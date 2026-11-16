@@ -94,7 +94,10 @@ export async function capturePoolMonitor(
       events.push(report("pool_request_failing_now", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
   // Missing evidence is a reliability incident, independently of synthetic availability.
-  if (reliability.some((failure) => failure.reason === "collection_unavailable")) {
+  if (
+    input.reliability?.state === "unavailable" ||
+    reliability.some((failure) => failure.reason === "collection_unavailable")
+  ) {
     const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
     console.warn("POOL_REQUEST_RELIABILITY_UNKNOWN", {
       ...context,

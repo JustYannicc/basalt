@@ -24,6 +24,12 @@ const openAt = async (page, origin) => {
   await dialog.getByText(`Using ${origin}`, { exact: true }).waitFor();
   return dialog;
 };
+const selectPrivateClient = async (page, dialog) => {
+  await dialog.getByRole("combobox", { name: "Who can use this client", exact: true }).click();
+  await page.getByRole("option", { name: "Only this account", exact: true }).click();
+  // Its closing portal must leave the dismissable layer before Escape targets the dialog.
+  await page.getByRole("listbox", { includeHidden: true }).waitFor({ state: "detached" });
+};
 const noOverflow = async (page) =>
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -71,10 +77,7 @@ export const verifyGitLabConnections = ({
         await dialog
           .getByRole("button", { name: "Use your own GitLab app for the full API", exact: true })
           .click();
-        await dialog.getByText("Advanced", { exact: true }).click();
-        await dialog
-          .getByRole("checkbox", { name: "Use your own GitLab app for this account", exact: true })
-          .check();
+        await selectPrivateClient(page, dialog);
         assert.equal(
           await dialog
             .getByRole("link", { name: "Open GitLab applications", exact: true })
@@ -160,6 +163,8 @@ export const verifyGitLabConnections = ({
     assert.equal(write.status, 409, "REST writes still need approval");
     assert.equal(write.body._tag, "ToolApprovalRequired");
     const ownBefore = yield* links("gitlab");
+    const clientsBefore = (yield* request("GET", `${prefix}/oauth-clients`)).clients;
+    const callsBefore = automatic.calls.length;
     yield* browser.use(
       "The full REST OAuth app guide matches its requested scopes",
       async (page) => {
@@ -171,13 +176,7 @@ export const verifyGitLabConnections = ({
           })
           .click();
         await dialog.getByText(`Using ${automatic.origin}`, { exact: true }).waitFor();
-        await dialog.getByText("Advanced", { exact: true }).click();
-        await dialog
-          .getByRole("checkbox", {
-            name: "Use your own GitLab app for this account",
-            exact: true,
-          })
-          .check();
+        await selectPrivateClient(page, dialog);
         assert.equal(
           await dialog.getByRole("link", { name: "Open GitLab applications", exact: true }).count(),
           0,
@@ -208,6 +207,22 @@ export const verifyGitLabConnections = ({
     assert.ok(own, "The own REST OAuth app saves and links an account");
     assert.equal(own.account.method, "oauth");
     assert.equal(own.account.site, automatic.origin);
+    assert.deepEqual(
+      (yield* request("GET", `${prefix}/oauth-clients`)).clients,
+      clientsBefore,
+      "Only this account keeps the entered client private, just like the former Advanced opt-in",
+    );
+    assert.ok(
+      automatic.calls
+        .slice(callsBefore)
+        .some(
+          (call) =>
+            call.phase === "authorize" &&
+            call.client === restOAuthClient.id &&
+            call.scope === "api read_user",
+        ),
+      "The private client requests the original REST permissions",
+    );
     const ownHealth = yield* request("POST", `${prefix}/accounts/${own.account.id}/health`);
     assert.equal(ownHealth.apps.find((check) => check.app === app.id)?.check?.status, "healthy");
     const ownRead = yield* call("fixture.read", own.account.id);
@@ -278,24 +293,35 @@ export const verifyGitLabConnections = ({
     yield* browser.use("Without registration, sign-in explains the own-app setup", async (page) => {
       const dialog = await openAt(page, manual.origin);
       await dialog.getByText(/doesn't offer automatic app registration for sign-in/).waitFor();
-      await dialog.getByText("Advanced", { exact: true }).click();
-      await dialog
-        .getByRole("checkbox", { name: "Use your own GitLab MCP app for this account" })
-        .check();
-      const link = dialog.getByRole("link", {
-        name: "Open GitLab applications",
-        exact: true,
-      });
-      assert.equal(await link.count(), 0, "HTTP fixture setup links stay hidden");
-      await dialog.getByText(/clear Confidential and select the mcp scope/).waitFor();
-      await dialog.getByText("Use GitLab's Application ID.", { exact: true }).waitFor();
-      await dialog.getByText(/Leave Client secret empty/).waitFor();
+      assert.equal(
+        await dialog.getByText(/doesn't offer automatic app registration for sign-in/).isVisible(),
+        true,
+        "The registration reason remains readable beside the structured own-app guidance",
+      );
       await noOverflow(page);
     });
-    yield* browser.checkpoint(`GitLab own app for sign-in ${width}`);
-    yield* browser.use("Leave own-app setup without saving", async (page) =>
-      page.keyboard.press("Escape"),
+    yield* browser.checkpoint(`GitLab registration explanation ${width}`);
+    yield* browser.use(
+      "The own-app guide keeps its private client and scope instructions",
+      async (page) => {
+        const dialog = page.getByRole("dialog", { name: dialogName });
+        await selectPrivateClient(page, dialog);
+        const link = dialog.getByRole("link", {
+          name: "Open GitLab applications",
+          exact: true,
+        });
+        assert.equal(await link.count(), 0, "HTTP fixture setup links stay hidden");
+        await dialog.getByText(/clear Confidential and select the mcp scope/).waitFor();
+        await dialog.getByText("Use GitLab's Application ID.", { exact: true }).waitFor();
+        await dialog.getByText(/Leave Client secret empty/).waitFor();
+        await noOverflow(page);
+      },
     );
+    yield* browser.checkpoint(`GitLab own app for sign-in ${width}`);
+    yield* browser.use("Leave own-app setup without saving", async (page) => {
+      await page.keyboard.press("Escape");
+      await page.getByRole("dialog", { name: dialogName }).waitFor({ state: "hidden" });
+    });
     assert.deepEqual(
       (yield* links("signIn")).map((link) => link.account.id).sort(),
       cancelBefore,

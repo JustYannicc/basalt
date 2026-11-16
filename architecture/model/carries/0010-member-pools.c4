@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Verified organization members receive their own private pool app and signed control account through ordinary member setup. Reconciliation locks the recorded app before credential repair, preserves user changes and separates token rotation from installation. Only verified immutable seed files are cached; failed or request-owned reads are not."
+    }
+  }
+}

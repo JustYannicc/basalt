@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Every registered background job returns a typed outcome. Read-only host inventory preserves closed failure categories through the authenticated route while keeping query details private; success reports completion. Disabled domain heartbeats and successful account health rechecks report completion without rewriting failed outcomes. No dispatcher substitutes completion for a missing result. Custom app installation preserves the mutation's result subtype through its callback, including explicit generic callers, without changing dashboard navigation."
+    }
+  }
+}

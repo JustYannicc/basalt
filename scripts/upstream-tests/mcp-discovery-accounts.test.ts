@@ -107,7 +107,6 @@ test("an account removed during discovery is not described as a cloud account", 
 
 const { searchCatalog } =
   await import("../../.upstream/packages/mcp/src/implementation/execute.ts");
-const { defaultMcpLimits } = await import("../../.upstream/packages/mcp/src/contracts/execute.ts");
 
 for (const failure of ["failed", "stalled"] as const)
   test(`an empty search identifies a ${failure} catalog source`, { timeout: 20_000 }, async () => {
@@ -131,7 +130,6 @@ for (const failure of ["failed", "stalled"] as const)
                 failure === "stalled" ? Effect.never : Effect.fail(new sdk.StorageError()),
               searchTools: () => Effect.succeed({ items: [], remaining: 0, missing: [] }),
             },
-            defaultMcpLimits,
             { query: "list calendars" },
           );
           assert.equal(page.items.length, 0);

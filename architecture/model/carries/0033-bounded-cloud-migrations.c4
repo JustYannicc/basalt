@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "The Cloud migration job bounds connection, lock, statement and reply waits, records the current step and retains redacted session diagnostics on failure or stalled progress. Only a lock timeout permits one retry; the runner never terminates another database session. Independent setup-skip migrations and typed storage failures retain their existing behavior."
+    }
+  }
+}

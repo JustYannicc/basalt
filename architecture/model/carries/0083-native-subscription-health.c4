@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Host-owned subscription checks use the current retained Home binding independently of pool membership and preserve quota collection limits and provider failure classes. Driver capability permits a check before the first result. Revalidation keys include stale driver identity, version and check time so a changed driver gets its own bounded retry rather than inheriting another result's attempt."
+    }
+  }
+}

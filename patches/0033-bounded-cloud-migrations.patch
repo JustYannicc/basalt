@@ -371,7 +371,7 @@ index 0000000..4b8ac9c
 +    Effect.scoped,
 +  );
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
-index 8fa83bc..7a13959 100644
+index 5fee598..0e752d8 100644
 --- a/apps/hosted/cloud/src/implementation/migrations.ts
 +++ b/apps/hosted/cloud/src/implementation/migrations.ts
 @@ -5,12 +5,20 @@ import { PgClient, PgTypes } from "@effect/sql-pg";
@@ -395,7 +395,7 @@ index 8fa83bc..7a13959 100644
  
  /** Additive cloud tables; existing organizations and memberships are never changed. */
  export const migrateOnboarding = Effect.gen(function* () {
-@@ -180,8 +188,8 @@ export const migrateSetupAssignments = Effect.gen(function* () {
+@@ -274,8 +282,8 @@ export const migrateSetupSkipAssignments = Effect.gen(function* () {
    )`;
  }).pipe(Effect.mapError(migrationFailed("product")));
  
@@ -406,7 +406,7 @@ index 8fa83bc..7a13959 100644
    Effect.gen(function* () {
      const setup = yield* cloudAuthSetup;
      // The pinned driver does not include regclass (OID 2205), which Effect's
-@@ -192,6 +200,7 @@ export const migrateCloudDatabase = Effect.scoped(
+@@ -286,6 +294,7 @@ export const migrateCloudDatabase = Effect.scoped(
        encode: (value) => PgTypes.encode(value, PgTypes.OID.oid),
      });
      const cloudMigrations = Effect.gen(function* () {
@@ -414,8 +414,8 @@ index 8fa83bc..7a13959 100644
        const registry = yield* makeRegistryStorage(yield* organizationPublishers);
        yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
        yield* migrateProductSteps("private_cloud_migrations", {
-@@ -204,10 +213,32 @@ export const migrateCloudDatabase = Effect.scoped(
-         "7_v1_import_orgs": migrateV1ImportOrgs,
+@@ -304,10 +313,32 @@ export const migrateCloudDatabase = Effect.scoped(
+         "13_v1_import_into": migrateV1ImportInto,
        });
      });
 -    yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(
@@ -451,7 +451,7 @@ index 8fa83bc..7a13959 100644
 +  yield* Effect.log("Hosted Postgres schemas are current");
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
-index 7800c6e..65dbbd1 100644
+index 6e14a1c..41ecef6 100644
 --- a/apps/hosted/cloud/src/infrastructure/database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/database.ts
 @@ -90,7 +90,8 @@ const preparedPreviewDatabase = (stage: TestStage) =>
@@ -503,19 +503,19 @@ index 3658c8c..19eb382 100644
 +    }),
 +});
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
-index e691b71..8eee52b 100644
+index d54113d..ba83cb8 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
 @@ -3,7 +3,7 @@ import type { BetterAuthOptions } from "better-auth";
  import { getMigrations } from "better-auth/db/migration";
  import { createDataStepJournal } from "@executor-js/app-management/data-steps";
- import { makeExecutorStorage } from "@executor-js/sdk/core";
+ import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/core";
 -import { Effect, Schema } from "effect";
 +import { Context, Effect, Schema } from "effect";
  import { SqlClient } from "effect/sql";
  import * as Migrator from "effect/sql/Migrator";
  import { migrateProvisioning } from "./provisioning-schema.ts";
-@@ -56,6 +56,19 @@ export const migrationFailed =
+@@ -66,6 +66,19 @@ export const migrationFailed =
      });
    };
  
@@ -535,7 +535,7 @@ index e691b71..8eee52b 100644
  /**
   * Apply an append-only list once, with completion recorded in the same SQL
   * transaction. The caller owns startup access or the hosted migration lock.
-@@ -127,6 +140,7 @@ export const migrateHostedDatabase = (
+@@ -137,6 +150,7 @@ export const migrateHostedDatabase = (
          // Fail the deployment instead of waiting indefinitely behind live work.
          yield* sql`set local lock_timeout = '5s'`;
          yield* sql`set local statement_timeout = '60s'`;
@@ -543,7 +543,7 @@ index e691b71..8eee52b 100644
          yield* sql`select pg_advisory_xact_lock(641028113)`;
          yield* migrateHostedSchemas(options, additional);
        }),
-@@ -144,7 +158,9 @@ export const migrateHostedSchemas = (
+@@ -154,7 +168,9 @@ export const migrateHostedSchemas = (
    Effect.gen(function* () {
      const storage = yield* makeExecutorStorage({ provider: "postgresql" });
      // Check compatibility before Better Auth's independent pool can commit DDL.
@@ -553,7 +553,7 @@ index e691b71..8eee52b 100644
      const migrations = yield* Effect.tryPromise({
        try: () => getMigrations(options),
        catch: migrationFailed("auth"),
-@@ -153,15 +169,19 @@ export const migrateHostedSchemas = (
+@@ -163,15 +179,19 @@ export const migrateHostedSchemas = (
      // before applying migrations rather than discovering it on the next login.
      if (migrations.schemaProblems.length > 0)
        return yield* new HostedMigrationFailed({ stage: "auth" });

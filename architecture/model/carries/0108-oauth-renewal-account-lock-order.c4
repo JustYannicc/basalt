@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "OAuth identification and independent renewal settlement claim the account before its grant, matching account removal, reconnect and reuse. Identification rereads the saved binding and credential generation under that claim. Token requests run outside the transaction, and shared grants never overwrite a binding credential."
+    }
+  }
+}

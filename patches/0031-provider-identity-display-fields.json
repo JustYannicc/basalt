@@ -1,7 +1,7 @@
 {
   "identity": "executor-provider-identity-display-fields",
   "file": "0031-provider-identity-display-fields.patch",
-  "content_sha256": "d5ee1c68d4f662b287a4000df140ac040b9f747fe863cfe76fe3c9df540394a3",
+  "content_sha256": "43c1748faa070a8e0e5c835cfcf087866c1837e04a6dabade7d5d17cfada038f",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

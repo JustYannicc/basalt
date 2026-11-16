@@ -259,7 +259,7 @@ test("public app operations, CLI and MCP preserve busy capacity as a recoverable
   assert.equal(cli?.code, "BuildBusy");
   assert.equal(cli?.status, 503);
   assert.equal(cli?.recovery?.action, busy.recovery.action);
-  const mcp = JSON.parse(diagnostic(decoded));
+  const mcp = JSON.parse(diagnostic(decoded, { operation: "call", reference: undefined }));
   assert.equal(mcp.code, "BuildBusy");
   assert.equal(mcp.status, 503);
   assert.equal(mcp.recovery.action, busy.recovery.action);

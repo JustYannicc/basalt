@@ -2,9 +2,9 @@
   "package": "@executor.sh/confluence",
   "publishedUrl": "https://catalog.executor.sh/apps/confluence.json",
   "publishedSha256": "be9751625a0278dd24dd09dea05559cc1a004ebc8c0ac683e3265483c11f15e4",
-  "carriedSha256": "3ab3848a4da8392df994ccadfb84df1107fe8be7c0847ade2320c73f0f2595a0",
-  "patchSha256": "b958c26c1300ece98da389799cbde692b90f830ea1452ba8e73c313c47aa2e6b",
-  "appsVersion": "0.0.1-beta.104-basalt.15",
+  "carriedSha256": "6470a91bd6ab5e124098ff97acfdac888ac7634187ffef8cbe7a41ceeddeaa04",
+  "patchSha256": "bbeda14bb91f9f1ff57c5c99be8d823f3cbbb273c01e0647b88e62648c114acb",
+  "appsVersion": "0.0.1-beta.104-basalt.17",
   "license": "Not declared in the published package",
   "excludedOperations": [
     "getForgeAppProperties",

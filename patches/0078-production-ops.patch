@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
-index 7a13959..b34c9ab 100644
+index 0e752d8..17241eb 100644
 --- a/apps/hosted/cloud/src/implementation/migrations.ts
 +++ b/apps/hosted/cloud/src/implementation/migrations.ts
 @@ -13,6 +13,7 @@ import { Effect } from "effect";
@@ -10,10 +10,16 @@ index 7a13959..b34c9ab 100644
  import {
    blockerReport,
    guardMigration,
-@@ -211,6 +212,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+@@ -305,12 +306,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
          "5_v1_import_map": migrateV1ImportMap,
          "6_setup_assignments": migrateSetupAssignments,
          "7_v1_import_orgs": migrateV1ImportOrgs,
+-        "8_v1_session_handoffs": migrateV1SessionHandoffs,
+-        "9_v1_import_allowed": migrateV1ImportAllowed,
+-        "10_setup_skip_assignments": migrateSetupSkipAssignments,
+-        "11_v1_import_billing": migrateV1ImportBilling,
+-        "12_v1_import_displacement": migrateV1ImportDisplacement,
+-        "13_v1_import_into": migrateV1ImportInto,
 +        "8_production_ops_receipts": migrateProductionOps,
        });
      });
@@ -924,7 +930,7 @@ index 0000000..1095121
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..488484426b7a0c8b21a6b1ac71576ee84a7edc92
+index 0000000..4884844
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
 @@ -0,0 +1,162 @@
@@ -1091,7 +1097,7 @@ index 0000000000000000000000000000000000000000..488484426b7a0c8b21a6b1ac71576ee8
 +    }
 +  });
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index ce5e4aa..a2a1cf4 100644
+index a0ff641..242e615 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -26,6 +26,10 @@ import {
@@ -1105,7 +1111,7 @@ index ce5e4aa..a2a1cf4 100644
  import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import { SqlClient } from "effect/sql";
-@@ -612,7 +616,11 @@ export default Api.make(
+@@ -638,7 +642,11 @@ export default Api.make(
        HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
      );
@@ -1118,10 +1124,10 @@ index ce5e4aa..a2a1cf4 100644
          HttpRouter.provideRequest(executor),
        ),
 diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
-index c2df1f7..033dee5 100644
+index 0fb5269..5ffd05b 100644
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
-@@ -24,6 +24,8 @@ import {
+@@ -25,6 +25,8 @@ import {
  } from "./infrastructure/telemetry.ts";
  import { workerBuild } from "./infrastructure/worker-build.ts";
  import { cloudSite } from "./infrastructure/site.ts";
@@ -1130,7 +1136,7 @@ index c2df1f7..033dee5 100644
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
  /** The executor and MCP identity are built once per isolate and shared by its objects. */
-@@ -78,7 +80,20 @@ export default McpServer.make(
+@@ -85,7 +87,20 @@ export default McpServer.make(
      };
    }),
    Effect.gen(function* () {
@@ -1153,10 +1159,10 @@ index c2df1f7..033dee5 100644
      Effect.provide(
        Layer.mergeAll(McpSession.make(mcpSession), cloudTelemetry).pipe(
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 2f38a5e..54483ae 100644
+index eb6d66d..39947f7 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -285,6 +285,31 @@ const notRunInCi: Partial<
+@@ -287,6 +287,31 @@ const notRunInCi: Partial<
      { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
    >
  > = {
@@ -1189,11 +1195,11 @@ index 2f38a5e..54483ae 100644
      targets: ["cloud"],
      reason:
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 2262db4..eb0372e 100644
+index 88201d5..052ccd8 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -2,11 +2,13 @@ import {
-   Clock,
+@@ -3,11 +3,13 @@ import {
+   Console,
    Deferred,
    Effect,
 +  Exit,
@@ -1206,7 +1212,7 @@ index 2262db4..eb0372e 100644
    Stream,
  } from "effect";
  import { ChildProcess, ChildProcessSpawner } from "effect/process";
-@@ -26,6 +28,7 @@ import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
+@@ -28,6 +30,7 @@ import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
  import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
  import { roleHost } from "./role-hosts.ts";
  import { freePort } from "./ports.ts";
@@ -1214,7 +1220,7 @@ index 2262db4..eb0372e 100644
  import {
    OperatorOAuthFixture,
    operatorOAuthFile,
-@@ -270,6 +273,9 @@ export const startCloudEnvironment = (input: {
+@@ -284,6 +287,9 @@ export const startCloudEnvironment = (input: {
          : {}),
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
@@ -1224,7 +1230,7 @@ index 2262db4..eb0372e 100644
        APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
        EXECUTOR_BUILD_VERSION: input.commit,
        POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
-@@ -419,9 +425,12 @@ export const startCloudEnvironment = (input: {
+@@ -437,9 +443,12 @@ export const startCloudEnvironment = (input: {
          ),
          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
        );
@@ -1237,7 +1243,7 @@ index 2262db4..eb0372e 100644
        databasePassword,
        dockerEnv,
        log: `${directory}/postgres.log`,
-@@ -446,71 +455,96 @@ export const startCloudEnvironment = (input: {
+@@ -464,71 +473,96 @@ export const startCloudEnvironment = (input: {
            );
      if (built !== 0)
        return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
@@ -1394,7 +1400,7 @@ index 2262db4..eb0372e 100644
      const fixtures = yield* startFixtureControl(input.origin, directory, browser);
      yield* fixtureRequest(fixtures, "/configure", {
        origin: input.origin,
-@@ -520,9 +554,29 @@ export const startCloudEnvironment = (input: {
+@@ -538,9 +572,29 @@ export const startCloudEnvironment = (input: {
        databaseName: "executor",
        databaseUsername: "executor",
      });
@@ -1426,7 +1432,7 @@ index 2262db4..eb0372e 100644
        oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
      };
 diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
-index e9dcffc..2c9c62e 100644
+index 0e37085..a33f0d5 100644
 --- a/e2e/support/cloud-postgres.ts
 +++ b/e2e/support/cloud-postgres.ts
 @@ -136,6 +136,8 @@ const removeAbandoned = (dockerEnv: DockerEnv, namespace: string) =>
@@ -1528,7 +1534,7 @@ index 0000000..a47083f
 +  });
 diff --git a/e2e/support/production-ops-account.ts b/e2e/support/production-ops-account.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a3a318d6bbcedf39af64e6cbed54ef044692c94
+index 0000000..6a3a318
 --- /dev/null
 +++ b/e2e/support/production-ops-account.ts
 @@ -0,0 +1,57 @@
@@ -1992,10 +1998,10 @@ index 0000000..73c4fcf
 +  return { own, foreign, database, account, snapshot };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 01d372e..9c0713c 100644
+index eb72446..9e273ed 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2293,6 +2293,62 @@ export const scenarios = plan({
+@@ -2816,6 +2816,62 @@ export const scenarios = plan({
        local: na("Local runs its background jobs in its own server process."),
      },
    },
@@ -2060,7 +2066,7 @@ index 01d372e..9c0713c 100644
      file: "pool-migration-inventory.spec.ts",
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d9937f85b3c35931f6b770ba66320b13bb366ec9
+index 0000000..d9937f8
 --- /dev/null
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -0,0 +1,217 @@

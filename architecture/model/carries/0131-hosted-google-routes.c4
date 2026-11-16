@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.hostedRoutes {
+    metadata {
+      constraint "The provisioned mapping capability verifies current membership, app and account use, live link and signed nonce before the fixed upstream directions request. A central ledger reserves each dispatch before I/O and counts uncertain failures toward its monthly and shorter limits. Callers cannot choose the upstream URL, method, field mask or key; health makes no vendor call."
+    }
+  }
+}

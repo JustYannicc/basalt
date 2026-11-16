@@ -115,7 +115,7 @@ export function proveOperatorChoices({
       return value.href;
     };
     const invalid = [
-      ["not a callback URL", null],
+      ["not a callback URL", "RequestInvalid"],
       [corrupt((url) => url.searchParams.set("state", "x".repeat(64))), "sign_in_not_found"],
       [
         corrupt((url) => url.searchParams.append("state", url.searchParams.get("state"))),
@@ -167,7 +167,17 @@ export function proveOperatorChoices({
     for (const [value, reason] of invalid) {
       const response = yield* complete(path, value);
       assert.equal(response.status, 400, `Refuse ${reason} before exchanging a code`);
-      assert.equal(reason === null ? response.body : response.body.reason, reason);
+      if (reason === "RequestInvalid") {
+        // Invalid HTTP URLs never reach the OAuth completion handler.
+        assert.equal(response.body._tag, "RequestInvalid");
+        assert.equal(response.body.part, "body");
+        assert.equal(response.body.issues.length, 1);
+        assert.equal(response.body.issues[0].path, "$.callbackUrl");
+        assert.equal(typeof response.body.issues[0].expected, "string");
+        assert.ok(response.body.issues[0].expected.length > 0);
+      } else {
+        assert.equal(response.body.reason, reason);
+      }
       assert.equal(exchangeCount(), before);
     }
     const account = checked(

@@ -63,6 +63,13 @@ def check_batch(root, base, head):
             raise ValueError(f"CPA attribution refuses octopus merge {commit}")
         # A merge's second parent is the immutable member head, including all its commits.
         member = parents[1] if len(parents) == 2 else commit
+        if len(parents) == 2:
+            landed = subprocess.run(["git", "merge-base", "--is-ancestor", member, base], cwd=root)
+            if landed.returncode not in (0, 1):
+                landed.check_returncode()
+            # Older main merges inherit history already checked at the trusted base.
+            if landed.returncode == 0:
+                continue
         member_base = git("merge-base", parents[0], member) if len(parents) == 2 else parents[0]
         try:
             check(root, member_base, member)

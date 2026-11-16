@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Interactive methods use retained host acquisition state and lifecycle hooks rather than secret-field or OAuth grant resolution. Batched usable-account reads skip interactive entries without dropping other accounts. Sign-in serializes the complete validated start action, and both reconnect paths resume waiting webhook sources after saving the account."
+    }
+  }
+}

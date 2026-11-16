@@ -2,9 +2,9 @@
   "package": "@executor.sh/cloudflare",
   "publishedUrl": "https://catalog.executor.sh/apps/cloudflare.json",
   "publishedSha256": "410272bcabc6722d6b722ead908b8667332ea004d41dc59cada4057d8e36161f",
-  "carriedSha256": "ea908c94fb95445146f075716b9196a490a7e2aa61198da22c66fa0e1b518b88",
-  "patchSha256": "3cf82af4896f3a848324c49db4bebca96ba5e08a61d35158f37483b6ac864f0a",
-  "appsVersion": "0.0.1-beta.104-basalt.15",
+  "carriedSha256": "61aa2c057fde57519280ae2217c4801a61ee2ac15713085a1c51ed24225b3070",
+  "patchSha256": "71a8c7e17356fd305cb0772cb7071cc9b0f36db0075c0340ddf24f5d91190ad5",
+  "appsVersion": "0.0.1-beta.104-basalt.17",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Full advertised OAuth scope declaration; publication not claimed"

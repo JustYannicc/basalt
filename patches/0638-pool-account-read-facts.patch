@@ -586,13 +586,13 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -1,3 +1,4 @@
 +import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ import { findUnverifiedRetainedBuild } from "./unverified-retained-build.ts";
+ import { BuildId } from "../contracts/shared.ts";
  import { versionBuildFailed } from "./version-build-failure.ts";
- import type { ResourceLifecycle } from "../contracts/executor.ts";
- import { AppWorkflowsActive } from "../contracts/apps.ts";
-@@ -112,19 +113,44 @@
+@@ -115,19 +116,44 @@
      }),
    ).pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
-
+ 
 +export const uncachedStoredAppRow = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
 +  query(() =>
 +    db.findFirst("apps", {
@@ -610,7 +610,7 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
 +) =>
 +  query(() =>
 +    db.findMany("apps", {
-+      join: (b) => b.deployment({ select: ["requirements"] }),
++      join: (b) => b.deployment({ select: ["requirements", "build"] }),
 +      where: (b) =>
 +        b.and(
 +          input.owner === undefined ? true : b("owner", "=", input.owner),
@@ -623,7 +623,7 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
 +  );
 +
  /** Read a configured app, applying an optional owner constraint. */
-
+ 
  export const storedApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
    Effect.gen(function* () {
 -    const row = yield* query(() =>
@@ -643,10 +643,10 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
      if (row === null) return yield* Effect.fail(new AppNotFound({ app: input.app }));
      return yield* Schema.decodeUnknownEffect(StoredApp)(row).pipe(
        Effect.mapError(() => new StorageError()),
-@@ -144,6 +170,23 @@
+@@ -147,6 +173,23 @@
      return yield* storedApp(db, input);
    });
-
+ 
 +export const uncachedVersionRow = (
 +  db: Query,
 +  app: Pick<StoredApp, "id" | "code">,
@@ -667,7 +667,7 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
  /** Read a version from this app's lineage, including its retained source and requirements. */
  export const storedVersion = (
    db: Query,
-@@ -153,16 +196,16 @@
+@@ -156,16 +199,16 @@
  ) =>
    Effect.gen(function* () {
      if (version === null) return yield* new AppNotDeployed({ app: app.id });
@@ -694,13 +694,13 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
      if (row === null) return yield* Effect.fail(new VersionNotFound({ app: app.id, version }));
      return yield* Schema.decodeUnknownEffect(StoredVersion)(row).pipe(
        Effect.mapError(() => new StorageError()),
-@@ -826,19 +869,18 @@
+@@ -848,19 +891,18 @@
        }).pipe(Effect.withSpan("sdk.apps.get")),
      list: (input: NonNullable<Parameters<Executor["apps"]["list"]>[0]> = {}) =>
        Effect.gen(function* () {
 -        const rows = yield* query(() =>
 -          db.findMany("apps", {
--            join: (b) => b.deployment({ select: ["requirements"] }),
+-            join: (b) => b.deployment({ select: ["requirements", "build"] }),
 -            where: (b) =>
 -              b.and(
 -                input.owner === undefined ? true : b("owner", "=", input.owner),
@@ -733,11 +733,11 @@ diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/impl
 +import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
  import { AccountIdentityId } from "../contracts/account-identity.ts";
  import { AccountWorkflowsActive } from "../contracts/account.ts";
- import { AccountWebhooksActive } from "../contracts/account.ts";
-@@ -34,15 +35,22 @@
+ import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
+@@ -40,15 +41,22 @@
      ).join(""),
    );
-
+ 
 +export const uncachedStoredAccountRow = (db: Query, account: AccountId, owner?: OwnerId) =>
 +  query(() =>
 +    db.findFirst("accounts", {
@@ -979,15 +979,22 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
 @@ -1,3 +1,4 @@
 +import { SelectionReadFacts } from "./selection-read-facts.ts";
  /** Native Effect database operations; SQL failures are projected to safe domain errors. */
- import { Effect } from "effect";
- import { StorageError } from "../contracts/shared.ts";
-@@ -21,7 +22,11 @@
-   Effect.suspend(work).pipe(Effect.mapError(() => new StorageError()));
+ import { Effect, Result } from "effect";
+ import { SqlError } from "effect/sql";
+@@ -26,17 +27,21 @@
+   );
  /** Preserve native Effect failures and cancellation through the SQL transaction. */
  export const transaction = <A, E, R>(db: Query, work: (tx: Query) => Effect.Effect<A, E, R>) =>
 -  db.transaction(Effect.suspend(() => work(db))).pipe(
 -    Effect.withSpan("storage.transaction"),
--    Effect.catchTag("SqlError", () => new StorageError()),
+-    Effect.catchTag("SqlError", (error) =>
+-      // A statement inside it that failed outside `query` names itself; otherwise the transaction does.
+-      withFailureAttributes(new StorageError(), {
+-        "executor.storage.operation": "transaction",
+-        ...(SqlError.isSqlError(error) && { "executor.storage.reason": error.reason._tag }),
+-        ...failureAttributes(error),
+-      }),
+-    ),
 -  );
 +  db
 +    .transaction(
@@ -995,8 +1002,18 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
 +    )
 +    .pipe(
 +      Effect.withSpan("storage.transaction"),
-+      Effect.catchTag("SqlError", () => new StorageError()),
++      Effect.catchTag("SqlError", (error) =>
++        // A statement inside it that failed outside `query` names itself; otherwise the transaction does.
++        withFailureAttributes(new StorageError(), {
++          "executor.storage.operation": "transaction",
++          ...(SqlError.isSqlError(error) && { "executor.storage.reason": error.reason._tag }),
++          ...failureAttributes(error),
++        }),
++      ),
 +    );
+ /**
+  * Run two effects at once but report the first one's failure first, as if they ran in order. Read
+  * ahead of a check this way only: the second's result is released only once the first succeeded.
 diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
 --- a/e2e/tests/pool-account-view-cloud-read.spec.ts
 +++ b/e2e/tests/pool-account-view-cloud-read.spec.ts

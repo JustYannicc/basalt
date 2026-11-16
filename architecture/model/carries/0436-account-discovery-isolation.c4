@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Framework basalt.14 and protocol 40 permit credential-free unavailable account bindings only for tool discovery when the app advertises support. OAuth grant and renewal failures remain account-scoped typed recovery beside static and healthy tools, including required and many selections. Partial catalogs are re-evaluated so recovery is observable. Calls, trusted approvals, account authorization, credential decryption and storage failures retain their strict boundaries. Released protocols 1 through 39 remain unchanged."
+      constraint "Framework basalt.14 and protocol 40 permit credential-free unavailable account bindings only for tool discovery when the app advertises support. OAuth grant and renewal failures remain account-scoped typed recovery beside static and healthy tools, including required and many selections. Partial catalogs are re-evaluated so recovery is observable. Calls, trusted approvals, account authorization, credential decryption and storage failures retain their strict boundaries. Released protocols 1 through 39 remain unchanged. Unavailable bindings remain discovery-only through batched usableAll and current actor checks. Per-child catalogs return independent results, and pending evaluation handoff retains current renewal and search-fill guards."
     }
   }
 }

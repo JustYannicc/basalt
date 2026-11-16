@@ -1,7 +1,8 @@
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+index ddb424b..74ac279 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -81,6 +81,20 @@
+@@ -82,6 +82,20 @@ const check = Effect.gen(function* () {
              specifier === "@executor-js/utils/provisioning-request"
            )
              return;
@@ -19,9 +20,9 @@ diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
 +            node.parent.importClause.namedBindings.elements[0]?.propertyName === undefined
 +          )
 +            return;
-           // The runner owns its canonical TCP listener through this external transport SDK.
-           // Application implementations remain forbidden; only this listener adapter may import it.
+           // Listener announcements may contain terminal styling; no other utility imports pass.
            if (
+             label === `support${path.sep}cloud-listener.ts` &&
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts

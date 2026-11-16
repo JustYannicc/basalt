@@ -162,7 +162,12 @@ export function delegatedCommand(command: string) {
   const words = commandWords(command);
   if (
     !executedPaths(command).some((path) =>
-      ["scripts/ci/run-e2e.ts", "../scripts/ci/run-e2e.ts"].includes(path),
+      [
+        "scripts/ci/run-e2e.ts",
+        "../scripts/ci/run-e2e.ts",
+        "scripts/ci/with-published-frameworks.ts",
+        "../scripts/ci/with-published-frameworks.ts",
+      ].includes(path),
     )
   )
     return words;

@@ -1,0 +1,158 @@
+diff --git a/apps/hosted/server/src/implementation/migration-lineage.ts b/apps/hosted/server/src/implementation/migration-lineage.ts
+--- a/apps/hosted/server/src/implementation/migration-lineage.ts
++++ b/apps/hosted/server/src/implementation/migration-lineage.ts
+@@ -12,10 +12,12 @@
+   table: Journal,
+   keys: ReadonlyArray<string>,
+   rows: ReadonlyArray<Entry>,
++  operatorKeys: ReadonlyArray<string> = [],
+ ) => {
+   const issues: Array<string> = [];
+   const expected = new Map<number, string>();
+-  for (const key of keys) {
++  const operatorIds = new Set(operatorKeys.map((key) => Number.parseInt(key, 10)));
++  for (const key of [...keys, ...operatorKeys]) {
+     const match = /^([1-9][0-9]*)_([a-z0-9_]+)$/.exec(key);
+     if (!match || !Number.isSafeInteger(Number(match[1]))) {
+       issues.push(`${table}: invalid registered migration key`);
+@@ -37,7 +39,7 @@
+       );
+   }
+   for (const [id, name] of expected)
+-    if (id <= latest && !applied.has(id))
++    if (id <= latest && !applied.has(id) && !operatorIds.has(id))
+       issues.push(`${table}: missing ${id}_${name} below recorded maximum ${latest}`);
+   return issues;
+ };
+@@ -52,5 +54,11 @@
+     return yield* sql<Entry>`select migration_id, name from ${sql(table)} order by migration_id`;
+   });
+ 
+-export const checkMigrationLineage = (table: Journal, keys: ReadonlyArray<string>) =>
+-  Effect.map(readMigrationJournal(table), (rows) => migrationLineageIssues(table, keys, rows));
++export const checkMigrationLineage = (
++  table: Journal,
++  keys: ReadonlyArray<string>,
++  operatorKeys: ReadonlyArray<string> = [],
++) =>
++  Effect.map(readMigrationJournal(table), (rows) =>
++    migrationLineageIssues(table, keys, rows, operatorKeys),
++  );
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -100,15 +100,17 @@
+ 
+ /**
+  * Apply an append-only list once, with completion recorded in the same SQL
+- * transaction. The caller owns startup access or the hosted migration lock.
++ * transaction. Operator keys recognize optional committed cutovers without scheduling them.
++ * The caller owns startup access or the hosted migration lock.
+  */
+ export const migrateProductSteps = (
+   table: "private_hosted_migrations" | "private_cloud_migrations",
+   steps: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>,
++  operatorKeys: ReadonlyArray<string> = [],
+ ) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
+-    const issues = yield* checkMigrationLineage(table, Object.keys(steps));
++    const issues = yield* checkMigrationLineage(table, Object.keys(steps), operatorKeys);
+     if (issues.length > 0)
+       return yield* new HostedMigrationFailed({ stage: "product", lineageIssues: issues });
+     // Effect's Postgres migrator probes with ::regclass. Bootstrap explicitly
+@@ -146,48 +148,52 @@
+     Effect.mapError(migrationFailed("product")),
+   );
+ 
+-const hostedProductMigrations = migrateProductSteps("private_hosted_migrations", {
+-  "1_baseline": Effect.gen(function* () {
+-    yield* migrateGroups;
+-    yield* migrateResourceAccess;
+-    yield* migrateProvisioning;
+-    yield* migrateOrganizationRemovals;
+-  }),
+-  "2_api_key_memberships": migrateApiKeyMemberships,
+-  "3_upgrade_executor_apps": queueExecutorAppUpgrades,
+-  // Additive: the journal for data steps the new server runs; the running server never reads it.
+-  "4_data_steps": createDataStepJournal("private_hosted"),
+-  // The template moved to routers and served framework lookups (#829, #841).
+-  "5_upgrade_executor_apps": queueExecutorAppUpgrades,
+-  // Step 5 skipped apps whose only change since deploying was the framework pin commit.
+-  "6_upgrade_pinned_executor_apps": queueExecutorAppUpgrades,
+-  // SDK 4.0.8 deleted every connection without a target, and these rows with them. The running
+-  // server records a target for every connection it creates.
+-  "7_require_connection_targets": Effect.gen(function* () {
+-    const sql = yield* SqlClient.SqlClient;
+-    yield* sql`alter table hosted_connection_access alter column target set not null`;
+-  }),
+-  // Additive: who may use each stored OAuth client; the running server never reads it.
+-  "8_oauth_client_access": migrateOAuthClientAccess,
+-  // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
+-  // the profiles.
+-  "9_app_account_links": migrateAppAccountLinks,
+-  "10_account_observations": migrateAccountObservations,
+-  "11_contributed_departures": migrateContributedDepartures,
+-  "12_account_identity_index": migrateAccountIdentityIndex,
+-  "13_contributed_departure_observability": migrateContributedDepartureObservability,
+-  "14_model_bindings": migrateModelBindings,
+-  "15_hosted_routes": migrateHostedRoutes,
+-  "16_tool_policies": migrateToolPolicies,
+-  "17_account_rechecks": migrateAccountRechecks,
+-  "18_tool_availability": Effect.gen(function* () {
+-    yield* migrateToolAvailability;
+-    yield* queueExecutorAppUpgrades;
+-  }),
+-  "19_change_revisions": migrateChangeRevisions,
+-  "20_account_changes": migrateAccountChanges,
+-  "21_change_journal_prepare": prepareChangeJournal,
+-});
++const hostedProductMigrations = migrateProductSteps(
++  "private_hosted_migrations",
++  {
++    "1_baseline": Effect.gen(function* () {
++      yield* migrateGroups;
++      yield* migrateResourceAccess;
++      yield* migrateProvisioning;
++      yield* migrateOrganizationRemovals;
++    }),
++    "2_api_key_memberships": migrateApiKeyMemberships,
++    "3_upgrade_executor_apps": queueExecutorAppUpgrades,
++    // Additive: the journal for data steps the new server runs; the running server never reads it.
++    "4_data_steps": createDataStepJournal("private_hosted"),
++    // The template moved to routers and served framework lookups (#829, #841).
++    "5_upgrade_executor_apps": queueExecutorAppUpgrades,
++    // Step 5 skipped apps whose only change since deploying was the framework pin commit.
++    "6_upgrade_pinned_executor_apps": queueExecutorAppUpgrades,
++    // SDK 4.0.8 deleted every connection without a target, and these rows with them. The running
++    // server records a target for every connection it creates.
++    "7_require_connection_targets": Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      yield* sql`alter table hosted_connection_access alter column target set not null`;
++    }),
++    // Additive: who may use each stored OAuth client; the running server never reads it.
++    "8_oauth_client_access": migrateOAuthClientAccess,
++    // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
++    // the profiles.
++    "9_app_account_links": migrateAppAccountLinks,
++    "10_account_observations": migrateAccountObservations,
++    "11_contributed_departures": migrateContributedDepartures,
++    "12_account_identity_index": migrateAccountIdentityIndex,
++    "13_contributed_departure_observability": migrateContributedDepartureObservability,
++    "14_model_bindings": migrateModelBindings,
++    "15_hosted_routes": migrateHostedRoutes,
++    "16_tool_policies": migrateToolPolicies,
++    "17_account_rechecks": migrateAccountRechecks,
++    "18_tool_availability": Effect.gen(function* () {
++      yield* migrateToolAvailability;
++      yield* queueExecutorAppUpgrades;
++    }),
++    "19_change_revisions": migrateChangeRevisions,
++    "20_account_changes": migrateAccountChanges,
++    "21_change_journal_prepare": prepareChangeJournal,
++  },
++  ["22_change_journal_activate"],
++);
+ 
+ /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
+ export const activateHostedChangeJournal = Effect.gen(function* () {
