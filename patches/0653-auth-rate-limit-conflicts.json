@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-auth-rate-limit-conflicts",
+  "file": "0653-auth-rate-limit-conflicts.patch",
+  "content_sha256": "5d327455219b86f2c1625776f6674390bf63fe4b009acd498f7a69064c1f2f59",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
