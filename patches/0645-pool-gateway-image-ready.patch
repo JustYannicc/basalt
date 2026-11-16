@@ -10,3 +10,16 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
              {
                headers: { "Cache-Control": "no-store" },
              },
+diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener.spec.ts
+--- a/e2e/tests/cloud-app-listener.spec.ts
++++ b/e2e/tests/cloud-app-listener.spec.ts
+@@ -142,7 +142,8 @@
+       const generated = yield* fs.readFileString(
+         "apps/hosted/server/src/implementation/pool-worker-revision.ts",
+       );
+-      expect(Object.keys(report).sort()).toEqual(["keyVersion", "revision"]);
++      expect(Object.keys(report).sort()).toEqual(["imageReady", "keyVersion", "revision"]);
++      expect(report.imageReady).toBe(true);
+       expect(generated).toContain(JSON.stringify(report.revision));
+       expect(report.revision).toMatch(/^[0-9a-f]{64}$/);
+       expect(report.keyVersion).toBe(
