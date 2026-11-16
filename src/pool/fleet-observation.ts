@@ -7,11 +7,14 @@ export const poolObservationPermission = "cfd39eebc07c4e3ea849e4b3d2644637";
 export const poolObservationSecretName = (stage: string) =>
   `basalt-${stage}-pool-provider-observation`;
 
+export const poolObservationStore = () =>
+  Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
+
 /** Provisioning owns the value; deployment only binds its account store and stable name. */
 export const bindPoolObservationSecret = (worker: Cloudflare.Worker) =>
   Effect.gen(function* () {
     const stage = yield* Stage;
-    const store = yield* Cloudflare.SecretsStore.Store("PoolObservationSecrets").pipe(retain());
+    const store = yield* poolObservationStore();
     yield* worker.bind("pool-provider-observation", {
       bindings: [
         {
