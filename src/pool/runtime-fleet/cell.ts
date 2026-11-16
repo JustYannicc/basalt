@@ -26,10 +26,22 @@ interface Dependencies {
 export class FleetHandoffCell implements FleetCell {
   private deps: Dependencies;
   private retirementAttempts = 0;
+  private starting?: { target: SlotTarget; work: Promise<SlotIdentity> };
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
   async start(target: SlotTarget) {
+    if (this.starting) {
+      if (!sameTarget(this.starting.target, target)) throw new SlotRefused("identity");
+      return this.starting.work;
+    }
+    const work = this.startOwned(target).finally(() => {
+      this.starting = undefined;
+    });
+    this.starting = { target, work };
+    return work;
+  }
+  private async startOwned(target: SlotTarget) {
     await this.deps.handoff.startInitial(
       await this.deps.admission.envelope(target, "initial-start"),
     );
@@ -44,6 +56,11 @@ export class FleetHandoffCell implements FleetCell {
     return selected;
   }
   async observe(target: SlotTarget, retryUnsent = false) {
+    if (this.starting) {
+      if (!sameTarget(this.starting.target, target)) throw new SlotRefused("identity");
+      // A recovered activation would invalidate the still-returning start's durable receipt.
+      return undefined;
+    }
     const selected = await this.selected();
     if (selected) {
       if (!sameTarget(selected, target)) throw new SlotRefused("identity");
