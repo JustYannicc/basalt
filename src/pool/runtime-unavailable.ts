@@ -89,6 +89,10 @@ export function nativeRuntimeStream(response: Response, request: Request) {
         } catch (error) {
           ended = true;
           void reader.cancel().catch(() => {});
+          if (terminal) {
+            controller.close();
+            return;
+          }
           if (request.signal.aborted) {
             controller.error(error);
             return;

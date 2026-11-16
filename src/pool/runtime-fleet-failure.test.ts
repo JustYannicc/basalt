@@ -4,6 +4,7 @@ import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { failureFleetFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-failure-fixture.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 
 test("a health refusal fences the exact runtime before eleven new requests and survives reconstruction", async () => {
   const f = await fixture(),
@@ -28,6 +29,42 @@ test("a health refusal fences the exact runtime before eleven new requests and s
   assert.equal(attempts, 1);
   assert.equal(f.legacyCalls(), 0);
   assert.deepEqual(new Set(f.sends), new Set([sibling.instanceId]));
+});
+
+test("recent demand protects a surviving idle sibling when the first ready sibling fails its probe", async (context) => {
+  let now = 0;
+  context.mock.method(Date, "now", () => now);
+  const f = await fixture(),
+    dead = await f.add(),
+    healthy = await f.add();
+  now = 60_001;
+  const pending: Promise<unknown>[] = [];
+  const fleet = new RuntimeFleet({
+    state: f.state,
+    target: async () => assert.fail("unreclaimed failed compute still owns physical capacity"),
+    cell: (target) => ({
+      ...f.cell(target),
+      healthy: async () => {
+        if (target.slotId === dead.slotId) throw new SlotRefused("unhealthy");
+      },
+    }),
+    legacyActive: async () => 0,
+    currentRequests: () => 0,
+    targetActive: 10,
+    idleMilliseconds: 60_000,
+    maximum: 2,
+    now: () => now,
+    recentDemandUntil: async () => 120_000,
+    wrap: (response) => response,
+    defer: (work) => {
+      pending.push(work);
+    },
+  });
+  await fleet.upkeep();
+  await Promise.all(pending);
+  const rows = await f.state.inspect();
+  assert.equal(rows.find((row) => row.target.slotId === dead.slotId)?.phase, "quarantined");
+  assert.equal(rows.find((row) => row.target.slotId === healthy.slotId)?.phase, "ready");
 });
 
 test("a lost dispatched reply quarantines without replaying the invocation", async () => {

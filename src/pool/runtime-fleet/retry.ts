@@ -41,6 +41,7 @@ export async function forwardRecoverably(
     !request.headers.has("upgrade");
   let retained = new Request(request, { signal });
   let recovered = false;
+  let retainedOwned = true;
   try {
     for (let index = 0; index < 6; index++) {
       signal.throwIfAborted();
@@ -53,6 +54,8 @@ export async function forwardRecoverably(
           () =>
             attempt(current, () => {
               dispatched = true;
+              retainedOwned = false;
+              if (!safe) clearTimeout(timer);
               if (backup) {
                 void backup.body?.cancel().catch(() => {});
                 backup = undefined;
@@ -64,12 +67,14 @@ export async function forwardRecoverably(
         if (backup) void backup.body?.cancel().catch(() => {});
         return nativeRuntimeStream(response, request);
       } catch (error) {
+        if (!dispatched) void current.body?.cancel().catch(() => {});
         if (signal.aborted || !recoverable(error)) {
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
         }
         if (dispatched && !safe) return nativeRuntimeUnavailable(request);
         retained = backup ?? new Request(request, { signal });
+        retainedOwned = true;
         if (error instanceof FleetRefused && error.reason === "capacity") {
           if (recovered || !recover) return nativeRuntimeUnavailable(request);
           recovered = true;
@@ -81,7 +86,6 @@ export async function forwardRecoverably(
         }
       }
     }
-    void retained.body?.cancel().catch(() => {});
     return nativeRuntimeUnavailable(request);
   } catch (error) {
     if (deadline.signal.aborted && !request.signal.aborted)
@@ -89,5 +93,6 @@ export async function forwardRecoverably(
     throw error;
   } finally {
     clearTimeout(timer);
+    if (retainedOwned) void retained.body?.cancel().catch(() => {});
   }
 }

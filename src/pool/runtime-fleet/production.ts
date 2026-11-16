@@ -1,3 +1,4 @@
+import { awaitProbe } from "../availability.ts";
 import { forwardRecoverably } from "./retry.ts";
 import { FleetDemand } from "./demand.ts";
 import {
@@ -371,10 +372,18 @@ export class PoolRuntimeFleet {
         request,
         (current, dispatch) => fleet.forward(current, pool, legacy, dispatch),
         beforeDispatch,
-        () => this.deps.handoff.supervise(),
+        () => fleet.recoverPrimary(),
       );
     }
     return forwardRecoverably(request, legacy, beforeDispatch, () => this.deps.handoff.supervise());
+  }
+  async recoverAdmission(signal: AbortSignal) {
+    if (!(await this.deps.handoff.selected())) return false;
+    await awaitProbe(
+      () => (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()),
+      signal,
+    );
+    return true;
   }
   async install(policy: NativeMembershipPolicy) {
     await (await this.fleet())?.install(policy);
@@ -426,7 +435,9 @@ export class PoolRuntimeFleet {
   async upkeep() {
     try {
       this.deps.ctx.waitUntil(
-        this.deps.handoff.supervise().catch(() => console.error("POOL_SELECTED_RECOVERY_PENDING")),
+        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(() =>
+          console.error("POOL_SELECTED_RECOVERY_PENDING"),
+        ),
       );
       await this.primaryHeadroom();
       const fleet = await this.fleet();

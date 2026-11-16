@@ -950,6 +950,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       env: this.env,
       computers: this.computers,
       memberships: this.memberships,
+      recoverAdmission: (signal) => this.fleet.recoverAdmission(signal),
       streams: this.modelStreams,
       lifecycle: this.lifecycle,
       protection: this.protection,

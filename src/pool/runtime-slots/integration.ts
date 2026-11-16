@@ -384,7 +384,7 @@ export class RuntimeHandoff {
     beforeDispatch: () => void = () => {},
   ) {
     if (!this.options.remote && (await this.ctx.storage.get(slotSelectionKey)) === undefined) {
-      return legacy(request, () => {});
+      return legacy(request, beforeDispatch);
     }
     // Pre-adoption requests remain unbound leases and block retirement until their bodies close.
     const pending = this.streams.acquire(pool ?? "", request.signal);
@@ -392,11 +392,14 @@ export class RuntimeHandoff {
       return await this.choose(
         async (prepared) => {
           const done = await this.legacyActivity.acquire();
+          const forwarded = new Request(request, { signal: pending.lease.signal });
+          let dispatched = false;
           try {
-            const response = await legacy(
-              new Request(request, { signal: pending.lease.signal }),
-              prepared,
-            );
+            const response = await legacy(forwarded, () => {
+              prepared();
+              beforeDispatch();
+              dispatched = true;
+            });
             return this.options.wrap(response, {
               ...pending.lease,
               release: () => {
@@ -405,6 +408,7 @@ export class RuntimeHandoff {
               },
             });
           } catch (error) {
+            if (!dispatched) void forwarded.body?.cancel().catch(() => {});
             await done();
             throw error;
           }

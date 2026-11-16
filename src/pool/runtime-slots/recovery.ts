@@ -115,8 +115,29 @@ export class RuntimeSlotRecovery {
     if (completion != null) {
       this.unavailable = true;
       const value = Schema.decodeUnknownSync(Completion)(completion);
-      await this.finish(value.identity, value.fingerprint, signal);
-      return;
+      const current = await storage.inspect();
+      if (
+        !sameIdentity(current.selection?.active.identity, value.identity) ||
+        current.selection?.active.fenced ||
+        current.selection?.active.retirement
+      )
+        throw new SlotRefused("selection");
+      const actual = Schema.decodeUnknownSync(Retained)(
+        await driver.recoveryWitness(value.identity),
+      );
+      if (!sameIdentity(actual.identity, value.identity)) throw new SlotRefused("identity");
+      if (actual.running) {
+        await this.finish(value.identity, value.fingerprint, signal);
+        return;
+      }
+      await storage.transact(async (latest, transaction) => {
+        if (
+          !sameIdentity(latest.selection?.active.identity, value.identity) ||
+          JSON.stringify(await transaction.get(completionKey)) !== JSON.stringify(completion)
+        )
+          throw new SlotRefused("selection");
+        await transaction.put(completionKey, null);
+      });
     }
     const snapshot = await storage.inspect();
     const selection = snapshot.selection;

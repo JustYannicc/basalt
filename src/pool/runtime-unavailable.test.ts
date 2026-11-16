@@ -77,3 +77,25 @@ test("large native events retain their payload and do not become overload errors
   assert.equal(response.headers.has("content-length"), false);
   assert.equal(await response.text(), body);
 });
+
+test("transport failure after a delivered native completion cannot introduce another terminal", async () => {
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  const response = nativeRuntimeStream(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          source = controller;
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    ),
+    new Request("http://pool/v1/responses"),
+  );
+  const reader = response.body!.getReader();
+  source.enqueue(
+    new TextEncoder().encode('event: response.completed\ndata: {"type":"response.completed"}\n\n'),
+  );
+  await reader.read();
+  source.error(new Error("transport failed after completion"));
+  assert.equal((await reader.read()).done, true);
+});

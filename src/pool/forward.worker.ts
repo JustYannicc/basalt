@@ -44,6 +44,7 @@ interface Dependencies {
   env: Parameters<typeof gatewayUnavailable>[0] & { POOL_APP_SIGNING_KEY: string };
   computers: Pick<Computers, "nativeModel" | "observeUsage">;
   memberships: NativeMemberships;
+  recoverAdmission?(signal: AbortSignal): Promise<boolean>;
   streams: NativeStreams;
   lifecycle: Promise<PoolLifecycle>;
   route?: (
@@ -138,6 +139,7 @@ export async function forwardPoolRequest(
         deps.env.POOL_AUTH_DATABASE?.connectionString,
         deps.streams,
         native ?? deps.appModel,
+        deps.recoverAdmission,
       );
       request = gate.request;
       identity = gate.identity;

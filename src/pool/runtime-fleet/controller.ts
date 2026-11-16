@@ -58,6 +58,7 @@ export class RuntimeFleet {
   private growing?: Promise<void>;
   private atCapacity = false;
   private primaryFailed = false;
+  private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
@@ -155,6 +156,11 @@ export class RuntimeFleet {
       throw error;
     }
   }
+  async recoverPrimary() {
+    const failure = this.primaryFailure;
+    await this.deps.recoverPrimary?.();
+    if (failure === this.primaryFailure) this.primaryFailed = false;
+  }
   async forward(
     request: Request,
     pool: string | undefined,
@@ -217,15 +223,8 @@ export class RuntimeFleet {
       rememberRuntimeFailure(step, error);
       if (reservation.kind === "primary") {
         this.primaryFailed = true;
-        if (this.deps.recoverPrimary)
-          this.deps.defer(
-            this.deps
-              .recoverPrimary()
-              .then(() => {
-                this.primaryFailed = false;
-              })
-              .catch(() => {}),
-          );
+        this.primaryFailure++;
+        if (this.deps.recoverPrimary) this.deps.defer(this.recoverPrimary().catch(() => {}));
       }
       if (reservation.kind === "runtime") {
         try {
@@ -290,7 +289,8 @@ export class RuntimeFleet {
             }
           }),
       );
-      for (const row of await this.deps.state.inspect()) {
+      const surviving = await this.deps.state.inspect();
+      for (const row of surviving) {
         await trace.run(
           row.phase,
           async () => {
@@ -320,7 +320,7 @@ export class RuntimeFleet {
               (this.deps.enabled?.() === false ||
                 this.deps.now() >= ((await this.deps.recentDemandUntil?.()) ?? 0) ||
                 !sameIdentity(
-                  rows.find((value) => value.phase === "ready")?.identity,
+                  surviving.find((value) => value.phase === "ready")?.identity,
                   row.identity,
                 )) &&
               (this.deps.enabled?.() === false ||
