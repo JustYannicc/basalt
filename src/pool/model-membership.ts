@@ -29,6 +29,7 @@ export async function modelMembership(
   connectionString: string | undefined,
   streams: NativeStreams,
   native?: ModelIdentity,
+  recoverAdmission?: (signal: AbortSignal) => Promise<boolean>,
 ): Promise<{
   request: Request;
   identity?: RefusalIdentity;
@@ -54,9 +55,16 @@ export async function modelMembership(
   // Register before authority and signing so a concurrent veto cannot miss this admission.
   const lease = streams.acquire(crypto.randomUUID(), pool, cleaned.signal);
   try {
-    const policy = await memberships.authority(pool).catch(() => {
-      throw new ModelMembershipUnavailable(identity);
-    });
+    let policy;
+    try {
+      policy = await memberships.authority(pool);
+    } catch {
+      if (!(await recoverAdmission?.(lease.signal))) throw new ModelMembershipUnavailable(identity);
+      lease.signal.throwIfAborted();
+      policy = await memberships.authority(pool).catch(() => {
+        throw new ModelMembershipUnavailable(identity);
+      });
+    }
     if (policy) {
       headers.set(
         policyHeader,
@@ -75,6 +83,7 @@ export async function modelMembership(
     };
   } catch (error) {
     lease.release();
+    void cleaned.body?.cancel().catch(() => {});
     throw error;
   }
 }

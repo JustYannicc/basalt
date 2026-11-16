@@ -108,6 +108,8 @@ export class RuntimeChannel {
         target === 8317 ? undefined : target,
       );
     } catch (error) {
+      if (port === 8317 && this.ctx.container?.running === false)
+        refuseRuntime(step, new SlotRefused("unhealthy"));
       refuseRuntime(step, error);
     }
   }

@@ -1,6 +1,13 @@
 import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
-import { ControllerCode, SlotIdentity, SlotTarget, SlotRefused } from "./contract.ts";
+import {
+  ControllerCode,
+  SlotIdentity,
+  SlotTarget,
+  SlotRefused,
+  sameIdentity,
+  sameTarget,
+} from "./contract.ts";
 import { launchGeneration, launchOperationId } from "../launch-contract.ts";
 
 export const runtimeAttestationFormat = "pool-runtime-attestation-v1";
@@ -66,7 +73,17 @@ export const InitialStartAuthorization = Schema.Struct({
   ...StartAuthorization.fields,
   kind: Schema.Literal("initial-start"),
 });
-export const LaunchAuthorization = Schema.Union([StartAuthorization, InitialStartAuthorization]);
+export const RestartAuthorization = Schema.Struct({
+  ...StartAuthorization.fields,
+  kind: Schema.Literal("restart"),
+  previous: SlotIdentity,
+});
+export type RestartAuthorization = typeof RestartAuthorization.Type;
+export const LaunchAuthorization = Schema.Union([
+  StartAuthorization,
+  InitialStartAuthorization,
+  RestartAuthorization,
+]);
 export type LaunchAuthorization = typeof LaunchAuthorization.Type;
 
 /** Preserves the existing running boot without representing its startup settings as measured. */
@@ -91,11 +108,19 @@ export const InitialRuntimeAttestation = Schema.Struct({
   ...RuntimeAttestation.fields,
   kind: Schema.Literal("initial-attested"),
 });
+export const RestartRuntimeAttestation = Schema.Struct({
+  ...RuntimeAttestation.fields,
+  kind: Schema.Literal("restart-attested"),
+  previous: SlotIdentity,
+});
 export const VerifiedRuntimeAttestation = Schema.Union([
+  RestartRuntimeAttestation,
   RuntimeAttestation,
   InitialRuntimeAttestation,
 ]);
 export const AdmissionProof = Schema.Union([
+  RestartAuthorization,
+  RestartRuntimeAttestation,
   StartAuthorization,
   InitialStartAuthorization,
   UnattestedActive,
@@ -104,11 +129,13 @@ export const AdmissionProof = Schema.Union([
 ]);
 export type AdmissionProof = typeof AdmissionProof.Type;
 export const isLaunchAuthorization = (proof: AdmissionProof): proof is LaunchAuthorization =>
-  proof.kind === "start" || proof.kind === "initial-start";
+  proof.kind === "start" || proof.kind === "initial-start" || proof.kind === "restart";
 export const isRuntimeAttestation = (
   proof: AdmissionProof,
 ): proof is typeof VerifiedRuntimeAttestation.Type =>
-  proof.kind === "attested" || proof.kind === "initial-attested";
+  proof.kind === "attested" ||
+  proof.kind === "initial-attested" ||
+  proof.kind === "restart-attested";
 
 export const StartupWitness = Schema.Struct({
   operationId: Identifier,
@@ -156,7 +183,16 @@ export function decodeAdmissionProof(value: unknown, now = Date.now()): Admissio
     throw new SlotRefused("identity");
   if (!initial && proof.kind !== "unattested-active" && selection.active === null)
     throw new SlotRefused("identity");
+  const restart = proof.kind === "restart" || proof.kind === "restart-attested";
   if (
+    restart &&
+    (!selection.active ||
+      !sameIdentity(selection.active, proof.previous) ||
+      !sameTarget(proof.previous, target))
+  )
+    throw new SlotRefused("identity");
+  if (
+    !restart &&
     selection.active &&
     (selection.active.controllerId !== target.controllerId ||
       selection.active.applicationId === target.applicationId ||
@@ -164,6 +200,7 @@ export function decodeAdmissionProof(value: unknown, now = Date.now()): Admissio
   )
     throw new SlotRefused("identity");
   if (
+    !restart &&
     selection.active?.homePeerOrdinal !== undefined &&
     (target.homePeerOrdinal === undefined ||
       target.homePeerOrdinal === selection.active.homePeerOrdinal)

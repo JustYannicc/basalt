@@ -197,7 +197,16 @@ test(
     await f.resourcesWhen((rows) => rows.every((row) => row.active === 0));
     now += 1_001;
     await f.upkeep();
-    assert.equal((await state.inspect()).length, 0);
+    await f.settle();
+    const remaining = await state.inspect();
+    assert.equal(remaining.length, 1, "recent demand retains one sibling on the promoted image");
+    assert.equal(remaining[0]?.phase, "ready");
+    assert.equal(remaining[0]?.target.applicationId, "green-application");
+    assert.ok(
+      remaining.every(
+        (row) => !oldRows.some((old) => old.target.instanceId === row.target.instanceId),
+      ),
+    );
     for (const row of oldRows)
       assert.equal(f.instances.get(row.target.instanceId)!.fixture.calls.destroy, 1);
     assert.equal(
