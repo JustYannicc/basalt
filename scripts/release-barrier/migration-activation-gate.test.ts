@@ -454,6 +454,11 @@ test("the activation workflow keeps the release lock and excludes all ordinary d
   assert.equal(job.needs, undefined);
   const steps = job.steps;
   assert.equal(steps[0].with.ref, "${{ github.sha }}");
+  const conflict = steps.findIndex(
+    (step: { name?: string }) => step.name === "Reject conflicting recovery operations",
+  );
+  assert.equal(steps[conflict].if, "inputs.runtime_abort != ''");
+  assert.match(steps[conflict].run, /exit 1/);
   const validate = steps.findIndex((step: { run?: string }) =>
     step.run?.includes("migration-activation-gate.ts"),
   );
@@ -463,7 +468,7 @@ test("the activation workflow keeps the release lock and excludes all ordinary d
   const run = steps.findIndex((step: { run?: string }) =>
     step.run?.includes("migration-activation-entry.ts"),
   );
-  assert.ok(validate > 0 && select > validate && run > select);
+  assert.ok(conflict > 0 && validate > conflict && select > validate && run > select);
   // Main's client runs in main's checkout; the candidate is prepared beside it as data.
   assert.equal(steps[run]["working-directory"], undefined);
   assert.equal(steps[run].env.BASALT_ACTIVATION_SOURCE_ROOT, "${{ runner.temp }}/candidate");

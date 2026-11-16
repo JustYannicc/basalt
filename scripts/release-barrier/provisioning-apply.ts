@@ -28,7 +28,7 @@ export const CreatedRuntimeApplication = Schema.Struct({
   version: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
   createdAt: Schema.String,
   instances: Schema.Literal(0),
-  maxInstances: Schema.Literal(1),
+  maxInstances: Schema.Literals([1, 4]),
   schedulingPolicy: Schema.Literal("default"),
   constraints: Schema.Unknown,
   affinities: Schema.optionalKey(Schema.Unknown),
@@ -50,7 +50,7 @@ export function runtimeCreatePlan(
   manifest: RuntimeProvisioningManifest,
   namespaceId: string,
 ) {
-  const node = input.resources.PoolRuntime;
+  const node = input.resources[manifest.declaration.fqn];
   const declaration = manifest.declaration;
   if (
     !node ||
@@ -66,7 +66,7 @@ export function runtimeCreatePlan(
     throw provisioningRefusal(
       "provisioning-create-plan-unsupported",
       "plan.action",
-      "one-acyclic-PoolRuntime-create",
+      `one-acyclic-${manifest.declaration.fqn}-create`,
       node?.action ?? null,
     );
   sameProvisioningValue(
@@ -92,7 +92,9 @@ export function runtimeCreatePlan(
   sameProvisioningValue("plan.namespace", { durableObjects: { namespaceId } }, bindings[0]!.data);
   return {
     ...input,
-    resources: { PoolRuntime: { ...node, provider: { ...node.provider, precreate: undefined } } },
+    resources: {
+      [manifest.declaration.fqn]: { ...node, provider: { ...node.provider, precreate: undefined } },
+    },
   };
 }
 
@@ -119,9 +121,9 @@ export const applyRuntimeCreate = (
         .digest("hex"),
     );
     const plan = runtimeCreatePlan(input, manifest, namespaceId);
-    const node = plan.resources.PoolRuntime!;
+    const node = plan.resources[manifest.declaration.fqn]!;
     const state = yield* yield* State;
-    const target = { stack: manifest.stack, stage: manifest.stage, fqn: "PoolRuntime" };
+    const target = { stack: manifest.stack, stage: manifest.stage, fqn: manifest.declaration.fqn };
     const prior = yield* state.get(target);
     if (
       prior &&
@@ -137,8 +139,8 @@ export const applyRuntimeCreate = (
       );
     const pending = {
       status: "creating" as const,
-      fqn: "PoolRuntime",
-      logicalId: "PoolRuntime",
+      fqn: manifest.declaration.fqn,
+      logicalId: manifest.declaration.fqn,
       resourceType: "Cloudflare.Container",
       instanceId: manifest.declaration.instanceId,
       props: node.props,
@@ -167,7 +169,7 @@ export const applyRuntimeCreate = (
     const client = yield* HttpClient.HttpClient;
     yield* Apply.apply({
       ...plan,
-      resources: { PoolRuntime: { ...node, state: prior ?? pending } },
+      resources: { [manifest.declaration.fqn]: { ...node, state: prior ?? pending } },
     }).pipe(
       Retry.none,
       Effect.provideService(

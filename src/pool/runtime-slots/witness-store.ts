@@ -1,9 +1,10 @@
 import { Schema } from "effect";
+import { startupStopKey } from "./startup-abort-contract.ts";
 import { SlotIdentity, SlotRefused, SlotTarget, sameTarget } from "./contract.ts";
 import {
-  StartAuthorization,
+  LaunchAuthorization,
   StartupWitness,
-  RuntimeAttestation,
+  VerifiedRuntimeAttestation,
   UnattestedActive,
   launchWitnessKey,
 } from "./admission-proof.ts";
@@ -15,14 +16,15 @@ import {
 } from "./configuration.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 
-const Authorization = Schema.Union([StartAuthorization, UnattestedActive]);
+const Authorization = Schema.Union([LaunchAuthorization, UnattestedActive]);
 const WitnessRecord = Schema.Struct({
   authorization: Authorization,
   sealed: Schema.Struct({ iv: Schema.String, ciphertext: Schema.String }),
   identity: Schema.optional(SlotIdentity),
   witness: Schema.optional(StartupWitness),
-  attestation: Schema.optional(RuntimeAttestation),
+  attestation: Schema.optional(VerifiedRuntimeAttestation),
   retired: Schema.optional(Schema.Boolean),
+  failed: Schema.optional(Schema.Boolean),
 });
 export type WitnessRecord = typeof WitnessRecord.Type;
 
@@ -34,11 +36,19 @@ export class RuntimeWitnessStore {
     this.storage = storage;
     this.secret = secret;
   }
+  retainAlarmTarget(target: SlotTarget) {
+    return this.storage.put("runtime-alarm-v1:target", target);
+  }
+  async alarmTarget() {
+    const value = await this.storage.get("runtime-alarm-v1:target");
+    return value === undefined ? undefined : Schema.decodeUnknownSync(SlotTarget)(value);
+  }
   async retained(slot: string) {
     const value = await this.storage.get(launchWitnessKey(slot));
     return value === undefined ? undefined : Schema.decodeUnknownSync(WitnessRecord)(value);
   }
   async read(target: SlotTarget) {
+    if (await this.storage.get(startupStopKey(target))) throw new SlotRefused("selection");
     const record = await this.retained(target.slotId);
     if (!record || record.retired || !sameTarget(record.authorization.target, target))
       throw new SlotRefused("identity");
@@ -60,6 +70,7 @@ export class RuntimeWitnessStore {
     identity?: SlotIdentity,
   ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(authorization.target);
+    if (await this.storage.get(startupStopKey(target))) throw new SlotRefused("selection");
     const sealed = await sealConfiguration(configuration, this.secret, JSON.stringify(target));
     await this.put(target, { authorization, sealed, ...(identity ? { identity } : {}) });
   }

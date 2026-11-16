@@ -13,6 +13,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .home_identity import HomeIdentity
+from .home_peer import HomePeers
 from .child_signals import (
     NativePolicyFuseParser,
     NativePolicyProbeParser,
@@ -231,6 +233,7 @@ def main(stop: threading.Event | None = None) -> int:
     ready_server = None
     readiness = None
     policy_monitor_thread = None
+    home_peers = None
     stop = threading.Event() if stop is None else stop
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
@@ -239,6 +242,7 @@ def main(stop: threading.Event | None = None) -> int:
         management_key = env_required("POOL_MANAGEMENT_KEY")
         database_url = env_required("POOL_DATABASE_URL")
         allow_remote = boolean_env("POOL_MANAGEMENT_ALLOW_REMOTE", False)
+        home_identity = HomeIdentity.parse(os.environ.get("POOL_HOME_PEER_ORDINAL"))
         require_tmpfs(pathlib.Path("/dev/shm"))
         ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
         pathlib.Path(ROOT / "tmp").mkdir(mode=0o700, exist_ok=True)
@@ -266,6 +270,9 @@ def main(stop: threading.Event | None = None) -> int:
             ROOT / "cluster.yaml",
             cluster_yaml(database_url, os.environ.get("POOL_DATABASE_SCHEMA_OWNER", "").strip()),
         )
+        if home_identity.ordinal is not None:
+            home_peers = HomePeers(home_identity.ordinal)
+            home_peers.start()
 
         def launch_generation(recovering: bool = False) -> tuple[str, int]:
             """Reuse boot, child capture and health gates; import only on first boot."""
@@ -277,7 +284,7 @@ def main(stop: threading.Event | None = None) -> int:
                 operation_timeout(STARTUP_TIMEOUT_SECONDS)
                 home_child = Child(
                     "home",
-                    [HOME_BINARY, "-addr", "0.0.0.0:8327"],
+                    [HOME_BINARY, "-addr", f"0.0.0.0:{home_identity.port}"],
                     child_environment("home", management_key),
                     ROOT,
                     lambda generation=generation: readiness.note_policy_fused(
@@ -306,7 +313,7 @@ def main(stop: threading.Event | None = None) -> int:
                 with startup_phase(StartupPhase.HOME_BOOT, supervisor_started_ns):
                     home_child = Child(
                         "home",
-                        [HOME_BINARY, "-addr", "0.0.0.0:8327"],
+                        [HOME_BINARY, "-addr", f"0.0.0.0:{home_identity.port}"],
                         child_environment("home", management_key),
                         ROOT,
                         lambda generation=generation: readiness.note_policy_fused(
@@ -335,7 +342,10 @@ def main(stop: threading.Event | None = None) -> int:
                 operation_timeout(STARTUP_TIMEOUT_SECONDS)
                 node_child = Child(
                     "node",
-                    [NODE_BINARY, "-home-disable-cluster-discovery"],
+                    [NODE_BINARY, *(
+                        ["-home-disable-cluster-discovery"]
+                        if home_identity.ordinal is None else []
+                    )],
                     child_environment(
                         "node", management_key, home_jwt, readiness.boot_id
                     ),
@@ -450,6 +460,8 @@ def main(stop: threading.Event | None = None) -> int:
         if readiness is not None:
             readiness.set_ready(False)
         stop.set()
+        if home_peers is not None:
+            home_peers.close()
         if not recovery_cleanup_done and policy_monitor_thread is not None:
             policy_monitor_thread.join(timeout=1)
         if not recovery_cleanup_done and ready_server is not None:

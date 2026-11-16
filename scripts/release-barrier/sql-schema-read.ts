@@ -60,17 +60,32 @@ function versions(expectation: SqlSchemaExpectation, rows: Record<string, unknow
   });
 }
 
-async function readDatabase(
+export class SqlSnapshotFailure extends Error {
+  readonly reason: "connection" | "identity" | "query";
+  readonly code?: string;
+  constructor(reason: "connection" | "identity" | "query", code?: string) {
+    super("Schema snapshot unavailable");
+    this.reason = reason;
+    this.code = code;
+  }
+}
+
+const snapshotCode = (error: unknown) => {
+  const code = error instanceof Error && "code" in error ? String(error.code) : "";
+  return /^[A-Z0-9]{5}$/u.test(code) ? code : undefined;
+};
+
+/** The caller receives a verified read-only snapshot, never an unguarded SQL session. */
+export async function readSqlSnapshot<A>(
   source: SqlJournalSource,
-  expectations: SqlSchemaExpectation[],
-): Promise<SqlSchemaObservation[]> {
+  read: (session: SqlJournalSession) => Promise<A>,
+): Promise<A> {
   let session: SqlJournalSession;
   try {
     session = await source.connect();
   } catch (error) {
-    return expectations.map((entry) => unreadableSqlSchema(entry, "connection", error));
+    throw new SqlSnapshotFailure("connection", snapshotCode(error));
   }
-  const observations: SqlSchemaObservation[] = [];
   try {
     await session.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await session.query("SET LOCAL lock_timeout = '500ms'");
@@ -87,49 +102,69 @@ async function readDatabase(
       identity.rows[0]!.schema_matches !== true ||
       identity.rows[0]!.read_only !== true
     )
-      return expectations.map((entry) => unreadableSqlSchema(entry, "identity"));
-    const catalog = await session.query(
-      `SELECT c.relname AS name,c.relkind AS kind
-      FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname='public' AND c.relname=ANY($1::text[])`,
-      [expectations.map((entry) => entry.journal)],
-    );
-    for (const expectation of expectations) {
-      const matches = catalog.rows.filter((row) => row.name === expectation.journal);
-      if (matches.length !== 1 || matches[0]!.kind !== "r") {
-        observations.push(
-          unreadableSqlSchema(expectation, matches.length ? "journal-type" : "journal-missing"),
-        );
-        continue;
-      }
-      // One denied journal must not abort the read transaction and hide the other namespace receipts.
-      await session.query("SAVEPOINT schema_observation");
-      try {
-        const rows = await session.query(queries[expectation.namespace]);
-        let applied: string[];
-        try {
-          applied = versions(expectation, rows.rows);
-        } catch {
-          observations.push(unreadableSqlSchema(expectation, "invalid-marker"));
-          continue;
-        }
-        observations.push(observeSqlVersions(expectation, applied));
-      } catch (error) {
-        await session.query("ROLLBACK TO SAVEPOINT schema_observation").catch(() => {});
-        observations.push(unreadableSqlSchema(expectation, "query", error));
-      } finally {
-        await session.query("RELEASE SAVEPOINT schema_observation");
-      }
-    }
+      throw new SqlSnapshotFailure("identity");
+    const result = await read(session);
     await session.query("COMMIT");
-    return observations;
+    return result;
   } catch (error) {
-    await session.query("ROLLBACK").catch(() => {});
-    // A failed snapshot or commit cannot establish any namespace in this database as ready.
-    return expectations.map((entry) => unreadableSqlSchema(entry, "query", error));
+    if (error instanceof SqlSnapshotFailure) throw error;
+    throw new SqlSnapshotFailure("query", snapshotCode(error));
   } finally {
     await session.query("ROLLBACK").catch(() => {});
     await session.end().catch(() => {});
+  }
+}
+
+async function readDatabase(
+  source: SqlJournalSource,
+  expectations: SqlSchemaExpectation[],
+): Promise<SqlSchemaObservation[]> {
+  try {
+    return await readSqlSnapshot(source, async (session) => {
+      const observations: SqlSchemaObservation[] = [];
+      const catalog = await session.query(
+        `SELECT c.relname AS name,c.relkind AS kind
+      FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='public' AND c.relname=ANY($1::text[])`,
+        [expectations.map((entry) => entry.journal)],
+      );
+      for (const expectation of expectations) {
+        const matches = catalog.rows.filter((row) => row.name === expectation.journal);
+        if (matches.length !== 1 || matches[0]!.kind !== "r") {
+          observations.push(
+            unreadableSqlSchema(expectation, matches.length ? "journal-type" : "journal-missing"),
+          );
+          continue;
+        }
+        // One denied journal must not abort the read transaction and hide the other namespace receipts.
+        await session.query("SAVEPOINT schema_observation");
+        try {
+          const rows = await session.query(queries[expectation.namespace]);
+          let applied: string[];
+          try {
+            applied = versions(expectation, rows.rows);
+          } catch {
+            observations.push(unreadableSqlSchema(expectation, "invalid-marker"));
+            continue;
+          }
+          observations.push(observeSqlVersions(expectation, applied));
+        } catch (error) {
+          await session.query("ROLLBACK TO SAVEPOINT schema_observation").catch(() => {});
+          observations.push(unreadableSqlSchema(expectation, "query", error));
+        } finally {
+          await session.query("RELEASE SAVEPOINT schema_observation");
+        }
+      }
+      return observations;
+    });
+  } catch (error) {
+    return expectations.map((entry) =>
+      unreadableSqlSchema(
+        entry,
+        error instanceof SqlSnapshotFailure ? error.reason : "query",
+        error,
+      ),
+    );
   }
 }
 

@@ -211,6 +211,24 @@ for node, scope in calls:
           and symbol(argument(node, "family"), scope) == "socket.AF_UNIX"):
         # A newly created Unix-domain socket cannot address an outside host.
         pass
+    elif (name == "socket.socketpair" and len(node.args) <= 3
+          and all(kw.arg in {"family", "type", "proto"} for kw in node.keywords)
+          and symbol(argument(node, "family"), scope) == "socket.AF_UNIX"):
+        # Both ends are already connected within the same process.
+        pass
+    elif name in {"socket.create_connection", "socket.create_server"}:
+        address = argument(node, "address")
+        if not isinstance(address, (ast.Tuple, ast.List)) or len(address.elts) != 2:
+            report(scope.file, node, "Unsupported Python socket address")
+        else:
+            hosts = values(address.elts[0], scope)
+            if name == "socket.create_server":
+                if not hosts <= {"127.0.0.1", "::1", "localhost"}:
+                    report(scope.file, node, "Python TCP listeners require a proven loopback host")
+            else:
+                for host in hosts:
+                    host = "[" + host + "]" if ":" in host else host
+                    urls.append({"file": scope.file, "line": node.lineno, "value": "tcp://" + host, "sink": True})
     elif (name == "http.client.HTTPConnection"
           and values(argument(node, "host"), scope) <= {"127.0.0.1", "::1", "localhost"}):
         # Only literal loopback connections have no outside-service dependency.

@@ -64,7 +64,9 @@ export function readForwardPacket(value: unknown) {
     !("containers" in manifest) ||
     manifest.containers.length !== 1 ||
     frozen.containers.length !== 1 ||
-    frozen.containers[0]?.id !== "PoolContainer" ||
+    !["PoolContainer", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(
+      frozen.containers[0]?.id ?? "",
+    ) ||
     frozen.candidate !== manifest.candidate ||
     frozen.stack !== manifest.stack ||
     frozen.stage !== manifest.stage ||
@@ -133,12 +135,13 @@ export function verifyForwardWorkers(
   }
 }
 
-export function recordedContainer(saved: PersistedState | undefined) {
+export function recordedContainer(saved: PersistedState | undefined, resource = "PoolContainer") {
   if (
     !saved ||
     !("resourceType" in saved) ||
     saved.resourceType !== "Cloudflare.Container" ||
-    saved.fqn !== "PoolContainer" ||
+    saved.fqn !== resource ||
+    !["PoolContainer", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(resource) ||
     (saved.status !== "created" && saved.status !== "updated" && saved.status !== "updating") ||
     (saved.status === "updating" && saved.adopting)
   )
@@ -169,8 +172,8 @@ export function forwardAdoption(
   saved: PersistedState | undefined,
   observed: ContainerAttributes,
 ) {
-  const { recorded, identity, saved: before } = recordedContainer(saved);
   const container = packet.frozen.containers[0]!;
+  const { recorded, identity, saved: before } = recordedContainer(saved, container.id);
   const activation = packet.receipt.containers?.find((item) => item.container === container.id);
   const pending = packet.receipt.pendingContainer;
   if (pending?.phase === "rollout")

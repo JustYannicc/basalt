@@ -1,3 +1,5 @@
+import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
+import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { poolLifecycle } from "../lifecycle.ts";
 import { SlotRefused } from "./contract.ts";
 import { runtimePolicyAssertion } from "./policy-assertion.ts";
@@ -16,17 +18,26 @@ export class RuntimeChannel {
     this.ctx = ctx;
     this.env = env;
   }
+  private port(number: number) {
+    try {
+      return this.ctx.container!.getTcpPort(number);
+    } catch (error) {
+      refuseRuntime("port_lookup", error);
+    }
+  }
   async keepAlive() {
     if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
     await this.ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs);
   }
-  async health(configuration: RuntimeConfiguration, signal: AbortSignal) {
+  async health(configuration: RuntimeConfiguration, signal: AbortSignal, trace?: RuntimeReadTrace) {
     if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
     const status = await readRuntimeHealth(
-      this.ctx.container.getTcpPort(8318),
+      this.port(8318),
       configuration.managementKey,
       signal,
-    );
+      undefined,
+      trace,
+    ).catch((error: unknown) => refuseRuntime("endpoint_health", error));
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new SlotRefused("unhealthy");
     return status;
@@ -68,15 +79,36 @@ export class RuntimeChannel {
     if (!value || typeof value !== "object" || !("ok" in value) || value.ok !== true)
       throw new SlotRefused("policy");
   }
-  async fetch(configuration: RuntimeConfiguration, request: Request, port: 8317 | 8327 | 8318) {
-    const headers = new Headers(request.headers);
-    await runtimePolicyAssertion(headers, {
-      current: this.env.POOL_APP_SIGNING_KEY,
-      previous: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      runtime: configuration.signingKey,
-    });
-    if (port === 8327) headers.set("X-Management-Key", configuration.managementKey);
-    if (port === 8318) headers.set("Authorization", `Bearer ${configuration.managementKey}`);
-    return this.ctx.container!.getTcpPort(port).fetch(new Request(request, { headers }));
+  async fetch(
+    configuration: RuntimeConfiguration,
+    request: Request,
+    port: 8317 | 8327 | 8318,
+    trace?: RuntimeReadTrace,
+  ) {
+    let step: RuntimeRouteDiagnostic["runtimeStep"] = "endpoint_request";
+    try {
+      const headers = new Headers(request.headers);
+      await runtimeReadStep(trace, "request_prepare", () =>
+        runtimePolicyAssertion(headers, {
+          current: this.env.POOL_APP_SIGNING_KEY,
+          previous: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+          runtime: configuration.signingKey,
+        }),
+      );
+      if (port === 8327) headers.set("X-Management-Key", configuration.managementKey);
+      if (port === 8318) headers.set("Authorization", `Bearer ${configuration.managementKey}`);
+      const target = port === 8327 && configuration.homePeerOrdinal !== undefined ? 8329 : port;
+      step = "port_lookup";
+      const destination = this.port(target);
+      step = "port_dispatch";
+      return await runtimeReadStep(
+        trace,
+        "port_headers",
+        () => destination.fetch(new Request(request, { headers })),
+        target === 8317 ? undefined : target,
+      );
+    } catch (error) {
+      refuseRuntime(step, error);
+    }
   }
 }

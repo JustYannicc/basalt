@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Redacted } from "effect";
+import { Cause, Effect, Redacted } from "effect";
 import { Browser, BrowserDriver } from "../.upstream/e2e/support/browser.ts";
 import { Evidence } from "../.upstream/e2e/support/evidence.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
@@ -198,4 +198,82 @@ test("explicit commit plus load retains a deliberately incomplete document for i
   );
   assert.equal(observed, true);
   assert.deepEqual(f.clicks, []);
+});
+
+test("a browser timeout retains its closed error class without its selector or cause", async (t) => {
+  const f = await fixture(t, false);
+  const failure = await f.run((browser) =>
+    browser
+      .use("Observe activated version", (page) =>
+        page.getByText("private-fixture-selector").waitFor({ timeout: 1 }),
+      )
+      .pipe(Effect.flip),
+  );
+  assert.equal(failure.errorClass, "TimeoutError");
+  assert.match(failure.message, /TimeoutError/);
+  assert.doesNotMatch(JSON.stringify(failure), /private-fixture-selector/);
+  assert.doesNotMatch(Cause.pretty(Cause.fail(failure)), /private-fixture-selector/);
+});
+
+test("switching actors retires every old document before installing the new session", async (t) => {
+  const f = await fixture(t, false);
+  const session = (actor) => ({
+    cookies: Effect.succeed(
+      Redacted.make([{ name: "actor", value: actor, domain: "127.0.0.1", path: "/" }]),
+    ),
+  });
+  const observed = await f.run((browser) =>
+    Effect.gen(function* () {
+      yield* browser.login(session("first"));
+      yield* browser.use("Open the first actor's documents", async (page) => {
+        await page.goto("/first");
+        const popup = await page.context().newPage();
+        await popup.goto(page.url());
+      });
+      yield* browser.login(session("second"));
+      return yield* browser.use("Read the new actor boundary", async (page) => ({
+        pages: page
+          .context()
+          .pages()
+          .map((opened) => opened.url()),
+        actors: (await page.context().cookies())
+          .filter((cookie) => cookie.name === "actor")
+          .map((cookie) => cookie.value),
+      }));
+    }),
+  );
+  assert.deepEqual(observed.pages, ["about:blank", "about:blank"]);
+  assert.deepEqual(observed.actors, ["second"]);
+});
+
+test("browser assertion diagnostics keep the class and reject arbitrary exception names", async (t) => {
+  const f = await fixture(t, false);
+  const failures = await f.run((browser) =>
+    Effect.gen(function* () {
+      const assertion = yield* browser
+        .use("Assert fixture state", () => {
+          assert.equal("private-actual", "private-expected");
+          return Promise.resolve();
+        })
+        .pipe(Effect.flip);
+      const unknown = yield* browser
+        .use("Reject unknown exception metadata", () => {
+          const error = new Error("private-cause");
+          error.name = "private-error-name";
+          return Promise.reject(error);
+        })
+        .pipe(Effect.flip);
+      return [assertion, unknown];
+    }),
+  );
+  assert.deepEqual(
+    failures.map((failure) => failure.errorClass),
+    ["AssertionError", "unknown"],
+  );
+  assert.doesNotMatch(JSON.stringify(failures), /private-(?:actual|expected|cause|error-name)/);
+  for (const failure of failures)
+    assert.doesNotMatch(
+      Cause.pretty(Cause.fail(failure)),
+      /private-(?:actual|expected|cause|error-name)/,
+    );
 });

@@ -197,62 +197,70 @@ test("two failed mirrors exhaust the fixed attempt count", async () => {
 });
 
 for (const hit of [true, false]) {
-  test(`a progressing local install can exceed the mirror deadline after a cache ${hit ? "hit" : "miss"}`, async () => {
-    const fixture_ = fixture("slow");
-    try {
-      const start = Date.now();
-      const result = await fixture_.run(hit);
-      const seconds = (Date.now() - start) / 1000;
-      assert.equal(result.code, 0, result.output);
-      assert.ok(seconds >= 62, `local installation ended after ${seconds}s`);
-      assert.ok(result.calls.filter((call) => call.name === "unpack-progress").length >= 12);
-      assert.ok(result.calls.some((call) => call.name === "dpkg"));
-      assert.equal(
-        result.calls.filter((call) => call.name === "download-only").length,
-        hit ? 0 : 1,
-      );
-      console.log(
-        `Progressing local install after cache ${hit ? "hit" : "miss"} completed in ${seconds.toFixed(2)}s`,
-      );
-    } finally {
-      fixture_.dispose();
-    }
-  });
+  test(
+    `a progressing local install can exceed the mirror deadline after a cache ${hit ? "hit" : "miss"}`,
+    { timeout: 90_000 },
+    async () => {
+      const fixture_ = fixture("slow");
+      try {
+        const start = Date.now();
+        const result = await fixture_.run(hit);
+        const seconds = (Date.now() - start) / 1000;
+        assert.equal(result.code, 0, result.output);
+        assert.ok(seconds >= 62, `local installation ended after ${seconds}s`);
+        assert.ok(result.calls.filter((call) => call.name === "unpack-progress").length >= 12);
+        assert.ok(result.calls.some((call) => call.name === "dpkg"));
+        assert.equal(
+          result.calls.filter((call) => call.name === "download-only").length,
+          hit ? 0 : 1,
+        );
+        console.log(
+          `Progressing local install after cache ${hit ? "hit" : "miss"} completed in ${seconds.toFixed(2)}s`,
+        );
+      } finally {
+        fixture_.dispose();
+      }
+    },
+  );
 }
 
-test("a mirror that accepts connections but never responds reaches the fallback within 70 seconds", async () => {
-  const sockets = new Set<import("node:net").Socket>();
-  const server = createServer((socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const fixture_ = fixture("stall", `http://127.0.0.1:${address.port}/`);
-  try {
-    const start = Date.now();
-    const result = await fixture_.run(false);
-    const seconds = (Date.now() - start) / 1000;
-    assert.equal(result.code, 0, result.output);
-    const attempts = result.calls.filter(
-      (call) => call.name === "playwright" && !call.args.includes("--dry-run"),
-    );
-    assert.equal(attempts.length, 2);
-    assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
-    assert.equal(result.calls.filter((call) => call.name === "dpkg").length, 1);
-    assert.equal(
-      result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
-        .length,
-      1,
-    );
-    assert.ok(seconds >= 59 && seconds < 70, `mirror failover took ${seconds}s`);
-    console.log(`Stalled mirror failed over and installed in ${seconds.toFixed(2)}s`);
-  } finally {
-    fixture_.dispose();
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
-  }
-});
+test(
+  "a mirror that accepts connections but never responds reaches the fallback within 70 seconds",
+  { timeout: 90_000 },
+  async () => {
+    const sockets = new Set<import("node:net").Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const fixture_ = fixture("stall", `http://127.0.0.1:${address.port}/`);
+    try {
+      const start = Date.now();
+      const result = await fixture_.run(false);
+      const seconds = (Date.now() - start) / 1000;
+      assert.equal(result.code, 0, result.output);
+      const attempts = result.calls.filter(
+        (call) => call.name === "playwright" && !call.args.includes("--dry-run"),
+      );
+      assert.equal(attempts.length, 2);
+      assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
+      assert.equal(result.calls.filter((call) => call.name === "dpkg").length, 1);
+      assert.equal(
+        result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
+          .length,
+        1,
+      );
+      assert.ok(seconds >= 59 && seconds < 70, `mirror failover took ${seconds}s`);
+      console.log(`Stalled mirror failed over and installed in ${seconds.toFixed(2)}s`);
+    } finally {
+      fixture_.dispose();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+);

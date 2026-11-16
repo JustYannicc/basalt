@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { RuntimeResourceName } from "./runtime-create-schema.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import {
   decodeProvisioningInput,
@@ -6,6 +7,11 @@ import {
   sameProvisioningValue,
 } from "./provisioning-refusal.ts";
 
+const ProvisioningResource = Schema.Union([
+  RuntimeResourceName,
+  Schema.Literal("PoolProviderObservationToken"),
+]);
+type ProvisioningResource = typeof ProvisioningResource.Type;
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const operation = Schema.Struct({
   request: hash,
@@ -16,7 +22,7 @@ export const ProvisioningRecord = Schema.Struct({
   schemaVersion: Schema.Literal(2),
   candidate: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
   manifest: hash,
-  resource: Schema.Literal("PoolRuntime"),
+  resource: ProvisioningResource,
   complete: Schema.Boolean,
   receipt: Schema.optionalKey(hash),
   operations: Schema.Record(Schema.String, operation),
@@ -46,7 +52,12 @@ export interface ProvisioningStore {
   write(record: ProvisioningRecord): Promise<void>;
 }
 
-export function provisioningJournal(store: ProvisioningStore, candidate: string, manifest: string) {
+export function provisioningJournal(
+  store: ProvisioningStore,
+  candidate: string,
+  manifest: string,
+  resource: ProvisioningResource = "PoolRuntime",
+) {
   const read = async () => {
     const value = await store.read({ candidate, manifest });
     const record =
@@ -55,11 +66,12 @@ export function provisioningJournal(store: ProvisioningStore, candidate: string,
             schemaVersion: 2,
             candidate,
             manifest,
-            resource: "PoolRuntime",
+            resource,
             complete: false,
             operations: {},
           })
         : decodeProvisioningRecord(value);
+    sameProvisioningValue("journal.resource", resource, record.resource);
     sameProvisioningValue("journal.candidate", candidate, record.candidate);
     sameProvisioningValue("journal.manifest", manifest, record.manifest);
     return record;

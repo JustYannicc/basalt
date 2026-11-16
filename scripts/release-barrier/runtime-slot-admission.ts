@@ -8,6 +8,7 @@ import { signRuntimeAdmission } from "./runtime-slot-proof.ts";
 import type { Fetcher } from "../deploy-safety/http.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { provisioningRefusal } from "./provisioning-refusal.ts";
+import type { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts";
 
 const refused = (reason: string, path: string) => (error: unknown) =>
   error instanceof BarrierRefusal
@@ -22,6 +23,7 @@ export const attestRuntimeRelease = (input: {
   target: PoolOperationsTarget;
   fetcher?: Fetcher;
   now?: () => number;
+  selection?: SelectionProof;
 }) =>
   Effect.gen(function* () {
     const now = input.now ?? Date.now;
@@ -44,7 +46,7 @@ export const attestRuntimeRelease = (input: {
         signRuntimeAdmission(
           input.manifest,
           "attested",
-          { provider, selection: input.manifest.selection, witness },
+          { provider, selection: input.selection ?? input.manifest.selection, witness },
           input.enable,
           input.signingKey,
           now,

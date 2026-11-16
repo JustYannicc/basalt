@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { canonical, digest } from "./manifest.ts";
-import { RuntimeCreateDeclaration } from "./runtime-create-schema.ts";
+import { RuntimeCreateDeclaration, type RuntimeResourceName } from "./runtime-create-schema.ts";
 import { decodeProvisioningInput, provisioningRefusal } from "./provisioning-refusal.ts";
 
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
@@ -33,10 +33,22 @@ export const provisioningManifestDigest = (value: RuntimeProvisioningManifest) =
   digest(canonical(decodeProvisioningManifest(value)));
 
 export interface ProvisioningEnable {
-  coordinatorGo: string;
+  coordinatorGo?: string;
+  releaseWriter?: { candidate: string; lease: string };
   manifest: string;
   writerLease: string;
   expiresAt: number;
+}
+
+export function provisioningAuthority(enable: ProvisioningEnable | undefined, candidate: string) {
+  return (
+    !!enable?.coordinatorGo ||
+    !!(
+      enable?.writerLease &&
+      enable.releaseWriter?.candidate === candidate &&
+      enable.releaseWriter.lease === enable.writerLease
+    )
+  );
 }
 
 /** No ordinary release entrypoint constructs this authority; enabling requires a separate reviewed GO. */
@@ -46,8 +58,8 @@ export function assertProvisioningEnable(
   now: number,
 ) {
   if (
-    !enable?.coordinatorGo ||
-    !enable.writerLease ||
+    !provisioningAuthority(enable, manifest.candidate) ||
+    !enable?.writerLease ||
     enable.manifest !== provisioningManifestDigest(manifest) ||
     !Number.isSafeInteger(enable.expiresAt) ||
     !Number.isSafeInteger(now) ||
@@ -65,7 +77,7 @@ export interface RuntimeProvisioningReceipt {
   schemaVersion: 3;
   candidate: string;
   manifest: string;
-  resource: "PoolRuntime";
+  resource: RuntimeResourceName;
   disposition: "idle";
   namespaceId: string;
   applicationId: string;

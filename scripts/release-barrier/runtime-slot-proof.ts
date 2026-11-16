@@ -70,7 +70,20 @@ export async function signRuntimeAdmission(
       imageDigest: provider.imageDigest,
     },
   );
-  sameProvisioningValue("handoff.selection", manifest.selection, observations.selection);
+  if (kind === "attested") {
+    // Startup keeps its original manifest; promotion must prove today's policy for the same selection.
+    sameProvisioningValue(
+      "handoff.selection",
+      {
+        active: manifest.selection.active,
+        expectedEpoch: manifest.selection.expectedEpoch,
+      },
+      {
+        active: observations.selection.active,
+        expectedEpoch: observations.selection.expectedEpoch,
+      },
+    );
+  } else sameProvisioningValue("handoff.selection", manifest.selection, observations.selection);
   sameProvisioningValue(
     "handoff.disposition",
     kind === "unattested-active" ? "preserve-unattested" : "runtime-handoff",
@@ -114,7 +127,7 @@ export async function signRuntimeAdmission(
       controllerCode: manifest.controllerCode,
       target: manifest.target,
       configurationFingerprint: manifest.configurationFingerprint,
-      selection: manifest.selection,
+      selection: observations.selection,
       provider,
       at,
       expiresAt: Math.min(at + 60_000, enable!.expiresAt),

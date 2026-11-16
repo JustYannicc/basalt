@@ -58,11 +58,11 @@ test("database-restore rollback requires the exact backup while recorded-version
 test("Workflow-identity releases fail closed in the drain step", () => {
   for (const name of ["release-main.yml", "release-manual.yml"]) {
     const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows", name), "utf8");
-    assert.match(
-      workflow,
-      /- name: Journal changes require all existing workflow runs drained before deployment\n\s+run: node scripts\/deploy-safety\/release\.ts inspect-workflows /,
-      name,
-    );
+    const drainStep =
+      name === "release-main.yml"
+        ? /- name: Journal changes require all existing workflow runs drained before deployment\n\s+if: inputs\.runtime_abort == ''\n\s+run: node scripts\/deploy-safety\/release\.ts inspect-workflows /
+        : /- name: Journal changes require all existing workflow runs drained before deployment\n\s+run: node scripts\/deploy-safety\/release\.ts inspect-workflows /;
+    assert.match(workflow, drainStep, name);
     assert.ok(workflow.indexOf("inspect-workflows") < workflow.indexOf("release.ts deploy "), name);
   }
 });

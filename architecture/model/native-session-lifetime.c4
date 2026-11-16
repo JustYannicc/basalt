@@ -1,0 +1,7 @@
+model {
+  extend basalt.nativeTunnel {
+    metadata {
+      constraint "The verified native grant expiry owns the server session deadline, including operations still waiting for model headers. Revocation through the registry lease, cancellation and receiver byte credit remain effective. READY retains every version-one advertised limit because installed clients compare the complete limits object for exact equality; its legacy sessionMilliseconds value does not impose a second server deadline. READY.expiresAt carries the actual grant deadline. Long deadlines rearm within the platform timer range without closing early. No interrupted inference is replayed."
+    }
+  }
+}
