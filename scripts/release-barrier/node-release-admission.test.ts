@@ -15,6 +15,11 @@ for (const { version, baselineInputHash, sourceInputHash } of [
     baselineInputHash: "526fa60bed0df442",
     sourceInputHash: "3c69ffd86382c294",
   },
+  {
+    version: "8.0.74 with scale-out",
+    baselineInputHash: "59a7663b4fbc8e4a",
+    sourceInputHash: "5120df81c4faab06",
+  },
 ]) {
   test(`the ${version} node publication requires its reviewed source pair and unchanged Home schema`, async () => {
     const admit = await homeSchemaAdmission(fileURLToPath(new URL("../../", import.meta.url)));
