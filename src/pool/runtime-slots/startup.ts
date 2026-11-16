@@ -86,7 +86,22 @@ export async function startRuntime(
       },
     },
   );
-  await lifecycle.warm();
+  const pending = await ledger.current();
+  if (
+    record.authorization.kind === "restart" &&
+    pending &&
+    !pending.bootId &&
+    !ctx.container!.running
+  ) {
+    await lifecycle.startStopped(
+      { operationId: pending.operationId, generation: pending.generation, target: pending.target },
+      async () => {
+        signal.throwIfAborted();
+        decodeAdmissionProof(record.authorization);
+      },
+      async () => {},
+    );
+  } else await lifecycle.warm();
 }
 
 export function verifyRuntimeLaunch(ctx: RuntimeState, record: WitnessRecord, status: PoolStatus) {

@@ -141,6 +141,19 @@ export class RuntimeFleetConfiguration {
     await transaction.put(key, record);
     await transaction.put(operationKey(record.operationId), record);
   }
+  async recoverPrimary(previous: SlotIdentity, next: SlotIdentity, transaction: SlotStorage) {
+    const current = await this.inspect(undefined, transaction);
+    if (!current) return;
+    if (!sameIdentity(current.configuration.legacy, previous)) throw new SlotRefused("selection");
+    const configuration = {
+      ...current.configuration,
+      legacy: next,
+      revision: current.configuration.revision + 1,
+      previousDigest: current.digest,
+    };
+    const record = { ...current, configuration, digest: await providerDigest(configuration) };
+    await transaction.put(key, record);
+  }
   private compare(previous: FleetConfigurationRecord | undefined, next: FleetConfiguration) {
     if (
       next.revision !== (previous?.configuration.revision ?? 0) + 1 ||

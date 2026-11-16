@@ -41,6 +41,7 @@ import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
+import { admitRuntimeRestart } from "./restart-admission.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -137,6 +138,10 @@ export class RuntimeEndpoint {
     return this.serialize(async () => {
       const proof = await this.proof(envelope);
       if (isRuntimeAttestation(proof)) throw new SlotRefused("identity");
+      if (proof.kind === "restart") {
+        await admitRuntimeRestart(this.ctx, this.store, proof);
+        return;
+      }
       const retained = await this.store.retained(proof.target.slotId);
       if (retained && !retained.retired) {
         const { record } = await this.store.read(proof.target);
@@ -194,6 +199,10 @@ export class RuntimeEndpoint {
       const { record, configuration } = await this.store.read(target);
       if (record.identity) return this.health(record.identity, signal);
       if (!isLaunchAuthorization(record.authorization)) throw new SlotRefused("uncertain");
+      if (this.ctx.container!.running) {
+        if (!record.witness) throw new SlotRefused("uncertain");
+        return this.complete(target, signal);
+      }
       await startRuntime(
         this.ctx,
         this.code,
@@ -289,6 +298,16 @@ export class RuntimeEndpoint {
         }
       : { kind: "witness" as const, controllerCode: this.code, witness: record.witness };
   }
+  async recoveryWitness(target: SlotTarget) {
+    this.bound(target);
+    const { record } = await this.store.read(target);
+    return {
+      authorization: record.authorization,
+      running: this.ctx.container!.running,
+      identity: record.identity,
+      witness: record.witness,
+    };
+  }
   attest(envelope: string) {
     return this.serialize(async () => {
       const proof = await this.proof(envelope);
@@ -299,6 +318,10 @@ export class RuntimeEndpoint {
       if (
         !isLaunchAuthorization(previous) ||
         (previous.kind === "initial-start") !== (proof.kind === "initial-attested") ||
+        (previous.kind === "restart") !== (proof.kind === "restart-attested") ||
+        (previous.kind === "restart" &&
+          proof.kind === "restart-attested" &&
+          !sameIdentity(previous.previous, proof.previous)) ||
         !witness?.bootId ||
         !record.identity ||
         proof.bootId !== witness.bootId ||

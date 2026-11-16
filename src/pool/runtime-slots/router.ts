@@ -41,6 +41,8 @@ export class RuntimeSlotRouter {
     candidate?: SlotIdentity,
   ): Promise<Response> {
     const pending = this.deps.streams.acquire(pool ?? "", request.signal);
+    let outbound: Request | undefined;
+    let sent = false;
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "slot_authorize";
     try {
       request = await authorize(pending.lease.signal);
@@ -78,16 +80,20 @@ export class RuntimeSlotRouter {
       });
       step = "slot_pre_send";
       pending.lease.signal.throwIfAborted();
-      const outbound = new Request(request, { signal: pending.lease.signal });
+      outbound = new Request(request, { signal: pending.lease.signal });
+      const beforeSend = () => {
+        beforeDispatch();
+        sent = true;
+      };
       const forward = (request: Request) => this.deps.driver.fetch(identity, request, port);
       const dispatch = (request: Request) => {
-        beforeDispatch();
+        beforeSend();
         step = "slot_port";
         return forward(request);
       };
       const upstream =
         port === 8317
-          ? await modelLifetimeFetch(outbound, forward, beforeDispatch)
+          ? await modelLifetimeFetch(outbound, forward, beforeSend)
           : await dispatch(outbound);
       const headers = new Headers(upstream.headers);
       headers.set("X-Signalbox-Pool-Boot", identity.bootId);
@@ -101,6 +107,7 @@ export class RuntimeSlotRouter {
             });
       return this.deps.wrap(tagged, pending.lease);
     } catch (error) {
+      if (!sent) void outbound?.body?.cancel().catch(() => {});
       pending.lease.release();
       refuseRuntime(step, error);
     }

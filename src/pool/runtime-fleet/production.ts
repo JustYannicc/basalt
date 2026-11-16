@@ -1,3 +1,6 @@
+import { awaitProbe } from "../availability.ts";
+import { forwardRecoverably } from "./retry.ts";
+import { FleetDemand } from "./demand.ts";
 import {
   observeBoundProvider,
   type ProviderObservationTarget,
@@ -32,7 +35,7 @@ import type { SlotIdentity } from "../runtime-slots/contract.ts";
 import type { HomePeerSource } from "../runtime-slots/peer-access.ts";
 import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
-import { physicalPrimaryTargets } from "./physical.ts";
+import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
 
 export interface FleetNamespace extends FleetBinding {
@@ -66,8 +69,10 @@ export class PoolRuntimeFleet {
   private peers: RuntimeFleetPeers;
   private replacement: RuntimeFleetReplacement;
   private imageUpdate: RuntimeImageUpdate;
+  private demand: FleetDemand;
   constructor(deps: Dependencies) {
     this.deps = deps;
+    this.demand = new FleetDemand(deps.ctx.storage);
     this.state = new RuntimeFleetState(deps.ctx.storage, 4, Date.now, (target, transaction) =>
       this.permission(target, transaction),
     );
@@ -249,6 +254,9 @@ export class PoolRuntimeFleet {
       changed: () => this.deps.ctx.waitUntil(this.schedule()),
       keepReady: (identity) => this.replacement.keepReady(identity),
       balancePrimary: true,
+      recentDemandUntil: () => this.demand.until(),
+      primaryAvailable: () => this.deps.handoff.available(),
+      recoverPrimary: () => this.deps.handoff.supervise(),
       demandAt: (at) => {
         if (this.deps.schedule) this.deps.ctx.waitUntil(this.deps.schedule(at));
       },
@@ -314,7 +322,10 @@ export class PoolRuntimeFleet {
     const primaries = await physicalPrimaryTargets(transaction);
     if (
       target.homePeerOrdinal !== undefined ||
-      rows.some((row) => row.target.applicationId === target.applicationId) ||
+      rows.some(
+        (row) =>
+          row.target.applicationId === target.applicationId && !sameGeneration(row.target, target),
+      ) ||
       rows.length + primaries.length >= (record?.configuration.maximum ?? 4)
     )
       throw new SlotRefused("selection");
@@ -351,11 +362,28 @@ export class PoolRuntimeFleet {
   async forward(
     request: Request,
     pool: string | undefined,
-    legacy: () => Promise<Response>,
+    legacy: (request: Request, beforeDispatch: () => void) => Promise<Response>,
     beforeDispatch: () => void,
   ) {
     const fleet = await this.fleet();
-    return fleet && this.enabled ? fleet.forward(request, pool, legacy, beforeDispatch) : legacy();
+    if (fleet && this.enabled) {
+      await this.demand.touch(Date.now());
+      return forwardRecoverably(
+        request,
+        (current, dispatch) => fleet.forward(current, pool, legacy, dispatch),
+        beforeDispatch,
+        () => fleet.recoverPrimary(),
+      );
+    }
+    return forwardRecoverably(request, legacy, beforeDispatch, () => this.deps.handoff.supervise());
+  }
+  async recoverAdmission(signal: AbortSignal) {
+    if (!(await this.deps.handoff.selected())) return false;
+    await awaitProbe(
+      () => (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()),
+      signal,
+    );
+    return true;
   }
   async install(policy: NativeMembershipPolicy) {
     await (await this.fleet())?.install(policy);
@@ -366,17 +394,21 @@ export class PoolRuntimeFleet {
   private async schedule() {
     if (!this.deps.schedule) return;
     const permission = await this.configuration.inspect();
-    if (!permission) return;
     const now = Date.now();
+    if (await this.deps.handoff.selected()) await this.deps.schedule(now + 2_000);
+    if (!permission) return;
     const deadlines = (await this.state.inspect())
       .map((row) => {
         if (row.phase === "ready")
           return permission.enabled && row.active
-            ? undefined
-            : Math.max(
-                now + 100,
-                row.lastUsedAt +
-                  (permission.enabled ? permission.configuration.idleMilliseconds : 0),
+            ? now + 2_000
+            : Math.min(
+                now + 2_000,
+                Math.max(
+                  now + 100,
+                  row.lastUsedAt +
+                    (permission.enabled ? permission.configuration.idleMilliseconds : 0),
+                ),
               );
         if (row.phase === "draining" && row.active && row.drainAcknowledged) return undefined;
         return now + 2_000;
@@ -402,6 +434,11 @@ export class PoolRuntimeFleet {
   }
   async upkeep() {
     try {
+      this.deps.ctx.waitUntil(
+        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(() =>
+          console.error("POOL_SELECTED_RECOVERY_PENDING"),
+        ),
+      );
       await this.primaryHeadroom();
       const fleet = await this.fleet();
       if (!this.enabled) await this.replacement.cancel();
