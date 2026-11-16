@@ -11,7 +11,15 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
  import { requestServices } from "@executor-js/hosted-server";
  import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
  /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
-@@ -178,6 +179,7 @@
+@@ -37,6 +38,7 @@
+ import { postHogBindings } from "./infrastructure/posthog.ts";
+ import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
+ import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
++import { InvocationStatementGroups } from "./infrastructure/invocation-database.ts";
+ import { cloudServingProduct } from "./infrastructure/serving-product.ts";
+ import { sentryBindings } from "./infrastructure/sentry.ts";
+ import { cloudHosts } from "./infrastructure/stage.ts";
+@@ -178,6 +180,7 @@
          appSessions,
          executor,
          Layer.succeed(ScopedChanges, changeRevisions.transport),
@@ -19,14 +27,48 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
        ),
      );
      const notFound = HttpServerResponse.empty({ status: 404 });
+@@ -255,7 +258,12 @@
+       ),
+     };
+   }).pipe(
+-    Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry)),
++    Effect.provide(
++      Layer.mergeAll(
++        cloudAuthDatabase.pipe(Layer.provide(Layer.succeed(InvocationStatementGroups, true))),
++        cloudTelemetry,
++      ),
++    ),
+     Effect.tapCause(logFailure),
+   ),
+ ) {}
 diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 --- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
-@@ -48,6 +48,7 @@
+@@ -28,6 +28,11 @@
+   Effect.Effect<Context.Context<SqlServices>, SqlError.SqlError>
+ >()("executor/cloud/InvocationDatabase") {}
+ 
++export const InvocationStatementGroups = Context.Reference<boolean>(
++  "executor/cloud/InvocationStatementGroups",
++  { defaultValue: () => false },
++);
++
+ /**
+  * One client per execution, closed with the event. A Durable Object lends its own held client
+  * instead. Both come from {@link cloudDatabasePool}, so neither relies on session state, and both
+@@ -37,6 +42,7 @@
+   InvocationDatabase,
+   Effect.gen(function* () {
+     const connection = yield* cloudDatabaseConnection;
++    const statementGroups = yield* InvocationStatementGroups;
+     return yield* makeBatchExecutionMemo(
+       Effect.gen(function* () {
+         const object = yield* Effect.serviceOption(ObjectDatabase);
+@@ -48,6 +54,7 @@
            cloudDatabasePool({
              url,
              maxConnections: invocationConnectionLimit,
-+            statementGroups: true,
++            statementGroups,
            }),
          );
          return Context.add(sql, ConnectionReservations, {
@@ -261,7 +303,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
      const batchProxy =
        process.env.BASALT_E2E_BATCH_STALL === "1" ? yield* statementBatchProxy : undefined;
 +    const poolProxy =
-+      process.env.BASALT_E2E_POOL_BACKEND === "1"
++      process.env.BASALT_E2E_POOL_BACKEND === "1" || process.env.BASALT_E2E_POOL_SETUP === "1"
 +        ? yield* sqlLatencyProxy(path.join(directory, "sql-wire.json"))
 +        : undefined;
      const databaseProxy =
@@ -729,7 +771,7 @@ diff --git a/e2e/tests/pool-account-view-latency.spec.ts b/e2e/tests/pool-accoun
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-account-view-latency.spec.ts
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,255 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schedule, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -972,6 +1014,8 @@ new file mode 100644
 +            "Full pool query round-trip budget at 15 ms SQL latency",
 +          ).toBeLessThanOrEqual(80);
 +          expect(work["sql.execute"]).toBeLessThanOrEqual(204);
++          expect(work["sdk.apps.get"]).toBeLessThanOrEqual(1);
++          expect(work["sdk.apps.list"]).toBeLessThanOrEqual(11);
 +          expect(work["sdk.accounts.health"]).toBe(5);
 +          expect(work["sdk.accounts.observations"]).toBe(5);
 +          expect(work["runtime.app.remote.invoke"]).toBe(6);
@@ -1052,9 +1096,11 @@ diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/
 diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
 --- a/packages/sdk/src/implementation/app-connections.ts
 +++ b/packages/sdk/src/implementation/app-connections.ts
-@@ -350,25 +350,31 @@
+@@ -349,26 +349,33 @@
+   const bindings: AppCallsHost["bindings"] = {
      list: (input) =>
        Effect.gen(function* () {
++        const facts = yield* SelectionReadFacts;
          const listed = yield* operations.list(input);
 -        const result = [];
 -        for (const connection of listed.connections) {
@@ -1097,7 +1143,7 @@ diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/s
 +                },
 +              ];
 +            }),
-+          { concurrency: 4 },
++          { concurrency: facts === undefined ? 1 : 4 },
 +        );
 +        return result.flat();
        }),
