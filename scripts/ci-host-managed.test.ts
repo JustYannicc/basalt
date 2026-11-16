@@ -158,7 +158,13 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       env: null,
       cwd: ".upstream",
       minutes: null,
-      scenarios: ["poolOwnerImport", "poolUsageSeries"],
+      scenarios: [
+        "poolBulkStatusAckBudget",
+        "poolBulkUploadDurableAck",
+        "poolBulkUploadUnknownAck",
+        "poolOwnerImport",
+        "poolUsageSeries",
+      ],
     },
   ];
   const commands = [accounts, pool].flatMap((job, index) =>
