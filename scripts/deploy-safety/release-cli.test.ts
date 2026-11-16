@@ -43,7 +43,7 @@ test("database-restore rollback requires the exact backup while recorded-version
       ),
       command,
     );
-  assert.equal(workflow.match(/RESTORED_BACKUP: \$\{\{ inputs\.restored_backup \}\}/g)?.length, 3);
+  assert.equal(workflow.match(/RESTORED_BACKUP: \$\{\{ inputs\.restored_backup \}\}/g)?.length, 4);
   assertRestoredBackup(" basalt-release-v2-recorded\n", "basalt-release-v2-recorded");
   assert.throws(
     () => assertRestoredBackup("basalt-release-v2-other", "basalt-release-v2-recorded"),
