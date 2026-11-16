@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.serviceInstalls {
+    metadata {
+      constraint "The catalog offers ordinary Add or Open for an existing service and a separate-instance action when supported. Instance identity remains explicit and visible app access filters its projection. Revisit and row actions preserve the current loading frame, primary-action width and saved app and account state. The separate-instance dialog retains its closing content in React state, keeps one request ID for uncertain retries, and rejects a second same-frame submission."
+    }
+  }
+}

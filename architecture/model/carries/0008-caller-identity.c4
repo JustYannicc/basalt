@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The host supplies the opaque caller identity independently of account requirements and tool arguments on ordinary, nested and workflow invocations. Dynamic tool caches remain caller-scoped. Retained protocol 14 keeps Basalt caller identity and strict credential-host grammar; protocol 13 strips that identity, and newer host grammar cannot alter either released adapter."
+    }
+  }
+}

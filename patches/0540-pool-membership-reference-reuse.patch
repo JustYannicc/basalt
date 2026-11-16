@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index a209f3a..3009327 100644
+index 04f7cc29d02733a68f418c767168225d3fcc3e62..5cefa69911b3bc61d711ecec9241d12c00909364 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
 @@ -1,3 +1,4 @@
@@ -7,7 +7,7 @@ index a209f3a..3009327 100644
  import { poolModels } from "@executor-js/hosted-server/pool-models";
  import { cloudEgress } from "./egress.ts";
  export { cloudEgress } from "./egress.ts";
-@@ -199,6 +200,9 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -222,6 +223,9 @@ export const cloudExecutor = Effect.fn(function* (
            allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
          },
        }).pipe(Effect.provide(BrowserCrypto.layer));
@@ -19,7 +19,7 @@ index a209f3a..3009327 100644
      }).pipe(
 diff --git a/apps/hosted/server/src/implementation/pool-membership-reference-cache.ts b/apps/hosted/server/src/implementation/pool-membership-reference-cache.ts
 new file mode 100644
-index 0000000..7bade32
+index 0000000000000000000000000000000000000000..7bade32aaff585440936d41c6740c626ee61cc6f
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-membership-reference-cache.ts
 @@ -0,0 +1,55 @@
@@ -79,7 +79,7 @@ index 0000000..7bade32
 +  },
 +};
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
-index 3258293..3126239 100644
+index 8f79f938d5e6f3587acda0a1aadd7f6f1a258798..0d6d4c475c02fb6a972a5c0599d5c5fbee56135a 100644
 --- a/apps/hosted/server/src/implementation/pool-membership.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership.ts
 @@ -17,6 +17,7 @@ import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
@@ -143,19 +143,19 @@ index 3258293..3126239 100644
 +        (select a.id from ${usable}) order by account for share`;
 +      const rows =
 +        yield* sql`with linked as (select a.*,l.requirement as linked_requirement,l.created_at as link_order,
-+        app.active_deployment from ${usable})
++        l.active_deployment from ${usable})
 +        select a.id as account,a.owner,a.linked_requirement as requirement,a.provider,a.method,
            a.credential_generation as generation,
 -          (select driver from executor_account_acquisitions where account = a.id) as driver,
 -          (select driver_revision from executor_account_acquisitions where account = a.id) as "driverRevision",
 -          (select revision from executor_account_acquisitions where account = a.id) as "bindingRevision",
 -          (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
--            from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
+-            from executor_deployments d where d.id = l.active_deployment) as "requirementScope",
 -          (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
--            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider",
+-            from executor_deployments d where d.id = l.active_deployment) as "requirementProvider",
 -          coalesce((select d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method
 -              @> '{"type":"secrets","provisioned":true}'::jsonb
--            from executor_deployments d where d.id = app.active_deployment), false) as "requirementProvisioned"
+-            from executor_deployments d where d.id = l.active_deployment), false) as "requirementProvisioned"
 -        from ${yield* usableAppLinks(sql, [pool])}
 -          and not exists (select 1 from executor_account_acquisitions retiring
 -            where retiring.account = a.id and retiring.removal is not null)

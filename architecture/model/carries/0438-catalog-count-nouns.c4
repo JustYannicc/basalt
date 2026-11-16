@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "The shared app catalog count uses app for exactly one matching entry and apps for zero or several. The real hosted catalog journey verifies one result at desktop and phone widths, plural counts and no horizontal overflow without changing app installation or account authority."
+      constraint "The shared app catalog count uses app for exactly one matching entry and apps for zero or several. The real hosted catalog journey verifies one result at desktop and phone widths, plural counts and no horizontal overflow without changing app installation or account authority. The count uses the current filtered entry set while preserving the catalog's pending frame, provider focus and width guards; loading assertions run before count cases."
     }
   }
 }

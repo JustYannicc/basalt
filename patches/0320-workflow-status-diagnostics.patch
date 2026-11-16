@@ -1,74 +1,5 @@
-diff --git a/apps/hosted/server/src/contracts/workflows.ts b/apps/hosted/server/src/contracts/workflows.ts
---- a/apps/hosted/server/src/contracts/workflows.ts
-+++ b/apps/hosted/server/src/contracts/workflows.ts
-@@ -1,3 +1,4 @@
-+import { ObserveWorkflowStatus } from "./workflow-status.ts";
- /** Organization authorization surrounds app-scoped workflow lifecycle operations. */
- import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
- import { Schema } from "effect";
-@@ -26,7 +27,7 @@
-  * Members who can use the app read definitions and start runs with their accounts. Runs belong to
-  * the actor that started them; terminating someone else's run needs app management.
-  */
--export const HostedWorkflows = HttpApiGroup.make("workflows")
-+const workflowRoutes = HttpApiGroup.make("workflows")
-   .add(
-     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
-       params: app,
-@@ -70,3 +71,8 @@
-     }),
-   )
-   .middleware(RequireOrganization);
-+
-+// Add the observer after organization middleware so it also sees authorization dependency failures.
-+export const HostedWorkflows = workflowRoutes.add(
-+  workflowRoutes.endpoints.get.middleware(ObserveWorkflowStatus),
-+);
-diff --git a/apps/hosted/server/src/implementation/workflows.ts b/apps/hosted/server/src/implementation/workflows.ts
---- a/apps/hosted/server/src/implementation/workflows.ts
-+++ b/apps/hosted/server/src/implementation/workflows.ts
-@@ -1,3 +1,4 @@
-+import { WorkflowStatusFault } from "../contracts/workflow-status.ts";
- import { requireWorkflowAccess, requireWorkflowReplayAccess } from "./workflow-access.ts";
- /** Keep product permissions outside the reusable workflow SDK. */
- import { Effect } from "effect";
-@@ -35,7 +36,9 @@
-         const owner = yield* currentOwner,
-           executor = yield* Effect.flatten(HostedExecutor);
-         yield* requireWorkflowAccess(executor, owner, params.app, params.run);
--        return yield* executor.apps.workflowRuns.get(params);
-+        const run = yield* executor.apps.workflowRuns.get(params);
-+        yield* (yield* WorkflowStatusFault)("response_mapping");
-+        return run;
-       }),
-     )
-     .handle("list", ({ params, query }) =>
-diff --git a/apps/hosted/server/src/implementation/middleware.ts b/apps/hosted/server/src/implementation/middleware.ts
---- a/apps/hosted/server/src/implementation/middleware.ts
-+++ b/apps/hosted/server/src/implementation/middleware.ts
-@@ -1,3 +1,4 @@
-+import { observeWorkflowStatusLive } from "./workflow-status.ts";
- import { Layer } from "effect";
- import { requireUserLive } from "./auth.ts";
- import { requireOrganizationLive } from "./organization.ts";
-@@ -13,4 +14,5 @@
-   requireOrganizationLive,
-   requireAccountTargetLive,
-   batchAuthentication.layer,
-+  observeWorkflowStatusLive,
- );
-diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
---- a/apps/hosted/server/package.json
-+++ b/apps/hosted/server/package.json
-@@ -12,6 +12,7 @@
-     "./auth": "./src/contracts/auth.ts",
-     "./contracts": "./src/contracts/api.ts",
-     "./catalog": "./src/contracts/catalog.ts",
-+    "./workflow-status": "./src/contracts/workflow-status.ts",
-     "./workflow-display/direct": "./src/implementation/workflow-display-direct.ts",
-     "./authorization": "./src/contracts/authorization.ts",
-     "./workflow-display": "./src/contracts/workflow-display.ts",
 diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
+index f4ece11..815f86f 100644
 --- a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
 +++ b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
 @@ -1,3 +1,7 @@
@@ -79,7 +10,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hos
  /** The executor's client for the native app workflow: start, inspect and stop runs. */
  import * as Cloudflare from "alchemy/Cloudflare";
  import type { Workflow } from "@cloudflare/workers-types";
-@@ -60,7 +64,10 @@
+@@ -60,7 +64,10 @@ export const cloudWorkflows = Effect.gen(function* () {
    const read = (instance: string) =>
      binding.pipe(
        Effect.flatMap((binding) =>
@@ -91,7 +22,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hos
            Effect.tapError((error) =>
              Effect.annotateCurrentSpan({
                "executor.workflow.failure.phase": "native_status",
-@@ -75,6 +82,11 @@
+@@ -75,6 +82,11 @@ export const cloudWorkflows = Effect.gen(function* () {
            return Effect.succeed({ status: "unknown" } as const);
          return Effect.failCause(cause);
        }),
@@ -103,7 +34,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hos
      );
    // An instance's identity fixes its journal format, so a retyped output cannot downgrade it.
    // Existing unprefixed instances keep their legacy output and do not restart under a new id.
-@@ -87,6 +99,7 @@
+@@ -87,6 +99,7 @@ export const cloudWorkflows = Effect.gen(function* () {
        const value = encrypted ? current : yield* read(run);
        if (value.status === "unknown") return { instance, state: { status: "missing" } as const };
        const state = yield* Effect.gen(function* () {
@@ -111,7 +42,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hos
          if (value.status !== "complete")
            return yield* Schema.decodeUnknownEffect(WorkflowBackendState)(value);
          const output = encrypted
-@@ -99,6 +112,11 @@
+@@ -99,6 +112,11 @@ export const cloudWorkflows = Effect.gen(function* () {
            output,
          });
        }).pipe(
@@ -123,7 +54,46 @@ diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hos
          Effect.tapError(() =>
            Effect.annotateCurrentSpan({
              "executor.workflow.failure.phase": "decode_status",
+diff --git a/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts b/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts
+new file mode 100644
+index 0000000..dcfab60
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts
+@@ -0,0 +1,32 @@
++import { AlchemyContext } from "alchemy/AlchemyContext";
++import * as Cloudflare from "alchemy/Cloudflare";
++import {
++  WorkflowStatusFault,
++  type WorkflowStatusPhase,
++} from "@executor-js/hosted-server/workflow-status";
++import { Effect } from "effect";
++import { HttpRouter, HttpServerRequest } from "effect/http";
++
++export const workflowStatusFaultBindings = Effect.gen(function* () {
++  return { WORKFLOW_STATUS_FAULTS: (yield* AlchemyContext).dev };
++});
++
++/** Only local Cloud installs request-scoped fault controls; deployments ignore this header. */
++export const localWorkflowStatusFaults = HttpRouter.middleware(
++  Effect.gen(function* () {
++    const environment = yield* Cloudflare.WorkerEnvironment;
++    return (response) =>
++      Effect.gen(function* () {
++        if (environment.WORKFLOW_STATUS_FAULTS !== true) return yield* response;
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const requested = request.headers["x-executor-test-workflow-status-phase"];
++        return yield* response.pipe(
++          Effect.provideService(WorkflowStatusFault, (phase: WorkflowStatusPhase) =>
++            requested === phase
++              ? Effect.die(new TypeError("synthetic-private-status-payload"))
++              : Effect.void,
++          ),
++        );
++      });
++  }),
++);
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index fe5ea26..059f8e4 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,3 +1,7 @@
@@ -134,7 +104,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
  import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
  import { runAccountRechecks } from "@executor-js/hosted-server";
  import {
-@@ -207,6 +211,7 @@
+@@ -214,6 +218,7 @@ export default Api.make(
          ...(yield* billingBindings),
          // Local tests stall chosen removal starts; deployed Workers never install the hook.
          ...(yield* removalStallBindings),
@@ -142,7 +112,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
          // Only local e2e Clouds may turn the auth rate limit off; deployed Workers get `false`.
          ...(yield* authRateLimitSwitchBindings),
          // A deployed stage identifies Executor to authorization servers by its own document.
-@@ -526,6 +531,7 @@
+@@ -549,6 +554,7 @@ export default Api.make(
      // Only framework lookups and the published skills read the large authoring reference.
      const authoring = yield* cloudAuthoringReference;
      const api = cloudApi(document).pipe(
@@ -150,51 +120,21 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
        HttpRouter.provideRequest(Layer.succeed(McpAppSandbox, appSandboxAddress(appBase))),
        HttpRouter.provideRequest(yield* cloudWorkflowInputDisplays),
        Layer.provide(frameworkDocumentation(authoring)),
-diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
---- a/apps/hosted/web/src/contracts/errors.ts
-+++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -211,1 +211,2 @@
-+    WorkflowStatusUnavailable: ({ message }) => message,
-     WorkflowFailure: (error) => `Workflow request failed (${error.reason}).`,
-diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
---- a/e2e/test-plan.ts
-+++ b/e2e/test-plan.ts
-@@ -9996,3 +9996,33 @@
-+  workflowStatusNativeFailure: {
-+    fixtures: "actors",
-+    file: "workflow-status-diagnostics.spec.ts",
-+    title: "Cloud workflow status native failures emit safe native diagnostics",
-+    targets: {
-+      "self-host": na("The native Cloud workflow boundary is exercised by managed Cloud."),
-+      cloud: { status: "scheduled", runtime: "managed" },
-+      local: na("The native Cloud workflow boundary is exercised by managed Cloud."),
-+    },
-+  },
-+  workflowStatusDecodeFailure: {
-+    fixtures: "actors",
-+    file: "workflow-status-diagnostics.spec.ts",
-+    title: "Cloud workflow status decode failures emit safe native diagnostics",
-+    targets: {
-+      "self-host": na("The native Cloud workflow boundary is exercised by managed Cloud."),
-+      cloud: { status: "scheduled", runtime: "managed" },
-+      local: na("The native Cloud workflow boundary is exercised by managed Cloud."),
-+    },
-+  },
-+  workflowStatusResponseFailure: {
-+    fixtures: "actors",
-+    file: "workflow-status-diagnostics.spec.ts",
-+    title: "Cloud workflow status response failures emit safe native diagnostics",
-+    targets: {
-+      "self-host": na("The native Cloud workflow boundary is exercised by managed Cloud."),
-+      cloud: { status: "scheduled", runtime: "managed" },
-+      local: na("The native Cloud workflow boundary is exercised by managed Cloud."),
-+    },
-+  },
-   cloudPoolAccountEventualRepair: {
-     fixtures: "actors",
-     managementApps: ["owner"],
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 6352379..599386f 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -12,6 +12,7 @@
+     "./auth": "./src/contracts/auth.ts",
+     "./contracts": "./src/contracts/api.ts",
+     "./catalog": "./src/contracts/catalog.ts",
++    "./workflow-status": "./src/contracts/workflow-status.ts",
+     "./workflow-display/direct": "./src/implementation/workflow-display-direct.ts",
+     "./authorization": "./src/contracts/authorization.ts",
+     "./workflow-display": "./src/contracts/workflow-display.ts",
 diff --git a/apps/hosted/server/src/contracts/workflow-status.ts b/apps/hosted/server/src/contracts/workflow-status.ts
 new file mode 100644
+index 0000000..0aceabc
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/workflow-status.ts
 @@ -0,0 +1,29 @@
@@ -227,8 +167,51 @@ new file mode 100644
 +  "hosted/ObserveWorkflowStatus",
 +  { error: WorkflowStatusUnavailable },
 +) {}
+diff --git a/apps/hosted/server/src/contracts/workflows.ts b/apps/hosted/server/src/contracts/workflows.ts
+index e945a0e..a3b4aa7 100644
+--- a/apps/hosted/server/src/contracts/workflows.ts
++++ b/apps/hosted/server/src/contracts/workflows.ts
+@@ -1,3 +1,4 @@
++import { ObserveWorkflowStatus } from "./workflow-status.ts";
+ /** Organization authorization surrounds app-scoped workflow lifecycle operations. */
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { Schema } from "effect";
+@@ -28,7 +29,7 @@ const path = "/api/organizations/:organization/apps/:app";
+  * Members who can use the app read definitions and start runs with their accounts. Runs belong to
+  * the actor that started them; terminating someone else's run needs app management.
+  */
+-export const HostedWorkflows = HttpApiGroup.make("workflows")
++const workflowRoutes = HttpApiGroup.make("workflows")
+   .add(
+     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
+       params: app,
+@@ -72,3 +73,8 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
+     }),
+   )
+   .middleware(RequireOrganization);
++
++// Add the observer after organization middleware so it also sees authorization dependency failures.
++export const HostedWorkflows = workflowRoutes.add(
++  workflowRoutes.endpoints.get.middleware(ObserveWorkflowStatus),
++);
+diff --git a/apps/hosted/server/src/implementation/middleware.ts b/apps/hosted/server/src/implementation/middleware.ts
+index 187cc56..fe60786 100644
+--- a/apps/hosted/server/src/implementation/middleware.ts
++++ b/apps/hosted/server/src/implementation/middleware.ts
+@@ -1,3 +1,4 @@
++import { observeWorkflowStatusLive } from "./workflow-status.ts";
+ import { Layer } from "effect";
+ import { requireUserLive } from "./auth.ts";
+ import { requireOrganizationLive } from "./organization.ts";
+@@ -13,4 +14,5 @@ export const hostedMiddlewareLive = Layer.mergeAll(
+   requireOrganizationLive,
+   requireAccountTargetLive,
+   batchAuthentication.layer,
++  observeWorkflowStatusLive,
+ );
 diff --git a/apps/hosted/server/src/implementation/workflow-status.ts b/apps/hosted/server/src/implementation/workflow-status.ts
 new file mode 100644
+index 0000000..389573a
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/workflow-status.ts
 @@ -0,0 +1,74 @@
@@ -306,45 +289,145 @@ new file mode 100644
 +    );
 +  }),
 +);
-diff --git a/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts b/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts
+diff --git a/apps/hosted/server/src/implementation/workflows.ts b/apps/hosted/server/src/implementation/workflows.ts
+index 12f543e..56fdf23 100644
+--- a/apps/hosted/server/src/implementation/workflows.ts
++++ b/apps/hosted/server/src/implementation/workflows.ts
+@@ -1,3 +1,4 @@
++import { WorkflowStatusFault } from "../contracts/workflow-status.ts";
+ import {
+   requireWorkflowAccess,
+   requireWorkflowReplayAccess,
+@@ -39,7 +40,9 @@ export const hostedWorkflowHandlers = HttpApiBuilder.group(HostedApi, "workflows
+         const owner = yield* currentOwner,
+           executor = yield* Effect.flatten(HostedExecutor);
+         yield* requireWorkflowAccess(executor, owner, params.app, params.run);
+-        return yield* executor.apps.workflowRuns.get(params);
++        const run = yield* executor.apps.workflowRuns.get(params);
++        yield* (yield* WorkflowStatusFault)("response_mapping");
++        return run;
+       }),
+     )
+     .handle("list", ({ params, query }) =>
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 0cc87f9..e5f640d 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -209,6 +209,7 @@ const errorMessage = Match.type<HostedError>().pipe(
+       "Wait for this app’s workflows to finish or terminate them before deleting it.",
+     AccountWorkflowsActive: () =>
+       "Wait for this account’s workflows to finish or terminate them before deleting it.",
++    WorkflowStatusUnavailable: ({ message }) => message,
+     WorkflowFailure: (error) => `Workflow request failed (${error.reason}).`,
+     AppRemovalUnavailable: ({ message }) => message,
+     AppWebhooksActive: () => "Remove this app’s webhook subscriptions before deleting it.",
+diff --git a/e2e/support/workflow-status-log-evidence.ts b/e2e/support/workflow-status-log-evidence.ts
 new file mode 100644
+index 0000000..be9bc4e
 --- /dev/null
-+++ b/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts
-@@ -0,0 +1,32 @@
-+import { AlchemyContext } from "alchemy/AlchemyContext";
-+import * as Cloudflare from "alchemy/Cloudflare";
-+import {
-+  WorkflowStatusFault,
-+  type WorkflowStatusPhase,
-+} from "@executor-js/hosted-server/workflow-status";
-+import { Effect } from "effect";
-+import { HttpRouter, HttpServerRequest } from "effect/http";
++++ b/e2e/support/workflow-status-log-evidence.ts
+@@ -0,0 +1,57 @@
++/** Wait for a later request's native log as an append barrier, then inspect the earlier record. */
++import { Effect, FileSystem, Option, Schema } from "effect";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { Target } from "./platform.ts";
 +
-+export const workflowStatusFaultBindings = Effect.gen(function* () {
-+  return { WORKFLOW_STATUS_FAULTS: (yield* AlchemyContext).dev };
++const Record = Schema.Struct({
++  message: Schema.String,
++  annotations: Schema.Record(Schema.String, Schema.Unknown),
 +});
-+
-+/** Only local Cloud installs request-scoped fault controls; deployments ignore this header. */
-+export const localWorkflowStatusFaults = HttpRouter.middleware(
++export const workflowStatusLogEvidence = (barrier: string) =>
 +  Effect.gen(function* () {
-+    const environment = yield* Cloudflare.WorkerEnvironment;
-+    return (response) =>
-+      Effect.gen(function* () {
-+        if (environment.WORKFLOW_STATUS_FAULTS !== true) return yield* response;
-+        const request = yield* HttpServerRequest.HttpServerRequest;
-+        const requested = request.headers["x-executor-test-workflow-status-phase"];
-+        return yield* response.pipe(
-+          Effect.provideService(WorkflowStatusFault, (phase: WorkflowStatusPhase) =>
-+            requested === phase
-+              ? Effect.die(new TypeError("synthetic-private-status-payload"))
-+              : Effect.void,
-+          ),
-+        );
++    const target = yield* Target,
++      fs = yield* FileSystem.FileSystem,
++      http = yield* HttpClient.HttpClient;
++    const fixtures = target.fixtures;
++    if (fixtures === undefined) return yield* Effect.die("Managed Cloud logs required");
++    const revision = (after?: number) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const request = yield* HttpClientRequest.post(
++            `${fixtures.origin}/runtime/cloud-log`,
++          ).pipe(
++            HttpClientRequest.bearerToken(fixtures.token),
++            HttpClientRequest.bodyJson(after === undefined ? {} : { after }),
++          );
++          const response = yield* http.execute(request);
++          return (yield* response.json.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(CloudLogRevision)),
++          )).revision;
++        }),
++      );
++    let after = yield* revision();
++    for (;;) {
++      const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
++      const records = text.split("\n").flatMap((line) => {
++        const start = line.indexOf('{"message":');
++        if (start < 0) return [];
++        try {
++          const value: unknown = JSON.parse(line.slice(start));
++          const parsed = Schema.decodeUnknownOption(Record)(value);
++          return Option.isSome(parsed) ? [parsed.value] : [];
++        } catch {
++          return [];
++        }
 +      });
-+  }),
-+);
++      if (
++        records.some(
++          (record) =>
++            record.message === "executor.request.context" &&
++            record.annotations["executor.trace_id"] === barrier,
++        )
++      )
++        return records;
++      after = yield* revision(after);
++    }
++  }).pipe(Effect.timeout("10 seconds"));
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 7fbe317..8b1e823 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -11151,6 +11151,36 @@ export const scenarios = plan({
+       local: na("Cloud pool membership acknowledgements are hosted dependencies."),
+     },
+   },
++  workflowStatusNativeFailure: {
++    fixtures: "actors",
++    file: "workflow-status-diagnostics.spec.ts",
++    title: "Cloud workflow status native failures emit safe native diagnostics",
++    targets: {
++      "self-host": na("The native Cloud workflow boundary is exercised by managed Cloud."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The native Cloud workflow boundary is exercised by managed Cloud."),
++    },
++  },
++  workflowStatusDecodeFailure: {
++    fixtures: "actors",
++    file: "workflow-status-diagnostics.spec.ts",
++    title: "Cloud workflow status decode failures emit safe native diagnostics",
++    targets: {
++      "self-host": na("The native Cloud workflow boundary is exercised by managed Cloud."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The native Cloud workflow boundary is exercised by managed Cloud."),
++    },
++  },
++  workflowStatusResponseFailure: {
++    fixtures: "actors",
++    file: "workflow-status-diagnostics.spec.ts",
++    title: "Cloud workflow status response failures emit safe native diagnostics",
++    targets: {
++      "self-host": na("The native Cloud workflow boundary is exercised by managed Cloud."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The native Cloud workflow boundary is exercised by managed Cloud."),
++    },
++  },
+   cloudPoolAccountEventualRepair: {
+     fixtures: "actors",
+     managementApps: ["owner"],
 diff --git a/e2e/tests/workflow-status-diagnostics.spec.ts b/e2e/tests/workflow-status-diagnostics.spec.ts
 new file mode 100644
+index 0000000..600fd09
 --- /dev/null
 +++ b/e2e/tests/workflow-status-diagnostics.spec.ts
 @@ -0,0 +1,184 @@
@@ -532,65 +615,3 @@ new file mode 100644
 +    );
 +  }
 +});
-diff --git a/e2e/support/workflow-status-log-evidence.ts b/e2e/support/workflow-status-log-evidence.ts
-new file mode 100644
---- /dev/null
-+++ b/e2e/support/workflow-status-log-evidence.ts
-@@ -0,0 +1,57 @@
-+/** Wait for a later request's native log as an append barrier, then inspect the earlier record. */
-+import { Effect, FileSystem, Option, Schema } from "effect";
-+import { HttpClient, HttpClientRequest } from "effect/http";
-+import { CloudLogRevision } from "./cloud-log-activity.ts";
-+import { Target } from "./platform.ts";
-+
-+const Record = Schema.Struct({
-+  message: Schema.String,
-+  annotations: Schema.Record(Schema.String, Schema.Unknown),
-+});
-+export const workflowStatusLogEvidence = (barrier: string) =>
-+  Effect.gen(function* () {
-+    const target = yield* Target,
-+      fs = yield* FileSystem.FileSystem,
-+      http = yield* HttpClient.HttpClient;
-+    const fixtures = target.fixtures;
-+    if (fixtures === undefined) return yield* Effect.die("Managed Cloud logs required");
-+    const revision = (after?: number) =>
-+      Effect.scoped(
-+        Effect.gen(function* () {
-+          const request = yield* HttpClientRequest.post(
-+            `${fixtures.origin}/runtime/cloud-log`,
-+          ).pipe(
-+            HttpClientRequest.bearerToken(fixtures.token),
-+            HttpClientRequest.bodyJson(after === undefined ? {} : { after }),
-+          );
-+          const response = yield* http.execute(request);
-+          return (yield* response.json.pipe(
-+            Effect.flatMap(Schema.decodeUnknownEffect(CloudLogRevision)),
-+          )).revision;
-+        }),
-+      );
-+    let after = yield* revision();
-+    for (;;) {
-+      const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
-+      const records = text.split("\n").flatMap((line) => {
-+        const start = line.indexOf('{"message":');
-+        if (start < 0) return [];
-+        try {
-+          const value: unknown = JSON.parse(line.slice(start));
-+          const parsed = Schema.decodeUnknownOption(Record)(value);
-+          return Option.isSome(parsed) ? [parsed.value] : [];
-+        } catch {
-+          return [];
-+        }
-+      });
-+      if (
-+        records.some(
-+          (record) =>
-+            record.message === "executor.request.context" &&
-+            record.annotations["executor.trace_id"] === barrier,
-+        )
-+      )
-+        return records;
-+      after = yield* revision(after);
-+    }
-+  }).pipe(Effect.timeout("10 seconds"));

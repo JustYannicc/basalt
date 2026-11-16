@@ -632,7 +632,7 @@ diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/ap
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
-@@ -9,7 +9,7 @@ import {
+@@ -9,7 +9,7 @@
  } from "@executor-js/hosted-server/app-ui/contracts";
  import type { OrganizationReference } from "@executor-js/hosted-server/organization";
  import type { AppId, AppSlug } from "@executor-js/sdk";
@@ -641,8 +641,8 @@ diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contr
  import { Atom, AtomHttpApi } from "effect/reactivity";
  import type { HttpApiEndpoint } from "effect/http-api";
  import type { HttpClientError } from "effect/http";
-@@ -108,6 +108,9 @@ const message = Match.type<AppUiError>().pipe(
-     StorageError: () => "This app could not be read. Try again.",
+@@ -109,6 +109,9 @@
+     RequestInvalid: () => "This page sent a request that could not be accepted. Reload the page.",
      AppUiUnavailable: () =>
        "The app page is unavailable. Check its version and the server’s app URL settings.",
 +    UiUnauthorized: () => "Your app session ended. Open the app again.",
@@ -651,7 +651,7 @@ diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contr
      Unauthorized: () => "Your session ended. Sign in again.",
      Forbidden: () => "Open this page from the site’s configured address.",
      AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
-@@ -139,3 +142,42 @@ export const appUiError = (cause: Cause.Cause<AppUiError>) =>
+@@ -140,3 +143,42 @@
      onSome: message,
      onNone: () => "The app could not open. Try again.",
    });
@@ -777,7 +777,7 @@ diff --git a/packages/app-templates/executor/skills/app-authoring/ui.md b/packag
 diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 --- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 +++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-@@ -10,7 +10,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
+@@ -10,7 +10,7 @@
    "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
    "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
    "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
@@ -785,7 +785,7 @@ diff --git a/packages/app-templates/src/implementation/executor-skill-digests.ge
 +  "app-authoring/ui.md": "f5e5be69fbc70d053600d21d14f27c787bcdc33c25458211b195a8d847b7fb81",
    "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
    "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
-   "app-authoring/webhooks.md": "e4ca224cd413b591c3692b389bd88d644b337b4697a067d83551e6bcab657cf3",
+   "app-authoring/webhooks.md": "8b6e4fa3fbc1641bfa741bc449d8ff1b1db7c7923c2ddec0a134be7a2f7de5d8",
 diff --git a/packages/ui/src/contracts/host-navigation.ts b/packages/ui/src/contracts/host-navigation.ts
 new file mode 100644
 --- /dev/null
@@ -1590,7 +1590,7 @@ diff --git a/e2e/support/instant-navigation.ts b/e2e/support/instant-navigation.
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
 --- a/apps/hosted/server/src/contracts/app-ui.ts
 +++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -13,10 +13,10 @@ import {
+@@ -14,10 +14,10 @@
    type RuntimeBuildUnavailable,
  } from "@executor-js/sdk/core";
  import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
@@ -1603,15 +1603,14 @@ diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src
  import {
    OrganizationForbidden,
    OrganizationId,
-@@ -196,7 +196,16 @@ export class HostedAppSessions extends Context.Service<
-     readonly current: (
+@@ -201,9 +201,15 @@
        target: AppUiTarget,
        token: typeof AppSignInCode.Type,
--    ) => Effect.Effect<{ readonly userId: string }, UiUnauthorized | UiForbidden | UiFailed>;
-+    ) => Effect.Effect<
-+      { readonly userId: string; readonly navigation: string },
-+      UiUnauthorized | UiForbidden | UiFailed
-+    >;
+     ) => Effect.Effect<
+-      { readonly userId: string; readonly impersonatedBy?: string },
++      { readonly userId: string; readonly navigation: string; readonly impersonatedBy?: string },
+       UiUnauthorized | UiForbidden | UiFailed
+     >;
 +    /** A reference alone grants nothing: the dashboard login must match this exact record. */
 +    readonly navigation: (
 +      target: AppUiTarget,
@@ -1621,7 +1620,7 @@ diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src
    }
  >()("hosted/AppSessions") {}
  
-@@ -232,6 +241,26 @@ export const HostedAppUi = /* @__PURE__ */ (() =>
+@@ -239,6 +245,26 @@
          "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deploy. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
        )
        .middleware(RequireOrganization),
@@ -1647,11 +1646,11 @@ diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src
 +      .middleware(RequireUser),
    ))();
  /** A browser client can consume the same narrow contract without importing a host's full API. */
- export const HostedAppUiApi = HttpApi.make("executor-hosted").add(HostedAppUi);
+ export const HostedAppUiApi = HttpApi.make("executor-hosted")
 diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
 --- a/apps/hosted/server/src/implementation/app-sessions.ts
 +++ b/apps/hosted/server/src/implementation/app-sessions.ts
-@@ -251,13 +251,26 @@ export const hostedAppSessions = (
+@@ -257,15 +257,28 @@
        }),
      current: (target, token) =>
        Effect.gen(function* () {
@@ -1659,12 +1658,16 @@ diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted
 +        const navigation = yield* digest(token);
 +        const session = yield* read(key("session", navigation));
          if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
-           return yield* new UiUnauthorized();
-         yield* parent(session.parent, session.user);
+           return yield* refuse("wrong_resource", new UiUnauthorized());
+         const login = yield* parent(session.parent, session.user);
          // The serving host checks current membership together with app/account
          // permissions. A second lookup here adds no authority to that decision.
--        return { userId: session.user };
-+        return { userId: session.user, navigation };
+         return typeof login.impersonatedBy === "string"
+-          ? { userId: session.user, impersonatedBy: login.impersonatedBy }
+-          : { userId: session.user };
+-      }),
++          ? { userId: session.user, navigation, impersonatedBy: login.impersonatedBy }
++          : { userId: session.user, navigation };
 +      }),
 +    navigation: (target, reference, principal) =>
 +      Effect.gen(function* () {
@@ -1677,13 +1680,13 @@ diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted
 +        )
 +          return yield* new UiUnauthorized();
 +        yield* parent(session.parent, session.user);
-       }),
++      }),
    });
  };
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -68,7 +68,12 @@ import {
+@@ -70,7 +70,12 @@
    type AppUiAddressInvalid,
    type AppUiTarget,
  } from "../contracts/app-ui.ts";
@@ -1697,16 +1700,16 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import { HostedExecutor } from "../contracts/executor.ts";
  import {
    CurrentOrganization,
-@@ -270,7 +275,7 @@ export const hostedAppUi = <R = never>(
-           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
-         ),
+@@ -284,7 +289,7 @@
+         Effect.tapErrorTag("UiForbidden", () => recordAuthFailure("resource_denied")),
        );
+       yield* recordCaller(resolved.target.organization, identity.userId);
 -      return { ...resolved, access, app };
 +      return { ...resolved, access, app, navigation: identity.navigation };
      });
    const authorize = Effect.flatMap(target, authorizeTarget);
    const assets = (version: VersionMetadata, path: string) =>
-@@ -397,53 +402,83 @@ export const hostedAppUi = <R = never>(
+@@ -411,53 +416,83 @@
        ),
      );
    const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
@@ -1834,15 +1837,15 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
 +            : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
 +        }),
 +      ),
-   );
+   ).pipe(Layer.provide(requestRejections));
    const dataFailure = (error: unknown) =>
      Schema.is(OrganizationForbidden)(error)
-@@ -757,6 +792,7 @@ export const hostedAppUi = <R = never>(
+@@ -792,6 +827,7 @@
          accountsHref: fix.href,
          parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
          version: version.id,
 +        navigation: current.navigation,
-         asset: (path) => assets(version, path),
+         asset: (path) => (path === "index.html" ? index : assets(version, path)),
        }),
      );
 diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts

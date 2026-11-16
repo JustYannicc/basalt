@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "OAuth grant reuse requires confirmed requested coverage using the host-reviewed scope implication recipe and the saved client, resource and placement. Unknown grants remain unknown; partial consent retains the original account for retry. List and consent paths apply the same configured implications without granting capabilities from display labels."
+    }
+  }
+}

@@ -1,5 +1,6 @@
 diff --git a/apps/hosted/server/src/implementation/app-ui-phase-timing.ts b/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
 new file mode 100644
+index 0000000..a117108
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
 @@ -0,0 +1,75 @@
@@ -79,6 +80,7 @@ new file mode 100644
 +    return yield* handler.pipe(Effect.provideService(Timings, timings));
 +  });
 diff --git a/apps/hosted/server/src/implementation/app-ui-query-timing.ts b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+index 2daa874..00dcdc0 100644
 --- a/apps/hosted/server/src/implementation/app-ui-query-timing.ts
 +++ b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
 @@ -1,6 +1,12 @@
@@ -94,16 +96,17 @@ diff --git a/apps/hosted/server/src/implementation/app-ui-query-timing.ts b/apps
  
  /** Annotate the request span captured before the operation opens any child spans. */
  export const queryPhase = <A, E, R>(phase: QueryPhase, operation: Effect.Effect<A, E, R>) =>
-@@ -31,4 +37,4 @@
+@@ -31,4 +37,4 @@ export const queryPhase = <A, E, R>(phase: QueryPhase, operation: Effect.Effect<
          }),
        ),
      );
 -  });
 +  }).pipe((timed) => appUiPhase(headerPhase[phase], timed));
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+index 392dcfc..bf15de1 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -7,6 +7,7 @@
+@@ -7,6 +7,7 @@ import {
    poolAppUsagePath,
  } from "./pool-app-ui.ts";
  import { queryPhase } from "./app-ui-query-timing.ts";
@@ -111,7 +114,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { visibleAccountStatuses } from "./account-identity.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
-@@ -380,6 +381,7 @@
+@@ -394,6 +395,7 @@ export const hostedAppUi = <R = never>(
      response: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
    ) =>
      response.pipe(
@@ -119,7 +122,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
        Effect.map((value) =>
          addresses.embedded
            ? HttpServerResponse.setHeader(
-@@ -642,7 +644,7 @@
+@@ -659,7 +661,7 @@ export const hostedAppUi = <R = never>(
        request.method === "GET" &&
        (request.headers["sec-fetch-mode"] === "navigate" ||
          request.headers.accept?.includes("text/html"));
@@ -128,7 +131,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
        Effect.map(Option.some),
        // Only a browser navigation starts sign-in; other requests keep the plain 401.
        Effect.catchTag("UiUnauthorized", (error) =>
-@@ -651,12 +653,15 @@
+@@ -668,12 +670,15 @@ export const hostedAppUi = <R = never>(
      );
      if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
      const current = authorized.value;
@@ -149,53 +152,55 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
      if (Option.isSome(file)) return file.value;
      const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
      const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-@@ -672,7 +677,10 @@
-     fix.searchParams.set("view", "accounts");
+@@ -690,7 +695,7 @@ export const hostedAppUi = <R = never>(
      // The page runs with the app's linked accounts and the caller's linked accounts; a plain
      // requirement with none shows what to link.
--    const resolution = yield* callerAccounts(current.app).pipe(
-+    const resolution = yield* appUiPhase(
-+      "document-caller-accounts",
-+      callerAccounts(current.app),
-+    ).pipe(
-       asCaller,
-       Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
-       Effect.catchTag("AccountRequired", (error) =>
-@@ -726,15 +734,21 @@
-       if (problems.length === 0) return undefined;
-       return { app: current.app.name, problems, fix: fix.href };
+     const accountReads = Effect.gen(function* () {
+-      const resolution = yield* callerAccounts(current.app).pipe(
++      const resolution = yield* appUiPhase("document-caller-accounts", callerAccounts(current.app)).pipe(
+         asCaller,
+         Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
+         Effect.catchTag("AccountRequired", (error) =>
+@@ -700,6 +705,7 @@ export const hostedAppUi = <R = never>(
+           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+         ),
+       );
++      return yield* appUiPhase("document-account-notice", Effect.gen(function* () {
+       if (resolution.kind === "missing") {
+         const requirement = current.app.requirements.accounts[resolution.slot];
+         if (requirement === undefined) return yield* unavailable();
+@@ -746,6 +752,7 @@ export const hostedAppUi = <R = never>(
+         accounts: resolution.accounts,
+         notice: problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
+       };
++      }));
      });
+     // The document's read needs only the version and no SQL, so it runs beside the account
+     // reads. Its failure counts only where the document reads it, as before.
+@@ -753,15 +760,15 @@ export const hostedAppUi = <R = never>(
+       [accountReads, Effect.exit(assets(version, "index.html"))],
+       { concurrency: 2 },
+     );
 -    const document = yield* appDocument({
--      // The page names the caller's own accounts; the app's are not theirs to see.
--      accountIds: accounts?.user,
--      accounts: yield* accountNotice,
--      parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
--      version: version.id,
--      asset: (path) => assets(version, path),
++    const document = yield* appUiPhase("document-asset", appDocument({
+       // The page names the caller's own accounts; the app's are not theirs to see.
+       accountIds: accounts?.user,
+       accounts: notice,
+       parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
+       version: version.id,
+       asset: (path) => (path === "index.html" ? index : assets(version, path)),
 -    });
 -    yield* recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }).pipe(
-+    const document = yield* appUiPhase(
-+      "document-asset",
-+      appDocument({
-+        // The page names the caller's own accounts; the app's are not theirs to see.
-+        accountIds: accounts?.user,
-+        accounts: yield* appUiPhase("document-account-notice", accountNotice),
-+        parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
-+        version: version.id,
-+        asset: (path) => assets(version, path),
-+      }),
-+    );
-+    yield* appUiPhase(
-+      "document-usage",
-+      recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }),
-+    ).pipe(
++    }));
++    yield* appUiPhase("document-usage", recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id })).pipe(
        Effect.provideService(CurrentUserId, current.access.userId),
        Effect.provideService(CurrentOrganization, current.access),
        Effect.provideService(CurrentUsage, { source: "app_ui" }),
 diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
+index 53aeb3f..68ef529 100644
 --- a/apps/hosted/server/src/implementation/pool-app-ui.ts
 +++ b/apps/hosted/server/src/implementation/pool-app-ui.ts
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,7 @@ import {
  import { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
  import { PoolUsageSeriesInput } from "../contracts/pool-usage-series.ts";
  import { poolPersonalUsageOverview, poolUsageOverview, poolUsageSeries } from "./pool-usage.ts";
@@ -203,7 +208,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/
  
  export const poolAppUsagePath = "/_executor/api/pool-usage/series";
  export const poolAppUsageOverviewPath = "/_executor/api/pool-usage/overview";
-@@ -79,7 +80,7 @@
+@@ -79,7 +80,7 @@ const appUsageOverview = <E, R>(
    read: typeof poolUsageOverview | typeof poolPersonalUsageOverview,
  ) =>
    Effect.gen(function* () {
@@ -213,9 +218,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/
        return json({ _tag: "UiUnauthorized" }, 401);
      const payload = yield* HttpServerRequest.schemaBodyJson(OverviewRequest).pipe(
 diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+index 1d3ab53..3733048 100644
 --- a/apps/hosted/server/src/implementation/pool-usage-overview.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage-overview.ts
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,7 @@ import { nativePoolMembership } from "./pool-membership.ts";
  import { policyDatabase } from "./resource-policy.ts";
  import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
  import { providers } from "./pool-provider-definitions.ts";
@@ -223,7 +229,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps
  
  const DirectoryPerson = Schema.Struct({
    user: Principal.fields.userId,
-@@ -74,9 +75,10 @@
+@@ -74,9 +75,10 @@ const accountOfferings = (pool: Pick<Pool, "pool" | "organization">) =>
    Effect.gen(function* () {
      const sql = yield* policyDatabase;
      const executor = yield* Effect.flatten(HostedExecutor);
@@ -237,7 +243,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps
      const history = yield* usageSeriesAccounts(pool, undefined);
      const bindingByAccount = new Map<
        string,
-@@ -104,7 +106,7 @@
+@@ -104,7 +106,7 @@ const accountOfferings = (pool: Pick<Pool, "pool" | "organization">) =>
        history.length === nativeAccounts.size &&
        new Set(namedAccounts).size === namedAccounts.length &&
        namedAccounts.every((account) => nativeAccounts.has(account));
@@ -246,7 +252,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps
      const accounts = history.map((entry) => {
        if (entry.account === null) return { ...entry, offering: "unknown" as const };
        const binding = bindingByAccount.get(entry.account);
-@@ -144,24 +146,29 @@
+@@ -144,24 +146,29 @@ export const poolOverviewSignedInput = (pool: Pool, input: PoolOverviewInput) =>
      const users = [...new Set(pool.users)].sort();
      if (users.length > 500) return yield* new StorageError();
      const sql = yield* policyDatabase;
@@ -291,9 +297,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps
  
      const { accounts, mappingProven } = yield* accountOfferings(pool);
 diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+index 693afd2..fe857b7 100644
 --- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
-@@ -7,12 +7,16 @@
+@@ -7,12 +7,16 @@ import { OrganizationForbidden } from "../contracts/organization.ts";
  import { AccountGrants } from "./proofs/account-access.ts";
  import { nativePoolMembership } from "./pool-membership.ts";
  import { policyDatabase } from "./resource-policy.ts";
@@ -314,7 +321,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
    );
  
  const digest = async (value: string) => {
-@@ -52,9 +56,10 @@
+@@ -52,9 +56,10 @@ export const usageSeriesAccounts = (
      const executor = yield* Effect.flatten(HostedExecutor);
      const sql = yield* policyDatabase;
      // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
@@ -328,7 +335,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
      const accounts = [
        ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
      ];
-@@ -64,20 +69,23 @@
+@@ -64,20 +69,23 @@ export const usageSeriesAccounts = (
      const source = yield* Effect.tryPromise(() => digest("home-local-v1")).pipe(
        Effect.mapError(() => new StorageError()),
      );
@@ -367,9 +374,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
      );
    });
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index 29326cb..b3caa8b 100644
 --- a/apps/hosted/server/src/implementation/pool-usage.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
-@@ -24,6 +24,7 @@
+@@ -24,6 +24,7 @@ import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
  import type { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
  import { poolOverviewSignedInput, poolPersonalOverviewOfferings } from "./pool-usage-overview.ts";
  import { HostedExecutor } from "../contracts/executor.ts";
@@ -377,7 +385,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/s
  
  const Pool = Schema.Struct({
    owner: Principal.fields.userId,
-@@ -103,49 +104,58 @@
+@@ -103,49 +104,58 @@ const withPool = <A, E, R>(
  ) =>
    Effect.gen(function* () {
      const sql = yield* policyDatabase;
@@ -474,7 +482,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/s
      );
    });
  
-@@ -289,15 +299,18 @@
+@@ -289,15 +299,18 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
    withPool(app, (pool) =>
      Effect.gen(function* () {
        const signedInput = yield* poolOverviewSignedInput(pool, input);
@@ -504,6 +512,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/s
    ).pipe(
 diff --git a/e2e/support/app-phase-timings.ts b/e2e/support/app-phase-timings.ts
 new file mode 100644
+index 0000000..72d56fb
 --- /dev/null
 +++ b/e2e/support/app-phase-timings.ts
 @@ -0,0 +1,22 @@
@@ -530,9 +539,10 @@ new file mode 100644
 +  return result;
 +};
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 2e07baf..78fed2b 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -6866,6 +6866,24 @@
+@@ -7664,6 +7664,24 @@ export const scenarios = plan({
        ),
      },
    },
@@ -559,6 +569,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      file: "app-query-timing.spec.ts",
 diff --git a/e2e/tests/app-ui-phase-headers.spec.ts b/e2e/tests/app-ui-phase-headers.spec.ts
 new file mode 100644
+index 0000000..4d6438e
 --- /dev/null
 +++ b/e2e/tests/app-ui-phase-headers.spec.ts
 @@ -0,0 +1,130 @@
@@ -693,9 +704,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+index 05b6f5d..7e28c8e 100644
 --- a/e2e/tests/pool-usage-series.spec.ts
 +++ b/e2e/tests/pool-usage-series.spec.ts
-@@ -14,6 +14,8 @@
+@@ -14,6 +14,8 @@ import { legacyStorage } from "../support/legacy-storage.ts";
  import { poolUsageSeriesBackend } from "../support/pool-usage-series-backend.ts";
  import { serverControl } from "../support/server-control.ts";
  import { scenarios } from "../test-plan.ts";
@@ -704,7 +716,7 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
  
  const source = `import {defineApp,query,object,router} from "apps";
  export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
-@@ -198,6 +200,7 @@
+@@ -198,6 +200,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
                  response.text.pipe(
                    Effect.map((text) => ({
                      status: response.status,
@@ -712,7 +724,7 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
                      location: response.headers.location,
                      cookies: response.cookies,
                      text,
-@@ -275,6 +278,7 @@
+@@ -275,6 +278,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
          const memberPerson = personHash(memberIdentity.userId);
          expect(memberPerson).not.toBe(ownerPerson);
          yield* backend.respond((assertion) => {
@@ -720,7 +732,7 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
            if (assertion.action !== "poolPersonalOverview") return {};
            return {
              person: Schema.decodeUnknownSync(PersonalInput)(assertion.input).person,
-@@ -303,6 +307,27 @@
+@@ -303,6 +307,27 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
            },
          });
  
@@ -748,7 +760,7 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
          const memberResponse = yield* postApp(memberApp, personalPath, attack(ownerIdentity));
          expect(memberResponse.status).toBe(200);
          expect(
-@@ -385,6 +410,17 @@
+@@ -385,6 +410,17 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
          });
          expect(managerOverview.status).toBe(403);
          expect((yield* backend.calls).length).toBe(beforeRejected);

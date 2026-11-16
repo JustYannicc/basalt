@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Manual OAuth forms with structured setup guidance display the exact registration deferral as readable text beside that guidance only when no automatic, registered or current client is usable. Available registration and other OAuth paths retain their existing guidance and layout."
+    }
+  }
+}

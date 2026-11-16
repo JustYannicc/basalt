@@ -28,7 +28,7 @@ export const seed = ({
       "alter table executor_apps add column active_deployment text",
       "create table executor_deployments (id text primary key, requirements json)",
       "create table hosted_account_access (account_id text primary key, organization_id text, kind text, personal_user_id text)",
-      "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz)",
+      "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz, linked_by text default 'owner')",
       "create table executor_accounts (id text primary key, owner text, provider text, method text, credential_generation integer, encrypted_credentials bytea)",
       "create table executor_account_acquisitions (account text primary key, owner text, provider text, method text, generation integer, driver text, driver_revision text, revision text, removal jsonb, mirror_ready boolean, mirror_reference bytea)",
     ])
@@ -45,7 +45,6 @@ export const seed = ({
     }
     if (hosted) {
       yield* sql`alter table hosted_account_access add column audience text default 'everyone'`;
-      yield* sql`alter table hosted_app_account_links add column linked_by text default 'owner'`;
       yield* sql`create table hosted_account_groups (account_id text, group_id text)`;
       const { migrateContributedDepartures } = yield* Effect.promise(
         () =>

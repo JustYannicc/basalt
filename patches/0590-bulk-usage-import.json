@@ -1,7 +1,7 @@
 {
   "identity": "basalt-bulk-usage-import",
   "file": "0590-bulk-usage-import.patch",
-  "content_sha256": "8c471fd0b47e0dbec2487360fa06ad3a48eacef16080f3bd87832e926c39df53",
+  "content_sha256": "a4f3a5e340413fbb4d41250cba64144429b3fbd4ad254e4d1cf197dcdb05099c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

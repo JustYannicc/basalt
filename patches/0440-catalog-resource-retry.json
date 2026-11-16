@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-resource-retry",
   "file": "0440-catalog-resource-retry.patch",
-  "content_sha256": "f7d87f7a1ff9c721f85435fa2e04227fe060a8ee2176a9a4d985bbd628bd20a3",
+  "content_sha256": "421f8985fd1deb0b8b3efe446fd2d712fa6996f6e646891aba161fd8c04157ed",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

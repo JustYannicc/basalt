@@ -136,7 +136,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
 @@ -466,7 +526,7 @@
        ...(yield* cloudObservability),
        workersDev: false,
-       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
 -      env: yield* telemetryBindings,
 +      env: { ...(yield* telemetryBindings), ...(yield* bulkImportEnvironment) },
      };

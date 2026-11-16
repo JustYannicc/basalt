@@ -1,16 +1,16 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..88b5470b51f73071e96aea9c8e230c0139dd2e73 100644
+index a7dba56..0679b3a 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -9,6 +9,7 @@ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+@@ -15,6 +15,7 @@ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
  import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
  import { poolAccountRegistry } from "@executor-js/hosted-server/pool-account-registry";
  import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 +import { makeHostedBackgroundWork } from "@executor-js/hosted-server/background-work";
  import {
    createExecutor,
-   httpEventSender,
-@@ -19,7 +20,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+   declarationConfig,
+@@ -26,7 +27,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
  import { SqlClient } from "effect/sql";
  import { makeBatchExecutionMemo } from "./batch-execution.ts";
  import * as Cloudflare from "alchemy/Cloudflare";
@@ -19,7 +19,7 @@ index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..88b5470b51f73071e96aea9c8e230c01
  import { cachedVersionSources } from "../implementation/version-source-cache.ts";
  import { organizationPublishers } from "../implementation/publishers.ts";
  import type { AppSources } from "./source.ts";
-@@ -107,25 +108,12 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -130,25 +131,12 @@ export const cloudExecutor = Effect.fn(function* (
        const storage = yield* makeExecutorRuntimeStorage({ provider: "postgresql" }).pipe(
          Effect.provideContext(services),
        );
@@ -47,7 +47,7 @@ index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..88b5470b51f73071e96aea9c8e230c01
        const lifecycle = yield* hostedResourceLifecycle.pipe(
          Effect.provide(BrowserCrypto.layer),
          Effect.provideService(AccessLifecycle, accessLifecycle),
-@@ -140,7 +128,7 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -163,7 +151,7 @@ export const cloudExecutor = Effect.fn(function* (
          webhookOrigin,
          git: appSources(background),
          blobs: yield* cachedVersionSources(origin, blobs),
@@ -57,7 +57,7 @@ index 3df7ef9b517d87aabc759f27c2b2573a6a19d7ae..88b5470b51f73071e96aea9c8e230c01
          // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
          workflowInputUrl: ({ owner, app, id }) =>
 diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
-index 177741ec2d78a45d740be54afa077d210095395b..0c7401d92e8ae1cd527df908049ec987e9b376a4 100644
+index 74af533..897bfd9 100644
 --- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 @@ -13,6 +13,7 @@ import {
@@ -68,7 +68,7 @@ index 177741ec2d78a45d740be54afa077d210095395b..0c7401d92e8ae1cd527df908049ec987
  
  /**
   * Connections one Worker event may hold. The pool opens them on demand and reuses an idle one,
-@@ -54,7 +55,15 @@ export const cloudInvocationDatabase = Layer.effect(
+@@ -55,7 +56,15 @@ export const cloudInvocationDatabase = Layer.effect(
            scope: reservations,
            retire: Effect.void,
          });
@@ -86,7 +86,7 @@ index 177741ec2d78a45d740be54afa077d210095395b..0c7401d92e8ae1cd527df908049ec987
    }),
  );
 diff --git a/apps/hosted/self-host/src/implementation/database-schema.ts b/apps/hosted/self-host/src/implementation/database-schema.ts
-index 5a3051ad690220d4692d85159a57701375da05b6..93a448399c5ddf61a6599c26c025279b4438b467 100644
+index 5a3051a..93a4483 100644
 --- a/apps/hosted/self-host/src/implementation/database-schema.ts
 +++ b/apps/hosted/self-host/src/implementation/database-schema.ts
 @@ -1,7 +1,9 @@
@@ -108,10 +108,10 @@ index 5a3051ad690220d4692d85159a57701375da05b6..93a448399c5ddf61a6599c26c025279b
    }),
  );
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 7ebe7ac3ecf4384cbde87d92b92226129a885e8a..9b6eefeb0675b46c3aab8cfc9508d820b0c46c40 100644
+index 838508c..a58b57a 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -44,6 +44,7 @@ import {
+@@ -46,6 +46,7 @@ import {
  } from "@executor-js/hosted-server";
  import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
  import { hostedEventAuthority } from "@executor-js/hosted-server/events";
@@ -119,7 +119,7 @@ index 7ebe7ac3ecf4384cbde87d92b92226129a885e8a..9b6eefeb0675b46c3aab8cfc9508d820
  import { deliverEvents } from "@executor-js/sdk/scheduling";
  import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
  import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
-@@ -54,7 +55,7 @@ import {
+@@ -56,7 +57,7 @@ import {
    type BlobStorage,
    type WorkflowRuntime,
  } from "@executor-js/sdk/core";
@@ -128,7 +128,7 @@ index 7ebe7ac3ecf4384cbde87d92b92226129a885e8a..9b6eefeb0675b46c3aab8cfc9508d820
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import {
    retainConnections,
-@@ -105,11 +106,11 @@ export const selfHostExecutorServices = <E, R>(
+@@ -107,11 +108,11 @@ export const selfHostExecutorServices = <E, R>(
        });
        const storage = yield* makeExecutorStorage({ provider: "postgresql" });
        const evaluation = yield* declarationConfig;
@@ -141,10 +141,10 @@ index 7ebe7ac3ecf4384cbde87d92b92226129a885e8a..9b6eefeb0675b46c3aab8cfc9508d820
        const registry = remoteRegistry(
          yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
            Config.withDefault(hostedExecutorOrigin),
-@@ -161,8 +162,7 @@ export const selfHostExecutorServices = <E, R>(
-           durable: declarations,
+@@ -169,8 +170,7 @@ export const selfHostExecutorServices = <E, R>(
            toolListings: evaluation.toolListings,
          },
+         hostApi: hostedApi([origin], revision),
 -        // Stale declarations refresh on the server's own lifetime.
 -        background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
 +        background,
@@ -152,7 +152,7 @@ index 7ebe7ac3ecf4384cbde87d92b92226129a885e8a..9b6eefeb0675b46c3aab8cfc9508d820
            sender: httpEventSender(egress),
            authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 9a7b3d0e4542648299eb8b6b417e8d9ba0ed201c..197d281fae359ffb6bbff6f575918102214845dd 100644
+index af864b5..72dc646 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -4,6 +4,8 @@
@@ -165,7 +165,7 @@ index 9a7b3d0e4542648299eb8b6b417e8d9ba0ed201c..197d281fae359ffb6bbff6f575918102
      "./contributed-departures": "./src/implementation/contributed-departure-queue.ts",
      "./connection-retention": "./src/implementation/connection-retention.ts",
 diff --git a/apps/hosted/server/src/implementation/app-link-policy.ts b/apps/hosted/server/src/implementation/app-link-policy.ts
-index c51414f92079c5b3001edd089ced8808e1eda64c..6059a901434d7898f04e71f4caf1174d4043b3ca 100644
+index 7e31a46..0bcf61b 100644
 --- a/apps/hosted/server/src/implementation/app-link-policy.ts
 +++ b/apps/hosted/server/src/implementation/app-link-policy.ts
 @@ -1,23 +1,27 @@
@@ -204,7 +204,7 @@ index c51414f92079c5b3001edd089ced8808e1eda64c..6059a901434d7898f04e71f4caf1174d
                  and revoked.account = l.account and revoked.linked_at = l.created_at)))`;
 diff --git a/apps/hosted/server/src/implementation/app-link-schema.ts b/apps/hosted/server/src/implementation/app-link-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7672798898edaa7d5899f4ba717e6056dc575000
+index 0000000..7672798
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/app-link-schema.ts
 @@ -0,0 +1,12 @@
@@ -222,7 +222,7 @@ index 0000000000000000000000000000000000000000..7672798898edaa7d5899f4ba717e6056
 +  contributedSchemas.has(sql);
 diff --git a/apps/hosted/server/src/implementation/background-work.ts b/apps/hosted/server/src/implementation/background-work.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b5b60eeefe7ebfb15d6a5587c718c7ca80d574b
+index 0000000..1b5b60e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/background-work.ts
 @@ -0,0 +1,26 @@
@@ -253,7 +253,7 @@ index 0000000000000000000000000000000000000000..1b5b60eeefe7ebfb15d6a5587c718c7c
 +    )) satisfies BackgroundWork;
 +});
 diff --git a/apps/hosted/testing/self-host.ts b/apps/hosted/testing/self-host.ts
-index 63d2e5848885e198c4fcc0470443ca1a43107c0f..0df8ea50cb2e5de5cfcd1288107c048f68260573 100644
+index a304c14..a060932 100644
 --- a/apps/hosted/testing/self-host.ts
 +++ b/apps/hosted/testing/self-host.ts
 @@ -3,7 +3,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
@@ -265,9 +265,9 @@ index 63d2e5848885e198c4fcc0470443ca1a43107c0f..0df8ea50cb2e5de5cfcd1288107c048f
  import { CliError, Command, Flag } from "effect/cli";
  import { HttpRouter } from "effect/http";
  import * as Statement from "effect/sql/Statement";
-@@ -16,6 +16,11 @@ import { accessCheckFixture } from "./access-check-fixture.ts";
- import { statementHoldFixture } from "./statement-hold-fixture.ts";
+@@ -17,6 +17,11 @@ import { statementHoldFixture } from "./statement-hold-fixture.ts";
  import { storageFaultFixture } from "./storage-fault-fixture.ts";
+ import { apiDocumentFixture } from "./api-document-fixture.ts";
  
 +let releaseAccounting = Effect.void;
 +process.on("executor:test:accounting-release", () => {
@@ -277,15 +277,15 @@ index 63d2e5848885e198c4fcc0470443ca1a43107c0f..0df8ea50cb2e5de5cfcd1288107c048f
  /**
   * Zero-config defaults; explicit settings win. The hostname is per checkout so browser
   * cookies stay separate, the port is free for this run, and the self-host bootstrap keeps
-@@ -54,6 +59,7 @@ const command = Command.make("test-self-host", {
+@@ -55,6 +60,7 @@ const command = Command.make("test-self-host", {
            const development = yield* developmentSignIn(target, organization);
            const statementHold = yield* statementHoldFixture;
-           const product = yield* statementHold.provide(selfHostRoutes);
+           const product = yield* storageFault.provide(statementHold.provide(selfHostRoutes));
 +          releaseAccounting = statementHold.releaseOnShutdown;
            const routes = Layer.mergeAll(
              HttpRouter.add("GET", "/api/devtools", development.status),
              HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
-@@ -91,6 +97,7 @@ const command = Command.make("test-self-host", {
+@@ -93,6 +99,7 @@ const command = Command.make("test-self-host", {
  BunRuntime.runMain(
    Command.run(command, { version: "0.0.0" }).pipe(
      Effect.provide(BunServices.layer),
@@ -294,7 +294,7 @@ index 63d2e5848885e198c4fcc0470443ca1a43107c0f..0df8ea50cb2e5de5cfcd1288107c048f
        CliError.isCliError(error)
          ? Effect.fail(error)
 diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing/statement-hold-fixture.ts
-index 9d292361ae4361ef975b538e7c24387aa6ae667d..579ed9ba938fa43a2630737384b1e63ef787c7ee 100644
+index 9d29236..579ed9b 100644
 --- a/apps/hosted/testing/statement-hold-fixture.ts
 +++ b/apps/hosted/testing/statement-hold-fixture.ts
 @@ -46,6 +46,11 @@ const Arm = Schema.Union([
@@ -397,7 +397,7 @@ index 9d292361ae4361ef975b538e7c24387aa6ae667d..579ed9ba938fa43a2630737384b1e63e
    };
  });
 diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
-index 4962842419ead4407ae76db441ea0eeb0ca110e1..3f31cd9c3125f453991ebb89adf69aee8a62a9e8 100644
+index 4962842..3f31cd9 100644
 --- a/e2e/support/account-target-sdk-source.ts
 +++ b/e2e/support/account-target-sdk-source.ts
 @@ -32,6 +32,9 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
@@ -420,7 +420,7 @@ index 4962842419ead4407ae76db441ea0eeb0ca110e1..3f31cd9c3125f453991ebb89adf69aee
    );
 diff --git a/e2e/support/account-tool-accounting.ts b/e2e/support/account-tool-accounting.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..189f1523d454d4dfb0e16d9957d8fe0c91764425
+index 0000000..189f152
 --- /dev/null
 +++ b/e2e/support/account-tool-accounting.ts
 @@ -0,0 +1,167 @@
@@ -592,7 +592,7 @@ index 0000000000000000000000000000000000000000..189f1523d454d4dfb0e16d9957d8fe0c
 +      ),
 +    );
 diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
-index f457ce49f318f7be398de680d468430fe9cea2cb..0bf3be3642a3d7d3f2ad20963d0e6c8d7ffc5bbc 100644
+index f457ce4..0bf3be3 100644
 --- a/e2e/support/data-query-batch.ts
 +++ b/e2e/support/data-query-batch.ts
 @@ -150,7 +150,12 @@ export const assertDataQueryBatch = (
@@ -610,7 +610,7 @@ index f457ce49f318f7be398de680d468430fe9cea2cb..0bf3be3642a3d7d3f2ad20963d0e6c8d
      ).toHaveLength(1);
      expect(
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92e6807b89 100644
+index 549dd16..647817c 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -155,6 +155,7 @@ export const startManagedServer = (
@@ -621,7 +621,7 @@ index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92
      /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
      let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
      const env = {
-@@ -244,6 +245,8 @@ export const startManagedServer = (
+@@ -246,6 +247,8 @@ export const startManagedServer = (
        if (current !== undefined) return;
        const scope = yield* Scope.make();
        current = scope;
@@ -630,7 +630,7 @@ index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92
        yield* Effect.gen(function* () {
          // Self-host runs under Bun, which loads the runner's hooks as preloads. The local CLI owns
          // the same hooks (see e2e-process.ts): a release executable runs no preload.
-@@ -344,6 +347,8 @@ export const startManagedServer = (
+@@ -346,6 +349,8 @@ export const startManagedServer = (
                );
                const clock = /^Executor test clock: (\d+)$/.exec(line);
                if (clock !== null) confirmedOffset = Number(clock[1]);
@@ -639,7 +639,7 @@ index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92
                if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
                  origin = line.slice("Executor: ".length);
                  // A scenario may need a named same-site dashboard for embedded app cookies.
-@@ -574,6 +579,40 @@ export const startManagedServer = (
+@@ -576,6 +581,40 @@ export const startManagedServer = (
        HttpRouter.add("POST", "/stop", control("stop")),
        HttpRouter.add("POST", "/restart", control("restart")),
        HttpRouter.add("POST", "/kill", control("kill")),
@@ -681,7 +681,7 @@ index bca5c030ff3b6676ead2d52ac14bd91795cb006b..2eabe1042d53c4220ec3e84c822e0e92
      const services = yield* Layer.build(
        Layer.fresh(
 diff --git a/e2e/support/server-control.ts b/e2e/support/server-control.ts
-index fc6fb9ff89dc00e60c222b384074b68776dc8a94..c2208536828192c7fc851e8c0e29eb0f509b0289 100644
+index fc6fb9f..c220853 100644
 --- a/e2e/support/server-control.ts
 +++ b/e2e/support/server-control.ts
 @@ -55,7 +55,16 @@ export const controlRequest = (path: string, expectedStatus: number, body?: unkn
@@ -703,7 +703,7 @@ index fc6fb9ff89dc00e60c222b384074b68776dc8a94..c2208536828192c7fc851e8c0e29eb0f
    body?:
      | { readonly milliseconds: number }
 diff --git a/e2e/support/wall-clock.mjs b/e2e/support/wall-clock.mjs
-index ea72a1b17f99ea641d5fe98c4b215622d320738d..e7753a1a2db4f85dc2fdebe611526c3f428fc2a4 100644
+index ea72a1b..e7753a1 100644
 --- a/e2e/support/wall-clock.mjs
 +++ b/e2e/support/wall-clock.mjs
 @@ -23,6 +23,7 @@ if (process.env.EXECUTOR_TEST_CLOCK_CONTROL === "stdin") {
@@ -715,7 +715,7 @@ index ea72a1b17f99ea641d5fe98c4b215622d320738d..e7753a1a2db4f85dc2fdebe611526c3f
        if (match === null) continue;
        offset = Math.max(offset, parse(match[1]));
 diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
-index d0c8a8a4f357b2c3916a51c47eed99b22db17601..718c5e339e22b73d991d08fe1339292c005ecfcf 100644
+index d0c8a8a..718c5e3 100644
 --- a/e2e/tests/account-targets.spec.ts
 +++ b/e2e/tests/account-targets.spec.ts
 @@ -41,6 +41,15 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
@@ -736,7 +736,7 @@ index d0c8a8a4f357b2c3916a51c47eed99b22db17601..718c5e339e22b73d991d08fe1339292c
          expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 diff --git a/e2e/tests/account-tool-accounting.spec.ts b/e2e/tests/account-tool-accounting.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f7ce5a60342381b1c59fbeac8ba8c0e15359d8a0
+index 0000000..f7ce5a6
 --- /dev/null
 +++ b/e2e/tests/account-tool-accounting.spec.ts
 @@ -0,0 +1,141 @@
@@ -882,7 +882,7 @@ index 0000000000000000000000000000000000000000..f7ce5a60342381b1c59fbeac8ba8c0e1
 +  );
 +});
 diff --git a/e2e/tests/account-tool-calls.spec.ts b/e2e/tests/account-tool-calls.spec.ts
-index 098f5dc2abd3441d0bfd72cc24879f4f31533c95..7f362f452831f5fee721abf77f8c76280c45b6e7 100644
+index 098f5dc..7f362f4 100644
 --- a/e2e/tests/account-tool-calls.spec.ts
 +++ b/e2e/tests/account-tool-calls.spec.ts
 @@ -6,7 +6,8 @@ import { scenarios } from "../test-plan.ts";
@@ -925,7 +925,7 @@ index 098f5dc2abd3441d0bfd72cc24879f4f31533c95..7f362f452831f5fee721abf77f8c7628
          const owned = yield* read(actors.owner);
 diff --git a/e2e/tests/cloud-account-tool-accounting.spec.ts b/e2e/tests/cloud-account-tool-accounting.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fb986f765e72877d8ee1a2ef268df3f50a5a3211
+index 0000000..fb986f7
 --- /dev/null
 +++ b/e2e/tests/cloud-account-tool-accounting.spec.ts
 @@ -0,0 +1,73 @@
@@ -1004,7 +1004,7 @@ index 0000000000000000000000000000000000000000..fb986f765e72877d8ee1a2ef268df3f5
 +);
 diff --git a/packages/sdk/src/implementation/account-target-read.ts b/packages/sdk/src/implementation/account-target-read.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..84cc77f2b301b40be5b428e39d32b5e7dabdb20c
+index 0000000..84cc77f
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-target-read.ts
 @@ -0,0 +1,36 @@
@@ -1045,7 +1045,7 @@ index 0000000000000000000000000000000000000000..84cc77f2b301b40be5b428e39d32b5e7
 +        Effect.mapError(() => new StorageError()),
 +      );
 diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
-index 696dafd155df9cbf458a3a08080fc66226ebe57e..9e738a1a9ee6d691110a486ec854cc09cee2ca76 100644
+index 696dafd..9e738a1 100644
 --- a/packages/sdk/src/implementation/account-targets.ts
 +++ b/packages/sdk/src/implementation/account-targets.ts
 @@ -11,6 +11,7 @@ import {
@@ -1103,7 +1103,7 @@ index 696dafd155df9cbf458a3a08080fc66226ebe57e..9e738a1a9ee6d691110a486ec854cc09
          .filter((binding) => binding.mode === "device");
 diff --git a/packages/sdk/src/implementation/account-tool-traffic.ts b/packages/sdk/src/implementation/account-tool-traffic.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e19f9526db661281864bbec7c380756c72cd3f8
+index 0000000..5e19f95
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-tool-traffic.ts
 @@ -0,0 +1,86 @@
@@ -1194,7 +1194,7 @@ index 0000000000000000000000000000000000000000..5e19f9526db661281864bbec7c380756
 +      });
 +    });
 diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
-index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..effa11eae7e016ddceb9dc764e61460459cb1431 100644
+index 1f2736a..effa11e 100644
 --- a/packages/sdk/src/implementation/account-traffic-store.ts
 +++ b/packages/sdk/src/implementation/account-traffic-store.ts
 @@ -40,18 +40,23 @@ const sqlState = (error: unknown) => {
@@ -1239,10 +1239,10 @@ index 1f2736af6a2d677a07ba2abf89b5e172ecfcc0c4..effa11eae7e016ddceb9dc764e614604
              safe,
            ),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 38f5f95fa16a7aa40c4ae48aead676a35f23d77c..a7c100863730b86ef22f58ebab6eeacd0d0de761 100644
+index 1511717..cf9e110 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -413,6 +413,7 @@ export const createExecutor = (
+@@ -433,6 +433,7 @@ export const createExecutor = (
        makeAppConfirmations(db, appConnectionStore, options.appCalls),
        options.toolPolicy,
        accountTargets,
@@ -1251,10 +1251,10 @@ index 38f5f95fa16a7aa40c4ae48aead676a35f23d77c..a7c100863730b86ef22f58ebab6eeacd
      const interactiveOperations = makeInteractiveAccounts(
        db,
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 14fe074c20a173dfd56b08d0bdc3c0746a86e56d..85599196d709132961561b045e3bb402b2adaedb 100644
+index 7dfe918..40b0373 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -9,6 +9,7 @@ export type Query = ReturnType<typeof database>;
+@@ -11,6 +11,7 @@ export type Query = ReturnType<typeof database>;
  export const database = (storage: ExecutorRuntimeDatabase) => ({
    ...storage.orm("4.0.28"),
    lockAccountObservation: storage.lockAccountObservation,
@@ -1264,7 +1264,7 @@ index 14fe074c20a173dfd56b08d0bdc3c0746a86e56d..85599196d709132961561b045e3bb402
  /**
 diff --git a/packages/sdk/src/implementation/selection-account-store.ts b/packages/sdk/src/implementation/selection-account-store.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..48ef76c6677f7d5c2f3896bbdee84db0363500fc
+index 0000000..48ef76c
 --- /dev/null
 +++ b/packages/sdk/src/implementation/selection-account-store.ts
 @@ -0,0 +1,35 @@
@@ -1304,7 +1304,7 @@ index 0000000000000000000000000000000000000000..48ef76c6677f7d5c2f3896bbdee84db0
 +          ),
 +        );
 diff --git a/packages/sdk/src/implementation/selection.ts b/packages/sdk/src/implementation/selection.ts
-index 02ec4994aa8ac470a32c36fae6719edf7790edf2..a47dc5fe79efd9069ad02fdd4436672865b9b470 100644
+index 02ec499..a47dc5f 100644
 --- a/packages/sdk/src/implementation/selection.ts
 +++ b/packages/sdk/src/implementation/selection.ts
 @@ -13,7 +13,8 @@ import { AccountNotFound } from "../contracts/account.ts";
@@ -1368,7 +1368,7 @@ index 02ec4994aa8ac470a32c36fae6719edf7790edf2..a47dc5fe79efd9069ad02fdd44366728
  
  /** A selection as the accounts it names, by scope; without a caller it names no `user`. */
 diff --git a/packages/sdk/src/implementation/storage-runtime.ts b/packages/sdk/src/implementation/storage-runtime.ts
-index c2d0b318383c23cba9cdc68d602e0a89ae96ccb9..f5d0b4c4d1610fd3c797e321f92cc58ebd3b4352 100644
+index c2d0b31..f5d0b4c 100644
 --- a/packages/sdk/src/implementation/storage-runtime.ts
 +++ b/packages/sdk/src/implementation/storage-runtime.ts
 @@ -10,6 +10,7 @@ import { currentStorageSchema } from "./storage-current.ts";
@@ -1388,7 +1388,7 @@ index c2d0b318383c23cba9cdc68d602e0a89ae96ccb9..f5d0b4c4d1610fd3c797e321f92cc58e
    });
  
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e771ac0bff 100644
+index f951935..ba7132d 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -19,7 +19,6 @@ import {
@@ -1399,17 +1399,17 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
    Redacted,
    Result,
    Schema,
-@@ -54,7 +53,8 @@ import {
-   type ResourceLifecycle,
- } from "../contracts/executor.ts";
- import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
+@@ -60,7 +59,8 @@ import {
+   type CallFailureSource,
+   type Runtime,
+ } from "../contracts/runtime.ts";
 -import { accountTrafficNotCounted } from "./account-traffic-store.ts";
 +import { makeToolCallAccounting } from "./account-tool-traffic.ts";
 +import type { BackgroundWork } from "../contracts/declarations.ts";
  import {
    Cursor,
    ToolName,
-@@ -207,7 +207,7 @@ export function snapshot(
+@@ -243,7 +243,7 @@ export function snapshot(
            : yield* Schema.decodeUnknownEffect(StoredVersion)(row.deployment).pipe(
                Effect.mapError(() => new StorageError()),
              );
@@ -1418,7 +1418,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
        db,
        app.id,
        version,
-@@ -221,7 +221,7 @@ export function snapshot(
+@@ -257,7 +257,7 @@ export function snapshot(
        ahead?.accounts,
        input.connecting,
      );
@@ -1427,7 +1427,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
    });
  }
  
-@@ -776,14 +776,6 @@ const summarizeTool = ({
+@@ -867,14 +867,6 @@ const summarizeTool = ({
    ...summary
  }: Tool): ToolSummary => summary;
  
@@ -1442,7 +1442,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
  /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
  export const makeTools = (
    storage: ExecutorRuntimeDatabase,
-@@ -804,6 +796,7 @@ export const makeTools = (
+@@ -896,6 +888,7 @@ export const makeTools = (
      ReturnType<typeof import("./account-targets.ts").makeAccountTargets>,
      "requireCloudCall" | "requireCloud"
    >,
@@ -1450,7 +1450,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
  ) => {
    const db = database(storage);
    const toolControls = (state: InvocationSnapshot) => {
-@@ -819,51 +812,7 @@ export const makeTools = (
+@@ -911,51 +904,7 @@ export const makeTools = (
    };
    const resolveAccount = oauth.resolveSelected;
    const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
@@ -1503,7 +1503,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
    /** Renew an account the service refused without repeating what it refused; undefined when none was. */
    const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
      renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
-@@ -1665,6 +1614,7 @@ export const makeTools = (
+@@ -1813,6 +1762,7 @@ export const makeTools = (
          // Machine-bound accounts never enter cloud app code or credential resolution.
          yield* (
            accountTargets?.requireCloudCall({
@@ -1511,7 +1511,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
              accounts: distinctSelection(state).map(({ account }) => ({
                id: account.id,
                owner: account.owner,
-@@ -1823,7 +1773,10 @@ export const makeTools = (
+@@ -1983,7 +1933,10 @@ export const makeTools = (
                  ),
            ),
            Effect.provideService(AppCodeEntered, appCode),
@@ -1523,7 +1523,7 @@ index 54a941708a93f2d975f142d3c91d9c5547f17394..cce4b1947bff64157d5b66766082a7e7
          );
        }).pipe(Effect.withSpan("sdk.tools.call")),
      pruneApprovals: (input: Parameters<Executor["tools"]["pruneApprovals"]>[0] = {}) =>
-@@ -2022,7 +1975,10 @@ export const makeTools = (
+@@ -2191,7 +2144,10 @@ export const makeTools = (
                          enteredApp = true;
                        },
                      }),

@@ -7,7 +7,6 @@ import {
   activeSteps,
   shellCommands,
   expandedRuns,
-  commandWords,
   executedArgv,
   selectorAssigned,
   groupSelectors,
@@ -96,7 +95,7 @@ export function coverageInventory(
       (config) =>
         activeSteps(workflow.jobs[config.job]).some((step) =>
           shellCommands(step.run).some((command) => {
-            const words = commandWords(command);
+            const words = delegatedCommand(command);
             if (
               words[0] !== "bunx" ||
               words[1] !== "vitest" ||

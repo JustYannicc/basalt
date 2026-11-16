@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+index e068aa6..66be9f9 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
-@@ -27,7 +27,6 @@
+@@ -27,7 +27,6 @@ import {
    InsertQueryNode,
    Kysely,
    PostgresAdapter,
@@ -9,7 +10,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted
    PostgresQueryCompiler,
    SelectQueryNode,
    TableNode,
-@@ -548,7 +547,10 @@
+@@ -548,7 +547,10 @@ const timedAuthDatabase = (nextSavepoint: () => string) => {
      dialect: {
        createDriver: () => invocationDriver(nextSavepoint),
        createAdapter: () => new PostgresAdapter(),
@@ -22,19 +23,20 @@ diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted
      },
      plugins: [
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 0996cb9..a7dba56 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -3,7 +3,7 @@
+@@ -3,7 +3,7 @@ import { cloudEgress } from "./egress.ts";
  export { cloudEgress } from "./egress.ts";
  /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
  import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 -import { makeRegistryStorage } from "@executor-js/app-registry";
 +import { makeRegistryRuntimeStorage } from "@executor-js/app-registry";
- import { firstPartyOAuthClients } from "@executor-js/hosted-server";
- import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
- import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
-@@ -13,7 +13,7 @@
-   createExecutor,
+ import {
+   firstPartyOAuthClients,
+   hostedApi,
+@@ -20,7 +20,7 @@ import {
+   declarationConfig,
    httpEventSender,
    StorageError,
 -  makeExecutorStorage,
@@ -42,7 +44,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/clou
  } from "@executor-js/sdk/core";
  import { hostedEventAuthority } from "@executor-js/hosted-server/events";
  import { SqlClient } from "effect/sql";
-@@ -104,7 +104,7 @@
+@@ -127,7 +127,7 @@ export const cloudExecutor = Effect.fn(function* (
      Effect.gen(function* () {
        const key = yield* secrets.encryptionKey;
        const services = yield* database;
@@ -51,7 +53,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/clou
          Effect.provideContext(services),
        );
        // Stale metadata refreshes and tool listings nobody waits for run beside the request, inside
-@@ -146,7 +146,7 @@
+@@ -169,7 +169,7 @@ export const cloudExecutor = Effect.fn(function* (
          workflowInputUrl: ({ owner, app, id }) =>
            `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
          registry: {
@@ -61,9 +63,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/clou
            ),
            publishing,
 diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
+index ad8503d..3e5b67b 100644
 --- a/e2e/tests/mcp-server.spec.ts
 +++ b/e2e/tests/mcp-server.spec.ts
-@@ -84,6 +84,7 @@
+@@ -84,6 +84,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
          );
          expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
            "app-callback",
@@ -71,7 +74,7 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
            "app-resource",
            "call",
            "describe",
-@@ -203,6 +204,7 @@
+@@ -203,6 +204,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
          );
          expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
            "app-callback",
@@ -81,6 +84,7 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
            "describe",
 diff --git a/packages/app-registry/src/implementation/storage-runtime.ts b/packages/app-registry/src/implementation/storage-runtime.ts
 new file mode 100644
+index 0000000..cc12896
 --- /dev/null
 +++ b/packages/app-registry/src/implementation/storage-runtime.ts
 @@ -0,0 +1,190 @@
@@ -275,9 +279,10 @@ new file mode 100644
 +    };
 +  });
 diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-registry/src/implementation/storage.ts
+index 13c0fc4..f736efe 100644
 --- a/packages/app-registry/src/implementation/storage.ts
 +++ b/packages/app-registry/src/implementation/storage.ts
-@@ -8,30 +8,19 @@
+@@ -8,30 +8,19 @@ import {
    AppId,
    OwnerId,
    PackageName,
@@ -315,7 +320,7 @@ diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-
  
  const legacy = schema({
    version: "1.0.0",
-@@ -49,35 +38,8 @@
+@@ -49,35 +38,8 @@ const legacy = schema({
      }),
    },
  });
@@ -351,11 +356,10 @@ diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-
  const LegacyListing = Schema.Struct({
    name: PackageName,
    owner: OwnerId,
-@@ -85,19 +47,6 @@
-   publication: Schema.Union([Schema.fromJsonString(Release), Release]),
+@@ -86,19 +48,6 @@ const LegacyListing = Schema.Struct({
    source: Schema.Union([Schema.fromJsonString(SourceRevision), SourceRevision]),
  });
--
+ 
 -const named = (listing: Listing, scope: string): StoredPublication => {
 -  const name = `@${scope}/${listing.label}` as PackageName;
 -  return {
@@ -368,10 +372,11 @@ diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-
 -};
 -const byName = (left: Publication, right: Publication) =>
 -  left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
- 
+-
  /** Move version 1 rows, keyed by the name they were published under, to their owner and label. */
  const moveLegacyListings = Effect.gen(function* () {
-@@ -130,12 +79,12 @@
+   const sql = yield* SqlClient.SqlClient;
+@@ -130,12 +79,12 @@ const moveLegacyListings = Effect.gen(function* () {
    yield* sql`drop table executor_public_scopes`;
  });
  
@@ -386,7 +391,7 @@ diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-
      const run = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
        work.pipe(
          Effect.provideService(SqlClient.SqlClient, sql),
-@@ -143,37 +92,8 @@
+@@ -143,37 +92,8 @@ export const makeRegistryStorage = (publishers: Publishers) =>
            Schema.is(RegistryError)(error) ? error : new RegistryError({ reason: "storage" }),
          ),
        );
@@ -425,7 +430,7 @@ diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-
        migrate: run(
          Effect.gen(function* () {
            const migrator = yield* client.createMigrator;
-@@ -192,73 +112,6 @@
+@@ -192,73 +112,6 @@ export const makeRegistryStorage = (publishers: Publishers) =>
            );
          }),
        ),
@@ -500,6 +505,7 @@ diff --git a/packages/app-registry/src/implementation/storage.ts b/packages/app-
    });
  /** The SDK contract plus this host's migration step. */
 diff --git a/packages/app-registry/src/index.ts b/packages/app-registry/src/index.ts
+index 679d9ae..f33e580 100644
 --- a/packages/app-registry/src/index.ts
 +++ b/packages/app-registry/src/index.ts
 @@ -1,2 +1,3 @@
@@ -507,9 +513,10 @@ diff --git a/packages/app-registry/src/index.ts b/packages/app-registry/src/inde
  export { makeRegistryStorage, type Publishers } from "./implementation/storage.ts";
 +export { makeRegistryRuntimeStorage } from "./implementation/storage-runtime.ts";
 diff --git a/packages/fumadb-effect/src/implementation/sql/index.ts b/packages/fumadb-effect/src/implementation/sql/index.ts
+index 7b2d389..b2bdd93 100644
 --- a/packages/fumadb-effect/src/implementation/sql/index.ts
 +++ b/packages/fumadb-effect/src/implementation/sql/index.ts
-@@ -34,8 +34,8 @@
+@@ -34,8 +34,8 @@ const resolveConfig = (config: SqlAdapterConfig): ResolvedSqlAdapterConfig => ({
    relationMode: config.relationMode ?? defaultRelationMode(config.provider),
  });
  
@@ -520,7 +527,7 @@ diff --git a/packages/fumadb-effect/src/implementation/sql/index.ts b/packages/f
    const resolved = resolveConfig(config);
    return {
      name: "sql",
-@@ -47,6 +47,15 @@
+@@ -47,6 +47,15 @@ export const sqlAdapter = (config: SqlAdapterConfig): Adapter<SqlClient> => {
      },
      getSchemaVersion: (context) =>
        getSettingsVersion(resolved.provider, settingsTableName(context.namespace)),
@@ -537,9 +544,10 @@ diff --git a/packages/fumadb-effect/src/implementation/sql/index.ts b/packages/f
    };
  };
 diff --git a/packages/sdk/scripts/check-storage-versions.ts b/packages/sdk/scripts/check-storage-versions.ts
+index 7675352..dd81e73 100644
 --- a/packages/sdk/scripts/check-storage-versions.ts
 +++ b/packages/sdk/scripts/check-storage-versions.ts
-@@ -9,8 +9,13 @@
+@@ -9,9 +9,14 @@ import {
    IndexOnlyVersionChangesTables,
    trailingIndexVersions,
    trailingStorageIndexVersions,
@@ -547,16 +555,18 @@ diff --git a/packages/sdk/scripts/check-storage-versions.ts b/packages/sdk/scrip
  } from "../src/implementation/storage-migrations.ts";
 +import { currentStorageSchema } from "../src/implementation/storage-current.ts";
  import { fixtures, type Fixture } from "./check-storage-versions-fixtures.ts";
-+
+ 
 +if (storageSchemas.at(-1) !== currentStorageSchema)
 +  throw new Error("Runtime queries must use the migration registry's current schema");
- 
++
  const outcome = (fixture: Fixture) => {
    try {
+     return `accepted, trailing [${[...trailingIndexVersions(fixture.schemas)].join(", ")}]`;
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index ca6e60c..5c95b98 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -20,6 +20,7 @@
+@@ -20,6 +20,7 @@ import { SavedOAuthClientsHost } from "./oauth-clients.ts";
  import { OwnerMovesHost } from "./owner.ts";
  import { OAuthGrantImport } from "./oauth.ts";
  import type { ExecutorDatabase } from "../implementation/storage.ts";
@@ -564,7 +574,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
  import type { AppRuntime } from "../implementation/runtime.ts";
  import type { OAuthOptions } from "./oauth.ts";
  import type {
-@@ -361,9 +362,9 @@
+@@ -377,9 +378,9 @@ export interface PersonalDataReportingHost {
  }
  
  /** Caller-owned database, blobs, Git and execution; constructors do not migrate or close them. */
@@ -576,7 +586,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    /** Public origin: the address of a stored catalog, and of webhook callbacks by default. */
    readonly origin?: string;
    /**
-@@ -403,11 +404,12 @@
+@@ -421,11 +422,12 @@ export interface ExecutorInputs {
  }
  
  /** A hex-encoded 256-bit key encrypts saved credentials with AES-GCM; a custom store replaces that. */
@@ -595,23 +605,25 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
  /** No valid remote response was received; the operation may already have completed. */
  export class TransportError extends Schema.TaggedError<TransportError>()("TransportError", {
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 4cc9418..aa63c12 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -38,6 +38,10 @@
+@@ -38,6 +38,10 @@ export { executorDatabase } from "./implementation/storage-migrations.ts";
+ export { identifyProvider } from "./implementation/provider.ts";
  export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
  export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
- export {
++export {
 +  makeExecutorRuntimeStorage,
 +  type ExecutorRuntimeDatabase,
 +} from "./implementation/storage-runtime.ts";
-+export {
+ export {
    accountAcquisitionDriver,
    type PromiseAccountAcquisitionDriver,
- } from "./implementation/account-acquisition-adapter.ts";
 diff --git a/packages/sdk/src/implementation/app-storage.ts b/packages/sdk/src/implementation/app-storage.ts
+index b1c8ec6..de2a626 100644
 --- a/packages/sdk/src/implementation/app-storage.ts
 +++ b/packages/sdk/src/implementation/app-storage.ts
-@@ -5,7 +5,7 @@
+@@ -5,7 +5,7 @@ import { Json } from "../contracts/shared.ts";
  import { HostOperationNotFound } from "apps/contracts";
  import { AppDataFailed, AppDataNotFound, type AppDataInput } from "../contracts/app-data.ts";
  import type { Runtime } from "../contracts/runtime.ts";
@@ -620,7 +632,7 @@ diff --git a/packages/sdk/src/implementation/app-storage.ts b/packages/sdk/src/i
  import { database } from "./database.ts";
  import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
  import type { makeOAuth } from "./oauth.ts";
-@@ -13,7 +13,7 @@
+@@ -15,7 +15,7 @@ import { versionHostApi } from "./declarations.ts";
  
  /** Bind data calls to the current app version and the named accounts. */
  export const makeAppData = (
@@ -628,11 +640,12 @@ diff --git a/packages/sdk/src/implementation/app-storage.ts b/packages/sdk/src/i
 +  storage: ExecutorRuntimeDatabase,
    resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
    runtime: Runtime,
-   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
+   hostApi: HostApi | undefined,
 diff --git a/packages/sdk/src/implementation/app-views.ts b/packages/sdk/src/implementation/app-views.ts
+index bd5f15e..d7b0639 100644
 --- a/packages/sdk/src/implementation/app-views.ts
 +++ b/packages/sdk/src/implementation/app-views.ts
-@@ -10,10 +10,10 @@
+@@ -10,10 +10,10 @@ import {
  } from "../contracts/app-views.ts";
  import { JsonObject, StorageError } from "../contracts/shared.ts";
  import type { Credentials } from "../contracts/storage.ts";
@@ -646,6 +659,7 @@ diff --git a/packages/sdk/src/implementation/app-views.ts b/packages/sdk/src/imp
    crypto: Crypto.Crypto,
  ): AppViewsHost => {
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index bb4efd5..7c6e05b 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,4 @@
@@ -653,7 +667,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  import { AccountTargetsHost } from "../contracts/account-target.ts";
  import { makeAccountTargets } from "./account-targets.ts";
  import { type AppCallEffectIdentity } from "./app-call-effects.ts";
-@@ -106,7 +107,7 @@
+@@ -112,7 +113,7 @@ import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
  
  /** Capture host cryptography; caller owns database and platform resource lifetimes. */
  export const createExecutor = (
@@ -663,11 +677,12 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
    Effect.gen(function* () {
      const crypto = yield* Crypto.Crypto;
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index 189e6bc..7dfe918 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -1,12 +1,12 @@
- /** Native Effect database operations; SQL failures are projected to safe domain errors. */
- import { Effect } from "effect";
+@@ -3,12 +3,12 @@ import { Effect, Result } from "effect";
+ import { SqlError } from "effect/sql";
+ import { failureAttributes, withFailureAttributes } from "@executor-js/telemetry/failed-span";
  import { StorageError } from "../contracts/shared.ts";
 -import type { ExecutorDatabase } from "./storage.ts";
 +import type { ExecutorRuntimeDatabase } from "./storage-runtime.ts";
@@ -681,9 +696,10 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
    lockAccountObservation: storage.lockAccountObservation,
  });
 diff --git a/packages/sdk/src/implementation/initial-source.ts b/packages/sdk/src/implementation/initial-source.ts
+index c757d09..c9c1901 100644
 --- a/packages/sdk/src/implementation/initial-source.ts
 +++ b/packages/sdk/src/implementation/initial-source.ts
-@@ -6,7 +6,7 @@
+@@ -6,7 +6,7 @@ import { SourceError, SourceFiles, type AppSourceStorage } from "../contracts/so
  import { AppFields } from "../contracts/apps.ts";
  import type { StoredApp } from "../contracts/storage.ts";
  import { database, query, type Query } from "./database.ts";
@@ -692,7 +708,7 @@ diff --git a/packages/sdk/src/implementation/initial-source.ts b/packages/sdk/sr
  import { storeBytes, uploadsFrom } from "./public-files.ts";
  
  const initialKey = (code: AppCodeId) => BlobKey.make(`app-source/${code}/initial.json`);
-@@ -64,7 +64,7 @@
+@@ -64,7 +64,7 @@ export const initializeAppRepository = (
  
  /** Retry pending repository creation with bounded parallel work; one unavailable repository does not stop the rest. */
  export const recoverAppRepositories = (options: {
@@ -702,6 +718,7 @@ diff --git a/packages/sdk/src/implementation/initial-source.ts b/packages/sdk/sr
    readonly blobs: BlobStorage;
  }) =>
 diff --git a/packages/sdk/src/implementation/live.ts b/packages/sdk/src/implementation/live.ts
+index bb98417..e33d63b 100644
 --- a/packages/sdk/src/implementation/live.ts
 +++ b/packages/sdk/src/implementation/live.ts
 @@ -1,3 +1,4 @@
@@ -709,7 +726,7 @@ diff --git a/packages/sdk/src/implementation/live.ts b/packages/sdk/src/implemen
  /** Live app queries re-resolve the configured app and its selected accounts on every evaluation. */
  import { Schema, Effect, Stream } from "effect";
  import type { ExecutorOptions } from "../contracts/executor.ts";
-@@ -10,7 +11,7 @@
+@@ -10,7 +11,7 @@ import { createExecutor } from "./create.ts";
   * Calling without authorize is appropriate only for the already-trusted in-process SDK caller.
   */
  export const subscribeAppQuery = <E, R>(
@@ -719,9 +736,10 @@ diff --git a/packages/sdk/src/implementation/live.ts b/packages/sdk/src/implemen
    authorize: Effect.Effect<void, E, R> = Effect.void,
  ) => {
 diff --git a/packages/sdk/src/implementation/schedules.ts b/packages/sdk/src/implementation/schedules.ts
+index 4dec10e..a0c293a 100644
 --- a/packages/sdk/src/implementation/schedules.ts
 +++ b/packages/sdk/src/implementation/schedules.ts
-@@ -27,7 +27,7 @@
+@@ -28,7 +28,7 @@ import { CallFailureSources, InvocationRun, type CallFailureSource } from "../co
  import { ScheduleObservation } from "../contracts/scheduler.ts";
  import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
  import type { Credentials } from "../contracts/storage.ts";
@@ -730,7 +748,7 @@ diff --git a/packages/sdk/src/implementation/schedules.ts b/packages/sdk/src/imp
  import { database, query, transaction } from "./database.ts";
  import { lockApp } from "./apps.ts";
  import { backgroundAccounts } from "./background-accounts.ts";
-@@ -60,7 +60,7 @@
+@@ -80,7 +80,7 @@ const nextOccurrence = (timing: ScheduleTiming, after: Date) =>
  
  /** Compose settings and lifecycle over ordinary app discovery, calls and persisted SDK approvals. */
  export const makeSchedules = (
@@ -741,6 +759,7 @@ diff --git a/packages/sdk/src/implementation/schedules.ts b/packages/sdk/src/imp
      Pick<ReturnType<typeof makeTools>, "scheduled" | "accountNeedingReconnect">,
 diff --git a/packages/sdk/src/implementation/storage-current.ts b/packages/sdk/src/implementation/storage-current.ts
 new file mode 100644
+index 0000000..5a20d95
 --- /dev/null
 +++ b/packages/sdk/src/implementation/storage-current.ts
 @@ -0,0 +1,18 @@
@@ -763,6 +782,7 @@ new file mode 100644
 +  },
 +});
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 32d1bd9..6ec9a58 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,4 +1,4 @@
@@ -771,7 +791,7 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
  import { appConnections, appCallReceipts } from "./app-call-schema.ts";
  import { accountAcquisitions4020 } from "./account-acquisition-schema.ts";
  import { accountDriverChecks } from "./account-driver-check-schema.ts";
-@@ -820,18 +820,7 @@
+@@ -825,18 +825,7 @@ export const storageSchemas = [
        }),
      },
    }),
@@ -793,6 +813,7 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage-runtime.ts b/packages/sdk/src/implementation/storage-runtime.ts
 new file mode 100644
+index 0000000..0db8e3e
 --- /dev/null
 +++ b/packages/sdk/src/implementation/storage-runtime.ts
 @@ -0,0 +1,39 @@
@@ -836,9 +857,10 @@ new file mode 100644
 +/** Storage needed to serve requests, independent of the host's migration lifecycle. */
 +export type ExecutorRuntimeDatabase = Effect.Success<ReturnType<typeof makeExecutorRuntimeStorage>>;
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index 83773c6..80219e5 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -3,9 +3,8 @@
+@@ -3,9 +3,8 @@ import { Effect, Option } from "effect";
  import { SqlClient } from "effect/sql";
  import { sqlAdapter } from "fumadb-effect/sql";
  import type { Provider as SqlProvider } from "fumadb-effect";
@@ -849,14 +871,16 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
  import {
    currentIndexes,
    executorDatabase,
-@@ -13,16 +12,13 @@
+@@ -13,8 +12,6 @@ import {
    trailingStorageIndexVersions,
  } from "./storage-migrations.ts";
  import { storageMigrationFailed } from "./storage-migration-error.ts";
 -import { makeAppViewStorage } from "./app-view-storage.ts";
 -import { makeToolSearchStore } from "./tool-search-store.ts";
  
- /** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
+ /** The version a new database is created at, reported when creating it fails. */
+ const latestVersion = storageSchemas.at(-1)?.version;
+@@ -23,9 +20,8 @@ const latestVersion = storageSchemas.at(-1)?.version;
  export const makeExecutorStorage = (options: { readonly provider: SqlProvider }) =>
    Effect.gen(function* () {
      const sql = yield* SqlClient.SqlClient;
@@ -867,7 +891,7 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -77,23 +73,13 @@
+@@ -80,23 +76,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -895,9 +919,10 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
 +/** Caller-owned persistence including explicit host migration operations. */
  export type ExecutorDatabase = Effect.Success<ReturnType<typeof makeExecutorStorage>>;
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 0d680b9..d918942 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -102,7 +102,7 @@
+@@ -109,7 +109,7 @@ import {
    type PrefetchHost,
    type ToolRouter,
  } from "../contracts/tools.ts";
@@ -906,19 +931,20 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
  import type { ProviderDefinition } from "../contracts/provider.ts";
  import {
    type Credentials,
-@@ -767,7 +767,7 @@
+@@ -863,7 +863,7 @@ const summarizeTool = ({
  
  /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
  export const makeTools = (
 -  storage: ExecutorDatabase,
 +  storage: ExecutorRuntimeDatabase,
-   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usableAll">,
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
    sitePolicy: UrlPolicy,
 diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
+index 3b08347..9a3d370 100644
 --- a/packages/sdk/src/implementation/webhooks.ts
 +++ b/packages/sdk/src/implementation/webhooks.ts
-@@ -35,7 +35,7 @@
+@@ -35,7 +35,7 @@ import {
  import { SelectedAccounts } from "../contracts/apps.ts";
  import type { Credentials } from "../contracts/storage.ts";
  import type { Runtime } from "../contracts/runtime.ts";
@@ -927,7 +953,7 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
  import type { makeOAuth } from "./oauth.ts";
  import { database, query, transaction } from "./database.ts";
  import { snapshot, resolve, resolveRemoval, type InvocationSnapshot } from "./tools.ts";
-@@ -105,7 +105,7 @@
+@@ -299,7 +299,7 @@ const sameSetup = (declared: Setup) => {
   * callback resolves the actor's current accounts for the app's other requirements.
   */
  export const makeWebhooks = (
@@ -937,9 +963,10 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
    resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
    credentials: Credentials,
 diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
+index 11c06fa..c0f2296 100644
 --- a/packages/sdk/src/implementation/workflows.ts
 +++ b/packages/sdk/src/implementation/workflows.ts
-@@ -34,7 +34,7 @@
+@@ -37,7 +37,7 @@ import {
  } from "../contracts/shared.ts";
  import type { Credentials } from "../contracts/storage.ts";
  import type { Runtime } from "../contracts/runtime.ts";
@@ -948,7 +975,7 @@ diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/imp
  import type { Executor } from "../contracts/executor.ts";
  import type { makeOAuth } from "./oauth.ts";
  import { database, query, transaction } from "./database.ts";
-@@ -120,7 +120,7 @@
+@@ -147,7 +147,7 @@ const dispatch = (backend: WorkflowRuntime, run: WorkflowRunId) =>
  
  /** Compose lifecycle operations and private execution callbacks without acquiring resources. */
  export const makeWorkflowRuns = (
@@ -958,16 +985,17 @@ diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/imp
    resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
    credentials: Credentials,
 diff --git a/packages/sdk/src/index.ts b/packages/sdk/src/index.ts
+index 4008457..21bdce3 100644
 --- a/packages/sdk/src/index.ts
 +++ b/packages/sdk/src/index.ts
-@@ -26,6 +26,10 @@
+@@ -25,6 +25,10 @@ export {
+ } from "./implementation/runtime.ts";
  export { executorDatabase } from "./implementation/storage-migrations.ts";
  export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
- export {
++export {
 +  makeExecutorRuntimeStorage,
 +  type ExecutorRuntimeDatabase,
 +} from "./implementation/storage-runtime.ts";
-+export {
+ export {
    accountAcquisitionDriver,
    type PromiseAccountAcquisitionDriver,
- } from "./implementation/account-acquisition-adapter.ts";

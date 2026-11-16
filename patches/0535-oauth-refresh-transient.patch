@@ -1,152 +1,23 @@
-diff --git a/patches/@better-auth%2Foauth-provider@1.7.5.patch b/patches/@better-auth%2Foauth-provider@1.7.5.patch
---- a/patches/@better-auth%2Foauth-provider@1.7.5.patch
-+++ b/patches/@better-auth%2Foauth-provider@1.7.5.patch
-@@ -75,7 +75,7 @@
- +export const seedOAuthResources = (ctx, options) =>
- +  seedResourcesForProvisioning(ctx, { ...options, resourceSeedMode: "insertOnly" }, true);
- diff --git a/dist/introspect-njKASm3q.mjs b/dist/introspect-njKASm3q.mjs
--index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..21d78930a1564b2d380c4b3a5593892629246aa0 100644
-+index c8d635e57..987ff255e 100644
- --- a/dist/introspect-njKASm3q.mjs
- +++ b/dist/introspect-njKASm3q.mjs
- @@ -676,6 +676,8 @@ async function getResource(ctx, opts, identifier) {
-@@ -145,7 +145,7 @@
-  		sub: resolvedSub,
-  		aud: client.clientId,
-  		nonce,
--@@ -1588,10 +1593,13 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
-+@@ -1588,10 +1593,9 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
-  		}],
-  		increment: {},
-  		set: rotationUpdate
-@@ -154,16 +154,24 @@
- -		error: "invalid_grant"
- -	});
- +	})) {
--+		reportRefreshRejected(ctx, opts, "rotation_lost");
--+		throw new APIError("BAD_REQUEST", {
--+			error_description: "invalid refresh token",
--+			error: "invalid_grant"
--+		});
-++		throwRefreshUnavailable(ctx, opts, "rotation_lost");
- +	}
-  	return {
-  		id: (await ctx.context.adapter.create({
-  			model: "oauthRefreshToken",
--@@ -2097,6 +2105,17 @@ async function handleClientCredentialsGrant(ctx, opts) {
-+@@ -1741,8 +1745,9 @@ async function getRefreshTokenRotationReplay(ctx, refreshToken, request) {
-+ 	if (!refreshToken.rotationReplayResponse) return;
-+ 	try {
-+ 		const replay = await decryptRefreshTokenRotationReplay(ctx, refreshToken.rotationReplayResponse);
-+-		if (!replay || !sameRefreshTokenRotationReplayRequest(replay.request, request)) return;
-+-		return replay.response;
-++		if (!replay) return;
-++		if (!sameRefreshTokenRotationReplayRequest(replay.request, request)) return { mismatch: true };
-++		return { response: replay.response };
-+ 	} catch (error) {
-+ 		ctx.context.logger.error("refresh token rotation replay failed", error);
-+ 		return;
-+@@ -2097,6 +2102,25 @@ async function handleClientCredentialsGrant(ctx, opts) {
-  * Refresh tokens will only allow the same or lesser scopes as the initial authorize request.
-  * To add scopes, you must restart the authorize process again.
-  */
-@@ -178,10 +186,18 @@
- +		ctx.context.logger.error("oauth-provider: onRefreshRejected failed");
- +	}
- +}
-++function throwRefreshUnavailable(ctx, opts, reason, refreshToken) {
-++	reportRefreshRejected(ctx, opts, reason, refreshToken);
-++	ctx.setHeader("Retry-After", "1");
-++	throw new APIError("SERVICE_UNAVAILABLE", {
-++		error_description: "refresh token rotation is temporarily unavailable",
-++		error: "server_error"
-++	});
-++}
-  async function handleRefreshTokenGrant(ctx, opts) {
-  	const { clientId: client_id, clientSecret: client_secret, preVerified, authMethod } = destructureCredentials(await extractClientCredentials(ctx, opts, `${ctx.context.baseURL}/oauth2/token`));
-  	const { refresh_token, scope, resource } = ctx.body;
--@@ -2117,18 +2136,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
-+@@ -2117,18 +2141,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
-  			value: await getStoredToken(opts.storeTokens, decodedRefresh.token, "refresh_token")
-  		}]
-  	});
-@@ -221,15 +237,20 @@
-  	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
-  		error_description: "requested resource invalid",
-  		error: "invalid_target"
--@@ -2152,12 +2180,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
-+@@ -2151,13 +2184,25 @@ async function handleRefreshTokenGrant(ctx, opts) {
-+ 				scopes: requestedScopes ?? scopes,
-  				resources: resources ?? refreshToken.resources
-  			}));
-- 			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
--+			reportRefreshRejected(ctx, opts, "replay_unavailable", refreshToken);
--+			throw new APIError("BAD_REQUEST", {
--+				error_description: "invalid refresh token",
--+				error: "invalid_grant"
--+			});
-+-			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
-++			if (replay?.response) return replayRefreshTokenRotationResponse(ctx, replay.response);
-++			if (replay?.mismatch) {
-++				reportRefreshRejected(ctx, opts, "replay_mismatch", refreshToken);
-++				throw new APIError("BAD_REQUEST", {
-++					error_description: "invalid refresh token",
-++					error: "invalid_grant"
-++				});
-++			}
-++			throwRefreshUnavailable(ctx, opts, "replay_unavailable", refreshToken);
- +		}
- +		if (refreshToken.rotatedAt && new Date(refreshToken.rotatedAt).getTime() + (opts.refreshTokenSupersededInterval ?? 0) * 1e3 >= Date.now()) {
- +			reportRefreshRejected(ctx, opts, "superseded", refreshToken);
-@@ -243,7 +264,7 @@
-  		throw new APIError("BAD_REQUEST", {
-  			error_description: "invalid refresh token",
-  			error: "invalid_grant"
--@@ -2238,7 +2275,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
-+@@ -2238,7 +2283,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
-  	const jwtPlugin = opts.disableJwtPlugin ? void 0 : getJwtPlugin(ctx.context);
-  	const jwtPluginOptions = jwtPlugin?.options;
-  	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
-@@ -252,7 +273,7 @@
-  	let jwtPayload;
-  	try {
-  		jwtPayload = (await jwtVerify(token, createLocalJWKSet(await getJwks(token, {
--@@ -2360,7 +2397,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
-+@@ -2360,7 +2405,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
-  		payload: {
-  			...accessTokenClaims,
-  			active: true,
-@@ -261,7 +282,7 @@
-  			aud: toAudienceClaim(audienceClaim),
-  			client_id: accessToken.clientId,
-  			azp: accessToken.clientId,
--@@ -2411,7 +2448,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
-+@@ -2411,7 +2456,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
-  	return {
-  		active: true,
-  		client_id: clientId,
-@@ -271,7 +292,7 @@
-  		sid: sessionId,
-  		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
- diff --git a/dist/oauth-1Ud-hvZY.d.mts b/dist/oauth-1Ud-hvZY.d.mts
--index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..a49e282e0c52c175591a28afe2217103a861dc6c 100644
-+index 130fd5d8f..8b8c006cf 100644
- --- a/dist/oauth-1Ud-hvZY.d.mts
- +++ b/dist/oauth-1Ud-hvZY.d.mts
- @@ -1131,7 +1131,10 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
-@@ -307,7 +328,7 @@
- +   * `revokedAt` is when the presented token was revoked, and `rotated` whether rotation revoked it.
- +   */
- +  onRefreshRejected?: (rejection: {
--+    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "superseded" | "reused" | "rotation_lost";
-++    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "replay_mismatch" | "superseded" | "reused" | "rotation_lost";
- +    revokedAt?: Date;
- +    rotated: boolean;
- +  }) => void;
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index cf24f2a..2b273d7 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -367,6 +367,10 @@ const notRunInCi: Partial<
+     reason:
+       "The Basalt compiler-diagnostics job runs inherited production settings on the managed test stage.",
+   },
++  mcpRefreshRetryableErrors: {
++    targets: ["cloud"],
++    reason: "The Basalt declared-cloud job runs the scoped refresh race fixture.",
++  },
+   cloudPoolSetupAtomic: {
+     targets: ["cloud"],
+     reason:
 diff --git a/e2e/support/mcp-oauth.ts b/e2e/support/mcp-oauth.ts
+index c7eb987..c9034ec 100644
 --- a/e2e/support/mcp-oauth.ts
 +++ b/e2e/support/mcp-oauth.ts
-@@ -245,20 +245,30 @@
+@@ -245,20 +245,30 @@ const make = Effect.gen(function* () {
          yield* evidence.json(`oauth-${fields.grant_type}-${response.status}.json`, {
            status: response.status,
          });
@@ -179,7 +50,7 @@ diff --git a/e2e/support/mcp-oauth.ts b/e2e/support/mcp-oauth.ts
        },
        tokenOrigin,
      );
-@@ -552,6 +562,20 @@
+@@ -552,6 +562,20 @@ const make = Effect.gen(function* () {
          );
          return { ...grant, tokens };
        }),
@@ -200,22 +71,9 @@ diff --git a/e2e/support/mcp-oauth.ts b/e2e/support/mcp-oauth.ts
      refreshStatus: (grant: Grant) =>
        refreshResponse(grant).pipe(Effect.map((response) => response.status)),
      revoke: (grant: Grant) =>
-diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
---- a/e2e/ci-selection.ts
-+++ b/e2e/ci-selection.ts
-@@ -364,6 +364,10 @@
-     targets: ["cloud"],
-     reason:
-       "The Basalt compiler-diagnostics job runs inherited production settings on the managed test stage.",
-+  },
-+  mcpRefreshRetryableErrors: {
-+    targets: ["cloud"],
-+    reason: "The Basalt declared-cloud job runs the scoped refresh race fixture.",
-   },
-   cloudPoolSetupAtomic: {
-     targets: ["cloud"],
 diff --git a/e2e/tests/mcp-refresh-errors.spec.ts b/e2e/tests/mcp-refresh-errors.spec.ts
 new file mode 100644
+index 0000000..d8350d9
 --- /dev/null
 +++ b/e2e/tests/mcp-refresh-errors.spec.ts
 @@ -0,0 +1,162 @@
@@ -381,3 +239,202 @@ new file mode 100644
 +    ),
 +  );
 +});
+diff --git a/patches/@better-auth%2Foauth-provider@1.7.16.patch b/patches/@better-auth%2Foauth-provider@1.7.16.patch
+index 67b834d..a11177e 100644
+--- a/patches/@better-auth%2Foauth-provider@1.7.16.patch
++++ b/patches/@better-auth%2Foauth-provider@1.7.16.patch
+@@ -1,5 +1,5 @@
+ diff --git a/dist/authorize-BnSO_Slc.mjs b/dist/authorize-BnSO_Slc.mjs
+-index ad18021..1c194f6 100644
++index ad18021..6dceff0 100644
+ --- a/dist/authorize-BnSO_Slc.mjs
+ +++ b/dist/authorize-BnSO_Slc.mjs
+ @@ -1016,6 +1016,8 @@ async function getResource(ctx, opts, identifier) {
+@@ -47,7 +47,7 @@ index ad18021..1c194f6 100644
+  		sub: resolvedSub,
+  		aud: client.clientId,
+  		nonce,
+-@@ -1765,10 +1769,13 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
++@@ -1765,10 +1769,9 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
+  		}],
+  		increment: {},
+  		set: rotationUpdate
+@@ -56,16 +56,24 @@ index ad18021..1c194f6 100644
+ -		error: "invalid_grant"
+ -	});
+ +	})) {
+-+		reportRefreshRejected(ctx, opts, "rotation_lost");
+-+		throw new APIError("BAD_REQUEST", {
+-+			error_description: "invalid refresh token",
+-+			error: "invalid_grant"
+-+		});
+++		throwRefreshUnavailable(ctx, opts, "rotation_lost");
+ +	}
+  	return {
+  		id: (await ctx.context.adapter.create({
+  			model: "oauthRefreshToken",
+-@@ -2280,6 +2287,17 @@ async function handleClientCredentialsGrant(ctx, opts) {
++@@ -1918,8 +1921,9 @@ async function getRefreshTokenRotationReplay(ctx, refreshToken, request) {
++ 	if (!refreshToken.rotationReplayResponse) return;
++ 	try {
++ 		const replay = await decryptRefreshTokenRotationReplay(ctx, refreshToken.rotationReplayResponse);
++-		if (!replay || !sameRefreshTokenRotationReplayRequest(replay.request, request)) return;
++-		return replay.response;
+++		if (!replay) return;
+++		if (!sameRefreshTokenRotationReplayRequest(replay.request, request)) return { mismatch: true };
+++		return { response: replay.response };
++ 	} catch (error) {
++ 		ctx.context.logger.error("refresh token rotation replay failed", error);
++ 		return;
++@@ -2280,6 +2284,25 @@ async function handleClientCredentialsGrant(ctx, opts) {
+  * Refresh tokens will only allow the same or lesser scopes as the initial authorize request.
+  * To add scopes, you must restart the authorize process again.
+  */
+@@ -79,11 +87,19 @@ index ad18021..1c194f6 100644
+ +	} catch {
+ +		ctx.context.logger.error("oauth-provider: onRefreshRejected failed");
+ +	}
+++}
+++function throwRefreshUnavailable(ctx, opts, reason, refreshToken) {
+++	reportRefreshRejected(ctx, opts, reason, refreshToken);
+++	ctx.setHeader("Retry-After", "1");
+++	throw new APIError("SERVICE_UNAVAILABLE", {
+++		error_description: "refresh token rotation is temporarily unavailable",
+++		error: "server_error"
+++	});
+ +}
+  async function handleRefreshTokenGrant(ctx, opts) {
+  	const credentials = await extractClientCredentials(ctx, opts, `${ctx.context.baseURL}/oauth2/token`);
+  	const { clientId: client_id, clientSecret: client_secret, preVerified, authMethod } = destructureCredentials(credentials);
+-@@ -2305,18 +2323,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
++@@ -2305,18 +2328,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
+  			value: await getStoredToken(opts.storeTokens, decodedRefresh.token, "refresh_token")
+  		}]
+  	});
+@@ -123,15 +139,20 @@ index ad18021..1c194f6 100644
+  	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
+  		error_description: "requested resource invalid",
+  		error: "invalid_target"
+-@@ -2340,12 +2367,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
++@@ -2339,13 +2371,25 @@ async function handleRefreshTokenGrant(ctx, opts) {
++ 				scopes: requestedScopes ?? scopes,
+  				resources: resources ?? refreshToken.resources
+  			}));
+- 			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
+-+			reportRefreshRejected(ctx, opts, "replay_unavailable", refreshToken);
+-+			throw new APIError("BAD_REQUEST", {
+-+				error_description: "invalid refresh token",
+-+				error: "invalid_grant"
+-+			});
++-			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
+++			if (replay?.response) return replayRefreshTokenRotationResponse(ctx, replay.response);
+++			if (replay?.mismatch) {
+++				reportRefreshRejected(ctx, opts, "replay_mismatch", refreshToken);
+++				throw new APIError("BAD_REQUEST", {
+++					error_description: "invalid refresh token",
+++					error: "invalid_grant"
+++				});
+++			}
+++			throwRefreshUnavailable(ctx, opts, "replay_unavailable", refreshToken);
+ +		}
+ +		if (refreshToken.rotatedAt && new Date(refreshToken.rotatedAt).getTime() + (opts.refreshTokenSupersededInterval ?? 0) * 1e3 >= Date.now()) {
+ +			reportRefreshRejected(ctx, opts, "superseded", refreshToken);
+@@ -145,7 +166,7 @@ index ad18021..1c194f6 100644
+  		throw new APIError("BAD_REQUEST", {
+  			error_description: "invalid refresh token",
+  			error: "invalid_grant"
+-@@ -2430,7 +2466,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
++@@ -2430,7 +2474,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
+  	const jwtPlugin = getJwtPlugin(ctx.context);
+  	const jwtPluginOptions = jwtPlugin.options;
+  	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
+@@ -154,7 +175,7 @@ index ad18021..1c194f6 100644
+  	let jwtPayload;
+  	try {
+  		const jwksFetch = jwtPluginOptions?.jwks?.remoteUrl ? jwtPluginOptions.jwks.remoteUrl : async () => {
+-@@ -2552,7 +2588,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
++@@ -2552,7 +2596,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
+  		payload: {
+  			...accessTokenClaims,
+  			active: true,
+@@ -163,7 +184,7 @@ index ad18021..1c194f6 100644
+  			aud: toAudienceClaim(audienceClaim),
+  			client_id: accessToken.clientId,
+  			azp: accessToken.clientId,
+-@@ -2603,7 +2639,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
++@@ -2603,7 +2647,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+  	return {
+  		active: true,
+  		client_id: clientId,
+@@ -172,7 +193,7 @@ index ad18021..1c194f6 100644
+  		sub: user?.id,
+  		sid: sessionId,
+  		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
+-@@ -3254,7 +3290,7 @@ function authServerMetadata(ctx, opts, overrides) {
++@@ -3254,7 +3298,7 @@ function authServerMetadata(ctx, opts, overrides) {
+  	const backchannelSupported = !overrides?.jwt_disabled;
+  	return {
+  		scopes_supported: overrides?.scopes_supported,
+@@ -181,7 +202,7 @@ index ad18021..1c194f6 100644
+  		authorization_endpoint: `${baseURL}/oauth2/authorize`,
+  		token_endpoint: `${baseURL}/oauth2/token`,
+  		jwks_uri: overrides?.jwt_disabled ? void 0 : opts?.jwks?.remoteUrl ?? `${baseURL}${opts?.jwks?.jwksPath ?? "/jwks"}`,
+-@@ -3307,6 +3343,7 @@ function buildAuthServerMetadata(ctx, opts) {
++@@ -3307,6 +3351,7 @@ function buildAuthServerMetadata(ctx, opts) {
+  		jwtPluginOptions,
+  		clientDiscoveries,
+  		authMetadata: authServerMetadata(ctx, jwtPluginOptions, {
+@@ -189,7 +210,7 @@ index ad18021..1c194f6 100644
+  			scopes_supported: opts.advertisedMetadata?.scopes_supported ?? opts.scopes,
+  			dynamic_client_registration_supported: opts.allowDynamicClientRegistration,
+  			public_client_supported: publicClientSupported,
+-@@ -6158,7 +6195,7 @@ async function revokeJwtAccessToken(ctx, opts, token) {
++@@ -6158,7 +6203,7 @@ async function revokeJwtAccessToken(ctx, opts, token) {
+  			jwksFetch,
+  			jwksCacheKey: jwtPlugin
+  		});
+@@ -198,7 +219,7 @@ index ad18021..1c194f6 100644
+  	} catch (error) {
+  		if (error instanceof errors.JWTExpired || error instanceof errors.JWTInvalid) return null;
+  		if (error instanceof TypeError || isInvalidJwtError(error)) throw new APIError$1("BAD_REQUEST", {
+-@@ -6946,7 +6983,7 @@ const oauthProvider = (options) => {
++@@ -6946,7 +6991,7 @@ const oauthProvider = (options) => {
+  	const handleIssuerMetadataRequest = async (request, ctx) => {
+  		const requestPathname = new URL(request.url).pathname;
+  		const requestPath = ctx.options.advanced?.skipTrailingSlashes ? requestPathname.replace(/\/+$/, "") || "/" : requestPathname;
+@@ -207,7 +228,7 @@ index ad18021..1c194f6 100644
+  		let issuerPath = "/";
+  		try {
+  			issuerPath = new URL(issuer).pathname.replace(/\/$/, "") || "";
+-@@ -8108,7 +8145,8 @@ function validateIssuerUrl(issuer) {
++@@ -8108,7 +8153,8 @@ function validateIssuerUrl(issuer) {
+  */
+  function getIssuer(ctx, opts) {
+  	let issuer;
+@@ -217,7 +238,7 @@ index ad18021..1c194f6 100644
+  	else try {
+  		issuer = getJwtPlugin(ctx.context).options?.jwt?.issuer ?? ctx.context.baseURL;
+  	} catch {
+-@@ -8517,3 +8555,4 @@ async function signParams(ctx, opts, flags) {
++@@ -8517,3 +8563,4 @@ async function signParams(ctx, opts, flags) {
+  }
+  //#endregion
+  export { extractRepeatedResourceFromForm as _, registerClientMetadataDocument as a, oauthClientMetadataSchema as b, isForbiddenCimdClientMetadataField as c, metadataResponse as d, oauthAuthorizationServerMetadata as f, getOAuthProviderApi as g, oidcServerMetadata as h, oauthProvider as i, validatePublicClientJwks as l, oauthProviderOpenIdConfigMetadata as m, DEFAULT_OAUTH_SCOPES as n, client_assertion_exports as o, oauthProviderAuthServerMetadata as p, getOAuthProviderState as r, consumeClientAssertion as s, getIssuer as t, authServerMetadata as u, resolveResourcePolicy as v, ResourceUriSchema as y };
+@@ -318,7 +339,7 @@ index 3c2ba5d..ad3f1da 100644
+                          type: string;
+                          items: {
+ diff --git a/dist/oauth-m0aNFIHP.d.mts b/dist/oauth-m0aNFIHP.d.mts
+-index dacd1ef..7db2ded 100644
++index dacd1ef..2836091 100644
+ --- a/dist/oauth-m0aNFIHP.d.mts
+ +++ b/dist/oauth-m0aNFIHP.d.mts
+ @@ -1183,7 +1183,10 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+@@ -354,7 +375,7 @@ index dacd1ef..7db2ded 100644
+ +   * `revokedAt` is when the presented token was revoked, and `rotated` whether rotation revoked it.
+ +   */
+ +  onRefreshRejected?: (rejection: {
+-+    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "superseded" | "reused" | "rotation_lost";
+++    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "replay_mismatch" | "superseded" | "reused" | "rotation_lost";
+ +    revokedAt?: Date;
+ +    rotated: boolean;
+ +  }) => void;

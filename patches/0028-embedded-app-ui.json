@@ -1,7 +1,7 @@
 {
   "identity": "executor-embedded-app-ui",
   "file": "0028-embedded-app-ui.patch",
-  "content_sha256": "84074ef29b3c919bb9c48481b4c47d3943f839e0e93d485cf936a14370abbbb9",
+  "content_sha256": "9c186779962d27826b3d9b05ed1ed2755a904969dc80b56788c41401f41445b3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

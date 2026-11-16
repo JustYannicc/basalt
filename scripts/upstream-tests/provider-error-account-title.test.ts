@@ -189,8 +189,16 @@ test("a server error still names no account in its copy", async () => {
 
 test("MCP diagnostics and CLI text retain the account's row title", async () => {
   const error = await failure("Default 2");
-  assert.ok(JSON.parse(diagnostic(error)).message.includes("for account “Vercel API key 2”"));
-  assert.ok(diagnosticSummary(error).includes("for account “Vercel API key 2”"));
+  assert.ok(
+    JSON.parse(diagnostic(error, { operation: "call", reference: undefined })).message.includes(
+      "for account “Vercel API key 2”",
+    ),
+  );
+  assert.ok(
+    diagnosticSummary(error, { operation: "call", reference: undefined }).includes(
+      "for account “Vercel API key 2”",
+    ),
+  );
   const described = describeAppFailure(error);
   assert.ok(described);
   assert.ok(renderAppFailure(described).includes("for account “Vercel API key 2”"));

@@ -101,10 +101,10 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import { GroupDatabase } from "../contracts/groups.ts";
 -import { requireAppAccess, requireAppUse } from "./resource-policy.ts";
 +import { requireAppAccess, requireAppUse, resourceAuthorityForApp } from "./resource-policy.ts";
+ import { recordAuthFailure, recordCaller, recordCredential, refuse } from "./auth-telemetry.ts";
  /** Hosted policy around the shared app browser protocol and retained asset renderer. */
  import {
-   AccountRequired,
-@@ -273,6 +274,35 @@
+@@ -292,6 +293,35 @@
        return { ...resolved, access, app, navigation: identity.navigation };
      });
    const authorize = Effect.flatMap(target, authorizeTarget);
@@ -140,7 +140,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
    const assets = (version: VersionMetadata, path: string) =>
      Effect.gen(function* () {
        const runtime = yield* HostedAppRuntime;
-@@ -861,6 +891,10 @@
+@@ -932,6 +962,10 @@
      originAccess,
      sessionAccess,
      telemetry,

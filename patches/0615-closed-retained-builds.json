@@ -1,0 +1,9 @@
+{
+  "identity": "closed-retained-builds",
+  "file": "0615-closed-retained-builds.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true,
+  "content_sha256": "0da1e1f2da53a5032c06f4f9a40023e8a608b9e9d7998ddd4fe015a99fd59deb"
+}

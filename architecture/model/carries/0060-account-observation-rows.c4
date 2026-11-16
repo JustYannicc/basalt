@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Account rows show retained observation time, freshness and refresh failure separately from credential health. Inspection denial hides details, and failed refreshes keep earlier successful values. Reconnect rows retain active and failed app rechecks, with retry completion following the Exit-returning revalidation contract."
+    }
+  }
+}

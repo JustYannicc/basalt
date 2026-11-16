@@ -1,7 +1,7 @@
 {
   "identity": "executor-cloud-startup-cause",
   "file": "0107-cloud-startup-cause.patch",
-  "content_sha256": "58705237609ed9d29eb968034bc57a6d94307291d96911fc239623fed1351272",
+  "content_sha256": "629c2946002ee1dcc68e00237034de09b11e83b001a77afb1098d17200664744",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

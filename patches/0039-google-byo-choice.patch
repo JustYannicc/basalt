@@ -1,21 +1,8 @@
-diff --git a/e2e/support/oauth-client-entry.ts b/e2e/support/oauth-client-entry.ts
-index 4b1391e..f991b00 100644
---- a/e2e/support/oauth-client-entry.ts
-+++ b/e2e/support/oauth-client-entry.ts
-@@ -11,7 +11,7 @@ export const enterClientDetails = (page: Page) => {
-     .click()
-     .then(() =>
-       dialog
--        .getByRole("checkbox", { name: "Enter client details for this account", exact: true })
-+        .getByRole("checkbox", { name: /^Use your own .+ app for this account$/ })
-         .check(),
-     );
- };
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0fe4d6a..ae93c09 100644
+index e5de001..b94eb07 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4029,6 +4029,16 @@ export const scenarios = plan({
+@@ -4703,6 +4703,16 @@ export const scenarios = plan({
        local: na("Hosted app account controls and organization permissions."),
      },
    },
@@ -34,10 +21,10 @@ index 0fe4d6a..ae93c09 100644
      file: "oauth-client-recovery.spec.ts",
 diff --git a/e2e/tests/google-oauth-choices.spec.ts b/e2e/tests/google-oauth-choices.spec.ts
 new file mode 100644
-index 0000000..e0dcef2
+index 0000000..7411bf4
 --- /dev/null
 +++ b/e2e/tests/google-oauth-choices.spec.ts
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,231 @@
 +/** Google-labelled services keep BYO visible without changing a new or saved account's client. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -108,9 +95,12 @@ index 0000000..e0dcef2
 +            );
 +            const connection = (account?: string) =>
 +              api
-+                .request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
-+                  ...(account === undefined ? {} : { account }),
-+                })
++                .request(
++                  actors.owner,
++                  "POST",
++                  connectionsPath(path, "user", "service"),
++                  account === undefined ? {} : { account },
++                )
 +                .pipe(Effect.flatMap((answer) => body(Resource, answer)));
 +            return { path, id: app.id, connection };
 +          });
@@ -267,7 +257,7 @@ index 0000000..e0dcef2
 +  );
 +});
 diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-recovery.spec.ts
-index 3fc2d06..9bde536 100644
+index 3fc2d06..954105b 100644
 --- a/e2e/tests/oauth-client-recovery.spec.ts
 +++ b/e2e/tests/oauth-client-recovery.spec.ts
 @@ -60,7 +60,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client recovery", (it) =
@@ -297,13 +287,14 @@ index 3fc2d06..9bde536 100644
                  .click(),
              ),
          );
-@@ -209,11 +209,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+@@ -208,12 +208,10 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+                 .getByLabel("Client secret", { exact: true })
                  .fill(` ${recoveryClients.original.clientSecret} `),
              )
-             .then(() =>
+-            .then(() =>
 -              page.getByRole("button", { name: "Connect Recoverable OAuth", exact: true }).click(),
-+              page.getByRole("button", { name: "Connect Gmail", exact: true }).click(),
-             )
+-            )
++            .then(() => page.getByRole("button", { name: "Connect Gmail", exact: true }).click())
              .then(() => nameConnectedAccount(page, "Recovery account"))
              .then(() =>
 -              linkedChoice(page, "Recoverable OAuth", "Recovery account").waitFor({
@@ -311,7 +302,7 @@ index 3fc2d06..9bde536 100644
                  state: "visible",
                }),
              ),
-@@ -278,28 +278,37 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+@@ -278,28 +276,40 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
          yield* browser.use("Open the existing account for reconnection", (page) =>
            page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
          );
@@ -335,93 +326,95 @@ index 3fc2d06..9bde536 100644
 -          page
 -            .getByText("Advanced", { exact: true })
 -            .click()
-+              .then(() => clients.waitFor({ state: "visible" }))
-+              .then(() => clients.count());
-+          }),
-+        ).toBe(1);
-+        yield* browser.use("The saved client stays selected beside the shared and BYO choices", (page) => {
-+          const clients = page.getByRole("combobox", { name: "OAuth client" });
-+          return clients
-+            .filter({ hasText: "Current client" })
-+            .waitFor({ state: "visible" })
-+            .then(() => clients.click())
-             .then(() =>
-               page
--                .getByRole("combobox", { name: "OAuth client" })
--                .filter({ hasText: "Current client" })
-+                .getByRole("option", { name: "synthetic-registered-client", exact: true })
-                 .waitFor({ state: "visible" }),
--            ),
--        );
-+            )
-+            .then(() =>
-+              page
-+                .getByRole("option", { name: "Your own Google app (OAuth)", exact: true })
-+                .waitFor({ state: "visible" }),
-+            );
-+        });
-+        yield* browser.checkpoint("Google shared and BYO client options");
-+        yield* browser.use("Close Google client choices", (page) => page.keyboard.press("Escape"));
-+        yield* browser.checkpoint("Reconnect with the shared client and Google BYO available");
-         expect(
-           (yield* api.request(
-             actors.owner,
-@@ -308,22 +317,21 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
-           )).status,
-         ).toBe(200);
-         yield* browser.use("Reopen the reconnect without the registered client", (page) =>
--          page
--            .reload()
--            .then(() => page.getByText("Advanced", { exact: true }).click())
 -            .then(() =>
 -              page
 -                .getByRole("combobox", { name: "OAuth client" })
 -                .filter({ hasText: "Current client" })
 -                .waitFor({ state: "visible" }),
 -            ),
-+          page.reload().then(() =>
-+            page
-+              .getByRole("combobox", { name: "OAuth client" })
++              .then(() => clients.waitFor({ state: "visible" }))
++              .then(() => clients.count());
++          }),
++        ).toBe(1);
++        yield* browser.use(
++          "The saved client stays selected beside the shared and BYO choices",
++          (page) => {
++            const clients = page.getByRole("combobox", { name: "OAuth client" });
++            return clients
 +              .filter({ hasText: "Current client" })
-+              .waitFor({ state: "visible" }),
-+          ),
++              .waitFor({ state: "visible" })
++              .then(() => clients.click())
++              .then(() =>
++                page
++                  .getByRole("option", { name: "synthetic-registered-client", exact: true })
++                  .waitFor({ state: "visible" }),
++              )
++              .then(() =>
++                page
++                  .getByRole("option", { name: "Your own Google app (OAuth)", exact: true })
++                  .waitFor({ state: "visible" }),
++              );
++          },
          );
-         yield* browser.checkpoint("Reconnect OAuth client options");
-         yield* browser.use("The account's client can be replaced", (page) =>
++        yield* browser.checkpoint("Google shared and BYO client options");
++        yield* browser.use("Close Google client choices", (page) => page.keyboard.press("Escape"));
++        yield* browser.checkpoint("Reconnect with the shared client and Google BYO available");
+         expect(
+           (yield* api.request(
+             actors.owner,
+@@ -310,7 +320,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+         yield* browser.use("Reopen the reconnect without the registered client", (page) =>
+           page
+             .reload()
+-            .then(() => page.getByText("Advanced", { exact: true }).click())
+             .then(() =>
+               page
+                 .getByRole("combobox", { name: "OAuth client" })
+@@ -323,7 +332,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
            page
              .getByRole("combobox", { name: "OAuth client" })
              .click()
 -            .then(() => page.getByRole("option", { name: /^Your own .+ app \(OAuth\)$/ }).click()),
 +            .then(() =>
-+              page.getByRole("option", { name: "Your own Google app (OAuth)", exact: true }).click(),
++              page
++                .getByRole("option", { name: "Your own Google app (OAuth)", exact: true })
++                .click(),
 +            ),
          );
          yield* browser.checkpoint("Account client can be replaced");
          yield* browser.use("Try an invalid replacement", (page) =>
-@@ -333,7 +341,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+@@ -331,11 +344,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             .getByLabel("Client ID", { exact: true })
+             .fill(recoveryClients.replacement.clientId)
              .then(() => page.getByLabel("Client secret", { exact: true }).fill("wrong-secret"))
+-            .then(() =>
+-              page
+-                .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
+-                .click(),
+-            )
++            .then(() => page.getByRole("button", { name: "Reconnect Gmail", exact: true }).click())
              .then(() =>
                page
+                 .getByRole("link", { name: "Update client details", exact: true })
+@@ -358,11 +367,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+                 .getByLabel("Client secret", { exact: true })
+                 .fill(recoveryClients.replacement.clientSecret),
+             )
+-            .then(() =>
+-              page
 -                .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
-+                .getByRole("button", { name: "Reconnect Gmail", exact: true })
-                 .click(),
-             )
-             .then(() =>
-@@ -360,7 +368,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
-             )
+-                .click(),
+-            )
++            .then(() => page.getByRole("button", { name: "Reconnect Gmail", exact: true }).click())
              .then(() =>
                page
--                .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
-+                .getByRole("button", { name: "Reconnect Gmail", exact: true })
-                 .click(),
-             )
-             .then(() =>
+                 // A reconnect through the app returns to that app's accounts.
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index e97dca4..eb4caac 100644
+index f47de7d..a5a2860 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-@@ -150,6 +150,8 @@ export function OAuthFields<A, E>({
-   readonly missingClient?: ReactNode;
+@@ -153,6 +153,8 @@ export function OAuthFields<A, E>({
+   readonly editClient?: OAuthClientId | undefined;
  }) {
    const brand = useProductBrand();
 +  const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
@@ -429,7 +422,7 @@ index e97dca4..eb4caac 100644
    const choices =
      options === "unresolved"
        ? setupFailed
-@@ -229,7 +231,7 @@ export function OAuthFields<A, E>({
+@@ -240,7 +242,7 @@ export function OAuthFields<A, E>({
        case "automatic":
          return `${brand.name} (automatic)`;
        case "manual":
@@ -438,7 +431,7 @@ index e97dca4..eb4caac 100644
      }
    };
    const connect = () => {
-@@ -265,11 +267,15 @@ export function OAuthFields<A, E>({
+@@ -277,11 +279,15 @@ export function OAuthFields<A, E>({
        onPendingChange?.(false);
      });
    };
@@ -458,12 +451,3 @@ index e97dca4..eb4caac 100644
    const clientSelect =
      choice === undefined || choices.length < 2 ? undefined : (
        <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-@@ -316,7 +322,7 @@ export function OAuthFields<A, E>({
-           setError(undefined);
-         }}
-       />
--      Use your own {providerName} app for this account
-+      Use your own {ownAppName} app for this account
-     </label>
-   );
-   return (

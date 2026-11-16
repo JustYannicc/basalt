@@ -21,22 +21,24 @@ diff --git a/apps/hosted/server/src/implementation/app-link-policy.ts b/apps/hos
      // SQL resolves columns, functions and tables before evaluating OR. Ordinary SDK hosts must
      // not need the hosted contribution schema. Recheck opt-in in the final read so a concurrent
      // deployment cannot turn that smaller query into an unchecked contribution read.
-@@ -25,14 +27,25 @@
+@@ -25,6 +27,10 @@
              and not exists (select 1 from hosted_contributed_departures revoked
                where revoked.app = l.app and revoked.requirement = l.requirement
                  and revoked.account = l.account and revoked.linked_at = l.created_at)))`;
 +    const declarations = projected
 +      ? sql`left join hosted_app_requirement_declarations declaration
 +          on declaration.app=l.app and declaration.requirement=l.requirement and declaration.method=a.method`
-+      : sql`left join executor_deployments contribution_deployment on contribution_deployment.id = app.active_deployment`;
-     return sql`hosted_app_account_links l
-       join executor_apps app on app.id = l.app
-       join executor_accounts a on a.id = l.account and a.owner = app.owner
++      : sql`left join executor_deployments contribution_deployment on contribution_deployment.id = l.active_deployment`;
+     return sql`(select l.app, l.requirement, l.account, l.created_at, l.linked_by,
+         app.owner, app.active_deployment
+         from hosted_app_account_links l
+@@ -34,9 +40,16 @@
+       join executor_accounts a on a.id = l.account and a.owner = l.owner
        join hosted_account_access p on p.account_id = a.id
          and a.owner = 'organization:' || p.organization_id
--      left join executor_deployments contribution_deployment on contribution_deployment.id = app.active_deployment
+-      left join executor_deployments contribution_deployment on contribution_deployment.id = l.active_deployment
 +      ${declarations}
-       where l.subject is null and ${sql.in("l.app", apps)} and ${policy}
+       where ${policy}
          and (p.kind <> 'personal' or exists(select 1 from member owner_member
            where owner_member."organizationId" = p.organization_id
              and owner_member."userId" = p.personal_user_id))`;
@@ -72,7 +74,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hos
 -      const usable = yield* usableAppLinks(sql, [pool]);
 -      const rows =
 -        yield* sql`with linked as (select a.*,l.requirement as linked_requirement,l.created_at as link_order,
--        app.active_deployment from ${usable})
+-        l.active_deployment from ${usable})
 -        select a.id as account,a.owner,a.linked_requirement as requirement,a.provider,a.method,
 -          a.credential_generation as generation,
 -          r.driver,r.driver_revision as "driverRevision",r.revision as "bindingRevision",

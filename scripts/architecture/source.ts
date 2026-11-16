@@ -28,7 +28,10 @@ export interface Dependency {
   evidence: string;
 }
 export const values = (value: string | string[] | undefined): string[] =>
-  (Array.isArray(value) ? value : (value?.split("|") ?? [])).map((v) => v.trim()).filter(Boolean);
+  (Array.isArray(value) ? value : [value ?? ""])
+    .flatMap((entry) => entry.split("|"))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 
 export function runtimeFiles(root: string, modules: Module[] = []): string[] {
   return executionFiles(root, modules).filter((path) => /\.[cm]?[jt]sx?$/.test(path));
@@ -278,7 +281,10 @@ export function sourceDependencies(
             argument !== undefined && staticValues.packageSpecifier(argument),
           );
       }
-      if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) {
+      if (
+        (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) &&
+        !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)
+      ) {
         const prefix = ts.isTemplateExpression(node) ? node.head.text : node.text;
         if (/^(?:https?|wss?):\/\//.test(prefix)) {
           if (usesBoundTransport(node, module, source)) return;

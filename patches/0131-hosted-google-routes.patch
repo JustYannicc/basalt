@@ -213,16 +213,16 @@ index 0000000..3e6b8a2
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
 new file mode 100644
-index 0000000..4e444d4
+index 0000000..0f6c69a
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,223 @@
 +import { AppId, ProviderId } from "@executor-js/sdk/core";
 +import { authorizeHostedRoutesAccount } from "@executor-js/hosted-server/hosted-routes";
 +import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-routes/contracts";
 +import { verifyHostedRoutesToken } from "@executor-js/hosted-server/hosted-routes-token";
 +import { GroupDatabase } from "@executor-js/hosted-server/groups";
-+import { OrganizationForbidden, OrganizationId } from "@executor-js/hosted-server/organization";
++import { OrganizationId } from "@executor-js/hosted-server/organization";
 +import { Effect, Option, Redacted, Result, Schema, Stream } from "effect";
 +import { HttpServerRequest, HttpServerResponse } from "effect/http";
 +import type { SqlClient } from "effect/sql";
@@ -244,12 +244,6 @@ index 0000000..4e444d4
 +  readonly provider: ProviderId;
 +  /** Used by the cloud emulator boundary to route only the fixed Google request to its fixture. */
 +  readonly fetcher?: typeof fetch;
-+}
-+
-+interface Authorized {
-+  readonly app: string;
-+  readonly organization: string;
-+  readonly user: string;
 +}
 +
 +const tokenFrom = (request: HttpServerRequest.HttpServerRequest) => {
@@ -683,7 +677,7 @@ index efaf0f5..67a3123 100644
      Layer.succeed(AccessLifecycle, accessLifecycle),
      Layer.succeed(
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index f344ca4..5dfbb83 100644
+index f4cbe68..3ed51b7 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -2,6 +2,8 @@ import { drainContributedDepartures } from "@executor-js/hosted-server/contribut
@@ -695,7 +689,7 @@ index f344ca4..5dfbb83 100644
  import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
  import {
    Provisioning,
-@@ -616,6 +618,7 @@ export default Api.make(
+@@ -642,6 +644,7 @@ export default Api.make(
        sitePageRoutes.map((page) => HttpRouter.route("GET", page, sitePage)),
      );
      // The site's first-party analytics proxy and error tunnel.
@@ -703,7 +697,7 @@ index f344ca4..5dfbb83 100644
      const siteTelemetryRoutes = Layer.mergeAll(
        HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
-@@ -625,6 +628,12 @@ export default Api.make(
+@@ -651,6 +654,12 @@ export default Api.make(
        HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
          HttpRouter.provideRequest(executor),
        ),
@@ -717,7 +711,7 @@ index f344ca4..5dfbb83 100644
          HttpRouter.provideRequest(executor),
        ),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 4d4111d..fbb1a4f 100644
+index fa00bc9..47de695 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -46,6 +46,9 @@
@@ -817,7 +811,7 @@ index 0000000..920b6e4
 +export const hostedRoutesCatalogReference = (origin: string) =>
 +  `${canonicalHostedRoutesOrigin(origin).origin}/catalog/apps/google-maps.json`;
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index 01062bf..324ccae 100644
+index 09d1668..84f3cc3 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -1,3 +1,6 @@
@@ -827,7 +821,7 @@ index 01062bf..324ccae 100644
  import { protectProvisionedLinks } from "./provisioned-links.ts";
  import { InteractiveRemovalDone } from "@executor-js/sdk/core";
  import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
-@@ -35,7 +38,7 @@ import type { SqlClient } from "effect/sql";
+@@ -39,7 +42,7 @@ import type { SqlClient } from "effect/sql";
  import { CurrentUserId } from "../contracts/auth.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { RequirementMismatch } from "../contracts/app-accounts.ts";
@@ -836,7 +830,7 @@ index 01062bf..324ccae 100644
  import {
    AppAccountReads,
    LinkedAccount,
-@@ -202,7 +205,26 @@ export const stillLinked = (used: AppAccounts, current: AppAccounts) => {
+@@ -206,7 +209,26 @@ export const stillLinked = (used: AppAccounts, current: AppAccounts) => {
  };
  /** The accounts an operation the caller starts runs with on the app's active version. */
  export const callerAccounts = (app: App, links?: CallerLinks) =>
@@ -866,10 +860,10 @@ index 01062bf..324ccae 100644
  export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink" | "sources">;
 diff --git a/apps/hosted/server/src/implementation/hosted-routes-accounts.ts b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
 new file mode 100644
-index 0000000..0c8b8ad
+index 0000000..db28a9e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,310 @@
 +import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 +/** Provision and authorize the host-owned Maps Routes account. */
 +import {
@@ -1058,14 +1052,19 @@ index 0000000..0c8b8ad
 +          // A live personal link is the authority to repair a host-owned credential after key
 +          // rotation. Keep the same account so selections and explicit relinks survive.
 +          const token = yield* Effect.tryPromise({
-+            try: () => signHostedRoutesToken(tokenKey, {
-+              app: app.id, organization, user, nonce: current.nonce,
-+              origin: configuration.origin,
-+            }),
++            try: () =>
++              signHostedRoutesToken(tokenKey, {
++                app: app.id,
++                organization,
++                user,
++                nonce: current.nonce,
++                origin: configuration.origin,
++              }),
 +            catch: () => new StorageError(),
 +          });
 +          yield* executor.managedAccounts.replaceCredentials({
-+            owner, account: current.account,
++            owner,
++            account: current.account,
 +            fields: Redacted.make({ origin: configuration.origin, token }),
 +          });
 +          yield* sql`update basalt_hosted_routes_accounts set state = 'linked'
@@ -1287,10 +1286,10 @@ index 0000000..98af5fe
 +  }
 +};
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
-index 5143de3..7383086 100644
+index e673b9d..95e0a55 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
 +++ b/apps/hosted/server/src/implementation/mcp-http.ts
-@@ -323,6 +323,7 @@ export const dispatchHostedMcp = <E, R>(
+@@ -333,6 +333,7 @@ export const dispatchHostedMcp = <E, R>(
            !fold.result.value.access.canUse
              ? Effect.succeed(undefined)
              : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
@@ -1319,10 +1318,10 @@ index 70eb890..7d41e42 100644
  
  /**
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 3643ce7..06d8267 100644
+index 2573dbd..8d05b02 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -39,6 +39,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
+@@ -40,6 +40,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
  import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
  import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
  import { cloudNativeStack } from "./cloud-native-stack.ts";
@@ -1330,7 +1329,7 @@ index 3643ce7..06d8267 100644
  import {
    OperatorOAuthFixture,
    operatorOAuthFile,
-@@ -205,6 +206,40 @@ export const startCloudEnvironment = (input: {
+@@ -204,6 +205,40 @@ export const startCloudEnvironment = (input: {
                services: input.signInThrough.services,
              }),
            );
@@ -1371,8 +1370,8 @@ index 3643ce7..06d8267 100644
      const oauthProxy = {
        productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
        secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
-@@ -217,7 +252,7 @@ export const startCloudEnvironment = (input: {
-       ).pipe(Effect.asVoid, Effect.orDie),
+@@ -219,7 +254,7 @@ export const startCloudEnvironment = (input: {
+       ),
      );
      const emulators = `${directory}/emulators.json`;
 -    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
@@ -1380,7 +1379,7 @@ index 3643ce7..06d8267 100644
      yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
      const analyticsPort = yield* startAnalyticsCollector(directory);
      // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
-@@ -289,7 +324,7 @@ export const startCloudEnvironment = (input: {
+@@ -298,7 +333,7 @@ export const startCloudEnvironment = (input: {
        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
        // Fresh test installs use the encrypted native journal, as production does.
        EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
@@ -1389,7 +1388,7 @@ index 3643ce7..06d8267 100644
          ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
          : {}),
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
-@@ -337,6 +372,13 @@ export const startCloudEnvironment = (input: {
+@@ -348,6 +383,13 @@ export const startCloudEnvironment = (input: {
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
@@ -1403,7 +1402,7 @@ index 3643ce7..06d8267 100644
        EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
        // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
-@@ -685,6 +727,6 @@ export const startCloudEnvironment = (input: {
+@@ -693,6 +735,6 @@ export const startCloudEnvironment = (input: {
        emulators,
        fixtures: controls,
        origin: input.origin,
@@ -1412,7 +1411,7 @@ index 3643ce7..06d8267 100644
      };
    });
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
-index ddd7b7e..a7b789b 100644
+index 53aef73..1af610c 100644
 --- a/e2e/support/emulators.ts
 +++ b/e2e/support/emulators.ts
 @@ -56,6 +56,24 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
@@ -1440,7 +1439,7 @@ index ddd7b7e..a7b789b 100644
  
  /** The fields of v1 WorkOS listings that seeding reads back. */
  const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
-@@ -74,6 +92,7 @@ export const EmulatorFixture = Schema.Struct({
+@@ -106,6 +124,7 @@ export const EmulatorFixture = Schema.Struct({
    version: Schema.Literal(4),
    origin: Schema.String,
    services: Schema.Struct({
@@ -1448,7 +1447,7 @@ index ddd7b7e..a7b789b 100644
      google: GoogleProvider,
      github: Provider,
      mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
-@@ -493,47 +512,51 @@ const make = Effect.gen(function* () {
+@@ -525,47 +544,51 @@ const make = Effect.gen(function* () {
        ),
      );
    return {
@@ -1731,10 +1730,10 @@ index fdde97c..af8446c 100644
      { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
    ] as const;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 24aa102..82b1b94 100644
+index d481629..0bba386 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8843,6 +8843,17 @@ export const scenarios = plan({
+@@ -10067,6 +10067,17 @@ export const scenarios = plan({
        local: na("The Cloud host owns automatic pool setup."),
      },
    },

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, relative, win32 } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { actionlintSource } from "./ci/actionlint.ts";
 import { downloadVerified } from "./ci/verified-download.mjs";
 
@@ -129,4 +130,116 @@ test("Bun setup exposes both command entry points on Unix and Windows and can re
       rmSync(root, { recursive: true, force: true });
     }
   }
+});
+
+test("Bun setup keeps the primary on PATH and exports a named secondary binary only", async () => {
+  const { registerBun } = await import("./ci/setup-bun.ts");
+  const root = mkdtempSync(join(tmpdir(), "basalt-bun-export-"));
+  try {
+    const bun = join(root, "bun");
+    const pathFile = join(root, "github-path");
+    const envFile = join(root, "github-env");
+    writeFileSync(bun, "installed Bun binary");
+    writeFileSync(pathFile, "existing-path\n");
+    writeFileSync(envFile, "existing-env\n");
+
+    registerBun(root, bun, undefined, { GITHUB_PATH: pathFile, GITHUB_ENV: envFile });
+    assert.equal(readFileSync(pathFile, "utf8"), `existing-path\n${root}\n`);
+    assert.equal(readFileSync(envFile, "utf8"), "existing-env\n");
+
+    registerBun(root, bun, "EXECUTOR_MOTEL_BUN", {
+      GITHUB_PATH: pathFile,
+      GITHUB_ENV: envFile,
+    });
+    assert.equal(readFileSync(pathFile, "utf8"), `existing-path\n${root}\n`);
+    assert.equal(readFileSync(envFile, "utf8"), `existing-env\nEXECUTOR_MOTEL_BUN=${bun}\n`);
+    assert.throws(
+      () =>
+        registerBun(root, bun, "GITHUB_PATH", {
+          GITHUB_PATH: pathFile,
+          GITHUB_ENV: envFile,
+        }),
+      /non-reserved environment variable name/,
+    );
+    assert.throws(
+      () => registerBun(root, bun, "EXECUTOR_MOTEL_BUN", { GITHUB_PATH: pathFile }),
+      /GITHUB_ENV/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("every workflow job preparing upstream E2E assets gets the separate collector Bun", () => {
+  const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+  const workflowRoot = join(repositoryRoot, ".github/workflows");
+  const scriptsRoot = join(repositoryRoot, "scripts");
+  const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const action = parse(
+    readFileSync(join(repositoryRoot, ".github/actions/setup-bun/action.yml"), "utf8"),
+  );
+  assert.equal(action.inputs["export-as"].required, false);
+  const filesBelow = (root: string): string[] =>
+    readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+      if (entry.isDirectory() && ["node_modules", ".git"].includes(entry.name)) return [];
+      const path = join(root, entry.name);
+      return entry.isDirectory() ? filesBelow(path) : [path];
+    });
+  const prepareWrappers = filesBelow(scriptsRoot)
+    .filter((path) => /\.[cm]?[jt]sx?$/.test(path))
+    .filter((path) =>
+      /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["']bun["']\s*,\s*\[[^\]]*["']e2e:prepare["']/.test(
+        readFileSync(path, "utf8"),
+      ),
+    )
+    .map((path) => relative(repositoryRoot, path).replaceAll("\\", "/"));
+  const setupBun = "./.github/actions/setup-bun";
+  let coveredJobs = 0;
+
+  const workflowFiles = readdirSync(workflowRoot).filter((name) => /\.ya?ml$/.test(name));
+  let primaryWorkflowVersion: string | undefined;
+  for (const file of workflowFiles) {
+    const workflow = parse(readFileSync(join(workflowRoot, file), "utf8"));
+    if (file === "ci.yml") primaryWorkflowVersion = workflow.env?.E2E_BUN_VERSION;
+    for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+      const steps =
+        (
+          job as {
+            steps?: Array<{ uses?: string; with?: Record<string, string>; run?: string }>;
+          }
+        ).steps ?? [];
+      const callerIndexes = steps.flatMap((step, index) => {
+        const run = step.run ?? "";
+        return /\be2e:prepare(?=$|\s)/.test(run) ||
+          prepareWrappers.some((path) => run.includes(path))
+          ? [index]
+          : [];
+      });
+      if (callerIndexes.length === 0) continue;
+      coveredJobs += 1;
+
+      const primaryIndex = steps.findIndex(
+        (step) =>
+          (step.uses === setupBun &&
+            step.with?.["bun-version"] === "${{ env.E2E_BUN_VERSION }}" &&
+            step.with?.["export-as"] === undefined) ||
+          (step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.2"),
+      );
+      const collectorIndex = steps.findIndex(
+        (step) =>
+          step.uses === setupBun &&
+          step.with?.["bun-version"] === "1.4.4" &&
+          step.with?.["export-as"] === "EXECUTOR_MOTEL_BUN",
+      );
+      const callerIndex = Math.min(...callerIndexes);
+      assert.ok(
+        primaryIndex >= 0 && primaryIndex < collectorIndex,
+        `${file}:${name} primary Bun setup`,
+      );
+      assert.ok(collectorIndex < callerIndex, `${file}:${name} collector setup`);
+    }
+  }
+
+  assert.equal(primaryWorkflowVersion, "1.4.2");
+  assert.ok(coveredJobs > 0);
 });

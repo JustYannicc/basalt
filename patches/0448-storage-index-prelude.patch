@@ -1,80 +1,5 @@
-diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
-index 7b5082d1e..36374761d 100644
---- a/packages/sdk/src/implementation/storage-schema.ts
-+++ b/packages/sdk/src/implementation/storage-schema.ts
-@@ -997,3 +997,10 @@ export const accountIdentityIndexes = [
- ] as const;
- 
- export const version4025Tables = { ...version4024Tables, accountAcquisitions };
-+
-+/** Queue indexes shared by fresh setup and the additive 4.0.29 upgrade. */
-+export const queueReadIndexes = [
-+  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
-+  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
-+  "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
-+] as const;
-diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index 359c4fb9f..944ceec83 100644
---- a/packages/sdk/src/implementation/storage-migrations.ts
-+++ b/packages/sdk/src/implementation/storage-migrations.ts
-@@ -41,6 +41,7 @@ import {
-   storedOAuthClientIndexes,
-   storedOAuthClientIssuerIndexes,
-   accountReportIndexes,
-+  queueReadIndexes,
- } from "./storage-schema.ts";
- 
- /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
-@@ -99,6 +100,7 @@ export const currentIndexes = [
-   ...boundedReadIndexes,
-   ...storedOAuthClientIssuerIndexes,
-   ...accountReportIndexes,
-+  ...queueReadIndexes,
- ] as const;
- 
- /** Versions built by {@link indexOnlyVersion}. */
-@@ -498,7 +500,7 @@ const version4 = <Version extends string>(version: Version, up?: CustomMigration
- /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
- const version4020Tables = { ...version4019Tables, accountAcquisitions: accountAcquisitions4020 };
- 
--export const storageSchemas = [
-+const applicationSchemas = [
-   version4("4.0.0"),
-   version4("4.0.1", () =>
-     Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
-@@ -824,6 +826,13 @@ export const storageSchemas = [
-   currentStorageSchema,
- ] as const;
- 
-+// Basalt's 4.0.16 stores account sites. Append upstream's queue indexes above the complete
-+// Basalt layout so existing installs run them without changing any released schema.
-+export const storageSchemas = [
-+  ...applicationSchemas,
-+  indexOnlyVersion(currentStorageSchema, "4.0.29", queueReadIndexes),
-+] as const;
-+
- /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
- export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
- 
-diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index 030613bf6..0040a29fb 100644
---- a/packages/sdk/src/implementation/storage.ts
-+++ b/packages/sdk/src/implementation/storage.ts
-@@ -44,7 +44,11 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.25")));
-+          }).pipe(
-+            Effect.mapError((cause) =>
-+              storageMigrationFailed(cause, storageSchemas[storageSchemas.length - 1]!.version),
-+            ),
-+          );
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
-index 889bc19a6..588d34336 100644
+index 889bc19..588d343 100644
 --- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 @@ -188,7 +188,7 @@ export const retirementReader = (
@@ -86,8 +11,21 @@ index 889bc19a6..588d34336 100644
                }),
              ),
            ),
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index b7b6870..b5d39e2 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -57,7 +57,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.28" }]]);
++        expect(storage).toEqual([[{ value: "4.0.29" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
-index 17f9ed15d..72656016c 100644
+index 17f9ed1..7265601 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -57,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
@@ -108,47 +46,8 @@ index 17f9ed15d..72656016c 100644
          expect(columns).toEqual([]);
          expect(records).toEqual([
            {
-diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
-index d4c737281..682de2111 100644
---- a/e2e/tests/legacy-targetless-connections.spec.ts
-+++ b/e2e/tests/legacy-targetless-connections.spec.ts
-@@ -136,7 +136,7 @@ const expectUpgraded = (
-   ids: Ids,
- ) => {
-   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
--  expect(version).toEqual([{ value: "4.0.28" }]);
-+  expect(version).toEqual([{ value: "4.0.29" }]);
- 
-   // Only the connection with a target is left, and only the sign-in no connection pointed at.
-   expect(connections).toEqual([{ id: template, target: "object" }]);
-diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
-index b7b687077..b5d39e20e 100644
---- a/e2e/tests/account-identities.spec.ts
-+++ b/e2e/tests/account-identities.spec.ts
-@@ -57,7 +57,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
-         const storage = yield* legacyStorage([
-           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
-         ]);
--        expect(storage).toEqual([[{ value: "4.0.28" }]]);
-+        expect(storage).toEqual([[{ value: "4.0.29" }]]);
-         yield* serverControl("start");
-         expect((yield* product.read(app)).status).toBe(200);
-         const again = yield* body(
-diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
-index cb3e07dc8..dfadc1700 100644
---- a/e2e/tests/oauth-client-issuer-migration.spec.ts
-+++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
-@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
-           },
-         ]);
-         yield* serverControl("start");
--        expect(version).toEqual([{ value: "4.0.28" }]);
-+        expect(version).toEqual([{ value: "4.0.29" }]);
- 
-         expect(credentials).toEqual([
-           { client: ids.a },
 diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
-index 8b20ee2ec..3dbd581ea 100644
+index 8b20ee2..3dbd581 100644
 --- a/e2e/tests/legacy-profile-schedules.spec.ts
 +++ b/e2e/tests/legacy-profile-schedules.spec.ts
 @@ -630,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
@@ -160,66 +59,37 @@ index 8b20ee2ec..3dbd581ea 100644
  
          expect(plans).toEqual(
            [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
-diff --git a/packages/sdk/scripts/check-storage-versions.ts b/packages/sdk/scripts/check-storage-versions.ts
---- a/packages/sdk/scripts/check-storage-versions.ts
-+++ b/packages/sdk/scripts/check-storage-versions.ts
-@@ -5,6 +5,7 @@
-  * tables exist. Loading the storage module runs the check on the real versions; first the same
-  * check runs on check-storage-versions-fixtures.ts, lists it must reject and ones it must accept.
-  */
-+import type { AnySchema } from "fumadb-effect/schema";
- import {
-   IndexOnlyVersionChangesTables,
-   trailingIndexVersions,
-@@ -12,10 +13,19 @@
-   storageSchemas,
- } from "../src/implementation/storage-migrations.ts";
- import { currentStorageSchema } from "../src/implementation/storage-current.ts";
--import { fixtures, type Fixture } from "./check-storage-versions-fixtures.ts";
-+import {
-+  fixtures,
-+  runtimeLayoutFixtures,
-+  type Fixture,
-+} from "./check-storage-versions-fixtures.ts";
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index d4c7372..682de21 100644
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -136,7 +136,7 @@ const expectUpgraded = (
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.28" }]);
++  expect(version).toEqual([{ value: "4.0.29" }]);
  
--if (storageSchemas.at(-1) !== currentStorageSchema)
--  throw new Error("Runtime queries must use the migration registry's current schema");
-+const runtimeLayoutIsCurrent = (schemas: ReadonlyArray<AnySchema>, current: AnySchema) => {
-+  const trailing = trailingIndexVersions(schemas);
-+  return schemas.findLast((entry) => !trailing.has(entry.version)) === current;
-+};
-+
-+if (!runtimeLayoutIsCurrent(storageSchemas, currentStorageSchema))
-+  throw new Error("Runtime queries must use the migration registry's current table layout");
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index cb3e07d..dfadc17 100644
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.28" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
  
- const outcome = (fixture: Fixture) => {
-   try {
-@@ -33,6 +43,13 @@
-   const actual = outcome(fixture);
-   return actual === expected ? [] : [`${fixture.name}: expected ${expected}, got ${actual}`];
- });
-+for (const fixture of runtimeLayoutFixtures) {
-+  const actual = runtimeLayoutIsCurrent(fixture.schemas, fixture.current);
-+  if (actual !== fixture.accepts)
-+    wrong.push(
-+      `${fixture.name}: expected runtime layout ${fixture.accepts ? "accepted" : "rejected"}`,
-+    );
-+}
- if (wrong.length > 0) {
-   console.error(
-     "The storage version check is wrong about these fixtures (packages/sdk/scripts/check-storage-versions-fixtures.ts):",
-@@ -45,3 +62,7 @@
- console.log(
-   `Index-only storage versions change no tables; trailing: ${[...trailingStorageIndexVersions].join(", ") || "none"} (the check rejects ${rejected} fixtures and accepts ${fixtures.length - rejected}).`,
- );
-+
-+console.log(
-+  `Runtime layout matches the last non-index-only schema (${runtimeLayoutFixtures.length} runtime fixtures checked).`,
-+);
+         expect(credentials).toEqual([
+           { client: ids.a },
 diff --git a/packages/sdk/scripts/check-storage-versions-fixtures.ts b/packages/sdk/scripts/check-storage-versions-fixtures.ts
+index b529c84..a063496 100644
 --- a/packages/sdk/scripts/check-storage-versions-fixtures.ts
 +++ b/packages/sdk/scripts/check-storage-versions-fixtures.ts
-@@ -90,3 +90,50 @@
+@@ -90,3 +90,50 @@ export const fixtures: ReadonlyArray<Fixture> = [
      rejects: "1.0.0",
    },
  ];
@@ -270,3 +140,95 @@ diff --git a/packages/sdk/scripts/check-storage-versions-fixtures.ts b/packages/
 +  current: AnySchema;
 +  accepts: boolean;
 +}>;
+diff --git a/packages/sdk/scripts/check-storage-versions.ts b/packages/sdk/scripts/check-storage-versions.ts
+index dd81e73..febf490 100644
+--- a/packages/sdk/scripts/check-storage-versions.ts
++++ b/packages/sdk/scripts/check-storage-versions.ts
+@@ -5,6 +5,7 @@
+  * tables exist. Loading the storage module runs the check on the real versions; first the same
+  * check runs on check-storage-versions-fixtures.ts, lists it must reject and ones it must accept.
+  */
++import type { AnySchema } from "fumadb-effect/schema";
+ import {
+   IndexOnlyVersionChangesTables,
+   trailingIndexVersions,
+@@ -12,10 +13,19 @@ import {
+   storageSchemas,
+ } from "../src/implementation/storage-migrations.ts";
+ import { currentStorageSchema } from "../src/implementation/storage-current.ts";
+-import { fixtures, type Fixture } from "./check-storage-versions-fixtures.ts";
++import {
++  fixtures,
++  runtimeLayoutFixtures,
++  type Fixture,
++} from "./check-storage-versions-fixtures.ts";
++
++const runtimeLayoutIsCurrent = (schemas: ReadonlyArray<AnySchema>, current: AnySchema) => {
++  const trailing = trailingIndexVersions(schemas);
++  return schemas.findLast((entry) => !trailing.has(entry.version)) === current;
++};
+ 
+-if (storageSchemas.at(-1) !== currentStorageSchema)
+-  throw new Error("Runtime queries must use the migration registry's current schema");
++if (!runtimeLayoutIsCurrent(storageSchemas, currentStorageSchema))
++  throw new Error("Runtime queries must use the migration registry's current table layout");
+ 
+ const outcome = (fixture: Fixture) => {
+   try {
+@@ -33,6 +43,13 @@ const wrong = fixtures.flatMap((fixture) => {
+   const actual = outcome(fixture);
+   return actual === expected ? [] : [`${fixture.name}: expected ${expected}, got ${actual}`];
+ });
++for (const fixture of runtimeLayoutFixtures) {
++  const actual = runtimeLayoutIsCurrent(fixture.schemas, fixture.current);
++  if (actual !== fixture.accepts)
++    wrong.push(
++      `${fixture.name}: expected runtime layout ${fixture.accepts ? "accepted" : "rejected"}`,
++    );
++}
+ if (wrong.length > 0) {
+   console.error(
+     "The storage version check is wrong about these fixtures (packages/sdk/scripts/check-storage-versions-fixtures.ts):",
+@@ -45,3 +62,7 @@ const rejected = fixtures.filter((fixture) => "rejects" in fixture).length;
+ console.log(
+   `Index-only storage versions change no tables; trailing: ${[...trailingStorageIndexVersions].join(", ") || "none"} (the check rejects ${rejected} fixtures and accepts ${fixtures.length - rejected}).`,
+ );
++
++console.log(
++  `Runtime layout matches the last non-index-only schema (${runtimeLayoutFixtures.length} runtime fixtures checked).`,
++);
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 0eb6357..43b02e0 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -101,6 +101,7 @@ export const currentIndexes = [
+   ...storedOAuthClientIssuerIndexes,
+   ...queueReadIndexes,
+   ...accountReportIndexes,
++  ...queueReadIndexes,
+ ] as const;
+ 
+ /** Versions built by {@link indexOnlyVersion}. */
+@@ -514,7 +515,7 @@ const version4015Schema = schema({
+ /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
+ const version4020Tables = { ...version4019Tables, accountAcquisitions: accountAcquisitions4020 };
+ 
+-export const storageSchemas = [
++const applicationSchemas = [
+   version4("4.0.0"),
+   version4("4.0.1", () =>
+     Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
+@@ -829,6 +830,13 @@ export const storageSchemas = [
+   currentStorageSchema,
+ ] as const;
+ 
++// Basalt's 4.0.16 stores account sites. Append upstream's queue indexes above the complete
++// Basalt layout so existing installs run them without changing any released schema.
++export const storageSchemas = [
++  ...applicationSchemas,
++  indexOnlyVersion(currentStorageSchema, "4.0.29", queueReadIndexes),
++] as const;
++
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+ export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
+ 
