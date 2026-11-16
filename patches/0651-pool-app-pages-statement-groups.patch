@@ -495,7 +495,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/sql-latency-proxy.ts
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,183 @@
 +import { Effect, FileSystem } from "effect";
 +import { connect, createServer, type Socket } from "node:net";
 +import { createServer as createHttpServer } from "node:http";
@@ -598,7 +598,8 @@ new file mode 100644
 +      incoming.on("error", close);
 +      outgoing.on("error", close);
 +      incoming.on("data", (chunk) => {
-+        front = Buffer.concat([front, chunk]);
++        const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
++        front = Buffer.concat([front, bytes]);
 +        while (front.length >= (startup ? 4 : 5)) {
 +          const size = startup ? front.readInt32BE(0) : front.readInt32BE(1) + 1;
 +          if (size < (startup ? 4 : 5)) return close();
@@ -609,15 +610,16 @@ new file mode 100644
 +          else if (frame[0] === 83 || frame[0] === 81)
 +            requests.push({ start: Date.now(), ...(measuring ? { generation } : {}) });
 +        }
-+        outgoing.write(chunk);
++        outgoing.write(bytes);
 +      });
 +      outgoing.on("data", (chunk) => {
++        const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
 +        const now = Date.now();
 +        const milliseconds = initialized ? delay : 0;
 +        // A later zero-delay chunk must never overtake one already waiting.
 +        deliveryAt = Math.max(deliveryAt, now + milliseconds);
 +        const end = deliveryAt;
-+        back = Buffer.concat([back, chunk]);
++        back = Buffer.concat([back, bytes]);
 +        while (back.length >= 5) {
 +          const size = back.readInt32BE(1) + 1;
 +          if (size < 5) return close();
@@ -635,12 +637,12 @@ new file mode 100644
 +        }
 +        const wait = end - now;
 +        if (wait <= 0) {
-+          incoming.write(chunk);
++          incoming.write(bytes);
 +          return;
 +        }
 +        const timer = setTimeout(() => {
 +          timers.delete(timer);
-+          if (!incoming.destroyed) incoming.write(chunk);
++          if (!incoming.destroyed) incoming.write(bytes);
 +        }, wait);
 +        timers.add(timer);
 +      });
@@ -771,7 +773,7 @@ diff --git a/e2e/tests/pool-account-view-latency.spec.ts b/e2e/tests/pool-accoun
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-account-view-latency.spec.ts
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,262 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schedule, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -863,7 +865,14 @@ new file mode 100644
 +            .pipe(Effect.asVoid, Effect.orDie),
 +        );
 +        const plan = yield* worker.operations("/model-history/schema/catalog");
-+        const hashes = yield* driver("Read isolated schema plan", () => plan.json());
++        expect(plan.status).toBe(200);
++        const hashes = yield* driver("Read isolated schema plan", () => plan.json()).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
++            ),
++          ),
++        );
 +        expect(
 +          (yield* worker.operations("/model-history/schema", {
 +            method: "POST",
