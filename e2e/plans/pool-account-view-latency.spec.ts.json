@@ -22,9 +22,7 @@
     }
   },
   "runs": {
-    "poolAccountViewLatency": [
-      "declared:cloud"
-    ]
+    "poolAccountViewLatency": ["declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/app-ui.ts",
