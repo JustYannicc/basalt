@@ -371,7 +371,7 @@ test(
       );
       assert.deepEqual(
         hostedMigrations.rows.map((row) => row.migration_id),
-        Array.from({ length: 21 }, (_, index) => index + 1),
+        [...Array.from({ length: 21 }, (_, index) => index + 1), 23],
       );
     } finally {
       await removeNoDdlGuard(f.client).catch(() => undefined);
