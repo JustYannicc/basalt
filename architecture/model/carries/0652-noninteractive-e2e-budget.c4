@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Noninteractive end-to-end tests have a finite 120-second test-body budget across self-host, local and cloud targets. Interactive observation retains its existing unlimited test budget. Hook, teardown, unit-test and outer CI deadlines stay independent and unchanged, and per-test overrides retain their authority."
+    }
+  }
+}
