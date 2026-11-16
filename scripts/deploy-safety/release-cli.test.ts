@@ -4,12 +4,19 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertRestoredBackup, candidateCheckout, resolveManualRollbackSourceRoot } from "./release.ts";
+import {
+  assertRestoredBackup,
+  candidateCheckout,
+  resolveManualRollbackSourceRoot,
+} from "./release.ts";
 import { gitRepositoryRoot } from "./release-plan.ts";
 
 test("rollback workflow selects a release and defers deployment status eligibility to the guarded CLI", () => {
-  const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows/release-rollback.yml"), "utf8");
-  assert.match(workflow, /inputs:\n\s+release_sha:/);
+  const workflow = readFileSync(
+    join(gitRepositoryRoot(), ".github/workflows/release-rollback.yml"),
+    "utf8",
+  );
+  assert.match(workflow, /\n\s+release_sha:/);
   assert.doesNotMatch(workflow, /failed_release_sha|FAILED_RELEASE_SHA/);
   assert.match(workflow, /release\.ts rollback-report/);
   assert.match(workflow, /release\.ts rollback-target/);
@@ -18,20 +25,44 @@ test("rollback workflow selects a release and defers deployment status eligibili
   assert.match(workflow, /environment: production-release/);
 });
 
-test("rollback runs only for the backup the dispatcher says they restored", () => {
-  const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows/release-rollback.yml"), "utf8");
-  assert.match(workflow, /\n\s+restored_backup:\n\s+description: [^\n]+\n\s+required: true/);
+test("database-restore rollback requires the exact backup while recorded-version recovery rejects a restore assertion", () => {
+  const workflow = readFileSync(
+    join(gitRepositoryRoot(), ".github/workflows/release-rollback.yml"),
+    "utf8",
+  );
+  assert.match(workflow, /\n\s+restored_backup:\n\s+description: [^\n]+\n\s+required: false/);
+  assert.match(
+    workflow,
+    /plan:\n\s+if: github.ref == 'refs\/heads\/main' && inputs.recovery_mode != 'recorded-versions'/,
+  );
   for (const command of ["rollback-target", "manual-rollback"])
-    assert.match(workflow, new RegExp(`release\\.ts ${command} \\\\\\n(?:\\s+--[^\\n]+\\n)*?\\s+--restored-backup "\\$RESTORED_BACKUP"`), command);
-  assert.equal(workflow.match(/RESTORED_BACKUP: \$\{\{ inputs\.restored_backup \}\}/g)?.length, 2);
+    assert.match(
+      workflow,
+      new RegExp(
+        `release\\.ts ${command} \\\\\\n(?:\\s+--[^\\n]+\\n)*?\\s+--restored-backup "\\$RESTORED_BACKUP"`,
+      ),
+      command,
+    );
+  assert.equal(workflow.match(/RESTORED_BACKUP: \$\{\{ inputs\.restored_backup \}\}/g)?.length, 4);
   assertRestoredBackup(" basalt-release-v2-recorded\n", "basalt-release-v2-recorded");
-  assert.throws(() => assertRestoredBackup("basalt-release-v2-other", "basalt-release-v2-recorded"), /recorded backup, basalt-release-v2-recorded; restore that exact backup first/);
+  assert.throws(
+    () => assertRestoredBackup("basalt-release-v2-other", "basalt-release-v2-recorded"),
+    /recorded backup, basalt-release-v2-recorded; restore that exact backup first/,
+  );
+  assert.throws(
+    () => assertRestoredBackup("", "basalt-release-v2-recorded"),
+    /restore that exact backup first/,
+  );
 });
 
 test("Workflow-identity releases fail closed in the drain step", () => {
   for (const name of ["release-main.yml", "release-manual.yml"]) {
     const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows", name), "utf8");
-    assert.match(workflow, /- name: Journal changes require all existing workflow runs drained before deployment\n\s+run: node scripts\/deploy-safety\/release\.ts inspect-workflows /, name);
+    assert.match(
+      workflow,
+      /- name: Journal changes require all existing workflow runs drained before deployment\n\s+run: node scripts\/deploy-safety\/release\.ts inspect-workflows /,
+      name,
+    );
     assert.ok(workflow.indexOf("inspect-workflows") < workflow.indexOf("release.ts deploy "), name);
   }
 });
@@ -49,9 +80,15 @@ test("bootstrap report accepts trusted main on workflow_dispatch without candida
   const previousDirectory = process.cwd();
   try {
     process.chdir(root);
-    assert.deepEqual(candidateCheckout({ "--candidate": candidate }, true), { root, commit: candidate });
+    assert.deepEqual(candidateCheckout({ "--candidate": candidate }, true), {
+      root,
+      commit: candidate,
+    });
     const trustedCandidate = commitAt(gitRepositoryRoot());
-    assert.throws(() => candidateCheckout({ "--candidate": trustedCandidate }), /separate worktree under RUNNER_TEMP/);
+    assert.throws(
+      () => candidateCheckout({ "--candidate": trustedCandidate }),
+      /separate worktree under RUNNER_TEMP/,
+    );
   } finally {
     process.chdir(previousDirectory);
     restore();
@@ -72,17 +109,26 @@ test("manual commands require the exact candidate worktree under RUNNER_TEMP", (
     BASALT_RELEASE_CANDIDATE_SHA: undefined,
   });
   try {
-    assert.deepEqual(candidateCheckout({ "--candidate": candidate, "--candidate-root": candidateRoot }), {
-      root: realpathSync(candidateRoot),
-      commit: candidate,
-    });
+    assert.deepEqual(
+      candidateCheckout({ "--candidate": candidate, "--candidate-root": candidateRoot }),
+      {
+        root: realpathSync(candidateRoot),
+        commit: candidate,
+      },
+    );
     assert.throws(
       () => candidateCheckout({ "--candidate": "f".repeat(40), "--candidate-root": candidateRoot }),
       /does not match the checked-out HEAD/,
     );
     const trustedCandidate = commitAt(gitRepositoryRoot());
-    assert.throws(() => candidateCheckout({ "--candidate": trustedCandidate }), /separate worktree under RUNNER_TEMP/);
-    assert.throws(() => candidateCheckout({ "--candidate-root": candidateRoot }), /Missing required option --candidate/);
+    assert.throws(
+      () => candidateCheckout({ "--candidate": trustedCandidate }),
+      /separate worktree under RUNNER_TEMP/,
+    );
+    assert.throws(
+      () => candidateCheckout({ "--candidate-root": candidateRoot }),
+      /Missing required option --candidate/,
+    );
   } finally {
     restore();
     rmSync(temporary, { recursive: true, force: true });
@@ -99,7 +145,10 @@ test("automatic report uses the checked-out candidate without candidate-root", (
     BASALT_RELEASE_CANDIDATE_SHA: undefined,
   });
   try {
-    assert.deepEqual(candidateCheckout({ "--candidate": candidate }, true), { root, commit: candidate });
+    assert.deepEqual(candidateCheckout({ "--candidate": candidate }, true), {
+      root,
+      commit: candidate,
+    });
   } finally {
     restore();
   }
@@ -114,7 +163,10 @@ test("manual rollback source must be a separate exact-baseline worktree under RU
   const failedSha = createCommit(failedRoot);
   const rollbackSha = createCommit(rollbackRoot);
   try {
-    assert.equal(resolveManualRollbackSourceRoot(rollbackSha, rollbackRoot, failedRoot, temporary), realpathSync(rollbackRoot));
+    assert.equal(
+      resolveManualRollbackSourceRoot(rollbackSha, rollbackRoot, failedRoot, temporary),
+      realpathSync(rollbackRoot),
+    );
     assert.throws(
       () => resolveManualRollbackSourceRoot(failedSha, rollbackRoot, failedRoot, temporary),
       /does not match the recorded production baseline/,
@@ -164,6 +216,7 @@ function setEnvironment(values: Record<string, string | undefined>): () => void 
       else process.env[key] = value;
     }
     const runnerTemp = values.RUNNER_TEMP;
-    if (runnerTemp?.includes("basalt-runner-temp-")) rmSync(runnerTemp, { recursive: true, force: true });
+    if (runnerTemp?.includes("basalt-runner-temp-"))
+      rmSync(runnerTemp, { recursive: true, force: true });
   };
 }

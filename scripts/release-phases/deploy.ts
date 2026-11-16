@@ -22,10 +22,12 @@ export async function deployInPhases(options: {
   const candidate = options.environment.BASALT_RELEASE_CANDIDATE;
   if (!candidate || !/^[a-f0-9]{40}$/.test(candidate))
     throw new Error("Release barrier requires an immutable candidate");
-  const headroom = await (options.preflight ?? checkReleaseHeadroom)(options.environment);
-  console.log(
-    `Database release admitted: primary total ${headroom.observed}, release envelope ${headroom.envelope}, ordinary slots ${headroom.ordinarySlots}.`,
-  );
+  if (!recovery.length) {
+    const headroom = await (options.preflight ?? checkReleaseHeadroom)(options.environment);
+    console.log(
+      `Database release admitted: primary total ${headroom.observed}, release envelope ${headroom.envelope}, ordinary slots ${headroom.ordinarySlots}.`,
+    );
+  }
   (options.execute ?? run)(
     "bun",
     ["../../../../scripts/release-barrier/entry.ts", ...args],
