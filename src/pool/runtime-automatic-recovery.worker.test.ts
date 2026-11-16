@@ -142,6 +142,7 @@ test(
   "an accepted interrupted call is not replayed and receives native HTTP retry advice",
   { timeout: 10_000 },
   async (context) => {
+    const errors = context.mock.method(console, "error", () => {});
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     await f.bootstrap();
@@ -166,6 +167,13 @@ test(
       assert.equal(response.headers.get("retry-after"), "1");
       const body = (await response.json()) as { error: { type: string } };
       assert.equal(body.error.type, type);
+      const requestId = response.headers.get("X-Request-Id");
+      assert.equal(
+        errors.mock.calls
+          .filter((call) => call.arguments[0] === "POOL_RUNTIME_ROUTE_FAILURE")
+          .at(-1)!.arguments[1].requestId,
+        requestId,
+      );
       await f.upkeep();
     }
     assert.equal(attempts, 2, "one attempt per accepted original");

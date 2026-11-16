@@ -967,6 +967,7 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
     assert.partialDeepStrictEqual(
       errors.find((entry) => entry[0] === "POOL_RUNTIME_ROUTE_FAILURE")?.[1],
       {
+        requestId: response.headers.get("X-Request-Id"),
         runtimeStep: "fleet_forward",
         runtimeReason: "unhealthy",
       },

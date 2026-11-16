@@ -1,4 +1,5 @@
 import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
+import { retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
 const message = "The model runtime restarted. Please retry this request.";
 function anthropic(request: Request) {
@@ -7,7 +8,7 @@ function anthropic(request: Request) {
 
 export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
   const claude = anthropic(request);
-  return Response.json(
+  const response = Response.json(
     claude
       ? { type: "error", error: { type: "overloaded_error", message } }
       : { error: { type: "server_error", code: "server_error", message } },
@@ -20,6 +21,8 @@ export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
       },
     },
   );
+  if (error instanceof Error) retainEndpointRequestId(error, response);
+  return response;
 }
 
 /** Once headers commit, only a native SSE terminal can describe the interruption. */

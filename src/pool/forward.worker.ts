@@ -37,6 +37,7 @@ import { digest } from "./backend-users.ts";
 import { endpointMetadata } from "./model-history/record.ts";
 import { terminalSocket } from "./terminal-socket.worker.ts";
 import { captureRefusalModel } from "./refusal-model.ts";
+import { endpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
 interface Dependencies {
   terminal?: TerminalRecorder;
@@ -194,8 +195,10 @@ export async function forwardPoolRequest(
       : await legacy(outbound);
     guard = "upstream_response";
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    const runtimeRequestId = endpointRequestId(upstream) ?? requestId;
     if (runtimeRefusal)
       console.error("POOL_RUNTIME_ROUTE_FAILURE", {
+        requestId: runtimeRequestId,
         code: "runtime-refused",
         status: upstream.status,
         ...runtimeRefusal,
@@ -247,7 +250,8 @@ export async function forwardPoolRequest(
     headers.delete("X-Basalt-Terminal-Protocol");
     headers.delete(dispatchTimingHeader);
     stripRuntimeFailureHeaders(headers);
-    if (modelCall || runtimeRefusal) headers.set("X-Request-Id", requestId);
+    if (modelCall || runtimeRefusal)
+      headers.set("X-Request-Id", runtimeRefusal ? runtimeRequestId : requestId);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
