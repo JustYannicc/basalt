@@ -156,6 +156,22 @@ test("auth-preview requests cannot escape their phase or exceed the bounded requ
   assert.throws(f.envelope.endAuth, /envelope-violated/);
 });
 
+test("absolute DNS aliases cannot bypass the global mutation guard or its receipt", async () => {
+  for (const phase of ["closed", "auth", "operation"])
+    for (const host of ["api.cloudflare.com.", "API.CLOUDFLARE.COM.", "api.cloudflare.com.."])
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+        const f = fixture();
+        if (phase !== "closed") f.envelope.beginAuth();
+        if (phase === "operation") f.envelope.endAuth();
+        const url = `${prefix.replace("api.cloudflare.com", host)}scripts/alchemy-state-store/edge-preview`;
+        await assert.rejects(f.envelope.fetch(url, { method }), /request-refused/);
+        assert.equal(f.sent.length, 0);
+        assert.equal(f.log[0]!.disposition, "blocked");
+        assert.equal(f.envelope.receipt().blockedMutations, 1);
+        assert.equal(f.envelope.receipt().otherCloudflareMutations, 0);
+      }
+});
+
 test("concurrent auth requests cannot outrun the global budget", async () => {
   const f = fixture();
   f.envelope.beginAuth();

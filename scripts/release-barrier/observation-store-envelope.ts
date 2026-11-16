@@ -27,9 +27,10 @@ export function observationStoreEnvelope(
     assertClean();
     const request = new Request(input, init);
     const url = new URL(request.url);
-    const mutation = url.hostname === "api.cloudflare.com" && request.method !== "GET";
+    const cloudflareApi = url.hostname.replace(/\.+$/u, "") === "api.cloudflare.com";
+    const mutation = cloudflareApi && request.method !== "GET";
     const operation = Object.entries(paths).find(([, path]) => path === url.pathname)?.[0];
-    const preview = url.hostname === "api.cloudflare.com" && url.pathname.includes("/edge-preview");
+    const preview = cloudflareApi && url.pathname.includes("/edge-preview");
     if (mutation || preview) {
       const expectedMethod = operation === "createSubdomainEdgePreviewSession" ? "GET" : "POST";
       if (
