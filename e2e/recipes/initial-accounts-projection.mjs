@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-/** Hold transport before its first request, where a request-idle check cannot see it. */
+/** Hold initial projections before transport, where a request-idle check cannot see them. */
 export async function holdInitialAccountsProjection(context, installReadRouting) {
   let enter, release;
   const entered = new Promise((resolve) => {
@@ -16,7 +16,7 @@ export async function holdInitialAccountsProjection(context, installReadRouting)
   });
   const installHold = ({ binding }) => {
     const native = window.fetch;
-    let held = false;
+    let holding = true;
     const delayed = (input, init) => {
       const url = URL.parse(input instanceof Request ? input.url : String(input), location.href);
       const method = (
@@ -26,9 +26,12 @@ export async function holdInitialAccountsProjection(context, installReadRouting)
         url?.origin === location.origin &&
         method === "GET" &&
         /^\/api\/organizations\/[^/]+\/resources\/accounts$/.test(url.pathname);
-      if (!held && accounts) {
-        held = true;
-        return window[binding]().then(() => native(input, init));
+      if (holding && accounts) {
+        // Another initial read can satisfy the response join before the first one is released.
+        return window[binding]().then(() => {
+          holding = false;
+          return native(input, init);
+        });
       }
       return native(input, init);
     };
