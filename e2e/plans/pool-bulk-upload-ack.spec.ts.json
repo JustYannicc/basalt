@@ -56,15 +56,9 @@
     }
   },
   "runs": {
-    "poolBulkUploadDurableAck": [
-      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
-    ],
-    "poolBulkUploadUnknownAck": [
-      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
-    ],
-    "poolBulkStatusAckBudget": [
-      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
-    ]
+    "poolBulkUploadDurableAck": ["host-managed-accounts-runtime:bulk-upload-acknowledgements"],
+    "poolBulkUploadUnknownAck": ["host-managed-accounts-runtime:bulk-upload-acknowledgements"],
+    "poolBulkStatusAckBudget": ["host-managed-accounts-runtime:bulk-upload-acknowledgements"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/main.ts",
