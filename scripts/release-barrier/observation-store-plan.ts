@@ -105,6 +105,23 @@ export const readObservationStorePlan = (stack: CompiledStack, accountId: string
     );
   });
 
+export function assertObservationStorePlanGo(
+  request: typeof ObservationStorePlanRequest.Type,
+  now: number,
+) {
+  if (
+    !Number.isSafeInteger(now) ||
+    !Number.isSafeInteger(request.expiresAt) ||
+    request.expiresAt <= now
+  )
+    throw provisioningRefusal(
+      "observation-store-plan-not-enabled",
+      "observationStore.plan.go",
+      "unexpired-writer-GO",
+      "unavailable",
+    );
+}
+
 export const planObservationStore = (
   stack: CompiledStack,
   request: typeof ObservationStorePlanRequest.Type,
@@ -112,7 +129,8 @@ export const planObservationStore = (
   now: () => number = Date.now,
 ) =>
   Effect.gen(function* () {
-    if (!writer.lease || !Number.isSafeInteger(now()) || request.expiresAt <= now())
+    assertObservationStorePlanGo(request, now());
+    if (!writer.lease)
       throw provisioningRefusal(
         "observation-store-plan-not-enabled",
         "observationStore.plan.go",

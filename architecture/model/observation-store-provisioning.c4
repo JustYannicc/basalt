@@ -1,0 +1,17 @@
+model {
+  extend basalt {
+    observationStoreProvisioning = module "Observation store adoption" {
+      #basalt #deep
+      description "The serialized provisioning lane records one existing account store in native state after a separately approved read-only plan. The plan freezes its account, identity, declaration, SDK and absent-row digests. Missing stores refuse without creation. Standard adoption preserves other resource rows, the deployed stack output and recovery history; completion requires native readback, a no-op replan and unchanged release admission."
+      metadata {
+        code "scripts/release-barrier/observation-store-apply.ts|scripts/release-barrier/observation-store-contract.ts|scripts/release-barrier/observation-store-envelope.ts|scripts/release-barrier/observation-store-plan.ts|scripts/release-barrier/observation-store-stack.ts|scripts/release-barrier/observation-store-state.ts|scripts/release-barrier/observation-store-wire.ts"
+        libraries "alchemy"
+        constraint "State authentication alone may create the bounded ephemeral preview needed to read its existing credential. The exact account-bound session GET and State script preview POST are counted and logged; their exception closes before planning. A global transport guard refuses every other cloud account mutation throughout the operation, and the provider guard independently admits only store-list reads. Receipts distinguish the actual auth-preview POST count from zero other cloud account mutations. An auth violation prevents planning; uncertain adoption cannot replay."
+      }
+    }
+  }
+  basalt.deployment -[sync]-> basalt.observationStoreProvisioning "run the approved plan or native adoption under the production writer lock"
+  basalt.observationStoreProvisioning -[sync]-> basalt.deployment "retain the provisioning journal and require unchanged release admission"
+  basalt.observationStoreProvisioning -[sync]-> basalt.modelGateway "reuse the shared retained account store declaration"
+  basalt.observationStoreProvisioning -[sync]-> deploymentProvider "authenticate State and observe the existing account store"
+}

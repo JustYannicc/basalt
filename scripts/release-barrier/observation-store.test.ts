@@ -56,6 +56,10 @@ test("invalid workflow plan input records a safe failure before stack evaluation
     assert.equal((result.stdout + result.stderr).includes("synthetic-never-print"), false);
     assert.equal((result.stdout + result.stderr).includes("REAL NETWORK DENIED"), false);
     assert.ok(JSON.parse(failure).reason);
+    const envelope = JSON.parse(await readFile(join(directory, "network-envelope.json"), "utf8"));
+    assert.equal(envelope.authPreviewPosts, 0);
+    assert.equal(envelope.otherCloudflareMutations, 0);
+    assert.equal(envelope.blockedMutations, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

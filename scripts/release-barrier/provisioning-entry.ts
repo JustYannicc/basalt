@@ -1,12 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Context, Effect, Schema } from "effect";
+import { FetchHttpClient } from "effect/http";
+import { observationStoreEnvelope } from "./observation-store-envelope.ts";
 import { evalStack } from "alchemy/Stack";
 import { State } from "alchemy/State/State";
 import { observationStoreStack } from "./observation-store-stack.ts";
 import { ObservationStorePlanRequest } from "./observation-store-contract.ts";
-import { planObservationStore } from "./observation-store-plan.ts";
+import { assertObservationStorePlanGo, planObservationStore } from "./observation-store-plan.ts";
 import { provisioningStack } from "./provisioning-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
@@ -78,70 +80,115 @@ if (import.meta.main && process.argv[2] === "digest") {
     process.env.EXECUTOR_ENCRYPTION_KEY,
   );
   process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
-  process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMARY, () =>
-    Effect.runPromiseExit(
-      Effect.gen(function* () {
-        const planRequest =
-          mode === "plan"
-            ? yield* Schema.decodeUnknownEffect(ObservationStorePlanRequest, {
-                onExcessProperty: "error",
-              })(value)
-            : undefined;
-        return yield* evalStack(
-          planRequest || packet?.operation.kind === "observation-store"
-            ? observationStoreStack
-            : provisioningStack,
-          (compiled) =>
-            Effect.gen(function* () {
-              yield* assertReleaseStateVersion(compiled);
-              const receipt = planRequest
-                ? {
-                    operation: {
-                      kind: "observation-store" as const,
-                      manifest: yield* planObservationStore(compiled, planRequest, writer),
-                    },
-                  }
-                : mode === "apply"
-                  ? yield* runDeclaredProvisioning(
-                      compiled,
-                      packet!,
-                      writer,
-                      process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
-                      process.env.POOL_DEPLOYMENT_KEY ?? "",
-                    )
-                  : yield* inspectDeclaredProvisioning(
-                      compiled,
-                      packet!,
-                      writer,
-                      process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
-                    );
-              const output =
-                planRequest && "operation" in receipt
+  const nativeFetch = globalThis.fetch;
+  const envelope =
+    mode === "plan" || packet?.operation.kind === "observation-store"
+      ? observationStoreEnvelope(
+          writer.accountId,
+          (entry) =>
+            appendFile(resolve(directory, "network-requests.jsonl"), JSON.stringify(entry) + "\n", {
+              mode: 0o600,
+              flush: true,
+            }),
+          nativeFetch,
+        )
+      : undefined;
+  if (envelope) globalThis.fetch = envelope.fetch;
+  try {
+    process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMARY, () =>
+      Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const planRequest =
+            mode === "plan"
+              ? yield* Schema.decodeUnknownEffect(ObservationStorePlanRequest, {
+                  onExcessProperty: "error",
+                })(value)
+              : undefined;
+          if (planRequest) assertObservationStorePlanGo(planRequest, Date.now());
+          envelope?.beginAuth();
+          return yield* evalStack(
+            planRequest || packet?.operation.kind === "observation-store"
+              ? observationStoreStack
+              : provisioningStack,
+            (compiled) =>
+              Effect.gen(function* () {
+                if (envelope) {
+                  yield* Effect.gen(function* () {
+                    yield* assertReleaseStateVersion(compiled);
+                    // Resolve the SDK's lazy State login before closing the auth-only exception.
+                    yield* yield* State;
+                  }).pipe(Effect.timeout("60 seconds"));
+                  envelope.endAuth();
+                } else yield* assertReleaseStateVersion(compiled);
+                const receipt = planRequest
                   ? {
-                      disposition: "plan",
-                      ...receipt,
-                      operationDigest: provisioningOperationDigest(receipt.operation),
+                      operation: {
+                        kind: "observation-store" as const,
+                        manifest: yield* planObservationStore(compiled, planRequest, writer),
+                      },
                     }
-                  : {
-                      disposition: mode,
-                      ...(packet
-                        ? { manifest: provisioningOperationDigest(packet.operation) }
-                        : {}),
-                      receipt,
-                    };
-              yield* Effect.promise(() =>
-                writeFile(resolve(directory, "receipt.json"), JSON.stringify(output), {
-                  mode: 0o600,
-                  flush: true,
-                }),
-              );
-            }).pipe(
-              Effect.provideContext(compiled.services),
-              Effect.provideService(State, Context.get(compiled.services, State)),
-            ),
-          { stage: "production" },
-        );
-      }).pipe(withReleaseRuntime),
-    ),
-  );
+                  : mode === "apply"
+                    ? yield* runDeclaredProvisioning(
+                        compiled,
+                        packet!,
+                        writer,
+                        process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                        process.env.POOL_DEPLOYMENT_KEY ?? "",
+                      )
+                    : yield* inspectDeclaredProvisioning(
+                        compiled,
+                        packet!,
+                        writer,
+                        process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                      );
+                const output =
+                  planRequest && "operation" in receipt
+                    ? {
+                        disposition: "plan",
+                        ...receipt,
+                        operationDigest: provisioningOperationDigest(receipt.operation),
+                      }
+                    : {
+                        disposition: mode,
+                        ...(packet
+                          ? { manifest: provisioningOperationDigest(packet.operation) }
+                          : {}),
+                        receipt,
+                      };
+                envelope?.assertClean();
+                yield* Effect.promise(() =>
+                  writeFile(
+                    resolve(directory, "receipt.json"),
+                    JSON.stringify({
+                      ...output,
+                      ...(envelope ? { networkEnvelope: envelope.receipt() } : {}),
+                    }),
+                    {
+                      mode: 0o600,
+                      flush: true,
+                    },
+                  ),
+                );
+              }).pipe(
+                Effect.provideContext(compiled.services),
+                Effect.provideService(State, Context.get(compiled.services, State)),
+              ),
+            { stage: "production" },
+          );
+        }).pipe(
+          withReleaseRuntime,
+          Effect.provideService(FetchHttpClient.Fetch, envelope?.fetch ?? nativeFetch),
+        ),
+      ),
+    );
+  } finally {
+    if (envelope) {
+      globalThis.fetch = nativeFetch;
+      await writeFile(
+        resolve(directory, "network-envelope.json"),
+        JSON.stringify(envelope.receipt()),
+        { mode: 0o600, flush: true },
+      );
+    }
+  }
 }
