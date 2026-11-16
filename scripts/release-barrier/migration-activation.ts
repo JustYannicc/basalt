@@ -58,7 +58,7 @@ export function migrationActivationIntent(
   if (
     adoption.candidate !== candidate ||
     !sha.test(adoption.poolWorkerRevision) ||
-    !sha.test(adoption.imageInput)
+    !/^[a-f0-9]{16}$/u.test(adoption.imageInput)
   )
     throw new BarrierRefusal("migration-activation-reader-adoption-missing", "PoolWorker");
   if (

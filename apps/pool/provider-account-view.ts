@@ -16,9 +16,6 @@ interface Context {
 
 /** Provider presentation comes only from the exact saved source, never a similar app's name. */
 export async function providerAccountView(ctx: Context, view: PoolView): Promise<PoolView> {
-  const selected = Object.entries(ctx.app.accounts).flatMap(([slot, accounts]) =>
-    slot === "pool" ? [] : "read" in accounts ? [accounts] : accounts,
-  );
   const ids = [
     ...new Set(
       view.accounts.flatMap((account) =>
@@ -26,6 +23,18 @@ export async function providerAccountView(ctx: Context, view: PoolView): Promise
       ),
     ),
   ];
+  return (await readProviderAccountViews(ctx, ids))(view);
+}
+
+/** Start exact source reads beside the independent pool-control request. */
+export async function readProviderAccountViews(
+  ctx: Context,
+  idsToRead?: readonly string[],
+): Promise<(view: PoolView) => PoolView> {
+  const selected = Object.entries(ctx.app.accounts).flatMap(([slot, accounts]) =>
+    slot === "pool" ? [] : "read" in accounts ? [accounts] : accounts,
+  );
+  const ids = idsToRead ?? selected.map((account) => account.id);
   const reads = new Map<string, SelectedAccountView>();
   const resolved = new Set<string>();
   for (let start = 0; start < ids.length; start += 8) {
@@ -69,40 +78,44 @@ export async function providerAccountView(ctx: Context, view: PoolView): Promise
       }),
     );
   }
-  const accounts = view.accounts.map((account): Account => {
-    if (account.nativeAccountId === undefined) return account;
-    if (account.nativeAccountId === null) return withheldAccount(account);
-    const nativeView = reads.get(account.nativeAccountId);
-    const bound = selected.some((candidate) => candidate.id === account.nativeAccountId);
-    if (nativeView === undefined)
-      return bound ? account : withheldAccount({ ...account, nativeAccountId: null });
-    const attached = { ...account, nativeView };
-    if (nativeView.state === "denied" || !nativeView.canInspect) return withheldAccount(attached);
-    return { ...attached, label: nativeView.account.label };
-  });
-  const providers = view.providers.map((provider): Provider => {
-    const sources = accounts.flatMap((account) =>
-      account.provider === provider.id &&
-      account.nativeView?.state === "available" &&
-      account.nativeAccountId !== undefined &&
-      account.nativeAccountId !== null &&
-      resolved.has(account.nativeAccountId)
-        ? [account.nativeView.sourceApp]
-        : [],
-    );
-    const source = sources[0];
-    if (source === undefined) return provider;
-    const presentation = JSON.stringify([source.name, source.icons ?? []]);
-    // Several instances can serve one lab. A conflicting brand has no single honest lab mark.
-    if (!sources.every((entry) => JSON.stringify([entry.name, entry.icons ?? []]) === presentation))
-      return provider;
-    return {
-      ...provider,
-      name: source.name,
-      ...(source.icons === undefined ? {} : { icons: source.icons }),
-    };
-  });
-  return { ...view, accounts, providers };
+  return (view) => {
+    const accounts = view.accounts.map((account): Account => {
+      if (account.nativeAccountId === undefined) return account;
+      if (account.nativeAccountId === null) return withheldAccount(account);
+      const nativeView = reads.get(account.nativeAccountId);
+      const bound = selected.some((candidate) => candidate.id === account.nativeAccountId);
+      if (nativeView === undefined)
+        return bound ? account : withheldAccount({ ...account, nativeAccountId: null });
+      const attached = { ...account, nativeView };
+      if (nativeView.state === "denied" || !nativeView.canInspect) return withheldAccount(attached);
+      return { ...attached, label: nativeView.account.label };
+    });
+    const providers = view.providers.map((provider): Provider => {
+      const sources = accounts.flatMap((account) =>
+        account.provider === provider.id &&
+        account.nativeView?.state === "available" &&
+        account.nativeAccountId !== undefined &&
+        account.nativeAccountId !== null &&
+        resolved.has(account.nativeAccountId)
+          ? [account.nativeView.sourceApp]
+          : [],
+      );
+      const source = sources[0];
+      if (source === undefined) return provider;
+      const presentation = JSON.stringify([source.name, source.icons ?? []]);
+      // Several instances can serve one lab. A conflicting brand has no single honest lab mark.
+      if (
+        !sources.every((entry) => JSON.stringify([entry.name, entry.icons ?? []]) === presentation)
+      )
+        return provider;
+      return {
+        ...provider,
+        name: source.name,
+        ...(source.icons === undefined ? {} : { icons: source.icons }),
+      };
+    });
+    return { ...view, accounts, providers };
+  };
 }
 
 /** Keep membership and credential/routing state while withholding identity and allowance data. */

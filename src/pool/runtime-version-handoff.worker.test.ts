@@ -88,7 +88,9 @@ test(
     const f = await fleetWorkerFixture({ candidateColor: "green", publicProbe: true });
     const pending = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
     const arrivals = new Map<number, ReturnType<typeof deferred<void>>>();
-    const requests: Promise<Response>[] = [];
+    const requests = new Map<string, Promise<Response>>();
+    const overtaken = deferred();
+    let cleaningUp = false;
     const waitFor = (count: number) => {
       if (pending.size >= count) return Promise.resolve();
       const event = deferred();
@@ -96,12 +98,14 @@ test(
       return event.promise;
     };
     context.after(async () => {
+      cleaningUp = true;
+      overtaken.resolve();
       for (const body of pending.values()) {
         try {
           body.close();
         } catch {}
       }
-      await Promise.allSettled(requests);
+      await Promise.allSettled(requests.values());
       await f.cleanup();
     });
     f.onModel(async (runtime, request) => {
@@ -112,18 +116,22 @@ test(
             ? JSON.stringify({ data: [{ id: "synthetic-model" }] })
             : runtime.target.applicationId,
         );
+      // Response arrival order must differ from dispatch order to exercise ID correlation.
+      if (id === "root-0") await overtaken.promise;
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
             pending.set(id, controller);
+            if (id === "root-1") overtaken.resolve();
             controller.enqueue(new TextEncoder().encode(`${id}:`));
             arrivals.get(pending.size)?.resolve();
+            if (cleaningUp) controller.close();
           },
         }),
       );
     });
     const dispatch = (id: string) =>
-      requests.push(f.model(new Request(`https://pool.invalid/v1/models?held=${id}`)));
+      requests.set(id, f.model(new Request(`https://pool.invalid/v1/models?held=${id}`)));
     await f.bootstrap();
     const enabled = Schema.decodeUnknownSync(Schema.Struct({ digest: Schema.String }))(
       await f.send("fleet-configure", { operationId: "grow-old", configuration: f.configuration }),
@@ -182,10 +190,7 @@ test(
     for (const [id, body] of pending) {
       body.enqueue(new TextEncoder().encode("terminal"));
       body.close();
-      assert.equal(
-        await (await requests[[...pending.keys()].indexOf(id)]!).text(),
-        `${id}:terminal`,
-      );
+      assert.equal(await (await requests.get(id)!).text(), `${id}:terminal`);
     }
     pending.clear();
     await f.settle();
