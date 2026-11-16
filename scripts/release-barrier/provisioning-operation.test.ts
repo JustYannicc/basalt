@@ -186,6 +186,7 @@ test("expired-GO inspection retains an uncertain create and returns hashes and o
         writer,
         key,
       ).pipe(Effect.provideService(State, Effect.succeed(readonly)));
+      assert.ok("complete" in result);
       assert.equal(result.complete, false);
       assert.equal(result.native.status, "creating");
       assert.deepEqual(

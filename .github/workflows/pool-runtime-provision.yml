@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: deploy-production
@@ -45,6 +46,8 @@ jobs:
       - name: Provision only the reviewed source declaration
         run: bun scripts/release-barrier/provisioning-entry.ts
         env:
+          GITHUB_TOKEN: ${{ github.token }}
+          POOL_OBSERVATION_STORE_RESTORE_RUN_ID: ${{ vars.POOL_OBSERVATION_STORE_RESTORE_RUN_ID }}
           ALCHEMY_STAGE: production
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

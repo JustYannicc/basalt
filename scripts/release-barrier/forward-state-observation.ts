@@ -1,15 +1,9 @@
 import type { StateService } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
+import { observeJournalHeader } from "./journal-observation.ts";
 import { containerKey, journalKey } from "./forward-journal.ts";
 import { encodedRecordHash, recordedContainer } from "./forward-model.ts";
-
-const journalHeader = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  candidate: Schema.String,
-  manifest: Schema.String,
-  complete: Schema.Boolean,
-});
 
 /** Observe exact resource bytes and the public journal header without retaining encrypted payloads. */
 export const readForwardStateObservation = (
@@ -29,7 +23,7 @@ export const readForwardStateObservation = (
         hash: encodedRecordHash(saved),
         version: identity.version,
       },
-      journal: journal === undefined ? null : Schema.decodeUnknownSync(journalHeader)(journal),
+      journal: journal === undefined ? null : observeJournalHeader(journal),
     };
   });
 
