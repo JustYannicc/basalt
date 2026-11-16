@@ -13,5 +13,6 @@ model {
   basalt.deployment -[sync]-> basalt.observationStoreProvisioning "run the approved plan or native adoption under the production writer lock"
   basalt.observationStoreProvisioning -[sync]-> basalt.deployment "retain the provisioning journal and require unchanged release admission"
   basalt.observationStoreProvisioning -[sync]-> basalt.modelGateway "reuse the shared retained account store declaration"
+  basalt.observationStoreProvisioning -[sync]-> basalt.toolsGateway "reuse the hosted native State storage configuration"
   basalt.observationStoreProvisioning -[sync]-> deploymentProvider "authenticate State and observe the existing account store"
 }
