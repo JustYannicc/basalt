@@ -3,6 +3,8 @@ export type SchemaInspectionReason =
   | "schema-inspection-selection-unsupported"
   | "schema-inspection-credentials-unavailable"
   | "schema-inspection-state-unavailable"
+  | "schema-inspection-state-version"
+  | "schema-inspection-authority-unavailable"
   | "schema-inspection-operation-failed"
   | "schema-inspection-timeout"
   | "schema-inspection-receipt-too-large"

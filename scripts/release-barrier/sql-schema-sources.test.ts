@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Redacted } from "effect";
 import { InMemoryService } from "alchemy/State/InMemoryState";
-import { inspectionSqlSource } from "./sql-schema-sources.ts";
+import { inspectionSqlSource, SqlSchemaAuthorityFailure } from "./sql-schema-sources.ts";
 
 const url = "postgresql://fixture:private-password@database.example.test/tools?sslmode=require";
 async function fixture(status: "created" | "updating", oldUrl = url) {
@@ -66,8 +66,17 @@ test("inspection takes only existing Migrations authority, including a failed up
 
 test("a failed update with changed SQL authority refuses instead of choosing a database", async () => {
   const f = await fixture("updating", url.replace("/tools?", "/other?"));
-  await assert.rejects(
-    Effect.runPromise(inspectionSqlSource(f.store)),
-    /sql-schema-authority-unavailable/u,
-  );
+  await assert.rejects(Effect.runPromise(inspectionSqlSource(f.store)), (error) => {
+    assert.ok(error instanceof SqlSchemaAuthorityFailure);
+    assert.deepEqual(error.authority, {
+      resource: "Migrations",
+      check: "updating-authority-drift",
+      status: "updating",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(error.authority),
+      /private-password|database\.example|other/u,
+    );
+    return true;
+  });
 });

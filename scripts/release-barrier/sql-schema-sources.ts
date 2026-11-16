@@ -6,6 +6,45 @@ import { clientConfig } from "../pool-database-provisioning.ts";
 import type { SqlJournalSource } from "./sql-schema-read.ts";
 import { BarrierRefusal } from "./refusal.ts";
 
+const resourceStatuses = [
+  "creating",
+  "created",
+  "updating",
+  "updated",
+  "deleting",
+  "replacing",
+  "replaced",
+] as const;
+type AuthorityStatus = (typeof resourceStatuses)[number] | "missing" | "unknown";
+type AuthorityCheck =
+  | "resource-missing"
+  | "resource-type"
+  | "resource-status"
+  | "environment"
+  | "database-authority"
+  | "updating-authority-drift";
+export class SqlSchemaAuthorityFailure extends BarrierRefusal {
+  readonly authority: {
+    resource: "Migrations" | "PoolDatabase";
+    check: AuthorityCheck;
+    status: AuthorityStatus;
+  };
+  constructor(
+    resource: "Migrations" | "PoolDatabase",
+    check: AuthorityCheck,
+    status: AuthorityStatus,
+  ) {
+    super("sql-schema-authority-unavailable", resource);
+    this.authority = { resource, check, status };
+  }
+}
+const authorityStatus = (value: unknown): AuthorityStatus => {
+  if (value === undefined) return "missing";
+  const status =
+    typeof value === "object" && value !== null ? Reflect.get(value, "status") : undefined;
+  return resourceStatuses.find((allowed) => allowed === status) ?? "unknown";
+};
+
 function secret(value: unknown): string {
   const text = Redacted.isRedacted(value) ? Redacted.value(value) : value;
   if (typeof text !== "string" || !text)
@@ -71,23 +110,24 @@ function source(connectionString: string): SqlJournalSource {
 const commandEnv = (
   state: StateService,
   stack: Pick<CompiledStack, "name" | "stage">,
-  fqn: string,
+  fqn: "Migrations" | "PoolDatabase",
   inspectUpdate = false,
 ) =>
   Effect.gen(function* () {
     const value = yield* state.get({ stack: stack.name, stage: stack.stage, fqn });
+    const status = authorityStatus(value);
+    if (!value) throw new SqlSchemaAuthorityFailure(fqn, "resource-missing", status);
+    if (!("resourceType" in value) || value.resourceType !== "Command.Exec")
+      throw new SqlSchemaAuthorityFailure(fqn, "resource-type", status);
     if (
-      !value ||
-      !("resourceType" in value) ||
-      value.resourceType !== "Command.Exec" ||
-      (value.status !== "created" &&
-        value.status !== "updated" &&
-        !(inspectUpdate && value.status === "updating"))
+      value.status !== "created" &&
+      value.status !== "updated" &&
+      !(inspectUpdate && value.status === "updating")
     )
-      throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
+      throw new SqlSchemaAuthorityFailure(fqn, "resource-status", status);
     const env: unknown = value.props?.env;
     if (!env || typeof env !== "object" || Array.isArray(env))
-      throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
+      throw new SqlSchemaAuthorityFailure(fqn, "environment", status);
     // A failed Command remains updating. Inspect only when both recorded authorities agree exactly.
     if (value.status === "updating") {
       const before: unknown = value.old.props.env;
@@ -95,12 +135,18 @@ const commandEnv = (
         !before ||
         typeof before !== "object" ||
         !("DATABASE_URL" in before) ||
-        !("DATABASE_URL" in env) ||
-        secret(before.DATABASE_URL) !== secret(env.DATABASE_URL)
+        !("DATABASE_URL" in env)
       )
-        throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
+        throw new SqlSchemaAuthorityFailure(fqn, "updating-authority-drift", status);
+      let matches = false;
+      try {
+        matches = secret(before.DATABASE_URL) === secret(env.DATABASE_URL);
+      } catch {
+        /* Invalid recorded authority cannot establish equality. */
+      }
+      if (!matches) throw new SqlSchemaAuthorityFailure(fqn, "updating-authority-drift", status);
     }
-    return env;
+    return { env, status };
   });
 
 /** Inspection reads only the release's existing tools authority, without initializing State. */
@@ -112,8 +158,13 @@ export const inspectionSqlSource = (state: StateService) =>
       "Migrations",
       true,
     );
-    if (!("DATABASE_URL" in tools)) throw new BarrierRefusal("sql-schema-authority-unavailable");
-    return source(secret(tools.DATABASE_URL));
+    if (!("DATABASE_URL" in tools.env))
+      throw new SqlSchemaAuthorityFailure("Migrations", "database-authority", tools.status);
+    try {
+      return source(secret(tools.env.DATABASE_URL));
+    } catch {
+      throw new SqlSchemaAuthorityFailure("Migrations", "database-authority", tools.status);
+    }
   });
 
 /** Consume only the existing migration Commands' in-process authority, never expose a new SQL endpoint. */
@@ -122,8 +173,8 @@ export const deploymentSqlSources = (
   stack: Pick<CompiledStack, "name" | "stage">,
 ) =>
   Effect.gen(function* () {
-    const tools = yield* commandEnv(state, stack, "Migrations");
-    const pool = yield* commandEnv(state, stack, "PoolDatabase");
+    const tools = (yield* commandEnv(state, stack, "Migrations")).env;
+    const pool = (yield* commandEnv(state, stack, "PoolDatabase")).env;
     if (!("DATABASE_URL" in tools) || !("POOL_DATABASE_ADMIN_URL" in pool))
       throw new BarrierRefusal("sql-schema-authority-unavailable");
     const toolsUrl = secret(tools.DATABASE_URL);

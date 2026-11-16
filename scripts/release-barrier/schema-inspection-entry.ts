@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { Effect, Exit, Redacted } from "effect";
+import { Cause, Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { makeReadOnlyHttpStateStore } from "alchemy/State/ReadOnlyHttpStateStore";
 import { readOnlyFetch } from "./read-only-runtime.ts";
@@ -12,6 +12,10 @@ import {
 } from "./schema-inspection-context.ts";
 import { inspectionSqlSource } from "./sql-schema-sources.ts";
 import { inspectSqlSchema } from "./sql-schema-inspection.ts";
+import {
+  schemaInspectionFailure,
+  schemaInspectionFailureMessage,
+} from "./schema-inspection-failure.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const output = new URL("../../.local/schema-inspection/", import.meta.url);
@@ -20,15 +24,14 @@ let tooling: string | null = null;
 let stage: SchemaInspectionReason = "schema-inspection-untrusted-context";
 let receipt:
   | Awaited<ReturnType<typeof inspectSqlSchema>>
-  | {
+  | ({
       formatVersion: 1;
       selection: "schema-v1";
       tooling: string | null;
       status: "incomplete";
-      reason: SchemaInspectionReason;
       journals: [];
       auth: [];
-    };
+    } & ReturnType<typeof schemaInspectionFailure>);
 
 try {
   const candidate = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -62,6 +65,7 @@ try {
             stage: "production",
             expectedVersion: 8,
           });
+          stage = "schema-inspection-authority-unavailable";
           const source = yield* inspectionSqlSource(state);
           stage = "schema-inspection-operation-failed";
           return yield* Effect.tryPromise({
@@ -76,7 +80,7 @@ try {
         }).pipe(Effect.provideService(FetchHttpClient.Fetch, timedFetch)),
         { signal: deadline },
       );
-      if (Exit.isFailure(result)) throw new SchemaInspectionRefusal(stage);
+      if (Exit.isFailure(result)) throw Cause.squash(result.cause);
       return result.value;
     },
   );
@@ -88,11 +92,10 @@ try {
     selection: "schema-v1",
     tooling,
     status: "incomplete",
-    reason: deadline.aborted
-      ? "schema-inspection-timeout"
-      : error instanceof SchemaInspectionRefusal
-        ? error.reason
-        : stage,
+    ...schemaInspectionFailure(
+      deadline.aborted ? new SchemaInspectionRefusal("schema-inspection-timeout") : error,
+      stage,
+    ),
     journals: [],
     auth: [],
   };
@@ -105,7 +108,7 @@ try {
   });
   const summary =
     "reason" in receipt
-      ? `Production schema inspection incomplete: ${receipt.reason}.`
+      ? schemaInspectionFailureMessage(receipt)
       : `Production schema inspection ${receipt.status}. Journals observed: ${receipt.journals.filter((entry) => entry.status === "observed").length}/${receipt.journals.length}. Auth tables observed: ${receipt.auth.filter((entry) => entry.status === "observed").length}/${receipt.auth.length}.`;
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY)

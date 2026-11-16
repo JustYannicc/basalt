@@ -216,3 +216,26 @@ test("an activated optional journal marker remains ready through the actual read
     await f.close();
   }
 });
+
+test("connection failures preserve bounded SQLSTATEs without driver text in release observations", async () => {
+  for (const code of ["28P01", "3D000", "53300", "ECONNRESET"]) {
+    const source = {
+      databaseName: "postgres",
+      connect: async () => {
+        throw Object.assign(new Error("password=private-connect-secret"), { code });
+      },
+    };
+    const receipt = await readSqlSchemas({
+      candidate,
+      homeImageDigest: image,
+      expectations,
+      sources: { tools: source, pool: source },
+    });
+    assert.equal(receipt.observations.length, 6);
+    for (const entry of receipt.observations) {
+      assert.equal(entry.reason, "connection");
+      assert.equal(entry.sqlState, code === "ECONNRESET" ? undefined : code);
+    }
+    assert.doesNotMatch(JSON.stringify(receipt), /private-connect-secret|password/u);
+  }
+});

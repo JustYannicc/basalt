@@ -70,6 +70,11 @@ export class SqlSnapshotFailure extends Error {
   }
 }
 
+const snapshotCode = (error: unknown) => {
+  const code = error instanceof Error && "code" in error ? String(error.code) : "";
+  return /^[A-Z0-9]{5}$/u.test(code) ? code : undefined;
+};
+
 /** The caller receives a verified read-only snapshot, never an unguarded SQL session. */
 export async function readSqlSnapshot<A>(
   source: SqlJournalSource,
@@ -78,8 +83,8 @@ export async function readSqlSnapshot<A>(
   let session: SqlJournalSession;
   try {
     session = await source.connect();
-  } catch {
-    throw new SqlSnapshotFailure("connection");
+  } catch (error) {
+    throw new SqlSnapshotFailure("connection", snapshotCode(error));
   }
   try {
     await session.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -103,8 +108,7 @@ export async function readSqlSnapshot<A>(
     return result;
   } catch (error) {
     if (error instanceof SqlSnapshotFailure) throw error;
-    const code = error instanceof Error && "code" in error ? String(error.code) : "";
-    throw new SqlSnapshotFailure("query", /^[A-Z0-9]{5}$/u.test(code) ? code : undefined);
+    throw new SqlSnapshotFailure("query", snapshotCode(error));
   } finally {
     await session.query("ROLLBACK").catch(() => {});
     await session.end().catch(() => {});
