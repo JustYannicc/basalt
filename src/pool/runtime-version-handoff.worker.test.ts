@@ -90,6 +90,7 @@ test(
     const arrivals = new Map<number, ReturnType<typeof deferred<void>>>();
     const requests = new Map<string, Promise<Response>>();
     const overtaken = deferred();
+    let cleaningUp = false;
     const waitFor = (count: number) => {
       if (pending.size >= count) return Promise.resolve();
       const event = deferred();
@@ -97,6 +98,7 @@ test(
       return event.promise;
     };
     context.after(async () => {
+      cleaningUp = true;
       overtaken.resolve();
       for (const body of pending.values()) {
         try {
@@ -123,6 +125,7 @@ test(
             if (id === "root-1") overtaken.resolve();
             controller.enqueue(new TextEncoder().encode(`${id}:`));
             arrivals.get(pending.size)?.resolve();
+            if (cleaningUp) controller.close();
           },
         }),
       );
