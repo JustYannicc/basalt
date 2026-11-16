@@ -1,17 +1,42 @@
 name: Manual production rollback
 
-run-name: Roll back production release ${{ inputs.release_sha }}
+run-name: Recover production release ${{ inputs.release_sha }} (${{ inputs.recovery_mode || 'database-restore' }})
 
 on:
   workflow_dispatch:
     inputs:
+      recovery_mode:
+        description: Restore database and rebuild old source, or recover exact recorded versions without SQL writes
+        required: true
+        type: choice
+        default: database-restore
+        options:
+          - database-restore
+          - recorded-versions
       release_sha:
-        description: Exact 40-character lowercase commit SHA of the database release to roll back
+        description: Exact 40-character lowercase commit SHA of the production release to recover
         required: true
         type: string
       restored_backup:
         description: Name of the release's protected PlanetScale backup (backupName in its production deployment payload), already restored to production
-        required: true
+        required: false
+        type: string
+      recorded_run:
+        description: Failed main release run/attempt, required for recorded-versions (for example 123456/1)
+        required: false
+        type: string
+      recovery_pair_sha256:
+        description: SHA-256 of canonical {manifest,receipt} from that release-barrier artifact
+        required: false
+        type: string
+      database_compatible:
+        description: Old baseline binaries are compatible with the committed schema; required for recorded container recovery
+        required: false
+        type: boolean
+        default: false
+      progress_run:
+        description: Previous recorded-version recovery run/attempt to resume, preserving its exact recovery.json
+        required: false
         type: string
 
 permissions:
@@ -26,7 +51,7 @@ concurrency:
 
 jobs:
   plan:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.recovery_mode != 'recorded-versions'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -123,7 +148,7 @@ jobs:
 
   rollback:
     needs: plan
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.candidate == inputs.release_sha
+    if: always() && github.ref == 'refs/heads/main' && ((inputs.recovery_mode == 'recorded-versions' && needs.plan.result == 'skipped') || (inputs.recovery_mode != 'recorded-versions' && needs.plan.result == 'success' && needs.plan.outputs.candidate == inputs.release_sha))
     name: Deploy previous production release
     environment: production-release
     runs-on: ubuntu-latest
@@ -195,6 +220,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Recreate the exact selected-release and previous-source worktrees
+        if: inputs.recovery_mode != 'recorded-versions'
         run: |
           if [[ "$RELEASE_SHA" != "$EXPECTED_RELEASE_SHA" || ! "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Rollback inputs changed or are invalid" >&2
@@ -209,10 +235,12 @@ jobs:
           EXPECTED_RELEASE_SHA: ${{ needs.plan.outputs.candidate }}
           BASELINE_SHA: ${{ needs.plan.outputs.baseline }}
       - uses: actions/download-artifact@v4
+        if: inputs.recovery_mode != 'recorded-versions'
         with:
           name: manual-production-rollback-report
           path: .local
       - name: Deploy and verify the previous production release
+        if: inputs.recovery_mode != 'recorded-versions'
         run: |
           node scripts/deploy-safety/release.ts manual-rollback \
             --candidate "$RELEASE_SHA" \
@@ -225,6 +253,32 @@ jobs:
           RELEASE_SHA: ${{ inputs.release_sha }}
           RESTORED_BACKUP: ${{ inputs.restored_backup }}
           EXPECTED_DEPLOYMENT_ID: ${{ needs.plan.outputs.deployment_id }}
+
+      - name: Prepare the trusted recorded-recovery client
+        if: inputs.recovery_mode == 'recorded-versions'
+        run: npm run prepare:upstream
+
+      - name: Recover the exact recorded versions without database changes
+        if: inputs.recovery_mode == 'recorded-versions'
+        run: node scripts/deploy-safety/recorded-recovery-entry.ts
+        env:
+          RECOVERY_MODE: ${{ inputs.recovery_mode }}
+          RECOVERY_CANDIDATE: ${{ inputs.release_sha }}
+          RECOVERY_SOURCE_RUN: ${{ inputs.recorded_run }}
+          RECOVERY_PAIR_SHA256: ${{ inputs.recovery_pair_sha256 }}
+          RECOVERY_DATABASE_COMPATIBLE: ${{ inputs.database_compatible }}
+          RECOVERY_PROGRESS_RUN: ${{ inputs.progress_run }}
+          RESTORED_BACKUP: ${{ inputs.restored_backup }}
+
+      - name: Retain recorded-version recovery evidence and progress
+        if: always() && inputs.recovery_mode == 'recorded-versions'
+        uses: actions/upload-artifact@v4
+        with:
+          name: recorded-version-recovery
+          include-hidden-files: true
+          path: .local/recorded-version-recovery/*.json
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Retain release barrier receipts
         if: always()

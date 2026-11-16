@@ -67,6 +67,19 @@ For a container release, first establish that the old binaries remain compatible
 
 Keep the resulting `recovery.json` beside the manifest when resuming. A rollout with a retained ID and target version is observed to convergence without another rollout call. An uncertain advance is observed through its known rollout ID without repeating next; an unconfirmed pending advance refuses. A lost rollout response with no attributable version stops for an explicit recovery decision; matching image bytes alone cannot establish who wrote a version. Foreign versions or configurations refuse. The production workflow concurrency group serializes releases, but the container API has no compare-and-swap field, so an out-of-band writer can still race between a baseline read and its mutation.
 
+The existing **Manual production rollback** workflow has a `recorded-versions` mode for a failed main release. It shares `production-release` credentials and the `deploy-production` lock with normal releases. Select the exact failed release SHA, its Actions `run/attempt`, and the SHA-256 of the canonical `{manifest,receipt}` pair from that run's `release-barrier` artifact. The mode verifies the GitHub artifact digest, requires the latest production record to name that same failed run, and checks the pair again after preparing the exact candidate. It invokes `npm run deploy -- --recover` without database admission, migrations, a database restore, or a new deployment record. Leave `restored_backup` empty. The default `database-restore` mode still requires that the recorded backup has already been restored.
+
+For a container manifest, `database_compatible=true` is an explicit operator decision that the saved baseline binaries remain compatible with the committed schema. Unknown compatibility stops recovery. The workflow retains `recorded-version-recovery`, including the original pair, sealed descriptor, source identity and `recovery.json`. To continue an interrupted recovery, also name that prior recovery's `run/attempt` in `progress_run`. Only matching retained progress is accepted; a fresh release retry never substitutes for recovery.
+
+```sh
+gh workflow run release-rollback.yml --ref main \
+  -f recovery_mode=recorded-versions \
+  -f release_sha='<failed-release-sha>' \
+  -f recorded_run='<failed-run-id>/<attempt>' \
+  -f recovery_pair_sha256='<canonical-pair-sha256>' \
+  -f database_compatible=true
+```
+
 Missing publication evidence, unresolved image drift or failed pool readiness marks the attempt failed and stops without automatic rollback, including after a partial deployment. Retain the logged publication evidence and review the exact image before manual recovery. A manual rollback also needs publication evidence before it can report success; a source that predates receipt capture cannot satisfy that guard.
 
 A failed deploy command marks the attempt failed and stops before image verification or any automatic source redeployment. A successful deploy still requires image verification and smoke checks. Smoke failure also stops without a source rollback. Inspect the retained barrier disposition and use explicit recorded-version recovery; retain pending intent when activation is uncertain. Release subprocesses run quietly. Actions logs are public, so a failed command prints the last 60 lines of its stdout and stderr separately, starting at a whole line, after removing credentials. The runner settles when the command exits, so a descendant holding its output cannot keep the release open.
