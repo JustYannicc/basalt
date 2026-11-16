@@ -2427,7 +2427,7 @@ jobs:
               else
                 status=$?
               fi
-              if (( attempt == 3 )) || ! grep -Eq 'read "https://proxy[.]golang[.]org/[^"]+[.]zip": stream error: stream ID [0-9]+; INTERNAL_ERROR; received from peer' "$log"; then
+              if (( attempt == 3 )) || ! grep -F 'read "https://proxy.golang.org/' "$log" | grep -E '[.]zip": stream error: stream ID [0-9]+; INTERNAL_ERROR; received from peer' > /dev/null; then
                 return "$status"
               fi
               echo "::warning::Go module proxy reset the download stream; retrying pool build after attempt $attempt/3"
