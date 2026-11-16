@@ -20,7 +20,7 @@ import {
 import { readRuntimeProvisioningHeader } from "../provisioning-header.ts";
 import { assertB102CompletedHead, decodeB102ProvisioningRecord } from "../b102-journal-reader.ts";
 import { observeJournalHeader } from "../journal-observation.ts";
-import { canonical, digest } from "../manifest.ts";
+import { digest } from "../manifest.ts";
 import { sealRecovery } from "../recovery-envelope.ts";
 const accountId = "1".repeat(32),
   candidate = "a".repeat(40),

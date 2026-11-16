@@ -143,8 +143,8 @@ if (import.meta.main && process.argv[2] === "digest") {
                 } else yield* assertReleaseStateVersion(compiled);
                 const receipt = planRequest
                   ? {
-                      operation: {
-                        ...(planRequest.kind === "observation-store-restore"
+                      operation:
+                        planRequest.kind === "observation-store-restore"
                           ? {
                               kind: "observation-store-restore" as const,
                               manifest: yield* planJournalRestore(
@@ -158,8 +158,7 @@ if (import.meta.main && process.argv[2] === "digest") {
                           : {
                               kind: "observation-store" as const,
                               manifest: yield* planObservationStore(compiled, planRequest, writer),
-                            }),
-                      },
+                            },
                     }
                   : mode === "apply"
                     ? yield* runDeclaredProvisioning(
