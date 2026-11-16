@@ -140,3 +140,72 @@ for (const example of cases)
       assert.equal(measured.hour.real.successRate, 800 / 9);
     }
   });
+
+const captured = Date.parse("2026-11-14T12:00:00Z");
+const unavailable = "pool_request_reliability_unavailable";
+const collectionCases = [
+  { reason: "capture_lagging", age: 299_999, expected: [] },
+  { reason: "capture_lagging", age: 300_000, expected: [unavailable] },
+  { reason: "capture_lagging", age: 300_001, expected: [unavailable] },
+  { reason: "capture_lagging", age: -1, expected: [unavailable] },
+  { reason: "capture_lagging", captureAt: null, expected: [unavailable] },
+  { reason: "capture_lagging", captureAt: "invalid", expected: [unavailable] },
+  { reason: "history_inactive", age: 1, expected: [unavailable] },
+  { reason: "capture_stale", age: 1, expected: [unavailable] },
+  { reason: "classification_pending", age: 1, expected: [unavailable] },
+  { reason: "terminal_collection_pending", age: 1, expected: [unavailable] },
+  { reason: "terminal_collection_unavailable", age: 1, expected: [unavailable] },
+  { reason: "capture_lagging", age: 1, failed: true, expected: [immediate] },
+] satisfies {
+  reason: NonNullable<PoolReliabilitySlo["reason"]>;
+  age?: number;
+  captureAt?: string | null;
+  failed?: boolean;
+  expected: string[];
+}[];
+
+for (const example of collectionCases)
+  test(`collection notifications preserve ${example.reason}, age=${example.age}, capture=${example.captureAt}, failed=${example.failed}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: captured });
+    const messages: Record<string, unknown>[] = [];
+    const diagnostics: unknown[][] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+    t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+      messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
+      return new Response(null, { status: 202 });
+    });
+    const measured: PoolReliabilitySlo = {
+      target: 99,
+      state: "unavailable",
+      reason: example.reason,
+      captureAt:
+        example.age === undefined
+          ? example.captureAt!
+          : new Date(captured - example.age).toISOString(),
+      hour: window(1, example.failed ? 1 : 0),
+      day: window(1, example.failed ? 1 : 0),
+      current: window(1, example.failed ? 1 : 0),
+    };
+    const before = structuredClone(measured);
+    await runAvailabilityProbe(
+      {
+        POOL_AVAILABILITY_TARGET: "fixture-pool",
+        SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456",
+      },
+      async () => ({ ok: true, failures: [] }),
+      async () => measured,
+    );
+    assert.deepEqual(
+      messages
+        .filter((message) => message.fingerprint)
+        .map((message) => (message.tags as { error_code: string }).error_code),
+      example.expected,
+    );
+    assert.deepEqual(measured, before, "grace never changes the unknown objective or raw counts");
+    assert.deepEqual(
+      messages.filter((message) => message.status).map((message) => message.status),
+      ["in_progress", "ok"],
+    );
+    assert.equal((diagnostics[0]![1] as { state: string }).state, "unavailable");
+    assert.equal((diagnostics[0]![1] as { reason: string }).reason, example.reason);
+  });
