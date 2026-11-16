@@ -223,6 +223,43 @@ jobs:
           retention-days: 3
           if-no-files-found: warn
 
+  restore-preparation-probe:
+    permissions:
+      contents: read
+      actions: read
+    needs: select
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.select.outputs.baseline_probe == 'true' &&
+      vars.POOL_OBSERVATION_STORE_RESTORE_RUN_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Verify the real restore artifact before any State or Cloudflare auth
+        run: bun scripts/release-barrier/restore-preparation-probe.ts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          POOL_OBSERVATION_STORE_RESTORE_RUN_ID: ${{ vars.POOL_OBSERVATION_STORE_RESTORE_RUN_ID }}
+          BASALT_RESTORE_PREPARATION_PROBE_INPUT: ${{ secrets.BASALT_RESTORE_PREPARATION_PROBE_INPUT }}
+          BASALT_RESTORE_PREPARATION_PROBE_OUTPUT: ${{ runner.temp }}/restore-preparation-probe.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: restore-preparation-probe
+          path: ${{ runner.temp }}/restore-preparation-probe.json
+          if-no-files-found: error
+
   cpa-pipeline:
     needs: [select, reuse]
     if: >-
@@ -2606,6 +2643,7 @@ jobs:
         browser-install,
         cpa-pipeline,
         baseline-probe,
+        restore-preparation-probe,
         workerd-assets,
         client-connection,
         client-mobile,
@@ -2680,6 +2718,7 @@ jobs:
           CI_REUSE_EVIDENCE: ${{ needs.reuse.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_BASELINE_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' }}
+          CI_RESTORE_PREPARATION_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' && vars.POOL_OBSERVATION_STORE_RESTORE_RUN_ID != '' }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
         run: node scripts/ci/gate.ts

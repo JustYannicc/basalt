@@ -3,7 +3,7 @@ import { heavyJobs } from "./areas.ts";
 import { checkedOutIdentity, retainReuseEvidence, validReuseEvidence } from "./reuse.ts";
 
 export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "browser-install"];
-export const conditionalJobs = ["baseline-probe", "workerd-assets"];
+export const conditionalJobs = ["baseline-probe", "restore-preparation-probe", "workerd-assets"];
 
 export function gateErrors(
   needs: Record<string, { result: string }>,
@@ -11,6 +11,7 @@ export function gateErrors(
   boat: readonly string[] = [],
   full?: boolean,
   baselineProbeRequired = false,
+  restorePreparationRequired = false,
 ) {
   const errors: string[] = [];
   if (full === false && selected.length) errors.push("Fast lane selected heavy jobs");
@@ -30,6 +31,7 @@ export function gateErrors(
     const required =
       fastJobs.includes(job) ||
       (job === "baseline-probe" && baselineProbeRequired) ||
+      (job === "restore-preparation-probe" && restorePreparationRequired) ||
       (job === "workerd-assets" && selected.includes("upstream-image")) ||
       selected.includes(job);
     if (needs[job]?.result !== (required ? "success" : "skipped"))
@@ -93,6 +95,7 @@ export function runGateCli(env = process.env): void {
     JSON.parse(env.CI_BOAT_JOBS ?? "null"),
     env.CI_FULL_SUITE === "true",
     env.CI_BASELINE_PROBE === "true",
+    env.CI_RESTORE_PREPARATION_PROBE === "true",
   );
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;

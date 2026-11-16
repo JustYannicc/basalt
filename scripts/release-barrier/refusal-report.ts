@@ -51,6 +51,7 @@ export function refusalTable(failure: Failure) {
       [
         failure.operation,
         failure.provider?.type,
+        failure.provider?.message,
         failure.provider?.reason,
         failure.provider?.status === undefined ? undefined : `status=${failure.provider.status}`,
         failure.provider?.codes?.length ? `codes=${failure.provider.codes.join(",")}` : undefined,
