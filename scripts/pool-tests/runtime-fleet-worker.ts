@@ -68,6 +68,7 @@ export async function fleetWorkerFixture(
   const candidate = applications.find((app) => app.color === (options.candidateColor ?? "blue"))!;
   const pending = new Map<string, Promise<Instance>>();
   let created: (runtime: Runtime, color: Color) => Promise<void> = async () => {};
+  let startReply: (runtime: Runtime) => Promise<void> = async () => {};
   let model: (instance: Runtime, request: Request) => Promise<Response | undefined> = async () =>
     undefined;
   const fetchBefore = globalThis.fetch;
@@ -213,7 +214,11 @@ export async function fleetWorkerFixture(
                     })(),
                   );
                 }
-                return (await pending.get(instanceId)!).worker.fetch(request);
+                const instance = await pending.get(instanceId)!;
+                const response = await instance.worker.fetch(request);
+                if (response.ok && new URL(request.url).pathname === "/start")
+                  await startReply(instance.fixture);
+                return response;
               },
               homePeerSource: async (target: SlotTarget) =>
                 (await existing()).worker.homePeerSource(target),
@@ -366,6 +371,9 @@ export async function fleetWorkerFixture(
     },
     onRuntimeCreated: (hook: typeof created) => {
       created = hook;
+    },
+    onRuntimeStartReply: (hook: typeof startReply) => {
+      startReply = hook;
     },
     settle: () => f.old.settle(),
     cleanup: async () => {
