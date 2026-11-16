@@ -2,6 +2,7 @@ import { StateStoreError } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
 import { migrationCommandFailure, type MigrationDiagnostic } from "./migration-failure.ts";
+import { redactFailureOutput } from "../deploy-safety/failure-output.ts";
 
 export type ReleaseOperation =
   | "plan-read-state"
@@ -145,6 +146,7 @@ const integer = (value: unknown, minimum: number, maximum: number): value is num
 
 export interface ProviderFailure {
   type: string;
+  message?: string;
   reason?: string;
   status?: number;
   codes?: number[];
@@ -226,7 +228,21 @@ export class ReleaseOperationFailure extends BarrierRefusal {
       refusal?.stateStore,
     );
     this.operation = operation;
-    this.provider = refusal ? undefined : safeProviderFailure(error);
+    const message = field(error, "message");
+    this.provider = refusal
+      ? undefined
+      : {
+          ...safeProviderFailure(error),
+          // Fetch TypeErrors explain transport failures. Parser messages can contain response bodies.
+          ...(error instanceof TypeError && typeof message === "string"
+            ? {
+                message: redactFailureOutput(message, process.env)
+                  .replace(/https?:\/\/[^\s"'<>]+/gu, "[url]")
+                  .replace(/\p{Cc}/gu, " ")
+                  .slice(0, 1024),
+              }
+            : {}),
+        };
   }
 }
 

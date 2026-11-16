@@ -200,3 +200,40 @@ test("baseline observation receipts preserve versions and paths without claiming
   assert.ok(!text.includes("registry.cloudflare.com"));
   assert.equal((await stat(join(root, "publication.json"))).mode & 0o777, 0o600);
 });
+
+test("a native TypeError retains its redacted message in the failure artifact and refusal table", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "release-type-error-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const failure = await releaseEvidence(root, candidate).failure(
+    new TypeError(
+      'UnexpectedRedirect fetching "https://archive.example.test/signed?token=private-fixture-token"; Authorization: Bearer private-fixture-bearer',
+    ),
+  );
+  assert.equal(failure.provider?.type, "TypeError");
+  assert.match(failure.provider?.message ?? "", /UnexpectedRedirect fetching "\[url\]"/);
+  const output: string[] = [];
+  await reportRefusal(failure, undefined, (message) => output.push(message));
+  const retained = await readFile(join(root, "failure.json"), "utf8");
+  assert.match(retained, /"message":/);
+  assert.match(output.join("\n"), /TypeError; UnexpectedRedirect/);
+  assert.doesNotMatch(
+    retained + output.join("\n"),
+    /private-fixture|archive\.example\.test|signed\?token/,
+  );
+});
+
+test("a malformed provider response keeps its parser classification without exposing body excerpts", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "release-parser-error-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const error = await new Response("customer42 confidential provider record")
+    .json()
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof SyntaxError);
+  const failure = await releaseEvidence(root, candidate).failure(error);
+  assert.equal(failure.provider?.type, "SyntaxError");
+  assert.equal(failure.provider?.message, undefined);
+  const output: string[] = [];
+  await reportRefusal(failure, undefined, (message) => output.push(message));
+  const retained = await readFile(join(root, "failure.json"), "utf8");
+  assert.doesNotMatch(retained + output.join("\n"), /customer42|confidential|provider record/);
+});
