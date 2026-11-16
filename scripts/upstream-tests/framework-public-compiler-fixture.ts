@@ -19,6 +19,7 @@ import { BlobStore } from "./packages/sdk/src/contracts/blobs.ts";
 import { BuildId } from "./packages/sdk/src/contracts/shared.ts";
 import { InlinedWorkerBuild } from "./packages/sdk/src/contracts/worker-build.ts";
 import { compileWorkerApp } from "./packages/sdk/src/implementation/worker-build.ts";
+import { FrameworkProvenanceRegistry } from "./packages/sdk/src/implementation/framework-provenance.ts";
 import {
   assembleWorkerBundle, retainWorkerBuild, loadStoredWorkerBuild, loadWorkerFramework,
   linkWorkerBuild, encodeJson, inlinedBuildKey,
@@ -51,8 +52,11 @@ export default {
         format: 1, ...loaded, database: false,
       }));
       const legacy = yield* loadStoredWorkerBuild(legacyBuild);
+      // Released versions can share server bytes. This synthetic legacy store has one producer.
       const inlined = yield* linkWorkerBuild(legacy,
-        () => Effect.die("An inlined build cannot load a split framework"), legacyBuild);
+        () => Effect.die("An inlined build cannot load a split framework"), legacyBuild).pipe(
+          Effect.provideService(FrameworkProvenanceRegistry, [compiled.framework.provenance]),
+        );
       return {
         loaded, split, inlined, storedFormat: stored.format, inlinedFormat: legacy.format,
         objectCount: objects.size,

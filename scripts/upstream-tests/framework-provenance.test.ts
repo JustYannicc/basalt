@@ -236,6 +236,12 @@ test("format1 needs exact approved bytes and does not infer lineage from implici
     [f.release],
   );
   assert.deepEqual(loaded.framework, f.release);
+  const ambiguous = await refused(
+    linkWorkerBuild(inlined, () => assert.fail("format1 read an external framework"), build),
+    [f.release, { ...f.release, version: "0.0.1-beta.104-basalt.15" }],
+  );
+  assert.equal(ambiguous.reason, "conflicting-lineage");
+  assert.equal(ambiguous.build, build);
   const unknown = await refused(
     linkWorkerBuild(inlined, () => assert.fail("format1 read an external framework"), build),
   );
