@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"obsidian\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"@flowershow/remark-wiki-link\": \"3.4.0\",\n    \"@r4ai/remark-callout\": \"0.6.2\",\n    \"apps\": \"0.0.1-beta.104-basalt.16\",\n    \"react\": \"19.3.0\",\n    \"react-dom\": \"19.3.0\",\n    \"react-markdown\": \"10.1.0\",\n    \"remark-gfm\": \"4.0.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"obsidian\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"@flowershow/remark-wiki-link\": \"3.4.0\",\n    \"@r4ai/remark-callout\": \"0.6.2\",\n    \"apps\": \"0.0.1-beta.104-basalt.17\",\n    \"react\": \"19.3.0\",\n    \"react-dom\": \"19.3.0\",\n    \"react-markdown\": \"10.1.0\",\n    \"remark-gfm\": \"4.0.1\"\n  }\n}\n"
     },
     {
       "path": "ui/api.ts",
