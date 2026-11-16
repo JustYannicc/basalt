@@ -43,6 +43,28 @@ const environment = {
   ALCHEMY_STAGE: "production",
 };
 
+test("recorded recovery starts only the recovery barrier without database admission or mutation", async () => {
+  const commands: string[][] = [];
+  await deployInPhases({
+    cloud: "fixture",
+    environment: { ALCHEMY_STAGE: "production", BASALT_RELEASE_CANDIDATE: "a".repeat(40) },
+    sharedFoundation: false,
+    recovery: ["--recover", "/recorded/manifest.json", "/recorded/receipt.json"],
+    preflight: async () => {
+      throw new Error("Recovery must not enter database admission");
+    },
+    execute: (_command, args) => {
+      commands.push(args);
+    },
+  });
+  assert.equal(commands.length, 1);
+  assert.deepEqual(commands[0]!.slice(1), [
+    "--recover",
+    "/recorded/manifest.json",
+    "/recorded/receipt.json",
+  ]);
+});
+
 test("release admission refuses 20/22 and admits 14/22 with the configured seven-client envelope", () => {
   assert.equal(
     Object.values(releaseDatabasePolicy.connections).reduce((sum, value) => sum + value, 0),
