@@ -316,6 +316,11 @@
     "target": "self-host",
     "mode": "managed"
   },
+  "host-managed-accounts-runtime:bulk-upload-acknowledgements": {
+    "job": "host-managed-accounts-runtime",
+    "target": "self-host",
+    "mode": "managed"
+  },
   "host-managed-accounts-adopted:audited-account-compatibility": {
     "job": "host-managed-accounts-adopted",
     "target": "self-host",
