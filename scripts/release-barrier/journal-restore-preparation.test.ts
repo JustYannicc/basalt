@@ -134,3 +134,31 @@ test("the CI preparation probe verifies the same archive through real fetch and 
     await f.close();
   }
 });
+
+test("a missing CI source-run pin fails preparation before any GitHub, State or Cloudflare request", async () => {
+  const f = await restorePreparationFixture();
+  try {
+    const { probeRestorePreparation } = await import("./restore-preparation-probe.ts");
+    await assert.rejects(
+      probeRestorePreparation(
+        {
+          ...f.env,
+          POOL_OBSERVATION_STORE_RESTORE_RUN_ID: "",
+          BASALT_RESTORE_PREPARATION_PROBE_INPUT: JSON.stringify({
+            source: f.source,
+            adoption: f.adoption,
+          }),
+          BASALT_RESTORE_PREPARATION_PROBE_OUTPUT: join(f.directory, "probe.json"),
+        },
+        f.transport,
+      ),
+      /journal-restore-run-not-approved/,
+    );
+    assert.equal(f.requests.length, 0);
+    const result = JSON.parse(await readFile(join(f.directory, "probe.json"), "utf8"));
+    assert.equal(result.preparation, "FAIL");
+    assert.deepEqual(result.calls, { github: 0, archive: 0, cloudflare: 0, stateOrOther: 0 });
+  } finally {
+    await f.close();
+  }
+});

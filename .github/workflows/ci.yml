@@ -231,8 +231,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.select.outputs.baseline_probe == 'true' &&
-      vars.POOL_OBSERVATION_STORE_RESTORE_RUN_ID != ''
+      needs.select.outputs.baseline_probe == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -2718,7 +2717,7 @@ jobs:
           CI_REUSE_EVIDENCE: ${{ needs.reuse.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_BASELINE_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' }}
-          CI_RESTORE_PREPARATION_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' && vars.POOL_OBSERVATION_STORE_RESTORE_RUN_ID != '' }}
+          CI_RESTORE_PREPARATION_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
         run: node scripts/ci/gate.ts

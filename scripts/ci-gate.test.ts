@@ -135,6 +135,11 @@ test("only the read-only preparation job consumes its frozen input with the disp
   );
   const probe = workflow.jobs["restore-preparation-probe"];
   assert.deepEqual(probe.permissions, dispatch.permissions);
+  assert.doesNotMatch(probe.if, /POOL_OBSERVATION_STORE_RESTORE_RUN_ID/);
+  const aggregate = workflow.jobs.check.steps.find(
+    (value: { run?: string }) => value.run === "node scripts/ci/gate.ts",
+  );
+  assert.equal(aggregate.env.CI_RESTORE_PREPARATION_PROBE, aggregate.env.CI_BASELINE_PROBE);
   assert.equal(probe.environment, undefined);
   const step = probe.steps.find(
     (value: { run?: string }) =>
