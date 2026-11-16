@@ -25,6 +25,9 @@ import {
   sameProvisioningValue,
 } from "./provisioning-refusal.ts";
 
+import { ObservationStoreManifest, observationStoreDigest } from "./observation-store-contract.ts";
+import { provisionObservationStore } from "./observation-store-apply.ts";
+
 export const ProvisioningOperation = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("runtime"),
@@ -32,6 +35,7 @@ export const ProvisioningOperation = Schema.Union([
     activeRead: ProvisioningActiveRead,
   }),
   Schema.Struct({ kind: Schema.Literal("observation-token"), manifest: ObservationTokenManifest }),
+  Schema.Struct({ kind: Schema.Literal("observation-store"), manifest: ObservationStoreManifest }),
 ]);
 export type ProvisioningOperation = typeof ProvisioningOperation.Type;
 const Go = Schema.Struct({
@@ -50,6 +54,27 @@ export const provisioningOperationDigest = (operation: ProvisioningOperation) =>
       Schema.decodeUnknownSync(ProvisioningOperation, { onExcessProperty: "error" })(operation),
     ),
   );
+
+const manifestDigest = (operation: ProvisioningOperation) => {
+  switch (operation.kind) {
+    case "runtime":
+      return provisioningManifestDigest(operation.manifest);
+    case "observation-token":
+      return observationTokenDigest(operation.manifest);
+    case "observation-store":
+      return observationStoreDigest(operation.manifest);
+  }
+};
+const operationResource = (operation: ProvisioningOperation) => {
+  switch (operation.kind) {
+    case "runtime":
+      return operation.manifest.declaration.fqn;
+    case "observation-token":
+      return "PoolProviderObservationToken";
+    case "observation-store":
+      return "PoolObservationSecrets";
+  }
+};
 
 export interface ProvisioningWriter {
   candidate: string;
@@ -98,10 +123,7 @@ export function validateProvisioningOperation(
   const enable: ProvisioningEnable = {
     ...go,
     writerLease: writer.lease,
-    manifest:
-      operation.kind === "runtime"
-        ? provisioningManifestDigest(operation.manifest)
-        : observationTokenDigest(operation.manifest),
+    manifest: manifestDigest(operation),
   };
   return enable;
 }
@@ -121,10 +143,7 @@ export const inspectDeclaredProvisioning = (
     );
     const state = yield* yield* State;
     const operation = packet.operation;
-    const manifest =
-      operation.kind === "runtime"
-        ? provisioningManifestDigest(operation.manifest)
-        : observationTokenDigest(operation.manifest);
+    const manifest = manifestDigest(operation);
     const store = stateProvisioningStore(state, stack, encryptionKey, async () => {
       throw new Error("Inspection cannot write provisioning state");
     });
@@ -132,10 +151,7 @@ export const inspectDeclaredProvisioning = (
       store.read({ candidate: operation.manifest.candidate, manifest }),
     );
     const journal = raw === undefined ? undefined : decodeProvisioningRecord(raw);
-    const resource =
-      operation.kind === "runtime"
-        ? operation.manifest.declaration.fqn
-        : "PoolProviderObservationToken";
+    const resource = operationResource(operation);
     if (journal)
       sameProvisioningValue("provisioning.inspection.resource", resource, journal.resource);
     const row = yield* state.get({ stack: stack.name, stage: stack.stage, fqn: resource });
@@ -182,7 +198,8 @@ export const runDeclaredProvisioning = (
       );
     if (packet.operation.kind === "runtime")
       yield* sourceRuntimeCreatePlan(stack, packet.operation.manifest, "$namespace-receipt");
-    else yield* sourceObservationTokenPlan(stack, packet.operation.manifest);
+    else if (packet.operation.kind === "observation-token")
+      yield* sourceObservationTokenPlan(stack, packet.operation.manifest);
     const state = yield* yield* State;
     let queue: Promise<unknown> = Promise.resolve();
     const store = stateProvisioningStore(
@@ -199,6 +216,13 @@ export const runDeclaredProvisioning = (
       },
     );
     const operation = packet.operation;
+    if (operation.kind === "observation-store")
+      return yield* provisionObservationStore(stack, {
+        manifest: operation.manifest,
+        enable,
+        store,
+        now,
+      });
     if (operation.kind === "observation-token")
       return yield* provisionDeclaredObservationToken(stack, {
         manifest: operation.manifest,

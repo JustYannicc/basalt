@@ -1,9 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Context, Effect } from "effect";
+import { Context, Effect, Schema } from "effect";
 import { evalStack } from "alchemy/Stack";
 import { State } from "alchemy/State/State";
+import { observationStoreStack } from "./observation-store-stack.ts";
+import { ObservationStorePlanRequest } from "./observation-store-contract.ts";
+import { planObservationStore } from "./observation-store-plan.ts";
 import { provisioningStack } from "./provisioning-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
@@ -39,7 +42,7 @@ export function provisioningWorkflowWriter(env: NodeJS.ProcessEnv) {
   };
 }
 
-function readPacket(text: string) {
+function readInput(text: string) {
   if (Buffer.byteLength(text) > 256 * 1024)
     throw new Error("Provisioning packet exceeds its limit");
   let value: unknown;
@@ -48,19 +51,27 @@ function readPacket(text: string) {
   } catch {
     throw new Error("Provisioning packet is invalid JSON");
   }
-  return decodeProvisioningPacket(value);
+  return value;
 }
 
 if (import.meta.main && process.argv[2] === "digest") {
   if (process.argv.length !== 4) throw new Error("Use digest <reviewed-packet.json>");
-  const packet = readPacket(await readFile(resolve(process.argv[3]!), "utf8"));
+  const packet = decodeProvisioningPacket(
+    readInput(await readFile(resolve(process.argv[3]!), "utf8")),
+  );
   process.stdout.write(`${provisioningOperationDigest(packet.operation)}\n`);
 } else if (import.meta.main) {
   const writer = provisioningWorkflowWriter(process.env);
   const mode = process.env.POOL_PROVISIONING_MODE;
-  if (mode !== "apply" && mode !== "inspect") throw new Error("Choose inspect or apply");
-  const packet = readPacket(process.env.POOL_PROVISIONING_PACKET ?? "null");
-  if (mode === "apply") validateProvisioningOperation(packet, writer, Date.now());
+  if (mode !== "apply" && mode !== "inspect" && mode !== "plan")
+    throw new Error("Choose plan, inspect or apply");
+  const value = readInput(process.env.POOL_PROVISIONING_PACKET ?? "null");
+  const packet = mode === "plan" ? undefined : decodeProvisioningPacket(value);
+  const planRequest =
+    mode === "plan"
+      ? Schema.decodeUnknownSync(ObservationStorePlanRequest, { onExcessProperty: "error" })(value)
+      : undefined;
+  if (mode === "apply") validateProvisioningOperation(packet!, writer, Date.now());
   const directory = resolve(
     process.env.POOL_PROVISIONING_OUTPUT_DIRECTORY ?? ".local/pool-provisioning",
   );
@@ -74,35 +85,50 @@ if (import.meta.main && process.argv[2] === "digest") {
   process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMARY, () =>
     Effect.runPromiseExit(
       evalStack(
-        provisioningStack,
+        planRequest || packet?.operation.kind === "observation-store"
+          ? observationStoreStack
+          : provisioningStack,
         (compiled) =>
           Effect.gen(function* () {
             yield* assertReleaseStateVersion(compiled);
-            const receipt =
-              mode === "apply"
+            const receipt = planRequest
+              ? {
+                  operation: {
+                    kind: "observation-store" as const,
+                    manifest: yield* planObservationStore(compiled, planRequest, writer),
+                  },
+                }
+              : mode === "apply"
                 ? yield* runDeclaredProvisioning(
                     compiled,
-                    packet,
+                    packet!,
                     writer,
                     process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
                     process.env.POOL_DEPLOYMENT_KEY ?? "",
                   )
                 : yield* inspectDeclaredProvisioning(
                     compiled,
-                    packet,
+                    packet!,
                     writer,
                     process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
                   );
+            const output =
+              planRequest && "operation" in receipt
+                ? {
+                    disposition: "plan",
+                    ...receipt,
+                    operationDigest: provisioningOperationDigest(receipt.operation),
+                  }
+                : {
+                    disposition: mode,
+                    ...(packet ? { manifest: provisioningOperationDigest(packet.operation) } : {}),
+                    receipt,
+                  };
             yield* Effect.promise(() =>
-              writeFile(
-                resolve(directory, "receipt.json"),
-                JSON.stringify({
-                  disposition: mode,
-                  manifest: provisioningOperationDigest(packet.operation),
-                  receipt,
-                }),
-                { mode: 0o600, flush: true },
-              ),
+              writeFile(resolve(directory, "receipt.json"), JSON.stringify(output), {
+                mode: 0o600,
+                flush: true,
+              }),
             );
           }).pipe(
             Effect.provideContext(compiled.services),

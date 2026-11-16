@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Inspect the retained operation, or apply the exact reviewed provisioning packet
+        description: Plan store adoption, inspect the retained operation, or apply the reviewed packet
         required: true
         default: inspect
         type: choice
-        options: [inspect, apply]
+        options: [plan, inspect, apply]
       packet:
-        description: Reviewed provisioning packet with an exact operation checksum and expiring coordinator GO
+        description: Read-only store plan request, or reviewed provisioning packet with checksum and expiring GO
         required: true
         type: string
 

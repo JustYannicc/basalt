@@ -10,6 +10,7 @@ import {
 const ProvisioningResource = Schema.Union([
   RuntimeResourceName,
   Schema.Literal("PoolProviderObservationToken"),
+  Schema.Literal("PoolObservationSecrets"),
 ]);
 type ProvisioningResource = typeof ProvisioningResource.Type;
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
