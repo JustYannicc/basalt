@@ -19,7 +19,13 @@ import { openRecovery } from "./recovery-envelope.ts";
 import { decodeRuntimeReleaseHead } from "./runtime-release-journal.ts";
 import { runtimeReleaseState } from "./runtime-release-state.ts";
 import { normalizePlacement } from "./script-placement.ts";
-import { ReleaseSettlementProof, releaseImageJournalKey } from "./release-settlement-contract.ts";
+import {
+  ReleaseSettlementProof,
+  releaseImageJournalKey,
+  type ReleaseSettlementDisposition,
+} from "./release-settlement-contract.ts";
+import { readUnadoptedController } from "./release-settlement-controller-reads.ts";
+import { settlementSourceFailure } from "./release-settlement-source.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { readServingObservation } from "./serving-observation.ts";
 
@@ -31,7 +37,11 @@ const forwardHeader = Schema.Struct({
   complete: Schema.Literal(false),
   sealed: Schema.Unknown,
 });
-const refuse = () => new BarrierRefusal("release-settlement-not-pre-controller", "PoolWorker");
+// The earlier disposition keeps its message; the later one names the guard that failed.
+const notSettleable = (disposition: ReleaseSettlementDisposition, guard?: string) =>
+  disposition === "abandoned-before-controller"
+    ? new BarrierRefusal("release-settlement-not-pre-controller", "PoolWorker")
+    : new BarrierRefusal("release-settlement-not-controller-active", guard ?? "PoolWorker");
 export type ReleaseSettlementIo = {
   forward?: NonNullable<Parameters<typeof resumeForwardRelease>[1]["io"]>;
   container?: typeof observeContainer;
@@ -45,34 +55,20 @@ export const collectReleaseSettlementProof = (
   sourceCandidate: string,
   key: string,
   directory: string,
-  io: ReleaseSettlementIo = {},
+  io: ReleaseSettlementIo,
+  disposition: ReleaseSettlementDisposition,
 ) =>
   Effect.gen(function* () {
+    const refuse = () => notSettleable(disposition);
+    const activated = disposition === "controller-active-unadopted";
     const state = yield* yield* State;
     const image = yield* state.getOutput(releaseImageJournalKey(stack));
     const forward = yield* state.getOutput(journalKey(stack));
     const { record } = decodeRuntimeReleaseHead(image, key);
     const head = Schema.decodeUnknownSync(forwardHeader)(forward);
     const packet = readForwardPacket(openRecovery(head.sealed, key, head.candidate, head.manifest));
-    if (
-      record.candidate !== sourceCandidate ||
-      head.candidate !== sourceCandidate ||
-      packet.manifest.candidate !== sourceCandidate ||
-      record.complete ||
-      record.abort ||
-      record.update ||
-      record.promotion ||
-      Object.keys(record.bootstrap).length ||
-      Object.keys(record.configurations).length ||
-      packet.receipt.phase !== "upload" ||
-      packet.receipt.activated.length ||
-      packet.receipt.pending ||
-      packet.receipt.pendingContainer ||
-      packet.receipt.containers?.length ||
-      packet.frozen.containers[0]?.id !== "PoolContainer" ||
-      packet.manifest.workers.length > 32
-    )
-      throw refuse();
+    const unsettled = settlementSourceFailure(disposition, sourceCandidate, record, head, packet);
+    if (unsettled) throw notSettleable(disposition, unsettled);
     const resources = [
       ...new Set([
         ...packet.manifest.workers.map((worker) => worker.id),
@@ -98,6 +94,8 @@ export const collectReleaseSettlementProof = (
       signingKey !== record.baseline.deploymentKey
     )
       throw new BarrierRefusal("release-settlement-image-baseline-drift", "PoolWorker");
+    if (activated && baseline.code.candidate !== sourceCandidate)
+      throw new BarrierRefusal("release-settlement-controller-not-source", "PoolWorker");
     const deny = () => Effect.die(new BarrierRefusal("release-settlement-state-write-refused"));
     const readOnly: StateService = {
       ...state,
@@ -140,9 +138,12 @@ export const collectReleaseSettlementProof = (
     const workers: (typeof ReleaseSettlementProof.Type)["workers"][number][] = [];
     for (const worker of packet.manifest.workers) {
       const active = reconciliation.workers.find((row) => row.worker === worker.id)?.versions;
-      if (canonical(active) !== canonical(worker.baseline))
-        throw new BarrierRefusal("release-settlement-worker-not-baseline", worker.id);
       const accepted = packet.receipt.accepted.find((row) => row.worker === worker.id)?.versionId;
+      if (activated) {
+        if (canonical(active) !== canonical([{ versionId: accepted, percentage: 100 }]))
+          throw new BarrierRefusal("release-settlement-worker-not-accepted", worker.id);
+      } else if (canonical(active) !== canonical(worker.baseline))
+        throw new BarrierRefusal("release-settlement-worker-not-baseline", worker.id);
       const versionIds = [
         ...new Set([
           ...worker.baseline.map((row) => row.versionId),
@@ -227,6 +228,18 @@ export const collectReleaseSettlementProof = (
         }),
       });
     }
+    const controllerReads = activated
+      ? yield* Effect.promise(() =>
+          readUnadoptedController({
+            controller: baseline,
+            key: signingKey,
+            root: record.baseline.applications.root,
+            instanceId: reconciliation.instanceId,
+            target: { ...baseline.target, connect: io.connect },
+            record: io.runtimeRead,
+          }),
+        )
+      : undefined;
     for (const resource of nativeResources) {
       const row = yield* state.get({ stack: stack.name, stage: stack.stage, fqn: resource.fqn });
       if (encodedRecordHash(row) !== resource.digest)
@@ -238,7 +251,8 @@ export const collectReleaseSettlementProof = (
     )
       throw new BarrierRefusal("release-settlement-head-drift", "PoolWorker");
     const proof = Schema.decodeUnknownSync(ReleaseSettlementProof)({
-      disposition: "abandoned-before-controller",
+      disposition,
+      ...(controllerReads ? { controllerReads } : {}),
       controller: baseline,
       health: { instanceId: reconciliation.instanceId, bootId: reconciliation.bootId },
       imageBaselineDigest: hash(record.baseline),

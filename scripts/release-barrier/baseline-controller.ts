@@ -14,6 +14,7 @@ import { readBaseline } from "./cloudflare.ts";
 import { encodedRecordHash } from "./forward-model.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import type { RuntimeCommandAction } from "./runtime-command-rpc.ts";
 
 export const BaselineController = Schema.Struct({
   code: ControllerCode,
@@ -102,8 +103,64 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
 export type BaselineRead = {
   method: "GET" | "POST";
   path: typeof runtimeRecoveryPath | typeof runtimeHandoffPath;
-  action?: "inspect";
+  action?: "inspect" | "fleet-inspect" | "witness";
 };
+type PoolOperationsBridge = Awaited<ReturnType<typeof openPoolOperations>>;
+
+/** One signed send of a read-only handoff action. The caller owns the response body. */
+export async function handoffRead(input: {
+  bridge: PoolOperationsBridge;
+  key: string;
+  code: BaselineController["code"];
+  action: RuntimeCommandAction & { action: NonNullable<BaselineRead["action"]> };
+  signal: AbortSignal;
+  record?(call: BaselineRead): Promise<void>;
+}) {
+  const at = Date.now();
+  const envelope = await signEnvelope(input.key, runtimeHandoffCommandPrefix, {
+    ...input.action,
+    controllerCode: input.code,
+    at,
+    expiresAt: at + 60_000,
+  });
+  await input.record?.({ method: "POST", path: runtimeHandoffPath, action: input.action.action });
+  const { bridge, signal } = input;
+  return bounded(
+    bridge.service.fetch(
+      new Request(`http://pool-operations${runtimeHandoffPath}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ envelope }),
+        signal,
+      }),
+    ),
+    signal,
+  );
+}
+
+/** An inspect answered by exactly this controller code, with no slot selection retained. */
+export async function readUnselectedInspection(
+  response: Response,
+  signal: AbortSignal,
+  code: BaselineController["code"],
+  refusals: { refused: string; codePath: string; selection: string },
+) {
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    throw new BarrierRefusal(refusals.refused, "PoolWorker");
+  }
+  const inspection = Schema.decodeUnknownSync(
+    Schema.Struct({
+      result: Schema.Struct({
+        controllerCode: ControllerCode,
+        selection: Schema.optional(Schema.Unknown),
+      }),
+    }),
+  )(await bounded(response.json(), signal)).result;
+  sameProvisioningValue(refusals.codePath, code, inspection.controllerCode);
+  if (inspection.selection !== undefined)
+    throw new BarrierRefusal(refusals.selection, "PoolWorker");
+}
 
 /** Both calls exist in the baseline protocol. Neither starts, adopts, promotes or repairs a runtime. */
 export async function baselineControllerHealth(input: {
@@ -116,41 +173,24 @@ export async function baselineControllerHealth(input: {
   const bridge = await openPoolOperations(input.target ?? baseline.target);
   const signal = AbortSignal.timeout(30_000);
   try {
-    const at = Date.now();
-    const envelope = await signEnvelope(input.key, runtimeHandoffCommandPrefix, {
-      action: "inspect",
-      controllerCode: baseline.code,
-      at,
-      expiresAt: at + 60_000,
-    });
-    await input.record?.({ method: "POST", path: runtimeHandoffPath, action: "inspect" });
-    const inspected = await bounded(
-      bridge.service.fetch(
-        new Request(`http://pool-operations${runtimeHandoffPath}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ envelope }),
-          signal,
-        }),
-      ),
-      signal,
-    );
-    if (inspected.status !== 200) {
-      await inspected.body?.cancel();
-      throw new BarrierRefusal("baseline-controller-identity-refused", "PoolWorker");
-    }
-    const inspection = Schema.decodeUnknownSync(
-      Schema.Struct({
-        result: Schema.Struct({
-          controllerCode: ControllerCode,
-          selection: Schema.optional(Schema.Unknown),
-        }),
-      }),
-    )(await bounded(inspected.json(), signal)).result;
-    sameProvisioningValue("baseline-controller.code", baseline.code, inspection.controllerCode);
     // This path proves the legacy PoolContainer before the first slot handoff.
-    if (inspection.selection !== undefined)
-      throw new BarrierRefusal("baseline-controller-selection-unexpected", "PoolWorker");
+    await readUnselectedInspection(
+      await handoffRead({
+        bridge,
+        key: input.key,
+        code: baseline.code,
+        action: { action: "inspect" },
+        signal,
+        record: input.record,
+      }),
+      signal,
+      baseline.code,
+      {
+        refused: "baseline-controller-identity-refused",
+        codePath: "baseline-controller.code",
+        selection: "baseline-controller-selection-unexpected",
+      },
+    );
     await input.record?.({ method: "GET", path: runtimeRecoveryPath });
     const response = await bounded(
       bridge.service.fetch(new Request(`http://pool-operations${runtimeRecoveryPath}`, { signal })),
