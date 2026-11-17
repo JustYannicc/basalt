@@ -72,6 +72,9 @@ test("multiple history statements coalesce transaction keys and become visible o
 test("hash, group, membership and all-pool target resolution stays legacy-identical", async () => {
   await historyInsertFixture(async ({ a }) => {
     await a.query("INSERT INTO channel_group_detail VALUES(1,2,'fixture-account',NULL)");
+    await a.query(
+      "INSERT INTO channel_group SELECT 3,string_agg(md5(i::text),''),false,NULL FROM generate_series(1,300) AS i",
+    );
     await a.query("UPDATE channel_group SET disabled=true,deleted_at=now() WHERE id=2");
     const hash = (
       await a.query("SELECT left(encode(sha256(convert_to($1,'UTF8')),'hex'),16) AS hash", [

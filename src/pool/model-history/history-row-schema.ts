@@ -19,7 +19,8 @@ export const historyRowStatements = [
     $$`,
   `DO $$ BEGIN IF to_regclass('channel_group') IS NOT NULL THEN
     CREATE INDEX basalt_pool_group_history_hash ON channel_group
-      ((basalt_pool_history_hash(substring(channel_name FROM ${poolStart})))) INCLUDE(channel_name);
+      ((basalt_pool_history_hash(substring(channel_name FROM ${poolStart})))) INCLUDE(channel_name)
+      WHERE channel_name ~ ${groupPattern};
   END IF; END $$`,
   `CREATE INDEX basalt_pool_heads_history_hash ON basalt_pool_change_heads
     ((basalt_pool_history_hash(pool))) INCLUDE(pool)`,

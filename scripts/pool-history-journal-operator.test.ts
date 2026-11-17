@@ -17,6 +17,7 @@ import {
 import {
   activateModelHistoryJournal,
   historyJournalActivationMigration,
+  historySchemaVersion,
   migrateModelHistory,
   type HistoryDatabase,
 } from "../src/pool/model-history/schema.ts";
@@ -84,7 +85,7 @@ test("activation plans select only v10 despite higher unrelated markers and pres
       "model_request_history_v999_unrelated",
     ]);
     const normal = await modelHistorySchemaPlan(db);
-    assert.equal(normal.version, historyJournalPrepareVersion);
+    assert.equal(normal.version, historySchemaVersion);
     assert.equal(normal.applied, true);
     assert.equal(
       (
@@ -180,7 +181,7 @@ test("activation plans select only v10 despite higher unrelated markers and pres
     await runHistoryOperator(applying, account, connect);
     assert.equal(writes, 1);
     assert.equal((await modelHistorySchemaPlan(db, "journal-activation")).applied, true);
-    assert.equal((await modelHistorySchemaPlan(db)).version, historyJournalPrepareVersion);
+    assert.equal((await modelHistorySchemaPlan(db)).version, historySchemaVersion);
     await assert.rejects(runHistoryOperator(applying, account, connect));
     assert.equal(writes, 1);
   } finally {
