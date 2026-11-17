@@ -129,13 +129,18 @@ export async function releaseSettlementFixture(
       { accountId, workerName: worker },
     );
   await put("PoolContainer", "Cloudflare.Container", {}, previous);
+  // Scale-out code phases defer the readiness command, so after the source's controller phase it
+  // still records the controller that ran before the source.
+  const readinessCode = options.controllerActive
+    ? previousController(accountId, previous.hash!.image).code
+    : code;
   await put(
     "PoolBackendBudgetRuntimeReady",
     "Command.Exec",
     {
       env: {
-        GITHUB_SHA: sourceCandidate,
-        DATABASE_BUDGET_WORKER_INPUT: code.workerInput,
+        GITHUB_SHA: readinessCode.candidate,
+        DATABASE_BUDGET_WORKER_INPUT: readinessCode.workerInput,
         DATABASE_BUDGET_IMAGE_HASH: previous.hash!.image,
         DATABASE_BUDGET_WORKER: "PoolWorker",
         CLOUDFLARE_ACCOUNT_ID: accountId,
@@ -362,6 +367,9 @@ export async function releaseSettlementFixture(
     }),
   };
   return {
+    code,
+    /** The source controller code a controller-active request names; tests may change it. */
+    sourceController: (options.controllerActive ? code : undefined) as typeof code | undefined,
     scope,
     accountId,
     key,

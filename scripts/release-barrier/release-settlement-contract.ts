@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 import { BaselineController } from "./baseline-controller.ts";
 import { canonical, digest } from "./manifest.ts";
 
@@ -20,6 +21,9 @@ export const ReleaseSettlementPlanRequest = Schema.Struct({
   expiresAt: Schema.Int,
   // Absent keeps earlier reviewed requests, and their digests, as abandoned-before-controller.
   disposition: Schema.optional(ReleaseSettlementDisposition),
+  // Required for controller-active-unadopted. Scale-out code phases defer the readiness command, so
+  // native state still names the previous controller; the live controller confirms this code.
+  sourceController: Schema.optional(ControllerCode),
 });
 const proofFields = {
   controller: BaselineController,
