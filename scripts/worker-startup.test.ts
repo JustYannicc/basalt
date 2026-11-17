@@ -10,6 +10,7 @@ import {
   sizeBudgetBytes,
   startupBudgetMs,
   violations,
+  workerStartupBudgetMs,
   type WorkerBundle,
 } from "./worker-startup.ts";
 
@@ -194,11 +195,39 @@ test("a Worker fails when its median startup or its size crosses the budget", ()
     inconclusive: 0,
   };
   assert.deepEqual(violations(fits), []);
-  const slow = { ...fits, startupMs: [startupBudgetMs + 1, startupBudgetMs + 2, 10] };
+  const slow = {
+    ...fits,
+    name: "Router",
+    startupMs: [startupBudgetMs + 1, startupBudgetMs + 2, 10],
+  };
   assert.match(
     violations(slow).join("\n"),
-    /Api starts in 401\.0 ms of CPU \(median\); the budget is 400 ms/,
+    /Router starts in 401\.0 ms of CPU \(median\); the budget is 400 ms/,
   );
   const large = { ...fits, bytes: sizeBudgetBytes + 1 };
   assert.match(violations(large).join("\n"), /Api uploads 33554433 bytes/);
+});
+
+test("Api and McpServer fail at their tighter startup budget", () => {
+  for (const [name, budget] of Object.entries(workerStartupBudgetMs)) {
+    assert.ok(budget < startupBudgetMs);
+    const at = {
+      name,
+      bytes: 1,
+      gzipBytes: 1,
+      startupMs: [budget, budget, budget],
+      inconclusive: 0,
+    };
+    assert.deepEqual(violations(at), []);
+    const over = { ...at, startupMs: [budget + 1, budget + 1, budget + 1] };
+    assert.match(
+      violations(over).join("\n"),
+      new RegExp(
+        `${name} starts in ${budget + 1}\\.0 ms of CPU \\(median\\); the budget is ${budget} ms`,
+      ),
+    );
+  }
+  // Workers without a tighter budget keep the general one.
+  const router = { name: "Router", bytes: 1, gzipBytes: 1, startupMs: [350], inconclusive: 0 };
+  assert.deepEqual(violations(router), []);
 });

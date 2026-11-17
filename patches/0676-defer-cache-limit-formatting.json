@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-defer-cache-limit-formatting",
+  "file": "0676-defer-cache-limit-formatting.patch",
+  "content_sha256": "7e0db93d0b4030464d79e662dcb886a5a87595f0836dfefe39761cf23e6f1cc5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

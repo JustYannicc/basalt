@@ -27,6 +27,19 @@ import {
 export const startupLimitMs = 1_000;
 /** A budget well under it: CI runners and Cloudflare's machines differ, and startup varies run to run. */
 export const startupBudgetMs = 400;
+/**
+ * Workers Cloudflare has measured near its limit (Api reported 325 ms to over 1 s for one build, McpServer
+ * 900 ms) get a tighter budget, so their growth fails here before a release is refused for it. Their CI
+ * medians were 186–239 ms (Api) and 168–208 ms (McpServer); each budget sits about a third above the slowest.
+ */
+export const workerStartupBudgetMs = { Api: 325, McpServer: 300 } as const satisfies Record<
+  string,
+  number
+>;
+export const startupBudgetFor = (name: string): number =>
+  Object.hasOwn(workerStartupBudgetMs, name)
+    ? workerStartupBudgetMs[name as keyof typeof workerStartupBudgetMs]
+    : startupBudgetMs;
 /** Cloudflare's size limit, uncompressed; there is no compressed limit. */
 export const sizeLimitBytes = 64 * 1024 * 1024;
 /** Fail at half of it. Upstream's own per-Worker upload budgets are far tighter. */
@@ -152,10 +165,11 @@ export const median = (values: ReadonlyArray<number>) => {
 /** Every budget a measurement crosses, as messages; empty when it fits. */
 export const violations = (measurement: Measurement) => {
   const startup = median(measurement.startupMs);
+  const budget = startupBudgetFor(measurement.name);
   return [
-    ...(startup > startupBudgetMs
+    ...(startup > budget
       ? [
-          `${measurement.name} starts in ${startup.toFixed(1)} ms of CPU (median); the budget is ${startupBudgetMs} ms, against Cloudflare's ${startupLimitMs} ms limit`,
+          `${measurement.name} starts in ${startup.toFixed(1)} ms of CPU (median); the budget is ${budget} ms, against Cloudflare's ${startupLimitMs} ms limit`,
         ]
       : []),
     ...(measurement.bytes > sizeBudgetBytes
@@ -243,7 +257,11 @@ const kib = (bytes: number) => `${(bytes / 1024).toFixed(1)} KiB`;
 
 export const report = (measurements: ReadonlyArray<Measurement>) =>
   [
-    `Startup CPU budget ${startupBudgetMs} ms (Cloudflare limit ${startupLimitMs} ms); size budget ${kib(sizeBudgetBytes)} (limit ${kib(sizeLimitBytes)}).`,
+    `Startup CPU budget ${startupBudgetMs} ms, ${Object.entries(workerStartupBudgetMs)
+      .map(([name, ms]) => `${name} ${ms} ms`)
+      .join(
+        ", ",
+      )} (Cloudflare limit ${startupLimitMs} ms); size budget ${kib(sizeBudgetBytes)} (limit ${kib(sizeLimitBytes)}).`,
     "",
     "| Worker | Uncompressed | Gzip | Startup CPU, median | Runs (ms) | Inconclusive starts retried |",
     "|---|---:|---:|---:|---|---:|",
