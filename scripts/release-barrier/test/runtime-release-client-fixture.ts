@@ -39,12 +39,14 @@ export async function runtimeReleaseClientFixture(
   let root = f.worker,
     fail = fault;
   const commands: string[] = [];
-  // CI-shaped bridge timing: setup runs before dispatch, healthReply after the controller answers.
+  // CI-shaped bridge timing: setup runs before dispatch, healthReply after the controller answers,
+  // close after the reply was read.
   const bridge: {
     setupMs: number;
+    closeMs: number;
     healthReplyMs: number;
     healthReply?: (result: { identity: SlotIdentity; leaseMs: number }) => unknown;
-  } = { setupMs: 0, healthReplyMs: 0 };
+  } = { setupMs: 0, closeMs: 0, healthReplyMs: 0 };
   let closes = 0;
   let promotion: ReleasePromotionAttempt | undefined;
   const attempts: ReleasePromotionAttempt[] = [];
@@ -183,6 +185,7 @@ export async function runtimeReleaseClientFixture(
               },
             },
             dispose: async () => {
+              await delay(bridge.closeMs);
               closes++;
             },
           };
