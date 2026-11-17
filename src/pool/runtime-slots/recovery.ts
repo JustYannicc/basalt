@@ -12,14 +12,20 @@ import {
   sameTarget,
   type ControllerCode,
 } from "./contract.ts";
-import { healthy, currentPolicies, proveSlot, slotClock } from "./proof.ts";
+import {
+  healthy,
+  currentPolicies,
+  retiredDenials,
+  proveSlot,
+  slotClock,
+  vetoLease,
+} from "./proof.ts";
 import { slotSelectionKey, type RuntimeSlotStorage, type SlotStorage } from "./storage.ts";
 import type { BoundSlotDriver } from "./transport.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { providerDigest } from "../runtime-provider/canonical.ts";
 import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
-import type { SlotSnapshot } from "./contract.ts";
 import { awaitProbe } from "../availability.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
@@ -44,13 +50,6 @@ interface Dependencies {
   afterCommit?(identity: SlotIdentity, fingerprint: string): Promise<void>;
 }
 export const runtimeRecoveryBudgetMs = 200_000;
-function clean(snapshot: SlotSnapshot) {
-  if (
-    snapshot.policies.some((policy) => policy.dirty) ||
-    snapshot.denials.some((policy) => !policy.dirty || policy.accounts.length)
-  )
-    throw new SlotRefused("policy");
-}
 
 /** Reconstructible per-boot recovery joins the endpoint's durable launch witness before changing selection. */
 export class RuntimeSlotRecovery {
@@ -163,7 +162,7 @@ export class RuntimeSlotRecovery {
       at: Date.now(),
       slot: previous.slotId,
     });
-    clean(snapshot);
+    retiredDenials(snapshot);
     const retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "witness",
@@ -256,7 +255,7 @@ export class RuntimeSlotRecovery {
         current.digest !== snapshot.digest
       )
         throw new SlotRefused("selection");
-      clean(current);
+      retiredDenials(current);
     });
     if (!retained.running) await driver.admit(previous, await envelope(false));
     signal.throwIfAborted();
@@ -268,12 +267,14 @@ export class RuntimeSlotRecovery {
     const health = await driver.start(previous, signal);
     if (health.identity.bootId === previous.bootId) throw new SlotRefused("identity");
     const ready = await storage.inspect();
-    clean(ready);
+    retiredDenials(ready);
     if (ready.digest !== snapshot.digest) throw new SlotRefused("policy");
     // Expired positives stay absent on a fresh boot. Home renews them before recovery reports ready.
     await Promise.all(
       [
-        ...ready.policies.filter((policy) => policy.expiresAt > Date.now()),
+        ...ready.policies
+          .filter((policy) => policy.dirty || policy.expiresAt > Date.now())
+          .map((policy) => vetoLease(policy, Date.now())),
         ...ready.denials.map((policy) => ({ ...policy, expiresAt: Date.now() + membershipTtlMs })),
       ].map((policy) => driver.install(health.identity, policy, signal)),
     );
@@ -291,7 +292,7 @@ export class RuntimeSlotRecovery {
         current.selection.draining
       )
         throw new SlotRefused("selection");
-      clean(current);
+      retiredDenials(current);
       signal.throwIfAborted();
       await this.deps.beforeCommit?.(previous, health.identity, transaction);
       await transaction.put(slotSelectionKey, {

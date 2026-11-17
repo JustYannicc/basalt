@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { ConfigProvider, Effect, Layer, Redacted, Schema } from "effect";
+import { ConfigProvider, Effect, Layer, Redacted } from "effect";
 import { State, StateStoreError, type StateService } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { encodeState } from "alchemy/State/StateEncoding";
@@ -11,21 +11,28 @@ import { Stack, evalStack } from "alchemy/Stack";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
-import { openEnvelope } from "../../../src/pool/token.ts";
-import { ControllerCode } from "../../../src/pool/runtime-slots/contract.ts";
-import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { containerPublication } from "./container-fixture.ts";
 import { readForwardPacket } from "../forward-model.ts";
 import { writeForwardJournal } from "../forward-journal.ts";
 import { describeWorker, manifestDigest, type ReleaseManifest } from "../manifest.ts";
 import { describeContainer, containerSnapshot } from "../container.ts";
 import { runtimeReleaseState } from "../runtime-release-state.ts";
-import { runtimeReleaseJournal } from "../runtime-release-journal.ts";
+import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "../runtime-release-journal.ts";
 import { ordinaryReleaseWriter } from "../runtime-release-writer.ts";
 import { withReleaseRuntime } from "../runtime.ts";
 import type { SettlementOperationIo } from "../release-settlement-operation.ts";
+import type { BaselineRead } from "../baseline-controller.ts";
+import {
+  activatedReceipt,
+  previousController,
+  settlementController,
+} from "./settlement-controller.ts";
 
-export async function releaseSettlementFixture(context: TestContext) {
+/** `controllerActive` is the source after its controller phase: every Worker activated, nothing adopted. */
+export async function releaseSettlementFixture(
+  context: TestContext,
+  options: { controllerActive?: boolean } = {},
+) {
   context.mock.method(globalThis, "fetch", async () => {
     throw new Error("No network in the offline settlement proof");
   });
@@ -58,7 +65,8 @@ export async function releaseSettlementFixture(context: TestContext) {
     bootId = "baseline-boot",
     placement = "off";
   const calls: string[] = [],
-    intents: unknown[] = [];
+    intents: unknown[] = [],
+    runtimeReads: BaselineRead[] = [];
   const state: StateService = {
     ...memory,
     setOutput: (request) =>
@@ -157,7 +165,14 @@ export async function releaseSettlementFixture(context: TestContext) {
       ...(id === "PoolWorker" ? { baselineImageHash: previous.hash!.image } : {}),
     })),
   };
-  const active = new Map(manifest.workers.map((worker) => [worker.scriptName, worker.baseline]));
+  const active = new Map(
+    manifest.workers.map((worker) => [
+      worker.scriptName,
+      options.controllerActive
+        ? [{ versionId: `accepted-${worker.id}`, percentage: 100 }]
+        : worker.baseline,
+    ]),
+  );
   const client = HttpClient.make((request, url) => {
     assert.equal(request.method, "GET");
     calls.push("GET deployment");
@@ -229,11 +244,14 @@ export async function releaseSettlementFixture(context: TestContext) {
   const journal = await Effect.runPromise(
     provide(runtimeReleaseJournal(scope, writer(sourceCandidate), key)),
   );
-  const record = {
-    format: "pool-image-release-v1" as const,
+  const record: RuntimeReleaseRecord = {
+    format: "pool-image-release-v1",
     candidate: sourceCandidate,
     complete: false,
     baseline,
+    ...(options.controllerActive
+      ? { baselineController: previousController(accountId, previous.hash!.image) }
+      : {}),
     desiredInput: "d".repeat(16),
     desiredConfiguration: baseline.configuration,
     bootstrap: {},
@@ -257,15 +275,22 @@ export async function releaseSettlementFixture(context: TestContext) {
       candidate: sourceCandidate,
       manifest: manifestDigest(manifest),
       ceilingMs: 750,
-      phase: "upload",
-      accepted: [{ worker: "Api", versionId: "accepted-Api", startupTimeMs: 125 }],
-      startupMeasurements: [
-        { worker: "Api", versionId: "accepted-Api", startupTimeMs: 125 },
-        { worker: "McpServer", versionId: "noisy-McpServer", startupTimeMs: 900 },
-      ],
-      activated: [],
-      containers: [],
-      pendingUpload: { worker: "McpServer" },
+      ...(options.controllerActive
+        ? activatedReceipt(
+            manifest.workers.map((worker) => worker.id),
+            previous.version,
+          )
+        : {
+            phase: "upload",
+            accepted: [{ worker: "Api", versionId: "accepted-Api", startupTimeMs: 125 }],
+            startupMeasurements: [
+              { worker: "Api", versionId: "accepted-Api", startupTimeMs: 125 },
+              { worker: "McpServer", versionId: "noisy-McpServer", startupTimeMs: 900 },
+            ],
+            activated: [],
+            containers: [],
+            pendingUpload: { worker: "McpServer" },
+          }),
     },
     nativeBefore: encodeState(
       await Effect.runPromise(
@@ -274,6 +299,14 @@ export async function releaseSettlementFixture(context: TestContext) {
     ),
   });
   await Effect.runPromise(writeForwardJournal(state, scope, key, packet));
+  const controller = settlementController({
+    controllerId: instanceId,
+    applicationId: previous.applicationId,
+    imageInput: previous.hash!.image,
+    code,
+    key,
+    calls,
+  });
   const io: SettlementOperationIo = {
     directory,
     intent: async (value) => {
@@ -297,6 +330,9 @@ export async function releaseSettlementFixture(context: TestContext) {
         ],
       }),
     },
+    runtimeRead: async (call) => {
+      runtimeReads.push(call);
+    },
     connect: async () => ({
       dispose: async () => {},
       env: {
@@ -316,21 +352,7 @@ export async function releaseSettlementFixture(context: TestContext) {
             }
             assert.equal(request.method, "POST");
             assert.equal(path, "/runtime-handoff");
-            const body = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
-              await request.json(),
-            );
-            const command = Schema.decodeUnknownSync(
-              Schema.Struct({
-                action: Schema.Literal("inspect"),
-                controllerCode: ControllerCode,
-                at: Schema.Number,
-                expiresAt: Schema.Number,
-              }),
-              { onExcessProperty: "error" },
-            )(await openEnvelope(key, runtimeHandoffCommandPrefix, body.envelope));
-            assert.deepEqual(command.controllerCode, code);
-            calls.push("POST inspect");
-            return Response.json({ result: { controllerCode: code } });
+            return controller.handle(request);
           },
         },
       },
@@ -353,6 +375,8 @@ export async function releaseSettlementFixture(context: TestContext) {
     active,
     calls,
     intents,
+    runtimeReads,
+    controller,
     provisioningWriter: { candidate, accountId, lease: "deploy-production:1:1" },
     writes: () => writes,
     failWrite: () => {

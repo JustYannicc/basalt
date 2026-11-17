@@ -33,6 +33,7 @@ import { readFirstHandoffAdoption } from "./first-handoff-runtime.ts";
 import { runtimeApplicationPins, type runtimeReleaseState } from "./runtime-release-state.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { verifyContainerHealth } from "./container-health.ts";
+import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { awaitRuntimeStartup } from "./runtime-startup-client.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
@@ -240,16 +241,7 @@ export const runtimeReleaseClient = (input: {
           AbortSignal.timeout(15_000),
         );
         const retained = await manifest(
-          {
-            format: "pool-runtime-slot-v1",
-            controllerId: observed.instanceId,
-            instanceId: observed.instanceId,
-            slotId: "legacy",
-            applicationId: root.attributes.applicationId,
-            applicationVersion: String(root.attributes.version),
-            imageDigest: root.attributes.configuration.image.split("@")[1]!,
-            imageInput: root.image.inputHash,
-          },
+          legacyAdoptionTarget(root, observed.instanceId),
           `adopt-${writer.candidate}`,
           "preserve-unattested",
         );

@@ -119,6 +119,7 @@ try {
             connect,
             runtimeRead: countBaselineReadDeclaration(counters),
           },
+          "abandoned-before-controller",
         ).pipe(Effect.provideContext(readOnlyServices));
         assertReadOnlyRehearsal(result.proof, counters);
         return {
