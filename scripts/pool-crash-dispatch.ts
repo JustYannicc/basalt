@@ -7,8 +7,7 @@ import {
   ControllerCode,
   SlotIdentity,
   SlotRefused,
-  SlotSelection,
-  type SlotTarget,
+  SlotTarget,
 } from "../src/pool/runtime-slots/contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
 import { isSigningKey } from "../src/pool/token.ts";
@@ -198,7 +197,10 @@ async function step<T>(read: () => Promise<T>, phase: string): Promise<Step<T>> 
   }
 }
 
-const Selected = Schema.Struct({ selection: SlotSelection });
+// Only the active target is read, so a newer controller's other selection fields never hide it.
+const Selected = Schema.Struct({
+  selection: Schema.Struct({ active: Schema.Struct({ target: SlotTarget }) }),
+});
 
 /** The selected primary's target, or undefined when no selection exists. */
 function selectedTarget(inspected: unknown): Step<SlotTarget> | undefined {
@@ -214,7 +216,7 @@ function selectedTarget(inspected: unknown): Step<SlotTarget> | undefined {
   }
 }
 
-/** Without a selection the root container is the primary; its legacy slot is named from its own boot. */
+/** Without a selection the root container is the primary; its legacy slot is named from its health read. */
 async function legacyPrimary(input: {
   root: RootApplication | undefined;
   target: ReleaseTarget;

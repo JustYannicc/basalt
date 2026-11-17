@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { runCrashDispatch, type DispatchDependencies } from "./pool-crash-dispatch.ts";
+import {
+  ControllerRefused,
+  runCrashDispatch,
+  type DispatchDependencies,
+} from "./pool-crash-dispatch.ts";
 
 // Shaped like the first observe after the legacy root was adopted as selection epoch 1: only an
 // active record, matching active-health, no fleet yet, and a root status read the controller refuses.
@@ -138,13 +142,36 @@ test("after a release the witness follows the promoted slot, not the draining le
   assert.equal(result.ok, true);
   assert.ok(!calls.includes("rootHealth"));
   assert.deepEqual(witnessed, [promotedTarget]);
-  // The restart's witness names the boot the selection now reports, which the proof checks.
+  // The restart's witness names the boot the selection now reports, for the proof operator to compare.
   assert.deepEqual((result.diagnostic as { witness: unknown }).witness, {
     slotId: promotedTarget.slotId,
     kind: "witness",
     operationId: "restart-fixture",
     manifestDigest: "r",
     bootId: restarted.bootId,
+  });
+});
+
+test("a staged candidate leaves the witness on the active slot and records its refusal", async () => {
+  const { deps, witnessed } = observeWorld(
+    {
+      ...adopted,
+      selection: {
+        ...adopted.selection,
+        epoch: 2,
+        candidate: { target: promotedTarget, fenced: false },
+      },
+    },
+    () => {
+      throw new ControllerRefused("witness", "selection");
+    },
+  );
+  const result = await observe(deps);
+  assert.equal(result.ok, true);
+  assert.deepEqual(witnessed, [legacyTarget]);
+  assert.deepEqual((result.diagnostic as { witness: unknown }).witness, {
+    ok: false,
+    refused: "selection",
   });
 });
 
@@ -162,7 +189,7 @@ test("an unreadable selection reports itself instead of falling back to the root
   });
 });
 
-test("a crash packet naming the selected identity reaches the controller without root reads", async () => {
+test("an apply forwards the selected identity packet unchanged, without root reads", async () => {
   const nonce = crypto.randomUUID();
   const packet = { controllerCode, identity: legacyIdentity, nonce, operator: "fixture-operator" };
   const sent: unknown[] = [];
