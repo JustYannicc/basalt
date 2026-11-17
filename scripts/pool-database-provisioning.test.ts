@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { historySchemaMigrations } from "../src/pool/model-history/schema.ts";
-import { releaseWorkers } from "./release-barrier/barrier.ts";
+import { releaseWorkers, type BarrierReceipt } from "./release-barrier/barrier.ts";
 import {
   classify,
   clientConfig,
@@ -373,6 +373,8 @@ test("a failed history migration stops the release before any Worker activation"
       sql === 'SET LOCAL ROLE "basalt_pool_owner"' ? postgresError("42501") : undefined,
   });
   const activations: string[] = [];
+  const operations: string[] = [];
+  const receipts: BarrierReceipt[] = [];
   let uploads = 0;
   let migrationFailure = "";
   await assert.rejects(
@@ -399,20 +401,24 @@ test("a failed history migration stops the release before any Worker activation"
         ],
       },
       {
-        record: async () => {},
-        beforeActivate: () =>
-          provisionPoolDatabase({
+        record: async (receipt) => void receipts.push(receipt),
+        beforeActivate: () => {
+          operations.push("migrate-history");
+          return provisionPoolDatabase({
             runtimeLogin: "pool_runtime",
             connect: fake.connect,
             ...instant,
           }).catch((error: Error) => {
             migrationFailure = error.message;
             throw error;
-          }),
+          });
+        },
         provider: {
           upload: async () => {
             uploads++;
-            return { versionId: "new-gateway", startupTimeMs: 1 };
+            const versionId = `measurement-${uploads}`;
+            operations.push(`upload:${versionId}`);
+            return { versionId, startupTimeMs: 1 };
           },
           baseline: async (worker) => worker.baseline,
           activate: async (worker) => void activations.push(worker.id),
@@ -422,7 +428,14 @@ test("a failed history migration stops the release before any Worker activation"
     /Release barrier refused: barrier-operation-failed/,
   );
   assert.match(migrationFailure, /migrate model request history.*42501/);
-  assert.equal(uploads, 1);
+  assert.equal(uploads, 2, "two passing startup measurements precede the migration");
+  assert.deepEqual(operations, ["upload:measurement-1", "upload:measurement-2", "migrate-history"]);
+  assert.deepEqual(receipts.at(-1)?.startupMeasurements, [
+    { worker: "ModelGateway", versionId: "measurement-1", startupTimeMs: 1 },
+    { worker: "ModelGateway", versionId: "measurement-2", startupTimeMs: 1 },
+  ]);
+  assert.deepEqual([...new Set(receipts.map((receipt) => receipt.phase))], ["upload", "admitted"]);
+  assert.deepEqual(receipts.at(-1)?.activated, []);
   assert.deepEqual(activations, []);
   assert.ok(fake.statements.includes("ROLLBACK"));
 });
