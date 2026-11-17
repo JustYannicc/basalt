@@ -1,8 +1,8 @@
 import { Schema } from "effect";
 import type { SlotStorage, TransactionStorage } from "./storage.ts";
 
-// v1 held a bare count that dead isolates left behind. It is ignored, not rewritten, so code
-// rolled back to the v1 reader still decodes its own key.
+// v1 held a bare count that dead isolates left behind. It stays untouched: a rollback reads v1
+// exactly as before, and writing the new shape there would break that reader's decode.
 const key = "runtime-legacy-activity-v2";
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const Stored = Schema.Struct({ isolate: Schema.String, count: Count });

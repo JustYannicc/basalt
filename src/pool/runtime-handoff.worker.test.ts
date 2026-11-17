@@ -186,7 +186,7 @@ test("promotion keeps an old response body alive and refuses destruction until t
   assert.equal(f.old.calls.destroy, 1);
 });
 
-async function promotedWithClosedOldStream(f: Awaited<ReturnType<typeof handoffWorker>>) {
+async function promoted(f: Awaited<ReturnType<typeof handoffWorker>>) {
   const grant = await f.startGrant();
   assert.equal((await f.stage(grant.envelope)).status, 200);
   const intent = await f.intent(),
@@ -197,7 +197,7 @@ async function promotedWithClosedOldStream(f: Awaited<ReturnType<typeof handoffW
 test("legacy counts leaked by a dead isolate cannot hold the old generation's drain open", async (context) => {
   const f = await handoffWorker();
   context.after(f.cleanup);
-  await promotedWithClosedOldStream(f);
+  await promoted(f);
   // The pre-scoping v1 count production may already hold, and a v2 count from another isolate.
   await f.old.storage.put("runtime-legacy-activity-v1", 1);
   await new LegacyActivity(f.old.storage, "dead-isolate").acquire();
@@ -210,7 +210,7 @@ test("legacy counts leaked by a dead isolate cannot hold the old generation's dr
 test("a live legacy request in this isolate still blocks the drain without any old connection", async (context) => {
   const f = await handoffWorker();
   context.after(f.cleanup);
-  await promotedWithClosedOldStream(f);
+  await promoted(f);
   const complete = await new LegacyActivity(f.old.storage).acquire();
   f.reconstruct();
   assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
@@ -223,7 +223,7 @@ test("a live legacy request in this isolate still blocks the drain without any o
 test("an established old connection still blocks the drain after a dead isolate's count is dropped", async (context) => {
   const f = await handoffWorker();
   context.after(f.cleanup);
-  await promotedWithClosedOldStream(f);
+  await promoted(f);
   await f.old.storage.put("runtime-legacy-activity-v1", 1);
   f.reconstruct();
   f.old.hooks.connections = async () => 1;
