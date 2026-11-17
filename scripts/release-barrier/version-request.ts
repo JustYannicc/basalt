@@ -208,12 +208,19 @@ export async function freezeUpload(
   };
 }
 
-export function uploadRequest(worker: FrozenWorker): Workers.CreateScriptVersionRequest {
+/** `assetsJwt` replaces only the frozen completion token; the frozen manifest itself never changes. */
+export function uploadRequest(
+  worker: FrozenWorker,
+  assetsJwt?: string,
+): Workers.CreateScriptVersionRequest {
   return {
     accountId: worker.accountId,
     scriptName: worker.scriptName,
     bindingsInherit: "strict",
-    metadata: worker.metadata,
+    metadata:
+      assetsJwt && worker.metadata.assets
+        ? { ...worker.metadata, assets: { ...worker.metadata.assets, jwt: assetsJwt } }
+        : worker.metadata,
     files: worker.files.map(
       (file) => new File([new Uint8Array(file.bytes)], file.name, { type: file.type }),
     ),

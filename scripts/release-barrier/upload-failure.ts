@@ -15,6 +15,13 @@ function messageClass(error: unknown) {
   ]
     .filter((value): value is string => typeof value === "string")
     .map((value) => value.slice(0, 4096).toLowerCase());
+  // Cloudflare redeems an asset completion token once; 100312 is its answer to a second redeem.
+  if (
+    (Array.isArray(entries) &&
+      entries.slice(0, 8).some((entry) => field(entry, "code") === 100312)) ||
+    messages.some((value) => /completion token has already been consumed/.test(value))
+  )
+    return "asset-completion-token-consumed";
   if (messages.some((value) => /no such module|cannot resolve module|module not found/.test(value)))
     return "module-resolution";
   if (messages.some((value) => /script startup exceeded memory limit/.test(value)))

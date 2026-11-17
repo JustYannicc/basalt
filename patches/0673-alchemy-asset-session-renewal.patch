@@ -1,0 +1,88 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -7676,3 +7676,84 @@ diff --git a/lib/Cloudflare/StateStore/index.d.ts b/lib/Cloudflare/StateStore/in
+ +export { bootstrap, state, loginWithCloudflare, type BootstrapOptions } from "./State.ts";
+  //# sourceMappingURL=index.d.ts.map
+ \ No newline at end of file
++diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
++index c4baa2c..75ee7f1 100644
++--- a/src/Cloudflare/Workers/WorkerProvider.ts
+++++ b/src/Cloudflare/Workers/WorkerProvider.ts
++@@ -4206,7 +4206,14 @@ export const LiveWorkerProvider = () =>
++               versionId, deploymentId,
++             );
++           });
++-          const activationContext = yield* Effect.context<Effect.Services<ReturnType<typeof activate>>>();
+++          // A completion token redeems once, so each further upload of this request needs its own session.
+++          const renewSession = (read: NonNullable<typeof assets>) =>
+++            uploadAssets(accountId, name, read, session, dispatchNamespace).pipe(
+++              Effect.map(({ jwt }) => jwt),
+++            );
+++          const activationContext = yield* Effect.context<
+++            Effect.Services<ReturnType<typeof activate>> | Effect.Services<ReturnType<typeof renewSession>>
+++          >();
++           return yield* uploadHook.value.capture({
++             id, fqn,
++             request: { accountId, scriptName: name, metadata, files: bundle.files },
++@@ -4215,6 +4222,9 @@ export const LiveWorkerProvider = () =>
++             previousSettings: oldSettings,
++             props: news, previousProps: olds,
++             activate: (versionId) => activate(versionId).pipe(Effect.provideContext(activationContext)),
+++            renewAssets: metadataAssets?.jwt && assets
+++              ? () => renewSession(assets).pipe(Effect.provideContext(activationContext))
+++              : undefined,
++           });
++         }
++         const rolloutTraffic = getSelfRolloutTraffic(news);
++diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
++index 6939dbe..9f1bdc5 100644
++--- a/lib/Cloudflare/Workers/WorkerProvider.js
+++++ b/lib/Cloudflare/Workers/WorkerProvider.js
++@@ -3035,6 +3035,8 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++                 });
++                 return yield* finishWorkerUpload({ id: name, logpush: existingSettings?.logpush, tag: output?.workerId }, versionId, deploymentId);
++             });
+++            // A completion token redeems once, so each further upload of this request needs its own session.
+++            const renewSession = (read) => uploadAssets(accountId, name, read, session, dispatchNamespace).pipe(Effect.map(({ jwt }) => jwt));
++             const activationContext = yield* Effect.context();
++             return yield* uploadHook.value.capture({
++                 id, fqn,
++@@ -3044,6 +3046,9 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++                 previousSettings: oldSettings,
++                 props: news, previousProps: olds,
++                 activate: (versionId) => activate(versionId).pipe(Effect.provideContext(activationContext)),
+++                renewAssets: metadataAssets?.jwt && assets
+++                    ? () => renewSession(assets).pipe(Effect.provideContext(activationContext))
+++                    : undefined,
++             });
++         }
++         const rolloutTraffic = getSelfRolloutTraffic(news);
++diff --git a/src/Cloudflare/Workers/WorkerUploadHook.ts b/src/Cloudflare/Workers/WorkerUploadHook.ts
++index 9452842..85f16cb 100644
++--- a/src/Cloudflare/Workers/WorkerUploadHook.ts
+++++ b/src/Cloudflare/Workers/WorkerUploadHook.ts
++@@ -15,6 +15,11 @@ export interface PreparedWorkerUpload {
++   readonly previousProps: Worker["Props"] | undefined;
++   /** Deploy an already uploaded immutable version, then finish ordinary provider reconciliation. */
++   readonly activate: (versionId: string) => Effect.Effect<Worker["Attributes"], unknown>;
+++  /**
+++   * Present when `request` carries an asset completion token. Runs a fresh asset upload session
+++   * for the same manifest and returns its unredeemed completion token.
+++   */
+++  readonly renewAssets?: () => Effect.Effect<string, unknown>;
++ }
++ 
++ /** Opt-in orchestration boundary. Absence preserves the ordinary script upload path. */
++diff --git a/lib/Cloudflare/Workers/WorkerUploadHook.d.ts b/lib/Cloudflare/Workers/WorkerUploadHook.d.ts
++index 741f7ce..ff8ccc8 100644
++--- a/lib/Cloudflare/Workers/WorkerUploadHook.d.ts
+++++ b/lib/Cloudflare/Workers/WorkerUploadHook.d.ts
++@@ -12,6 +12,7 @@ export interface PreparedWorkerUpload {
++     readonly props: Worker["Props"];
++     readonly previousProps: Worker["Props"] | undefined;
++   readonly activate: (versionId: string) => Effect.Effect<Worker["Attributes"], unknown>;
+++  readonly renewAssets?: () => Effect.Effect<string, unknown>;
++ }
++ declare const WorkerUploadHook_base: Context.ServiceClass<WorkerUploadHook, "alchemy/Cloudflare/Workers/WorkerUploadHook", {
++   readonly capture: (upload: PreparedWorkerUpload) => Effect.Effect<Worker["Attributes"], unknown>;
