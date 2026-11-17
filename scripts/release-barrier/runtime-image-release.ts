@@ -33,7 +33,6 @@ import { verifyContainerHealth } from "./container-health.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import {
   baselineControllerHealth,
-  freezeBaselineController,
   readBaselineController,
   readBaselineControllerKey,
 } from "./baseline-controller.ts";
@@ -81,10 +80,7 @@ export const releaseRuntimeImage = <A, StackError>(
         if (record?.abort)
           throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
-          const baselineController = yield* freezeBaselineController(
-            compiled,
-            head.settledController,
-          );
+          const baselineController = yield* readBaselineController(compiled, head.sourceController);
           const key = yield* readBaselineControllerKey(compiled);
           yield* resumeForwardRelease(compiled, {
             directory: options.directory,

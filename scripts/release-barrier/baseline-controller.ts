@@ -48,8 +48,16 @@ export const readBaselineControllerKey = (stack: Pick<CompiledStack, "name" | "s
     return text(Schema.decodeUnknownSync(envSchema)(worker.props).env.POOL_DEPLOYMENT_KEY);
   });
 
-/** The persisted readiness command records the code that finished the previous deployment, not this checkout's code. */
-export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stage">) =>
+/**
+ * The persisted readiness command records the code that finished the previous deployment, not this
+ * checkout's code. After a controller-active settlement or an abort it names an older controller
+ * than the live one, so the caller passes the live-proven `sourceController` the image journal
+ * returned; only an authorized settlement or a confirmed abort supplies one.
+ */
+export const readBaselineController = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  sourceController?: typeof ControllerCode.Type,
+) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
     const key = { stack: stack.name, stage: stack.stage };
@@ -88,7 +96,7 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
       scriptName: target.worker,
     });
     return Schema.decodeUnknownSync(BaselineController)({
-      code: {
+      code: sourceController ?? {
         candidate: text(env.GITHUB_SHA),
         workerInput: text(env.DATABASE_BUDGET_WORKER_INPUT),
       },
@@ -99,21 +107,6 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
       readinessDigest: encodedRecordHash(ready),
     });
   });
-
-/**
- * The baseline a new image record freezes. Only an already authorized settlement supplies
- * `settledController`, so its live-proven source code adds no trust path; the readiness row would
- * still name the controller before that source, which the live controller refuses.
- */
-export const freezeBaselineController = (
-  stack: Pick<CompiledStack, "name" | "stage">,
-  settledController?: BaselineController["code"],
-) =>
-  readBaselineController(stack).pipe(
-    Effect.map((recorded) =>
-      settledController ? { ...recorded, code: settledController } : recorded,
-    ),
-  );
 
 export type BaselineRead = {
   method: "GET" | "POST";

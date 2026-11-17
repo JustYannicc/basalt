@@ -13,11 +13,9 @@ import { ReleasePromotionAttempt } from "./runtime-release-promotion.ts";
 import { StartupAbortReceipt } from "../../src/pool/runtime-slots/startup-abort-contract.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import { BaselineController } from "./baseline-controller.ts";
-import {
-  authorizedReleaseSettlement,
-  openReleaseSettlement,
-} from "./release-settlement-archive.ts";
-import { releaseImageJournalKey, releaseSettlementKey } from "./release-settlement-contract.ts";
+import { authorizedReleaseSettlement } from "./release-settlement-archive.ts";
+import { releaseImageJournalKey } from "./release-settlement-contract.ts";
+import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 
 const Record = Schema.Struct({
   format: Schema.Literal("pool-image-release-v1"),
@@ -60,40 +58,35 @@ export const runtimeReleaseJournal = (
   Effect.gen(function* () {
     const state = yield* yield* State;
     const key = releaseImageJournalKey(stack);
-    /** `settledController` is set only when an authorized settlement released the prior candidate's record. */
-    const head = async (): Promise<{
-      record?: RuntimeReleaseRecord;
-      settledController?: BaselineController["code"];
-    }> => {
+    /**
+     * After a controller-active settlement or an abort, the prior candidate's controller is live while
+     * the readiness row still names an older one; `sourceController` is the code that controller
+     * accepted. A complete record ran final settings, so its readiness row is current.
+     */
+    const head = async (): Promise<
+      | { record: RuntimeReleaseRecord; sourceController?: undefined }
+      | { record?: undefined; sourceController?: typeof ControllerCode.Type }
+    > => {
       const raw = await Effect.runPromise(state.getOutput(key));
       if (raw === undefined) return {};
       const { record } = decodeRuntimeReleaseHead(raw, encryptionKey);
       if (record.candidate !== writer.candidate) {
-        if (record.complete || record.abort?.status === "aborted") return {};
-        if (
-          await Effect.runPromise(
-            authorizedReleaseSettlement(
-              state,
-              stack,
-              encryptionKey,
-              record.candidate,
-              writer.candidate,
-              raw,
-            ),
-          )
-        ) {
-          const archive = await Effect.runPromise(
-            state.getOutput(releaseSettlementKey(stack, record.candidate, writer.candidate)),
-          );
-          return {
-            settledController: openReleaseSettlement(
-              archive,
-              encryptionKey,
-              record.candidate,
-              writer.candidate,
-            ).manifest.proof.controller.code,
-          };
-        }
+        if (record.complete) return {};
+        // An abort is signed with, and confirmed by, the controller this promotion installed.
+        if (record.abort?.status === "aborted")
+          return { sourceController: record.promotion?.startup.controllerCode };
+        const settlement = await Effect.runPromise(
+          authorizedReleaseSettlement(
+            state,
+            stack,
+            encryptionKey,
+            record.candidate,
+            writer.candidate,
+            raw,
+          ),
+        );
+        // Live-proven: the authorized settlement signed its controller reads with this code.
+        if (settlement) return { sourceController: settlement.proof.controller.code };
         throw new BarrierRefusal("runtime-release-prior-candidate-unsettled", "PoolWorker");
       }
       return { record };

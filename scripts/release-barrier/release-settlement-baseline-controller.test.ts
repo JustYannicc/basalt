@@ -1,6 +1,7 @@
 // The next candidate's image record freezes its baseline controller through the same two calls
-// runtime-image-release.ts init makes (journal head, then freezeBaselineController). Driving the
-// whole init needs the redirected release world, so this proves those calls plus the resume step.
+// runtime-image-release.ts init makes (journal head, then readBaselineController). The full init
+// runs only in the redirected release world (runtime-image-release.test.ts), so this proves those
+// calls against the real journal and archive, plus the resume step against the real handler.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
@@ -15,7 +16,7 @@ import { releaseSettlementDigest } from "./release-settlement-contract.ts";
 import { runtimeReleaseJournal } from "./runtime-release-journal.ts";
 import {
   baselineControllerHealth,
-  freezeBaselineController,
+  readBaselineController,
   type BaselineController,
 } from "./baseline-controller.ts";
 import { controllerForwardHealth } from "./controller-forward-health.ts";
@@ -23,6 +24,7 @@ import { readForwardPacket } from "./forward-model.ts";
 import { writeForwardJournal } from "./forward-journal.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import { runtimeProofFixture } from "./test/runtime-proof-fixture.ts";
 
 const notInstalled = async (): Promise<never> => {
   throw new BarrierRefusal("runtime-release-controller-not-installed", "PoolWorker");
@@ -82,6 +84,40 @@ const resumeController = (f: SettlementFixture, baseline: BaselineController) =>
     ),
   );
 
+/**
+ * Freezes the next candidate's baseline as init does, interrupts its controller phase mid-upload,
+ * and resumes it. The readiness row's code is refused by the live controller; the frozen one is not.
+ */
+async function freezeAndResume(f: SettlementFixture) {
+  const journal = await Effect.runPromise(
+    f.provide(runtimeReleaseJournal(f.scope, f.writer(), f.key)),
+  );
+  const head = await journal.head();
+  assert.equal(head.record, undefined);
+  assert.deepEqual(head.sourceController, f.code);
+  const baselineController = await Effect.runPromise(
+    f.provide(readBaselineController(f.compiled, head.sourceController)),
+  );
+  assert.deepEqual(baselineController.versions, [
+    { versionId: "accepted-PoolWorker", percentage: 100 },
+  ]);
+  await journal.write({ ...f.record, candidate: f.candidate, baselineController });
+  const record = await journal.read();
+  assert.ok(record?.baselineController);
+  assert.deepEqual(record.baselineController.code, f.code);
+  await Effect.runPromise(
+    writeForwardJournal(f.state, f.scope, f.key, interruptedControllerPhase(f), false),
+  );
+  const stale = await Effect.runPromise(f.provide(readBaselineController(f.compiled)));
+  await assert.rejects(
+    resumeController(f, stale),
+    /baseline-controller-identity-refused \(PoolWorker\)/,
+  );
+  const reconciled = await resumeController(f, record.baselineController);
+  assert.equal(reconciled?.before, reconciled?.after);
+  assert.deepEqual(f.calls.filter((call) => call.startsWith("POST")).slice(-1), ["POST inspect"]);
+}
+
 test("a candidate released by a controller-active settlement freezes the source controller the live controller holds", async (context) => {
   const f = await controllerActiveFixture(context);
   const manifest = await planSettlement(f);
@@ -101,28 +137,33 @@ test("a candidate released by a controller-active settlement freezes the source 
       ),
     ),
   );
-  const journal = await Effect.runPromise(
-    f.provide(runtimeReleaseJournal(f.scope, f.writer(), f.key)),
+  await freezeAndResume(f);
+});
+
+test("a candidate after an aborted release freezes the controller that confirmed the abort", async (context) => {
+  const f = await controllerActiveFixture(context);
+  const proof = await runtimeProofFixture();
+  const startup = { ...proof.manifest, candidate: f.sourceCandidate, controllerCode: f.code };
+  const source = await Effect.runPromise(
+    f.provide(runtimeReleaseJournal(f.scope, f.writer(f.sourceCandidate), f.key)),
   );
-  const head = await journal.head();
-  assert.equal(head.record, undefined);
-  assert.deepEqual(head.settledController, f.code);
-  const baselineController = await Effect.runPromise(
-    f.provide(freezeBaselineController(f.compiled, head.settledController)),
-  );
-  assert.deepEqual(baselineController.versions, [
-    { versionId: "accepted-PoolWorker", percentage: 100 },
-  ]);
-  await journal.write({ ...f.record, candidate: f.candidate, baselineController });
-  const record = await journal.read();
-  assert.ok(record?.baselineController);
-  await Effect.runPromise(
-    writeForwardJournal(f.state, f.scope, f.key, interruptedControllerPhase(f), false),
-  );
-  const reconciled = await resumeController(f, record.baselineController);
-  assert.equal(reconciled?.before, reconciled?.after);
-  assert.deepEqual(record.baselineController.code, f.code);
-  assert.deepEqual(f.calls.filter((call) => call.startsWith("POST")).slice(-1), ["POST inspect"]);
+  await source.write({
+    ...f.record,
+    promotion: { operationId: startup.operationId, pool: "synthetic-pool", generation: 0, startup },
+    abort: {
+      intent: {
+        operationId: "operator-abort",
+        target: startup.target,
+        witness: proof.witness,
+        startupOperationId: startup.operationId,
+        expectedEpoch: startup.selection.expectedEpoch,
+        active: startup.selection.active!,
+      },
+      status: "aborted",
+      sent: true,
+    },
+  });
+  await freezeAndResume(f);
 });
 
 test("a candidate after a completed release still freezes the readiness row's controller", async (context) => {
@@ -137,7 +178,7 @@ test("a candidate after a completed release still freezes the readiness row's co
   const head = await journal.head();
   assert.deepEqual(head, {});
   const baselineController = await Effect.runPromise(
-    f.provide(freezeBaselineController(f.compiled, head.settledController)),
+    f.provide(readBaselineController(f.compiled, head.sourceController)),
   );
   assert.deepEqual(
     baselineController.code,

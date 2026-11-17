@@ -13,6 +13,7 @@ import type { RuntimeConfiguration } from "../../../src/pool/runtime-slots/confi
 import type { RuntimeColor } from "../../../src/pool/image-release-plan.ts";
 import { BarrierRefusal } from "../refusal.ts";
 import type { RuntimeReleaseRecord } from "../runtime-release-journal.ts";
+import type { BaselineController } from "../baseline-controller.ts";
 import { RuntimeReleaseState } from "../runtime-release-state.ts";
 import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
 import { waitReleaseObservation as liveWait } from "../runtime-release-readiness.ts";
@@ -78,12 +79,16 @@ export const runtimeReleaseDesired = (_stack: CompiledStack) =>
   Effect.succeed({ imageInput: candidateInput, configuration: desiredConfiguration });
 
 let journal: RuntimeReleaseRecord | undefined;
-export const resetJournal = () => {
+type ControllerCode = BaselineController["code"];
+let sourceController: ControllerCode | undefined;
+/** `source` is the live-proven controller code a settled or aborted prior candidate left. */
+export const resetJournal = (source?: ControllerCode) => {
   journal = undefined;
+  sourceController = source;
 };
 export const runtimeReleaseJournal = (_stack: CompiledStack, _writer: unknown, _key: string) =>
   Effect.succeed({
-    head: async () => (journal ? { record: structuredClone(journal) } : {}),
+    head: async () => (journal ? { record: structuredClone(journal) } : { sourceController }),
     read: async () => (journal ? structuredClone(journal) : undefined),
     write: async (next: RuntimeReleaseRecord) => {
       journal = structuredClone(next);
@@ -106,8 +111,8 @@ const baseline = {
   workerDigest: "6".repeat(64),
   readinessDigest: "5".repeat(64),
 };
-export const readBaselineController = (_stack: CompiledStack) => Effect.succeed(baseline);
-export const freezeBaselineController = (_stack: CompiledStack) => Effect.succeed(baseline);
+export const readBaselineController = (_stack: CompiledStack, source?: ControllerCode) =>
+  Effect.succeed(source ? { ...baseline, code: source } : baseline);
 export const readBaselineControllerKey = (_stack: CompiledStack) => Effect.succeed(deploymentKey);
 export const baselineControllerHealth = async () => ({
   instanceId: "instance-root",
