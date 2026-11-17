@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deploymentReadinessPrefix } from "../src/pool/deployment-readiness.ts";
+import { SlotRefused } from "../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../src/pool/token.ts";
 import {
   crashSender,
@@ -66,9 +67,9 @@ function fakes(overrides: Partial<DispatchDependencies> = {}) {
         result: action === "inspect" ? { action, selection: { slot: "primary" } } : { action },
       };
     },
-    crash: async (_packet, apply) => {
-      calls.push(apply ? "crash:apply" : "crash:inspect");
-      return apply
+    crash: async ({ mode }) => {
+      calls.push(`crash:${mode}`);
+      return mode === "apply"
         ? { inspection: false, result: { status: "signalled" } }
         : { inspection: true, result: { status: "audited" } };
     },
@@ -94,7 +95,7 @@ test("the workflow is main-only, serialized and gives only the operator step any
     "pool-crash-operator ${{ inputs.mode }} ${{ inputs.request_id }}",
   );
   assert.deepEqual(workflow.concurrency, {
-    group: "pool-crash-operator",
+    group: "deploy-production",
     "cancel-in-progress": false,
   });
   assert.deepEqual(workflow.permissions, { contents: "read", actions: "read" });
@@ -139,6 +140,7 @@ test("malformed dispatch inputs refuse by field before any read or send", async 
     [{ requestId: crypto.randomUUID() }, "request_id must equal packet.nonce"],
     [{ mode: "inspect", requestId: crypto.randomUUID() }, "request_id must equal packet.nonce"],
     [{ ref: "refs/heads/feature" }, "workflow must be dispatched on refs/heads/main"],
+    [{ event: "push" }, "workflow event must be workflow_dispatch"],
     [{ signingKey: "" }, "POOL_DEPLOYMENT_KEY is unavailable"],
   ];
   for (const [overrides, error] of cases) {
@@ -206,15 +208,15 @@ test("an unreadable run list refuses apply without sending", async () => {
 });
 
 test("a lost apply reply is reported as unknown and never retried", async () => {
-  const sent: boolean[] = [];
+  const sent: string[] = [];
   const { deps } = fakes({
-    crash: async (_packet, apply) => {
-      sent.push(apply);
+    crash: async ({ mode }) => {
+      sent.push(mode);
       throw new Error("synthetic lost reply naming synthetic-pool");
     },
   });
   const result = await runCrashDispatch(input(), deps);
-  assert.deepEqual(sent, [true]);
+  assert.deepEqual(sent, ["apply"]);
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /^runtime-crash outcome unknown; never retry apply/u);
   assert.doesNotMatch(result.error ?? "", /synthetic-pool/u);
@@ -308,7 +310,7 @@ test("free-form inputs never reach the log line", async () => {
 test("observe keeps the selection and fleet when only the health read is refused", async () => {
   const { deps } = fakes({
     observe: async (action) => {
-      if (action === "active-health") throw new Error("refused");
+      if (action === "active-health") throw new SlotRefused("unhealthy");
       return { result: action === "inspect" ? { selection: { slot: "primary" } } : { action } };
     },
   });
@@ -327,4 +329,19 @@ test("observe keeps the selection and fleet when only the health read is refused
     fakes({ observe: async (action) => ({ result: { action } }) }).deps,
   );
   assert.equal(missing.error, "inspect reply has no result.selection");
+});
+
+test("an observe whose health read is lost, not refused, fails instead of recording null", async () => {
+  const { deps } = fakes({
+    observe: async (action) => {
+      if (action === "active-health") throw new Error("synthetic lost reply");
+      return { result: action === "inspect" ? { selection: { slot: "primary" } } : { action } };
+    },
+  });
+  const observed = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(observed.ok, false);
+  assert.equal(observed.error, "active-health outcome unknown");
 });

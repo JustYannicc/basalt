@@ -1,7 +1,9 @@
 import { Schema } from "effect";
 import { BarrierRefusal } from "./release-barrier/refusal.ts";
 
-/** Live production sources for the crash dispatch: the run history and the native release target. */
+// Live production sources for the crash dispatch: the run history and the native release target.
+
+/** The account and PoolWorker script a crash command is sent to. */
 export type ReleaseTarget = { accountId: string; worker: string };
 
 /** The dispatch title is the only durable record a fresh runner has of earlier nonces. */
@@ -28,7 +30,7 @@ export const workflowRunLister =
           },
         },
       );
-      if (!response.ok) throw new Error("Run list refused");
+      if (!response.ok) throw new Error(`Run list refused with HTTP ${response.status}`);
       const body = Schema.decodeUnknownSync(Page)(await response.json());
       runs.push(
         ...body.workflow_runs.map((run) => ({ id: run.id, displayTitle: run.display_title })),

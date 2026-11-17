@@ -38,11 +38,11 @@ export interface DispatchDependencies {
     target: ReleaseTarget,
     signingKey: string,
   ): Promise<unknown>;
-  crash(
-    packet: CrashPacket & ReleaseTarget,
-    apply: boolean,
-    signingKey: string,
-  ): Promise<{ inspection: boolean; result: unknown }>;
+  crash(request: {
+    packet: CrashPacket & ReleaseTarget;
+    mode: "apply" | "inspect";
+    signingKey: string;
+  }): Promise<{ inspection: boolean; result: unknown }>;
   now(): number;
 }
 
@@ -137,8 +137,10 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     }
     packetDigest = createHash("sha256").update(canonicalJson(parsed)).digest("hex");
     const preflight = async () => {
-      if (input.ref !== "refs/heads/main" || input.event !== "workflow_dispatch")
+      if (input.ref !== "refs/heads/main")
         throw new DispatchRefusal("workflow must be dispatched on refs/heads/main");
+      if (input.event !== "workflow_dispatch")
+        throw new DispatchRefusal("workflow event must be workflow_dispatch");
       if (!/^[a-f0-9]{32}$/u.test(input.accountId))
         throw new DispatchRefusal("CLOUDFLARE_ACCOUNT_ID is unavailable");
       if (!isSigningKey(input.signingKey))
@@ -165,8 +167,12 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
       if (inspected === null || typeof inspected !== "object" || !("selection" in inspected))
         throw new DispatchRefusal("inspect reply has no result.selection");
       const fleet = await send("fleet-inspect");
-      // A refused health read is evidence in itself; the selection and fleet still stand.
-      const activeHealth = await send("active-health").catch(() => null);
+      // A controller refusal of the health read is evidence in itself; the selection and fleet
+      // still stand. Any other failure (lost reply, timeout, malformed reply) fails the observe.
+      const activeHealth = await send("active-health").catch((cause: unknown) => {
+        if (cause instanceof SlotRefused || cause instanceof BarrierRefusal) return null;
+        throw cause;
+      });
       output.observe = { selection: inspected.selection, fleet, activeHealth };
     } else {
       const packet = decodePacket(
@@ -184,7 +190,11 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
         ? "runtime-crash outcome unknown; never retry apply, dispatch inspect with the same nonce"
         : "runtime-crash-inspect outcome unknown";
       const sent = await deps
-        .crash({ ...packet, ...target }, apply, input.signingKey)
+        .crash({
+          packet: { ...packet, ...target },
+          mode: apply ? "apply" : "inspect",
+          signingKey: input.signingKey,
+        })
         .catch((cause: unknown) => {
           // Once sent, every failure keeps the uncertainty in front of its cause.
           throw new DispatchRefusal(
@@ -221,16 +231,20 @@ const signedNow = () => Date.now() - 2_000;
 /** The operator's receipt stays in a private runner directory; only its controller reply leaves it. */
 export const crashSender =
   (directory: string, connect?: Connect): DispatchDependencies["crash"] =>
-  async (packet, apply, signingKey) => {
+  async ({ packet, mode, signingKey }) => {
     if (!directory) throw new DispatchRefusal("runner temporary directory is unavailable");
     const scratch = await mkdtemp(join(directory, "pool-crash-"));
     try {
       const path = join(scratch, "packet.json");
       await writeFile(path, JSON.stringify(packet), { mode: 0o600, flag: "wx" });
-      const { receiptPath } = await runCrashOperator({ packet: path, apply }, signingKey, {
-        connect,
-        now: signedNow,
-      });
+      const { receiptPath } = await runCrashOperator(
+        { packet: path, apply: mode === "apply" },
+        signingKey,
+        {
+          connect,
+          now: signedNow,
+        },
+      );
       const receipt = Schema.decodeUnknownSync(
         Schema.Struct({
           digest: Schema.String,

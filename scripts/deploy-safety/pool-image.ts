@@ -12,7 +12,7 @@ import {
 import { waitForPoolStatus } from "../pool-readiness.ts";
 import { boundFleet, type BoundFleetApplication } from "./pool-image-fleet.ts";
 
-export class PoolImagePending extends SafetyGateError {}
+class PoolImagePending extends SafetyGateError {}
 
 export interface PoolImageObservation {
   verifiedPath: "root" | "bound-fleet";
@@ -92,13 +92,13 @@ export async function assertPoolImageTarget(
   credentials: CloudflareCredentials,
   fetcher: Fetcher = fetch,
 ) {
-  if (
-    !target.applicationId ||
-    !target.accountId ||
-    !/^sha256:[a-f0-9]{64}$/u.test(target.digest) ||
-    !/^[a-f0-9]{16}$/u.test(worker.inputHash)
-  )
-    throw new SafetyGateError("Pool image target or Worker input is invalid");
+  if (!target.applicationId)
+    throw new SafetyGateError("Pool image target applicationId is missing");
+  if (!target.accountId) throw new SafetyGateError("Pool image target accountId is missing");
+  if (!/^sha256:[a-f0-9]{64}$/u.test(target.digest))
+    throw new SafetyGateError("Pool image target digest is not a sha256 digest");
+  if (!/^[a-f0-9]{16}$/u.test(worker.inputHash))
+    throw new SafetyGateError("Pool Worker inputHash is not a 16-hex image input");
   return assertImages(target, credentials, fetcher, worker);
 }
 
@@ -184,11 +184,8 @@ async function assertImages(
     });
   }
   const all = observed.flatMap((application) => application.instances);
-  const repeated = all.find((id, index) => all.indexOf(id) !== index);
-  if (repeated)
-    throw new SafetyGateError(
-      `Pool fleet instance ${repeated} is listed by both fleet applications`,
-    );
+  if (new Set(all).size !== all.length)
+    throw new SafetyGateError("A pool fleet instance is listed by both fleet applications");
   if (
     !observed.some(
       (application) =>
@@ -268,13 +265,11 @@ async function listInstances(
       const id = stringField(instance.id, `${expected.label} instance id`);
       if (ids.has(id) || instance.application_id !== applicationId)
         throw new SafetyGateError(
-          `${expected.label} instance list contains a duplicate or foreign instance (${id})`,
+          `${expected.label} instance list contains a duplicate or foreign instance`,
         );
       ids.add(id);
       if (record(instance.status, `${expected.label} instance status`).state !== "running")
-        throw new PoolImagePending(
-          `${expected.label} has an active instance that is not running (${id})`,
-        );
+        throw new PoolImagePending(`${expected.label} has an active instance that is not running`);
       assertDigest(
         instance.image,
         expected.digest,

@@ -150,11 +150,13 @@ test("each missing, stale, foreign or inconsistent fleet fact refuses with its o
     },
     {
       bindings: replace("POOL_GREEN_APPLICATION_ID", "blue"),
-      reason: /: Pool Worker binding POOL_GREEN_APPLICATION_ID reuses application blue$/,
+      reason:
+        /: Pool Worker binding POOL_GREEN_APPLICATION_ID reuses the root or the other color's application$/,
     },
     {
       bindings: replace("POOL_BLUE_APPLICATION_ID", "root"),
-      reason: /: Pool Worker binding POOL_BLUE_APPLICATION_ID reuses application root$/,
+      reason:
+        /: Pool Worker binding POOL_BLUE_APPLICATION_ID reuses the root or the other color's application$/,
     },
     {
       bindings: without("POOL_DESIRED_IMAGE_INPUT"),

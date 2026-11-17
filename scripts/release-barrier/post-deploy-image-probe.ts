@@ -26,7 +26,9 @@ const output = resolve(".local/post-deploy-image-probe.json");
 let receipt: unknown;
 let failed = false;
 try {
-  const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH ?? "", "utf8"));
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (!eventPath) throw new BarrierRefusal("post-deploy-image-event-unavailable", "PoolWorker");
+  const event = JSON.parse(await readFile(eventPath, "utf8"));
   const context = assertReadOnlyRehearsalContext(process.env, event);
   const pinned = assertProbeCandidate(process.cwd(), context.head);
   if (pinned.candidate !== context.candidate)

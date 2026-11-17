@@ -45,8 +45,9 @@ export function boundFleet(bindings: unknown[], rootApplicationId: string) {
     if (!imageInput.test(input))
       throw new SafetyGateError(`Pool Worker binding ${inputName} is not a 16-hex image input`);
     if (seen.has(applicationId))
+      // Application IDs are physical names; public refusals name only the binding.
       throw new SafetyGateError(
-        `Pool Worker binding ${idName} reuses application ${applicationId}`,
+        `Pool Worker binding ${idName} reuses the root or the other color's application`,
       );
     seen.add(applicationId);
     applications.push({ color, applicationId, imageInput: input });

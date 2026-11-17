@@ -27,9 +27,10 @@ permissions:
   contents: read
   actions: read
 
-# One crash operation at a time; a queued dispatch must never cancel one already signalling.
+# Shares the production release lock so a crash can never land inside a release, and a queued
+# dispatch never cancels one already signalling.
 concurrency:
-  group: pool-crash-operator
+  group: deploy-production
   cancel-in-progress: false
 
 jobs:
