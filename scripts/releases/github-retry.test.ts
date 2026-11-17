@@ -6,12 +6,15 @@ import { requestJson } from "../deploy-safety/http.ts";
 
 const url = "https://api.github.com/repos/owner/repo/deployments";
 
-function fakeGitHub(replies: Array<number | Error>) {
+type Reply = number | Error | { status: number; headers: Record<string, string> };
+
+function fakeGitHub(replies: Reply[]) {
   const calls: string[] = [];
   const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
     calls.push(init?.method ?? "GET");
     const reply = replies[Math.min(calls.length - 1, replies.length - 1)]!;
     if (reply instanceof Error) throw reply;
+    if (typeof reply === "object") return new Response("limited", reply);
     return reply === 200 ? Response.json([]) : new Response("upstream", { status: reply });
   };
   return { fetcher, calls };
@@ -28,6 +31,7 @@ function harness() {
         waits.push(milliseconds);
       },
       random: () => 0.5,
+      now: () => 1_800_000_000_000,
       log: (line: string) => {
         lines.push(line);
       },
@@ -81,7 +85,7 @@ test("connection resets retry, and a persistent reset surfaces the original tran
 });
 
 test("other client errors, unknown failures, aborted reads and writes are never retried", async () => {
-  for (const status of [400, 401, 403, 404, 409, 422, 429, 500]) {
+  for (const status of [400, 401, 403, 404, 409, 422]) {
     const github = fakeGitHub([status, 200]);
     const response = await retryGitHubReads(github.fetcher, harness().options)(url);
     assert.equal(response.status, status);
@@ -119,4 +123,42 @@ test("the production ledger read survives one gateway error from GitHub", async 
   );
   assert.equal(ledger.state, "uninitialized");
   assert.deepEqual(github.calls, ["GET", "GET"]);
+});
+
+test("a GitHub 500 retries like a gateway error and then succeeds", async () => {
+  const github = fakeGitHub([500, 200]);
+  const h = harness();
+  const reply = await requestJson(retryGitHubReads(github.fetcher, h.options), "GitHub", url, {});
+  assert.deepEqual(reply.body, []);
+  assert.equal(github.calls.length, 2);
+  assert.deepEqual(h.waits, [750]);
+});
+
+test("rate limits wait as GitHub asks, capped at a minute, and fall back to jitter", async () => {
+  const limited = (headers: Record<string, string>, status = 429) => ({ status, headers });
+  const resetIn5s = String(1_800_000_000 + 5);
+  const cases: Array<[Reply, number]> = [
+    [limited({ "retry-after": "2" }), 2_000],
+    [limited({ "retry-after": "120" }), 60_000],
+    [limited({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": resetIn5s }, 403), 5_000],
+    [limited({}), 750],
+  ];
+  for (const [first, wait] of cases) {
+    const github = fakeGitHub([first, 200]);
+    const h = harness();
+    const reply = await requestJson(retryGitHubReads(github.fetcher, h.options), "GitHub", url, {});
+    assert.deepEqual(reply.body, []);
+    assert.deepEqual(h.waits, [wait], JSON.stringify(first));
+  }
+});
+
+test("a rate limit that never lifts stops after three attempts and fails closed", async () => {
+  const github = fakeGitHub([{ status: 429, headers: { "retry-after": "1" } }]);
+  const h = harness();
+  await assert.rejects(
+    requestJson(retryGitHubReads(github.fetcher, h.options), "GitHub", url, {}),
+    /^SafetyGateError: GitHub request failed with HTTP 429$/,
+  );
+  assert.equal(github.calls.length, 3);
+  assert.deepEqual(h.waits, [1_000, 1_000]);
 });
