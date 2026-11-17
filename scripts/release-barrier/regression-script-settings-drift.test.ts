@@ -52,7 +52,7 @@ const activeVersion = (region: string) => [
 
 const freezeRefusal = async (region: string) => {
   const input = await apiUpload();
-  // Older barriers take two arguments; the resolved active version is ignored there.
+  // Untyped so the same call also runs against the pre-fix two-argument barrier for the RED proof.
   const freeze = freezeUpload as (...args: unknown[]) => Promise<unknown>;
   return freeze(input, [{ versionId: "active", percentage: 100 }], activeVersion(region)).then(
     () => undefined,

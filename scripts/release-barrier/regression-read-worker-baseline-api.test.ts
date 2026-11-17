@@ -7,6 +7,7 @@ import { Cause, Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { readBaseline } from "./cloudflare.ts";
+import { ReleaseOperationFailure } from "./operation-failure.ts";
 import { fixture } from "./test/deploy-stack-fixture.ts";
 
 const workerIds = [
@@ -84,7 +85,7 @@ test("the barrier reads every Worker baseline, Api first, over native fetch with
   });
   const exit = await Effect.runPromiseExit(proof.effect);
   const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
-  const refusal = error as { operation?: string; worker?: string; provider?: unknown } | undefined;
+  const refusal = error instanceof ReleaseOperationFailure ? error : undefined;
   assert.ok(
     Exit.isSuccess(exit),
     `${String(error)}; operation ${refusal?.operation}; worker ${refusal?.worker}; provider ${JSON.stringify(refusal?.provider)}; requests received ${requests.length}`,
