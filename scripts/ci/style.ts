@@ -12,7 +12,12 @@ for (const upstream of [false, true]) {
     .map((file) => (upstream ? file.slice(".upstream/".length) : file));
   if (!files.length) continue;
   const cwd = upstream ? resolve(root, ".upstream") : root;
-  run(resolve(root, ".upstream/node_modules/.bin/oxfmt"), ["--check", ...files], cwd);
+  // A change may touch only files the formatter ignores, such as generated skill digests.
+  run(
+    resolve(root, ".upstream/node_modules/.bin/oxfmt"),
+    ["--check", "--no-error-on-unmatched-pattern", ...files],
+    cwd,
+  );
   run(
     resolve(root, ".upstream/node_modules/.bin/oxlint"),
     ["-c", resolve(root, ".upstream/.oxlintrc.jsonc"), "--deny-warnings", ...files],
