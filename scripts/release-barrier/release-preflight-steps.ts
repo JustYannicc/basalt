@@ -18,7 +18,22 @@ import { verifyContainerHealth } from "./container-health.ts";
 import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { BarrierRefusal } from "./refusal.ts";
-import { NotApplicable, SettlementRequired, type preflightRunner } from "./release-preflight.ts";
+import {
+  NotApplicable,
+  SettlementRequired,
+  preflightRefusal,
+  type PreflightRefusal,
+  type preflightRunner,
+} from "./release-preflight.ts";
+
+/** Commit and worker-input hashes only; both are public build identities. */
+export type ControllerAttempt = {
+  source: string;
+  candidate: string;
+  workerInput: string;
+  route: string;
+  outcome: "accepted" | PreflightRefusal;
+};
 import { liveControllerCodes, settlementVerdict } from "./release-preflight-live.ts";
 import { releaseImageJournalKey } from "./release-settlement-contract.ts";
 import {
@@ -69,6 +84,8 @@ export const preflightSteps = (
     directory: string;
     /** Controller codes named by earlier release receipts; see liveControllerCodes. */
     receipts: readonly (typeof ControllerCode.Type)[];
+    /** Each live-controller inspect: the code it signed with and how the controller answered. */
+    attempts: ControllerAttempt[];
   },
 ) =>
   Effect.gen(function* () {
@@ -207,8 +224,20 @@ export const preflightSteps = (
         [],
         async () => {
           const attempt = async (source: string, code: typeof ControllerCode.Type) => {
-            const client = await clientFor(code);
-            return { source, code, client, snapshot: await client.inspect() };
+            const record: ControllerAttempt = {
+              source,
+              ...code,
+              route: "PoolOperations POST /runtime-handoff inspect",
+              outcome: "accepted",
+            };
+            input.attempts.push(record);
+            try {
+              const client = await clientFor(code);
+              return { source, code, client, snapshot: await client.inspect() };
+            } catch (error) {
+              record.outcome = preflightRefusal(error);
+              throw error;
+            }
           };
           let first: unknown;
           try {

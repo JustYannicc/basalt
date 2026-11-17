@@ -14,7 +14,7 @@ import {
 import { releaseReceiptCodes } from "./release-preflight-live.ts";
 import { createPreflightBridgeCounters } from "./release-preflight-guard.ts";
 import { preflightReport, preflightSummary } from "./release-preflight-report.ts";
-import { preflightSteps } from "./release-preflight-steps.ts";
+import { preflightSteps, type ControllerAttempt } from "./release-preflight-steps.ts";
 import {
   countReadOnlyProbeFetch,
   countReadOnlyState,
@@ -32,6 +32,7 @@ const nativeFetch = globalThis.fetch;
 let candidate: string | undefined;
 let mode: PreflightMode | undefined;
 let receiptCandidates: string[] = [];
+const controllerAttempts: ControllerAttempt[] = [];
 let fatal: string | undefined;
 
 try {
@@ -62,6 +63,7 @@ try {
             credentials: { accountId, apiToken, encryptionKey },
             directory,
             receipts,
+            attempts: controllerAttempts,
           });
         }).pipe(Effect.provideContext(compiled.services)),
       { stage: "production" },
@@ -95,6 +97,7 @@ const report = preflightReport({
   candidate,
   mode,
   receiptCandidates,
+  controllerAttempts,
   steps: runner.results,
   fatal,
   state: counters,

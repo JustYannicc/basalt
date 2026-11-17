@@ -1,6 +1,7 @@
 import type { PreflightBridgeCounters, HealthTiming } from "./release-preflight-guard.ts";
 import type { PreflightMode, PreflightStepResult } from "./release-preflight.ts";
 import type { RehearsalCounters } from "./release-resume-rehearsal.ts";
+import type { ControllerAttempt } from "./release-preflight-steps.ts";
 
 /** Any attempted write fails the preflight, even when the step that tried it was caught. */
 export function preflightReport(input: {
@@ -13,6 +14,7 @@ export function preflightReport(input: {
   bridge: PreflightBridgeCounters;
   /** Candidates of the release receipts that could name the live controller code. */
   receiptCandidates?: readonly string[];
+  controllerAttempts?: readonly ControllerAttempt[];
   observedAt?: string;
 }) {
   const mutations = {
@@ -40,6 +42,7 @@ export function preflightReport(input: {
     // Every active-health read, in order: the granted lease, the request leg and what was left.
     health: input.bridge.health,
     receiptCandidates: input.receiptCandidates ?? [],
+    controllerAttempts: input.controllerAttempts ?? [],
     mutations,
     reads: { state: input.state.state, http: input.state.fetch, bridge: input.bridge.dispatched },
     observedAt: input.observedAt ?? new Date().toISOString(),
@@ -79,6 +82,15 @@ export function preflightSummary(report: ReturnType<typeof preflightReport>) {
     `## Release preflight: ${report.status === "pass" ? "PASS" : "REFUSED"}`,
     "",
     ...report.steps.map(stepLine),
+    ...(report.controllerAttempts.length
+      ? [
+          "",
+          ...report.controllerAttempts.map(
+            (attempt) =>
+              `- inspect with ${attempt.source} code ${attempt.candidate.slice(0, 12)}/${attempt.workerInput.slice(0, 12)}: ${attempt.outcome === "accepted" ? "accepted" : `refused ${attempt.outcome.reason}`}`,
+          ),
+        ]
+      : []),
     ...(report.health.length ? ["", ...report.health.map(healthLine)] : []),
     ...(report.fatal ? ["", `Fatal: ${report.fatal}`] : []),
     "",
