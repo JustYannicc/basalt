@@ -27,6 +27,7 @@ import {
   type GatewayFailureDiagnostic,
 } from "./gateway-failure.ts";
 import { ModelMembershipUnavailable, modelMembership } from "./model-membership.ts";
+import { modelSocketRenewalLeadMs } from "./membership-contract.ts";
 import type { NativeMemberships } from "./membership.ts";
 import type { NativeStreams } from "./native-streams.ts";
 import { ProtectionRefusal, type RuntimeProtection } from "./runtime-protection.ts";
@@ -95,6 +96,7 @@ export async function forwardPoolRequest(
   let native: Awaited<ReturnType<Computers["nativeModel"]>> | undefined;
   let identity: RefusalIdentity | undefined;
   let modelLease: ReturnType<NativeStreams["acquire"]> | undefined;
+  let assertionExpiresAt: number | undefined;
   const started = performance.now();
   const resolveIdentity = async () => {
     if (identity) return identity;
@@ -145,6 +147,7 @@ export async function forwardPoolRequest(
       request = gate.request;
       identity = gate.identity;
       modelLease = gate.lease;
+      assertionExpiresAt = gate.assertionExpiresAt;
     }
     guard = "runtime_readiness";
     const warm = () => deps.lifecycle.then((lifecycle) => lifecycle.warm());
@@ -226,19 +229,25 @@ export async function forwardPoolRequest(
           new Response(null, { status: 101, headers, webSocket: response.webSocket }),
         );
       }
-      const observed =
-        socketCall && observing
+      // Renewal must survive observation being off: without it a held socket fails at expiry.
+      const renewAt =
+        socketCall && assertionExpiresAt !== undefined
+          ? assertionExpiresAt - modelSocketRenewalLeadMs
+          : undefined;
+      const relayed =
+        socketCall && (observing || renewAt !== undefined)
           ? inheritModelLifetime(
               response,
               terminalSocket(
                 response,
                 requestId,
-                observe,
+                observing ? observe : () => undefined,
                 response.headers.get("X-Basalt-Terminal-Protocol") === "1",
+                renewAt,
               ),
             )
           : response;
-      const forwarded = native === undefined ? observed : nativeResponse(observed, native);
+      const forwarded = native === undefined ? relayed : nativeResponse(relayed, native);
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
     }
     if (terminal && upstream.headers.get("X-Basalt-Request-Id") !== requestId) {

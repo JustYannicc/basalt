@@ -1,6 +1,7 @@
 import { modelDrainPayload, modelDrainProtocol } from "./model-drain-contract.ts";
 import { TerminalJson } from "./terminal-json.ts";
 import { protocolOutcome } from "./terminal-protocol.ts";
+import { modelSocketRenewalReason } from "./membership-contract.ts";
 import type { TerminalFinish } from "./terminal-response.worker.ts";
 
 /** Both ends add the request sequence to the private session UUID's low 48 bits. */
@@ -8,6 +9,8 @@ export function socketRequestId(session: string, sequence: number): string {
   const tail = (BigInt(`0x${session.slice(24)}`) + BigInt(sequence)) & 0xffffffffffffn;
   return session.slice(0, 24) + tail.toString(16).padStart(12, "0");
 }
+
+const turnEnds = new Set(["response.completed", "response.failed", "response.incomplete"]);
 
 function envelope(data: unknown) {
   const json = new TerminalJson();
@@ -46,12 +49,17 @@ function envelope(data: unknown) {
     : undefined;
 }
 
-/** Each Responses create is an attempt. Opening or closing an idle socket is not one. */
+/**
+ * Each Responses create is an attempt. Opening or closing an idle socket is not one.
+ * Every turn on a held socket reuses the upgrade's pool assertion. From `renewAt`, the socket
+ * closes normally once no turn is in flight, so the client reconnects with a fresh assertion.
+ */
 export function terminalSocket(
   response: Response,
   session: string,
   start: (requestId: string) => TerminalFinish | undefined,
   acknowledged: boolean,
+  renewAt?: number,
 ): Response {
   const upstream = response.webSocket!;
   const framed = response.headers.get("sec-websocket-protocol") === modelDrainProtocol;
@@ -62,21 +70,27 @@ export function terminalSocket(
     server = pair[1];
   const pending = new Map<string, { finish: TerminalFinish; response?: string; bytes: number }>();
   let sequence = 0,
+    turns = 0,
+    afterError = false,
     closed = false;
   let active: string | undefined;
+  let renewalTimer: ReturnType<typeof setTimeout> | undefined;
   upstream.binaryType = "arraybuffer";
   server.binaryType = "arraybuffer";
   upstream.accept();
   server.accept();
   const close = (
-    outcome: "truncated" | "client_closed",
+    outcome: "truncated" | "client_closed" | "renewed",
     code = 1011,
     reason = "Connection ended",
   ) => {
     if (closed) return;
     closed = true;
+    clearTimeout(renewalTimer);
     for (const item of pending.values())
-      item.finish(outcome, outcome === "client_closed" ? 499 : 502, item.bytes);
+      // Renewal waits for every counted turn, so anything left has no terminal join.
+      if (outcome === "renewed") item.finish("unavailable", 200, item.bytes);
+      else item.finish(outcome, outcome === "client_closed" ? 499 : 502, item.bytes);
     pending.clear();
     for (const socket of [upstream, server]) {
       try {
@@ -87,9 +101,25 @@ export function terminalSocket(
       } catch {}
     }
   };
+  const renew = () => close("renewed", 1000, modelSocketRenewalReason);
+  const renewalDue = () => renewAt !== undefined && Date.now() >= renewAt;
+  if (renewAt !== undefined)
+    renewalTimer = setTimeout(
+      () => {
+        if (turns === 0) renew();
+      },
+      Math.max(0, renewAt - Date.now()),
+    );
   server.addEventListener("message", (event) => {
     const parsed = envelope(payload(event.data, "input"));
     if (parsed && ["response.create", "response.append"].includes(parsed.requestType ?? "")) {
+      // No turn starts on a socket due for renewal: it could outlive the assertion and be refused.
+      // The socket closes once in-flight turns end, and the client resends this one on a fresh one.
+      if (renewalDue()) {
+        if (turns === 0) renew();
+        return;
+      }
+      turns++;
       if (++sequence >= 2 ** 48) {
         close("client_closed");
         return;
@@ -114,19 +144,10 @@ export function terminalSocket(
       close("truncated");
     }
   });
-  upstream.addEventListener("message", (event) => {
-    const parsed = envelope(payload(event.data, "output"));
-    if (parsed?.fields.type === "basalt.request_started") {
-      active = pending.has(parsed.fields.request_id ?? "") ? parsed.fields.request_id : undefined;
-      return;
-    }
-    try {
-      server.send(event.data);
-    } catch {
-      close("client_closed");
-      return;
-    }
-    if (!parsed) return;
+  const observeOutput = (
+    parsed: NonNullable<ReturnType<typeof envelope>>,
+    outcome: ReturnType<typeof protocolOutcome>,
+  ) => {
     const responseId = parsed.fields["response.id"] ?? parsed.fields.response_id;
     let match: [string, { finish: TerminalFinish; response?: string; bytes: number }] | undefined;
     if (responseId) {
@@ -145,12 +166,35 @@ export function terminalSocket(
     const [id, item] = match;
     if (responseId) item.response = responseId;
     item.bytes += parsed.bytes;
-    const outcome = protocolOutcome(parsed.fields, "responses");
     if (outcome) {
       pending.delete(id);
       if (active === id) active = undefined;
       item.finish(outcome, 200, item.bytes);
     }
+  };
+  upstream.addEventListener("message", (event) => {
+    const parsed = envelope(payload(event.data, "output"));
+    if (parsed?.fields.type === "basalt.request_started") {
+      active = pending.has(parsed.fields.request_id ?? "") ? parsed.fields.request_id : undefined;
+      return;
+    }
+    try {
+      server.send(event.data);
+    } catch {
+      close("client_closed");
+      return;
+    }
+    if (!parsed) return;
+    const outcome = protocolOutcome(parsed.fields, "responses");
+    // A turn ends at `error` or at its response's end. A failure right after an `error` is the
+    // same turn; counting it again would renew under another turn still streaming.
+    const type = parsed.fields.type ?? "";
+    const ended =
+      type === "error" || (turnEnds.has(type) && !(afterError && type !== "response.completed"));
+    afterError = type === "error";
+    if (ended) turns = Math.max(0, turns - 1);
+    observeOutput(parsed, outcome);
+    if (ended && turns === 0 && renewalDue()) renew();
   });
   upstream.addEventListener("close", (event) => close("truncated", event.code, event.reason));
   upstream.addEventListener("error", () => close("truncated"));
