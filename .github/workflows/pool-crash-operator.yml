@@ -1,0 +1,78 @@
+name: Pool crash operator
+run-name: pool-crash-operator ${{ inputs.mode }} ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Observe the fleet, inspect a crash nonce, or apply one reviewed crash
+        required: true
+        default: observe
+        type: choice
+        options: [observe, inspect, apply]
+      request_id:
+        description: Fresh UUID for this dispatch; inspect and apply require it to equal packet.nonce
+        required: true
+        type: string
+      packet:
+        description: "Observe: {controllerCode}. Inspect or apply: {controllerCode, identity, nonce, operator}"
+        required: true
+        type: string
+      coordinator_go:
+        description: The coordinator's literal GO for this dispatch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# Shares the production release lock so a crash can never land inside a release, and a queued
+# dispatch never cancels one already signalling.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Run the reviewed crash operation
+        run: bun scripts/pool-crash-dispatch.ts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ALCHEMY_STAGE: production
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_CRASH_MODE: ${{ inputs.mode }}
+          POOL_CRASH_REQUEST_ID: ${{ inputs.request_id }}
+          POOL_CRASH_PACKET: ${{ inputs.packet }}
+          POOL_CRASH_COORDINATOR_GO: ${{ inputs.coordinator_go }}
+          POOL_CRASH_TEMPORARY_DIRECTORY: ${{ runner.temp }}
+          POOL_CRASH_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-crash-operator
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-crash-operator-result
+          path: ${{ runner.temp }}/pool-crash-operator/result.json
+          if-no-files-found: ignore
+          retention-days: 1

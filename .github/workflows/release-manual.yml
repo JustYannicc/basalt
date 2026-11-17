@@ -150,7 +150,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: production-release
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Same multi-phase release path as release-main.yml; see the reason on its deploy job.
+    timeout-minutes: 180
     env:
       # Set this repository variable to stop every release while a manual restore and rollback run.
       PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}

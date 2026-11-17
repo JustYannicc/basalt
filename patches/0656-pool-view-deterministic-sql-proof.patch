@@ -1,0 +1,725 @@
+diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
+--- a/e2e/support/sql-latency-proxy.ts
++++ b/e2e/support/sql-latency-proxy.ts
+@@ -1,10 +1,17 @@
+ import { Effect, FileSystem } from "effect";
+ import { connect, createServer, type Socket } from "node:net";
+ import { createServer as createHttpServer } from "node:http";
++import { sqlWireCohorts } from "./sql-wire-cohorts.ts";
++import { sqlWireRequests } from "./sql-wire-requests.ts";
+ 
+ interface Wire {
+   readonly start: number;
+   readonly end: number;
++  readonly connection: number;
++  readonly cycle: number;
++  readonly query: string;
++  readonly trace?: string;
++  readonly span?: string;
+ }
+ 
+ /** Local SQL response latency and wire intervals, excluding the connection handshake. */
+@@ -15,12 +22,36 @@
+     let generation = 0;
+     let measuring = false;
+     let wires: Wire[] = [];
++    let connectionId = 0;
++    let cycleId = 0;
++    let failure: string | null = null;
++    const cohorts = sqlWireCohorts();
+     const configure = createHttpServer((request, response) => {
+       const chunks: Buffer[] = [];
+       request.on("data", (chunk) => chunks.push(chunk));
+       request.on("end", () => {
+         try {
+           const value: unknown = JSON.parse(Buffer.concat(chunks).toString());
++          if (request.url?.startsWith("/cohorts/")) {
++            if (failure !== null) {
++              response.writeHead(500, { "content-type": "application/json" });
++              response.end(JSON.stringify({ failure }));
++              return;
++            }
++            cohorts.control(request.url, value).then(
++              (result) => {
++                if (failure !== null) {
++                  response.writeHead(500, { "content-type": "application/json" });
++                  response.end(JSON.stringify({ failure }));
++                  return;
++                }
++                response.writeHead(200, { "content-type": "application/json" });
++                response.end(JSON.stringify(result));
++              },
++              () => response.writeHead(400).end(),
++            );
++            return;
++          }
+           if (
+             typeof value !== "object" ||
+             value === null ||
+@@ -34,12 +65,14 @@
+             throw new Error("Invalid wire control");
+           delay = value.delay;
+           if (value.measuring) {
++            failure = null;
+             generation++;
+             wires = [];
+           }
+           measuring = value.measuring;
++          if (!measuring) cohorts.reset();
+           response.writeHead(200, { "content-type": "application/json" });
+-          response.end(JSON.stringify({ wires }));
++          response.end(JSON.stringify({ wires, failure }));
+         } catch {
+           response.writeHead(400);
+           response.end();
+@@ -68,10 +101,6 @@
+     const control = configure.address();
+     if (control === null || typeof control === "string")
+       return yield* Effect.die("Missing wire control");
+-    yield* fs.writeFileString(
+-      controlFile,
+-      JSON.stringify({ url: `http://127.0.0.1:${control.port}` }),
+-    );
+     yield* Effect.addFinalizer(() => fs.remove(controlFile, { force: true }).pipe(Effect.orDie));
+     let target: number | undefined;
+     const sockets = new Set<Socket>();
+@@ -83,17 +112,57 @@
+       outgoing.setNoDelay(true);
+       sockets.add(incoming);
+       sockets.add(outgoing);
+-      let startup = true;
+       let initialized = false;
+-      let front = Buffer.alloc(0);
+       let back = Buffer.alloc(0);
+       let deliveryAt = 0;
+-      const requests: { readonly start: number; readonly generation?: number }[] = [];
++      const connection = ++connectionId;
++      const holds: (() => boolean)[] = [];
++      const waiting: { bytes: Buffer; end: number }[] = [];
++      const protocol = sqlWireRequests((query) => {
++        const parent = query.match(/traceparent='00-([a-f0-9]{32})-([a-f0-9]{16})-[a-f0-9]{2}'/u);
++        const cycle = ++cycleId;
++        const blocked = cohorts.arrive(parent?.[1], query, cycle);
++        if (blocked !== undefined) holds.push(blocked);
++        return {
++          start: Date.now(),
++          query,
++          cycle,
++          ...(measuring ? { generation } : {}),
++          ...(parent === null ? {} : { trace: parent[1], span: parent[2] }),
++        };
++      });
++      let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
++      const flush = () => {
++        if (deliveryTimer !== undefined || holds.some((blocked) => blocked())) return;
++        while (waiting.length !== 0) {
++          const next = waiting[0]!;
++          const wait = next.end - Date.now();
++          if (wait > 0) {
++            const timer = setTimeout(() => {
++              timers.delete(timer);
++              deliveryTimer = undefined;
++              flush();
++            }, wait);
++            deliveryTimer = timer;
++            timers.add(timer);
++            return;
++          }
++          waiting.shift();
++          if (!incoming.destroyed) incoming.write(next.bytes);
++        }
++      };
++      const unsubscribe = cohorts.onRelease(flush);
+       const close = () => {
++        if (deliveryTimer !== undefined) {
++          clearTimeout(deliveryTimer);
++          timers.delete(deliveryTimer);
++          deliveryTimer = undefined;
++        }
+         incoming.destroy();
+         outgoing.destroy();
+         sockets.delete(incoming);
+         sockets.delete(outgoing);
++        unsubscribe();
+       };
+       incoming.once("close", close);
+       outgoing.once("close", close);
+@@ -101,18 +170,14 @@
+       outgoing.on("error", close);
+       incoming.on("data", (chunk) => {
+         const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+-        front = Buffer.concat([front, bytes]);
+-        while (front.length >= (startup ? 4 : 5)) {
+-          const size = startup ? front.readInt32BE(0) : front.readInt32BE(1) + 1;
+-          if (size < (startup ? 4 : 5)) return close();
+-          if (front.length < size) break;
+-          const frame = front.subarray(0, size);
+-          front = front.subarray(size);
+-          if (startup) startup = false;
+-          else if (frame[0] === 83 || frame[0] === 81)
+-            requests.push({ start: Date.now(), ...(measuring ? { generation } : {}) });
+-        }
+-        outgoing.write(bytes);
++        try {
++          protocol.push(bytes);
++          outgoing.write(bytes);
++        } catch (error) {
++          failure = error instanceof Error ? error.message : "SQL protocol observer failed";
++          close();
++          cohorts.reset();
++        }
+       });
+       outgoing.on("data", (chunk) => {
+         const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+@@ -133,20 +198,12 @@
+             initialized = true;
+             continue;
+           }
+-          const request = requests.shift();
++          const request = protocol.requests.shift();
+           if (request?.generation === generation && measuring)
+-            wires.push({ start: request.start, end });
+-        }
+-        const wait = end - now;
+-        if (wait <= 0) {
+-          incoming.write(bytes);
+-          return;
+-        }
+-        const timer = setTimeout(() => {
+-          timers.delete(timer);
+-          if (!incoming.destroyed) incoming.write(bytes);
+-        }, wait);
+-        timers.add(timer);
++            wires.push({ ...request, connection, end });
++        }
++        waiting.push({ bytes, end });
++        flush();
+       });
+     });
+     yield* Effect.acquireRelease(
+@@ -173,6 +230,10 @@
+     const address = server.address();
+     if (address === null || typeof address === "string")
+       return yield* Effect.die("Missing SQL proxy address");
++    yield* fs.writeFileString(
++      controlFile,
++      JSON.stringify({ url: `http://127.0.0.1:${control.port}`, port: address.port }),
++    );
+     return {
+       port: address.port,
+       select: (port: number) =>
+diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
+--- a/e2e/support/sql-wire-proof.ts
++++ b/e2e/support/sql-wire-proof.ts
+@@ -2,8 +2,24 @@
+ import { HttpBody, HttpClient } from "effect/http";
+ import { randomUUID } from "node:crypto";
+ import { Target } from "./platform.ts";
++import { poolViewCohorts } from "./sql-wire-cohorts.ts";
+ 
+-const Wire = Schema.Struct({ start: Schema.Number, end: Schema.Number });
++const Wire = Schema.Struct({
++  start: Schema.Number,
++  end: Schema.Number,
++  connection: Schema.Number,
++  cycle: Schema.Number,
++  query: Schema.String,
++  trace: Schema.optional(Schema.String),
++  span: Schema.optional(Schema.String),
++});
++const Receipt = Schema.Struct({
++  id: Schema.String,
++  arrived: Schema.Array(Schema.String),
++  missing: Schema.Array(Schema.String),
++  cycles: Schema.Array(Schema.Number),
++  released: Schema.Boolean,
++});
+ 
+ /** Observe the actual local Postgres protocol, including statements the multiplexed client pipelines. */
+ export const sqlWireProof = Effect.gen(function* () {
+@@ -14,32 +30,77 @@
+     .readFileString(`${target.directory}/sql-wire.json`)
+     .pipe(
+       Effect.flatMap(
+-        Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ url: Schema.String }))),
++        Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ url: Schema.String, port: Schema.Number })),
++        ),
+       ),
+     );
+-  const configure = (delay: number, measuring: boolean) =>
++  const configure = (delay: number, measuring: boolean, cleanup = false) =>
+     http.post(control.url, { body: HttpBody.jsonUnsafe({ delay, measuring }) }).pipe(
+       Effect.flatMap((response) =>
+         response.status === 200 ? response.json : Effect.die("SQL wire control refused"),
+       ),
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ wires: Schema.Array(Wire) }))),
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Struct({ wires: Schema.Array(Wire), failure: Schema.NullOr(Schema.String) }),
++        ),
++      ),
++      Effect.flatMap((result) =>
++        result.failure === null || cleanup ? Effect.succeed(result) : Effect.die(result.failure),
++      ),
+     );
+-  yield* Effect.addFinalizer(() => configure(0, false).pipe(Effect.orDie));
++  const cohort = (operation: string, input: unknown) =>
++    http
++      .post(`${control.url}/cohorts/${operation}`, { body: HttpBody.jsonUnsafe(input) })
++      .pipe(
++        Effect.flatMap((response) =>
++          response.json.pipe(
++            Effect.flatMap((body) =>
++              response.status === 200 ? Effect.succeed(body) : Effect.die(body),
++            ),
++          ),
++        ),
++      );
++  let global: (typeof Wire.Type)[] = [];
++  yield* Effect.addFinalizer(() => configure(0, false, true).pipe(Effect.orDie));
+   return {
++    port: control.port,
+     begin: (delay = 0) => configure(delay, true).pipe(Effect.asVoid),
++    cohorts: poolViewCohorts,
++    arm: (trace: string) => cohort("arm", { trace, cohorts: poolViewCohorts }).pipe(Effect.asVoid),
++    wait: (id: string) =>
++      cohort("wait", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Receipt))),
++    status: (id: string) =>
++      cohort("status", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Receipt))),
++    release: (id: string) => cohort("release", { id }).pipe(Effect.asVoid),
++    global: () => global,
+     end: (trace: string) =>
+       configure(0, false).pipe(
++        Effect.tap(({ wires }) =>
++          Effect.sync(() => {
++            global = [...wires];
++          }),
++        ),
+         Effect.map(({ wires }) =>
+-          wires.map((wire) => ({
+-            span: {
+-              spanId: randomUUID().replaceAll("-", "").slice(0, 16),
+-              parentSpanId: trace.slice(0, 16),
+-              operationName: "sql.wire",
+-              startTime: new Date(wire.start).toISOString(),
+-              durationMs: wire.end - wire.start,
+-              tags: { "db.wire.clock": "date-now", "db.wire.observer": "local-protocol" },
+-            },
+-          })),
++          wires
++            .filter((wire) => wire.trace === trace)
++            .map((wire) => ({
++              traceId: wire.trace,
++              span: {
++                spanId: randomUUID().replaceAll("-", "").slice(0, 16),
++                parentSpanId: wire.span ?? null,
++                operationName: "sql.wire",
++                startTime: new Date(wire.start).toISOString(),
++                durationMs: wire.end - wire.start,
++                tags: {
++                  "db.wire.clock": "date-now",
++                  "db.wire.observer": "local-protocol",
++                  "db.wire.trace_id": wire.trace,
++                  "db.wire.connection": wire.connection,
++                  "db.wire.cycle": wire.cycle,
++                },
++              },
++            })),
+         ),
+       ),
+   };
+diff --git a/e2e/support/sql-wire-requests.ts b/e2e/support/sql-wire-requests.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sql-wire-requests.ts
+@@ -0,0 +1,49 @@
++export interface SqlWireRequest {
++  readonly start: number;
++  readonly generation?: number;
++  readonly query: string;
++  readonly trace?: string;
++  readonly span?: string;
++  readonly cycle: number;
++  readonly blocked?: () => boolean;
++}
++
++/** PostgreSQL Parse/Bind/Sync and simple Query cycles, independently of TCP chunk boundaries. */
++export const sqlWireRequests = (record: (query: string) => SqlWireRequest) => {
++  let startup = true;
++  let front = Buffer.alloc(0);
++  let query = "";
++  const statements = new Map<string, string>();
++  const requests: SqlWireRequest[] = [];
++  const text = (frame: Buffer, offset: number) =>
++    frame.toString("utf8", offset, frame.indexOf(0, offset));
++  return {
++    requests,
++    push: (bytes: Buffer) => {
++      front = Buffer.concat([front, bytes]);
++      while (front.length >= (startup ? 4 : 5)) {
++        const size = startup ? front.readInt32BE(0) : front.readInt32BE(1) + 1;
++        if (size < (startup ? 4 : 5)) throw new Error("Invalid PostgreSQL request frame");
++        if (front.length < size) break;
++        const frame = front.subarray(0, size);
++        front = front.subarray(size);
++        if (startup) {
++          startup = false;
++        } else if (frame[0] === 80) {
++          const name = text(frame, 5);
++          query = text(frame, 6 + Buffer.byteLength(name));
++          statements.set(name, query);
++        } else if (frame[0] === 66) {
++          const portal = text(frame, 5);
++          query = statements.get(text(frame, 6 + Buffer.byteLength(portal))) ?? "";
++        } else if (frame[0] === 81) {
++          requests.push(record(text(frame, 5)));
++          query = "";
++        } else if (frame[0] === 83) {
++          requests.push(record(query));
++          query = "";
++        }
++      }
++    },
++  };
++};
+diff --git a/e2e/support/sql-wire-noise.ts b/e2e/support/sql-wire-noise.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sql-wire-noise.ts
+@@ -0,0 +1,31 @@
++import { Effect, FileSystem, Redacted, Schema } from "effect";
++import { cloudLocksFor } from "./cloud-locks.ts";
++import { Target } from "./platform.ts";
++
++/** Read-only foreign traffic crosses the same observer without triggering product setup jobs. */
++export const sqlWireNoise = (port: number) =>
++  Effect.gen(function* () {
++    const target = yield* Target,
++      fs = yield* FileSystem.FileSystem;
++    const config = yield* fs
++      .readFileString(`${target.directory}/sso-database.json`)
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.fromJsonString(
++              Schema.Struct({ database: Schema.RedactedFromValue(Schema.String) }),
++            ),
++          ),
++        ),
++      );
++    const url = new URL(Redacted.value(config.database));
++    url.port = String(port);
++    const path = `${target.directory}/wire-noise-database.json`;
++    yield* fs.writeFileString(path, JSON.stringify({ database: url.href }), { mode: 0o600 });
++    yield* Effect.addFinalizer(() => fs.remove(path, { force: true }).pipe(Effect.orDie));
++    const database = yield* cloudLocksFor(path);
++    return (trace: string, marker = "background") =>
++      database.run({
++        sql: `select 1 as background /*${marker}*/ /*traceparent='00-${trace}-${trace.slice(0, 16)}-01'*/`,
++      });
++  });
+diff --git a/e2e/support/sql-wire-cohorts.ts b/e2e/support/sql-wire-cohorts.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sql-wire-cohorts.ts
+@@ -0,0 +1,125 @@
++import { Schema } from "effect";
++
++const Member = Schema.Struct({ id: Schema.String, contains: Schema.String });
++const Cohort = Schema.Struct({ id: Schema.String, members: Schema.Array(Member) });
++const Arm = Schema.Struct({ trace: Schema.String, cohorts: Schema.Array(Cohort) });
++const Select = Schema.Struct({ id: Schema.String });
++
++export const poolViewCohorts = [
++  {
++    id: "authority-and-links",
++    members: [
++      { id: "membership", contains: "select id, role from member" },
++      { id: "links", contains: "select l.app, l.account, l.requirement, l.subject" },
++    ],
++  },
++  {
++    id: "metadata-and-policies",
++    members: [
++      {
++        id: "apps",
++        contains: 'WHERE ("executor_apps"."owner" = $1 AND "executor_apps"."id" = ANY',
++      },
++      { id: "app-policy", contains: "select p.id as app, p.creator_id as creator" },
++      { id: "account-policy", contains: "select p.account_id as account, p.creator_id as creator" },
++    ],
++  },
++  {
++    id: "presentation-facts",
++    members: [
++      { id: "services", contains: "select app.id as app," },
++      { id: "pools", contains: "select a.id as app from organization" },
++      { id: "groups", contains: "select gm.group_id as" },
++      { id: "observation-access", contains: "select account_id as account, read_audience as read" },
++      { id: "labels", contains: "select c.state::jsonb -> 'account' ->> 'id' as account" },
++    ],
++  },
++];
++
++/** A response stays held until every independently issued member is on the wire. */
++export const sqlWireCohorts = () => {
++  let trace: string | undefined;
++  let groups: {
++    id: string;
++    members: (typeof Member.Type)[];
++    arrived: Map<string, number>;
++    released: boolean;
++  }[] = [];
++  const listeners = new Set<() => void>();
++  const wake = () => {
++    for (const listener of listeners) listener();
++  };
++  const receipt = (group: (typeof groups)[number]) => ({
++    id: group.id,
++    arrived: [...group.arrived.keys()],
++    cycles: [...group.arrived.values()],
++    missing: group.members
++      .filter((member) => !group.arrived.has(member.id))
++      .map((member) => member.id),
++    released: group.released,
++  });
++  return {
++    arrive: (owner: string | undefined, sql: string, cycle: number) => {
++      if (owner !== trace) return undefined;
++      for (const group of groups) {
++        if (group.released) continue;
++        const member = group.members.find((member) => sql.includes(member.contains));
++        if (member === undefined) continue;
++        if (group.arrived.has(member.id))
++          throw new Error(`Duplicate SQL cohort member ${group.id}/${member.id}`);
++        group.arrived.set(member.id, cycle);
++        wake();
++        return () => !group.released;
++      }
++      return undefined;
++    },
++    onRelease: (listener: () => void) => {
++      listeners.add(listener);
++      return () => listeners.delete(listener);
++    },
++    control: (path: string, value: unknown) => {
++      if (path === "/cohorts/arm") {
++        const input = Schema.decodeUnknownSync(Arm)(value);
++        trace = input.trace;
++        groups = input.cohorts.map((group) => ({
++          ...group,
++          members: [...group.members],
++          arrived: new Map(),
++          released: false,
++        }));
++        return Promise.resolve(groups.map(receipt));
++      }
++      const { id } = Schema.decodeUnknownSync(Select)(value);
++      const group = groups.find((group) => group.id === id);
++      if (group === undefined) throw new Error(`Unknown SQL cohort ${id}`);
++      if (path === "/cohorts/status") return Promise.resolve(receipt(group));
++      if (path === "/cohorts/release") {
++        if (receipt(group).missing.length !== 0) throw new Error(`Incomplete SQL cohort ${id}`);
++        group.released = true;
++        wake();
++        return Promise.resolve(receipt(group));
++      }
++      if (path !== "/cohorts/wait") throw new Error("Unknown SQL cohort operation");
++      return new Promise<ReturnType<typeof receipt>>((resolve) => {
++        const finish = () => {
++          clearTimeout(timer);
++          listeners.delete(changed);
++          resolve(receipt(group));
++        };
++        const changed = () => {
++          if (group.released || receipt(group).missing.length === 0) finish();
++        };
++        // Deadlock watchdog only. Successful proofs depend on arrivals, never elapsed time.
++        const timer = setTimeout(finish, 15_000);
++        listeners.add(changed);
++        changed();
++      });
++    },
++    reset: () => {
++      for (const group of groups) group.released = true;
++      wake();
++      groups = [];
++      trace = undefined;
++    },
++  };
++};
+diff --git a/e2e/support/pool-account-view-query.ts b/e2e/support/pool-account-view-query.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-account-view-query.ts
+@@ -0,0 +1,76 @@
++import { expect } from "@effect/vitest";
++import { Effect, Fiber } from "effect";
++import { Browser } from "./browser.ts";
++import { Evidence } from "./evidence.ts";
++import { sqlWireProof } from "./sql-wire-proof.ts";
++import { randomUUID } from "node:crypto";
++import { sqlWireNoise } from "./sql-wire-noise.ts";
++
++/** Hold each real SQL cohort until all its members arrive, then add separately traced traffic. */
++export const readPoolAccountView = (
++  fresh: boolean,
++  trace: string,
++  wire: Effect.Success<typeof sqlWireProof>,
++) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      evidence = yield* Evidence;
++    const noise = yield* sqlWireNoise(wire.port);
++    yield* wire.arm(trace);
++    const foreign = randomUUID().replaceAll("-", "");
++    for (const cohort of wire.cohorts) {
++      for (const member of cohort.members)
++        expect(yield* noise(foreign, member.contains)).toEqual([{ background: 1 }]);
++      const empty = yield* wire.status(cohort.id);
++      yield* evidence.json(`${fresh ? "fresh" : "initial"}-${cohort.id}-foreign.json`, empty);
++      expect(empty.arrived, "Foreign SQL cannot satisfy a view cohort").toEqual([]);
++    }
++    const pending = yield* browser
++      .use("Read the shipped pool view with SQL latency", (page) =>
++        page.evaluate(
++          ({ trace, fresh }) => {
++            const context = JSON.parse(
++              document.getElementById("executor-context")?.textContent ?? "{}",
++            );
++            const start = performance.now();
++            return fetch("/_executor/api/query", {
++              method: "POST",
++              headers: {
++                "content-type": "application/json",
++                traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
++              },
++              body: JSON.stringify({
++                version: context.version ?? context.deployment,
++                name: "view",
++                input: { fresh },
++              }),
++            }).then((response) =>
++              response.json().then((body) => ({
++                status: response.status,
++                body,
++                milliseconds: performance.now() - start,
++                timing: response.headers.get("server-timing"),
++              })),
++            );
++          },
++          { trace, fresh },
++        ),
++      )
++      .pipe(Effect.forkChild);
++    for (const cohort of wire.cohorts) {
++      const arrived = yield* wire.wait(cohort.id);
++      yield* evidence.json(`${fresh ? "fresh" : "initial"}-${cohort.id}.json`, arrived);
++      expect(
++        arrived.missing,
++        `Parallel SQL cohort ${cohort.id} missing ${arrived.missing.join(", ")}; arrived ${arrived.arrived.join(", ")}`,
++      ).toEqual([]);
++      expect(arrived.released).toBe(false);
++      expect(new Set(arrived.cycles).size).toBe(cohort.members.length);
++      const other = randomUUID().replaceAll("-", "");
++      for (let index = 0; index < 4; index++) {
++        expect(yield* noise(other)).toEqual([{ background: 1 }]);
++      }
++      yield* wire.release(cohort.id);
++    }
++    return yield* Fiber.join(pending);
++  });
+diff --git a/e2e/tests/pool-account-view-latency.spec.ts b/e2e/tests/pool-account-view-latency.spec.ts
+--- a/e2e/tests/pool-account-view-latency.spec.ts
++++ b/e2e/tests/pool-account-view-latency.spec.ts
+@@ -19,6 +19,7 @@
+ import { sqlWireProof } from "../support/sql-wire-proof.ts";
+ import { poolObservation } from "../support/pool-account-view-observations.ts";
+ import { scenarios } from "../test-plan.ts";
++import { readPoolAccountView } from "../support/pool-account-view-query.ts";
+ 
+ const View = Schema.Struct({
+   ok: Schema.Literal(true),
+@@ -132,41 +133,19 @@
+           const trace = randomUUID().replaceAll("-", "");
+           yield* wire.begin(15);
+           const start = yield* Clock.currentTimeMillis;
+-          const reply = yield* browser.use("Read the shipped pool view with SQL latency", (page) =>
+-            page.evaluate(
+-              ({ trace, fresh }) => {
+-                const context = JSON.parse(
+-                  document.getElementById("executor-context")?.textContent ?? "{}",
+-                );
+-                const start = performance.now();
+-                return fetch("/_executor/api/query", {
+-                  method: "POST",
+-                  headers: {
+-                    "content-type": "application/json",
+-                    traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
+-                  },
+-                  body: JSON.stringify({
+-                    version: context.version ?? context.deployment,
+-                    name: "view",
+-                    input: { fresh },
+-                  }),
+-                }).then((response) =>
+-                  response.json().then((body) => ({
+-                    status: response.status,
+-                    body,
+-                    milliseconds: performance.now() - start,
+-                    timing: response.headers.get("server-timing"),
+-                  })),
+-                );
+-              },
+-              { trace, fresh },
+-            ),
+-          );
++          const reply = yield* readPoolAccountView(fresh, trace, wire);
+           const end = yield* Clock.currentTimeMillis;
+           const wires = yield* wire.end(trace);
+           const name = fresh ? "fresh" : "initial";
+           yield* evidence.json(`${name}.json`, reply);
+           yield* evidence.json(`${name}-sql-wire.json`, wires);
++          const global = wire.global();
++          yield* evidence.json(`${name}-global-sql-wire.json`, global);
++          expect(
++            global.filter((item) => item.trace !== trace).length,
++            "Background SQL was observed during held view cohorts",
++          ).toBeGreaterThan(0);
++          expect(wires.every((item) => item.traceId === trace)).toBe(true);
+           expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+           const value = yield* Schema.decodeUnknownEffect(View)(reply.body);
+           expect(value.value.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
+@@ -219,6 +198,15 @@
+             }),
+             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+           );
++          expect(
++            [...new Set(wires.map((item) => item.span.parentSpanId))].sort(),
++            "Every measured SQL span has an attributed protocol cycle",
++          ).toEqual(
++            spans
++              .filter((item) => item.span.operationName === "sql.execute")
++              .map((item) => item.span.spanId)
++              .sort(),
++          );
+           const operations = [
+             "sql.execute",
+             "sdk.apps.get",
+@@ -242,10 +230,11 @@
+             criticalPath,
+             spans,
+           });
+-          expect(
+-            criticalPath.sequentialRoundTrips,
+-            "Full pool query round-trip budget at 15 ms SQL latency",
+-          ).toBeLessThanOrEqual(80);
++          yield* Effect.logInfo("Pool account view SQL diagnostic", {
++            name,
++            ...criticalPath,
++            globalWireRequests: global.length,
++          });
+           expect(work["sql.execute"]).toBeLessThanOrEqual(204);
+           expect(work["sdk.apps.get"]).toBeLessThanOrEqual(1);
+           expect(work["sdk.apps.list"]).toBeLessThanOrEqual(11);

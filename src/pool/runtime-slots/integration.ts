@@ -172,6 +172,12 @@ export class RuntimeHandoff {
       slot.retirement?.operationId ?? `primary-drain-${selection!.epoch}-${slot.target.slotId}`;
     return this.slots.retireDrained(operationId);
   }
+  crash(identity: SlotIdentity, envelope: string) {
+    return this.driver.crash(identity, envelope);
+  }
+  inspectCrash(identity: SlotIdentity, nonce: string) {
+    return this.driver.inspectCrash(identity, nonce);
+  }
   peerHealth(identity: SlotIdentity) {
     return this.legacyEndpoint.health(identity, AbortSignal.timeout(2_000));
   }

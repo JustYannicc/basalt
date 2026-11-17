@@ -1,7 +1,7 @@
 model {
   extend basalt.poolDatabase {
     metadata {
-      constraint "Private schema apply failures retain only validated SQLSTATE or connection codes, closed failure kinds and narrowly validated denied-resource identifiers. Driver messages, parameters, credentials and nested causes never enter diagnostics. Input validation, authorization and the empty public failure response stay unchanged."
+      constraint "Private schema apply failures retain only validated SQLSTATE or connection codes, closed failure kinds and narrowly validated denied-resource identifiers. Driver messages, parameters, credentials and nested causes never enter diagnostics. Input validation, authorization and the empty public failure response stay unchanged. A named additive migration keeps history invalidation at each legacy row-trigger snapshot, including its concurrent mapping creation miss. A hash-only resolver uses covering hash indexes; target lists are never cached across rows. UTF8 encoding is required so immutable byte hashing matches the existing UTF8 hash. Trigger definitions, UPDATE and DELETE watchers, journal writes and transaction boundaries remain unchanged. Index creation and function replacement commit atomically under bounded schema lock and statement timeouts."
     }
   }
 }

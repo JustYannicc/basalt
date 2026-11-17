@@ -11,6 +11,7 @@ import { readBaselineControllerKey } from "./baseline-controller.ts";
 import { releaseStateStack } from "./release-state-stack.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { collectReleaseSettlementProof } from "./release-settlement-proof.ts";
+import { assertReleaseSettlementArchiveAbsent } from "./release-settlement-operation.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import {
   assertNotApplicableRehearsalReadOnly,
@@ -83,6 +84,7 @@ try {
           return { disposition: "not-applicable" as const, source };
         const sourceSha = source.sourceCandidate;
         sourceCandidate = sourceSha;
+        yield* assertReleaseSettlementArchiveAbsent(state, compiled, sourceSha, candidateSha);
         const signingKey = yield* readBaselineControllerKey(compiled).pipe(
           Effect.provideContext(readOnlyServices),
         );

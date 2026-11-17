@@ -216,6 +216,18 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
 
+      - name: Probe the real post-deploy image reads without deployment
+        if: >-
+          always() && !cancelled() &&
+          steps.probe-candidate.outcome == 'success' &&
+          steps.prepare-upstream.outcome == 'success'
+        run: bun scripts/release-barrier/post-deploy-image-probe.ts
+        env:
+          GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -224,6 +236,7 @@ jobs:
             .local/baseline-probe.json
             .local/forward-probe/preparation.json
             .local/release-resume-rehearsal/receipt.json
+            .local/post-deploy-image-probe.json
             .local/probe-candidate.json
           include-hidden-files: true
           if-no-files-found: warn

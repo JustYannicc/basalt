@@ -131,6 +131,31 @@ test("capture accepts credential issuance HTTP 201 and writes digest-bound evide
   }
 });
 
+test("each sequential release phase replaces the receipt in its runner's private directory", async () => {
+  const fixture = registry({ index: "unique" });
+  const directory = mkdtempSync(join(tmpdir(), "pool-publication-test-"));
+  const file = join(directory, "receipt.json");
+  const source = (inputHash: string) => ({
+    BASALT_POOL_IMAGE_RECEIPT: file,
+    GITHUB_SHA: "a".repeat(40),
+    CLOUDFLARE_ACCOUNT_ID: credentials.accountId,
+    CLOUDFLARE_API_TOKEN: credentials.apiToken,
+    POOL_APPLICATION_ID: "pool-app",
+    POOL_WORKER_READY: "pool-worker",
+    POOL_IMAGE_INPUT_HASH: inputHash,
+    POOL_IMAGE_REF: fixture.image,
+    POOL_IMAGE_DIGEST: fixture.digest,
+  });
+  try {
+    await capturePoolImage(source("b".repeat(16)), fixture.fetcher);
+    await capturePoolImage(source("c".repeat(16)), fixture.fetcher);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).inputHash, "c".repeat(16));
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("only credential issuance accepts HTTP 201; immutable metadata still requires HTTP 200", async () => {
   const legacy = registry({ credentialStatus: 200 });
   assert.equal(
