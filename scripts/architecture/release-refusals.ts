@@ -3,7 +3,8 @@ import { join, relative } from "node:path";
 import ts from "typescript";
 import { filesBelow } from "./files.ts";
 
-const code = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/;
+// A code, or a code family (`home-schema-*`) whose tail is computed at runtime.
+const code = /^[a-z][a-z0-9_]*(?:-[a-z0-9_]+)*(?:-[a-z0-9_]+|-\*)$/;
 type Callable = ts.FunctionLikeDeclaration;
 
 /**
@@ -44,6 +45,19 @@ export function barrierRefusalCodes(root: string) {
         }
       });
   }
+  properties.clear();
+  for (const file of files.filter((file) => /\bBarrierRefusal\b/.test(file.text)))
+    visit(file, (node) => {
+      if (
+        ts.isPropertyAssignment(node) &&
+        ts.isIdentifier(node.name) &&
+        ts.isStringLiteralLike(node.initializer)
+      )
+        properties.set(node.name.text, [
+          ...(properties.get(node.name.text) ?? []),
+          node.initializer.text,
+        ]);
+    });
   const codes = new Set<string>();
   for (const file of files) {
     const refuses = /\bBarrierRefusal\b/.test(file.text);
@@ -64,6 +78,9 @@ export function barrierRefusalCodes(root: string) {
     );
   }
 }
+
+const properties = new Map<string, string[]>();
+const propertyValues = (name: string) => properties.get(name) ?? [];
 
 function sinkReason(
   node: ts.Node,
@@ -123,6 +140,14 @@ function mentions(expression: ts.Node, name: string): boolean {
 /** String literals the reason can evaluate to, following locals to their initializers. */
 function literals(expression: ts.Node, file: ts.SourceFile, seen = new Set<string>()): string[] {
   if (ts.isStringLiteralLike(expression)) return [expression.text];
+  // `home-schema-${reason}` raises a family of codes; its fixed head names the family.
+  if (ts.isTemplateExpression(expression)) return [`${expression.head.text}*`];
+  // `refusals.refused` names a code that callers supply as `{ refused: "..." }`.
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression))
+    return [
+      ...propertyValues(expression.name.text),
+      ...literals(expression.expression, file, seen),
+    ];
   if (ts.isIdentifier(expression)) {
     if (seen.has(expression.text)) return [];
     seen.add(expression.text);

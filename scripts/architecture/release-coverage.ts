@@ -34,6 +34,7 @@ export function releaseCoverageGaps(root: string) {
   };
   return {
     steps,
+    debt: knownUncovered.length,
     uncovered: steps.filter((step) => !covered.has(step) && !debt.has(step)),
     // A debt entry that is now covered, or no longer a step, must leave the list.
     settledDebt: knownUncovered.filter((step) => covered.has(step) || !known.has(step)),

@@ -1,4 +1,5 @@
 import { SchemaAST } from "effect";
+import { barrierPhases, type BarrierPhase } from "../barrier.ts";
 import { RuntimeHandoffCommand } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { releaseOperations, type ReleaseOperation } from "../operation-failure.ts";
 import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
@@ -12,6 +13,7 @@ export type ReleaseStepId =
   | `command:${RuntimeCommandAction["action"]}`
   | `operation:${ReleaseOperation}`
   | `phase:${RuntimeReleasePhase}`
+  | `phase:barrier-${BarrierPhase}`
   | `refusal:${string}`;
 
 /** `proof` names the test, preflight check or rehearsal step that drives this step under production-shaped conditions. */
@@ -44,6 +46,7 @@ export function releaseSteps(refusalCodes: readonly string[]): ReleaseStepId[] {
     ...runtimeCommandActions().map((action) => `command:${action}` as const),
     ...releaseOperations.map((operation) => `operation:${operation}` as const),
     ...runtimeReleasePhases.map((phase) => `phase:${phase}` as const),
+    ...barrierPhases.map((phase) => `phase:barrier-${phase}` as const),
     ...refusalCodes.map((reason): ReleaseStepId => `refusal:${reason}`),
   ];
   return [...new Set(steps)].sort();

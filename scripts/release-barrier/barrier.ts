@@ -39,19 +39,24 @@ export interface VersionProvider {
   activate(worker: FrozenWorker, versionId: string): Promise<void>;
 }
 
+/** Each phase a barrier receipt records; the release coverage gate enumerates them from here. */
+export const barrierPhases = [
+  "upload",
+  "admitted",
+  "schema",
+  "baseline",
+  "activation",
+  "container-activation",
+  "complete",
+] as const;
+export type BarrierPhase = (typeof barrierPhases)[number];
+
 export interface BarrierReceipt {
   schemaVersion: 1 | 2;
   candidate: string;
   manifest: string;
   ceilingMs: number;
-  phase:
-    | "upload"
-    | "admitted"
-    | "schema"
-    | "baseline"
-    | "activation"
-    | "container-activation"
-    | "complete";
+  phase: BarrierPhase;
   sqlSchemas?: SqlSchemaReceipt;
   accepted: { worker: string; versionId: string; startupTimeMs: number }[];
   startupMeasurements?: { worker: string; versionId: string; startupTimeMs: number }[];
