@@ -165,7 +165,9 @@ export async function releaseSelectedReady(
 const bridge = (): PoolOperationsPlatform["env"]["POOL_OPERATIONS"] => ({
   fetch: async (request) => {
     const w = world();
-    const { envelope } = (await request.json()) as { envelope: string };
+    const { envelope } = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
+      await request.json(),
+    );
     const command = decodeRuntimeHandoffCommand(
       await openEnvelope(deploymentKey, runtimeHandoffCommandPrefix, envelope),
     );

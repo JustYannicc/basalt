@@ -1,4 +1,4 @@
-// Regression: release-phases-real-client (r6 health() and the adopted-root witness ran only against a stand-in client)
+// Regression: release-phases-real-client (every phase drives the real release client, so health() and the witness readback run as in production)
 // End-to-end proof of the first scale-out release: the production runner's deploy and image steps,
 // releaseRuntimeImage through every phase, deployStack, Alchemy Plan/Apply and its Command provider,
 // against a local Cloudflare and controller fake (test/runtime-release-world.ts). The modules that

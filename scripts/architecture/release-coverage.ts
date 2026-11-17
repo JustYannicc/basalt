@@ -42,8 +42,8 @@ export function releaseCoverageGaps(root: string) {
     missingProofs: regressionCoverage
       .filter((entry) => !proofExists(read, root, entry.proof))
       .map((entry) => `${entry.step} -> ${entry.proof}`),
-    // r6 shipped because the phase test swapped the whole release client for a stand-in, so the
-    // real health() and witness readback never ran. A phase or command proven that way is untested.
+    // A phase test that swaps the release client for a stand-in never runs the real health() or
+    // witness readback, so a phase or command proven that way is untested.
     bypassedClient: regressionCoverage
       .filter(
         (entry) => /^(?:phase|command):/.test(entry.step) && proofExists(read, root, entry.proof),
