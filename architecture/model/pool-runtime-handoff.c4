@@ -1,6 +1,9 @@
 model {
   extend basalt.modelGateway {
     metadata {
+      constraint "A refused runtime handoff command keeps why it was refused. The controller logs one closed line per refusal with the command action, candidate commit, operation where the command has one, failure step and reason, and returns the same fixed step, reason and code. The release barrier reads at most a small refusal body, keeps only values from that fixed vocabulary in its refusal delta, and records anything else as unclassified; refusal text and other body fields never reach evidence."
+    }
+    metadata {
       constraint "The ordinary image release proves its account credential through the deployed controller Secrets Store binding before adoption, idle application creation or fleet configuration. This read-only observation cannot start compute or change controller permission. The controller code phase must activate the binding first and can already update runtime adapters, admitted storage and release journals. A missing binding, provider refusal, identity drift or stale observation stops progression. Exact provider identities remain in an authenticated encrypted receipt; the public receipt retains hashes, closed status and safe refusal deltas. The controller exports only allowlisted provider failure codes; the operator preserves those codes without reading exception text or provider response bodies. Abort inspection without a retained submission reports not-sent and cannot write or send a stop."
     }
     metadata {
