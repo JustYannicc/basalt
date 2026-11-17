@@ -1,6 +1,9 @@
 import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import { placementRepairFixture } from "./placement-repair-fixture.ts";
-import { readActivePlacements, uploadVersion } from "../cloudflare.ts";
+import { readActivePlacements, readBaseline, uploadVersion } from "../cloudflare.ts";
+import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+import * as HttpClient from "effect/http/HttpClient";
+import { productionFetch, productionHttpClient } from "./production-http.ts";
 import { CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
 import assert from "node:assert/strict";
 import { Stack, evalStack } from "alchemy/Stack";
@@ -13,7 +16,7 @@ import { Resource } from "alchemy/Resource";
 import { State, StateStoreError, isResourceState } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
-import { Context, Effect, Exit, Layer, Option } from "effect";
+import { Context, Effect, Exit, Layer, Option, Redacted } from "effect";
 import type { Worker } from "alchemy/Cloudflare";
 import { withReleaseRuntime } from "../runtime.ts";
 import { deployStack, type DeployStackOptions } from "../deploy-stack.ts";
@@ -29,6 +32,12 @@ interface FixtureWorker extends Resource<
 > {}
 const FixtureWorker = Resource<FixtureWorker>("Cloudflare.Worker");
 
+const fixtureCredentials = Effect.succeed({
+  type: "apiToken" as const,
+  apiToken: Redacted.make("synthetic"),
+  apiBaseUrl: "https://fixture.invalid",
+});
+
 export const fixture = (
   options: {
     placementRepair?: boolean;
@@ -39,8 +48,8 @@ export const fixture = (
     baselineError?: CloudflareHttpError;
     baseline?: typeof import("../cloudflare.ts").readBaseline;
     upload?: typeof uploadVersion;
-    /** Api carries an asset completion token; `renewAssets` mints the next one. */
-    assets?: { renewAssets?: () => Effect.Effect<string> };
+    /** `worker` (Api by default) carries an asset completion token; `renewAssets` mints the next one. */
+    assets?: { worker?: string; renewAssets?: () => Effect.Effect<string> };
     extraWorkers?: readonly string[];
     evidence?: Pick<DeployStackOptions, "record" | "manifest">;
     preparationError?: unknown;
@@ -75,6 +84,33 @@ export const fixture = (
   const events: string[] = [],
     receipts: BarrierReceipt[] = [];
   const repair = options.placementRepair ? placementRepairFixture(events, options) : undefined;
+  const baselineClient = productionHttpClient((request, url) =>
+    Effect.sync(() => {
+      assert.equal(request.method, "GET");
+      assert.ok(url.pathname.endsWith("/deployments"));
+      const scriptName = url.pathname.split("/").at(-2)!;
+      const versions = repair?.baseline(scriptName) ?? [{ versionId: "previous", percentage: 100 }];
+      return Response.json({
+        success: true,
+        errors: [],
+        messages: [],
+        result: {
+          deployments: [
+            {
+              id: `deployment-${scriptName}`,
+              created_on: "2026-11-01T00:00:00Z",
+              source: "api",
+              strategy: "percentage",
+              versions: versions.map(({ versionId, percentage }) => ({
+                version_id: versionId,
+                percentage,
+              })),
+            },
+          ],
+        },
+      });
+    }),
+  );
   let writes = 0;
   let failOrdinary = false;
   let seededStatus: string | undefined;
@@ -112,14 +148,14 @@ export const fixture = (
             return yield* Effect.fail(options.preparationError);
           const fixtureUpload = preparedUpload(input.id);
           const initialUpload =
-            options.assets && input.id === "Api"
+            options.assets && input.id === (options.assets.worker ?? "Api")
               ? {
                   ...fixtureUpload,
                   request: {
                     ...fixtureUpload.request,
                     metadata: {
                       ...fixtureUpload.request.metadata,
-                      assets: { jwt: "plan-token-Api", config: {} },
+                      assets: { jwt: `plan-token-${input.id}`, config: {} },
                     },
                   },
                   renewAssets: options.assets.renewAssets,
@@ -345,28 +381,32 @@ export const fixture = (
           io: {
             sqlSchemas: async () => readySqlSchemas("a".repeat(40)),
             namespace: (account, token) =>
-              cloudflareArtifactsApi(account, token, async (_input, init) => {
-                assert.equal(init?.method, "GET");
-                namespaceReads++;
-                events.push("namespace:read");
-                const missing =
-                  options.namespace === "missing" ||
-                  // Each admission reads the app-source and the vault namespace.
-                  (options.namespace === "drift" && namespaceReads > 2);
-                // Only the vault namespace disappears between admission and activation.
-                const vaultGone = options.namespace === "vault-drift" && namespaceReads > 2;
-                return Response.json({
-                  success: true,
-                  result: missing
-                    ? []
-                    : (vaultGone ? ["sources"] : ["sources", "sources-vaults"]).map(
-                        (namespace) => ({
-                          namespace,
-                          jurisdiction: options.namespace === "wrong" ? "global" : "eu",
-                        }),
-                      ),
-                });
-              }),
+              cloudflareArtifactsApi(
+                account,
+                token,
+                productionFetch(async (_input, init) => {
+                  assert.equal(init?.method, "GET");
+                  namespaceReads++;
+                  events.push("namespace:read");
+                  const missing =
+                    options.namespace === "missing" ||
+                    // Each admission reads the app-source and the vault namespace.
+                    (options.namespace === "drift" && namespaceReads > 2);
+                  // Only the vault namespace disappears between admission and activation.
+                  const vaultGone = options.namespace === "vault-drift" && namespaceReads > 2;
+                  return Response.json({
+                    success: true,
+                    result: missing
+                      ? []
+                      : (vaultGone ? ["sources"] : ["sources", "sources-vaults"]).map(
+                          (namespace) => ({
+                            namespace,
+                            jurisdiction: options.namespace === "wrong" ? "global" : "eu",
+                          }),
+                        ),
+                  });
+                }),
+              ),
             placements: (worker, baseline) =>
               worker.scriptName === "PoolWorker"
                 ? Effect.succeed(
@@ -384,10 +424,10 @@ export const fixture = (
               ((worker) =>
                 options.baselineError && worker.scriptName === "Api"
                   ? Effect.fail(options.baselineError)
-                  : Effect.succeed(
-                      repair?.baseline(worker.scriptName) ?? [
-                        { versionId: "previous", percentage: 100 },
-                      ],
+                  : // The real SDK read, so a GET that carries the frozen upload as a body fails here as it does in production.
+                    readBaseline(worker).pipe(
+                      Effect.provideService(HttpClient.HttpClient, baselineClient),
+                      Effect.provideService(Credentials, fixtureCredentials),
                     )),
             upload: (worker, assetsJwt) =>
               Effect.gen(function* () {

@@ -1,3 +1,4 @@
+// Regression: runtime-ready-unsettled (a never-completed readiness Command refused as new-or-unsettled-resource)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";

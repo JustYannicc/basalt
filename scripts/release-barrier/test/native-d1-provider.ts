@@ -6,6 +6,7 @@ import { CloudflareEnvironment, Providers } from "alchemy/Cloudflare";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
+import { productionHttpClient } from "./production-http.ts";
 
 export const nativeD1Provider = (current: () => Database["Attributes"] | undefined) =>
   Layer.effect(Providers, Provider.collection([Database])).pipe(
@@ -22,7 +23,7 @@ export const nativeD1Provider = (current: () => Database["Attributes"] | undefin
         ),
         Layer.succeed(
           HttpClient.HttpClient,
-          HttpClient.make((request, url) =>
+          productionHttpClient((request, url) =>
             Effect.sync(() => {
               const stored = current();
               assert.equal(request.method, "GET");

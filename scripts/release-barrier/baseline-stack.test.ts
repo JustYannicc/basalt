@@ -8,6 +8,7 @@ import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { readBaseline } from "./cloudflare.ts";
 import { fixture } from "./test/deploy-stack-fixture.ts";
+import { productionHttpClient } from "./test/production-http.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { refusalTable } from "./refusal-report.ts";
@@ -43,7 +44,7 @@ const sdkFixture = (
   failedWorker = "Api",
 ) => {
   const reads = new Map<string, number>();
-  const client = HttpClient.make((request, url) =>
+  const client = productionHttpClient((request, url) =>
     Effect.suspend(() => {
       assert.equal(request.method, "GET");
       assert.ok(url.pathname.endsWith("/deployments"));

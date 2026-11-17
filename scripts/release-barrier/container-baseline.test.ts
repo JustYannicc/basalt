@@ -1,3 +1,4 @@
+// Regression: container-baseline-drift (the 11th production refusal on a recorded pre-rollout v25 baseline)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";

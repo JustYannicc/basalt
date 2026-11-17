@@ -1,3 +1,4 @@
+// Regression: read-worker-baseline-publicsite and get-with-body (the baseline GET carried the upload as its body)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
