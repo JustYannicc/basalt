@@ -25,6 +25,7 @@ import {
   type ReleaseSettlementDisposition,
 } from "./release-settlement-contract.ts";
 import { readUnadoptedController } from "./release-settlement-controller-reads.ts";
+import { readActivatedLive } from "./release-settlement-live.ts";
 import { settlementSourceFailure } from "./release-settlement-source.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { readServingObservation } from "./serving-observation.ts";
@@ -34,7 +35,7 @@ const forwardHeader = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   candidate: Schema.String,
   manifest: Schema.String,
-  complete: Schema.Literal(false),
+  complete: Schema.Boolean,
   sealed: Schema.Unknown,
 });
 // The earlier disposition keeps its message; the later one names the guard that failed.
@@ -66,6 +67,8 @@ export const collectReleaseSettlementProof = (
     const forward = yield* state.getOutput(journalKey(stack));
     const { record } = decodeRuntimeReleaseHead(image, key);
     const head = Schema.decodeUnknownSync(forwardHeader)(forward);
+    // A finished controller phase completes its forward head; an abandoned upload never does.
+    if (head.complete !== activated) throw notSettleable(disposition, "forward.complete");
     const packet = readForwardPacket(openRecovery(head.sealed, key, head.candidate, head.manifest));
     const unsettled = settlementSourceFailure(disposition, sourceCandidate, record, head, packet);
     if (unsettled) throw notSettleable(disposition, unsettled);
@@ -104,40 +107,54 @@ export const collectReleaseSettlementProof = (
       deleteStack: deny,
       setOutput: deny,
     };
-    const reconciliation = yield* resumeForwardRelease(stack, {
-      dryRun: true,
-      directory,
-      io: { ...io.forward, ...(io.container ? { container: io.container } : {}) },
-      runtime: (container, _observed, observation) =>
-        controllerForwardHealth({
-          baseline,
-          container,
-          observation,
-          baselineHealth: () =>
-            baselineControllerHealth({
-              baseline,
-              key: signingKey,
-              target: { ...baseline.target, connect: io.connect },
-              record: io.runtimeRead,
-            }),
-          candidateReady: async () => {
-            throw refuse();
-          },
-          candidateHealth: async () => {
-            throw refuse();
-          },
-        }),
-    }).pipe(Effect.provideService(State, Effect.succeed(readOnly)));
-    if (
-      !reconciliation ||
-      reconciliation.disposition !== "baseline" ||
-      reconciliation.before !== reconciliation.after ||
-      reconciliation.continuation
-    )
-      throw refuse();
+    const baselineHealth = (
+      container: Parameters<typeof controllerForwardHealth>[0]["container"],
+      observation: Parameters<typeof controllerForwardHealth>[0]["observation"],
+    ) =>
+      controllerForwardHealth({
+        baseline,
+        container,
+        observation,
+        baselineHealth: () =>
+          baselineControllerHealth({
+            baseline,
+            key: signingKey,
+            target: { ...baseline.target, connect: io.connect },
+            record: io.runtimeRead,
+          }),
+        candidateReady: async () => {
+          throw refuse();
+        },
+        candidateHealth: async () => {
+          throw refuse();
+        },
+      });
+    const reconcileAbandoned = () =>
+      Effect.gen(function* () {
+        const report = yield* resumeForwardRelease(stack, {
+          dryRun: true,
+          directory,
+          io: { ...io.forward, ...(io.container ? { container: io.container } : {}) },
+          runtime: (container, _observed, observation) => baselineHealth(container, observation),
+        });
+        if (
+          !report ||
+          report.disposition !== "baseline" ||
+          report.before !== report.after ||
+          report.continuation
+        )
+          throw refuse();
+        const { instanceId, bootId, workers } = report;
+        return { evidence: report, native: report.before, instanceId, bootId, workers };
+      });
+    // A finished controller phase completed its forward head, so there is nothing to reconcile.
+    const readOnlyState = Effect.provideService(State, Effect.succeed(readOnly));
+    const live = activated
+      ? yield* readActivatedLive(stack, packet, io, baselineHealth).pipe(readOnlyState)
+      : yield* reconcileAbandoned().pipe(readOnlyState);
     const workers: (typeof ReleaseSettlementProof.Type)["workers"][number][] = [];
     for (const worker of packet.manifest.workers) {
-      const active = reconciliation.workers.find((row) => row.worker === worker.id)?.versions;
+      const active = live.workers.find((row) => row.worker === worker.id)?.versions;
       const accepted = packet.receipt.accepted.find((row) => row.worker === worker.id)?.versionId;
       if (activated) {
         if (canonical(active) !== canonical([{ versionId: accepted, percentage: 100 }]))
@@ -234,7 +251,7 @@ export const collectReleaseSettlementProof = (
             controller: baseline,
             key: signingKey,
             root: record.baseline.applications.root,
-            instanceId: reconciliation.instanceId,
+            instanceId: live.instanceId,
             target: { ...baseline.target, connect: io.connect },
             record: io.runtimeRead,
           }),
@@ -254,15 +271,15 @@ export const collectReleaseSettlementProof = (
       disposition,
       ...(controllerReads ? { controllerReads } : {}),
       controller: baseline,
-      health: { instanceId: reconciliation.instanceId, bootId: reconciliation.bootId },
+      health: { instanceId: live.instanceId, bootId: live.bootId },
       imageBaselineDigest: hash(record.baseline),
-      nativeBeforeDigest: reconciliation.before,
-      nativeAfterDigest: reconciliation.after,
+      nativeBeforeDigest: live.native,
+      nativeAfterDigest: live.native,
       nativeResources,
       workers,
       applications,
       forwardManifest: packet.receipt.manifest,
-      forwardProofDigest: hash(reconciliation),
+      forwardProofDigest: hash(live.evidence),
       stateWrites: 0,
       runtimeMutations: 0,
     });

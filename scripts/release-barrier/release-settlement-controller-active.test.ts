@@ -14,12 +14,9 @@ import { releaseSettlementDigest, releaseSettlementKey } from "./release-settlem
 import { openReleaseSettlement } from "./release-settlement-archive.ts";
 import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-release-journal.ts";
 import { journalKey, writeForwardJournal } from "./forward-journal.ts";
-import { readForwardPacket, type ForwardPacket } from "./forward-model.ts";
+import type { ForwardPacket } from "./forward-model.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
-import { baselineControllerHealth } from "./baseline-controller.ts";
-import { controllerForwardHealth } from "./controller-forward-health.ts";
 import { runtimeReleaseState } from "./runtime-release-state.ts";
-import { openRecovery } from "./recovery-envelope.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import type { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
 
@@ -34,10 +31,13 @@ const rewriteImage = async (
 };
 const rewriteForward = (f: SettlementFixture, receipt: Partial<ForwardPacket["receipt"]>) =>
   Effect.runPromise(
-    writeForwardJournal(f.state, f.scope, f.key, {
-      ...f.packet,
-      receipt: { ...f.packet.receipt, ...receipt },
-    }),
+    writeForwardJournal(
+      f.state,
+      f.scope,
+      f.key,
+      { ...f.packet, receipt: { ...f.packet.receipt, ...receipt } },
+      true,
+    ),
   );
 const ForwardHead = Schema.Struct({
   candidate: Schema.String,
@@ -142,41 +142,26 @@ test("an activated controller that never adopted its runtime is archived and let
   assert.equal(saved.manifest.proof.disposition, "controller-active-unadopted");
   assert.equal(await next.read(), undefined);
   const headBefore = await Effect.runPromise(f.state.getOutput(journalKey(f.scope)));
-  // The next candidate's first release step resumes the source's forward packet exactly so.
-  const controller = manifest.proof.controller;
+  // The finished controller phase left the head complete, so the next candidate's first release
+  // step finds nothing to reconcile and never touches the head the archive is bound to.
   const reconciled = await Effect.runPromise(
     f.provide(
       resumeForwardRelease(f.compiled, {
         directory: f.io.directory,
         io: { ...f.io.forward, container: f.io.container },
-        runtime: (container, _observed, observation) =>
-          controllerForwardHealth({
-            baseline: controller,
-            container,
-            observation,
-            baselineHealth: () =>
-              baselineControllerHealth({
-                baseline: controller,
-                key: f.key,
-                target: { ...controller.target, connect: f.io.connect },
-              }),
-            candidateReady: notInstalled,
-            candidateHealth: notInstalled,
-          }),
+        // The next candidate passes its health read here; a complete head never calls it.
+        runtime: notInstalled,
       }),
     ),
   );
-  assert.equal(reconciled?.disposition, "baseline");
-  assert.equal(reconciled?.before, reconciled?.after);
+  assert.equal(reconciled, undefined);
   const headAfter = await Effect.runPromise(f.state.getOutput(journalKey(f.scope)));
-  assert.notEqual(digest(canonical(headAfter)), digest(canonical(headBefore)));
-  const head = Schema.decodeUnknownSync(ForwardHead)(headAfter);
-  assert.equal(head.complete, true);
-  const completed = readForwardPacket(
-    openRecovery(head.sealed, f.key, head.candidate, head.manifest),
+  assert.equal(digest(canonical(headAfter)), digest(canonical(headBefore)));
+  assert.equal(Schema.decodeUnknownSync(ForwardHead)(headAfter).complete, true);
+  assert.equal(
+    manifest.proof.nativeBeforeDigest,
+    manifest.proof.nativeResources.find((row) => row.fqn === "PoolContainer")?.digest,
   );
-  assert.equal(completed.adoption?.before, manifest.proof.nativeBeforeDigest);
-  assert.equal(completed.adoption?.after, manifest.proof.nativeAfterDigest);
   assert.equal(await next.read(), undefined);
   const other = await Effect.runPromise(
     f.provide(runtimeReleaseJournal(f.scope, f.writer("d".repeat(40)), f.key)),
@@ -315,6 +300,78 @@ const refusals: [
     (f) => f.active.set("Api", [{ versionId: "old-Api", percentage: 100 }]),
   ],
   [
+    "an image record that never froze the controller it replaced",
+    /release-settlement-not-controller-active \(record\.baselineController\)/,
+    (f) =>
+      rewriteImage(f, (record) => {
+        const unfrozen = { ...record };
+        delete unfrozen.baselineController;
+        return unfrozen;
+      }),
+  ],
+  [
+    "a root placement serving another image",
+    /release-settlement-root-not-baseline \(PoolContainer\)/,
+    (f) => {
+      const read = f.io.forward!.observation!;
+      f.io.forward!.observation = async (...args) => ({
+        ...(await read(...args)),
+        digest: `sha256:${"9".repeat(64)}`,
+      });
+    },
+  ],
+  [
+    "a root rollout in progress",
+    /release-settlement-root-not-baseline \(PoolContainer\)/,
+    (f) => {
+      const read = f.io.forward!.observation!;
+      f.io.forward!.observation = async (...args) => ({
+        ...(await read(...args)),
+        activeRolloutId: "synthetic-rollout",
+      });
+    },
+  ],
+  [
+    "a health boot outside the root placements",
+    /baseline-controller-boot-instance-mismatch/,
+    (f) => {
+      const read = f.io.forward!.observation!;
+      f.io.forward!.observation = async (...args) => {
+        const value = await read(...args);
+        return {
+          ...value,
+          instances: value.instances.map((row) => ({ ...row, id: "9".repeat(64) })),
+        };
+      };
+    },
+  ],
+  [
+    "a root instance that is not running",
+    /baseline-controller-placement-unconfirmed/,
+    (f) => {
+      const read = f.io.forward!.observation!;
+      f.io.forward!.observation = async (...args) => {
+        const value = await read(...args);
+        return {
+          ...value,
+          instances: value.instances.map((row) => ({ ...row, state: "stopped" })),
+        };
+      };
+    },
+  ],
+  [
+    "a root record changed since the controller phase",
+    /forward-native-before-drift/,
+    async (f) => {
+      const key = { stack: f.scope.name, stage: f.scope.stage, fqn: "PoolContainer" };
+      const row = await Effect.runPromise(f.memory.get(key));
+      assert.ok(row);
+      await Effect.runPromise(
+        f.memory.set({ ...key, value: { ...row, downstream: ["synthetic"] } }),
+      );
+    },
+  ],
+  [
     "a container that changed",
     /release-settlement-not-controller-active \(receipt\.containers\)/,
     (f) =>
@@ -367,6 +424,16 @@ test("each disposition refuses the other's source state", async (context) => {
   );
   await assert.rejects(
     planSettlement(await releaseSettlementFixture(context)),
-    /release-settlement-not-controller-active \(record\.baselineController\)/,
+    /release-settlement-not-controller-active \(forward\.complete\)/,
   );
+});
+
+test("controller-active settlement refuses a forward head its controller phase never completed", async (context) => {
+  const f = await controllerActiveFixture(context);
+  await Effect.runPromise(writeForwardJournal(f.state, f.scope, f.key, f.packet, false));
+  await assert.rejects(
+    planSettlement(f),
+    /release-settlement-not-controller-active \(forward\.complete\)/,
+  );
+  assert.equal(f.writes(), 0);
 });
