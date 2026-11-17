@@ -6,16 +6,22 @@ const field = (value: unknown, key: string): unknown =>
 function redact(text: string, secrets: readonly string[]) {
   for (const secret of [...secrets].filter(Boolean).sort((a, b) => b.length - a.length))
     text = text.split(secret).join("[redacted]");
-  return redactFailureOutput(text, process.env)
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`]+/giu, "[redacted-url]")
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, "[redacted-email]")
-    .replace(/\b(?:(?:module|script)\s+)?source(?:\s+code)?\s*[:=][\s\S]*$/iu, "[redacted-source]")
-    .replace(/`[^`]*`|"[^"\r\n]*"|'[^'\r\n]*'/gu, "[redacted]")
-    .replace(/(?:[A-Za-z]:\\|(?:file:\/\/)?\/)[^\s<>"'`]+/gu, "[redacted-path]")
-    .replace(/^\s*(?:at\s|\d+\s*\||export\s|import\s).*$/gmu, "[redacted-source]")
-    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
+  return (
+    redactFailureOutput(text, process.env)
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`]+/giu, "[redacted-url]")
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, "[redacted-email]")
+      .replace(
+        /\b(?:(?:module|script)\s+)?source(?:\s+code)?\s*[:=][\s\S]*$/iu,
+        "[redacted-source]",
+      )
+      .replace(/`[^`]*`|"[^"\r\n]*"|'[^'\r\n]*'/gu, "[redacted]")
+      .replace(/(?:[A-Za-z]:\\|(?:file:\/\/)?\/)[^\s<>"'`]+/gu, "[redacted-path]")
+      .replace(/^\s*(?:at\s|\d+\s*\||export\s|import\s).*$/gmu, "[redacted-source]")
+      // eslint-disable-next-line no-control-regex -- Refusal excerpts must not retain terminal control characters.
+      .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim()
+  );
 }
 
 /** Only Cloudflare's error entries become a JSON excerpt; bindings and arbitrary response fields never do. */

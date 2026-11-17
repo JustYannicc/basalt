@@ -225,12 +225,7 @@ export function countReadOnlyBaselineConnect(
               input.counters.runtime.inspectControllerDigests.push(
                 digest(canonical(decoded.controllerCode)),
               );
-              let response: Response;
-              try {
-                response = await service.fetch(request);
-              } catch (error) {
-                throw error;
-              }
+              const response = await service.fetch(request);
               input.counters.runtime.inspectStatusClasses.push(safeStatusClass(response.status));
               return response;
             }
