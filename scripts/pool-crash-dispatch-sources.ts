@@ -14,6 +14,13 @@ export class RunListRefused extends Error {
 
 /** The account and PoolWorker script a crash command is sent to. */
 export type ReleaseTarget = { accountId: string; worker: string };
+/** The root PoolContainer application a legacy slot witness names. */
+export type RootApplication = {
+  applicationId: string;
+  applicationVersion: string;
+  imageDigest: string;
+  imageInput: string;
+};
 
 /** The dispatch title is the only durable record a fresh runner has of earlier nonces. */
 export const workflowRunLister =
@@ -50,7 +57,9 @@ export const workflowRunLister =
   };
 
 /** Native release provenance names the worker; every State write and non-GET fetch is refused. */
-export async function readReleaseTarget(env: NodeJS.ProcessEnv): Promise<ReleaseTarget> {
+export async function readReleaseTarget(
+  env: NodeJS.ProcessEnv,
+): Promise<ReleaseTarget & { root: RootApplication }> {
   // Loaded lazily so refusals and offline tests never initialize the deployment SDK.
   const [{ Cause, ConfigProvider, Context, Effect, Exit, Logger }, { FetchHttpClient }] =
     await Promise.all([import("effect"), import("effect/http")]);
@@ -82,7 +91,17 @@ export async function readReleaseTarget(env: NodeJS.ProcessEnv): Promise<Release
           const baseline = yield* runtimeReleaseState(compiled).pipe(
             Effect.provideContext(services),
           );
-          return { accountId: baseline.target.accountId, worker: baseline.target.worker };
+          const root = baseline.applications.root;
+          return {
+            accountId: baseline.target.accountId,
+            worker: baseline.target.worker,
+            root: {
+              applicationId: root.attributes.applicationId,
+              applicationVersion: String(root.attributes.version),
+              imageDigest: root.attributes.configuration.image.split("@")[1] ?? "",
+              imageInput: root.image.inputHash,
+            },
+          };
         }).pipe(Effect.provideContext(compiled.services)),
       { stage: "production" },
     );

@@ -13,6 +13,7 @@ import {
   crashSender,
   logLine,
   observeSender,
+  rootHealthReader,
   runCrashDispatch,
   writeDispatchResult,
   type DispatchDependencies,
@@ -34,6 +35,13 @@ const identity = {
   imageInput: "input",
   bootId: "boot",
 };
+const root = {
+  applicationId: "root-application",
+  applicationVersion: "57",
+  imageDigest: `sha256:${"9".repeat(64)}`,
+  imageInput: "root-input",
+};
+const rootInstance = "f".repeat(64);
 const nonce = crypto.randomUUID();
 const crashPacket = { controllerCode, identity, nonce, operator: "fixture-operator" };
 
@@ -60,7 +68,14 @@ function fakes(overrides: Partial<DispatchDependencies> = {}) {
     },
     readTarget: async () => {
       calls.push("readTarget");
-      return { accountId, worker: "synthetic-pool" };
+      return { accountId, worker: "synthetic-pool", root };
+    },
+    rootHealth: async () => {
+      calls.push("rootHealth");
+      return { instanceId: rootInstance, imageHash: "h", running: true, ready: true, bootId: "rb" };
+    },
+    sleep: async (ms) => {
+      calls.push(`sleep:${ms}`);
     },
     observe: async (action) => {
       calls.push(`observe:${action}`);
@@ -269,7 +284,14 @@ test("result.json carries raw controller results but never the key or a signed e
     deps,
   );
   const inspected = await runCrashDispatch(input({ mode: "inspect", signingKey }), deps);
-  assert.deepEqual(actions, ["inspect", "fleet-inspect", "active-health", "runtime-crash-inspect"]);
+  assert.deepEqual(actions, [
+    "inspect",
+    "fleet-inspect",
+    "active-health",
+    "witness",
+    "inspect",
+    "runtime-crash-inspect",
+  ]);
   assert.equal(observed.ok && inspected.ok, true);
   assert.deepEqual(observed.observe, {
     selection: { identity },
@@ -326,7 +348,166 @@ test("observe keeps the selection and fleet when only the health read is refused
     input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
     fakes({ observe: async (action) => ({ result: { action } }) }).deps,
   );
-  assert.equal(missing.error, "inspect reply has no result.selection");
+  assert.equal(missing.ok, true);
+  assert.deepEqual(missing.observe, {
+    selection: null,
+    fleet: { action: "fleet-inspect" },
+    activeHealth: { action: "active-health" },
+  });
+});
+
+const pool = "pool-sentinel-0001";
+const organization = "org-sentinel-0002";
+const account = "account-sentinel-0003";
+const hashed = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 16);
+
+test("a missing selection is diagnosed with reads only and hashed membership identifiers", async () => {
+  const sent: { action: string; slot?: unknown }[] = [];
+  let expiresAt = 1_000;
+  const { deps, calls } = fakes({
+    observe: async (action, _code, _target, _key, slot) => {
+      sent.push({ action, ...(slot ? { slot } : {}) });
+      if (action === "active-health") throw new ControllerRefused(action, "selection");
+      if (action === "witness") throw new ControllerRefused(action, "identity");
+      if (action === "fleet-inspect")
+        return { result: { permission: { enabled: false }, resources: [], bindings: [{}] } };
+      expiresAt += 5_000;
+      return {
+        result: {
+          policies: [
+            { pool, organization, revision: 3, expiresAt, accounts: [account], dirty: false },
+          ],
+          denials: [
+            { pool, organization, revision: 2, expiresAt: 0, accounts: [account], dirty: true },
+          ],
+          digest: "policy-digest",
+        },
+      };
+    },
+  });
+  const observed = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(observed.ok, true);
+  assert.equal((observed.observe as { selection: unknown }).selection, null);
+  assert.deepEqual(
+    sent.map(({ action }) => action),
+    ["inspect", "fleet-inspect", "active-health", "witness", "inspect"],
+  );
+  // The witness names the legacy slot of the root application the release state retains.
+  assert.deepEqual(sent[3]!.slot, {
+    format: "pool-runtime-slot-v1",
+    controllerId: rootInstance,
+    instanceId: rootInstance,
+    slotId: "legacy",
+    ...root,
+  });
+  assert.ok(calls.indexOf("sleep:6000") > calls.indexOf("rootHealth"));
+  const row = (at: number) => ({
+    pool: hashed(pool),
+    organization: hashed(organization),
+    revision: 3,
+    expiresAt: at,
+    dirty: false,
+    accounts: [hashed(account)],
+  });
+  const denial = { ...row(0), revision: 2, dirty: true };
+  assert.deepEqual(observed.diagnostic, {
+    inspect: [
+      {
+        observedAt: 1,
+        selectionPresent: false,
+        policies: [row(6_000)],
+        denials: [denial],
+        digest: "policy-digest",
+      },
+      {
+        observedAt: 1,
+        selectionPresent: false,
+        policies: [row(11_000)],
+        denials: [denial],
+        digest: "policy-digest",
+      },
+    ],
+    fleet: { enabled: false, resources: 0, bindings: 1 },
+    activeHealth: { refused: "selection" },
+    root: {
+      instanceId: hashed(rootInstance),
+      imageHash: "h",
+      running: true,
+      ready: true,
+      bootId: "rb",
+    },
+    witness: { ok: false, refused: "identity" },
+  });
+  const published = JSON.stringify(observed);
+  for (const raw of [pool, organization, account, rootInstance])
+    assert.ok(!published.includes(raw));
+});
+
+test("a retained adoption witness is reported by operation and code, and lost reads stay evidence", async () => {
+  const witnessed = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    fakes({
+      observe: async (action) => ({
+        result:
+          action === "witness"
+            ? {
+                kind: "unattested-active",
+                controllerCode,
+                identity: { ...identity, bootId: "old-boot" },
+                authorization: { operationId: `adopt-${"c".repeat(40)}`, manifestDigest: "m" },
+              }
+            : { action },
+      }),
+    }).deps,
+  );
+  assert.deepEqual((witnessed.diagnostic as { witness: unknown }).witness, {
+    kind: "unattested-active",
+    operationId: `adopt-${"c".repeat(40)}`,
+    manifestDigest: "m",
+    controllerCodeMatches: true,
+    bootId: "old-boot",
+  });
+  const { deps, calls } = fakes({
+    rootHealth: async () => {
+      throw new Error("synthetic bridge failure");
+    },
+    observe: async (action) => {
+      if (action === "inspect" && calls.includes("sleep:6000")) throw new Error("lost");
+      return { result: { action } };
+    },
+  });
+  const lost = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(lost.ok, true);
+  const diagnostic = lost.diagnostic as { root: unknown; witness: unknown; inspect: unknown[] };
+  assert.deepEqual(diagnostic.root, { ok: false, error: "root health read failed" });
+  assert.deepEqual(diagnostic.witness, {
+    ok: false,
+    error: "root health unavailable; witness not sent",
+  });
+  assert.deepEqual(diagnostic.inspect[1], { ok: false, error: "second inspect outcome unknown" });
+});
+
+test("the root health read is an unsigned GET of the recovery status", async () => {
+  const requests: string[] = [];
+  const health = await rootHealthReader(async () => ({
+    dispose: async () => {},
+    env: {
+      POOL_OPERATIONS: {
+        fetch: async (request: Request) => {
+          requests.push(`${request.method} ${new URL(request.url).pathname}`);
+          return Response.json({ instanceId: rootInstance, running: true });
+        },
+      },
+    },
+  }))({ accountId, worker: "synthetic-pool" });
+  assert.deepEqual(requests, ["GET /runtime-recovery"]);
+  assert.deepEqual(health, { instanceId: rootInstance, running: true });
 });
 
 test("an observe whose health read is lost, not refused, fails instead of recording null", async () => {
