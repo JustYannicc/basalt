@@ -42,7 +42,7 @@
   "websets-items-get": "query",
   "websets-items-delete": "mutation",
   "websets-items-list": "query",
-  "websets-preview": "mutation",
+  "websets-preview": "query",
   "monitors-list": "query",
   "monitors-create": "mutation",
   "monitors-get": "query",

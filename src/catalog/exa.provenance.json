@@ -2,8 +2,8 @@
   "package": "@executor.sh/exa",
   "publishedUrl": "https://catalog.executor.sh/apps/exa.json",
   "publishedSha256": "eef250240f754595c42f84ed0c01a2767539e8a117d233341bf1ab94dd1b040d",
-  "carriedSha256": "7735da7dfcdd85750ad4a4da0406e6b6ffa56b5974ef47c2f52ec78c1ef97f74",
-  "patchSha256": "779d475bab74fcf32a8c060f49c7524d68575faef8e764ce5b0d0dba86127689",
+  "carriedSha256": "4dddc1bef94196be5d3784a6a8e4f371ee8b9905110130f135646fffeaeea58d",
+  "patchSha256": "180fb23767991f21ae6efcce9ccaa2b9096c6ebdee7184600fb4c11e483b2572",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Account check on the operation's Websets server, refusal only on 401/403, and POST reads classed as queries, retained as a replayable patch; publication not claimed"
