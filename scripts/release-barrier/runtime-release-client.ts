@@ -252,6 +252,11 @@ export const runtimeReleaseClient = (input: {
           snapshot.selection!.active.retirement
         )
           return false;
+        // The adopted root is never a release's settled primary: its unattested witness cannot
+        // prove readiness and its readback is bound to the adopting controller's code, so the
+        // release always promotes a fleet primary instead of asking.
+        const active = snapshot.selection!.active.target;
+        if (active.slotId === "legacy" && active.instanceId === active.controllerId) return false;
         const witness = result(
           Schema.Struct({
             configurationFingerprint: Schema.optional(Schema.String),
