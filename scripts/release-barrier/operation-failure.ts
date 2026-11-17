@@ -4,33 +4,35 @@ import { BarrierRefusal } from "./refusal.ts";
 import { migrationCommandFailure, type MigrationDiagnostic } from "./migration-failure.ts";
 import { redactFailureOutput } from "../deploy-safety/failure-output.ts";
 
-export type ReleaseOperation =
-  | "plan-read-state"
-  | "apply-read-state"
-  | "apply-write-state"
-  | "read-release-journal"
-  | "write-release-journal"
-  | "record-release-journal"
-  | "plan-stack"
-  | "plan-read-resource"
-  | "plan-diff-resource"
-  | "prepare-resource"
-  | "read-worker-baseline"
-  | "freeze-worker-upload"
-  | "renew-asset-upload-session"
-  | "read-class-expansion"
-  | "deploy-class-expansion"
-  | "stage-class-baseline-clone"
-  | "record-class-expansion"
-  | "check-source-namespace"
-  | "read-native-state"
-  | "verify-native-state"
-  | "check-declared-buckets"
-  | "check-declared-databases"
-  | "apply-database-resource"
-  | "apply-database-plan"
-  | "before-activation"
-  | "release-stack";
+export const releaseOperations = [
+  "plan-read-state",
+  "apply-read-state",
+  "apply-write-state",
+  "read-release-journal",
+  "write-release-journal",
+  "record-release-journal",
+  "plan-stack",
+  "plan-read-resource",
+  "plan-diff-resource",
+  "prepare-resource",
+  "read-worker-baseline",
+  "freeze-worker-upload",
+  "renew-asset-upload-session",
+  "read-class-expansion",
+  "deploy-class-expansion",
+  "stage-class-baseline-clone",
+  "record-class-expansion",
+  "check-source-namespace",
+  "read-native-state",
+  "verify-native-state",
+  "check-declared-buckets",
+  "check-declared-databases",
+  "apply-database-resource",
+  "apply-database-plan",
+  "before-activation",
+  "release-stack",
+] as const;
+export type ReleaseOperation = (typeof releaseOperations)[number];
 
 export const knownTypes = new Set([
   // Effect's own timeout, raised by a provider call's bounded wait.
