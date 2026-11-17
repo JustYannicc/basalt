@@ -26,6 +26,7 @@ import {
 } from "./release-settlement-contract.ts";
 import { readUnadoptedController } from "./release-settlement-controller-reads.ts";
 import { readActivatedLive } from "./release-settlement-live.ts";
+import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 import { settlementSourceFailure } from "./release-settlement-source.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { readServingObservation } from "./serving-observation.ts";
@@ -58,6 +59,7 @@ export const collectReleaseSettlementProof = (
   directory: string,
   io: ReleaseSettlementIo,
   disposition: ReleaseSettlementDisposition,
+  sourceController?: typeof ControllerCode.Type,
 ) =>
   Effect.gen(function* () {
     const refuse = () => notSettleable(disposition);
@@ -87,7 +89,15 @@ export const collectReleaseSettlementProof = (
       if (!row) throw refuse();
       nativeResources.push({ fqn, digest: encodedRecordHash(row) });
     }
-    const baseline = yield* readBaselineController(stack);
+    if (
+      activated !== (sourceController !== undefined) ||
+      (sourceController && sourceController.candidate !== sourceCandidate)
+    )
+      throw new BarrierRefusal("release-settlement-source-controller-unproven", "PoolWorker");
+    const recorded = yield* readBaselineController(stack);
+    // Scale-out code phases defer the readiness command, so its record still names the controller
+    // that ran before the source. The signed reads below prove the source code live instead.
+    const baseline = sourceController ? { ...recorded, code: sourceController } : recorded;
     const signingKey = yield* readBaselineControllerKey(stack);
     const native = yield* runtimeReleaseState(stack);
     if (
@@ -97,8 +107,6 @@ export const collectReleaseSettlementProof = (
       signingKey !== record.baseline.deploymentKey
     )
       throw new BarrierRefusal("release-settlement-image-baseline-drift", "PoolWorker");
-    if (activated && baseline.code.candidate !== sourceCandidate)
-      throw new BarrierRefusal("release-settlement-controller-not-source", "PoolWorker");
     const deny = () => Effect.die(new BarrierRefusal("release-settlement-state-write-refused"));
     const readOnly: StateService = {
       ...state,
