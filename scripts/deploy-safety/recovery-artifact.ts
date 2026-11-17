@@ -5,6 +5,7 @@ import { digest } from "../release-barrier/manifest.ts";
 import { SafetyGateError } from "./contracts.ts";
 import type { LedgerEnvironment } from "./github-ledger.ts";
 import { record, requestJson, withBearer, type Fetcher } from "./http.ts";
+import { retryGitHubReads } from "../releases/github-retry.ts";
 
 const maximumBytes = 16 * 1024 * 1024;
 const selectedFiles = [
@@ -25,9 +26,10 @@ export async function recoveryArtifact(
 ) {
   const api = `https://api.github.com/repos/${environment.repository}`;
   const headers = withBearer(environment.token);
+  const github = retryGitHubReads(fetcher);
   const listing = record(
     (
-      await requestJson(fetcher, "GitHub", `${api}/actions/runs/${run}/artifacts?per_page=100`, {
+      await requestJson(github, "GitHub", `${api}/actions/runs/${run}/artifacts?per_page=100`, {
         headers,
       })
     ).body,
@@ -52,7 +54,7 @@ export async function recoveryArtifact(
   const owner = record(artifact.workflow_run, "artifact run");
   if (owner.id !== run || owner.head_sha !== head)
     throw new SafetyGateError("Recovery artifact belongs to another run or source head");
-  let response = await fetcher(`${api}/actions/artifacts/${artifact.id}/zip`, {
+  let response = await github(`${api}/actions/artifacts/${artifact.id}/zip`, {
     headers,
     redirect: "manual",
     signal: AbortSignal.timeout(20_000),
@@ -61,7 +63,7 @@ export async function recoveryArtifact(
     const location = new URL(response.headers.get("location") ?? "", api);
     if (location.protocol !== "https:" || location.username || location.password)
       throw new SafetyGateError("Recovery artifact redirect is invalid");
-    response = await fetcher(location, { redirect: "error", signal: AbortSignal.timeout(20_000) });
+    response = await github(location, { redirect: "error", signal: AbortSignal.timeout(20_000) });
   }
   if (!response.ok || !response.body)
     throw new SafetyGateError(`Recovery artifact download failed with HTTP ${response.status}`);

@@ -15,8 +15,28 @@ import {
   type RollbackBackup,
 } from "./contracts.ts";
 import { record, requestJson, stringField, withBearer, type Fetcher } from "./http.ts";
+import { readsOnly, retryGitHubReads } from "../releases/github-retry.ts";
 
 const apiOrigin = "https://api.github.com";
+
+const githubJson = (
+  fetcher: Fetcher,
+  url: string,
+  init: RequestInit,
+  acceptedStatuses?: readonly number[],
+) =>
+  requestJson(
+    retryGitHubReads(fetcher, { replayable: ledgerReplayable }),
+    "GitHub",
+    url,
+    init,
+    acceptedStatuses,
+  );
+// Statuses only append and the ledger reads the newest, so a replayed status write is harmless and
+// a lost one after a live deploy would block the next release. A new deployment never replays.
+const ledgerReplayable: typeof readsOnly = (method, url, init) =>
+  readsOnly(method, url, init) ||
+  (method === "POST" && /\/deployments\/\d+\/statuses$/.test(url.pathname));
 const pageSize = 100;
 const maximumPages = 1000;
 const systemName = "basalt-deploy-safety";
@@ -474,7 +494,7 @@ export async function finishDeployment(
   if (!Number.isInteger(deploymentId) || deploymentId < 1)
     throw new SafetyGateError("Deployment id is invalid");
   const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments/${deploymentId}`;
-  const reply = await requestJson(fetcher, "GitHub", url, {
+  const reply = await githubJson(fetcher, url, {
     method: "GET",
     headers: headers(environment.token),
   });
@@ -486,9 +506,8 @@ export async function finishDeployment(
     throw new SafetyGateError("Deployment SHA does not match its metadata");
 
   const statusUrl = `${url}/statuses`;
-  await requestJson(
+  await githubJson(
     fetcher,
-    "GitHub",
     statusUrl,
     {
       method: "POST",
@@ -542,9 +561,8 @@ async function createDeployment(
 ): Promise<number> {
   if (environment.run) payload = { ...payload, run: environment.run };
   const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments`;
-  const reply = await requestJson(
+  const reply = await githubJson(
     fetcher,
-    "GitHub",
     url,
     {
       method: "POST",
@@ -576,9 +594,8 @@ async function createDeployment(
   if (stableStringify(parseDeploymentPayload(deployment.payload)) !== stableStringify(payload))
     throw new SafetyGateError("GitHub production deployment metadata did not round-trip");
 
-  await requestJson(
+  await githubJson(
     fetcher,
-    "GitHub",
     `${url}/${id}/statuses`,
     {
       method: "POST",
@@ -717,7 +734,7 @@ async function listDeployments(
       page: String(page),
     });
     const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments?${query}`;
-    const reply = await requestJson(fetcher, "GitHub", url, {
+    const reply = await githubJson(fetcher, url, {
       method: "GET",
       headers: headers(environment.token),
     });
@@ -756,7 +773,7 @@ async function listStatuses(
   for (let page = 1; page <= maximumPages; page++) {
     const query = new URLSearchParams({ per_page: String(pageSize), page: String(page) });
     const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments/${deploymentId}/statuses?${query}`;
-    const reply = await requestJson(fetcher, "GitHub", url, {
+    const reply = await githubJson(fetcher, url, {
       method: "GET",
       headers: headers(environment.token),
     });
@@ -873,7 +890,7 @@ async function runCompletedAt(
     const url = `${apiOrigin}/repos/${repositoryPath(run.repository)}/actions/runs/${run.id}/attempts/${run.attempt}`;
     body = record(
       (
-        await requestJson(fetcher, "GitHub", url, {
+        await githubJson(fetcher, url, {
           method: "GET",
           headers: headers(environment.token),
         })
