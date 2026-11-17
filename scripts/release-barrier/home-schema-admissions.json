@@ -325,7 +325,7 @@
     },
     {
       "baselineInputHash": "5120df81c4faab06",
-      "candidateInputHash": "1e94cc79d7fa50a4",
+      "candidateInputHash": "3c41c454d80d91de",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
