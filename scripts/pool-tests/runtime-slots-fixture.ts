@@ -14,6 +14,7 @@ import {
 import { NativeMemberships } from "../../src/pool/membership.ts";
 import {
   membershipPrefix,
+  modelUseAssertionTtlMs,
   policyHeader,
   policyUsePrefix,
   type NativeMembershipPolicy,
@@ -239,7 +240,7 @@ export async function slotFixture() {
               [policyHeader]: await signEnvelope(secret, policyUsePrefix, {
                 pool: "pool",
                 revision: current.revision,
-                expiresAt: Date.now() + 7_200_000,
+                expiresAt: Date.now() + modelUseAssertionTtlMs,
               }),
             },
           });
