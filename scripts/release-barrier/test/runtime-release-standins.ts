@@ -83,6 +83,7 @@ export const resetJournal = () => {
 };
 export const runtimeReleaseJournal = (_stack: CompiledStack, _writer: unknown, _key: string) =>
   Effect.succeed({
+    head: async () => (journal ? { record: structuredClone(journal) } : {}),
     read: async () => (journal ? structuredClone(journal) : undefined),
     write: async (next: RuntimeReleaseRecord) => {
       journal = structuredClone(next);
@@ -106,6 +107,7 @@ const baseline = {
   readinessDigest: "5".repeat(64),
 };
 export const readBaselineController = (_stack: CompiledStack) => Effect.succeed(baseline);
+export const freezeBaselineController = (_stack: CompiledStack) => Effect.succeed(baseline);
 export const readBaselineControllerKey = (_stack: CompiledStack) => Effect.succeed(deploymentKey);
 export const baselineControllerHealth = async () => ({
   instanceId: "instance-root",

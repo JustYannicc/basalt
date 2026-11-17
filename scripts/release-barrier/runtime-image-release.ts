@@ -33,6 +33,7 @@ import { verifyContainerHealth } from "./container-health.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import {
   baselineControllerHealth,
+  freezeBaselineController,
   readBaselineController,
   readBaselineControllerKey,
 } from "./baseline-controller.ts";
@@ -75,11 +76,15 @@ export const releaseRuntimeImage = <A, StackError>(
           options.writer,
           options.encryptionKey,
         );
-        let record = yield* Effect.promise(journal.read);
+        const head = yield* Effect.promise(journal.head);
+        let record = head.record;
         if (record?.abort)
           throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
-          const baselineController = yield* readBaselineController(compiled);
+          const baselineController = yield* freezeBaselineController(
+            compiled,
+            head.settledController,
+          );
           const key = yield* readBaselineControllerKey(compiled);
           yield* resumeForwardRelease(compiled, {
             directory: options.directory,

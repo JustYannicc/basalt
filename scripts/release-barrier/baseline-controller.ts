@@ -100,6 +100,21 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
     });
   });
 
+/**
+ * The baseline a new image record freezes. Only an already authorized settlement supplies
+ * `settledController`, so its live-proven source code adds no trust path; the readiness row would
+ * still name the controller before that source, which the live controller refuses.
+ */
+export const freezeBaselineController = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  settledController?: BaselineController["code"],
+) =>
+  readBaselineController(stack).pipe(
+    Effect.map((recorded) =>
+      settledController ? { ...recorded, code: settledController } : recorded,
+    ),
+  );
+
 export type BaselineRead = {
   method: "GET" | "POST";
   path: typeof runtimeRecoveryPath | typeof runtimeHandoffPath;
