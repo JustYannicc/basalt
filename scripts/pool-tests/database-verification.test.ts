@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkDatabaseBackends } from "../verify-database-budget.ts";
+import { databaseBackendBudget as budget } from "../database-budget-verification.ts";
 import {
   connect,
   localDatabaseUrl,
@@ -25,7 +26,7 @@ test(
     try {
       await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD 'fixture-only'`);
       await admin.query(`CREATE DATABASE ${database}`);
-      for (let index = 0; index < 6; index++)
+      for (let index = 0; index <= budget; index++)
         clients.push(await connect(runtimeUrl(direct, database, role)));
       await assert.rejects(
         checkDatabaseBackends({
@@ -43,7 +44,7 @@ test(
         databases: [database],
         deadlineMs: 1_000,
       });
-      assert.deepEqual(counts, [{ database, connections: 5 }]);
+      assert.deepEqual(counts, [{ database, connections: budget }]);
     } finally {
       await Promise.all(clients.map((client) => client.end()));
       await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);

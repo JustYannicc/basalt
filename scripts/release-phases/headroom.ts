@@ -1,18 +1,13 @@
 import { Schema } from "effect";
+import { databaseConnectionPlan } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts";
 
 export const releaseDatabasePolicy = {
   // A provider-side limit change cannot silently expand the approved release envelope.
-  maxConnections: 50,
+  maxConnections: databaseConnectionPlan.production.maxConnections,
   // The metrics API exposes max_connections, but no verified reserved-slot gauge.
-  superuserReservedConnections: 3,
-  reservedConnections: 0,
-  connections: {
-    productMigration: 1,
-    betterAuthMigration: 2,
-    poolProvisioning: 2,
-    toolsVerifier: 1,
-    poolVerifier: 1,
-  },
+  superuserReservedConnections: databaseConnectionPlan.superuserReservedConnections,
+  reservedConnections: databaseConnectionPlan.reservedConnections,
+  connections: databaseConnectionPlan.releaseLogins,
   maxResponseAgeMs: 30_000,
   requestTimeoutMs: 10_000,
 } as const;

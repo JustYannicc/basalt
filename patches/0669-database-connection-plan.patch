@@ -1,0 +1,179 @@
+diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
+--- a/apps/hosted/cloud/scripts/database-pool-budget.ts
++++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
+@@ -1,7 +1,11 @@
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+ import { Config, Effect, Redacted, Schedule, Schema } from "effect";
+ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+-import { databasePoolParameters } from "../src/infrastructure/database-pool-policy.ts";
++import {
++  databaseBackendBudgetFor,
++  databaseConnectionPlan,
++  databasePoolParametersFor,
++} from "../src/infrastructure/database-pool-policy.ts";
+ 
+ class PoolBudgetFailed extends Schema.TaggedError<PoolBudgetFailed>()("PoolBudgetFailed", {
+   message: Schema.String,
+@@ -49,10 +53,6 @@
+     send(HttpClientRequest.get(`${base}/parameters`)).pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Parameters)),
+     );
+-  const matches = (rows: typeof Parameters.Type) =>
+-    Object.entries(databasePoolParameters).every(([name, value]) =>
+-      rows.some((row) => row.namespace === "pgbouncer" && row.name === name && row.value === value),
+-    );
+   const current = yield* parameters();
+   if (
+     !current.some(
+@@ -63,6 +63,41 @@
+     return yield* new PoolBudgetFailed({
+       message: "The database budget requires transaction pooling",
+     });
++  // Production's budget is derived from its declared limit, so a provider limit that moved alone
++  // fails here. Preview branches derive theirs from the limit they report.
++  const limit = current.find(
++    (row) => row.namespace === "pgconf" && row.name === "max_connections",
++  )?.value;
++  const declared = databaseConnectionPlan.production.maxConnections;
++  if (branch === "main" && limit !== String(declared))
++    return yield* new PoolBudgetFailed({
++      message:
++        `max_connections is ${limit ?? "unset"} on main; the plan declares ${declared}. ` +
++        "Change both together before releasing.",
++    });
++  const target =
++    branch === "main"
++      ? databaseConnectionPlan.production
++      : {
++          ...databaseConnectionPlan.preview,
++          maxConnections:
++            limit == null ? databaseConnectionPlan.preview.maxConnections : Number(limit),
++        };
++  if (!Number.isSafeInteger(target.maxConnections))
++    return yield* new PoolBudgetFailed({
++      message: `max_connections is ${limit} on ${branch}, which is not a connection count`,
++    });
++  const databasePoolParameters = databasePoolParametersFor(
++    yield* Effect.try({
++      try: () => databaseBackendBudgetFor(target),
++      catch: (error) =>
++        new PoolBudgetFailed({ message: `${String(error).replace(/^Error: /, "")} on ${branch}` }),
++    }),
++  );
++  const matches = (rows: typeof Parameters.Type) =>
++    Object.entries(databasePoolParameters).every(([name, value]) =>
++      rows.some((row) => row.namespace === "pgbouncer" && row.name === name && row.value === value),
++    );
+   if (matches(current)) return;
+   const change = yield* send(
+     yield* HttpClientRequest.patch(`${base}/changes`).pipe(
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
+--- a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
+@@ -1,11 +1,66 @@
+-/** One local transaction pooler fronts both logical databases; limits span every runtime login. */
+-export const databaseBackendBudget = 5;
+-export const retirement = { lifetimeSeconds: 60, idleSeconds: 15, verificationMs: 90_000 } as const;
+-export const databasePoolParameters = {
+-  default_pool_size: String(databaseBackendBudget),
+-  max_db_connections: String(databaseBackendBudget),
+-  min_pool_size: "0",
+-  reserve_pool_size: "0",
+-  server_lifetime: String(retirement.lifetimeSeconds),
+-  server_idle_timeout: String(retirement.idleSeconds),
++/** Logins a release opens alongside the running pool, each bounded by its own client limit. */
++const releaseLogins = {
++  productMigration: 1,
++  betterAuthMigration: 2,
++  poolProvisioning: 2,
++  toolsVerifier: 1,
++  poolVerifier: 1,
+ } as const;
++
++/**
++ * One local transaction pooler fronts both logical databases, and its limits apply to each database
++ * across every runtime login. Release preflight, this budget and its verifier all derive from this
++ * plan. When production's real `max_connections` differs from its declaration the release refuses,
++ * so raising the provider limit and raising the budget happen together.
++ */
++export const databaseConnectionPlan = {
++  /** The production branch; the margin keeps a release admissible while the pool is fully busy. */
++  production: { maxConnections: 50, margin: 4 },
++  /** PlanetScale's default; a preview branch's budget follows the limit it actually reports. */
++  preview: { maxConnections: 25, margin: 0 },
++  superuserReservedConnections: 3,
++  reservedConnections: 0,
++  logicalDatabases: 2,
++  /**
++   * Connections outside PgBouncer at steady state, such as provider monitoring. A release saw 13
++   * in use with at most 10 pooled, so at least 3; the production margin covers a few more.
++   */
++  unpooledConnections: 4,
++  releaseLogins,
++  releaseConnections: Object.values(releaseLogins).reduce((sum, logins) => sum + logins, 0),
++} as const;
++
++export function databaseBackendBudgetFor(target: { maxConnections: number; margin: number }) {
++  const plan = databaseConnectionPlan;
++  const available =
++    target.maxConnections -
++    plan.superuserReservedConnections -
++    plan.reservedConnections -
++    plan.unpooledConnections -
++    plan.releaseConnections -
++    target.margin;
++  const budget = Math.floor(available / plan.logicalDatabases);
++  if (!Number.isSafeInteger(budget) || budget < 1)
++    throw new Error(
++      `No PgBouncer backend budget fits max_connections ${target.maxConnections}: ` +
++        `${available} connections remain for ${plan.logicalDatabases} databases`,
++    );
++  return budget;
++}
++
++export const databaseBackendBudget = databaseBackendBudgetFor(databaseConnectionPlan.production);
++export const previewDatabaseBackendBudget = databaseBackendBudgetFor(
++  databaseConnectionPlan.preview,
++);
++export const retirement = { lifetimeSeconds: 60, idleSeconds: 15, verificationMs: 90_000 } as const;
++export function databasePoolParametersFor(budget: number) {
++  return {
++    default_pool_size: String(budget),
++    max_db_connections: String(budget),
++    min_pool_size: "0",
++    reserve_pool_size: "0",
++    server_lifetime: String(retirement.lifetimeSeconds),
++    server_idle_timeout: String(retirement.idleSeconds),
++  } as const;
++}
++export const databasePoolParameters = databasePoolParametersFor(databaseBackendBudget);
+diff --git a/apps/hosted/cloud/src/infrastructure/preview-database.ts b/apps/hosted/cloud/src/infrastructure/preview-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/preview-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/preview-database.ts
+@@ -4,7 +4,7 @@
+ import * as Command from "alchemy/Command";
+ import * as Output from "alchemy/Output";
+ import { databasePoolBudget } from "./database-pool-budget.ts";
+-import { databaseBackendBudget } from "./database-pool-policy.ts";
++import { previewDatabaseBackendBudget } from "./database-pool-policy.ts";
+ import { Random } from "alchemy";
+ import { Config, Effect, Option, Redacted } from "effect";
+ import { testStage, type TestStage } from "./stage.ts";
+@@ -31,12 +31,12 @@
+ };
+ 
+ /**
+- * PgBouncer server connections shared by all runtime roles in a PlanetScale preview's database. The branch allows 25
+- * connections, three reserved for superusers; PgBouncer's default of 20 left none for the
+- * migration login on the next deploy. Hyperdrive connects through the same PgBouncer, so this
+- * caps the runtime role's backends whatever Hyperdrive and the Durable Objects open.
++ * Hyperdrive's origin connections to a PlanetScale preview, sized to the preview budget at the
++ * branch default. PgBouncer's default of 20 left no connection for the migration login on the next
++ * deploy. Hyperdrive connects through the same PgBouncer, so its share of the preview's backends
++ * stays within that budget whatever Hyperdrive and the Durable Objects open.
+  */
+-export const previewPoolConnections = databaseBackendBudget;
++export const previewPoolConnections = previewDatabaseBackendBudget;
+ 
+ /** Preview provider selection is shared by database allocation and Worker transport. */
+ export const previewDatabaseProvider = Config.Literals(

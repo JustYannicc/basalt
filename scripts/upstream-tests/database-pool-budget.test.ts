@@ -30,11 +30,10 @@ function run(
         name,
         value,
       }));
-      parameters.push({
-        namespace: "pgbouncer",
-        name: "pool_mode",
-        value: options.mode ?? "transaction",
-      });
+      parameters.push(
+        { namespace: "pgbouncer", name: "pool_mode", value: options.mode ?? "transaction" },
+        { namespace: "pgconf", name: "max_connections", value: "50" },
+      );
       let data: unknown = path.endsWith("parameters")
         ? (++reads === 1 && !options.existing) || (reads > 1 && options.readback === false)
           ? parameters.filter((row) => row.name !== "max_db_connections")
