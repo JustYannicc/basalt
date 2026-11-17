@@ -298,7 +298,10 @@ export async function releaseSettlementFixture(
       ),
     ),
   });
-  await Effect.runPromise(writeForwardJournal(state, scope, key, packet));
+  // A finished controller phase completes its head (deploy-stack.ts finish); an abandoned upload does not.
+  await Effect.runPromise(
+    writeForwardJournal(state, scope, key, packet, options.controllerActive === true),
+  );
   const controller = settlementController({
     controllerId: instanceId,
     applicationId: previous.applicationId,
