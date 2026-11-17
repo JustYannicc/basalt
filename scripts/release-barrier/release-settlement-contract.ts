@@ -7,15 +7,21 @@ const commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 const versions = Schema.Array(
   Schema.Struct({ versionId: Schema.NonEmptyString, percentage: Schema.Number }),
 );
+export const ReleaseSettlementDisposition = Schema.Literals([
+  "abandoned-before-controller",
+  "controller-active-unadopted",
+]);
+export type ReleaseSettlementDisposition = typeof ReleaseSettlementDisposition.Type;
 export const ReleaseSettlementPlanRequest = Schema.Struct({
   kind: Schema.Literal("release-settlement"),
   sourceCandidate: commit,
   operationId: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9-]{1,128}$/u)),
   coordinatorGo: Schema.NonEmptyString,
   expiresAt: Schema.Int,
+  // Absent keeps earlier reviewed requests, and their digests, as abandoned-before-controller.
+  disposition: Schema.optional(ReleaseSettlementDisposition),
 });
-export const ReleaseSettlementProof = Schema.Struct({
-  disposition: Schema.Literal("abandoned-before-controller"),
+const proofFields = {
   controller: BaselineController,
   health: Schema.Struct({ instanceId: Schema.NonEmptyString, bootId: Schema.NonEmptyString }),
   imageBaselineDigest: SettlementHash,
@@ -43,7 +49,21 @@ export const ReleaseSettlementProof = Schema.Struct({
   forwardProofDigest: SettlementHash,
   stateWrites: Schema.Literal(0),
   runtimeMutations: Schema.Literal(0),
+};
+export const ReleaseSettlementControllerReads = Schema.Struct({
+  fleetDigest: SettlementHash,
+  witness: Schema.Literal("absent"),
+  finalInspect: Schema.Literal("no-selection"),
 });
+// Only an activated controller has adoption reads to prove; the earlier disposition never carries them.
+export const ReleaseSettlementProof = Schema.Union([
+  Schema.Struct({ disposition: Schema.Literal("abandoned-before-controller"), ...proofFields }),
+  Schema.Struct({
+    disposition: Schema.Literal("controller-active-unadopted"),
+    controllerReads: ReleaseSettlementControllerReads,
+    ...proofFields,
+  }),
+]);
 export const ReleaseSettlementManifest = Schema.Struct({
   format: Schema.Literal("pool-release-settlement-v1"),
   candidate: commit,
