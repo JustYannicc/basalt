@@ -24,6 +24,12 @@ import {
 } from "./provisioning-operation.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { releaseOutcome } from "./entry-outcome.ts";
+import { ReleaseSettlementPlanRequest } from "./release-settlement-contract.ts";
+import {
+  assertReleaseSettlementPlanGo,
+  planReleaseSettlement,
+} from "./release-settlement-operation.ts";
+import { releaseStateStack } from "./release-state-stack.ts";
 
 /** Only the main-only workflow holding deploy-production may supply the writer identity. */
 export function provisioningWorkflowWriter(env: NodeJS.ProcessEnv) {
@@ -87,7 +93,8 @@ if (import.meta.main && process.argv[2] === "digest") {
   const envelope =
     mode === "plan" ||
     packet?.operation.kind === "observation-store" ||
-    packet?.operation.kind === "observation-store-restore"
+    packet?.operation.kind === "observation-store-restore" ||
+    packet?.operation.kind === "release-settlement"
       ? observationStoreEnvelope(
           writer.accountId,
           (entry) =>
@@ -106,13 +113,19 @@ if (import.meta.main && process.argv[2] === "digest") {
           const planRequest =
             mode === "plan"
               ? yield* Schema.decodeUnknownEffect(
-                  Schema.Union([ObservationStorePlanRequest, JournalRestorePlanRequest]),
+                  Schema.Union([
+                    ObservationStorePlanRequest,
+                    JournalRestorePlanRequest,
+                    ReleaseSettlementPlanRequest,
+                  ]),
                   {
                     onExcessProperty: "error",
                   },
                 )(value)
               : undefined;
-          if (planRequest) assertObservationStorePlanGo(planRequest, Date.now());
+          if (planRequest?.kind === "release-settlement")
+            assertReleaseSettlementPlanGo(planRequest, Date.now());
+          else if (planRequest) assertObservationStorePlanGo(planRequest, Date.now());
           const restore =
             planRequest?.kind === "observation-store-restore"
               ? planRequest
@@ -128,11 +141,14 @@ if (import.meta.main && process.argv[2] === "digest") {
               : undefined;
           envelope?.beginAuth();
           return yield* evalStack(
-            planRequest ||
-              packet?.operation.kind === "observation-store" ||
-              packet?.operation.kind === "observation-store-restore"
-              ? observationStoreStack
-              : provisioningStack,
+            planRequest?.kind === "release-settlement" ||
+              packet?.operation.kind === "release-settlement"
+              ? releaseStateStack
+              : planRequest ||
+                  packet?.operation.kind === "observation-store" ||
+                  packet?.operation.kind === "observation-store-restore"
+                ? observationStoreStack
+                : provisioningStack,
             (compiled) =>
               Effect.gen(function* () {
                 if (envelope) {
@@ -146,21 +162,44 @@ if (import.meta.main && process.argv[2] === "digest") {
                 const receipt = planRequest
                   ? {
                       operation:
-                        planRequest.kind === "observation-store-restore"
+                        planRequest.kind === "release-settlement"
                           ? {
-                              kind: "observation-store-restore" as const,
-                              manifest: yield* planJournalRestore(
+                              kind: "release-settlement" as const,
+                              manifest: yield* planReleaseSettlement(
                                 compiled,
                                 planRequest,
                                 writer,
-                                adoptionProof!,
                                 process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                                {
+                                  directory,
+                                  runtimeRead: (call) =>
+                                    appendFile(
+                                      resolve(directory, "runtime-reads.jsonl"),
+                                      JSON.stringify(call) + "\n",
+                                      { mode: 0o600, flush: true },
+                                    ),
+                                },
                               ),
                             }
-                          : {
-                              kind: "observation-store" as const,
-                              manifest: yield* planObservationStore(compiled, planRequest, writer),
-                            },
+                          : planRequest.kind === "observation-store-restore"
+                            ? {
+                                kind: "observation-store-restore" as const,
+                                manifest: yield* planJournalRestore(
+                                  compiled,
+                                  planRequest,
+                                  writer,
+                                  adoptionProof!,
+                                  process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                                ),
+                              }
+                            : {
+                                kind: "observation-store" as const,
+                                manifest: yield* planObservationStore(
+                                  compiled,
+                                  planRequest,
+                                  writer,
+                                ),
+                              },
                     }
                   : mode === "apply"
                     ? yield* runDeclaredProvisioning(
@@ -169,7 +208,24 @@ if (import.meta.main && process.argv[2] === "digest") {
                         writer,
                         process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
                         process.env.POOL_DEPLOYMENT_KEY ?? "",
-                        { adoptionProof },
+                        {
+                          adoptionProof,
+                          settlement: {
+                            directory,
+                            runtimeRead: (call) =>
+                              appendFile(
+                                resolve(directory, "runtime-reads.jsonl"),
+                                JSON.stringify(call) + "\n",
+                                { mode: 0o600, flush: true },
+                              ),
+                            intent: (intent) =>
+                              writeFile(
+                                resolve(directory, "settlement-intent.json"),
+                                JSON.stringify(intent, null, 2),
+                                { mode: 0o600, flush: true },
+                              ),
+                          },
+                        },
                       )
                     : yield* inspectDeclaredProvisioning(
                         compiled,

@@ -2,6 +2,7 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { Effect } from "effect";
 import * as HttpClient from "effect/http/HttpClient";
+import { Credentials, formatHeaders } from "@distilled.cloud/cloudflare/Credentials";
 import { uploadResponseDiagnostic, withUploadFailure } from "./upload-failure.ts";
 import { BarrierRefusal, type FrozenWorker } from "./manifest.ts";
 import { uploadRequest } from "./version-request.ts";
@@ -59,16 +60,21 @@ export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptNam
 export const uploadVersion = (worker: FrozenWorker) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
+    const credentials = yield* yield* Credentials;
+    const secrets = Object.values(formatHeaders(credentials)).flatMap((value) => [
+      value,
+      value.replace(/^(?:Bearer|Basic)\s+/iu, ""),
+    ]);
     let diagnostic: ReturnType<typeof uploadResponseDiagnostic> | undefined;
     const observed = client.pipe(
       HttpClient.tap((response) => {
-        diagnostic = uploadResponseDiagnostic(response.status, undefined);
+        diagnostic = uploadResponseDiagnostic(response.status, undefined, secrets);
         if (response.status < 400) return Effect.void;
-        return response.json.pipe(
+        return response.text.pipe(
           Effect.match({
             onFailure: () => {},
             onSuccess: (body) => {
-              diagnostic = uploadResponseDiagnostic(response.status, body);
+              diagnostic = uploadResponseDiagnostic(response.status, body, secrets);
             },
           }),
         );

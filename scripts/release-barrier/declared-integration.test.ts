@@ -25,7 +25,7 @@ test("SQLite expansion preserves frozen bucket and D1 ownership through one prep
   assert.equal(proof.events.filter((event) => event === "expand").length, 1);
   assert.equal(proof.events.filter((event) => event === "create-d1").length, 1);
   assert.ok(proof.events.indexOf("expand") < proof.events.indexOf("upload"));
-  assert.equal(proof.events.filter((event) => event === "upload").length, 2);
+  assert.equal(proof.events.filter((event) => event === "upload").length, 4);
   assert.ok(proof.events.lastIndexOf("upload") < proof.events.indexOf("admitted"));
   assert.ok(proof.events.indexOf("admitted") < proof.events.indexOf("create-d1"));
   assert.ok(proof.events.indexOf("create-d1") < proof.events.indexOf("activate"));

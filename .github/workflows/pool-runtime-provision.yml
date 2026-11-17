@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Plan store adoption, inspect the retained operation, or apply the reviewed packet
+        description: Plan, inspect, or apply the reviewed retained-state operation
         required: true
         default: inspect
         type: choice
         options: [plan, inspect, apply]
       packet:
-        description: Read-only store plan request, or reviewed provisioning packet with checksum and expiring GO
+        description: Read-only plan request, or reviewed operation packet with checksum and expiring GO
         required: true
         type: string
 
@@ -43,7 +43,7 @@ jobs:
           bun-version: 1.4.2
       - name: Prepare the pinned SDK
         run: npm run prepare:upstream
-      - name: Provision only the reviewed source declaration
+      - name: Apply only the reviewed source operation
         run: bun scripts/release-barrier/provisioning-entry.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}

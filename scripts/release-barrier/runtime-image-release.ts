@@ -31,6 +31,12 @@ import {
 } from "./runtime-release-readiness.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import {
+  baselineControllerHealth,
+  readBaselineController,
+  readBaselineControllerKey,
+} from "./baseline-controller.ts";
+import { controllerForwardHealth } from "./controller-forward-health.ts";
 
 const provideCompiled = <A, E, R>(compiled: CompiledStack, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -73,7 +79,31 @@ export const releaseRuntimeImage = <A, StackError>(
         if (record?.abort)
           throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
-          yield* resumeForwardRelease(compiled, { directory: options.directory });
+          const baselineController = yield* readBaselineController(compiled);
+          const key = yield* readBaselineControllerKey(compiled);
+          yield* resumeForwardRelease(compiled, {
+            directory: options.directory,
+            runtime: (container, _observed, observation) =>
+              controllerForwardHealth({
+                baseline: baselineController,
+                container,
+                observation,
+                baselineHealth: () =>
+                  baselineControllerHealth({ baseline: baselineController, key }),
+                candidateReady: async () => {
+                  throw new BarrierRefusal(
+                    "runtime-release-controller-not-installed",
+                    "PoolWorker",
+                  );
+                },
+                candidateHealth: async () => {
+                  throw new BarrierRefusal(
+                    "runtime-release-controller-not-installed",
+                    "PoolWorker",
+                  );
+                },
+              }),
+          });
           const baseline = yield* runtimeReleaseState(compiled);
           const desired = yield* runtimeReleaseDesired(compiled);
           record = {
@@ -81,6 +111,7 @@ export const releaseRuntimeImage = <A, StackError>(
             candidate: options.candidate,
             complete: false,
             baseline,
+            baselineController,
             desiredInput: desired.imageInput,
             desiredConfiguration: desired.configuration,
             bootstrap: {},
@@ -151,9 +182,25 @@ export const releaseRuntimeImage = <A, StackError>(
       evaluate(plan(), (compiled) =>
         Effect.gen(function* () {
           const client = yield* clientFor();
+          const baselineController =
+            record.baselineController ?? (yield* readBaselineController(compiled));
           const forward = yield* resumeForwardRelease(compiled, {
             directory: options.directory,
-            runtime: () => client.health(),
+            runtime: (container, _observed, observation) =>
+              name === "controller"
+                ? controllerForwardHealth({
+                    baseline: baselineController,
+                    container,
+                    observation,
+                    baselineHealth: () =>
+                      baselineControllerHealth({
+                        baseline: baselineController,
+                        key: record.baseline.deploymentKey,
+                      }),
+                    candidateReady: () => releaseCodeReady(record.baseline, code),
+                    candidateHealth: () => client.health(),
+                  })
+                : client.health(),
           });
           yield* deployStack(compiled, {
             ...options,
