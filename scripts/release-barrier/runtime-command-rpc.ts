@@ -24,12 +24,14 @@ export type RuntimeCommandCall = (
   mutation?: boolean,
   signal?: AbortSignal,
   dispatched?: (requestedAt: number) => void,
+  received?: (receivedAt: number) => void,
 ) => Promise<unknown>;
 
 /**
  * One send only. An unknown response must be recovered through the retained operation's read path.
  * `dispatched` receives the monotonic time just before the request is handed to the already-open
- * bridge, so a caller bounding a remote lease never counts bridge setup against it.
+ * bridge and `received` the time its 200 body was read, before the bridge closes. A caller bounding
+ * a remote lease between the two never counts bridge setup or close against it.
  */
 export async function sendRuntimeCommand(
   command: RuntimeHandoffCommand,
@@ -38,6 +40,7 @@ export async function sendRuntimeCommand(
   assertCurrent: () => void,
   signal?: AbortSignal,
   dispatched?: (requestedAt: number) => void,
+  received?: (receivedAt: number) => void,
 ) {
   const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, command);
   const bridge = await openPoolOperations(target);
@@ -82,7 +85,9 @@ export async function sendRuntimeCommand(
         ],
       });
     }
-    return (await response.json()) as unknown;
+    const body: unknown = await response.json();
+    received?.(performance.now());
+    return body;
   } finally {
     await bridge.close();
   }
