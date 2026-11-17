@@ -78,6 +78,8 @@
     ".upstream/packages/sdk/src/contracts/tools.ts",
     ".upstream/packages/sdk/src/implementation/create.ts",
     ".upstream/packages/sdk/src/implementation/tool-search-store.ts",
-    ".upstream/packages/sdk/src/implementation/tools.ts"
-  ]
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/e2e/npm-packages.json"
+  ],
+  "fixture": "published-frameworks"
 }

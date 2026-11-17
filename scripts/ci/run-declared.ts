@@ -115,12 +115,18 @@ async function runAttempt(
     join(options.root, ".upstream/.local/e2e"),
   ];
   const before = await runNames(roots);
+  // Locked npm frameworks are test-only registry entries; the wrapper restores product assets after.
+  const wrapper =
+    run.entry.fixture === "published-frameworks"
+      ? [join(options.root, "scripts/ci/with-published-frameworks.ts"), "--", "bun"]
+      : [];
   const started = Date.now();
   const exit = options.signal?.aborted
     ? { code: null, stopped: "cancelled" as const }
     : await runBounded(
-        "bun",
+        wrapper.length > 0 ? "node" : "bun",
         [
+          ...wrapper,
           "run",
           "e2e:" + run.target,
           "--test-name",
