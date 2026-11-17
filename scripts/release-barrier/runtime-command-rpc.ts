@@ -29,7 +29,7 @@ export type RuntimeCommandCall = (
 
 /**
  * One send only. An unknown response must be recovered through the retained operation's read path.
- * `dispatched` receives the monotonic time just before the request is handed to the already-open
+ * `dispatched` receives the monotonic time just before the request is built for the already-open
  * bridge and `received` the time its 200 body was read, before the bridge closes. A caller bounding
  * a remote lease between the two never counts bridge setup or close against it.
  */
@@ -46,16 +46,17 @@ export async function sendRuntimeCommand(
   const bridge = await openPoolOperations(target);
   try {
     assertCurrent();
-    const request = new Request(`http://pool-operations${runtimeHandoffPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ envelope }),
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-        : AbortSignal.timeout(15_000),
-    });
     dispatched?.(performance.now());
-    const response = await bridge.service.fetch(request);
+    const response = await bridge.service.fetch(
+      new Request(`http://pool-operations${runtimeHandoffPath}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ envelope }),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000),
+      }),
+    );
     if (response.status !== 200) {
       const detail = await refusalDetail(response);
       const providerCause =
