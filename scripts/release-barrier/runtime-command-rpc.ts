@@ -25,28 +25,33 @@ export type RuntimeCommandCall = (
   signal?: AbortSignal,
 ) => Promise<unknown>;
 
-/** One send only. An unknown response must be recovered through the retained operation's read path. */
+/**
+ * One send only. An unknown response must be recovered through the retained operation's read path.
+ * `dispatched` receives the monotonic time the request left over the already-open bridge, so a
+ * caller bounding a remote lease never counts bridge setup against it.
+ */
 export async function sendRuntimeCommand(
   command: RuntimeHandoffCommand,
   signingKey: string,
   target: PoolOperationsTarget,
   assertCurrent: () => void,
   signal?: AbortSignal,
+  dispatched?: (requestedAt: number) => void,
 ) {
   const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, command);
   const bridge = await openPoolOperations(target);
   try {
     assertCurrent();
-    const response = await bridge.service.fetch(
-      new Request(`http://pool-operations${runtimeHandoffPath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ envelope }),
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-          : AbortSignal.timeout(15_000),
-      }),
-    );
+    const request = new Request(`http://pool-operations${runtimeHandoffPath}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ envelope }),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+        : AbortSignal.timeout(15_000),
+    });
+    dispatched?.(performance.now());
+    const response = await bridge.service.fetch(request);
     if (response.status !== 200) {
       const detail = await refusalDetail(response);
       const providerCause =

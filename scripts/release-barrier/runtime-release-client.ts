@@ -97,7 +97,12 @@ export const runtimeReleaseClient = (input: {
     const { state, code, writer } = input;
     const target = input.target ?? state.target;
     const signingKey = state.deploymentKey;
-    const call = (action: RuntimeCommandAction, mutation = false, signal?: AbortSignal) => {
+    const call = (
+      action: RuntimeCommandAction,
+      mutation = false,
+      signal?: AbortSignal,
+      dispatched?: (requestedAt: number) => void,
+    ) => {
       const send = () => {
         writer.assert();
         const at = Date.now();
@@ -114,6 +119,7 @@ export const runtimeReleaseClient = (input: {
             decodeRuntimeHandoffCommand(command);
           },
           signal,
+          dispatched,
         );
       };
       return mutation ? writer.exclusive(send) : send();
@@ -176,12 +182,17 @@ export const runtimeReleaseClient = (input: {
       target,
     });
     const health = async () => {
-      const start = performance.now();
+      // The lease runs from dispatch over the open bridge, as the controller's own slot driver
+      // bounds it; bridge setup from a CI runner alone can outlast the whole lease.
+      let requestedAt = Number.POSITIVE_INFINITY;
+      const reply = await call({ action: "active-health" }, false, undefined, (at) => {
+        requestedAt = at;
+      });
       const value = result(
         Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number }),
-        await call({ action: "active-health" }),
+        reply,
       );
-      if (value.leaseMs <= performance.now() - start)
+      if (!(requestedAt + value.leaseMs > performance.now()))
         throw new BarrierRefusal("runtime-release-health-expired", "PoolWorker");
       const snapshot = await inspect();
       sameProvisioningValue(
