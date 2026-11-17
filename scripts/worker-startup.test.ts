@@ -227,6 +227,18 @@ test("Api and McpServer fail at their tighter startup budget", () => {
       ),
     );
   }
+  // A lazy Worker's application, measured on its first event, keeps that Worker's budget.
+  const firstEvent = {
+    name: "Api (first event)",
+    bytes: 1,
+    gzipBytes: 1,
+    startupMs: [workerStartupBudgetMs.Api + 1],
+    inconclusive: 0,
+  };
+  assert.match(
+    violations(firstEvent).join("\n"),
+    new RegExp(`the budget is ${workerStartupBudgetMs.Api} ms`),
+  );
   // Workers without a tighter budget keep the general one.
   const router = { name: "Router", bytes: 1, gzipBytes: 1, startupMs: [350], inconclusive: 0 };
   assert.deepEqual(violations(router), []);

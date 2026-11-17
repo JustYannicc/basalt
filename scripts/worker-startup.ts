@@ -36,10 +36,14 @@ export const workerStartupBudgetMs = { Api: 325, McpServer: 300 } as const satis
   string,
   number
 >;
-export const startupBudgetFor = (name: string): number =>
-  Object.hasOwn(workerStartupBudgetMs, name)
-    ? workerStartupBudgetMs[name as keyof typeof workerStartupBudgetMs]
+const firstEventSuffix = " (first event)";
+// A lazy Worker's first-event measurement is its application, so it keeps that Worker's budget.
+export const startupBudgetFor = (name: string): number => {
+  const worker = name.endsWith(firstEventSuffix) ? name.slice(0, -firstEventSuffix.length) : name;
+  return Object.hasOwn(workerStartupBudgetMs, worker)
+    ? workerStartupBudgetMs[worker as keyof typeof workerStartupBudgetMs]
     : startupBudgetMs;
+};
 /** Cloudflare's size limit, uncompressed; there is no compressed limit. */
 export const sizeLimitBytes = 64 * 1024 * 1024;
 /** Fail at half of it. Upstream's own per-Worker upload budgets are far tighter. */
@@ -245,7 +249,7 @@ export const measure = async (
   }
   const files = [...contents.values()];
   return {
-    name: options.main ? `${bundle.name} (first event)` : bundle.name,
+    name: options.main ? `${bundle.name}${firstEventSuffix}` : bundle.name,
     bytes: files.reduce((total, file) => total + file.length, 0),
     gzipBytes: files.reduce((total, file) => total + gzipSync(file, { level: 9 }).length, 0),
     startupMs,
