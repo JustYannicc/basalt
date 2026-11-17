@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { ConfigProvider, Effect, Schema } from "effect";
 import { fleetWorkerFixture } from "../../pool-tests/runtime-fleet-worker.ts";
 import { runtimeApplicationFixture } from "../../pool-tests/runtime-provider-fixture.ts";
@@ -14,7 +15,7 @@ import { runtimeReleaseClient } from "../runtime-release-client.ts";
 import { ordinaryReleaseWriter } from "../runtime-release-writer.ts";
 import { decodeApplication } from "../container-observation.ts";
 import type { ReleasePromotionAttempt } from "../runtime-release-promotion.ts";
-import { SlotRefused } from "../../../src/pool/runtime-slots/contract.ts";
+import { SlotIdentity, SlotRefused } from "../../../src/pool/runtime-slots/contract.ts";
 
 export async function runtimeReleaseClientFixture(
   fault?:
@@ -38,6 +39,12 @@ export async function runtimeReleaseClientFixture(
   let root = f.worker,
     fail = fault;
   const commands: string[] = [];
+  // CI-shaped bridge timing: setup runs before dispatch, healthReply after the controller answers.
+  const bridge: {
+    setupMs: number;
+    healthReplyMs: number;
+    healthReply?: (result: { identity: SlotIdentity; leaseMs: number }) => unknown;
+  } = { setupMs: 0, healthReplyMs: 0 };
   let closes = 0;
   let promotion: ReleasePromotionAttempt | undefined;
   const attempts: ReleasePromotionAttempt[] = [];
@@ -125,49 +132,61 @@ export async function runtimeReleaseClientFixture(
       desiredConfiguration: runtimeConfiguration(f.candidate.env),
       target: {
         ...state.target,
-        connect: async () => ({
-          env: {
-            POOL_OPERATIONS: {
-              fetch: async (request) => {
-                const body = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
-                  await request.clone().json(),
-                );
-                const command = decodeRuntimeHandoffCommand(
-                  await openEnvelope(
-                    state.deploymentKey,
-                    runtimeHandoffCommandPrefix,
-                    body.envelope,
-                  ),
-                );
-                commands.push(command.action);
-                if (command.action === "candidate-probe") assert.equal(promotion?.probeSent, true);
-                if (command.action === "promote") assert.equal(promotion?.promotionSent, true);
-                if (fail === `${command.action}-before`) {
-                  fail = undefined;
-                  throw new Error("synthetic unknown send before receipt");
-                }
-                if (fail === "promote-refuse" && command.action === "promote") {
-                  fail = undefined;
-                  let health = 0;
-                  const runtime = [...f.instances.values()][0]!.fixture;
-                  runtime.hooks.health = async () => {
-                    // The first health belongs to attestation; refusal follows the durable promotion intent.
-                    if (++health === 2) throw new SlotRefused("unhealthy");
-                  };
-                }
-                const response = await root.runtimeHandoff(request);
-                if (fail === command.action) {
-                  fail = undefined;
-                  throw new Error("synthetic lost committed reply");
-                }
-                return response;
+        connect: async () => {
+          await delay(bridge.setupMs);
+          return {
+            env: {
+              POOL_OPERATIONS: {
+                fetch: async (request) => {
+                  const body = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
+                    await request.clone().json(),
+                  );
+                  const command = decodeRuntimeHandoffCommand(
+                    await openEnvelope(
+                      state.deploymentKey,
+                      runtimeHandoffCommandPrefix,
+                      body.envelope,
+                    ),
+                  );
+                  commands.push(command.action);
+                  if (command.action === "candidate-probe")
+                    assert.equal(promotion?.probeSent, true);
+                  if (command.action === "promote") assert.equal(promotion?.promotionSent, true);
+                  if (fail === `${command.action}-before`) {
+                    fail = undefined;
+                    throw new Error("synthetic unknown send before receipt");
+                  }
+                  if (fail === "promote-refuse" && command.action === "promote") {
+                    fail = undefined;
+                    let health = 0;
+                    const runtime = [...f.instances.values()][0]!.fixture;
+                    runtime.hooks.health = async () => {
+                      // The first health belongs to attestation; refusal follows the durable promotion intent.
+                      if (++health === 2) throw new SlotRefused("unhealthy");
+                    };
+                  }
+                  const response = await root.runtimeHandoff(request);
+                  if (fail === command.action) {
+                    fail = undefined;
+                    throw new Error("synthetic lost committed reply");
+                  }
+                  if (command.action !== "active-health") return response;
+                  await delay(bridge.healthReplyMs);
+                  if (!bridge.healthReply || response.status !== 200) return response;
+                  const reply = Schema.decodeUnknownSync(
+                    Schema.Struct({
+                      result: Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number }),
+                    }),
+                  )(await response.json());
+                  return Response.json({ result: bridge.healthReply(reply.result) });
+                },
               },
             },
-          },
-          dispose: async () => {
-            closes++;
-          },
-        }),
+            dispose: async () => {
+              closes++;
+            },
+          };
+        },
       },
     }),
   );
@@ -177,6 +196,7 @@ export async function runtimeReleaseClientFixture(
     state,
     client,
     commands,
+    bridge,
     attempts,
     closes: () => closes,
     reconstructRoot: () => {
