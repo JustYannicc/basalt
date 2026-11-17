@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { retryGitHubReads } from "../releases/github-retry.ts";
 
 export type MainCandidate = { head: string };
 
@@ -31,7 +32,8 @@ class MainHistory {
   constructor(repository: string, token: string, fetcher: MainCandidateFetch) {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
       throw new Error("GITHUB_REPOSITORY must identify the repository");
-    this.#get = (path) => json(fetcher, token, `https://api.github.com/repos/${repository}${path}`);
+    const github = retryGitHubReads(fetcher);
+    this.#get = (path) => json(github, token, `https://api.github.com/repos/${repository}${path}`);
   }
 
   async mainHead(): Promise<string> {

@@ -1,0 +1,43 @@
+diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/src/implementation/failure-detail.ts
+--- a/packages/apps/src/implementation/failure-detail.ts
++++ b/packages/apps/src/implementation/failure-detail.ts
+@@ -48,15 +48,21 @@ const cacheMessages = {
+ } satisfies Record<CacheError["reason"], string>;
+ 
+ const count = (value: number) => value.toLocaleString("en-US");
+-/** Fixed text per exceeded limit, with the limit's value. */
+-const cacheLimitMessages = {
+-  keyBytes: `A cache key exceeded the app cache's limit of ${count(cacheLimits.keyBytes)} bytes per key.`,
+-  entryBytes: `A cache value exceeded the app cache's limit of ${count(cacheLimits.entryBytes)} bytes per entry.`,
+-  batchBytes: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchBytes)} bytes per batch.`,
+-  batchEntries: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchEntries)} entries per batch.`,
+-  totalBytes: `The app cache is full: it holds at most ${count(cacheLimits.totalBytes)} bytes.`,
+-  totalEntries: `The app cache is full: it holds at most ${count(cacheLimits.totalEntries)} entries.`,
+-} satisfies Record<NonNullable<CacheError["limit"]>, string>;
++/**
++ * Fixed text per exceeded limit, with the limit's value. Built on use: the first number format
++ * initializes ICU, which otherwise costs several ms of startup CPU in every Worker importing this.
++ */
++const cacheLimitMessage = (limit: NonNullable<CacheError["limit"]>) => {
++  const messages = {
++    keyBytes: `A cache key exceeded the app cache's limit of ${count(cacheLimits.keyBytes)} bytes per key.`,
++    entryBytes: `A cache value exceeded the app cache's limit of ${count(cacheLimits.entryBytes)} bytes per entry.`,
++    batchBytes: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchBytes)} bytes per batch.`,
++    batchEntries: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchEntries)} entries per batch.`,
++    totalBytes: `The app cache is full: it holds at most ${count(cacheLimits.totalBytes)} bytes.`,
++    totalEntries: `The app cache is full: it holds at most ${count(cacheLimits.totalEntries)} entries.`,
++  } satisfies Record<NonNullable<CacheError["limit"]>, string>;
++  return messages[limit];
++};
+ 
+ /** What the client was doing when an MCP server failed. */
+ const mcpStages = {
+@@ -307,7 +313,7 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
+       errorName: "CacheError",
+       code: error.reason,
+       message:
+-        error.limit === undefined ? cacheMessages[error.reason] : cacheLimitMessages[error.limit],
++        error.limit === undefined ? cacheMessages[error.reason] : cacheLimitMessage(error.limit),
+     };
+   if (Schema.is(OpenapiError)(error))
+     return {

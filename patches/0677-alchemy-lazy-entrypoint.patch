@@ -1,0 +1,217 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -7757,3 +7757,200 @@ index 741f7ce..ff8ccc8 100644
+  }
+  declare const WorkerUploadHook_base: Context.ServiceClass<WorkerUploadHook, "alchemy/Cloudflare/Workers/WorkerUploadHook", {
+    readonly capture: (upload: PreparedWorkerUpload) => Effect.Effect<Worker["Attributes"], unknown>;
++diff --git a/src/Runtime.ts b/src/Runtime.ts
++index de8dc16..16f9a05 100644
++--- a/src/Runtime.ts
+++++ b/src/Runtime.ts
++@@ -12,6 +12,17 @@ import * as Layer from "effect/Layer";
++ import { isRedactedMarker, sanitizeKey } from "./RuntimeContext.ts";
++ import { asEffect } from "./Util/types.ts";
++ 
+++/** Marks an entrypoint whose module loads on the first build instead of at isolate startup. */
+++const lazyLoad = Symbol.for("alchemy/Runtime/lazyEntrypoint");
+++
+++/**
+++ * An entrypoint that imports its module on first use. Cloudflare's 1 s startup limit covers only the
+++ * global scope's CPU, so a Worker whose import graph runs close to it defers that work to the first
+++ * event. Every bridge in the isolate shares this one object, so the module loads once. A module that
+++ * throws while evaluating fails every event in that isolate, as ES modules keep the error.
+++ */
+++export const lazyEntrypoint = (load: () => Promise<{ default: unknown }>) => ({ [lazyLoad]: load });
+++
++ /**
++  * Resolve the user's default-export entrypoint into a `Layer` for the
++  * bundled runtime.
++@@ -30,6 +41,14 @@ export const makeEntrypointLayer = (
++   tag: any,
++   entrypoint: any,
++ ): Layer.Layer<any> => {
+++  const load = entrypoint?.[lazyLoad];
+++  if (typeof load === "function") {
+++    return Layer.unwrap(
+++      Effect.map(Effect.promise(load), (module: { default: unknown }) =>
+++        makeEntrypointLayer(tag, module.default),
+++      ),
+++    );
+++  }
++   if (typeof entrypoint?.build === "function") {
++     return entrypoint;
++   }
++diff --git a/lib/Runtime.js b/lib/Runtime.js
++index c51e564..e1bca95 100644
++--- a/lib/Runtime.js
+++++ b/lib/Runtime.js
++@@ -10,6 +10,15 @@ import * as Effect from "effect/Effect";
++ import * as Layer from "effect/Layer";
++ import { isRedactedMarker, sanitizeKey } from "./RuntimeContext.js";
++ import { asEffect } from "./Util/types.js";
+++/** Marks an entrypoint whose module loads on the first build instead of at isolate startup. */
+++const lazyLoad = Symbol.for("alchemy/Runtime/lazyEntrypoint");
+++/**
+++ * An entrypoint that imports its module on first use. Cloudflare's 1 s startup limit covers only the
+++ * global scope's CPU, so a Worker whose import graph runs close to it defers that work to the first
+++ * event. Every bridge in the isolate shares this one object, so the module loads once. A module that
+++ * throws while evaluating fails every event in that isolate, as ES modules keep the error.
+++ */
+++export const lazyEntrypoint = (load) => ({ [lazyLoad]: load });
++ /**
++  * Resolve the user's default-export entrypoint into a `Layer` for the
++  * bundled runtime.
++@@ -25,6 +34,10 @@ import { asEffect } from "./Util/types.js";
++  * every deployed worker/lambda).
++  */
++ export const makeEntrypointLayer = (tag, entrypoint) => {
+++    const load = entrypoint?.[lazyLoad];
+++    if (typeof load === "function") {
+++        return Layer.unwrap(Effect.map(Effect.promise(load), (module) => makeEntrypointLayer(tag, module.default)));
+++    }
++     if (typeof entrypoint?.build === "function") {
++         return entrypoint;
++     }
++diff --git a/lib/Runtime.d.ts b/lib/Runtime.d.ts
++index 96132bc..709db93 100644
++--- a/lib/Runtime.d.ts
+++++ b/lib/Runtime.d.ts
++@@ -7,6 +7,14 @@
++  */
++ import * as ConfigProvider from "effect/ConfigProvider";
++ import * as Layer from "effect/Layer";
+++/** An entrypoint that imports its module on first use instead of at isolate startup. */
+++export declare const lazyEntrypoint: (load: () => Promise<{
+++    default: unknown;
+++}>) => {
+++    [x: symbol]: () => Promise<{
+++        default: unknown;
+++    }>;
+++};
++ /**
++  * Resolve the user's default-export entrypoint into a `Layer` for the
++  * bundled runtime.
++diff --git a/src/Cloudflare/Workers/Sources/Rolldown.ts b/src/Cloudflare/Workers/Sources/Rolldown.ts
++index ce7a844..1213fa5 100644
++--- a/src/Cloudflare/Workers/Sources/Rolldown.ts
+++++ b/src/Cloudflare/Workers/Sources/Rolldown.ts
++@@ -34,6 +34,14 @@ export interface WorkerBuildOptions extends Bundle.BundleConfig {
++    * Workers must keep their entry exports, so never pass `false`.
++    */
++   preserveEntrySignatures?: rolldown.InputOptions["preserveEntrySignatures"];
+++  /**
+++   * Import the main module on the Worker's first event instead of at isolate startup. The
+++   * generated entry keeps the same exports; its Durable Object and Workflow bridges already build
+++   * their implementation on first use. A Worker whose global scope runs close to Cloudflare's
+++   * startup CPU limit moves that work into its first request; a module that throws while
+++   * evaluating then fails requests instead of the upload.
+++   */
+++  lazyEntrypoint?: boolean;
++ }
++ 
++ export interface WorkerBundleOptions {
++@@ -207,7 +215,9 @@ export const WorkerBundle = Effect.gen(function* () {
++         options.entry.kind === "effect"
++           ? [
++               virtualEntryPlugin(
++-                makeEffectVirtualEntry(options.entry.exports, options.stack),
+++                makeEffectVirtualEntry(options.entry.exports, options.stack, {
+++                  lazy: options.extraOptions?.lazyEntrypoint === true,
+++                }),
++               ),
++             ]
++           : undefined,
++@@ -280,6 +290,7 @@ export const WorkerBundle = Effect.gen(function* () {
++ export const makeEffectVirtualEntry = (
++   exports: Record<string, WorkerExport>,
++   stack: { name: string; stage: string },
+++  { lazy = false }: { lazy?: boolean } = {},
++ ) => {
++   const doClasses: string[] = [];
++   const wfClasses: string[] = [];
++@@ -301,9 +312,9 @@ import * as Effect from "effect/Effect";
++ 
++ import { env, DurableObject, WorkerEntrypoint${hasWfClasses ? ", WorkflowEntrypoint" : ""} } from "cloudflare:workers";
++ import { makeDurableObjectBridge, makeWorkerBridge${hasWfClasses ? ", makeWorkflowBridge" : ""}${hasMigrations ? ", withSqlMigrations" : ""} } from "alchemy/Cloudflare/Bridge";
++-import { makeEntrypointLayer } from "alchemy/Runtime";
+++import { makeEntrypointLayer${lazy ? ", lazyEntrypoint" : ""} } from "alchemy/Runtime";
++ 
++-import entrypoint from ${JSON.stringify(importPath)};
+++${lazy ? `const entrypoint = lazyEntrypoint(() => import(${JSON.stringify(importPath)}));` : `import entrypoint from ${JSON.stringify(importPath)};`}
++ 
++ const meta = {
++   entrypoint: ${hasMigrations ? `withSqlMigrations(entrypoint, ${JSON.stringify(migrations)})` : "entrypoint"},
++diff --git a/lib/Cloudflare/Workers/Sources/Rolldown.js b/lib/Cloudflare/Workers/Sources/Rolldown.js
++index 2792c01..996bf6b 100644
++--- a/lib/Cloudflare/Workers/Sources/Rolldown.js
+++++ b/lib/Cloudflare/Workers/Sources/Rolldown.js
++@@ -131,7 +131,9 @@ export const WorkerBundle = Effect.gen(function* () {
++                 workerModules,
++                 options.entry.kind === "effect"
++                     ? [
++-                        virtualEntryPlugin(makeEffectVirtualEntry(options.entry.exports, options.stack)),
+++                        virtualEntryPlugin(makeEffectVirtualEntry(options.entry.exports, options.stack, {
+++                            lazy: options.extraOptions?.lazyEntrypoint === true,
+++                        })),
++                     ]
++                     : undefined,
++             ],
++@@ -171,7 +173,7 @@ export const WorkerBundle = Effect.gen(function* () {
++         watch: flow(makeOptions, Stream.fromEffect, Stream.flatMap((resolved) => Bundle.watch(resolved.inputOptions, resolved.outputOptions, resolved.extraOptions))),
++     };
++ });
++-export const makeEffectVirtualEntry = (exports, stack) => {
+++export const makeEffectVirtualEntry = (exports, stack, { lazy = false } = {}) => {
++     const doClasses = [];
++     const wfClasses = [];
++     const migrations = {};
++@@ -194,9 +196,9 @@ import * as Effect from "effect/Effect";
++ 
++ import { env, DurableObject, WorkerEntrypoint${hasWfClasses ? ", WorkflowEntrypoint" : ""} } from "cloudflare:workers";
++ import { makeDurableObjectBridge, makeWorkerBridge${hasWfClasses ? ", makeWorkflowBridge" : ""}${hasMigrations ? ", withSqlMigrations" : ""} } from "alchemy/Cloudflare/Bridge";
++-import { makeEntrypointLayer } from "alchemy/Runtime";
+++import { makeEntrypointLayer${lazy ? ", lazyEntrypoint" : ""} } from "alchemy/Runtime";
++ 
++-import entrypoint from ${JSON.stringify(importPath)};
+++${lazy ? `const entrypoint = lazyEntrypoint(() => import(${JSON.stringify(importPath)}));` : `import entrypoint from ${JSON.stringify(importPath)};`}
++ 
++ const meta = {
++   entrypoint: ${hasMigrations ? `withSqlMigrations(entrypoint, ${JSON.stringify(migrations)})` : "entrypoint"},
++diff --git a/lib/Cloudflare/Workers/Sources/Rolldown.d.ts b/lib/Cloudflare/Workers/Sources/Rolldown.d.ts
++index 3cf80d2..64ca6b2 100644
++--- a/lib/Cloudflare/Workers/Sources/Rolldown.d.ts
+++++ b/lib/Cloudflare/Workers/Sources/Rolldown.d.ts
++@@ -23,6 +23,10 @@ export interface WorkerBuildOptions extends Bundle.BundleConfig {
++      * Workers must keep their entry exports, so never pass `false`.
++      */
++     preserveEntrySignatures?: rolldown.InputOptions["preserveEntrySignatures"];
+++    /**
+++     * Import the main module on the Worker's first event instead of at isolate startup.
+++     */
+++    lazyEntrypoint?: boolean;
++ }
++ export interface WorkerBundleOptions {
++     id: string;
++@@ -50,6 +54,8 @@ export declare const WorkerBundle: Effect.Effect<{
++ export declare const makeEffectVirtualEntry: (exports: Record<string, WorkerExport>, stack: {
++     name: string;
++     stage: string;
+++}, { lazy }?: {
+++    lazy?: boolean;
++ }) => (importPath: string) => string;
++ /**
++  * The default source provider: bundle `props.main` with rolldown.
+diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+--- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
++++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+@@ -164,6 +164,9 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
+   worker === "compiler"
+     ? { output: { plugins: [uploadedModules(worker)] } }
+     : {
++        // Api's import graph runs close to Cloudflare's startup CPU limit. Importing it on the first
++        // event keeps the global scope small; the Durable Object and Workflow bridges are unchanged.
++        ...(worker === "api" ? { lazyEntrypoint: true } : {}),
+         ...(worker === "oauth-wire"
+           ? {}
+           : {

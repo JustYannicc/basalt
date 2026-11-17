@@ -1,0 +1,2277 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Exa operations (trimmed from Exa's public OpenAPI document)",
+    "version": "2.0.0",
+    "x-source": {
+      "url": "https://api.exa.ai/openapi.json",
+      "captured": "2026-11-17",
+      "sha256": "444a89f0835588dbb13849d3da9a01e39de6181dc2590912f435eea0b393e38e",
+      "kept": "method, path, operationId, servers, security and media types; schemas and query parameters are dropped"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.exa.ai"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "name": "x-api-key",
+        "in": "header",
+        "description": "Pass your Exa API key in the x-api-key header. You can also authenticate with Authorization: Bearer <key>."
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Pass your Exa API key in the x-api-key header. You can also authenticate with Authorization: Bearer <key>."
+      }
+    }
+  },
+  "security": [
+    {
+      "apiKey": []
+    },
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/search": {
+      "post": {
+        "operationId": "search",
+        "summary": "Search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contents": {
+      "post": {
+        "operationId": "getContents",
+        "summary": "Contents",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/answer": {
+      "post": {
+        "operationId": "answer",
+        "summary": "Answer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/findSimilar": {
+      "post": {
+        "operationId": "findSimilar",
+        "summary": "Find similar links",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitors": {
+      "post": {
+        "operationId": "createMonitor",
+        "summary": "Create a monitor",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listMonitors",
+        "summary": "List monitors",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitors/batch": {
+      "post": {
+        "operationId": "batchMonitors",
+        "summary": "Batch action on monitors",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitors/{id}": {
+      "get": {
+        "operationId": "getMonitor",
+        "summary": "Get a monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateMonitor",
+        "summary": "Update a monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteMonitor",
+        "summary": "Delete a monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitors/{id}/trigger": {
+      "post": {
+        "operationId": "triggerMonitor",
+        "summary": "Trigger a monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitors/{id}/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "summary": "List runs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitors/{id}/runs/{runId}": {
+      "get": {
+        "operationId": "getRun",
+        "summary": "Get a run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/runs": {
+      "post": {
+        "operationId": "createAgentRun",
+        "summary": "Create a run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listAgentRuns",
+        "summary": "List runs",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/runs/{id}": {
+      "get": {
+        "operationId": "getAgentRun",
+        "summary": "Get a run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAgentRun",
+        "summary": "Delete a run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/runs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelAgentRun",
+        "summary": "Cancel a run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/runs/{id}/stop": {
+      "post": {
+        "operationId": "stopAgentRun",
+        "summary": "Stop a run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/runs/{id}/events": {
+      "get": {
+        "operationId": "listAgentRunEvents",
+        "summary": "List run events",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/batches": {
+      "post": {
+        "operationId": "createBatch",
+        "summary": "Create a batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listBatches",
+        "summary": "List batches",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/batches/{id}": {
+      "get": {
+        "operationId": "getBatch",
+        "summary": "Get a batch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteBatch",
+        "summary": "Delete a batch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/batches/{id}/cancel": {
+      "post": {
+        "operationId": "cancelBatch",
+        "summary": "Cancel a batch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v0/teams/me": {
+      "get": {
+        "operationId": "teams-me-get",
+        "summary": "Get team info",
+        "servers": [
+          {
+            "url": "https://api.exa.ai/websets"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v0/websets": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-create",
+        "summary": "Create a Webset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "websets-list",
+        "summary": "List all Websets",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "websets-get",
+        "summary": "Get a Webset",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "websets-update",
+        "summary": "Update a Webset",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "websets-delete",
+        "summary": "Delete a Webset",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{id}/cancel": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-cancel",
+        "summary": "Cancel a running Webset",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/searches": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-searches-create",
+        "summary": "Create a Search",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/searches/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "websets-searches-get",
+        "summary": "Get a Search",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/searches/{id}/cancel": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-searches-cancel",
+        "summary": "Cancel a running Search",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/enrichments": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-enrichments-create",
+        "summary": "Create an Enrichment",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/enrichments/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "patch": {
+        "operationId": "websets-enrichments-update",
+        "summary": "Update an Enrichment",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "websets-enrichments-get",
+        "summary": "Get an Enrichment",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "websets-enrichments-delete",
+        "summary": "Delete an Enrichment",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/enrichments/{id}/cancel": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-enrichments-cancel",
+        "summary": "Cancel a running Enrichment",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/items/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "websets-items-get",
+        "summary": "Get an Item",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "websets-items-delete",
+        "summary": "Delete an Item",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/{webset}/items": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "websets-items-list",
+        "summary": "List all Items for a Webset",
+        "parameters": [
+          {
+            "name": "webset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/websets/preview": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "websets-preview",
+        "summary": "Preview a webset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/monitors": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "monitors-create",
+        "summary": "Create a Monitor",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "monitors-list",
+        "summary": "List Monitors",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/monitors/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "monitors-get",
+        "summary": "Get Monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "monitors-update",
+        "summary": "Update Monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "monitors-delete",
+        "summary": "Delete Monitor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/monitors/{monitor}/runs": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "monitors-runs-list",
+        "summary": "List Monitor Runs",
+        "parameters": [
+          {
+            "name": "monitor",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/monitors/{monitor}/runs/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "monitors-runs-get",
+        "summary": "Get Monitor Run",
+        "parameters": [
+          {
+            "name": "monitor",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/imports": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "imports-create",
+        "summary": "Create an Import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "imports-list",
+        "summary": "List Imports",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/imports/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "imports-get",
+        "summary": "Get Import",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "imports-update",
+        "summary": "Update Import",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "imports-delete",
+        "summary": "Delete Import",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/webhooks": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "post": {
+        "operationId": "webhooks-create",
+        "summary": "Create a Webhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "webhooks-list",
+        "summary": "List webhooks",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/webhooks/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "webhooks-get",
+        "summary": "Get a Webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "webhooks-update",
+        "summary": "Update a Webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "webhooks-delete",
+        "summary": "Delete a Webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/webhooks/{id}/attempts": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "webhooks-attempts-list",
+        "summary": "List webhook attempts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/events": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "events-list",
+        "summary": "List all Events",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v0/events/{id}": {
+      "servers": [
+        {
+          "url": "https://api.exa.ai/websets"
+        }
+      ],
+      "get": {
+        "operationId": "events-get",
+        "summary": "Get an Event",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "bearer": []
+          }
+        ]
+      }
+    }
+  }
+}

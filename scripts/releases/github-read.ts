@@ -64,7 +64,8 @@ export async function readGitHubJson<T>(
   throw unavailable(path, attempts, "retry budget exhausted");
 }
 
-function retryDelay(headers: Headers, now: number): number | undefined {
+/** The wait GitHub asks for in Retry-After or an exhausted rate-limit reset, if any. */
+export function retryDelay(headers: Headers, now: number): number | undefined {
   const retryAfter = headers.get("retry-after");
   let delay: number | undefined;
   if (retryAfter !== null) {

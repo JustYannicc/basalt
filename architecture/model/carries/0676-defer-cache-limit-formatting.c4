@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "App failure details build their cache limit messages on use. Formatting a number at import initializes ICU, which cost every Worker importing the module several milliseconds of startup CPU. The message text is unchanged."
+    }
+  }
+}

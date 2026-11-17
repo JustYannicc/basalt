@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-lazy-entrypoint",
+  "file": "0677-alchemy-lazy-entrypoint.patch",
+  "content_sha256": "5b5e0c9db70732c466d6fb2bde70a1244ee7c86115213ccdc7fff79584f42e1a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "The pinned Alchemy generates Worker entries that can import their main module on the first event; remove after an Alchemy release ships an equivalent opt-in and the Api lazy-entry regressions pass."
+}

@@ -35,6 +35,7 @@ export async function modelMembership(
   identity?: RefusalIdentity;
   pool?: string;
   lease?: NativeStreamLease;
+  assertionExpiresAt?: number;
 }> {
   const headers = new Headers(request.headers);
   headers.delete(policyHeader);
@@ -65,13 +66,15 @@ export async function modelMembership(
         throw new ModelMembershipUnavailable(identity);
       });
     }
+    let assertionExpiresAt: number | undefined;
     if (policy) {
+      assertionExpiresAt = Date.now() + modelUseAssertionTtlMs;
       headers.set(
         policyHeader,
         await signEnvelope(signingKey, policyUsePrefix, {
           pool,
           revision: policy.revision,
-          expiresAt: Date.now() + modelUseAssertionTtlMs,
+          expiresAt: assertionExpiresAt,
         }),
       );
     }
@@ -80,6 +83,7 @@ export async function modelMembership(
       identity,
       pool,
       lease,
+      assertionExpiresAt,
     };
   } catch (error) {
     lease.release();
