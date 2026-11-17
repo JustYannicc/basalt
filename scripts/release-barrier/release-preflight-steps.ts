@@ -219,6 +219,7 @@ export const preflightSteps = (
           // The controller refuses any code but its own, so an accepted inspect proves the code.
           const options = liveControllerCodes({
             recorded: baseline.controller.code,
+            ...(prior ? { prior } : {}),
             running: await runningRelease(target),
             receipts: input.receipts,
             workerInput: poolWorkerRevision,

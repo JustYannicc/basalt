@@ -11,6 +11,8 @@ export function preflightReport(input: {
   fatal?: string;
   state: RehearsalCounters;
   bridge: PreflightBridgeCounters;
+  /** Candidates of the release receipts that could name the live controller code. */
+  receiptCandidates?: readonly string[];
   observedAt?: string;
 }) {
   const mutations = {
@@ -37,6 +39,7 @@ export function preflightReport(input: {
     steps: input.steps,
     // Every active-health read, in order: the granted lease, the request leg and what was left.
     health: input.bridge.health,
+    receiptCandidates: input.receiptCandidates ?? [],
     mutations,
     reads: { state: input.state.state, http: input.state.fetch, bridge: input.bridge.dispatched },
     observedAt: input.observedAt ?? new Date().toISOString(),

@@ -33,16 +33,21 @@ export async function releaseReceiptCodes(directory: string | undefined): Promis
 }
 
 /**
- * Codes to try, in order: the recorded readiness code, then the codes a release receipt names
- * for the release the controller reports running, then this checkout's revision of it.
+ * Codes to try, in order: the recorded readiness code; the code the receipts name for the
+ * journal's unsettled prior candidate, whose controller phase may be the one running; the code
+ * they name for the release the controller reports running; then this checkout's revision of it.
  */
 export function liveControllerCodes(input: {
   recorded: Code;
+  prior?: string;
   running: string | undefined;
   receipts: readonly Code[];
   workerInput: string;
 }) {
   const codes: { source: string; code: Code }[] = [{ source: "recorded", code: input.recorded }];
+  for (const code of input.receipts)
+    if (input.prior && code.candidate === input.prior)
+      codes.push({ source: "prior-release-receipt", code });
   if (input.running) {
     for (const code of input.receipts)
       if (code.candidate === input.running) codes.push({ source: "release-receipt", code });

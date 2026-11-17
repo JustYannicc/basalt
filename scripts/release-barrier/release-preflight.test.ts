@@ -263,6 +263,21 @@ const liveCode = { candidate: "1".repeat(40), workerInput: "2".repeat(64) };
 const recordedCode = { candidate: "3".repeat(40), workerInput: "4".repeat(64) };
 const accepts = (code: typeof liveCode) => JSON.stringify(code) === JSON.stringify(liveCode);
 
+test("the receipt for the journal's unsettled prior candidate is tried even when the running release is unknown", () => {
+  const codes = liveControllerCodes({
+    recorded: recordedCode,
+    prior: liveCode.candidate,
+    running: undefined,
+    receipts: [{ candidate: "6".repeat(40), workerInput: "7".repeat(64) }, liveCode],
+    workerInput: "5".repeat(64),
+  });
+  assert.deepEqual(
+    codes.map(({ source }) => source),
+    ["recorded", "prior-release-receipt"],
+  );
+  assert.equal(codes.find(({ code }) => accepts(code))?.source, "prior-release-receipt");
+});
+
 test("without a release receipt the lagging recorded code is all there is, and inspect refuses", () => {
   const codes = liveControllerCodes({
     recorded: recordedCode,

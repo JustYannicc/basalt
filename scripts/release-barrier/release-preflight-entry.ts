@@ -31,6 +31,7 @@ const runner = preflightRunner();
 const nativeFetch = globalThis.fetch;
 let candidate: string | undefined;
 let mode: PreflightMode | undefined;
+let receiptCandidates: string[] = [];
 let fatal: string | undefined;
 
 try {
@@ -44,6 +45,7 @@ try {
   if (!accountId || !apiToken || !encryptionKey)
     throw new BarrierRefusal("release-preflight-credentials-unavailable", "PoolWorker");
   const receipts = await releaseReceiptCodes(env.BASALT_PREFLIGHT_RECEIPTS);
+  receiptCandidates = [...new Set(receipts.map((code) => code.candidate))];
   const guarded = countReadOnlyProbeFetch(accountId, counters, nativeFetch);
   globalThis.fetch = guarded;
   const exit = await Effect.runPromiseExit(
@@ -92,6 +94,7 @@ try {
 const report = preflightReport({
   candidate,
   mode,
+  receiptCandidates,
   steps: runner.results,
   fatal,
   state: counters,
