@@ -22,9 +22,9 @@ test("the exact CI candidate reader names the missing release Command input", ()
 
 test("a probe-scoped attempt reads all 20 real candidate declarations without deployment-only inputs", () => {
   const result = discoverCandidateSettings(process.cwd(), "ready");
-  assert.ok(typeof result === "object" && result !== null && "roles" in result && "ok" in result);
-  assert.equal(result.ok, true);
-  assert.ok(Array.isArray(result.roles));
+  assert.ok(typeof result === "object" && result !== null && "ok" in result);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok("roles" in result && Array.isArray(result.roles));
   assert.deepEqual([...result.roles].sort(), [...baselineRoles].sort());
 });
 

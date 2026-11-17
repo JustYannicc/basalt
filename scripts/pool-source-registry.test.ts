@@ -433,7 +433,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
       } else if (patch.identity === "cliproxy-node-no-postwrite-replay") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0649-node-no-postwrite-replay.patch");
+        assert.equal(patch.file, "0661-node-no-postwrite-replay.patch");
         assert.match(patch.retirement.requires, /terminal unknown-outcome classification/);
         assert.match(patch.retirement.requires, /real post-write EOF/);
         assert.match(patch.retirement.requires, /empty accepted model-pool stream/);
@@ -498,7 +498,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
       } else if (patch.identity === "cliproxy-node-generation-submission") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0650-node-generation-submission.patch");
+        assert.equal(patch.file, "0662-node-generation-submission.patch");
         assert.match(patch.retirement.requires, /guards only generation sends/);
         assert.match(
           patch.retirement.requires,

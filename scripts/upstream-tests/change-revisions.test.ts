@@ -9,6 +9,10 @@ import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.t
 import { migrateChangeRevisions } from "../../.upstream/apps/hosted/server/src/implementation/change-revision-schema.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
 import { migrateProductSteps } from "../../.upstream/apps/hosted/server/src/implementation/migrations.ts";
+import {
+  handledJob,
+  jobCompleted,
+} from "../../.upstream/apps/hosted/cloud/src/contracts/job-outcome.ts";
 
 const key = { topic: "deployment", resource: "app-a" };
 test("migration 19 preserves retained apps, runs once and leaves existing SQL writers usable", () =>
@@ -21,6 +25,7 @@ test("migration 19 preserves retained apps, runs once and leaves existing SQL wr
         "18_tool_availability": Effect.void,
       });
       const upgrade = migrateProductSteps("private_hosted_migrations", {
+        "18_tool_availability": Effect.void,
         "19_change_revisions": migrateChangeRevisions,
       });
       yield* upgrade;
@@ -48,6 +53,42 @@ const run = (work: Effect.Effect<void, unknown, SqlClient.SqlClient>) =>
       yield* work;
     }).pipe(Effect.provide(pgliteLayer())),
   );
+
+test("a failed notification job reports its category and retries its retained pending work", () =>
+  run(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`insert into executor_apps values ('app-a', 'organization:team-a', 'build-1')`;
+      const journal = makeChangeJournal(sql);
+      let available = false;
+      const job = journal
+        .deliver(() => (available ? Effect.void : Effect.fail("synthetic private failure")))
+        .pipe(Effect.as(jobCompleted), handledJob(Effect.void));
+      assert.deepEqual(yield* job, { outcome: "failed", failure: "ChangeDispatchFailed" });
+      assert.deepEqual(yield* sql`select count(*)::int as pending from hosted_change_pending`, [
+        { pending: 1 },
+      ]);
+      available = true;
+      assert.deepEqual(yield* job, { outcome: "completed" });
+      assert.deepEqual(yield* sql`select count(*)::int as pending from hosted_change_pending`, [
+        { pending: 0 },
+      ]);
+    }),
+  ));
+
+test("a notification job reports projection attempted inside a transaction", () =>
+  run(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const job = sql
+        .withTransaction(makeChangeJournal(sql).deliver(() => Effect.void))
+        .pipe(Effect.as(jobCompleted), handledJob(Effect.void));
+      assert.deepEqual(yield* job, {
+        outcome: "failed",
+        failure: "ChangeProjectionInTransaction",
+      });
+    }),
+  ));
 
 test("a committed activation survives a crash before dispatch and a new journal delivers it", () =>
   run(

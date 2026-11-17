@@ -1228,10 +1228,10 @@ index 0000000..2f36f28
 +    );
 +  };
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 9e28f65..66d9473 100644
+index a8e0c22..de81b5d 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -101,6 +101,7 @@ import {
+@@ -108,6 +108,7 @@ import {
    type ToolSummary,
    InvocationPrefetch,
    InvocationSelection,
@@ -1239,7 +1239,7 @@ index 9e28f65..66d9473 100644
    type PrefetchedInvocation,
    type PrefetchHost,
    type ToolRouter,
-@@ -423,6 +424,16 @@ export const resolve = (
+@@ -459,6 +460,16 @@ export const resolve = (
      Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
    );
  
@@ -1256,7 +1256,7 @@ index 9e28f65..66d9473 100644
  /**
   * Resolve current credentials only to remove what the app registered, as `resolve` does without
   * app access. A refused account use stays `AccountUseRefused`: it lasts until access changes, so
-@@ -438,6 +449,7 @@ function resolveFor(
+@@ -474,6 +485,7 @@ function resolveFor(
    resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
    use: "run" | "removal",
    ahead?: RecheckAhead,
@@ -1264,7 +1264,7 @@ index 9e28f65..66d9473 100644
  ) {
    return Effect.gen(function* () {
      const selections: Record<AccountScope, Record<string, HostAccountSlots[string]>> = {
-@@ -457,7 +469,9 @@ function resolveFor(
+@@ -493,7 +505,9 @@ function resolveFor(
        Exit.isSuccess(ahead.result) &&
        recheckedFor(ahead, state, user, appUses)
          ? resolveAccount({ kind: "run", app }, selected, ahead.result)
@@ -1275,7 +1275,7 @@ index 9e28f65..66d9473 100644
      ).pipe(Effect.mapError(appAccountReconnect(selected)));
      const credentials = new Map(
        selected.map(({ account }, index) => [account.id, resolvedFields[index]] as const),
-@@ -467,12 +481,29 @@ function resolveFor(
+@@ -503,12 +517,29 @@ function resolveFor(
          Effect.gen(function* () {
            const bind = credentials.get(account.id);
            if (bind === undefined) return yield* new StorageError();

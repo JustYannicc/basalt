@@ -17,8 +17,12 @@ test("declared matrices use the bounded browser setup within their existing dead
     const job = workflow.jobs[id];
     assert.equal(job["timeout-minutes"], 10, id);
     assert.equal(job.needs, "select", id);
+    const preparation = job.steps.findIndex(
+      (step: { run?: string }) => step.run === "npm run prepare:upstream",
+    );
+    assert.ok(preparation > 0, id);
     assert.deepEqual(
-      job.steps.slice(3, 7),
+      job.steps.slice(preparation, preparation + 4),
       [
         { run: "npm run prepare:upstream" },
         {
@@ -43,8 +47,12 @@ test("sign-in jobs prepare the runtime before bounded browser setup and run inde
     assert.equal(job.needs, "select", id);
     assert.equal(job.strategy, undefined, id);
     assert.equal(job["timeout-minutes"], id === "planetscale-sign-in" ? 20 : 10, id);
+    const preparation = job.steps.findIndex(
+      (step: { run?: string }) => step.run === "npm run prepare:upstream",
+    );
+    assert.ok(preparation > 0, id);
     assert.deepEqual(
-      job.steps.slice(3, 6),
+      job.steps.slice(preparation, preparation + 3),
       [
         { run: "npm run prepare:upstream" },
         { run: "bun run --cwd .upstream e2e:prepare" },

@@ -52,12 +52,12 @@ class MainMergeFixture:
         self.git('merge', '--no-ff', '-qm', 'fixture merge', head)
         return self.git('rev-parse', 'HEAD')
 
-    def check(self, base, head, main_push='true'):
+    def check(self, base, head, main_push='true', batch_mode='false'):
         return subprocess.run(['bash', '-e', '-c', self.command], cwd=self.root,
                               text=True, capture_output=True, env={
                                   'PATH': '/opt/homebrew/bin:/usr/bin:/bin',
                                   'BASE_SHA': base, 'HEAD_SHA': head,
-                                  'BATCH_MODE': 'false', 'MAIN_PUSH': main_push,
+                                  'BATCH_MODE': batch_mode, 'MAIN_PUSH': main_push,
                               })
 
     def composed_main(self, bad_member=False):
@@ -87,6 +87,46 @@ class MainMergeTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         return MainMergeFixture(temporary.name)
+
+    def repeated_main_sync(self, bad_member=False):
+        fixture = self.fixture()
+        fixture.patches = [{'file': 'old.patch', 'identity': 'reviewed-carry'}]
+        (fixture.root / 'containers/pool/patches/old.patch').write_text('+reviewed behavior\n')
+        fixture.save_sources()
+        fixture.base = fixture.commit()
+        fixture.git('branch', '-f', 'candidate', fixture.base)
+        fixture.git('checkout', 'candidate')
+        (fixture.root / 'batch-only').write_text('batch work')
+        fixture.commit()
+        fixture.git('checkout', 'main')
+        fixture.patches = [{'file': 'replacement.patch', 'identity': 'reviewed-carry'}]
+        (fixture.root / 'containers/pool/patches/replacement.patch').write_text('+reviewed behavior\n')
+        fixture.bump('already-reviewed-main-release')
+        fixture.git('checkout', 'candidate')
+        fixture.merge('main')
+        fixture.git('checkout', 'main')
+        (fixture.root / 'main-only').write_text('main advanced again')
+        trusted_base = fixture.commit()
+        fixture.git('checkout', 'candidate')
+        fixture.merge('main')
+        if bad_member:
+            fixture.git('checkout', '-qb', 'malicious-update')
+            (fixture.root / 'containers/pool/runtime.py').write_text('changed request behavior')
+            member = fixture.bump('unreviewed-release')
+            fixture.git('checkout', 'candidate')
+            fixture.merge(member)
+        return fixture, trusted_base, fixture.git('rev-parse', 'HEAD')
+
+    def test_batch_skips_main_history_already_in_the_comparison_base(self):
+        fixture, base, head = self.repeated_main_sync()
+        result = fixture.check(base, head, main_push='false', batch_mode='true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_batch_still_checks_unlanded_member_after_repeated_main_sync(self):
+        fixture, base, head = self.repeated_main_sync(bad_member=True)
+        result = fixture.check(base, head, main_push='false', batch_mode='true')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('CPA bump changes runtime code: containers/pool/runtime.py', result.stderr)
 
     def test_main_merge_attributes_update_and_reviewed_carry_to_separate_members(self):
         fixture = self.fixture()

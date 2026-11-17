@@ -265,7 +265,7 @@ diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/s
  import { Atom } from "effect/reactivity";
  import { useOptionalDashboard } from "./context.tsx";
  import { useState, type ReactNode } from "react";
-@@ -16,10 +16,10 @@ import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+@@ -16,10 +16,10 @@
  import type { App, ProviderDefinition } from "@executor-js/sdk";
  import type { CatalogIcon } from "@executor-js/catalog/contracts";
  import { Input } from "@executor-js/ui/components/input";
@@ -277,27 +277,29 @@ diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/s
  import { builtInApp, isDefaultProductBrand } from "../../contracts/product-brand.ts";
  const noIcons = Atom.make(noCatalogIcons);
  
-@@ -102,17 +102,9 @@ export function ProviderIcon({
+@@ -103,18 +103,9 @@
      return null;
    const fail = (key: string) => () =>
      setFailed((current) => (current.includes(key) ? current : [...current, key]));
-+  const tile = large ? "large" : medium ? "medium" : "small";
-   return (
+-  return (
 -    <span
 -      className={cn(
--        "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
--        large &&
--          "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+-        // Logos are bare marks or shaped badges, so every one sits padded on the page background.
+-        // The mark scales with the tile, which keeps the padding even wherever a page resizes it.
+-        "provider-icon inline-flex size-8.5 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-border bg-background [&_img]:size-[70%] [&_img]:object-contain [&_>_svg]:size-1/2 max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
+-        large && "provider-icon-large size-11 rounded-[10px]",
 -        medium && "size-6 rounded-md [&_img]:size-4.5 [&_>_svg]:size-4.5",
 -      )}
 -      data-provider={brand?.key}
 -      aria-hidden
 -    >
++  const tile = large ? "large" : medium ? "medium" : "small";
++  return (
 +    <ProviderTile brand={brand} size={tile}>
        {own ? (
          // The browser picks the variant for the color scheme, so the server renders the same
          // markup. A srcset ends a URL at whitespace, which a data URI may hold escaped.
-@@ -145,19 +137,11 @@ export function ProviderIcon({
+@@ -147,19 +138,11 @@
        ) : waiting ? (
          <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
        ) : brand ? (
@@ -599,7 +601,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
  import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
  import { HugeiconsIcon } from "@hugeicons/react";
  import { UserCircleIcon } from "@hugeicons/core-free-icons";
-@@ -15,11 +10,8 @@ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+@@ -15,11 +10,8 @@
  import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
@@ -613,11 +615,15 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
  
  import { AccountDisplayStatus } from "./account-status.tsx";
  import { ProviderIcon } from "./common.tsx";
-@@ -27,28 +19,7 @@ import { cn } from "../lib/utils.ts";
+@@ -27,32 +19,7 @@
  
  type AccountInfo = NonNullable<AccountHealth["info"]>;
  
--/** What one app's latest check means for the reader; tone matches the other status pills. */
+-/**
+- * What one app's latest check means for the reader; tone matches the other status pills.
+- * `credentials_rejected` covers a service refusing the credentials and a sign-in that expired
+- * before any request, so its label claims neither.
+- */
 -export const describeAccountCheck = (status: AccountCheckStatus) =>
 -  Match.value(status).pipe(
 -    Match.when("healthy", () => ({ label: "Healthy", tone: "good" as const })),
@@ -1187,7 +1193,7 @@ diff --git a/packages/ui/src/implementation/dashboard/provider-mark.tsx b/packag
 new file mode 100644
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/provider-mark.tsx
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,96 @@
 +/**
 + * A provider's icon tile, without the dashboard's catalog or favicon lookups, so app pages can draw
 + * the same tile. `ProviderIcon` fills it with a logo when one loads; `ProviderMark` is the tile with
@@ -1215,9 +1221,10 @@ new file mode 100644
 +  return (
 +    <span
 +      className={cn(
-+        "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
-+        size === "large" &&
-+          "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
++        // Logos are bare marks or shaped badges, so every one sits padded on the page background.
++        // The mark scales with the tile, which keeps the padding even wherever a page resizes it.
++        "provider-icon inline-flex size-8.5 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-border bg-background [&_img]:size-[70%] [&_img]:object-contain [&_>_svg]:size-1/2 max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
++        size === "large" && "provider-icon-large size-11 rounded-[10px]",
 +        size === "medium" && "size-6 rounded-md [&_img]:size-4.5 [&_>_svg]:size-4.5",
 +      )}
 +      data-provider={brand?.key}
@@ -1283,6 +1290,7 @@ new file mode 100644
 +    </ProviderTile>
 +  );
 +}
+
 diff --git a/packages/ui/src/implementation/dashboard/account-name.tsx b/packages/ui/src/implementation/dashboard/account-name.tsx
 new file mode 100644
 --- /dev/null
@@ -1371,7 +1379,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-check-state.tsx b/
 new file mode 100644
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-check-state.tsx
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,121 @@
 +/**
 + * What an account check says and how it reads, shared by the Accounts list's Health column and app
 + * pages that show their selected accounts. It imports no dashboard context, host data or SDK code,
@@ -1384,7 +1392,11 @@ new file mode 100644
 +
 +type Check = NonNullable<AccountAppHealth["check"]>;
 +
-+/** What one app's latest check means for the reader; tone matches the other status pills. */
++/**
++ * What one app's latest check means for the reader; tone matches the other status pills.
++ * `credentials_rejected` covers a service refusing the credentials and a sign-in that expired
++ * before any request, so its label claims neither.
++ */
 +export const describeAccountCheck = (status: AccountCheckStatus) =>
 +  Match.value(status).pipe(
 +    Match.when("healthy", () => ({ label: "Healthy", tone: "good" as const })),
@@ -1489,6 +1501,7 @@ new file mode 100644
 +    </>
 +  );
 +}
+
 diff --git a/packages/apps/src/ui.tsx b/packages/apps/src/ui.tsx
 new file mode 100644
 --- /dev/null
@@ -2162,7 +2175,7 @@ diff --git a/packages/app-templates/executor/skills/app-authoring/ui.md b/packag
 diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 --- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 +++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-@@ -10,7 +10,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
+@@ -10,7 +10,7 @@
    "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
    "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
    "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
@@ -2170,4 +2183,4 @@ diff --git a/packages/app-templates/src/implementation/executor-skill-digests.ge
 +  "app-authoring/ui.md": "8b1733a4d1c9938c222d1bd011b345f816cdf6f8d8a23ce431878e349b507c63",
    "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
    "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
-   "app-authoring/webhooks.md": "e4ca224cd413b591c3692b389bd88d644b337b4697a067d83551e6bcab657cf3",
+   "app-authoring/webhooks.md": "8b6e4fa3fbc1641bfa741bc449d8ff1b1db7c7923c2ddec0a134be7a2f7de5d8",

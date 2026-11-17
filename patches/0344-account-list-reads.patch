@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/implementation/account-identity.ts b/apps/hosted/server/src/implementation/account-identity.ts
-index aef0bae261cc789392078c9f3b4944332363c5da..6119ee101223f0111ca01e3ee26df3d587d57273 100644
+index aef0bae..6119ee1 100644
 --- a/apps/hosted/server/src/implementation/account-identity.ts
 +++ b/apps/hosted/server/src/implementation/account-identity.ts
 @@ -6,6 +6,7 @@ import {
@@ -76,7 +76,7 @@ index aef0bae261cc789392078c9f3b4944332363c5da..6119ee101223f0111ca01e3ee26df3d5
    Effect.gen(function* () {
 diff --git a/apps/hosted/server/src/implementation/account-list-links.ts b/apps/hosted/server/src/implementation/account-list-links.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a8921aaeec08abdcaa5e504c9860edf67239517
+index 0000000..4a8921a
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-list-links.ts
 @@ -0,0 +1,40 @@
@@ -122,7 +122,7 @@ index 0000000000000000000000000000000000000000..4a8921aaeec08abdcaa5e504c9860edf
 +  });
 diff --git a/apps/hosted/server/src/implementation/account-list-reads.ts b/apps/hosted/server/src/implementation/account-list-reads.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..311e08226d719edcf34d320bf26e931903398a8a
+index 0000000..311e082
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-list-reads.ts
 @@ -0,0 +1,28 @@
@@ -156,7 +156,7 @@ index 0000000000000000000000000000000000000000..311e08226d719edcf34d320bf26e9319
 +>("hosted/AccountListReads", { defaultValue: () => undefined });
 diff --git a/apps/hosted/server/src/implementation/account-list-timing.ts b/apps/hosted/server/src/implementation/account-list-timing.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c7d74cd416b8e7a6d91290c5df81ab5f5c6e0c34
+index 0000000..c7d74cd
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-list-timing.ts
 @@ -0,0 +1,35 @@
@@ -196,7 +196,7 @@ index 0000000000000000000000000000000000000000..c7d74cd416b8e7a6d91290c5df81ab5f
 +    );
 +  }).pipe(Effect.withSpan(`hosted.accounts.${phase}`));
 diff --git a/apps/hosted/server/src/implementation/account-observation-policy.ts b/apps/hosted/server/src/implementation/account-observation-policy.ts
-index be5882b82e37766741f10b1b251b5fb1bc156603..321effed172946db30764a17a944ac4842d8a12e 100644
+index be5882b..321effe 100644
 --- a/apps/hosted/server/src/implementation/account-observation-policy.ts
 +++ b/apps/hosted/server/src/implementation/account-observation-policy.ts
 @@ -1,10 +1,6 @@
@@ -293,7 +293,7 @@ index be5882b82e37766741f10b1b251b5fb1bc156603..321effed172946db30764a17a944ac48
      return {
        ...health,
 diff --git a/apps/hosted/server/src/implementation/account-projection.ts b/apps/hosted/server/src/implementation/account-projection.ts
-index 38eeea005d2fbdbf2a2a38db6aa3b9f5337efcc0..8c605e7da29c8301b7fba368d8cc0fa70f211145 100644
+index 38eeea0..8c605e7 100644
 --- a/apps/hosted/server/src/implementation/account-projection.ts
 +++ b/apps/hosted/server/src/implementation/account-projection.ts
 @@ -1,3 +1,4 @@
@@ -324,7 +324,7 @@ index 38eeea005d2fbdbf2a2a38db6aa3b9f5337efcc0..8c605e7da29c8301b7fba368d8cc0fa7
        directory.accounts,
        ({ account, provider, health }) =>
 diff --git a/apps/hosted/server/src/implementation/account-reconnect.ts b/apps/hosted/server/src/implementation/account-reconnect.ts
-index fdc64093089826f87bebeac63ffcb58a779d879f..692775bd5c9bea5bdaab7c576449881ca7a3e37d 100644
+index fdc6409..692775b 100644
 --- a/apps/hosted/server/src/implementation/account-reconnect.ts
 +++ b/apps/hosted/server/src/implementation/account-reconnect.ts
 @@ -1,6 +1,5 @@
@@ -352,7 +352,7 @@ index fdc64093089826f87bebeac63ffcb58a779d879f..692775bd5c9bea5bdaab7c576449881c
      Effect.catchTags({
        OrganizationForbidden: () => Effect.succeed(false),
 diff --git a/apps/hosted/server/src/implementation/account-sign-in.ts b/apps/hosted/server/src/implementation/account-sign-in.ts
-index c57c3353d24ad33f8bad0deecf70dcf7c7766b0e..5315c1d0626c67940adf6c652fd759f091281dda 100644
+index c57c335..5315c1d 100644
 --- a/apps/hosted/server/src/implementation/account-sign-in.ts
 +++ b/apps/hosted/server/src/implementation/account-sign-in.ts
 @@ -1,15 +1,33 @@
@@ -400,7 +400,7 @@ index c57c3353d24ad33f8bad0deecf70dcf7c7766b0e..5315c1d0626c67940adf6c652fd759f0
 +    return (yield* executor[InteractiveHost].binding({ owner, account })) !== undefined;
 +  });
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index efe93d40997501f8b0d2085773a99b93bdff0cd0..60e52730bcb08dff70b26818cdc5cca88153287f 100644
+index efe93d4..60e5273 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -1,3 +1,5 @@
@@ -527,7 +527,7 @@ index efe93d40997501f8b0d2085773a99b93bdff0cd0..60e52730bcb08dff70b26818cdc5cca8
        executor,
        owner,
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index 7e40d6603c63f0488ef1e345ebae8b6993889d85..97cfe367473ca196fbd98c803b5f4328a2133b41 100644
+index 7e40d66..97cfe36 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -1,3 +1,4 @@
@@ -546,7 +546,7 @@ index 7e40d6603c63f0488ef1e345ebae8b6993889d85..97cfe367473ca196fbd98c803b5f4328
      if (subject === undefined) return yield* new OrganizationForbidden();
      return yield* permittedLinks(yield* linkedAccounts(yield* policyDatabase, { subject, apps }));
 diff --git a/apps/hosted/server/src/implementation/contributed-account-policy.ts b/apps/hosted/server/src/implementation/contributed-account-policy.ts
-index f8fc3779b994729f735554ae732d39a2a7c15eaf..8f8a28b076c2ed612542fc649f7ae08d240fa4cf 100644
+index f8fc377..8f8a28b 100644
 --- a/apps/hosted/server/src/implementation/contributed-account-policy.ts
 +++ b/apps/hosted/server/src/implementation/contributed-account-policy.ts
 @@ -1,5 +1,6 @@
@@ -590,7 +590,7 @@ index f8fc3779b994729f735554ae732d39a2a7c15eaf..8f8a28b076c2ed612542fc649f7ae08d
  export const requireRequirementAccessAs = (
    actor: ResourceAuthority,
 diff --git a/apps/hosted/server/src/implementation/host-managed-accounts.ts b/apps/hosted/server/src/implementation/host-managed-accounts.ts
-index ee8c1abfb2a686eb353acdd7bd953afd9d6d97cc..47fa1f05ac17b4c55067862d5022d00395f9cdc6 100644
+index ee8c1ab..47fa1f0 100644
 --- a/apps/hosted/server/src/implementation/host-managed-accounts.ts
 +++ b/apps/hosted/server/src/implementation/host-managed-accounts.ts
 @@ -9,6 +9,7 @@ import {
@@ -618,7 +618,7 @@ index ee8c1abfb2a686eb353acdd7bd953afd9d6d97cc..47fa1f05ac17b4c55067862d5022d003
        (yield* executor.accounts.providers({ owner: organizationOwner(organization) })).map(
          (provider) => [provider.id, provider.definition],
 diff --git a/apps/hosted/server/src/implementation/provider-account-policy.ts b/apps/hosted/server/src/implementation/provider-account-policy.ts
-index 32cf7b11c485feeea625f454573477d19c98165e..da5ad35d4574ccfb82eb8d6794fc9f17af5a3268 100644
+index 32cf7b1..da5ad35 100644
 --- a/apps/hosted/server/src/implementation/provider-account-policy.ts
 +++ b/apps/hosted/server/src/implementation/provider-account-policy.ts
 @@ -1,3 +1,4 @@
@@ -636,7 +636,7 @@ index 32cf7b11c485feeea625f454573477d19c98165e..da5ad35d4574ccfb82eb8d6794fc9f17
      const { organization } = yield* CurrentOrganization;
      const rows = yield* sql`select a.id from organization o
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 0374df4e794f3bf345b4c03d41840ad16c9206cc..65d5325b888d98538cc6239e68e8531e82fe657d 100644
+index 0374df4..65d5325 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
 @@ -1,198 +1,27 @@
@@ -858,7 +858,7 @@ index 0374df4e794f3bf345b4c03d41840ad16c9206cc..65d5325b888d98538cc6239e68e8531e
          .handle("shareApp", ({ params, payload }) =>
 diff --git a/apps/hosted/server/src/implementation/resource-directory.ts b/apps/hosted/server/src/implementation/resource-directory.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f62365081a288f54e95d13ae1bf80cae52d4c994
+index 0000000..f623650
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/resource-directory.ts
 @@ -0,0 +1,260 @@
@@ -1123,7 +1123,7 @@ index 0000000000000000000000000000000000000000..f62365081a288f54e95d13ae1bf80cae
 +    ),
 +  );
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
-index 2dfc27efe2b4f686dc555ce6bb41320553222d19..dce1a1b9152434dbdb2092ceab25073dfcab795b 100644
+index 5a48847..bd74c3b 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
 +++ b/apps/hosted/server/src/implementation/resource-policy.ts
 @@ -11,6 +11,7 @@ import {
@@ -1181,7 +1181,7 @@ index 2dfc27efe2b4f686dc555ce6bb41320553222d19..dce1a1b9152434dbdb2092ceab25073d
      const sql = yield* policyDatabase;
      const rows = yield* sql`select m.id, m.role, p.id as app, p.creator_id as creator, p.audience,
      p.revision,
-@@ -328,6 +353,16 @@ const accountAccessOf = (found: typeof AccountPolicy.Type, actor: ResourceAuthor
+@@ -336,6 +361,16 @@ const accountAccessOf = (found: typeof AccountPolicy.Type, actor: ResourceAuthor
  export const accountAccesses = (accounts: readonly AccountId[], actor: ResourceAuthority) =>
    Effect.gen(function* () {
      if (accounts.length === 0) return [];
@@ -1199,10 +1199,10 @@ index 2dfc27efe2b4f686dc555ce6bb41320553222d19..dce1a1b9152434dbdb2092ceab25073d
      const rows = yield* sql`select p.account_id as account, p.creator_id as creator, p.kind,
      p.personal_user_id as "personalUser", p.audience, p.revision,
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 9e5ebc669a561b9441e5d07def831d9ae30e723b..bca5c030ff3b6676ead2d52ac14bd91795cb006b 100644
+index aef22fa..549dd16 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
-@@ -635,6 +635,20 @@ export const startDevelopmentServer = (
+@@ -637,6 +637,20 @@ export const startDevelopmentServer = (
      Effect.map(({ origin }) => origin),
    );
  
@@ -1224,10 +1224,10 @@ index 9e5ebc669a561b9441e5d07def831d9ae30e723b..bca5c030ff3b6676ead2d52ac14bd917
  export const startFreshSelfHost = (
    target: typeof Target.Service,
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index e834c01502bfdf1575d2c6c5943e0f0ee8de0618..1862cdcfab87be4ab20b509ffdf0d3f2a589b687 100644
+index 4c56a61..af90a47 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -542,6 +542,15 @@ export const scenarios = plan({
+@@ -548,6 +548,15 @@ export const scenarios = plan({
        cloud: na("The synthetic authorization server listens on loopback."),
      },
    },
@@ -1245,7 +1245,7 @@ index e834c01502bfdf1575d2c6c5943e0f0ee8de0618..1862cdcfab87be4ab20b509ffdf0d3f2
      title: "account lists use constant SQL statements for one and six saved identities",
 diff --git a/e2e/tests/account-list-total-budget.spec.ts b/e2e/tests/account-list-total-budget.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d1718ffddbf9899b43a448c254b9a38860ffa96
+index 0000000..1d1718f
 --- /dev/null
 +++ b/e2e/tests/account-list-total-budget.spec.ts
 @@ -0,0 +1,231 @@
@@ -1481,7 +1481,7 @@ index 0000000000000000000000000000000000000000..1d1718ffddbf9899b43a448c254b9a38
 +  );
 +});
 diff --git a/e2e/tests/account-observation-access.spec.ts b/e2e/tests/account-observation-access.spec.ts
-index 90977d411092a0f243ef72a331b8fd1e2cdb199a..1ca35c2fe0d58209a89779b4e8311249beab15d2 100644
+index 90977d4..1ca35c2 100644
 --- a/e2e/tests/account-observation-access.spec.ts
 +++ b/e2e/tests/account-observation-access.spec.ts
 @@ -68,6 +68,17 @@ layer(HostedLive, { excludeTestServices: true })("Observation access", (it) => {
@@ -1519,7 +1519,7 @@ index 90977d411092a0f243ef72a331b8fd1e2cdb199a..1ca35c2fe0d58209a89779b4e8311249
            (yield* f.api.request(f.actors.owner, "PUT", path, {
              revision,
 diff --git a/e2e/tests/contributed-app-access.spec.ts b/e2e/tests/contributed-app-access.spec.ts
-index 7fb0ff6d213556ccc07e587fff46974065c1bf68..92109eb8a0036d0eeb41d95faba10ad3a869060b 100644
+index 7fb0ff6..92109eb 100644
 --- a/e2e/tests/contributed-app-access.spec.ts
 +++ b/e2e/tests/contributed-app-access.spec.ts
 @@ -29,6 +29,21 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
@@ -1578,7 +1578,7 @@ index 7fb0ff6d213556ccc07e587fff46974065c1bf68..92109eb8a0036d0eeb41d95faba10ad3
          });
 diff --git a/packages/sdk/src/contracts/account-read.ts b/packages/sdk/src/contracts/account-read.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..77b9c28e1dbaf5620573ea3f00663bcebe40c8d1
+index 0000000..77b9c28
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-read.ts
 @@ -0,0 +1,27 @@
@@ -1610,7 +1610,7 @@ index 0000000000000000000000000000000000000000..77b9c28e1dbaf5620573ea3f00663bce
 +  }) => Effect.Effect<AccountReadSnapshot, StorageError>;
 +}
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 6fad4ec671aa131ca8cf9ab2ace1d18b9f4c11c9..da868f0e4b0cd0cbe86257c796046c7317375026 100644
+index 9935208..5b3de71 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -16,6 +16,7 @@ import type { LegacyVersionEndpoints } from "./apps.ts";
@@ -1621,7 +1621,7 @@ index 6fad4ec671aa131ca8cf9ab2ace1d18b9f4c11c9..da868f0e4b0cd0cbe86257c796046c73
  import { PrefetchHost } from "./tools.ts";
  import { SavedOAuthClientsHost } from "./oauth-clients.ts";
  import { OwnerMovesHost } from "./owner.ts";
-@@ -577,6 +578,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -633,6 +634,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [PrefetchHost]: PrefetchHost;
    readonly [AppViewsHost]: AppViewsHost;
    readonly [AccountTrafficHost]: AccountTrafficHost;
@@ -1629,7 +1629,7 @@ index 6fad4ec671aa131ca8cf9ab2ace1d18b9f4c11c9..da868f0e4b0cd0cbe86257c796046c73
    readonly [AppSourceHost]: AppSourceHost;
    readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
    readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
-@@ -612,6 +614,7 @@ export type PromiseExecutor = Promisify<
+@@ -668,6 +670,7 @@ export type PromiseExecutor = Promisify<
      | typeof PrefetchHost
      | typeof AppViewsHost
      | typeof AccountTrafficHost
@@ -1638,10 +1638,10 @@ index 6fad4ec671aa131ca8cf9ab2ace1d18b9f4c11c9..da868f0e4b0cd0cbe86257c796046c73
      | typeof SavedOAuthClientsHost
      | typeof OwnerMovesHost
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index 9fa3256e68b3ac4bb427bbcea7f2dcdb0764277a..ebcb779f5a74dd01d304d3c34af6b92241d645ed 100644
+index 430f615..9064180 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -74,3 +74,5 @@ export {
+@@ -85,3 +85,5 @@ export {
    AcquisitionFailureReceipt,
    InteractiveConnectionFailed,
  } from "./contracts/interactive-accounts.ts";
@@ -1649,7 +1649,7 @@ index 9fa3256e68b3ac4bb427bbcea7f2dcdb0764277a..ebcb779f5a74dd01d304d3c34af6b922
 +export * from "./contracts/account-read.ts";
 diff --git a/packages/sdk/src/implementation/account-read.ts b/packages/sdk/src/implementation/account-read.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a09cbf00a4fc6544a490df6748a446219dadee3
+index 0000000..0a09cbf
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-read.ts
 @@ -0,0 +1,127 @@
@@ -1782,7 +1782,7 @@ index 0000000000000000000000000000000000000000..0a09cbf00a4fc6544a490df6748a4462
 +});
 diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/src/implementation/account-sign-in.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..59465f2611f7742aaf72919b8f9fba50a8d49151
+index 0000000..59465f2
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-sign-in.ts
 @@ -0,0 +1,44 @@
@@ -1831,18 +1831,18 @@ index 0000000000000000000000000000000000000000..59465f2611f7742aaf72919b8f9fba50
 +      : ({ state: "saved", reconnectAt } as const);
 +  });
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index dbf3789d8ead81f06084eb1dc4548032439651ed..05ffe342a58461599b3434bde4a10a032f68f4fe 100644
+index a2d353e..0a5fedc 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -18,6 +18,7 @@ import { query, transaction, type Query } from "./database.ts";
+@@ -24,6 +24,7 @@ import { query, transaction, type Query } from "./database.ts";
  import { accountGrantId, accountIdentities, accountIdentity } from "./account-identities.ts";
  import { releaseAccountGrant } from "./oauth-grant-bindings.ts";
- import { validateFields } from "./provider.ts";
+ import { canonical, validateFields } from "./provider.ts";
 +import { accountSignInState } from "./account-sign-in.ts";
  
  /** A stable digest of stored ciphertext; any credential write changes it. */
  const fingerprint = (bytes: Uint8Array) =>
-@@ -399,39 +400,21 @@ export const makeAccounts = (
+@@ -455,39 +456,21 @@ export const makeAccounts = (
          Effect.mapError(() => new StorageError()),
        );
        const method = provider.definition.auth[account.method];
@@ -1898,7 +1898,7 @@ index dbf3789d8ead81f06084eb1dc4548032439651ed..05ffe342a58461599b3434bde4a10a03
  });
  
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..5770859e582a577b04865216000d9a1868268d22 100644
+index aa5dc00..57bafa4 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -31,6 +31,8 @@ import { StorageHost } from "../contracts/storage.ts";
@@ -1910,7 +1910,7 @@ index 9a92b5c53dae025848b4cecb84be03bad4cbae5d..5770859e582a577b04865216000d9a18
  import { PrefetchHost } from "../contracts/tools.ts";
  import { OAuthGrantImport } from "../contracts/oauth.ts";
  import { gitSourceStorage } from "./git-sources.ts";
-@@ -602,6 +604,12 @@ export const createExecutor = (
+@@ -620,6 +622,12 @@ export const createExecutor = (
        [PrefetchHost]: { invocation: tools.prefetchInvocation },
        [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
        [AccountTrafficHost]: { read: options.database.accountTraffic.read },

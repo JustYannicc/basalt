@@ -46,7 +46,7 @@ new file mode 100644
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -25,6 +25,7 @@
+@@ -27,6 +27,7 @@
  import { migrateAccountObservations } from "./account-observation-schema.ts";
  import { migrateChangeRevisions } from "./change-revision-schema.ts";
  import { migrateAccountChanges } from "./account-change-schema.ts";
@@ -54,14 +54,14 @@ diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/s
  import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
  
  /**
-@@ -181,6 +182,7 @@
-   "19_change_revisions": migrateChangeRevisions,
-   "20_account_changes": migrateAccountChanges,
-   "21_change_journal_prepare": prepareChangeJournal,
-+  "23_account_traffic_changes": migrateAccountTrafficChanges,
- });
- 
- /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
+@@ -191,6 +192,7 @@
+     "19_change_revisions": migrateChangeRevisions,
+     "20_account_changes": migrateAccountChanges,
+     "21_change_journal_prepare": prepareChangeJournal,
++    "23_account_traffic_changes": migrateAccountTrafficChanges,
+   },
+   ["22_change_journal_activate"],
+ );
 diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
 --- a/apps/hosted/server/src/implementation/organization-changes.ts
 +++ b/apps/hosted/server/src/implementation/organization-changes.ts
@@ -200,9 +200,9 @@ diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src
 +import { changeProtected } from "./change-signal.ts";
 +import { revalidated, refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
  import { acknowledge } from "@executor-js/ui/contracts/mutations";
+ import { withCheckedApps } from "@executor-js/ui/contracts/dashboard";
  import { Data, Effect } from "effect";
- import { Atom } from "effect/reactivity";
-@@ -54,23 +54,13 @@
+@@ -56,23 +56,13 @@
  );
  const userLinks = Atom.family((key: AppKey) =>
    HostedClient.query("appAccounts", "userList", hydrated({ params: key })).pipe(
@@ -228,7 +228,7 @@ diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src
  /**
   * The accounts linked to the app's own requirements, oldest first per requirement. Anyone who can
   * use the app reads them; only people who can edit it see the identity checks reported.
-@@ -93,7 +83,7 @@
+@@ -95,7 +85,7 @@
  
  /** The accounts the caller linked to the app's user requirements and can still use. */
  export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>

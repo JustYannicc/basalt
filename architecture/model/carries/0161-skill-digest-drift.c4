@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Every carried change to published agent skill text regenerates its UTF-8 SHA-256 entry from the exact merged file bytes. The digest table retains all target-release keys; a digest from a clean upstream file or a different carry prefix cannot identify the served guidance."
+    }
+  }
+}

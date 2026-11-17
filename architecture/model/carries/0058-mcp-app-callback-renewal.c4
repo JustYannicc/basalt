@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The outer MCP Apps bridge renews callback authority without reloading its guest. Every renewal rechecks the retained principal, grant, app version, source and account selection. Already admitted approvals retain their original issuer; new callbacks and resource reads require unexpired authority."
+    }
+  }
+}

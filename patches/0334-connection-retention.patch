@@ -1,20 +1,20 @@
 diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
-index 2095073..1232851 100644
+index 8e2989f..26a7f30 100644
 --- a/apps/docs/content/run/self-host.mdx
 +++ b/apps/docs/content/run/self-host.mdx
-@@ -40,6 +40,7 @@ These settings override the defaults:
- | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
- | `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `86400`. |
+@@ -41,6 +41,7 @@ These settings override the defaults:
+ | `EXECUTOR_TOOL_LISTING_RENEW_SECONDS` | no     | Renew the tool lists search serves in the background once they are this old. The default is `86400`. |
+ | `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `604800`. |
  | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | no     | Stop evaluating an app's tool list after this long when no request is waiting for it; capped at the maximum age. The default is `45`. |
 +| `EXECUTOR_ACCOUNT_CONNECTION_RETENTION` | no | Set to `true` to delete, once a day, account sign-ins that never connected an account and expired more than a day ago. Off by default. |
  | `EXECUTOR_EVALUATION_MEMORY_MB`      | no       | Memory for kept tool lists and app declarations. The default is `256`.  |
  | `EXECUTOR_NPM_REGISTRY`              | no       | npm registry that app builds install packages from. The default is `https://registry.npmjs.org`. |
  | `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` | no | Set to `1` to turn off anonymous usage analytics and feedback. See [usage analytics](/run/usage-analytics). |
 diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-index 97fd42c..2544bf2 100644
+index bd6c368..7e4cd86 100644
 --- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 +++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-@@ -28,6 +28,7 @@ export const BackgroundJob = Schema.Literals([
+@@ -29,6 +29,7 @@ export const BackgroundJob = Schema.Literals([
    "workflow-reconcile",
    "billing-reconcile",
    "agent-grant-expiry",
@@ -36,7 +36,7 @@ index 1d6582a..e262bcd 100644
    "hosted_account_groups",
    "hosted_account_observation_access",
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
-index c09c2e8..1e1b122 100644
+index f068a96..0b0684d 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
 @@ -1,5 +1,6 @@
@@ -60,24 +60,6 @@ index c09c2e8..1e1b122 100644
      c.created_at::text, c.expires_at::text from executor_account_connections c
      where c.owner = 'organization:' || $1 order by c.id limit 2001`,
    // The same connections as counts, so an organization with more than the row bound still gets
-diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-index 7dca588..bf0a592 100644
---- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-+++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-@@ -3,6 +3,7 @@ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-ident
- import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
- import { releasedRetirementV1 } from "./migrations/released-retirement-v1.ts";
- import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
-+import { accountConnectionRetentionV1 } from "./migrations/account-connection-retention-v1.ts";
- import type { ProductionMigration } from "./contracts.ts";
- 
- /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
-@@ -12,4 +13,5 @@ export const productionMigrations: Readonly<Record<string, ProductionMigration>>
-   [googleAccountIdentityV1.name]: googleAccountIdentityV1,
-   [googleDuplicateBindingsV1.name]: googleDuplicateBindingsV1,
-   [atlassianAccountIdentityV1.name]: atlassianAccountIdentityV1,
-+  [accountConnectionRetentionV1.name]: accountConnectionRetentionV1,
- };
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
 new file mode 100644
 index 0000000..471aefa
@@ -346,6 +328,24 @@ index 0000000..acd18ab
 +    .join(" and ");
 +  return { predicate, params };
 +};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+index 7dca588..bf0a592 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -3,6 +3,7 @@ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-ident
+ import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
+ import { releasedRetirementV1 } from "./migrations/released-retirement-v1.ts";
+ import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
++import { accountConnectionRetentionV1 } from "./migrations/account-connection-retention-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+@@ -12,4 +13,5 @@ export const productionMigrations: Readonly<Record<string, ProductionMigration>>
+   [googleAccountIdentityV1.name]: googleAccountIdentityV1,
+   [googleDuplicateBindingsV1.name]: googleDuplicateBindingsV1,
+   [atlassianAccountIdentityV1.name]: atlassianAccountIdentityV1,
++  [accountConnectionRetentionV1.name]: accountConnectionRetentionV1,
+ };
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
 index baee04e..4456a53 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
@@ -367,7 +367,7 @@ index baee04e..4456a53 100644
      keys: ["account_id"],
      predicate: `${organization} and ${account("account_id")}`,
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index f62b73b..794b1b6 100644
+index 8507f87..6972719 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -41,6 +41,10 @@ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
@@ -381,9 +381,27 @@ index f62b73b..794b1b6 100644
  import { SqlClient } from "effect/sql";
  import {
    OrganizationRemoval,
-@@ -452,6 +456,18 @@ export default Api.make(
-       Effect.scoped,
-       Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+@@ -91,7 +95,7 @@ import { cloudSiteAssets } from "./infrastructure/site-assets.ts";
+ import { retainedAssetFolders, retainedAssetPath } from "./contracts/retained-assets.ts";
+ import * as Output from "alchemy/Output";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+-import { Config, Effect, Layer, Option, Path, Ref } from "effect";
++import { Cause, Config, Effect, Layer, Option, Path, Ref } from "effect";
+ import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+ import { cloudAuth } from "./infrastructure/auth.ts";
+ import { cloudAccountCallback } from "./implementation/account-callback.ts";
+@@ -118,7 +122,7 @@ import {
+   selfBinding,
+   type BackgroundJob,
+ } from "./infrastructure/background-jobs.ts";
+-import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
++import { handledJob, jobCompleted, jobFailed, jobFailedWith } from "./contracts/job-outcome.ts";
+ import { cloudEgress } from "./infrastructure/executor.ts";
+ import { withBatchExecution } from "./infrastructure/batch-execution.ts";
+ import { cloudEmulators } from "./infrastructure/emulators.ts";
+@@ -474,6 +478,23 @@ export default Api.make(
+       Effect.as(jobCompleted),
+       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
      );
 +    // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
 +    const connectionRetention = whenConnectionRetentionEnabled(
@@ -395,12 +413,17 @@ index f62b73b..794b1b6 100644
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
-+      Effect.catch(() => Effect.logWarning("Account connection retention failed")),
++      Effect.as(jobCompleted),
++      Effect.catch((error) =>
++        Effect.logWarning("Account connection retention failed").pipe(
++          Effect.as(jobFailedWith(Cause.fail(error))),
++        ),
++      ),
 +    );
      const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
        Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
        Effect.provide(executor),
-@@ -483,7 +499,12 @@ export default Api.make(
+@@ -506,7 +527,12 @@ export default Api.make(
        "workflow-reconcile",
        "app-domain-heartbeat",
      );
@@ -414,7 +437,7 @@ index f62b73b..794b1b6 100644
      yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
      // Keep the production poll off the hour. Subject-level cycle times spread actual requests further.
      const testReportingCron = yield* Config.String(
-@@ -515,6 +536,7 @@ export default Api.make(
+@@ -538,6 +564,7 @@ export default Api.make(
        "workflow-reconcile": workflowReconcile,
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,
@@ -423,10 +446,10 @@ index f62b73b..794b1b6 100644
        "personal-data-reporting": personalDataReporting,
        "account-health-rechecks": accountRechecks,
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 16a8005..45e7c1c 100644
+index 3e5e0f4..b4f47e2 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -55,6 +55,10 @@ import {
+@@ -57,6 +57,10 @@ import {
  } from "@executor-js/sdk/core";
  import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
@@ -437,7 +460,7 @@ index 16a8005..45e7c1c 100644
  import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
  import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
  import { SqlClient } from "effect/sql";
-@@ -187,6 +191,15 @@ export const selfHostExecutorServices = <E, R>(
+@@ -195,6 +199,15 @@ export const selfHostExecutorServices = <E, R>(
            Effect.repeat(Schedule.spaced("1 day")),
          ),
        );
@@ -454,7 +477,7 @@ index 16a8005..45e7c1c 100644
          executor[RepositoryHost].recover.pipe(
            Effect.catch(() => Effect.logWarning("App repository recovery failed")),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 0158c02..320bf03 100644
+index 5d8141a..1218072 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -6,6 +6,7 @@

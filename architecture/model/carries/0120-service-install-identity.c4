@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.serviceInstalls {
+    metadata {
+      constraint "A trusted catalog service identity and exact endpoint aliases reuse one visible app under the short installation transaction; deliberate separate instances retain their own identity. Reuse never overwrites saved accounts or source. Import results may name an existing AppSummary, while fresh mutation and installation callbacks retain their DeployedApp contract and Add app owns prompt configuration."
+    }
+  }
+}

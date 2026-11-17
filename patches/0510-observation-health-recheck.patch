@@ -183,7 +183,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
 +    recheckAfterObservation,
      listHealth,
      health: (input: Parameters<Executor["accounts"]["health"]>[0]) =>
-       storedAccount(db, input.account, input.owner).pipe(
+       report(storedAccount(db, input.account, input.owner), input.account, input.apps).pipe(
 diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
 --- a/packages/sdk/src/implementation/account-observations.ts
 +++ b/packages/sdk/src/implementation/account-observations.ts

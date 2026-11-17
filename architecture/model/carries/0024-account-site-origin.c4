@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A site-aware saved account binds authorization, callback, refresh, health and API requests to one validated exact origin. Reconnect cannot replace it. Retained storage 4.0.16 keeps the site layout; later queue indexes enter through their additive prelude. Released account-host adapters keep their own grammar and account resumption retains waiting-source recovery."
+    }
+  }
+}

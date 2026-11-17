@@ -456,11 +456,11 @@ index 0000000..c318096
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
-index 17ef904..276862f 100644
+index a657f16..b1b96de 100644
 --- a/apps/hosted/web/src/implementation/pages/connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect.tsx
-@@ -1,10 +1,15 @@
- import { Link } from "@tanstack/react-router";
+@@ -1,7 +1,10 @@
+ import { Link, useNavigate } from "@tanstack/react-router";
  import { Button } from "@executor-js/ui/components/button";
  import { Code } from "@executor-js/ui/dashboard/code";
 -import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
@@ -468,7 +468,11 @@ index 17ef904..276862f 100644
 +  AssistantGuideExtensionsProvider,
 +  McpInstallInstructions,
 +} from "@executor-js/ui/dashboard/connect";
- import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
+ import {
+   ScopedConnectionPage,
+   ScopedConnectionsPage,
+@@ -10,6 +13,8 @@ import {
+ } from "@executor-js/ui/dashboard/scoped-connections";
  import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
  import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
@@ -476,7 +480,7 @@ index 17ef904..276862f 100644
  import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
  import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
-@@ -18,6 +23,13 @@ import {
+@@ -23,6 +28,13 @@ import {
  } from "../../contracts/mcp-connections.ts";
  import { useDocumentationUrl } from "../documentation.ts";
  import { useResourceOrigins } from "../resource-origin.ts";
@@ -488,9 +492,9 @@ index 17ef904..276862f 100644
 +import { computerRows } from "./computer-rows.tsx";
 +import { usePoolSetup } from "./pool-setup.tsx";
  
- /** Headless setup: a personal access token against this organization's own addresses. */
- function PersonalTokenSetup({
-@@ -28,10 +40,11 @@ function PersonalTokenSetup({
+ /** The inventory and the member's connections, keyed by the URL. */
+ export const connectionPageReads: OrganizationPageReads = (organization) => [
+@@ -45,10 +57,11 @@ function PersonalTokenSetup({
    readonly mcpOrigin: string;
  }) {
    const { organization, slug, id } = useOrganizationRoute();
@@ -503,10 +507,22 @@ index 17ef904..276862f 100644
            type: "http",
            url: `${mcpOrigin}/org/${encodeURIComponent(slug)}/mcp`,
            headers: { Authorization: "Bearer <YOUR_PAT>" },
-@@ -78,6 +91,52 @@ export function ConnectPage() {
-   const mcpOrigin = origins.mcp[0];
-   const { organization } = useOrganizationRoute();
-   const docs = useDocumentationUrl() ?? null;
+@@ -99,6 +112,76 @@ function ConnectionLink({ connection, className, children }: ConnectionLinkProps
+   );
+ }
+ 
++/** Pool setup extends only the person's full-access guide. */
++function FullAccessInstallation({
++  endpoint,
++  docs,
++  apiOrigin,
++  mcpOrigin,
++}: {
++  readonly endpoint: string;
++  readonly docs: string | null;
++  readonly apiOrigin: string;
++  readonly mcpOrigin: string;
++}) {
 +  const setup = usePoolSetup();
 +  const brand = useProductBrand();
 +  // A stable value keeps the guides from re-rendering on every list refresh.
@@ -553,10 +569,44 @@ index 17ef904..276862f 100644
 +    }),
 +    [brand, mcpOrigin, setup],
 +  );
++  return (
++    <AssistantGuideExtensionsProvider value={extensions}>
++      <McpInstallInstructions
++        endpoint={endpoint}
++        docs={docs}
++        token={<PersonalTokenSetup apiOrigin={apiOrigin} mcpOrigin={mcpOrigin} />}
++        tabs={[{ value: "pool", label: "Pool endpoint", content: <PoolEndpoint setup={setup} /> }]}
++      />
++    </AssistantGuideExtensionsProvider>
++  );
++}
++
+ /** The bindings both connection pages share in this organization. */
+ function useConnectionBindings() {
+   const origins = useResourceOrigins();
+@@ -113,10 +196,11 @@ function useConnectionBindings() {
+     ConnectionLink,
+     renderInstallation: (target: ConnectTarget) =>
+       target.apps === undefined ? (
+-        <McpInstallInstructions
++        <FullAccessInstallation
+           endpoint={target.url}
+           docs={docs}
+-          token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={origins.mcp[0]} />}
++          apiOrigin={origins.api[0]}
++          mcpOrigin={origins.mcp[0]}
+         />
+       ) : (
+         <McpInstallInstructions
+@@ -133,6 +217,7 @@ export function ConnectPage() {
+   const bindings = useConnectionBindings();
+   const { organization } = useOrganizationRoute();
+   const origins = useResourceOrigins();
++  const setup = usePoolSetup();
    return (
      <ScopedConnectionsPage
        key={organization}
-@@ -92,14 +151,22 @@ export function ConnectPage() {
+@@ -143,7 +228,9 @@ export function ConnectPage() {
            query={mcpAgentsAtom(organization)}
            revoke={revokeMcpAgentAtom(organization)}
            Failure={HostedFailure}
@@ -565,26 +615,8 @@ index 17ef904..276862f 100644
 +          {computerRows(setup)}
 +        </ConnectedAgents>
        }
-       installation={
--        <McpInstallInstructions
--          endpoint={`${mcpOrigin}/mcp`}
--          docs={docs}
--          token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={mcpOrigin} />}
--        />
-+        // Only the person's own setup gets the pool; a scoped connection keeps the built-in guides.
-+        <AssistantGuideExtensionsProvider value={extensions}>
-+          <McpInstallInstructions
-+            endpoint={`${mcpOrigin}/mcp`}
-+            docs={docs}
-+            token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={mcpOrigin} />}
-+            tabs={[
-+              { value: "pool", label: "Pool endpoint", content: <PoolEndpoint setup={setup} /> },
-+            ]}
-+          />
-+        </AssistantGuideExtensionsProvider>
-       }
-       renderTools={({ app, names, onChange }) => (
-         <ConnectionToolPicker
+     />
+   );
 diff --git a/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx b/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx
 new file mode 100644
 index 0000000..3751f56
@@ -956,10 +988,10 @@ index 0000000..f9ed88d
 +}
 +export type PoolSetup = ReturnType<typeof usePoolSetup>;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 91721bb..2fe4d80 100644
+index 529bcbd..9d82b3a 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8895,6 +8895,30 @@ export const scenarios = plan({
+@@ -10235,6 +10235,30 @@ export const scenarios = plan({
        cloud: na("Hosted consent is covered by the organization Claude Code scenario."),
      },
    },
@@ -991,7 +1023,7 @@ index 91721bb..2fe4d80 100644
      fixtures: "actors",
      file: "connected-agents.spec.ts",
 diff --git a/e2e/tests/mcp-connections.spec.ts b/e2e/tests/mcp-connections.spec.ts
-index c1d867c..ab473fa 100644
+index e395259..4cb605c 100644
 --- a/e2e/tests/mcp-connections.spec.ts
 +++ b/e2e/tests/mcp-connections.spec.ts
 @@ -563,6 +563,14 @@ return { first, second };`,
@@ -1009,7 +1041,7 @@ index c1d867c..ab473fa 100644
          yield* browser.use("Open Connections", (page) =>
            page.goto(`/org/${actors.organization.slug}/connect`),
          );
-@@ -572,6 +580,10 @@ return { first, second };`,
+@@ -578,6 +586,10 @@ return { first, second };`,
          yield* browser.use("Choose Codex", (page) =>
            page.getByRole("button", { name: "Codex", exact: true }).click(),
          );

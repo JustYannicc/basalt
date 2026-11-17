@@ -1,7 +1,7 @@
 {
   "identity": "executor-account-observations",
   "file": "0053-account-observations.patch",
-  "content_sha256": "5f33dfea80de0a41467bfaf1620013862c5b91bbf506f8d0a4f81d111426d273",
+  "content_sha256": "1c32c4a950041d5eea90402fb5c8cc710ca40341da5cc32df2ce8b489a95d640",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

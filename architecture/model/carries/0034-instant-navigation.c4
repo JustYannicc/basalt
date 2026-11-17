@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted route read descriptors start the destination's independent reads before gated components mount. Pending page frames remain visible while code and data load, and retained results keep their ordinary refresh and access-denial rules. Connection and account-access descriptors remain complete when route components share bindings."
+    }
+  }
+}

@@ -348,8 +348,8 @@
         },
         {
           "identity": "cliproxy-node-no-postwrite-replay",
-          "file": "0649-node-no-postwrite-replay.patch",
-          "sha256": "acfdb8d1b7b6f1e70e181e4655befe10a06b1df73a416c59103c1ec010d7b3e2",
+          "file": "0661-node-no-postwrite-replay.patch",
+          "sha256": "79cdcfadfa85fe3dce84c988385c156d8e9a7056548a7c7c759259f4c0be622e",
           "retirement": {
             "mode": "manual",
             "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
@@ -366,8 +366,8 @@
         },
         {
           "identity": "cliproxy-node-generation-submission",
-          "file": "0650-node-generation-submission.patch",
-          "sha256": "c84bb8361bd862612183f1b07abd03ecc924d2c7f9ff580586ca7427be1b0f16",
+          "file": "0662-node-generation-submission.patch",
+          "sha256": "dd87c59da82d25432df3cc1f970dd7d1159ab30f640a0d87fdf2547e5c9a3616",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."

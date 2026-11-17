@@ -405,8 +405,8 @@ diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
 -export { catalogLive } from "./implementation/catalog.ts";
 +export { catalogLive, catalogReadLive } from "./implementation/catalog.ts";
  export {
+   hostedApi,
    hostedApiDocumentRoute,
-   lazyHostedApiDocument,
 diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
 --- a/e2e/support/provider-account-product.ts
 +++ b/e2e/support/provider-account-product.ts

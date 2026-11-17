@@ -233,6 +233,21 @@ export class PreviewClient {
   }
 
   async waitForComputer(id: string): Promise<ComputerEvidence> {
+    const value = await this.waitForComputerEvidence(id, true);
+    if (!value.firstModelRequestAt)
+      throw new AcceptanceFailure("Computer model evidence is missing");
+    return {
+      firstModelRequestAt: value.firstModelRequestAt,
+      firstToolCallAt: value.firstToolCallAt,
+    };
+  }
+
+  async waitForToolCall(id: string): Promise<{ firstToolCallAt: string }> {
+    const value = await this.waitForComputerEvidence(id, false);
+    return { firstToolCallAt: value.firstToolCallAt };
+  }
+
+  private async waitForComputerEvidence(id: string, requireModel: boolean) {
     const target = computerId(id);
     const deadline = this.now() + this.computerWaitMs;
     for (;;) {
@@ -255,7 +270,8 @@ export class PreviewClient {
         computer.firstToolCallAt === null
           ? null
           : isoTimestamp(computer.firstToolCallAt, "First tool call time");
-      if (modelAt && toolAt) return { firstModelRequestAt: modelAt, firstToolCallAt: toolAt };
+      if (toolAt && (!requireModel || modelAt))
+        return { firstModelRequestAt: modelAt, firstToolCallAt: toolAt };
 
       const remaining = deadline - this.now();
       if (remaining <= 0)

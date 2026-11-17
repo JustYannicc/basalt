@@ -11,6 +11,7 @@ import { storageSchemas } from "../../.upstream/packages/sdk/src/implementation/
 import { currentStorageSchema } from "../../.upstream/packages/sdk/src/implementation/storage-current.ts";
 import { registrySchema } from "../../.upstream/packages/app-registry/src/implementation/storage-runtime.ts";
 import { historySchemaMigrations } from "../../src/pool/model-history/schema.ts";
+import { observeSqlVersions } from "./sql-schema-contract.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const product = (entries: string, journal = "private_hosted_migrations") =>
@@ -43,6 +44,46 @@ test("product extraction follows the exact journal call and preserves every ID/n
     ["2_renamed", "10_later", "12_added"],
   );
 });
+
+test("operator migration keys are recognized without becoming required journal markers", () => {
+  for (const operators of ['["22_change_journal_activate"]', "[]"]) {
+    const source = `migrateProductSteps("private_hosted_migrations", {
+      "21_change_journal_prepare": prepare,
+      "20_account_changes": changes,
+    }, ${operators});`;
+    assert.deepEqual(parseProductMigrationMarkers(source, "private_hosted_migrations"), [
+      "20_account_changes",
+      "21_change_journal_prepare",
+    ]);
+  }
+});
+
+for (const [name, operators] of [
+  ["indirect list", "operatorKeys"],
+  ["object", '{ "22_change_journal_activate": activate }'],
+  ["spread", "[...operatorKeys]"],
+  ["nonliteral key", "[operatorKey]"],
+  ["number", "[22]"],
+  ["missing suffix", '["22"]'],
+  ["noncanonical ID", '["022_change_journal_activate"]'],
+  ["zero ID", '["0_change_journal_activate"]'],
+  ["overflow ID", '["2147483648_change_journal_activate"]'],
+  ["oversized key", JSON.stringify([`22_${"a".repeat(158)}`])],
+  ["duplicate key", '["22_change_journal_activate", "22_change_journal_activate"]'],
+  ["duplicate ID", '["22_change_journal_activate", "22_other"]'],
+  ["scheduled ID", '["21_other"]'],
+  ["scheduled key", '["21_change_journal_prepare"]'],
+  ["fourth argument", '["22_change_journal_activate"], []'],
+] as const)
+  test(`operator migration list refuses ${name}`, () => {
+    const source = `migrateProductSteps("private_hosted_migrations", {
+      "21_change_journal_prepare": prepare,
+    }, ${operators});`;
+    assert.throws(
+      () => parseProductMigrationMarkers(source, "private_hosted_migrations"),
+      /sql-schema-expectations-invalid/,
+    );
+  });
 
 for (const [name, source] of [
   ["missing call", "const unrelated = {};"],
@@ -142,6 +183,32 @@ test("all six expectations derive from the actual candidate registries and suppl
     historySchemaMigrations.map((entry) => entry.name),
   );
   assert.deepEqual(expectations.find((entry) => entry.namespace === "home")!.expected, ["73"]);
+  const hosted = expectations.find((entry) => entry.namespace === "hosted")!;
+  assert.ok(hosted.expected.includes("21_change_journal_prepare"));
+  assert.ok(!hosted.expected.includes("22_change_journal_activate"));
+  assert.deepEqual(hosted.optional, ["22_change_journal_activate"]);
+  for (const applied of [
+    [...hosted.expected],
+    [...hosted.expected, "22_change_journal_activate"],
+  ]) {
+    const observation = observeSqlVersions(hosted, applied);
+    assert.equal(observation.status, "ready");
+    assert.deepEqual(observation.pending, []);
+    assert.deepEqual(observation.unexpected, []);
+  }
+  assert.equal(
+    observeSqlVersions(
+      hosted,
+      [...hosted.expected, "22_change_journal_activate"].filter(
+        (key) => key !== "21_change_journal_prepare",
+      ),
+    ).status,
+    "pending",
+  );
+  assert.equal(
+    observeSqlVersions(hosted, [...hosted.expected, "22_wrong_activation"]).status,
+    "incompatible",
+  );
   for (const [namespace, sourcePath, journal] of [
     [
       "hosted",
@@ -157,7 +224,19 @@ test("all six expectations derive from the actual candidate registries and suppl
     const source = await readFile(resolve(root, sourcePath), "utf8");
     assert.deepEqual(
       expectations.find((entry) => entry.namespace === namespace)!.expected,
-      parseProductMigrationMarkers(source, journal),
+      parseProductMigrationMarkers(
+        source,
+        journal,
+        namespace === "cloud"
+          ? await readFile(
+              resolve(
+                root,
+                ".upstream/apps/hosted/cloud/src/implementation/cloud-migration-runner.ts",
+              ),
+              "utf8",
+            )
+          : undefined,
+      ),
     );
   }
 });

@@ -77,12 +77,11 @@ index 4147d98..94da1fb 100644
            : false;
        return yield* project({
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
-index 859cee4..6e27d1d 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
 +++ b/apps/hosted/server/src/implementation/resource-policy.ts
-@@ -564,10 +564,15 @@ export const visibleAccountsAs = (actor: ResourceAuthority, accounts: readonly A
- export const visibleApps = (apps: readonly App[]) =>
-   Effect.flatMap(currentResourceAuthority, (actor) => visibleAppsAs(actor, apps));
+@@ -583,10 +583,15 @@
+     return apps.filter((app) => usable.has(app.id));
+   });
  /** {@link visibleApps} for an actor already resolved in this operation. */
 -export const visibleAppsAs = (actor: ResourceAuthority, apps: readonly App[]) =>
 -  Effect.map(visibleAppsWithAccessAs(actor, apps), (visible) => visible.apps);

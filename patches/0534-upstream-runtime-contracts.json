@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-upstream-runtime-contracts",
+  "file": "0534-upstream-runtime-contracts.patch",
+  "content_sha256": "541d6c7a92dfba6e361991b1d9c5c0854d44c64c3b96a5fcd281f18d688d5cb4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

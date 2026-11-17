@@ -1,7 +1,7 @@
 {
   "identity": "basalt-human-in-the-loop",
   "file": "0074-human-in-the-loop.patch",
-  "content_sha256": "7105b303268c20b085974ee546a4fd68e0c875ef638b448e028efd76587e6e4f",
+  "content_sha256": "fa1968d76a37020eac64d570e257a8ee7ce1b24ac6771cbc5cbc6ef7749b41a5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

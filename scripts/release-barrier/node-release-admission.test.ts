@@ -6,6 +6,11 @@ import type { HomeMigrationIdentity, HomeSchemaResult } from "./home-schema-oper
 
 for (const { version, baselineInputHash, sourceInputHash } of [
   {
+    version: "8.0.76 after the scale-out release",
+    baselineInputHash: "5120df81c4faab06",
+    sourceInputHash: "3c41c454d80d91de",
+  },
+  {
     version: "8.0.73",
     baselineInputHash: "36a7ce7f37bea4a5",
     sourceInputHash: "526fa60bed0df442",
@@ -75,6 +80,14 @@ for (const { version, baselineInputHash, sourceInputHash } of [
         false,
         "Controller/bind retain the root image; its source hash is not a fleet baseline",
       );
+    if (sourceInputHash === "3c41c454d80d91de")
+      for (const baselineInputHash of [
+        "526fa60bed0df442",
+        "59a7663b4fbc8e4a",
+        "b669a1335e786091",
+        "1e94cc79d7fa50a4",
+      ])
+        assert.equal(admit({ ...identity, baselineInputHash }, info, before), false);
     for (const applied_version of [null, 14, 17])
       assert.equal(admit(identity, info, { ...before, applied_version }), false);
     assert.equal(admit(identity, { ...info, target_version: 17 }, before), false);
