@@ -52,7 +52,12 @@ for (const [originalName, adaptedName, originalSha256, reindent] of [
 ] as const) {
   test(`${adaptedName} preserves the immutable original and all code edits`, () => {
     const original = read(`retired/${originalName}.patch`);
-    const adapted = read(`patches/${adaptedName}.patch`);
+    const location = ["0649-node-no-postwrite-replay", "0650-node-generation-submission"].includes(
+      adaptedName,
+    )
+      ? "retired"
+      : "patches";
+    const adapted = read(`${location}/${adaptedName}.patch`);
     assert.equal(createHash("sha256").update(original).digest("hex"), originalSha256);
     const edits = (patch: string, removeExtraIndent = false) => {
       let retryHandler = false;
@@ -80,3 +85,63 @@ for (const [originalName, adaptedName, originalSha256, reindent] of [
     assert.deepEqual(edits(adapted, reindent), edits(original));
   });
 }
+
+test("the 8.0.76 replay adaptation retains all prior edits within the upstream attempt wrapper", () => {
+  const original = read("retired/0649-node-no-postwrite-replay.patch");
+  const adapted = read("patches/0661-node-no-postwrite-replay.patch");
+  assert.equal(
+    createHash("sha256").update(original).digest("hex"),
+    "acfdb8d1b7b6f1e70e181e4655befe10a06b1df73a416c59103c1ec010d7b3e2",
+  );
+  const edits = (patch: string) =>
+    patch
+      .split("\n")
+      .filter((line) => line.startsWith("diff --git ") || /^[+-]/.test(line))
+      .map((line) =>
+        line
+          .replace(
+            "withUpstreamAttemptProvider(m.newUpstreamAttemptContext(ctx), provider)",
+            "m.newUpstreamAttemptContext(ctx)",
+          )
+          .replace(
+            "withUpstreamAttemptProvider(m.newGenerationAttemptContext(ctx), provider)",
+            "m.newGenerationAttemptContext(ctx)",
+          ),
+      );
+  assert.deepEqual(edits(adapted), edits(original));
+  assert.match(
+    adapted,
+    /\+\s*ctx = withUpstreamAttemptProvider\(m.newGenerationAttemptContext\(ctx\), provider\)/,
+  );
+});
+
+test("the 8.0.76 generation adaptation keeps all prior regressions and unrelated edits byte-identical", () => {
+  const original = read("retired/0650-node-generation-submission.patch");
+  const adapted = read("patches/0662-node-generation-submission.patch");
+  assert.equal(
+    createHash("sha256").update(original).digest("hex"),
+    "c84bb8361bd862612183f1b07abd03ecc924d2c7f9ff580586ca7427be1b0f16",
+  );
+  const sections = (patch: string) =>
+    new Map(
+      patch
+        .split("diff --git ")
+        .slice(1)
+        .map((section) => [section.split("\n")[0]!.split(" b/")[1]!, section]),
+    );
+  const before = sections(original);
+  const after = sections(adapted);
+  const adaptedFiles = new Set([
+    "internal/runtime/executor/codex_executor_stream.go",
+    "internal/runtime/executor/codex_executor_terminal.go",
+    "internal/runtime/executor/codex_websockets_stream.go",
+  ]);
+  for (const [path, section] of before) {
+    assert.ok(after.has(path), path);
+    if (!adaptedFiles.has(path)) assert.equal(after.get(path), section, path);
+  }
+  assert.deepEqual(
+    [...after.keys()].filter((path) => !before.has(path)),
+    ["internal/runtime/executor/codex_bootstrap_provenance_retry_after_test.go"],
+  );
+});
