@@ -27,6 +27,7 @@ import { workosSource, withWorkOSSignIn } from "./workos.ts";
 import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
 import { canvaSource } from "./canva.ts";
+import { exaSource } from "./exa.ts";
 import { plaidSource, withPlaidAccess } from "./plaid.ts";
 import cloudflareSource from "./cloudflare.json" with { type: "json" };
 import { obsidian } from "./obsidian/index.ts";
@@ -153,6 +154,11 @@ export async function handleCatalog(
   if (relative === "apps/spotify.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(spotifySource)),
+      { headers },
+    );
+  if (relative === "apps/exa.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(exaSource)),
       { headers },
     );
   const added = [...additions, ...retiredSources(new URL(request.url).origin)].find(
