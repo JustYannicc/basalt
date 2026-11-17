@@ -26,7 +26,8 @@ export async function capturePoolImage(source: NodeJS.ProcessEnv, fetcher: Fetch
   if (!source.BASALT_POOL_IMAGE_RECEIPT) throw new Error("Missing output path");
   writeFileSync(source.BASALT_POOL_IMAGE_RECEIPT, JSON.stringify(receipt), {
     mode: 0o600,
-    flag: "wx",
+    // Every sequential Alchemy phase refreshes the receipt in this runner's private directory.
+    flag: "w",
   });
 }
 

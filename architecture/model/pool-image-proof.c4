@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Sequential release phases refresh their publication receipt in one isolated runner directory. After the root runtime is retired, post-deploy image verification checks every fleet application bound on the PoolWorker against its own immutable configured digest and requires a running instance. Missing, foreign, duplicate or unhealthy evidence refuses. Recorded recovery still proves its exact old container and never substitutes a fleet. The read-only PR probe exercises the same production image verifier with native baseline identity."
+    }
+  }
+}

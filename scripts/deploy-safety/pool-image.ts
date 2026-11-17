@@ -10,8 +10,11 @@ import {
   type Fetcher,
 } from "./http.ts";
 import { waitForPoolStatus } from "../pool-readiness.ts";
-
-class PoolImagePending extends SafetyGateError {}
+import {
+  assertBoundFleetImages,
+  PoolImagePending,
+  type PoolImageObservation,
+} from "./pool-image-fleet.ts";
 
 export function poolImageReceipt(value: unknown, candidate: string) {
   const receipt = record(value, "Pool image publication receipt");
@@ -56,7 +59,7 @@ export async function assertPoolImage(
   fetcher: Fetcher = fetch,
 ) {
   const receipt = poolImageReceipt(value, candidate);
-  return { ...receipt, ...(await assertImages(receipt, credentials, fetcher, receipt)) };
+  return { ...receipt, ...(await assertPoolImageTarget(receipt, receipt, credentials, fetcher)) };
 }
 
 export interface ContainerImageTarget {
@@ -66,14 +69,30 @@ export interface ContainerImageTarget {
 }
 
 /** Recovery must prove old instances before it can restore the old Worker and its input hash. */
-export function assertContainerImage(
+export async function assertContainerImage(
   target: ContainerImageTarget,
   credentials: CloudflareCredentials,
   fetcher: Fetcher = fetch,
 ) {
   if (!target.applicationId || !target.accountId || !/^sha256:[a-f0-9]{64}$/.test(target.digest))
     throw new SafetyGateError("Container image recovery target is invalid");
-  return assertImages(target, credentials, fetcher);
+  return { ...target, ...(await assertImages(target, credentials, fetcher)) };
+}
+
+export async function assertPoolImageTarget(
+  target: ContainerImageTarget,
+  worker: { workerName: string; inputHash: string },
+  credentials: CloudflareCredentials,
+  fetcher: Fetcher = fetch,
+) {
+  if (
+    !target.applicationId ||
+    !target.accountId ||
+    !/^sha256:[a-f0-9]{64}$/u.test(target.digest) ||
+    !/^[a-f0-9]{16}$/u.test(worker.inputHash)
+  )
+    throw new SafetyGateError("Pool image target or Worker input is invalid");
+  return assertImages(target, credentials, fetcher, worker);
 }
 
 async function assertImages(
@@ -81,10 +100,12 @@ async function assertImages(
   credentials: CloudflareCredentials,
   fetcher: Fetcher,
   worker?: { workerName: string; inputHash: string },
-) {
+  allowEmpty = false,
+): Promise<PoolImageObservation> {
   if (receipt.accountId !== credentials.accountId)
     throw new SafetyGateError("Pool image receipt belongs to another account");
-  const base = `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/containers/applications/${encodePathSegment(receipt.applicationId)}`;
+  const applications = `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/containers/applications/`;
+  const base = applications + encodePathSegment(receipt.applicationId);
   const get = async (url: string, label: string) =>
     cloudflareResult(
       (
@@ -104,6 +125,7 @@ async function assertImages(
     receipt.digest,
     "application",
   );
+  let bindings: unknown[] | undefined;
   if (worker) {
     const settings = record(
       (
@@ -116,6 +138,7 @@ async function assertImages(
     );
     if (!Array.isArray(settings.bindings))
       throw new SafetyGateError("Pool Worker bindings are missing");
+    bindings = settings.bindings;
     const hashes = settings.bindings
       .map((binding) => record(binding, "Pool Worker binding"))
       .filter((binding) => binding.name === "POOL_IMAGE_HASH");
@@ -150,8 +173,24 @@ async function assertImages(
     const info = record(reply.resultInfo, "Pool instance pagination");
     const next = info.next_page_token;
     if (next === undefined || next === "") {
-      if (ids.size === 0) throw new PoolImagePending("Pool has no running instance to verify");
-      return { ...receipt, instances: [...ids] };
+      if (ids.size === 0 && bindings)
+        return assertBoundFleetImages(
+          bindings,
+          receipt,
+          async (id) =>
+            (await get(applications + encodePathSegment(id), "pool fleet application")).result,
+          (id, digest) =>
+            assertImages(
+              { ...receipt, applicationId: id, digest },
+              credentials,
+              fetcher,
+              undefined,
+              true,
+            ),
+        );
+      if (ids.size === 0 && !allowEmpty)
+        throw new PoolImagePending("Pool has no running instance to verify");
+      return { instances: [...ids] };
     }
     if (typeof next !== "string" || tokens.has(next))
       throw new SafetyGateError("Pool instance pagination is inconsistent");
