@@ -303,9 +303,13 @@ export async function handoffWorker(
       expectedDigest?: string;
       update?: import("../../src/pool/runtime-fleet/image-update.ts").ImageUpdateIntent;
       pool?: string;
+      nonce?: string;
+      operator?: string;
+      at?: number;
+      expiresAt?: number;
     } = {},
   ) => {
-    const at = Date.now();
+    const at = fields.at ?? Date.now();
     return worker.runtimeHandoff(
       new Request("http://operations/runtime-handoff", {
         method: "POST",
@@ -315,7 +319,7 @@ export async function handoffWorker(
             action,
             ...fields,
             at,
-            expiresAt: at + 60_000,
+            expiresAt: fields.expiresAt ?? at + 60_000,
           }),
         }),
       }),

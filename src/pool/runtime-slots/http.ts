@@ -1,3 +1,4 @@
+import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import {
   type ProviderObservationTarget,
   type observeBoundProvider,
@@ -22,6 +23,8 @@ import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/ima
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
 
 export interface HandoffFleet {
+  crash?(command: RuntimeCrashCommand): Promise<unknown>;
+  inspectCrash?(identity: SlotIdentity, nonce: string): Promise<unknown>;
   observeProvider?(
     target: ProviderObservationTarget,
     signal?: AbortSignal,
@@ -80,6 +83,14 @@ export async function handleRuntimeHandoff(
       await fleet?.assertPrimaryChange?.(value.action);
     let result: unknown;
     switch (value.action) {
+      case "runtime-crash":
+        if (!fleet?.crash) throw new SlotRefused("selection");
+        result = await fleet.crash(value);
+        break;
+      case "runtime-crash-inspect":
+        if (!fleet?.inspectCrash) throw new SlotRefused("selection");
+        result = await fleet.inspectCrash(value.identity, value.nonce);
+        break;
       case "provider-observe":
         if (!fleet?.observeProvider) throw new Error("Provider observation unavailable");
         result = await fleet.observeProvider(value.target, request.signal);
