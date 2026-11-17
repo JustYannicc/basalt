@@ -182,9 +182,15 @@ async function assertImages(
     throw new SafetyGateError("Candidate image input is not a 16-hex image input");
   const fleet = bindings && boundFleet(bindings, receipt.applicationId);
   // Once a fleet is bound, the release pins the root to its baseline image, so a root instance
-  // proves nothing about this candidate. A release then proves the fleet; the baseline probe, which
-  // has no candidate input, keeps the root shortcut while the root still serves.
-  if (!fleet || worker?.candidateImageInput === undefined) {
+  // proves this candidate only when the root's own input (already matched to POOL_IMAGE_HASH) is the
+  // candidate's: an unchanged pool image is never promoted and the root keeps serving it. Otherwise
+  // a release proves the fleet. The baseline probe, which has no candidate input, keeps the root
+  // shortcut while the root still serves.
+  if (
+    !fleet ||
+    worker?.candidateImageInput === undefined ||
+    worker.inputHash === worker.candidateImageInput
+  ) {
     const instances = await listInstances(get, account, receipt.applicationId, {
       label: "Pool",
       digest: receipt.digest,

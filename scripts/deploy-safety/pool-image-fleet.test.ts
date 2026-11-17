@@ -287,3 +287,17 @@ test("without a bound fleet a release keeps the root proof of its published dige
   const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher, "c".repeat(16));
   assert.equal(result.verifiedPath, "root");
 });
+
+test("an unchanged pool image still serving from the root verifies through the root with a fleet bound", async () => {
+  // A bootstrapped fleet binds reference-hash inputs that never equal the candidate's context input.
+  const f = fixture({ instances: { root: [instance("root", "1")], blue: [], green: [] } });
+  const result = await assertPoolImage(
+    receipt,
+    candidate,
+    credentials,
+    f.fetcher,
+    receipt.inputHash,
+  );
+  assert.equal(result.verifiedPath, "root");
+  assert.deepEqual(result.instances, ["root-instance"]);
+});
