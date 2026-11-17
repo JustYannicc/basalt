@@ -1,6 +1,6 @@
 import { digest } from "./backend-users.ts";
 import { modelKeyScope } from "./key-scope.ts";
-import { policyHeader, policyUsePrefix } from "./membership-contract.ts";
+import { modelUseAssertionTtlMs, policyHeader, policyUsePrefix } from "./membership-contract.ts";
 import { NativeMemberships } from "./membership.ts";
 import type { RefusalIdentity } from "./gateway-failure.ts";
 import { signEnvelope } from "./token.ts";
@@ -71,7 +71,7 @@ export async function modelMembership(
         await signEnvelope(signingKey, policyUsePrefix, {
           pool,
           revision: policy.revision,
-          expiresAt: Date.now() + 2 * 60 * 60_000,
+          expiresAt: Date.now() + modelUseAssertionTtlMs,
         }),
       );
     }
