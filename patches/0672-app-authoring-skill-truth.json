@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-authoring-skill-truth",
+  "file": "0672-app-authoring-skill-truth.patch",
+  "content_sha256": "a6abd6561da4a3b4e172a14f89da2b4fc2cde77e37a7bb08236b3effa05b1677",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

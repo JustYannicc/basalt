@@ -1,0 +1,399 @@
+diff --git a/packages/app-templates/executor/skills/app-authoring/SKILL.md b/packages/app-templates/executor/skills/app-authoring/SKILL.md
+--- a/packages/app-templates/executor/skills/app-authoring/SKILL.md
++++ b/packages/app-templates/executor/skills/app-authoring/SKILL.md
+@@ -14,10 +14,13 @@ the framework. An app's installed name is separate from its source definition.
+ 
+ With a shell, prefer the **local CLI path** in [deploy.md](deploy.md): keep the
+ source in a directory, edit it with your file tools, and deploy with
+-`executor apps` (npm `executor@beta`). The pinned `apps` package from npm
+-supplies types and `framework-reference.json`, so writing code needs no MCP.
+-Use MCP only to connect accounts and call the deployed app. Without a shell,
+-build through `execute`; source then travels as data inside tool calls.
++`executor apps` (npm `executor@beta`). When npm has the pinned `apps` version,
++that package supplies types and `framework-reference.json`, so writing code
++needs no MCP. When it does not, read signatures and examples with
++`framework.search` and `framework.describe`
++([deploy.md](deploy.md#type-check-locally)). Use MCP to connect accounts and
++call the deployed app. Without a shell, build through `execute`; source then
++travels as data inside tool calls.
+ 
+ ## Read only the topics needed
+ 
+@@ -33,6 +36,7 @@ build through `execute`; source then travels as data inside tool calls.
+ | Handle webhooks                                              | [webhooks.md](webhooks.md)                             |
+ | Emit events that MCP clients such as ChatGPT subscribe to    | [events.md](events.md)                                 |
+ | Run workflows or scheduled mutations                         | [workflows.md](workflows.md)                           |
++| Call another app, request a model from a pool, use a drive   | [apps-models-drive.md](apps-models-drive.md)           |
+ | Upgrade an app to a newer `apps` version                     | [upgrades/0.0.1-beta.90.md](upgrades/0.0.1-beta.90.md) |
+ | Upgrade an app from before `apps@0.0.1-beta.38`              | [upgrades/0.0.1-beta.38.md](upgrades/0.0.1-beta.38.md) |
+ 
+diff --git a/packages/app-templates/executor/skills/app-authoring/apps-models-drive.md b/packages/app-templates/executor/skills/app-authoring/apps-models-drive.md
+new file mode 100644
+--- /dev/null
++++ b/packages/app-templates/executor/skills/app-authoring/apps-models-drive.md
+@@ -0,0 +1,212 @@
++## Call another app
++
++An app can call tools of another installed app it declares as a dependency.
++Declare it in the requirements, next to `app` and `user` accounts. Keep
++`as const` so the literal `scope` and `kind` values type-check:
++
++```ts
++import { defineApp, object, query, router, string } from "apps";
++
++const requirements = {
++  dependencies: {
++    tasks: {
++      scope: "user", // "app": one connection for everyone; "user": each member saves their own
++      tools: {
++        search: { kind: "query" },
++        create: { kind: "mutation" },
++      },
++    },
++  },
++} as const;
++
++const find = query(
++  { input: object({ target: string(), text: string() }) },
++  async (ctx, { target, text }) =>
++    ctx.apps.call({ connection: "tasks", target, tool: "search", kind: "query", input: { text } }),
++);
++
++export default defineApp(requirements, { tools: router({ find }) });
++```
++
++A dependency name has 1 to 48 letters, digits, `_` or `-` and starts with a
++letter. `tools` lists every target tool the app may call with its `kind`;
++optional `inputSchema` and `outputSchema` (JSON Schema) are checked on every
++call. `cardinality: "many"` lets one dependency hold a connection per target
++app; the default `"one"` holds a single target.
++
++A declaration grants nothing until someone saves a connection that binds it to
++a target app. On hosted Executor use the management app:
++
++```js
++return await tools.executor.appConnections.save({
++  path: {
++    organization: "<approved-organization-id>",
++    app: "<calling-app-id>",
++    dependency: "tasks",
++  },
++  body: { scope: "user", target: "<target-app-id>", revision: 0 },
++});
++```
++
++`revision` is the connection's current revision: `0` creates it, and each save
++returns the next one. A stale value fails with `AppConnectionConflict`.
++`appConnections.list`, `update` (with `enabled`) and `remove` (with `scope` and
++`revision` in `query`) manage saved connections; with `cardinality: "many"`,
++also pass `target`. An `app` connection needs edit access to the calling app; a
++`user` connection needs only use of it. Either needs use of the target app.
++
++The call runs as the person who saved the connection, with the accounts the
++connection names in `accounts`, keyed by the scope and name of the target's
++account requirements: `{ app: { gmail: ["<account-id>"] }, user: { notion:
++["<account-id>"] } }`. `app` is required, even as `{}`. With a `user` key, even
++`{}`, the target runs as that
++person and every one of its requirements must be named. Leave `user` out to run
++the target as the app, which then needs only its `app` requirements. A target
++with no account requirements needs no `accounts`. Saving does not check this;
++a missing account fails the call with `denied`. Read the target's requirements
++with `apps.get` first.
++
++`ctx.apps.call({ connection, target, tool, kind, input })` returns the target
++tool's result. `target` is the target app's ID and must match the saved
++connection; pass it in the tool's or workflow's input, or store it in app data.
++A call fails with `AppCallFailed`, whose `reason` says why, and is never resent
++automatically:
++
++- `denied`: the tool or kind is not declared, the connection is disabled or
++  names another target, a `user` dependency was called without a caller, an
++  account is missing, the target asked for approval or is disabled, or the
++  target tool failed.
++- `connection_missing`: no connection is saved for this dependency, scope and caller.
++- `stale`: the calling app was redeployed during the call, or the dependency's
++  declaration changed since the connection was saved. Save it again.
++- `invalid_input` or `invalid_output`: the values do not match the declared schemas.
++- `effects_unavailable`: a mutation was called where writes are not allowed, or
++  the target's build is too old to accept one; see below.
++- `in_progress`, `identity_conflict` or `outcome_unknown`: a write with the same
++  step identity is running, was sent with other input, or may have happened.
++  Check the target before doing anything else.
++- `device_offline`: the target needs an account reached through a device that
++  is offline.
++- `depth_exceeded`: calls nested more than eight deep.
++
++A query may call only `query` tools. A `mutation` tool can be called only from
++a workflow step: `ctx.step.do("name", (step) => step.apps.call({ ... }))`, or a
++mutation that `ctx.step.runMutation` runs. The step's identity becomes the
++write's receipt, so a replayed step returns the first result instead of writing
++again. A mutation called from a tool, schedule or webhook handler fails with
++`effects_unavailable` before anything is sent.
++
++A dependency with `scope: "user"` needs a caller, so app schedules and other
++app-scope work cannot use it. Nobody can answer an approval inside another
++app's call: a target tool whose approval returns `user-approval` is refused
++with `denied`, not paused. A `never-ask` tool policy for that app, tool or
++account, optionally limited to one workflow, approves it instead. Most catalog
++apps ask before every mutation, so a cross-app write usually needs such a
++policy first. People create tool policies in the signed-in dashboard; the
++management app can only list them.
++
++## Request a model
++
++Hosted Executor can lend an app a model through a model pool. Declare a model
++requirement, then call it from a mutation:
++
++```ts
++import { defineApp, mutation, object, router, string, type MutationContext } from "apps";
++
++const requirements = {
++  models: {
++    writer: { scope: "user", limits: { maxOutputTokens: 400 } },
++  },
++} as const;
++
++const summarize = mutation(
++  { input: object({ text: string() }) },
++  async (ctx: MutationContext<typeof requirements>, { text }) => {
++    const reply = await ctx.models.writer.request({
++      messages: [
++        { role: "system", content: "Summarize in one sentence." },
++        { role: "user", content: text },
++      ],
++    });
++    return { summary: reply.choices[0].message.content };
++  },
++);
++
++export default defineApp(requirements, { tools: router({ summarize }) });
++```
++
++A request is one non-streaming Chat Completions exchange: `messages` (roles
++`system`, `developer`, `user`, `assistant`), and optional `model`, `max_tokens`,
++`temperature` and `response_format` (`text`, `json_object` or `json_schema`).
++The reply has one `choices` entry and `usage` when the provider reports it.
++Annotate the handler's context with `MutationContext<typeof requirements>`, or
++`AnyScopeMutationContext<typeof requirements>` for one schedules also run, so
++`ctx.models` has the declared names.
++
++A request needs a model name. The first of the request's `model`, the binding's
++`model` and the requirement's `model` is used; with none, the request fails
++with `invalid_request`. Each limit (`timeoutMs`, `maxInputBytes`,
++`maxOutputTokens`) is the lower of the requirement's and the binding's. The
++binding's default to 30 seconds, 32,768 bytes and 800 tokens, so only a binding
++can raise them. Without `max_tokens` a request asks for the output limit; a
++larger `max_tokens` fails with `invalid_request`.
++
++A requirement does nothing until it is bound to a pool. `models.list` returns
++the app's declarations, bindings and the pools you can use. Bind one, naming a
++model the pool serves:
++
++```js
++return await tools.executor.models.bind({
++  path: { organization: "<approved-organization-id>", app: "<app-id>", requirement: "writer" },
++  body: { scope: "user", pool: "<pool-app-id>", model: "<model-name>" },
++});
++```
++
++`scope` must match the declaration. An `app` binding needs edit access to the
++app and serves everyone; each member binds a `user` requirement for themselves.
++`limits` in the body sets the binding's limits. `models.unbind`, with `scope`
++in `query`, removes a binding. Usage is charged to the bound pool.
++
++A `user` requirement needs a caller: app schedules and app-account webhooks get
++`denied`, so give background work an `app` requirement. Queries have no
++`ctx.models`. Every failure is `ModelRequestFailed` with a `reason`:
++`durable_steps_unavailable` inside a workflow, because replaying a step could
++send and charge a request twice (start a mutation outside the workflow
++instead), or `binding_missing`, `denied`, `pool_unavailable`, `cap_exceeded`,
++`invalid_request`, `invalid_response`, `cancelled`, `timeout` or
++`outcome_unknown`. None is retried automatically; after `timeout` or
++`outcome_unknown` the request may have been charged.
++
++## Use the app's drive
++
++On Executor Cloud an app that declares `drive: true` in its requirements gets
++its own versioned file store as `ctx.drive`. Each change is a commit, identified
++by a 40-character `oid`. Other hosts answer every drive call with
++`DriveRequestFailed` and `reason: "unavailable"`.
++
++Queries read with `list`, `read`, `search`, `history`, `attachment` and
++`devices`. Mutations and webhooks also write with `write`, `apply`, `move`,
++`remove`, `restore` and `resolve`. A write from a query fails with `denied`.
++
++```ts
++const page = await ctx.drive.list({ path: "notes" });
++const note = await ctx.drive.read({ path: "notes/today.md" });
++const result = await ctx.drive.write({
++  base: page.at,
++  path: "notes/today.md",
++  content: "Ship it.",
++  mode: note === null ? "create" : "edit",
++  operation: "note-today-1",
++});
++```
++
++Every write names the `base` commit it edits and an `operation` key of at most
++128 characters. Retrying the same change with the same key returns the first
++result instead of writing again; use a new key for each new change.
++`receipt({ operation })` reads a write's outcome later. A write returns
++`landed` with the new `oid`; changes since `base` that touch other content
++merge. It returns `conflict` only for paths that clash, each with a `reason` of
++`content` or `unsupported`. Read again and retry, or settle them with
++`resolve`. `apply` changes up
++to 100 files at once. `devices()` lists each device grant's last sync and the
++head it saw then; a device is up to date when that head is the drive's `head`.
+diff --git a/packages/app-templates/executor/skills/app-authoring/deploy.md b/packages/app-templates/executor/skills/app-authoring/deploy.md
+--- a/packages/app-templates/executor/skills/app-authoring/deploy.md
++++ b/packages/app-templates/executor/skills/app-authoring/deploy.md
+@@ -166,17 +166,25 @@ push a larger history in several pushes. The CLI does this for you. A pushed sou
+ over the limits above cannot be read or deployed. The limits apply to the commit being
+ read, not to the history before it.
+ 
+-Type-check locally before deploying. A deploy compiles the app and reports
+-build errors, but it does not type-check. The framework is published to npm as
+-`apps` under the `beta` tag. The `latest` tag and the `1.0.0-beta` versions are
+-unrelated packages, so install only the exact version pinned in `package.json`,
+-never `apps@latest` or an unpinned `apps`:
++### Type-check locally
++
++Type-check locally before deploying when you can. A deploy compiles the app and
++reports build errors, but it does not type-check. Framework releases are
++published to npm as `apps` under the `beta` tag. The `latest` tag and the
++`1.0.0-beta` versions are unrelated packages, so install only the exact version
++pinned in `package.json`, never `apps@latest` or an unpinned `apps`.
++
++A host can run its own build of the framework that npm does not have, such as a
++version with a `-basalt.` suffix. Check first: `npm view` prints the version
++only when npm has it. The chain below stops before installing when it does not:
+ 
+ ```sh
+ cd hello
+-npm install --no-package-lock
+-npx -y -p typescript@7 tsc --ignoreConfig --noEmit --strict --skipLibCheck \
+-  --module nodenext --moduleResolution nodenext --target es2022 index.ts
++version="$(node -p 'require("./package.json").dependencies.apps')" &&
++  [ -n "$(npm view "apps@$version" version 2>/dev/null)" ] &&
++  npm install --no-package-lock &&
++  npx -y -p typescript@7 tsc --ignoreConfig --noEmit --strict --skipLibCheck \
++    --module nodenext --moduleResolution nodenext --target es2022 index.ts
+ ```
+ 
+ For a React UI, declare `@types/react@19` and `@types/react-dom@19` in
+@@ -207,9 +215,12 @@ npx -y -p typescript@7 tsc --ignoreConfig --noEmit --strict --skipLibCheck \
+   --jsx react-jsx index.ts ui/main.tsx ui/assets.d.ts
+ ```
+ 
+-Executor offers no type check of its own, over MCP or otherwise. Without npm
+-access, check the source against `framework.describe` signatures, deploy, and
+-tell the user it was not type-checked.
++Executor offers no type check of its own, over MCP or otherwise. When npm does
++not have the pinned version, or you have no npm access, check the source
++against `framework.search` and `framework.describe`, which describe the exact
++version the host runs, deploy, and tell the user it was not type-checked. Do not
++type-check against a different `apps` version: its types differ from what the
++host builds.
+ 
+ Neither this check nor the build reads `tsconfig.json`; `--ignoreConfig` skips
+ it. A `tsconfig.json` is still useful for editors, but its `include` does not
+@@ -326,8 +337,9 @@ The scope is the organization's current one, `<slug>.executor.community`, such a
+ scope to the new slug before publishing again; the listing keeps its label.
+ The public listing points to the selected Git commit. Normal npm `dependencies`
+ are supported; `version` is optional author metadata and does not select an
+-Executor release. Apps cannot depend on other Executor apps; include the source
+-an app needs directly.
++Executor release. An app cannot import another Executor app's source as a
++package; include the source it needs directly, or call the other app's tools at
++run time as a dependency ([apps-models-drive.md](apps-models-drive.md)).
+ 
+ Copy a public app with `appManagement.copy`, using `from: { package, commit }`
+ and a new `name`. Owned apps use the same operation with `from: { app }`. This creates an independent app and Git repository with empty
+@@ -493,12 +505,15 @@ uses no longer applies.
+ 
+ Every call follows the active version, so nothing needs updating to pick up
+ new code. The next `execute` lists and calls the new tools. Activating a
+-version re-registers each webhook source's subscriptions on it in the
+-background, usually within seconds, without blocking tool calls; the app's
+-Webhooks tab shows their status. A manual (`setup`) subscription keeps its
+-callback URL, secret and setup fields while the activated version keeps the same
+-`signingSecret` and accepts the same `state` fields; changing either needs a new setup. It also deletes the saved settings of schedules
+-the new version no longer declares.
++version registers again, on the new version, the subscriptions Executor
++created when someone linked an account. This runs in the background, usually
++within seconds, and does not block tool calls; the app's Webhooks tab shows
++their status. A manual (`setup`) one of those keeps its callback URL, secret and
++setup fields while the activated version keeps the same `signingSecret` and
++accepts the same `state` fields; changing either needs a new setup. Activating
++also deletes the saved settings of schedules the new version no longer
++declares. Subscriptions created with the webhook `create` operation keep the
++version they were created on ([webhooks.md](webhooks.md)).
+ 
+ `apps.versions` lists retained versions. `apps.source` accepts an optional
+ `query.version` to read a specific version. `apps.activate` requires
+@@ -585,5 +600,7 @@ retained builds, configured copies, live discovery and tool calls. The local
+ catalog imports OpenAPI and remote MCP apps. Custom Add also generates GraphQL
+ apps. OAuth clients can be supplied or resolved through
+ DCR/CIMD; the host stores and refreshes grants. Private local/self-host app UI,
+-app data, webhook lifecycle and scheduled mutations are implemented. App-to-app
+-calls and `executor dev` remain deferred.
++app data, webhook lifecycle and scheduled mutations are implemented. Apps can
++call other apps' tools; on hosted Executor they can also request models from a
++pool, and on Cloud keep a drive ([apps-models-drive.md](apps-models-drive.md)).
++`executor dev` remains deferred.
+diff --git a/packages/app-templates/executor/skills/app-authoring/starter.md b/packages/app-templates/executor/skills/app-authoring/starter.md
+--- a/packages/app-templates/executor/skills/app-authoring/starter.md
++++ b/packages/app-templates/executor/skills/app-authoring/starter.md
+@@ -39,7 +39,8 @@ again when needed. Preserve unrelated files and edits.
+ 
+ With a shell and the CLI, read the same example from
+ `node_modules/apps/framework-reference.json`, the `examples` entry whose `id`
+-is `live-inbox`.
++is `live-inbox`, when npm has the pinned `apps` version; otherwise read it with
++`framework.describe` as above.
+ Write its `files` into a local app directory once, then edit and deploy them
+ with `executor apps` as described in [deploy.md](deploy.md). Over MCP only, keep one working copy and serialize its
+ content with JSON when preparing a tool payload. Do not rewrite valid TypeScript just
+diff --git a/packages/app-templates/executor/skills/app-authoring/webhooks.md b/packages/app-templates/executor/skills/app-authoring/webhooks.md
+--- a/packages/app-templates/executor/skills/app-authoring/webhooks.md
++++ b/packages/app-templates/executor/skills/app-authoring/webhooks.md
+@@ -50,7 +50,11 @@ operations. Create with a stable `key`, handler `name`, `config`, and an explici
+ `sourceAccount` for a collection requirement. Check the returned `status` and
+ `failure`. Retry failed or interrupted registration/cleanup with `reconcile`.
+ Remove a subscription before deleting its app or connected accounts.
+-Subscriptions pin their original version and account IDs; recreate to upgrade.
++A subscription created this way pins the version and account IDs it was
++created with; recreate it to move it to a newer version. The subscriptions
++Executor creates when someone links an account instead register again on each
++version the app activates; a manual (`setup`) one keeps its callback URL and
++secret while its setup still fits, as below.
+ Providers retry deliveries; Executor does not deduplicate or replay them.
+ `state` can be null during provider validation or cleanup after a lost
+ registration response. Local providers need a publicly reachable callback origin.
+diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+--- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
++++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+@@ -2,18 +2,19 @@
+ 
+ /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
+ export const executorSkillDigests: Readonly<Record<string, string>> = {
+-  "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
++  "app-authoring/SKILL.md": "9cf333e4d6f8f9b0eaf61a20e920fb6a0500bbeeb45721d775bce2da817244f7",
+   "app-authoring/accounts.md": "7d304cf09d9b717206e7526b361885933a58eba3a3919322ded22564d4db7b00",
+-  "app-authoring/deploy.md": "2df76fb22f6b0b04032c28c3b589199ca1aea91fd36548944ce797d32f8154af",
++  "app-authoring/apps-models-drive.md": "8429c4e8ab20e30f3a6e30250b8e858d7afe34ff1ad0b8a58afcda045c89579b",
++  "app-authoring/deploy.md": "9edee03712d9820c90169a3c466f27741e03997f36e81f9f171d189527a97779",
+   "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
+   "app-authoring/integrations.md": "b6686d96ac6225b86983b112deac510ddd2aa25e174a9f4c07ed59e99f199ab3",
+-  "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
++  "app-authoring/starter.md": "52e4574041596bf8dcc51d03f6f6c040d8fdc4bb728ee601efbbf07a669218bd",
+   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
+   "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
+   "app-authoring/ui.md": "a4262928891fcf81c2641311a97ec754f0a806b7035e3ff1cb50466115aa2359",
+   "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
+   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
+-  "app-authoring/webhooks.md": "8b6e4fa3fbc1641bfa741bc449d8ff1b1db7c7923c2ddec0a134be7a2f7de5d8",
++  "app-authoring/webhooks.md": "baecf861da492ce3b8b86ab1430d3f40cca966bb1d72115d7a34e3586cf70ed3",
+   "app-authoring/workflows.md": "5ade99c72458701fbc62b1681e4ce93366d9bd6abcb1cd0264d5f1466f07d33b",
+   "code-mode/SKILL.md": "683999bd21e33e53a0cc63fef2caace026e12e3f7c7544d5cf30da7d3cc45586",
+   "executor/SKILL.md": "d98a4bfa40ee0afbf8c31fac67b27b69c400ee2c3b434479c08deb72f0e07e99",
