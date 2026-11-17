@@ -15,7 +15,7 @@ import { runtimeReleaseClient } from "../runtime-release-client.ts";
 import { ordinaryReleaseWriter } from "../runtime-release-writer.ts";
 import { decodeApplication } from "../container-observation.ts";
 import type { ReleasePromotionAttempt } from "../runtime-release-promotion.ts";
-import { SlotRefused } from "../../../src/pool/runtime-slots/contract.ts";
+import { SlotIdentity, SlotRefused } from "../../../src/pool/runtime-slots/contract.ts";
 
 export async function runtimeReleaseClientFixture(
   fault?:
@@ -43,7 +43,7 @@ export async function runtimeReleaseClientFixture(
   const bridge: {
     setupMs: number;
     healthReplyMs: number;
-    healthReply?: (result: { identity: unknown; leaseMs: number }) => unknown;
+    healthReply?: (result: { identity: SlotIdentity; leaseMs: number }) => unknown;
   } = { setupMs: 0, healthReplyMs: 0 };
   let closes = 0;
   let promotion: ReleasePromotionAttempt | undefined;
@@ -175,7 +175,7 @@ export async function runtimeReleaseClientFixture(
                   if (!bridge.healthReply || response.status !== 200) return response;
                   const reply = Schema.decodeUnknownSync(
                     Schema.Struct({
-                      result: Schema.Struct({ identity: Schema.Unknown, leaseMs: Schema.Number }),
+                      result: Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number }),
                     }),
                   )(await response.json());
                   return Response.json({ result: bridge.healthReply(reply.result) });

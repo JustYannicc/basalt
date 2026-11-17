@@ -23,12 +23,13 @@ export type RuntimeCommandCall = (
   action: RuntimeCommandAction,
   mutation?: boolean,
   signal?: AbortSignal,
+  dispatched?: (requestedAt: number) => void,
 ) => Promise<unknown>;
 
 /**
  * One send only. An unknown response must be recovered through the retained operation's read path.
- * `dispatched` receives the monotonic time the request left over the already-open bridge, so a
- * caller bounding a remote lease never counts bridge setup against it.
+ * `dispatched` receives the monotonic time just before the request is handed to the already-open
+ * bridge, so a caller bounding a remote lease never counts bridge setup against it.
  */
 export async function sendRuntimeCommand(
   command: RuntimeHandoffCommand,

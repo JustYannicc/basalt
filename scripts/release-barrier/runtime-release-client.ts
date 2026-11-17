@@ -184,7 +184,7 @@ export const runtimeReleaseClient = (input: {
     const health = async () => {
       // The lease runs from dispatch over the open bridge, as the controller's own slot driver
       // bounds it; bridge setup from a CI runner alone can outlast the whole lease.
-      let requestedAt = Number.POSITIVE_INFINITY;
+      let requestedAt: number | undefined;
       const reply = await call({ action: "active-health" }, false, undefined, (at) => {
         requestedAt = at;
       });
@@ -192,8 +192,20 @@ export const runtimeReleaseClient = (input: {
         Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number }),
         reply,
       );
-      if (!(requestedAt + value.leaseMs > performance.now()))
-        throw new BarrierRefusal("runtime-release-health-expired", "PoolWorker");
+      const elapsedMs = requestedAt === undefined ? null : performance.now() - requestedAt;
+      if (elapsedMs === null || !(value.leaseMs > elapsedMs))
+        throw new BarrierRefusal("runtime-release-health-expired", "PoolWorker", {
+          fqn: "PoolWorker",
+          type: "Cloudflare.Worker",
+          // Old is the lease the controller granted, new is how long its reply took to arrive.
+          changed: [
+            {
+              path: "runtime-release.health.leaseMs",
+              old: value.leaseMs,
+              new: elapsedMs === null ? null : Math.ceil(elapsedMs),
+            },
+          ],
+        });
       const snapshot = await inspect();
       sameProvisioningValue(
         "runtime-release.healthy-selection",
