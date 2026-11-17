@@ -1,0 +1,430 @@
+diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
+--- a/e2e/tests/pool-account-view-cloud-read.spec.ts
++++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
+@@ -1,3 +1,4 @@
++import { inspectAccountViewTrace } from "../support/account-view-query-trace.ts";
+ import { sqlWireProof } from "../support/sql-wire-proof.ts";
+ import { appCallDelivery } from "../support/app-call-delivery.ts";
+ import { sqlCriticalPath } from "../support/sql-critical-path.ts";
+@@ -17,6 +18,16 @@
+ const Source = Schema.Struct({
+   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+ });
++const singleExecutionCeilings = { appGet: 20, appList: 12, health: 5, observations: 5 };
++// Measured in the forced head-change fallback: the fresh execution re-reads every source uncached.
++const freshExecutionCeilings = {
++  appGet: 76,
++  appList: 40,
++  health: 10,
++  observations: 10,
++  sqlExecute: 1062,
++};
++const fallbackRequestCeilings = { sqlExecute: 1239, sequentialRoundTrips: 1239 };
+ const Icon = Schema.Struct({ src: Schema.String });
+ const View = Schema.Struct({
+   accounts: Schema.Array(
+@@ -137,9 +148,9 @@
+                       content: `import { defineApp, query, object, router, boolean } from "apps";
+ import { providers } from "./providers.ts";
+ import { providerAccountView } from "./provider-account-view.ts";
+-const view = query({ input: object({ change: boolean().optional() }) }, async (ctx, input) => {
++const view = query({ input: object({ change: boolean().optional(), revoke: boolean().optional() }) }, async (ctx, input) => {
+   if (input.change) await ctx.fetch(${JSON.stringify(gate.origin + "/send")}, {
+-    method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({subject:"moving-head"}),
++    method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({subject:input.revoke ? "moving-head" : "measured-head"}),
+   });
+   return providerAccountView(ctx, {
+   isOwner: true, providers: [{id:"codex",name:"OpenAI"}],
+@@ -202,40 +213,68 @@
+         const wire = yield* sqlWireProof;
+         yield* browser.login(p.actors.owner);
+         yield* openPrivateApp(yield* waitForAppUrl(p.actors.owner, `${consumerPath}/ui`));
+-        for (const name of ["view", "viewAgain"]) {
++        const naturalExecutions: number[] = [];
++        for (const name of ["view", "viewAgain", "fallback"]) {
++          const forcedFallback = name === "fallback";
++          if (forcedFallback) yield* gate.hold("measured-head");
+           const trace = randomUUID().replaceAll("-", "");
+           yield* wire.begin();
+           const start = yield* Clock.currentTimeMillis;
+-          const reply = yield* browser.use("Read five selected provider accounts", (page) =>
+-            page.evaluate(
+-              ({ trace, name }) => {
+-                const context = JSON.parse(
+-                  document.getElementById("executor-context")?.textContent ?? "{}",
+-                );
+-                const start = performance.now();
+-                return fetch("/_executor/api/query", {
+-                  method: "POST",
+-                  headers: {
+-                    "content-type": "application/json",
+-                    traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
+-                  },
+-                  body: JSON.stringify({
+-                    version: context.version ?? context.deployment,
+-                    name,
+-                    input: {},
+-                  }),
+-                }).then((response) =>
+-                  response.json().then((body) => ({
+-                    status: response.status,
+-                    body,
+-                    milliseconds: performance.now() - start,
+-                    timing: response.headers.get("server-timing"),
+-                  })),
+-                );
+-              },
+-              { trace, name },
+-            ),
+-          );
++          const reading = yield* browser
++            .use("Read five selected provider accounts", (page) =>
++              page.evaluate(
++                ({ trace, name, change }) => {
++                  const context = JSON.parse(
++                    document.getElementById("executor-context")?.textContent ?? "{}",
++                  );
++                  const start = performance.now();
++                  return fetch("/_executor/api/query", {
++                    method: "POST",
++                    headers: {
++                      "content-type": "application/json",
++                      traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
++                    },
++                    body: JSON.stringify({
++                      version: context.version ?? context.deployment,
++                      name,
++                      input: { change },
++                    }),
++                  }).then((response) =>
++                    response.json().then((body) => ({
++                      status: response.status,
++                      body,
++                      milliseconds: performance.now() - start,
++                      timing: response.headers.get("server-timing"),
++                    })),
++                  );
++                },
++                { trace, name: forcedFallback ? "viewAgain" : name, change: forcedFallback },
++              ),
++            )
++            .pipe(Effect.forkChild);
++          if (forcedFallback) {
++            // Move the head after raw facts load, without holding a writer lock during the query.
++            yield* Effect.raceFirst(
++              gate.arrived("measured-head"),
++              Fiber.join(reading).pipe(
++                Effect.flatMap((reply) =>
++                  Effect.fail(
++                    new Error(`View completed before the head-change barrier: ${reply.status}`),
++                  ),
++                ),
++              ),
++            );
++            expect(
++              (yield* p.api.request(
++                p.actors.owner,
++                "PATCH",
++                `${p.prefix}/accounts/${accounts[0]}`,
++                { label: "Renamed during the measured fallback" },
++              )).status,
++            ).toBe(200);
++            yield* gate.release("measured-head");
++          }
++          const reply = yield* Fiber.join(reading);
+           const end = yield* Clock.currentTimeMillis;
+           const observedWires = yield* wire.end(trace);
+           yield* evidence.json(`${name}-sql-wire.json`, observedWires);
+@@ -268,36 +307,37 @@
+           expect(view.providers).toHaveLength(1);
+           expect(view.providers[0]!.name).toBe(view.accounts[0]!.nativeView.sourceApp.name);
+           expect(view.providers[0]!.icons).toEqual(view.accounts[0]!.nativeView.sourceApp.icons);
+-          const spans = yield* telemetry.query(trace).pipe(
++          if (forcedFallback)
++            expect(
++              view.accounts.find((account) => account.nativeAccountId === accounts[0])?.nativeView
++                .account.label,
++            ).toBe("Renamed during the measured fallback");
++          const completed = yield* telemetry.query(trace).pipe(
+             Effect.flatMap((result) => {
+-              const spans = result.data.map(({ span }) => span);
+-              const ids = new Set(spans.map((span) => span.spanId));
+               const server = reply.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
+-              return server !== undefined &&
+-                spans.some(
+-                  (span) => span.spanId === server && span.operationName === "http.server POST",
+-                ) &&
+-                spans.filter((span) => span.operationName === "runtime.app.rpc.release").length ===
+-                  6 &&
+-                spans.some((span) => span.operationName === "catalog.lookup") &&
+-                spans.every(
+-                  (span) =>
+-                    !span.operationName.startsWith("[missing parent") &&
+-                    (span.parentSpanId === null || ids.has(span.parentSpanId)),
+-                )
+-                ? Effect.succeed(result.data)
+-                : Effect.fail(
+-                    new Error("The completed query trace is partial or has missing parents"),
+-                  );
++              return Effect.try({
++                try: () => {
++                  const inspection = inspectAccountViewTrace(result.data, {
++                    traceId: trace,
++                    serverSpanId: server,
++                    sources: [5, 5],
++                    ...(forcedFallback ? { requiredExecutions: 2 as const } : {}),
++                  });
++                  return { spans: result.data, ...inspection };
++                },
++                catch: (cause) =>
++                  cause instanceof Error ? cause : new Error("Query trace validation failed"),
++              });
+             }),
+             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+           );
++          const { spans, executions } = completed;
+           const lookups = spans.filter(({ span }) => span.operationName === "catalog.lookup");
+           yield* evidence.json(`${name}-catalog-work.json`, { lookups: lookups.length, spans });
+           expect(
+             lookups,
+-            "One catalog lookup per view, without sharing it across views",
+-          ).toHaveLength(1);
++            "One catalog lookup per execution, without sharing it across executions",
++          ).toHaveLength(executions);
+           const work = Object.fromEntries(
+             [
+               "sql.execute",
+@@ -307,6 +347,7 @@
+               "sdk.accounts.health",
+               "sdk.accounts.observations",
+               "runtime.app.remote.invoke",
++              "sdk.data.query",
+             ].map((operation) => [
+               operation,
+               spans.filter(({ span }) => span.operationName === operation).length,
+@@ -315,6 +356,8 @@
+           const criticalPath = sqlCriticalPath(observedWires);
+           yield* evidence.json(`${name}-fresh-facts-work.json`, {
+             ...work,
++            executions,
++            counts: completed.counts,
+             criticalPath,
+             endToEndUpperBoundWith8msAddedToEachSql:
+               reply.milliseconds + criticalPath.sqlMillisAt8ms,
+@@ -322,16 +365,73 @@
+           expect(
+             criticalPath.sequentialRoundTrips,
+             "Conservative upper bound on sequential SQL round trips",
+-          ).toBeLessThanOrEqual(150);
+-          expect(work["sdk.apps.get"]).toBeLessThanOrEqual(20);
+-          expect(work["sdk.apps.list"]).toBeLessThanOrEqual(12);
+-          expect(work["sdk.accounts.health"]).toBe(5);
+-          expect(work["sdk.accounts.observations"]).toBe(5);
++          ).toBeLessThanOrEqual(
++            executions === 1 ? 150 : fallbackRequestCeilings.sequentialRoundTrips,
++          );
++          if (executions === 1) {
++            expect(work["sdk.apps.get"]).toBeLessThanOrEqual(singleExecutionCeilings.appGet);
++            expect(work["sdk.apps.list"]).toBeLessThanOrEqual(singleExecutionCeilings.appList);
++            expect(work["sdk.accounts.health"]).toBe(singleExecutionCeilings.health);
++            expect(work["sdk.accounts.observations"]).toBe(singleExecutionCeilings.observations);
++          } else {
++            // Cached host effects keep the request's span context, so ancestry alone misses their reads.
++            const executionWork = completed.queries.map((query) => {
++              const start = Date.parse(query.startTime);
++              const end = start + query.durationMs;
++              return Object.fromEntries(
++                Object.keys(work).map((operation) => [
++                  operation,
++                  spans.filter(
++                    ({ span }) =>
++                      span.operationName === operation &&
++                      Date.parse(span.startTime) >= start &&
++                      Date.parse(span.startTime) < end,
++                  ).length,
++                ]),
++              );
++            });
++            yield* evidence.json(`${name}-execution-work.json`, executionWork);
++            const speculative = executionWork[0]!;
++            const fresh = executionWork[1]!;
++            expect(speculative["sdk.apps.get"]).toBeLessThanOrEqual(singleExecutionCeilings.appGet);
++            expect(speculative["sdk.apps.list"]).toBeLessThanOrEqual(
++              singleExecutionCeilings.appList,
++            );
++            expect(speculative["sdk.accounts.health"]).toBe(singleExecutionCeilings.health);
++            expect(speculative["sdk.accounts.observations"]).toBe(
++              singleExecutionCeilings.observations,
++            );
++            expect(fresh["sdk.apps.get"]).toBeLessThanOrEqual(freshExecutionCeilings.appGet);
++            expect(fresh["sdk.apps.list"]).toBeLessThanOrEqual(freshExecutionCeilings.appList);
++            expect(fresh["sdk.accounts.health"]).toBe(freshExecutionCeilings.health);
++            expect(fresh["sdk.accounts.observations"]).toBe(freshExecutionCeilings.observations);
++            expect(fresh["sql.execute"]).toBeLessThanOrEqual(freshExecutionCeilings.sqlExecute);
++            expect(work["sql.execute"]).toBeLessThanOrEqual(fallbackRequestCeilings.sqlExecute);
++            expect(work["sdk.apps.get"]).toBeLessThanOrEqual(
++              singleExecutionCeilings.appGet + freshExecutionCeilings.appGet,
++            );
++            expect(work["sdk.apps.list"]).toBeLessThanOrEqual(
++              singleExecutionCeilings.appList + freshExecutionCeilings.appList,
++            );
++            expect(work["sdk.accounts.health"]).toBe(
++              singleExecutionCeilings.health + freshExecutionCeilings.health,
++            );
++            expect(work["sdk.accounts.observations"]).toBe(
++              singleExecutionCeilings.observations + freshExecutionCeilings.observations,
++            );
++          }
++          expect(work["sdk.data.query"]).toBe(executions);
+           expect(
+             work["runtime.app.remote.invoke"],
+-            "The pool and all five exact source queries still execute",
+-          ).toBe(6);
++            "The pool and all five exact source queries still execute once per execution",
++          ).toBe(6 * executions);
++          if (!forcedFallback) naturalExecutions.push(executions);
+         }
++        // A genuine invalidation may re-run one view; one that falls back every time is a regression.
++        expect(
++          naturalExecutions,
++          "At least one unforced view completes in a single execution",
++        ).toContain(1);
+         // The gate holds authored code after the query loaded its raw facts, without holding a writer lock.
+         yield* gate.hold("moving-head");
+         const moving = yield* browser
+@@ -346,7 +446,7 @@
+                 body: JSON.stringify({
+                   version: context.version ?? context.deployment,
+                   name: "viewAgain",
+-                  input: { change: true },
++                  input: { change: true, revoke: true },
+                 }),
+               }).then((response) =>
+                 response.json().then((body) => ({ status: response.status, body })),
+@@ -422,6 +522,7 @@
+             `${consumerPath}/accounts/app/openai/${removed}`,
+           )).status,
+         ).toBe(200);
++        expect(yield* gate.count("measured-head"), "One measured fresh fallback").toBe(2);
+         expect(
+           yield* gate.count("moving-head"),
+           "Only one uncached retry within the original request",
+diff --git a/e2e/support/account-view-query-trace.ts b/e2e/support/account-view-query-trace.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/account-view-query-trace.ts
+@@ -0,0 +1,114 @@
++export interface AccountViewSpan {
++  readonly traceId: string;
++  readonly span: {
++    readonly spanId: string;
++    readonly parentSpanId: string | null;
++    readonly operationName: string;
++    readonly startTime: string;
++    readonly durationMs: number;
++    readonly tags: Readonly<Record<string, unknown>>;
++  };
++}
++
++export interface AccountViewTraceInput {
++  readonly traceId: string;
++  readonly serverSpanId: string | undefined;
++  readonly sources: readonly number[];
++  readonly requiredExecutions?: 1 | 2;
++}
++
++export const inspectAccountViewTrace = (
++  rows: readonly AccountViewSpan[],
++  input: AccountViewTraceInput,
++) => {
++  const fail = (): never => {
++    throw new Error("The completed query trace is partial or has missing parents");
++  };
++  const spans = rows.map(({ span }) => span);
++  const byId = new Map(spans.map((span) => [span.spanId, span]));
++  const server = byId.get(input.serverSpanId ?? "");
++  if (
++    server?.operationName !== "http.server POST" ||
++    byId.size !== spans.length ||
++    rows.some((row) => row.traceId !== input.traceId) ||
++    spans.some(
++      (span) =>
++        span.operationName.startsWith("[missing parent") ||
++        (span.parentSpanId !== null && !byId.has(span.parentSpanId)) ||
++        !Number.isFinite(Date.parse(span.startTime)) ||
++        !Number.isFinite(span.durationMs) ||
++        span.durationMs < 0,
++    )
++  )
++    return fail();
++  const descendsFrom = (span: AccountViewSpan["span"], ancestor: string): boolean => {
++    const seen = new Set<string>();
++    let parent = span.parentSpanId;
++    while (parent !== null) {
++      if (seen.has(parent)) return fail();
++      seen.add(parent);
++      if (parent === ancestor) return true;
++      parent = byId.get(parent)?.parentSpanId ?? null;
++    }
++    return false;
++  };
++  const queries = spans
++    .filter((span) => span.operationName === "sdk.data.query")
++    .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
++  const executions = queries.length;
++  const order = server.tags["app.ui.query.phase_order"];
++  if (
++    (executions !== 1 && executions !== 2) ||
++    (input.requiredExecutions !== undefined && executions !== input.requiredExecutions) ||
++    order !== ["session_access", ...Array(executions).fill("caller_accounts"), "dispatch"].join(",")
++  )
++    return fail();
++  const operations = (name: string) => spans.filter((span) => span.operationName === name);
++  const invokes = operations("runtime.app.remote.invoke");
++  const releases = operations("runtime.app.rpc.release");
++  const catalogs = operations("catalog.lookup");
++  const counts = queries.map((query, index) => {
++    const start = Date.parse(query.startTime);
++    const end = start + query.durationMs;
++    if (
++      !descendsFrom(query, server.spanId) ||
++      query.durationMs <= 0 ||
++      start < Date.parse(server.startTime) ||
++      end > Date.parse(server.startTime) + server.durationMs ||
++      (index > 0 &&
++        start < Date.parse(queries[index - 1]!.startTime) + queries[index - 1]!.durationMs)
++    )
++      return fail();
++    const calls = invokes.filter((span) => descendsFrom(span, query.spanId));
++    const done = releases.filter((span) => descendsFrom(span, query.spanId));
++    // The cached catalog effect keeps its creation context, so it may be a sibling of the query.
++    const lookups = catalogs.filter((span) => {
++      const at = Date.parse(span.startTime);
++      return at >= start && at + span.durationMs <= end && descendsFrom(span, server.spanId);
++    });
++    if (
++      calls.length !== (input.sources[index] ?? -1) + 1 ||
++      done.length !== calls.length ||
++      new Set(calls.map((call) => call.parentSpanId)).size !== calls.length ||
++      // Remote invocation and server-side release are siblings under the same Cloud call.
++      calls.some(
++        (call) =>
++          call.parentSpanId === null ||
++          !["runtime.cloud.query", "runtime.cloud.call"].includes(
++            byId.get(call.parentSpanId)!.operationName,
++          ) ||
++          done.filter((span) => descendsFrom(span, call.parentSpanId!)).length !== 1,
++      ) ||
++      lookups.length !== 1
++    )
++      return fail();
++    return { invokes: calls.length, releases: done.length, catalogs: lookups.length };
++  });
++  if (
++    invokes.length !== counts.reduce((sum, count) => sum + count.invokes, 0) ||
++    releases.length !== counts.reduce((sum, count) => sum + count.releases, 0) ||
++    catalogs.length !== executions
++  )
++    return fail();
++  return { executions, counts, queries };
++};

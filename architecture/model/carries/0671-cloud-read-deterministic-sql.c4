@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The Cloud pool account-view read proof gates SQL work on statements attributed to the request's own trace: every traced SQL statement must have exactly one attributed protocol cycle, and a single execution stays within a named statement ceiling. Disjoint wire-interval counts depend on scheduling, so they remain evidence for both single and fallback executions rather than gates. Exact sources, SDK operation budgets and the fallback request's SQL total remain gates."
+    }
+  }
+}

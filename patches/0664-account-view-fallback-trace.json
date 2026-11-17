@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-view-fallback-trace",
+  "file": "0664-account-view-fallback-trace.patch",
+  "content_sha256": "3c408429b1acceaed0c6ebd487ba1aae2b9fe3f5ff2a50813c8a867be8087308",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

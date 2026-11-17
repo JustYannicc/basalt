@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloud-read-deterministic-sql",
+  "file": "0671-cloud-read-deterministic-sql.patch",
+  "content_sha256": "cf5b54c4d71d0daab93ba511180934abf296d6ae44981632f855cdd0309323e1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

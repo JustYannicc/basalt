@@ -30,6 +30,8 @@
     ".upstream/apps/hosted/server/src/implementation/account-source-options.ts",
     ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
     ".upstream/apps/hosted/server/src/implementation/linked-account-apps.ts",
-    "apps/pool/provider-account-view.ts"
+    "apps/pool/provider-account-view.ts",
+    ".upstream/e2e/support/sql-latency-proxy.ts",
+    ".upstream/e2e/support/sql-wire-proof.ts"
   ]
 }
