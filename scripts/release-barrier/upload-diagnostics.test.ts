@@ -23,7 +23,7 @@ test("an unknown Cloudflare upload error retains useful bounded text without cre
     failure.delta?.changed.map((row) => [row.path, "new" in row ? row.new : null]),
   );
   assert.equal(changed.get("$upload.codes"), "100312");
-  assert.equal(changed.get("$upload.messageClass"), "unclassified");
+  assert.equal(changed.get("$upload.messageClass"), "asset-completion-token-consumed");
   assert.equal(changed.get("$upload.bodyClass"), "cloudflare-errors-json");
   assert.match(String(changed.get("$upload.message")), /An unknown error has occurred/);
   assert.match(String(changed.get("$upload.message")), /\[redacted-source\]/);

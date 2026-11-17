@@ -57,7 +57,7 @@ export const readCurrentDeployment = (worker: Pick<FrozenWorker, "accountId" | "
 export const readBaseline = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
   readCurrentDeployment(worker).pipe(Effect.map((current) => current.versions));
 
-export const uploadVersion = (worker: FrozenWorker) =>
+export const uploadVersion = (worker: FrozenWorker, assetsJwt?: string) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const credentials = yield* yield* Credentials;
@@ -80,7 +80,7 @@ export const uploadVersion = (worker: FrozenWorker) =>
         );
       }),
     );
-    return yield* Workers.createScriptVersion(uploadRequest(worker)).pipe(
+    return yield* Workers.createScriptVersion(uploadRequest(worker, assetsJwt)).pipe(
       Effect.provideService(HttpClient.HttpClient, observed),
       Effect.map((result) => ({ versionId: result.id, startupTimeMs: result.startupTimeMs })),
       Retry.none,

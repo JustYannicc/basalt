@@ -85,7 +85,7 @@ test("a rejected startup confirmation retains the first measurement and terminat
     failure.delta?.changed.map((row) => [row.path, "new" in row ? row.new : null]),
   );
   assert.equal(uploadFields.get("$upload.codes"), "100312");
-  assert.equal(uploadFields.get("$upload.messageClass"), "unclassified");
+  assert.equal(uploadFields.get("$upload.messageClass"), "asset-completion-token-consumed");
   assert.equal(uploadFields.get("$upload.bodyClass"), "cloudflare-errors-json");
   assert.match(String(uploadFields.get("$upload.message")), /An unknown error has occurred/);
   assert.match(String(uploadFields.get("$upload.message")), /\[redacted-source\]/);

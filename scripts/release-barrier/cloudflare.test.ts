@@ -146,7 +146,7 @@ test("the real SDK keeps safe unknown-upload diagnostics and never retries an un
   );
   assert.equal(fields.get("$upload.status"), 400);
   assert.equal(fields.get("$upload.codes"), "100312");
-  assert.equal(fields.get("$upload.messageClass"), "unclassified");
+  assert.equal(fields.get("$upload.messageClass"), "asset-completion-token-consumed");
   assert.equal(fields.get("$upload.bodyClass"), "cloudflare-errors-json");
   assert.match(String(fields.get("$upload.message")), /An unknown error has occurred/);
   assert.match(String(fields.get("$upload.message")), /\[redacted-source\]/);
