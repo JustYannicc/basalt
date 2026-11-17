@@ -244,3 +244,46 @@ test("a starting or stopping fleet cell does not stall verification while anothe
   const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher);
   assert.deepEqual(result.instances, ["blue-instance"]);
 });
+
+test("a release proves the fleet serving this candidate's image input even while a root instance lingers", async () => {
+  const f = fixture({
+    instances: { root: [instance("root", "1")], blue: [instance("blue", "3")], green: [] },
+  });
+  const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher, "c".repeat(16));
+  assert.equal(result.verifiedPath, "bound-fleet");
+  assert.deepEqual(result.instances, ["blue-instance"]);
+  assert.ok(f.calls.every((path) => !path.endsWith("/applications/root/instances-v2")));
+});
+
+test("a release fails when the bound fleet serves an image other than this candidate's", async () => {
+  const other = "e".repeat(16);
+  await assert.rejects(
+    assertPoolImage(receipt, candidate, credentials, fixture().fetcher, other),
+    /: Pool Worker binding POOL_DESIRED_IMAGE_INPUT differs from this candidate's image input$/,
+  );
+  let now = 0;
+  const f = fixture();
+  await assert.rejects(
+    waitForPoolImage(
+      receipt,
+      candidate,
+      credentials,
+      "https://pool.fixture.invalid",
+      async (input, init) =>
+        new URL(String(input)).hostname === "pool.fixture.invalid"
+          ? new Response(null, { status: 401 })
+          : f.fetcher(input, init),
+      { now: () => now, sleep: async (ms: number) => void (now += ms), candidateImageInput: other },
+    ),
+    /did not return HTTP 200/,
+  );
+});
+
+test("without a bound fleet a release keeps the root proof of its published digest", async () => {
+  const f = fixture({
+    bindings: [binding("POOL_IMAGE_HASH", receipt.inputHash)],
+    instances: { root: [instance("root", "1")] },
+  });
+  const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher, "c".repeat(16));
+  assert.equal(result.verifiedPath, "root");
+});

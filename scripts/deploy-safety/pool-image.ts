@@ -56,14 +56,28 @@ export function poolImageReceipt(value: unknown, candidate: string) {
   };
 }
 
+/**
+ * `candidateImageInput` is the image input computed from this candidate's own source. With it, a
+ * bound fleet must serve exactly that input; without it (the read-only baseline probe), the fleet
+ * is checked only against the PoolWorker's own desired input binding.
+ */
 export async function assertPoolImage(
   value: unknown,
   candidate: string,
   credentials: CloudflareCredentials,
   fetcher: Fetcher = fetch,
+  candidateImageInput?: string,
 ) {
   const receipt = poolImageReceipt(value, candidate);
-  return { ...receipt, ...(await assertPoolImageTarget(receipt, receipt, credentials, fetcher)) };
+  return {
+    ...receipt,
+    ...(await assertPoolImageTarget(
+      receipt,
+      { ...receipt, candidateImageInput },
+      credentials,
+      fetcher,
+    )),
+  };
 }
 
 export interface ContainerImageTarget {
@@ -88,7 +102,7 @@ export async function assertContainerImage(
 
 export async function assertPoolImageTarget(
   target: ContainerImageTarget,
-  worker: { workerName: string; inputHash: string },
+  worker: WorkerTarget,
   credentials: CloudflareCredentials,
   fetcher: Fetcher = fetch,
 ) {
@@ -102,13 +116,19 @@ export async function assertPoolImageTarget(
   return assertImages(target, credentials, fetcher, worker);
 }
 
+interface WorkerTarget {
+  workerName: string;
+  inputHash: string;
+  candidateImageInput?: string;
+}
+
 type Get = (url: string, label: string) => Promise<{ result: unknown; resultInfo: unknown }>;
 
 async function assertImages(
   receipt: ContainerImageTarget,
   credentials: CloudflareCredentials,
   fetcher: Fetcher,
-  worker?: { workerName: string; inputHash: string },
+  worker?: WorkerTarget,
 ): Promise<PoolImageObservation> {
   if (receipt.accountId !== credentials.accountId)
     throw new SafetyGateError("Pool image receipt belongs to another account");
@@ -155,16 +175,31 @@ async function assertImages(
         "Pool Worker input hash differs from this candidate's publication receipt",
       );
   }
-  const instances = await listInstances(get, account, receipt.applicationId, {
-    label: "Pool",
-    digest: receipt.digest,
-    expected: "the published candidate digest",
-  });
-  if (instances.length) return { verifiedPath: "root", instances };
-  // A scale-out release retires the root runtime once a bound fleet primary serves, so an empty
-  // root is only acceptable when the PoolWorker's own bindings name a serving fleet.
+  if (
+    worker?.candidateImageInput !== undefined &&
+    !/^[a-f0-9]{16}$/u.test(worker.candidateImageInput)
+  )
+    throw new SafetyGateError("Candidate image input is not a 16-hex image input");
   const fleet = bindings && boundFleet(bindings, receipt.applicationId);
-  if (!fleet) throw new PoolImagePending("Pool has no running instance to verify");
+  // Once a fleet is bound, the release pins the root to its baseline image, so a root instance
+  // proves nothing about this candidate. A release then proves the fleet; the baseline probe, which
+  // has no candidate input, keeps the root shortcut while the root still serves.
+  if (!fleet || worker?.candidateImageInput === undefined) {
+    const instances = await listInstances(get, account, receipt.applicationId, {
+      label: "Pool",
+      digest: receipt.digest,
+      expected: "the published candidate digest",
+    });
+    if (instances.length) return { verifiedPath: "root", instances };
+    if (!fleet) throw new PoolImagePending("Pool has no running instance to verify");
+  }
+  if (
+    worker?.candidateImageInput !== undefined &&
+    fleet.desiredImageInput !== worker.candidateImageInput
+  )
+    throw new PoolImagePending(
+      "Pool Worker binding POOL_DESIRED_IMAGE_INPUT differs from this candidate's image input",
+    );
   const observed: NonNullable<PoolImageObservation["fleet"]> = [];
   for (const application of fleet.applications) {
     const label = `Pool ${application.color} fleet application`;
@@ -305,7 +340,12 @@ export async function waitForPoolImage(
   credentials: CloudflareCredentials,
   origin: string,
   fetcher: Fetcher = fetch,
-  options: Parameters<typeof waitForPoolStatus>[3] = {},
+  {
+    candidateImageInput,
+    ...options
+  }: Parameters<typeof waitForPoolStatus>[3] & {
+    candidateImageInput?: string;
+  } = {},
 ) {
   poolImageReceipt(value, candidate);
   let verified: Awaited<ReturnType<typeof assertPoolImage>> | undefined;
@@ -319,11 +359,16 @@ export async function waitForPoolImage(
       if (warm.status !== 401)
         throw new SafetyGateError(`Pool readiness returned unexpected HTTP ${warm.status}`);
       try {
-        verified = await assertPoolImage(value, candidate, credentials, (input, init) =>
-          fetcher(input, {
-            ...init,
-            signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
-          }),
+        verified = await assertPoolImage(
+          value,
+          candidate,
+          credentials,
+          (input, init) =>
+            fetcher(input, {
+              ...init,
+              signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
+            }),
+          candidateImageInput,
         );
         return new Response(null, { status: 200 });
       } catch (error) {
