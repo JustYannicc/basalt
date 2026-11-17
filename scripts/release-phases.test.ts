@@ -29,8 +29,8 @@ const metrics = (used: number) => ({
     {
       metric: "planetscale_postgres_settings_max_connections",
       values: [
-        { pod: "primary", role: "primary", value: 50 },
-        { pod: "replica", role: "replica", value: 50 },
+        { pod: "primary", role: "primary", value: releaseDatabasePolicy.maxConnections },
+        { pod: "replica", role: "replica", value: releaseDatabasePolicy.maxConnections },
       ],
     },
   ],
@@ -85,9 +85,9 @@ test("release admission refuses 41/47 and admits 40/47 with the configured seven
     envelope: 7,
   });
   assert.throws(() => primaryHeadroom(metrics(42), "main"), /refused/);
-  const raisedLimit = metrics(20);
-  raisedLimit.metrics[1]!.values[0]!.value = 40;
-  assert.throws(() => primaryHeadroom(raisedLimit, "main"), /observed max 40, expected max 50/);
+  const driftedLimit = metrics(20);
+  driftedLimit.metrics[1]!.values[0]!.value = 40;
+  assert.throws(() => primaryHeadroom(driftedLimit, "main"), /observed max 40, expected max 50/);
 });
 
 test("missing, duplicate, mismatched and invalid primary metrics fail closed", () => {
@@ -188,7 +188,7 @@ test("headroom failure starts no barrier; admitted releases invoke one barrier w
       environment: settings,
       sharedFoundation: false,
       execute,
-      preflight: async () => ({ observed: 14, ordinarySlots: 22, envelope: 7 }),
+      preflight: async () => ({ observed: 14, ordinarySlots: 47, envelope: 7 }),
     });
   assert.equal(calls.length, 2);
   assert.ok(
@@ -246,7 +246,7 @@ test("the barrier receives the Basalt checkout SHA when its working directory is
     cloud,
     environment: settings,
     sharedFoundation: false,
-    preflight: async () => ({ observed: 14, ordinarySlots: 22, envelope: 7 }),
+    preflight: async () => ({ observed: 14, ordinarySlots: 47, envelope: 7 }),
     execute: (_command, _args, _cwd, environment) => {
       candidate = environment?.BASALT_RELEASE_CANDIDATE;
     },

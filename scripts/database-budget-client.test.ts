@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkDatabaseBackends, type DatabaseClient } from "./verify-database-budget.ts";
-import { backendCountSql, backendVisibilitySql } from "./database-budget-verification.ts";
+import {
+  backendCountSql,
+  backendVisibilitySql,
+  databaseBackendBudget as budget,
+} from "./database-budget-verification.ts";
 import {
   DatabaseBudgetFailure,
   safeDatabaseError,
@@ -37,7 +41,7 @@ function fixture(
       if (sql === backendCountSql) {
         assert.deepEqual(values, [["runtime"]]);
         if (options.sql) throw privateError(options.sql);
-        return { rows: [{ database: "pool", connections: options.connections ?? 5 }] };
+        return { rows: [{ database: "pool", connections: options.connections ?? budget }] };
       }
       return { rows: [] };
     },
@@ -64,7 +68,7 @@ for (const [input, outcome, code] of [
   [{ sql: "53300" }, "sql-error", "53300"],
   [{ sql: "57014" }, "statement-timeout", "57014"],
   [{ visible: false }, "incomplete-visibility", undefined],
-  [{ connections: 6 }, "over-budget-deadline", undefined],
+  [{ connections: budget + 1 }, "over-budget-deadline", undefined],
 ] as const) {
   test(`${outcome} ${code ?? ""} retains safe diagnostics before guaranteed teardown`, async () => {
     const f = fixture(input);
@@ -82,9 +86,9 @@ for (const [input, outcome, code] of [
     );
   });
 }
-test("five succeeds, keeps one bounded client and retains before cleanup", async () => {
+test("a count within the budget succeeds, keeps one bounded client and retains before cleanup", async () => {
   const f = fixture();
-  assert.deepEqual(await f.run(), [{ database: "pool", connections: 5 }]);
+  assert.deepEqual(await f.run(), [{ database: "pool", connections: budget }]);
   assert.equal(f.actions.filter((action) => action === "connect").length, 1);
   assert.ok(f.actions.includes("BEGIN TRANSACTION READ ONLY"));
   assert.ok(f.actions.includes("SET LOCAL statement_timeout = '4s'"));
@@ -164,7 +168,7 @@ test("a stalled end is bounded by one second after retaining the outcome", async
           sql === backendVisibilitySql
             ? [{ visible: true }]
             : sql === backendCountSql
-              ? [{ database: "pool", connections: 5 }]
+              ? [{ database: "pool", connections: budget }]
               : [],
       };
     },
@@ -184,7 +188,7 @@ test("a stalled end is bounded by one second after retaining the outcome", async
   assert.deepEqual(actions, ["retain", "destroy", "end"]);
   // The timer is installed after end() returns its pending promise.
   t.mock.timers.tick(1000);
-  assert.deepEqual(await work, [{ database: "pool", connections: 5 }]);
+  assert.deepEqual(await work, [{ database: "pool", connections: budget }]);
 });
 
 for (const stage of ["readiness", "read"] as const) {
@@ -223,7 +227,7 @@ for (const stage of ["readiness", "read"] as const) {
           abort.abort();
           return new Promise(() => {});
         }
-        return { rows: [{ database: "pool", connections: 6 }] };
+        return { rows: [{ database: "pool", connections: budget + 1 }] };
       },
     };
     const work = checkDatabaseBackends({
@@ -250,7 +254,7 @@ for (const stage of ["readiness", "read"] as const) {
       assert.ok(error instanceof DatabaseBudgetFailure);
       assert.equal(error.receipt.outcome, "abort");
       assert.equal(error.receipt.stage, stage);
-      assert.deepEqual(error.receipt.counts, [{ database: "pool", connections: 6 }]);
+      assert.deepEqual(error.receipt.counts, [{ database: "pool", connections: budget + 1 }]);
       assert.equal(error.receipt.sampleRuntime?.bootId, "boot");
       return true;
     });

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { verifyDatabaseBudget, backendCountSql } from "./database-budget-verification.ts";
+import {
+  verifyDatabaseBudget,
+  backendCountSql,
+  databaseBackendBudget as budget,
+} from "./database-budget-verification.ts";
 import { DatabaseBudgetFailure, type BudgetReceipt } from "./database-budget-receipt.ts";
 import type { RuntimeReady } from "../src/pool/deployment-readiness.ts";
+
+const over = budget + 1;
 const ready = (bootId = "boot-a", readyAt = 0): RuntimeReady => ({
   candidate: "a".repeat(40),
   workerInput: "b".repeat(64),
@@ -33,20 +39,20 @@ test("adoption later than 90 seconds gets the full 90 seconds after target readi
     read: async () => {
       reads++;
       return [
-        { database: "pool", connections: reads < 3 ? 6 : 5 },
-        { database: "app", connections: 5 },
+        { database: "pool", connections: reads < 3 ? over : budget },
+        { database: "app", connections: budget },
       ];
     },
   });
   assert.equal(clock, 180_000);
   assert.equal(reads, 3);
   assert.deepEqual(counts, [
-    { database: "app", connections: 5 },
-    { database: "pool", connections: 5 },
+    { database: "app", connections: budget },
+    { database: "pool", connections: budget },
   ]);
 });
 
-test("a stuck sixth backend fails with exact counts and sample diagnostics", async () => {
+test("a stuck backend over the budget fails with exact counts and sample diagnostics", async () => {
   let clock = 0;
   await assert.rejects(
     verifyDatabaseBudget({
@@ -56,14 +62,14 @@ test("a stuck sixth backend fails with exact counts and sample diagnostics", asy
       wait: async () => {
         clock += 30_000;
       },
-      read: async () => [{ database: "pool", connections: 6 }],
+      read: async () => [{ database: "pool", connections: over }],
     }),
     (error) => {
       assert.ok(error instanceof DatabaseBudgetFailure);
       assert.equal(error.receipt.outcome, "over-budget-deadline");
       assert.equal(error.receipt.elapsedMs, 90_000);
       assert.equal(error.receipt.successfulSamples, 4);
-      assert.deepEqual(error.receipt.counts, [{ database: "pool", connections: 6 }]);
+      assert.deepEqual(error.receipt.counts, [{ database: "pool", connections: over }]);
       assert.equal(error.receipt.runtime?.bootId, "boot-a");
       return true;
     },
@@ -87,7 +93,7 @@ test("a replacement invalidates the in-flight sample and re-establishes target r
         clock = 80_000;
         return [];
       }
-      return [{ database: "pool", connections: reads < 4 ? 6 : 5 }];
+      return [{ database: "pool", connections: reads < 4 ? over : budget }];
     },
     wait: async () => {
       clock += 30_000;
@@ -100,7 +106,7 @@ test("a replacement invalidates the in-flight sample and re-establishes target r
     snapshots.find((snapshot) => snapshot.successfulSamples === 1)?.runtime?.bootId,
     "new",
   );
-  assert.deepEqual(counts, [{ database: "pool", connections: 5 }]);
+  assert.deepEqual(counts, [{ database: "pool", connections: budget }]);
 });
 
 test("only a successful complete query can yield an explicit zero for an absent database", async () => {
@@ -168,7 +174,7 @@ test("repeated runtime replacements stay inside the fixed 270-second overall bou
       read: async () => {
         observations++;
         if (observations % 2 === 0) boot = `boot-${observations}`;
-        return [{ database: "pool", connections: 6 }];
+        return [{ database: "pool", connections: over }];
       },
       wait: async () => {
         clock += 60_000;
@@ -177,7 +183,7 @@ test("repeated runtime replacements stay inside the fixed 270-second overall bou
     (error) => {
       assert.ok(error instanceof DatabaseBudgetFailure);
       assert.equal(error.receipt.outcome, "abort");
-      assert.equal(error.receipt.counts?.[0]?.connections, 6);
+      assert.equal(error.receipt.counts?.[0]?.connections, over);
       assert.ok(error.receipt.sampleRuntime?.bootId);
       assert.ok(clock >= 270_000 && clock <= 300_000);
       return true;

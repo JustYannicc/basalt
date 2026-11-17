@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-database-connection-plan",
+  "file": "0669-database-connection-plan.patch",
+  "content_sha256": "7ba17a995cd66ec5828d303936283073b65265216bb57dc664ad1f6480fd5967",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

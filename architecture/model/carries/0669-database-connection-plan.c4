@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "One declared connection plan sets production's max_connections, the superuser and reserved slots, the unpooled steady connections, the release's own logins and a margin. The per-database pooler budget is derived from it, and release preflight, the budget step and the post-deploy verifier all read that plan, so two full pools plus the unpooled connections and the release logins always leave the margin free in production's ordinary slots. Before writing, the budget step reads production's real max_connections and refuses, naming both values, when it differs from the declaration; preflight refuses the same drift from metrics. Raising the provider limit and the budget therefore ship together. Preview branches derive their budget from the limit they report, and a limit too small for any budget refuses."
+    }
+  }
+}

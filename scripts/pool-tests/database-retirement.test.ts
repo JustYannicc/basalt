@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { budgetFixture } from "./database-budget/fixture.ts";
 import { connect, runtimeUrl, runtimeBackends } from "./database-budget/postgres.ts";
-import { verifyDatabaseBudget, backendCountSql } from "../database-budget-verification.ts";
+import {
+  verifyDatabaseBudget,
+  backendCountSql,
+  databaseBackendBudget as budget,
+} from "../database-budget-verification.ts";
+
+const warmBackends = budget + 2;
 
 test(
   "downsizing drains old idle servers naturally and fails visibly for an open transaction",
@@ -14,10 +20,10 @@ test(
     const fixture = await budgetFixture("drain");
     const clients: Awaited<ReturnType<typeof connect>>[] = [];
     try {
-      await fixture.pooler.query("SET max_db_connections=10");
-      await fixture.pooler.query("SET default_pool_size=10");
+      await fixture.pooler.query(`SET max_db_connections=${budget + 5}`);
+      await fixture.pooler.query(`SET default_pool_size=${budget + 5}`);
       await Promise.all(
-        Array.from({ length: 7 }, async (_, i) => {
+        Array.from({ length: warmBackends }, async (_, i) => {
           const client = await connect(
             runtimeUrl(fixture.pooled, fixture.database, i % 2 ? "budget_b" : "budget_a"),
           );
@@ -26,9 +32,9 @@ test(
           await client.query("SELECT pg_backend_pid()");
         }),
       );
-      assert.equal(await runtimeBackends(fixture.admin, [fixture.database]), 7);
-      await fixture.pooler.query("SET max_db_connections=5");
-      await fixture.pooler.query("SET default_pool_size=5");
+      assert.equal(await runtimeBackends(fixture.admin, [fixture.database]), warmBackends);
+      await fixture.pooler.query(`SET max_db_connections=${budget}`);
+      await fixture.pooler.query(`SET default_pool_size=${budget}`);
       // Same managed parameters, shortened to exercise retirement without a minute-long test.
       await fixture.pooler.query("SET server_lifetime=2");
       await fixture.pooler.query("SET server_idle_timeout=1");
@@ -45,19 +51,20 @@ test(
         deadlineMs: 5_000,
         read,
       });
-      assert.ok(counts.every((row) => row.connections <= 5));
+      assert.ok(counts.every((row) => row.connections <= budget));
       const results = await Promise.all(clients.map((client) => client.query("SELECT 1 AS alive")));
       assert.ok(results.every((result) => result.rows[0]?.alive === 1));
       t.diagnostic(
-        JSON.stringify({ warmBackends: 7, convergenceMs: performance.now() - start, counts }),
+        JSON.stringify({ warmBackends, convergenceMs: performance.now() - start, counts }),
       );
     } finally {
       await Promise.all(clients.map((client) => client.end()));
       for (const [name, value] of Object.entries({
+        // The CI fixture pooler's own defaults, which later tests in this job expect.
         max_db_connections: 5,
         default_pool_size: 5,
-        server_lifetime: 3600,
-        server_idle_timeout: 600,
+        server_lifetime: 60,
+        server_idle_timeout: 15,
       })) {
         await fixture.pooler.query(`SET ${name}=${value}`);
       }
