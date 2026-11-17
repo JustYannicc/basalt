@@ -5,7 +5,13 @@ import { FetchHttpClient } from "effect/http";
 import { State } from "alchemy/State/State";
 import { evalStack } from "alchemy/Stack";
 import { BarrierRefusal } from "./refusal.ts";
-import { assertPreflightContext, preflightRefusal, preflightRunner } from "./release-preflight.ts";
+import {
+  assertPreflightContext,
+  preflightRefusal,
+  preflightRunner,
+  type PreflightMode,
+} from "./release-preflight.ts";
+import { releaseReceiptCodes } from "./release-preflight-live.ts";
 import { createPreflightBridgeCounters } from "./release-preflight-guard.ts";
 import { preflightReport, preflightSummary } from "./release-preflight-report.ts";
 import { preflightSteps } from "./release-preflight-steps.ts";
@@ -24,18 +30,20 @@ const bridge = createPreflightBridgeCounters();
 const runner = preflightRunner();
 const nativeFetch = globalThis.fetch;
 let candidate: string | undefined;
+let mode: PreflightMode | undefined;
 let fatal: string | undefined;
 
 try {
   const event = env.GITHUB_EVENT_PATH
     ? JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8"))
     : undefined;
-  candidate = assertPreflightContext(env, event, process.cwd());
+  ({ candidate, mode } = assertPreflightContext(env, event, process.cwd()));
   const accountId = env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = env.CLOUDFLARE_API_TOKEN;
   const encryptionKey = env.EXECUTOR_ENCRYPTION_KEY;
   if (!accountId || !apiToken || !encryptionKey)
     throw new BarrierRefusal("release-preflight-credentials-unavailable", "PoolWorker");
+  const receipts = await releaseReceiptCodes(env.BASALT_PREFLIGHT_RECEIPTS);
   const guarded = countReadOnlyProbeFetch(accountId, counters, nativeFetch);
   globalThis.fetch = guarded;
   const exit = await Effect.runPromiseExit(
@@ -51,6 +59,7 @@ try {
             runner,
             credentials: { accountId, apiToken, encryptionKey },
             directory,
+            receipts,
           });
         }).pipe(Effect.provideContext(compiled.services)),
       { stage: "production" },
@@ -82,6 +91,7 @@ try {
 
 const report = preflightReport({
   candidate,
+  mode,
   steps: runner.results,
   fatal,
   state: counters,

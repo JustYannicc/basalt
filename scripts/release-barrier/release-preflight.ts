@@ -20,7 +20,19 @@ export type PreflightStepResult =
   | { step: string; status: "pass"; summary?: unknown }
   | { step: string; status: "not-applicable"; why: string }
   | { step: string; status: "refused"; refusal: PreflightRefusal }
-  | { step: string; status: "skipped"; needs: string[] };
+  | { step: string; status: "skipped"; needs: string[] }
+  | { step: string; status: "settlement-required"; disposition: string };
+
+/**
+ * The release would refuse until a settlement this candidate can perform has been applied. A
+ * Check reports it; the release itself, which runs after the settlement apply, must not see it.
+ */
+export class SettlementRequired {
+  readonly disposition: string;
+  constructor(disposition: string) {
+    this.disposition = disposition;
+  }
+}
 
 /** Signals a release branch the live state does not take; the release would not call this read. */
 export class NotApplicable {
@@ -109,6 +121,14 @@ export function preflightRunner() {
         );
         return value;
       } catch (error) {
+        if (error instanceof SettlementRequired) {
+          results.push({
+            step: name,
+            status: "settlement-required",
+            disposition: error.disposition,
+          });
+          return undefined;
+        }
         if (error instanceof NotApplicable) {
           results.push({ step: name, status: "not-applicable", why: error.why });
           return undefined;
@@ -124,12 +144,14 @@ export function preflightRunner() {
  * Production reads run only from this repository's own Actions: a same-repo PR merge pinned to
  * current main, or the main release job on its checked-out candidate.
  */
+export type PreflightMode = "check" | "release";
+
 export function assertPreflightContext(env: NodeJS.ProcessEnv, event: unknown, root: string) {
   if (env.GITHUB_EVENT_NAME === "pull_request") {
     const context = assertReadOnlyRehearsalContext(env, event);
     if (assertProbeCandidate(root, context.head).candidate !== context.candidate)
       throw new BarrierRefusal("release-preflight-candidate-drift", "PoolWorker");
-    return context.candidate;
+    return { candidate: context.candidate, mode: "check" as const };
   }
   const candidate = env.BASALT_RELEASE_CANDIDATE ?? "";
   if (
@@ -141,5 +163,5 @@ export function assertPreflightContext(env: NodeJS.ProcessEnv, event: unknown, r
     execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim() !== candidate
   )
     throw new BarrierRefusal("release-preflight-untrusted-context", "PoolWorker");
-  return candidate;
+  return { candidate, mode: "release" as const };
 }

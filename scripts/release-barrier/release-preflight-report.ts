@@ -1,10 +1,12 @@
 import type { PreflightBridgeCounters, HealthTiming } from "./release-preflight-guard.ts";
-import type { PreflightStepResult } from "./release-preflight.ts";
+import type { PreflightMode, PreflightStepResult } from "./release-preflight.ts";
 import type { RehearsalCounters } from "./release-resume-rehearsal.ts";
 
 /** Any attempted write fails the preflight, even when the step that tried it was caught. */
 export function preflightReport(input: {
   candidate: string | undefined;
+  /** A pending settlement blocks only the release; the Check that ships the settlement reports it. */
+  mode: PreflightMode | undefined;
   steps: readonly PreflightStepResult[];
   fatal?: string;
   state: RehearsalCounters;
@@ -18,13 +20,19 @@ export function preflightReport(input: {
   };
   const failed =
     input.fatal !== undefined ||
-    input.steps.some((step) => step.status === "refused" || step.status === "skipped") ||
+    input.steps.some(
+      (step) =>
+        step.status === "refused" ||
+        step.status === "skipped" ||
+        (step.status === "settlement-required" && input.mode !== "check"),
+    ) ||
     mutations.deniedStateWrites > 0 ||
     mutations.blockedHttpMutations > 0 ||
     Object.keys(mutations.refusedBridgeRequests).length > 0;
   return {
     status: failed ? ("refused" as const) : ("pass" as const),
     candidate: input.candidate ?? null,
+    mode: input.mode ?? null,
     ...(input.fatal ? { fatal: input.fatal } : {}),
     steps: input.steps,
     // Every active-health read, in order: the granted lease, the request leg and what was left.
@@ -45,6 +53,8 @@ const stepLine = (result: PreflightStepResult) => {
       return `- ${result.step}: skipped, needs ${result.needs.join(", ")}`;
     case "not-applicable":
       return `- ${result.step}: not applicable (${result.why})`;
+    case "settlement-required":
+      return `- ${result.step}: SETTLEMENT REQUIRED (${result.disposition}); blocks the release until applied`;
     default:
       return `- ${result.step}: pass`;
   }

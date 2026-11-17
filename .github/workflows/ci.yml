@@ -291,10 +291,16 @@ jobs:
       - run: npm run prepare:upstream
         env:
           GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
+      # The live controller accepts only its own code; earlier releases' receipts name it.
+      - name: Collect the release receipts that name the live controller code
+        run: node scripts/release-barrier/release-preflight-receipts.ts "$RUNNER_TEMP/release-receipts"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       # Every production read the release makes, through the release's own clients, with writes refused.
       - name: Run the read-only release preflight against production
         run: bun scripts/release-barrier/release-preflight-entry.ts
         env:
+          BASALT_PREFLIGHT_RECEIPTS: ${{ runner.temp }}/release-receipts
           GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

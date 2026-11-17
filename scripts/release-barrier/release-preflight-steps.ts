@@ -16,10 +16,11 @@ import {
 } from "./baseline-controller.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
-import { canonical } from "./manifest.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { BarrierRefusal } from "./refusal.ts";
-import { NotApplicable, type preflightRunner } from "./release-preflight.ts";
+import { NotApplicable, SettlementRequired, type preflightRunner } from "./release-preflight.ts";
+import { liveControllerCodes, settlementVerdict } from "./release-preflight-live.ts";
+import { releaseImageJournalKey } from "./release-settlement-contract.ts";
 import {
   nodeBridgeFromConfig,
   readOnlyPoolOperations,
@@ -30,7 +31,7 @@ import {
 import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import { assertReleaseImageCapacity } from "./runtime-release-image.ts";
-import { runtimeReleaseJournal } from "./runtime-release-journal.ts";
+import { decodeRuntimeReleaseHead, runtimeReleaseJournal } from "./runtime-release-journal.ts";
 import { verifyBoundProviderObservation } from "./runtime-provider-observation.ts";
 import { releaseSelectedReady } from "./runtime-release-readiness.ts";
 import { runtimeReleaseState, type RuntimeReleaseState } from "./runtime-release-state.ts";
@@ -66,6 +67,8 @@ export const preflightSteps = (
     runner: ReturnType<typeof preflightRunner>;
     credentials: { accountId: string; apiToken: string; encryptionKey: string };
     directory: string;
+    /** Controller codes named by earlier release receipts; see liveControllerCodes. */
+    receipts: readonly (typeof ControllerCode.Type)[];
   },
 ) =>
   Effect.gen(function* () {
@@ -93,22 +96,41 @@ export const preflightSteps = (
       await step("migration-activation", ["state-version"], () =>
         read(assertMigrationActivationSettled(state, compiled, encryptionKey)),
       );
-      await step(
+      const journal = await step(
         "release-journal",
         ["state-version"],
         async () => {
-          const record = await (
-            await read(runtimeReleaseJournal(compiled, writer, encryptionKey))
-          ).read();
-          // The release's own first verdict on its journal.
-          if (record?.abort)
-            throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
-          return record;
+          try {
+            const record = await (
+              await read(runtimeReleaseJournal(compiled, writer, encryptionKey))
+            ).read();
+            // The release's own first verdict on its journal.
+            if (record?.abort)
+              throw new BarrierRefusal(
+                "runtime-release-candidate-aborted-or-pending",
+                "PoolWorker",
+              );
+            return { record, prior: undefined };
+          } catch (error) {
+            if (
+              !(error instanceof BarrierRefusal) ||
+              error.reason !== "runtime-release-prior-candidate-unsettled"
+            )
+              throw error;
+            // Which settlement it needs depends on the live controller; release-settlement decides.
+            const head = await read(state.getOutput(releaseImageJournalKey(compiled)));
+            return {
+              record: undefined,
+              prior: decodeRuntimeReleaseHead(head, encryptionKey).record.candidate,
+            };
+          }
         },
-        (record) =>
-          record
-            ? { record: "this-candidate", complete: record.complete, aborted: !!record.abort }
-            : { record: "none-or-settled" },
+        ({ record, prior }) =>
+          prior
+            ? { record: "prior-candidate-unsettled", prior }
+            : record
+              ? { record: "this-candidate", complete: record.complete }
+              : { record: "none-or-settled" },
       );
       const baseline = await step(
         "baseline-controller",
@@ -122,9 +144,9 @@ export const preflightSteps = (
       const native = await step("runtime-state", ["state-version"], () =>
         read(runtimeReleaseState(compiled)),
       );
-      if (native && baseline) await controllerReads(native, baseline);
+      if (native && baseline) await controllerReads(native, baseline, journal?.prior);
       else
-        for (const name of controllerSteps)
+        for (const name of [...controllerSteps, ...(journal?.prior ? ["release-settlement"] : [])])
           await step(name, ["baseline-controller", "runtime-state"], async () => {});
       // The image verifier reads only the native State rows, so it runs even without a controller.
       await step(
@@ -149,6 +171,7 @@ export const preflightSteps = (
     async function controllerReads(
       native: RuntimeReleaseState,
       baseline: { controller: BaselineController; key: string },
+      prior: string | undefined,
     ) {
       const target = {
         ...native.target,
@@ -187,18 +210,24 @@ export const preflightSteps = (
             const client = await clientFor(code);
             return { source, code, client, snapshot: await client.inspect() };
           };
-          let recordedFailure: unknown;
+          let first: unknown;
           try {
             return await attempt("recorded", baseline.controller.code);
           } catch (error) {
-            recordedFailure = error;
+            first = error;
           }
-          const release = await runningRelease(target);
-          const running = release && { candidate: release, workerInput: poolWorkerRevision };
-          // Only a different code is worth a second read; otherwise the recorded refusal stands.
-          if (!running || canonical(running) === canonical(baseline.controller.code))
-            throw recordedFailure;
-          return attempt("running", running);
+          // The controller refuses any code but its own, so an accepted inspect proves the code.
+          const options = liveControllerCodes({
+            recorded: baseline.controller.code,
+            running: await runningRelease(target),
+            receipts: input.receipts,
+            workerInput: poolWorkerRevision,
+          }).slice(1);
+          for (const option of options)
+            try {
+              return await attempt(option.source, option.code);
+            } catch {}
+          throw first;
         },
         (value) => ({
           source: value.source,
@@ -208,12 +237,27 @@ export const preflightSteps = (
         }),
       );
       if (!controller) {
-        for (const name of controllerSteps.slice(1))
+        for (const name of [...controllerSteps.slice(1), ...(prior ? ["release-settlement"] : [])])
           await step(name, ["live-controller"], async () => {});
         return;
       }
       const { client, code, snapshot } = controller;
       const selection = snapshot.selection;
+
+      if (prior)
+        await step("release-settlement", ["live-controller"], async () => {
+          const verdict = settlementVerdict({
+            prior,
+            liveCandidate: code.candidate,
+            selected: !!selection,
+          });
+          if (!verdict.supported)
+            throw new BarrierRefusal(
+              "release-preflight-settlement-unsupported",
+              verdict.disposition,
+            );
+          throw new SettlementRequired(verdict.disposition);
+        });
 
       await step(
         "selection-proof",

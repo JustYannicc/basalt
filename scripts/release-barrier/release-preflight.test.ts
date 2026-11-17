@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { signEnvelope } from "../../src/pool/token.ts";
 import { deploymentReadinessPath } from "../../src/pool/deployment-readiness.ts";
@@ -8,7 +11,12 @@ import {
 } from "../../src/pool/runtime-slots/handoff-command.ts";
 import { runtimeRecoveryPath } from "../../src/pool/runtime-recovery.ts";
 import { BarrierRefusal } from "./refusal.ts";
-import { NotApplicable, preflightRunner } from "./release-preflight.ts";
+import { NotApplicable, SettlementRequired, preflightRunner } from "./release-preflight.ts";
+import {
+  liveControllerCodes,
+  releaseReceiptCodes,
+  settlementVerdict,
+} from "./release-preflight-live.ts";
 import { preflightReport } from "./release-preflight-report.ts";
 import { createRehearsalCounters } from "./release-resume-rehearsal.ts";
 import {
@@ -161,7 +169,13 @@ test("a refusal naming a live identifier publishes only its digest", async () =>
 test("an attempted write fails the report even when every step passed", () => {
   const state = createRehearsalCounters();
   const counters = createPreflightBridgeCounters();
-  const clean = { candidate: "a".repeat(40), steps: [], state, bridge: counters };
+  const clean = {
+    candidate: "a".repeat(40),
+    mode: "check" as const,
+    steps: [],
+    state,
+    bridge: counters,
+  };
   assert.equal(preflightReport(clean).status, "pass");
   counters.refused["mutation:adopt"] = 1;
   assert.equal(preflightReport(clean).status, "refused");
@@ -213,6 +227,7 @@ test("the runner reports every refusal and skips only dependent steps", async ()
   );
   const report = preflightReport({
     candidate: "a".repeat(40),
+    mode: "check",
     steps: runner.results,
     state: createRehearsalCounters(),
     bridge: createPreflightBridgeCounters(),
@@ -241,4 +256,112 @@ test("the runner reports every refusal and skips only dependent steps", async ()
     },
     { step: "e", status: "pass", summary: { value: 1 } },
   ]);
+});
+
+// The controller as production runs it: it accepts a signed inspect only for its own code.
+const liveCode = { candidate: "1".repeat(40), workerInput: "2".repeat(64) };
+const recordedCode = { candidate: "3".repeat(40), workerInput: "4".repeat(64) };
+const accepts = (code: typeof liveCode) => JSON.stringify(code) === JSON.stringify(liveCode);
+
+test("without a release receipt the lagging recorded code is all there is, and inspect refuses", () => {
+  const codes = liveControllerCodes({
+    recorded: recordedCode,
+    running: liveCode.candidate,
+    receipts: [],
+    workerInput: "5".repeat(64),
+  });
+  assert.equal(
+    codes.some(({ code }) => accepts(code)),
+    false,
+  );
+});
+
+test("the release receipt for the running release supplies the code the controller accepts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "preflight-receipts-"));
+  try {
+    for (const [run, code] of [
+      ["101", { candidate: "6".repeat(40), workerInput: "7".repeat(64) }],
+      ["102", liveCode],
+    ] as const) {
+      await mkdir(join(directory, run, "nested"), { recursive: true });
+      await writeFile(
+        join(directory, run, "nested", "provider-observation.json"),
+        JSON.stringify({ status: "refused", ...code, at: 1 }),
+      );
+    }
+    await writeFile(join(directory, "101", "provider-observation.json"), "not json");
+    const receipts = await releaseReceiptCodes(directory);
+    const codes = liveControllerCodes({
+      recorded: recordedCode,
+      running: liveCode.candidate,
+      receipts,
+      workerInput: "5".repeat(64),
+    });
+    assert.deepEqual(
+      codes.map(({ source }) => source),
+      ["recorded", "release-receipt", "checkout-revision"],
+    );
+    assert.equal(codes.find(({ code }) => accepts(code))?.source, "release-receipt");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  assert.deepEqual(await releaseReceiptCodes(undefined), []);
+});
+
+test("an unsettled prior candidate needs the settlement its live controller state implies", () => {
+  const prior = "8".repeat(40);
+  assert.deepEqual(settlementVerdict({ prior, liveCandidate: prior, selected: true }), {
+    disposition: "controller-active-adopted",
+    supported: false,
+  });
+  assert.deepEqual(settlementVerdict({ prior, liveCandidate: prior, selected: false }), {
+    disposition: "controller-active-unadopted",
+    supported: true,
+  });
+  assert.deepEqual(settlementVerdict({ prior, liveCandidate: "9".repeat(40), selected: true }), {
+    disposition: "abandoned-before-controller",
+    supported: true,
+  });
+  assert.equal(
+    settlementVerdict({
+      prior,
+      liveCandidate: prior,
+      selected: true,
+      supported: ["controller-active-adopted"],
+    }).supported,
+    true,
+  );
+});
+
+test("a required settlement reports in Check but blocks the release; an unsupported one blocks both", async () => {
+  const runner = preflightRunner();
+  await runner.step("release-settlement", [], async () => {
+    throw new SettlementRequired("controller-active-adopted");
+  });
+  const report = (mode: "check" | "release", steps = runner.results) =>
+    preflightReport({
+      candidate: "a".repeat(40),
+      mode,
+      steps,
+      state: createRehearsalCounters(),
+      bridge: createPreflightBridgeCounters(),
+    }).status;
+  assert.deepEqual(runner.results, [
+    {
+      step: "release-settlement",
+      status: "settlement-required",
+      disposition: "controller-active-adopted",
+    },
+  ]);
+  assert.equal(report("check"), "pass");
+  assert.equal(report("release"), "refused");
+  const unsupported = preflightRunner();
+  await unsupported.step("release-settlement", [], async () => {
+    throw new BarrierRefusal(
+      "release-preflight-settlement-unsupported",
+      "controller-active-adopted",
+    );
+  });
+  assert.equal(report("check", unsupported.results), "refused");
+  assert.equal(report("release", unsupported.results), "refused");
 });

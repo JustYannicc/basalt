@@ -157,12 +157,17 @@ jobs:
           POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
 
+      - name: Collect the release receipts that name the live controller code
+        if: steps.live.outputs.already_live == 'false'
+        working-directory: ${{ runner.temp }}/candidate
+        run: node scripts/release-barrier/release-preflight-receipts.ts "$RUNNER_TEMP/release-receipts"
       # Runs every production read the release makes, with writes refused, so a refusal costs minutes, not a release.
       - name: Preflight every release read against production before the backup
         if: steps.live.outputs.already_live == 'false'
         working-directory: ${{ runner.temp }}/candidate
         run: bun scripts/release-barrier/release-preflight-entry.ts
         env:
+          BASALT_PREFLIGHT_RECEIPTS: ${{ runner.temp }}/release-receipts
           BASALT_RELEASE_CANDIDATE: ${{ steps.candidate.outputs.head }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
