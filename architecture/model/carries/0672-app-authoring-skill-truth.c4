@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The built-in app-authoring skill describes the served framework as it behaves: app dependencies with saved connections, query-only calls outside workflow steps and receipt-fenced mutations inside them, refused rather than paused target approvals unless a standing tool policy approves, pool-bound model requests that durable workflows refuse, the Cloud-only app drive, version re-registration for source-managed webhook subscriptions, with manual setups carried while they still fit, versus pinned explicitly created ones, and a local type check only when npm has the exact served framework version. Skill digests regenerate with every skill change; product behavior is unchanged."
+    }
+  }
+}
