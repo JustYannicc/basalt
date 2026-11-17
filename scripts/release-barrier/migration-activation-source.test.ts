@@ -142,6 +142,7 @@ test("main's client refuses to describe production with pool migrations the cand
   for (const drifted of [
     ["src/pool/model-history/change-schema.ts"],
     ["src/pool/model-history/history-row-schema.ts"],
+    ["src/pool/model-history/history-bulk-schema.ts"],
     ["brand.ts", "src/pool/model-history/schema.ts"],
   ]) {
     const tree = candidateTree(context, drifted);

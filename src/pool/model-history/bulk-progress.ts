@@ -135,7 +135,7 @@ export async function commitBulkChunk(
       }
       if (Number(job.committed_rows) !== start) throw new HistoryConflict();
       await eligibleTargets(db, definition);
-      const result = await insertBulkRequests(db, records);
+      const result = await insertBulkRequests(db, records, definition.identity.pool);
       if (result.count !== rows) throw new HistoryConflict();
       const elapsedMs = Math.max(1, Date.now() - startedAt);
       await db.query(

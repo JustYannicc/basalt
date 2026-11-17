@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { historyBulkInvalidationVersion } from "../../src/pool/model-history/history-bulk-schema.ts";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { digest } from "../../src/pool/backend-users.ts";
@@ -54,7 +55,9 @@ export async function historyInsertFixture<T>(
         auth_id text,deleted_at timestamptz);
       CREATE TABLE basalt_model_history_migrations(name text PRIMARY KEY,
         completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
-    for (const migration of historySchemaMigrations.filter((item) => item.name !== rowVersion)) {
+    for (const migration of historySchemaMigrations.filter(
+      (item) => item.name !== rowVersion && item.name !== historyBulkInvalidationVersion,
+    )) {
       for (const statement of migration.statements) await a.query(statement);
       await a.query("INSERT INTO basalt_model_history_migrations(name) VALUES($1)", [
         migration.name,
