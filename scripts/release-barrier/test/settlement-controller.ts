@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import { canonical } from "../manifest.ts";
 import { Schema } from "effect";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { ControllerCode, type SlotTarget } from "../../../src/pool/runtime-slots/contract.ts";
@@ -152,8 +152,9 @@ export function settlementController(input: {
       const command = Schema.decodeUnknownSync(Command, { onExcessProperty: "error" })(
         await openEnvelope(input.key, runtimeHandoffCommandPrefix, body.envelope),
       );
-      assert.deepEqual(command.controllerCode, input.code);
       input.calls.push(`POST ${command.action}`);
+      // Another controller code is refused by the real handler, as production refuses it.
+      if (canonical(command.controllerCode) !== canonical(input.code)) return live(forwarded);
       if (command.action === "fleet-inspect")
         return knobs.fleetResponse?.() ?? Response.json({ result: knobs.fleet });
       if (command.action === "witness") return knobs.witness?.() ?? live(forwarded);

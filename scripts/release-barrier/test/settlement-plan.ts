@@ -37,6 +37,9 @@ export const planSettlement = (
           coordinatorGo: "read-only-plan",
           expiresAt: Date.now() + 60_000,
           ...(disposition === "omitted" ? {} : { disposition }),
+          ...(disposition === "controller-active-unadopted" && f.sourceController
+            ? { sourceController: f.sourceController }
+            : {}),
         },
         f.provisioningWriter,
         f.key,

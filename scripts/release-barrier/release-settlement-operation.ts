@@ -93,6 +93,7 @@ export const planReleaseSettlement = (
       io.directory,
       io,
       request.disposition ?? "abandoned-before-controller",
+      request.sourceController,
     );
     if (collected.proof.controller.target.accountId !== writer.accountId)
       throw new BarrierRefusal("release-settlement-account-refused", "PoolWorker");
@@ -156,6 +157,9 @@ export const applyReleaseSettlement = (
       io.directory,
       io,
       manifest.proof.disposition,
+      manifest.proof.disposition === "controller-active-unadopted"
+        ? manifest.proof.controller.code
+        : undefined,
     );
     if (
       hash(collected.source.image) !== manifest.imageHeadDigest ||

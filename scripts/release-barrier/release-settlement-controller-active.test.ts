@@ -16,7 +16,6 @@ import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-rele
 import { journalKey, writeForwardJournal } from "./forward-journal.ts";
 import type { ForwardPacket } from "./forward-model.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
-import { runtimeReleaseState } from "./runtime-release-state.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import type { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
 
@@ -45,7 +44,6 @@ const ForwardHead = Schema.Struct({
   complete: Schema.Boolean,
   sealed: Schema.Unknown,
 });
-const ReadinessProps = Schema.Struct({ env: Schema.Record(Schema.String, Schema.Unknown) });
 const slotIdentity = {
   format: "pool-runtime-slot-v1" as const,
   controllerId: "f".repeat(64),
@@ -179,26 +177,24 @@ const refusals: [
   (f: SettlementFixture) => unknown,
 ][] = [
   [
-    "a live controller other than the source",
-    /release-settlement-controller-not-source/,
-    async (f) => {
-      const key = {
-        stack: f.scope.name,
-        stage: f.scope.stage,
-        fqn: "PoolBackendBudgetRuntimeReady",
-      };
-      const row = await Effect.runPromise(f.memory.get(key));
-      assert.ok(row && "props" in row);
-      const { env } = Schema.decodeUnknownSync(ReadinessProps)(row.props);
-      await Effect.runPromise(
-        f.memory.set({
-          ...key,
-          value: { ...row, props: { env: { ...env, GITHUB_SHA: "0".repeat(40) } } },
-        }),
-      );
-      // Keep the image journal's native baseline equal to the changed native state.
-      const native = await Effect.runPromise(f.provide(runtimeReleaseState(f.scope)));
-      await rewriteImage(f, (record) => ({ ...record, baseline: native }));
+    "a request that does not name the source controller",
+    /release-settlement-source-controller-unproven \(PoolWorker\)/,
+    (f) => {
+      f.sourceController = undefined;
+    },
+  ],
+  [
+    "a source controller of another candidate",
+    /release-settlement-source-controller-unproven \(PoolWorker\)/,
+    (f) => {
+      f.sourceController = { ...f.code, candidate: "0".repeat(40) };
+    },
+  ],
+  [
+    "a source controller code the live controller does not hold",
+    /baseline-controller-identity-refused \(PoolWorker\)/,
+    (f) => {
+      f.sourceController = { ...f.code, workerInput: "9".repeat(64) };
     },
   ],
   [
