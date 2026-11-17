@@ -45,7 +45,8 @@ try {
         const root = baseline.applications.root.image;
         const observed = yield* Effect.promise(() =>
           assertPoolImageTarget(
-            root,
+            // The verifier refuses a target whose account differs from the credentials it reads with.
+            { ...root, accountId: baseline.target.accountId },
             { workerName: baseline.target.worker, inputHash: root.inputHash },
             { accountId, apiToken },
             guarded,

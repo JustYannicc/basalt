@@ -86,7 +86,7 @@ test("an active root retains the original verification path", async () => {
 });
 
 test("fleet fallback refuses empty, stale, nonrunning, foreign and duplicate evidence", async () => {
-  const cases = [
+  const cases: (NonNullable<Parameters<typeof fixture>[0]> & { reason: RegExp })[] = [
     { instances: { root: [], blue: [], green: [] }, reason: /no running instance/ },
     { instances: { root: [], blue: [instance("blue", "5")] }, reason: /instance image differs/ },
     {
