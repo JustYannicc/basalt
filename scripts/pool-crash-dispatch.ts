@@ -7,11 +7,13 @@ import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-c
 import { isSigningKey } from "../src/pool/token.ts";
 import { runCrashOperator } from "./pool-crash-operator.ts";
 import type { PoolOperationsTarget } from "./pool-operations.ts";
+import { nodePoolOperations } from "./pool-operations-node.ts";
 import { BarrierRefusal } from "./release-barrier/refusal.ts";
 import { sendRuntimeCommand } from "./release-barrier/runtime-command-rpc.ts";
 import {
   readReleaseTarget,
   workflowRunLister,
+  RunListRefused,
   type ReleaseTarget,
 } from "./pool-crash-dispatch-sources.ts";
 
@@ -83,7 +85,6 @@ function replyResult(reply: unknown, action: string) {
   return reply.result;
 }
 
-// Raw messages from the bridge can name the account or worker; only fixed codes reach a public artifact.
 /**
  * The artifact is public on this repository. Raw controller replies can name the account (fleet
  * applications carry it), so its exact value is replaced while every other identity field stays raw
@@ -98,6 +99,7 @@ function redactAccount<T>(value: T, accountId: string): T {
   ) as T;
 }
 
+// Raw messages from the bridge can name the account or worker; only fixed codes reach a public artifact.
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
   const code =
@@ -116,8 +118,9 @@ async function replayed(input: DispatchInput, deps: DispatchDependencies) {
   let runs: Awaited<ReturnType<DispatchDependencies["listRuns"]>>;
   try {
     runs = await deps.listRuns();
-  } catch {
-    throw new DispatchRefusal("workflow run list unavailable; apply refused");
+  } catch (cause) {
+    const status = cause instanceof RunListRefused ? ` (HTTP ${cause.status})` : "";
+    throw new DispatchRefusal(`workflow run list unavailable${status}; apply refused`);
   }
   return runs.some((run) => run.id !== input.runId && run.displayTitle.includes(input.requestId));
 }
@@ -176,7 +179,7 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
       // A controller refusal of the health read is evidence in itself; the selection and fleet
       // still stand. Any other failure (lost reply, timeout, malformed reply) fails the observe.
       const activeHealth = await send("active-health").catch((cause: unknown) => {
-        if (cause instanceof SlotRefused || cause instanceof BarrierRefusal) return null;
+        if (cause instanceof ControllerRefused) return null;
         throw cause;
       });
       output.observe = redactAccount(
@@ -267,6 +270,9 @@ export const crashSender =
     }
   };
 
+/** The controller answered with its own handoff refusal (409 runtime-handoff-refused). */
+export class ControllerRefused extends Error {}
+
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
   async (action, controllerCode, target, signingKey) => {
@@ -275,9 +281,45 @@ export const observeSender =
       { controllerCode, action, at, expiresAt: at + 25_000 },
       at,
     );
-    return sendRuntimeCommand(command, signingKey, { ...target, connect }, () => {
-      decodeRuntimeHandoffCommand(command, signedNow());
-    });
+    // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
+    // refused; a defect, auth rejection or bridge failure must not read as a refusal.
+    let refused = false;
+    const observed: NonNullable<Connect> = async (path) => {
+      const platform = await (connect
+        ? connect(path)
+        : nodePoolOperations(target.accountId, target.worker));
+      const service = platform.env.POOL_OPERATIONS;
+      return {
+        ...platform,
+        env: {
+          POOL_OPERATIONS: {
+            fetch: async (request: Request) => {
+              const response = await service.fetch(request);
+              if (response.status === 409) {
+                const body: unknown = await response
+                  .clone()
+                  .json()
+                  .catch(() => undefined);
+                refused =
+                  !!body &&
+                  typeof body === "object" &&
+                  "error" in body &&
+                  body.error === "runtime-handoff-refused";
+              }
+              return response;
+            },
+          },
+        },
+      };
+    };
+    try {
+      return await sendRuntimeCommand(command, signingKey, { ...target, connect: observed }, () => {
+        decodeRuntimeHandoffCommand(command, signedNow());
+      });
+    } catch (cause) {
+      if (refused) throw new ControllerRefused(`${action} refused by the controller`);
+      throw cause;
+    }
   };
 
 export async function writeDispatchResult(directory: string, result: object) {

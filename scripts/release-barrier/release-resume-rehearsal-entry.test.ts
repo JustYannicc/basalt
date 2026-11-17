@@ -87,6 +87,7 @@ test("Check runs the post-deploy image probe whenever the verifier or its probe 
     "scripts/deploy-safety/cloudflare.ts",
     "scripts/deploy-safety/contracts.ts",
     "scripts/pool-readiness.ts",
+    "scripts/ci/probe-candidate.ts",
     "scripts/release-barrier/post-deploy-image-probe.ts",
   ])
     assert.equal(probeNeeded([path]), true, path);

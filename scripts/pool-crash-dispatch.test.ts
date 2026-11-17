@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deploymentReadinessPrefix } from "../src/pool/deployment-readiness.ts";
-import { SlotRefused } from "../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../src/pool/token.ts";
+import { RunListRefused } from "./pool-crash-dispatch-sources.ts";
 import {
+  ControllerRefused,
   crashSender,
   logLine,
   observeSender,
@@ -307,7 +308,7 @@ test("free-form inputs never reach the log line", async () => {
 test("observe keeps the selection and fleet when only the health read is refused", async () => {
   const { deps } = fakes({
     observe: async (action) => {
-      if (action === "active-health") throw new SlotRefused("unhealthy");
+      if (action === "active-health") throw new ControllerRefused("active-health refused");
       return { result: action === "inspect" ? { selection: { slot: "primary" } } : { action } };
     },
   });
@@ -359,4 +360,43 @@ test("the public result replaces the account wherever a raw controller reply car
   assert.equal(observed.ok, true);
   assert.doesNotMatch(JSON.stringify(observed), new RegExp(accountId));
   assert.match(JSON.stringify(observed.observe), /redacted-account/);
+});
+
+test("only the controller's own 409 refusal makes the health read null", async () => {
+  const signingKey = randomBytes(32).toString("hex");
+  const sender = (status: number, body: unknown) =>
+    observeSender(async () => ({
+      dispose: async () => {},
+      env: { POOL_OPERATIONS: { fetch: async () => Response.json(body, { status }) } },
+    }));
+  const target = { accountId, worker: "synthetic-pool" };
+  await assert.rejects(
+    sender(409, { error: "runtime-handoff-refused", reason: "unhealthy" })(
+      "active-health",
+      controllerCode,
+      target,
+      signingKey,
+    ),
+    ControllerRefused,
+  );
+  for (const [status, body] of [
+    [500, { error: "runtime-defect" }],
+    [401, { error: "unauthorized" }],
+    [409, { error: "something-else" }],
+  ] as const)
+    await assert.rejects(
+      sender(status, body)("active-health", controllerCode, target, signingKey),
+      (error: unknown) => !(error instanceof ControllerRefused),
+    );
+});
+
+test("a refused run list names its HTTP status and refuses apply", async () => {
+  const { deps } = fakes({
+    listRuns: async () => {
+      throw new RunListRefused(403);
+    },
+  });
+  const result = await runCrashDispatch(input(), deps);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "workflow run list unavailable (HTTP 403); apply refused");
 });

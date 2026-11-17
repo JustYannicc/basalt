@@ -3,6 +3,15 @@ import { BarrierRefusal } from "./release-barrier/refusal.ts";
 
 // Live production sources for the crash dispatch: the run history and the native release target.
 
+/** A refused run-list read; only its numeric status reaches the public result. */
+export class RunListRefused extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`Run list refused with HTTP ${status}`);
+    this.status = status;
+  }
+}
+
 /** The account and PoolWorker script a crash command is sent to. */
 export type ReleaseTarget = { accountId: string; worker: string };
 
@@ -30,7 +39,7 @@ export const workflowRunLister =
           },
         },
       );
-      if (!response.ok) throw new Error(`Run list refused with HTTP ${response.status}`);
+      if (!response.ok) throw new RunListRefused(response.status);
       const body = Schema.decodeUnknownSync(Page)(await response.json());
       runs.push(
         ...body.workflow_runs.map((run) => ({ id: run.id, displayTitle: run.display_title })),
