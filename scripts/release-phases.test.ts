@@ -29,8 +29,8 @@ const metrics = (used: number) => ({
     {
       metric: "planetscale_postgres_settings_max_connections",
       values: [
-        { pod: "primary", role: "primary", value: 25 },
-        { pod: "replica", role: "replica", value: 25 },
+        { pod: "primary", role: "primary", value: 50 },
+        { pod: "replica", role: "replica", value: 50 },
       ],
     },
   ],
@@ -65,29 +65,29 @@ test("recorded recovery starts only the recovery barrier without database admiss
   ]);
 });
 
-test("release admission refuses 20/22 and admits 14/22 with the configured seven-client envelope", () => {
+test("release admission refuses 41/47 and admits 40/47 with the configured seven-client envelope", () => {
   assert.equal(
     Object.values(releaseDatabasePolicy.connections).reduce((sum, value) => sum + value, 0),
     7,
   );
   assert.throws(
-    () => primaryHeadroom(metrics(20), "main"),
-    /primary total 20, release envelope 7, ordinary slots 22/,
+    () => primaryHeadroom(metrics(41), "main"),
+    /primary total 41, release envelope 7, ordinary slots 47/,
   );
-  assert.deepEqual(primaryHeadroom(metrics(14), "main"), {
-    observed: 14,
-    ordinarySlots: 22,
+  assert.deepEqual(primaryHeadroom(metrics(39), "main"), {
+    observed: 39,
+    ordinarySlots: 47,
     envelope: 7,
   });
-  assert.deepEqual(primaryHeadroom(metrics(15), "main"), {
-    observed: 15,
-    ordinarySlots: 22,
+  assert.deepEqual(primaryHeadroom(metrics(40), "main"), {
+    observed: 40,
+    ordinarySlots: 47,
     envelope: 7,
   });
-  assert.throws(() => primaryHeadroom(metrics(16), "main"), /refused/);
+  assert.throws(() => primaryHeadroom(metrics(42), "main"), /refused/);
   const raisedLimit = metrics(20);
   raisedLimit.metrics[1]!.values[0]!.value = 40;
-  assert.throws(() => primaryHeadroom(raisedLimit, "main"), /observed max 40, expected max 25/);
+  assert.throws(() => primaryHeadroom(raisedLimit, "main"), /observed max 40, expected max 50/);
 });
 
 test("missing, duplicate, mismatched and invalid primary metrics fail closed", () => {

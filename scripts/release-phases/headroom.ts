@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 export const releaseDatabasePolicy = {
   // A provider-side limit change cannot silently expand the approved release envelope.
-  maxConnections: 25,
+  maxConnections: 50,
   // The metrics API exposes max_connections, but no verified reserved-slot gauge.
   superuserReservedConnections: 3,
   reservedConnections: 0,

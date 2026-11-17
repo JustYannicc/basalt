@@ -252,6 +252,21 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   assert.doesNotMatch(release, /MAIN_RELEASE_EXPECTED_HEAD|MAIN_RELEASE_REQUIRE_EXPECTED/);
 });
 
+test("both release deploy jobs outlast a healthy first scale-out release", () => {
+  for (const name of ["release-main.yml", "release-manual.yml"]) {
+    const release = readFileSync(
+      new URL(`../../.github/workflows/${name}`, import.meta.url),
+      "utf8",
+    );
+    const deploy = release.slice(release.indexOf("\n  deploy:\n"));
+    assert.match(
+      deploy.slice(0, deploy.indexOf("\n    env:\n")),
+      /\n    timeout-minutes: 180$/,
+      name,
+    );
+  }
+});
+
 test("runtime startup recovery uses the existing trusted deploy job and excludes normal release writes", () => {
   const release = readFileSync(
     new URL("../../.github/workflows/release-main.yml", import.meta.url),
