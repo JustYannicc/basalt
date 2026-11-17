@@ -1,4 +1,5 @@
 import { assertReleaseStateVersion } from "./release-state-version.ts";
+import { releaseEntryTarget } from "./release-stage.ts";
 import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
 import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
@@ -26,8 +27,7 @@ if (
   !/^[a-f0-9]{40}$/.test(process.env.BASALT_RELEASE_CANDIDATE ?? "")
 )
   throw new Error("Release barrier requires GitHub Actions and an immutable candidate");
-if (process.env.ALCHEMY_STAGE !== "production")
-  throw new Error("Release barrier requires the production stage");
+const release = releaseEntryTarget();
 const homeSchemaRetryIntent = homeSchemaRetryAuthorization(process.env);
 const args = process.argv.slice(2);
 const abortMode = args[0] === "--abort-runtime" && args.length === 2 ? args[1] : undefined;
@@ -131,7 +131,7 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
                   Effect.provideContext(compiled.services),
                   Effect.provideService(State, Context.get(compiled.services, State)),
                 ),
-              { stage: "production" },
+              { stage: release.stage },
             )
           : Effect.gen(function* () {
               const declarations = yield* Effect.tryPromise({

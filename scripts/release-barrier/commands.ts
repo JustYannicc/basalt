@@ -7,6 +7,7 @@ import {
   stageNamespaces,
 } from "../ensure-artifacts.ts";
 import { BarrierRefusal } from "./manifest.ts";
+import { releaseTarget } from "./release-stage.ts";
 import { ArtifactsHttpFailure } from "../artifacts-http-failure.ts";
 import { namespaceAdmissionReader, type NamespaceReadOptions } from "./namespace-read.ts";
 
@@ -42,7 +43,22 @@ const commands: Record<
   },
 };
 
-export const supportedCommand = (id: string) => Object.hasOwn(commands, id);
+/**
+ * A rehearsal's stack is a disposable stage, which also re-runs its sign-in seed and its branch's
+ * pool budget on every deploy. Production never admits them.
+ */
+const rehearsalCommands: typeof commands = {
+  PreviewAuthSeed: { phase: "database", command: "node seed.ts" },
+  PreviewPoolSize: { phase: "database", command: "node scripts/database-pool-budget.ts" },
+};
+const commandRule = (id: string) =>
+  Object.hasOwn(commands, id)
+    ? commands[id]
+    : releaseTarget().rehearsal && Object.hasOwn(rehearsalCommands, id)
+      ? rehearsalCommands[id]
+      : undefined;
+
+export const supportedCommand = (id: string) => commandRule(id) !== undefined;
 
 /** This new read-only check first runs after activation, never during preparation or database work. */
 export const firstVerificationCommand = (id: string, props: ExecProps) =>
@@ -52,7 +68,7 @@ export const firstVerificationCommand = (id: string, props: ExecProps) =>
   commands[id]?.phase === "verification" &&
   commands[id]?.command === props.command;
 export function commandPhase(id: string, props: ExecProps) {
-  const rule = commands[id];
+  const rule = commandRule(id);
   if (!rule || rule.command !== props.command || props.shell)
     throw new BarrierRefusal("unsupported-command", id);
   return rule.phase;

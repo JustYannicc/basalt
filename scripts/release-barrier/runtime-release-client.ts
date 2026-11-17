@@ -43,6 +43,7 @@ import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { releaseScope } from "./release-stage.ts";
 import { awaitRuntimeStartup } from "./runtime-startup-client.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import {
@@ -169,8 +170,7 @@ export const runtimeReleaseClient = (input: {
       return freezeRuntimeHandoff({
         disposition,
         candidate: writer.candidate,
-        stack: "basalt",
-        stage: "production",
+        ...releaseScope(),
         operationId,
         controllerCode: code,
         controller: { accountId: state.target.accountId, scriptName: state.target.worker },

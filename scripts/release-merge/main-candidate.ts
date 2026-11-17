@@ -80,19 +80,19 @@ class MainHistory {
     }
   }
 
-  /** Commits among `filter`'s push Check runs on main that passed. */
-  async #passed(filter: Record<string, string>): Promise<Set<string>> {
+  /** Commits among `filter`'s push runs of `workflow` on main that passed. */
+  async #passed(filter: Record<string, string>, workflow = "ci.yml"): Promise<Set<string>> {
     const query = new URLSearchParams({
       ...filter,
       event: "push",
       branch: "main",
       per_page: "100",
     });
-    const runs = (await this.#get(`/actions/workflows/ci.yml/runs?${query}`)) as {
+    const runs = (await this.#get(`/actions/workflows/${workflow}/runs?${query}`)) as {
       workflow_runs?: unknown;
     };
     if (!Array.isArray(runs.workflow_runs))
-      throw new Error("GitHub returned no Check runs for the main release candidate");
+      throw new Error(`GitHub returned no ${workflow} runs for the main release candidate`);
     return new Set(
       runs.workflow_runs
         .filter(
@@ -100,7 +100,7 @@ class MainHistory {
             typeof run.head_sha === "string" &&
             run.event === "push" &&
             run.conclusion === "success" &&
-            run.path === ".github/workflows/ci.yml",
+            run.path === `.github/workflows/${workflow}`,
         )
         .map((run: { head_sha: string }) => run.head_sha.toLowerCase()),
     );
@@ -108,6 +108,12 @@ class MainHistory {
 
   async passedPushCheck(commit: string): Promise<boolean> {
     return (await this.#passed({ head_sha: commit, status: "completed" })).has(commit);
+  }
+
+  async passedRehearsal(commit: string): Promise<boolean> {
+    return (
+      await this.#passed({ head_sha: commit, status: "completed" }, "release-rehearsal.yml")
+    ).has(commit);
   }
 
   /** The latest 100 passing push Checks on main, so a walk needs one lookup instead of one per commit. */
@@ -178,6 +184,19 @@ export async function passedMainPushCheck(
 }
 
 /**
+ * Whether the release rehearsal passed on exactly this main commit's push. It runs the candidate's
+ * own release code against a disposable stack, so production never runs a write step first.
+ */
+export async function passedMainRehearsal(
+  repository: string,
+  token: string,
+  commit: string,
+  fetcher: MainCandidateFetch = fetch,
+): Promise<boolean> {
+  return new MainHistory(repository, token, fetcher).passedRehearsal(fullSha(commit, "main commit"));
+}
+
+/**
  * The newest main commit after `candidate` that contains it, passed its push Check and isn't a
  * release update, or undefined when none does. A release dispatched for `candidate` can replace a
  * newer commit's pending Deploy run, so it releases that newer commit instead.
@@ -187,6 +206,7 @@ export async function newerMainCandidate(
   token: string,
   candidate: string,
   fetcher: MainCandidateFetch = fetch,
+  requireRehearsal = false,
 ): Promise<string | undefined> {
   const history = new MainHistory(repository, token, fetcher);
   const base = fullSha(candidate, "release candidate");
@@ -198,7 +218,8 @@ export async function newerMainCandidate(
     if (
       passed.has(commit) &&
       !(await history.isReleaseUpdate(commit)) &&
-      (commit === mainHead || (await history.contains(base, commit)))
+      (commit === mainHead || (await history.contains(base, commit))) &&
+      (!requireRehearsal || (await history.passedRehearsal(commit)))
     )
       return commit;
   }
@@ -232,8 +253,17 @@ export async function runMainCandidateCli(
     throw new Error("the release candidate is missing; start a new release");
   let lines: string;
   // The walk only returns a commit that already meets every release check.
+  // Manual release of main only ships a rehearsed commit, so it never selects one it would then refuse.
   const newer =
-    requested && mode ? await newerMainCandidate(repository, token, requested, fetcher) : undefined;
+    requested && mode
+      ? await newerMainCandidate(
+          repository,
+          token,
+          requested,
+          fetcher,
+          mode === "newest" && env.MAIN_RELEASE_REQUIRE_REHEARSAL === "true",
+        )
+      : undefined;
   if (mode === "newer") lines = `newer=${newer ?? ""}\n`;
   else {
     const candidate = newer

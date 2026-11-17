@@ -84,3 +84,32 @@ test("exclusive work serializes writes, propagates failures and rejects expired 
   assert.throws(() => writer.enable("b".repeat(64)), /runtime-release-writer-expired/);
   assert.deepEqual(entered, ["first", "second"]);
 });
+
+test("a rehearsal writer holds its own lease, and neither workflow can pass as the other", () => {
+  const rehearsal = {
+    ...environment(),
+    ALCHEMY_STAGE: "test-rehearsal-42",
+    GITHUB_JOB: "rehearsal",
+    GITHUB_REF: "refs/pull/7/merge",
+    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
+  };
+  assert.equal(
+    ordinaryReleaseWriter(rehearsal).enable("b".repeat(64)).writerLease,
+    "release-rehearsal-test-rehearsal-42:123:2",
+  );
+  assert.equal(
+    ordinaryReleaseWriter({ ...rehearsal, GITHUB_REF: "refs/heads/main",
+      GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/heads/main" })
+      .lease,
+    "release-rehearsal-test-rehearsal-42:123:2",
+  );
+  for (const env of [
+    { ...rehearsal, ALCHEMY_STAGE: "production" },
+    { ...rehearsal, GITHUB_JOB: "deploy" },
+    { ...rehearsal, GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/deploy.yml@refs/pull/7/merge" },
+    { ...environment(), ALCHEMY_STAGE: "test-rehearsal-42" },
+    { ...environment(), GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/heads/main" },
+    { ...rehearsal, ALCHEMY_STAGE: "test-pr-7" },
+  ])
+    assert.throws(() => ordinaryReleaseWriter(env), /runtime-release-exclusive-writer-unavailable/);
+});

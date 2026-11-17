@@ -17,3 +17,21 @@ test("cleanup artifacts expose no manifest data and bind decryption to the exact
     message: "Preview cleanup manifest authentication failed",
   });
 });
+
+test("a PR and a rehearsal of the same number cannot open each other's cleanup manifest", () => {
+  const key = "ab".repeat(32), contents = Buffer.from('{"opaque":"private-resource-fixture"}');
+  const rehearsal = { kind: "rehearsal", number: 17 } as const;
+  const sealedPr = sealManifest(contents, key, 17);
+  const sealedRehearsal = sealManifest(contents, key, rehearsal);
+  assert.deepEqual(openManifest(sealedRehearsal, key, rehearsal), contents);
+  assert.deepEqual(Object.keys(JSON.parse(sealedPr.toString())), ["version", "pullRequest", "iv", "tag", "ciphertext"]);
+  assert.throws(() => openManifest(sealedPr, key, rehearsal), /authentication failed/);
+  assert.throws(() => openManifest(sealedRehearsal, key, 17), /authentication failed/);
+  // Relabelling the envelope does not help: the key and AAD differ too.
+  const relabelled = JSON.parse(sealedRehearsal.toString());
+  relabelled.pullRequest = relabelled.rehearsal; delete relabelled.rehearsal;
+  assert.throws(() => openManifest(Buffer.from(JSON.stringify(relabelled)), key, 17), /authentication failed/);
+  const relabelledPr = JSON.parse(sealedPr.toString());
+  relabelledPr.rehearsal = relabelledPr.pullRequest; delete relabelledPr.pullRequest;
+  assert.throws(() => openManifest(Buffer.from(JSON.stringify(relabelledPr)), key, rehearsal), /authentication failed/);
+});

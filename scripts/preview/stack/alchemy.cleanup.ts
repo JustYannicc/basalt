@@ -14,16 +14,20 @@ import {
   TestStageDomainCleanup,
 } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/test-stage-cleanup-providers.ts";
 import { axiomProviders } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/axiom-provider.ts";
+import { stackNameForStage } from "../../release-barrier/release-stage.ts";
+import { requireCleanupStage } from "../subject.ts";
+
+const configuredStage = process.env.ALCHEMY_STAGE;
 
 const cleanupState = Layer.unwrap(Effect.gen(function* () {
   const stage = yield* Stage;
-  if (!stage.startsWith("test-pr-")) return yield* Effect.die(new Error("Preview cleanup is restricted to PR stages."));
+  yield* Effect.try(() => requireCleanupStage(stage, configuredStage)).pipe(Effect.orDie);
   yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(Effect.orDie);
   return Cloudflare.state();
 }));
 
 export default Alchemy.Stack(
-  "basalt",
+  stackNameForStage(configuredStage),
   {
     providers: Layer.mergeAll(
       Cloudflare.providers(),

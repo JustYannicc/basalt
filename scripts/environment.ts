@@ -9,7 +9,13 @@ import { servedFrameworkVersion } from "../framework-release.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { feedbackEndpoints } from "../src/feedback/ui.ts";
 import { validSentryDsn } from "../src/telemetry/sentry-target.ts";
-import { derivePreviewSecrets, previewKey } from "./release-preview/keys.ts";
+import { deriveStageSecrets, stageKey } from "./release-preview/keys.ts";
+import {
+  pullRequestSubject,
+  stageNames,
+  toSubject,
+  type StageSubject,
+} from "./preview/subject.ts";
 import { assertOAuthClientId } from "./oauth-client-config.ts";
 
 export const requiredSecrets = [
@@ -56,44 +62,41 @@ export const requiredPreviewCleanupSecrets = [
   "TEST_STAGE_DOMAIN",
 ] as const;
 
-export interface PreviewEnvironment {
-  readonly pullRequest: number;
+interface StageIdentityFields {
   readonly stage: string;
   readonly sourceNamespace: string;
   readonly databaseName: string;
   readonly origin: string;
+}
+
+/**
+ * A PR identity keeps its original `pullRequest` field, so manifests written before rehearsals
+ * existed still read back; a rehearsal names its run number instead.
+ */
+export type PreviewIdentity =
+  | (StageIdentityFields & { readonly pullRequest: number; readonly rehearsal?: never })
+  | (StageIdentityFields & { readonly rehearsal: number; readonly pullRequest?: never });
+
+export type PreviewEnvironment = PreviewIdentity & {
   /** Passed to Alchemy. It contains no production runtime secrets or smoke credentials. */
   readonly deploy: NodeJS.ProcessEnv;
   /** Passed only to the one-shot database seeder. */
   readonly seed: NodeJS.ProcessEnv;
-}
+};
 
-export interface PreviewCleanupEnvironment {
-  readonly pullRequest: number;
-  readonly stage: string;
-  readonly sourceNamespace: string;
-  readonly databaseName: string;
-  readonly origin: string;
+export type PreviewCleanupEnvironment = PreviewIdentity & {
   /** Provider credentials and stage identity only. */
   readonly providers: NodeJS.ProcessEnv;
-}
+};
 
-export interface PreviewIdentity {
-  readonly pullRequest: number;
-  readonly stage: string;
-  readonly sourceNamespace: string;
-  readonly databaseName: string;
-  readonly origin: string;
+export function identitySubject(identity: PreviewIdentity): StageSubject {
+  return identity.pullRequest !== undefined
+    ? { kind: "pr", number: identity.pullRequest }
+    : { kind: "rehearsal", number: identity.rehearsal };
 }
 
 const dnsName =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
-
-function previewPullRequest(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1)
-    throw new Error("PR number must be a positive integer");
-  return value;
-}
 
 function previewDomain(value: string): string {
   const domain = value.trim().toLowerCase();
@@ -325,8 +328,13 @@ export function deployEnvironment(
 
 /** Derive one temporary PR environment; production credentials never enter the returned env. */
 export function previewEnvironment(pullRequest: number, source = process.env): PreviewEnvironment {
-  const number = previewPullRequest(pullRequest);
-  const identity = previewIdentity(number, source);
+  return stageEnvironment(pullRequestSubject(pullRequest), source);
+}
+
+/** The same isolated deploy environment for any disposable stage, PR or rehearsal. */
+export function stageEnvironment(value: StageSubject, source = process.env): PreviewEnvironment {
+  const subject = toSubject(value);
+  const identity = stageIdentity(subject, source);
   for (const name of requiredPreviewDeploySecrets) {
     if (!source[name]?.trim()) throw new Error(`Missing GitHub Actions secret: ${name}`);
   }
@@ -335,10 +343,10 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
   previewStateKey(source.PREVIEW_STATE_KEY!);
   previewSmokeCredentials(source);
 
-  const slug = `pr-${number}`;
+  const { slug } = stageNames(subject);
   const { stage, databaseName, origin, sourceNamespace } = identity;
   const domain = previewDomain(source.TEST_STAGE_DOMAIN!);
-  const generated = derivePreviewSecrets(source.PREVIEW_STATE_KEY!, number);
+  const generated = deriveStageSecrets(source.PREVIEW_STATE_KEY!, subject);
   const upstreamCommit = JSON.parse(
     readFileSync(new URL("../upstream.json", import.meta.url), "utf8"),
   ).commit as string;
@@ -359,7 +367,7 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
   }
 
   Object.assign(deploy, generated, {
-    POOL_DEPLOYMENT_KEY: previewKey(source.PREVIEW_STATE_KEY!, number, "POOL_DEPLOYMENT_KEY"),
+    POOL_DEPLOYMENT_KEY: stageKey(source.PREVIEW_STATE_KEY!, subject, "POOL_DEPLOYMENT_KEY"),
     ALCHEMY_STAGE: stage,
     CI: "true",
     DO_NOT_TRACK: "1",
@@ -377,20 +385,20 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
     EXECUTOR_APP_PUBLISHING: "off",
     BETTER_AUTH_URL: origin,
     EXECUTOR_CATALOG_URL: `${origin}${catalog.path}index.json`,
-    TELEMETRY_RELAY_KEY: previewKey(source.PREVIEW_STATE_KEY!, number, "TELEMETRY_RELAY_KEY"),
+    TELEMETRY_RELAY_KEY: stageKey(source.PREVIEW_STATE_KEY!, subject, "TELEMETRY_RELAY_KEY"),
     EXECUTOR_TELEMETRY_RELAY_URL: `${origin}/__telemetry/v1`,
-    EXECUTOR_TELEMETRY_RELAY_TOKEN: previewKey(
+    EXECUTOR_TELEMETRY_RELAY_TOKEN: stageKey(
       source.PREVIEW_STATE_KEY!,
-      number,
+      subject,
       "TELEMETRY_RELAY_KEY",
     ),
     AUTH_EMAIL_DOMAIN: `auth.${slug}.${domain}`,
     AUTH_EMAIL_PROVISION_SUBDOMAIN: "false",
     GOOGLE_CLIENT_ID: source.GOOGLE_CLIENT_ID,
     // Previews use the OAuth application IDs but never its production client secrets.
-    GOOGLE_CLIENT_SECRET: previewKey(source.PREVIEW_STATE_KEY!, number, "GOOGLE_CLIENT_SECRET"),
+    GOOGLE_CLIENT_SECRET: stageKey(source.PREVIEW_STATE_KEY!, subject, "GOOGLE_CLIENT_SECRET"),
     GITHUB_CLIENT_ID: source.AUTH_GITHUB_CLIENT_ID,
-    GITHUB_CLIENT_SECRET: previewKey(source.PREVIEW_STATE_KEY!, number, "GITHUB_CLIENT_SECRET"),
+    GITHUB_CLIENT_SECRET: stageKey(source.PREVIEW_STATE_KEY!, subject, "GITHUB_CLIENT_SECRET"),
     PLANETSCALE_DATABASE_NAME: databaseName,
     PLANETSCALE_ADOPT_DATABASE: "false",
     PLANETSCALE_REGION: deployment.databaseRegion,
@@ -420,7 +428,14 @@ export function previewCleanupEnvironment(
   pullRequest: number,
   source = process.env,
 ): PreviewCleanupEnvironment {
-  const identity = previewIdentity(pullRequest, source);
+  return stageCleanupEnvironment(pullRequestSubject(pullRequest), source);
+}
+
+export function stageCleanupEnvironment(
+  subject: StageSubject,
+  source = process.env,
+): PreviewCleanupEnvironment {
+  const identity = stageIdentity(subject, source);
   for (const name of requiredPreviewCleanupSecrets) {
     if (!source[name]?.trim()) throw new Error(`Missing GitHub Actions secret: ${name}`);
   }
@@ -461,14 +476,15 @@ export function previewStageOrigin(slug: string, domain: string, app = true): st
 
 /** Deterministic stage identity; it reads no provider credentials and performs no I/O. */
 export function previewIdentity(pullRequest: number, source = process.env): PreviewIdentity {
-  const number = previewPullRequest(pullRequest);
+  return stageIdentity(pullRequestSubject(pullRequest), source);
+}
+
+export function stageIdentity(value: StageSubject, source = process.env): PreviewIdentity {
+  const subject = toSubject(value);
   const domain = previewDomain(source.TEST_STAGE_DOMAIN ?? "");
-  const slug = `pr-${number}`;
-  return {
-    pullRequest: number,
-    stage: `test-${slug}`,
-    sourceNamespace: `basalt-preview-${slug}-apps`,
-    databaseName: `basalt-preview-${slug}`,
-    origin: previewStageOrigin(slug, domain),
-  };
+  const { slug, stage, sourceNamespace, databaseName } = stageNames(subject);
+  const fields = { stage, sourceNamespace, databaseName, origin: previewStageOrigin(slug, domain) };
+  return subject.kind === "pr"
+    ? { pullRequest: subject.number, ...fields }
+    : { rehearsal: subject.number, ...fields };
 }

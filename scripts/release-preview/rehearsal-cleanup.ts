@@ -1,0 +1,102 @@
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkpoint } from "./checkpoint.ts";
+import { privateOperation } from "./process.ts";
+import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
+
+/** Which rehearsal stages a finished, unsuccessful rehearsal run left a checkpoint for. */
+type Run = {
+  id?: unknown;
+  name?: unknown;
+  path?: unknown;
+  status?: unknown;
+  conclusion?: unknown;
+  head_repository?: { full_name?: unknown };
+};
+
+export function rehearsalCleanupRun(
+  event: { repository?: { full_name?: unknown }; workflow_run?: Run },
+  repository: string,
+): number {
+  const run = event.workflow_run;
+  if (
+    event.repository?.full_name !== repository ||
+    run?.name !== "Release rehearsal" ||
+    run.path !== ".github/workflows/release-rehearsal.yml" ||
+    run.status !== "completed" ||
+    run.conclusion === "success" ||
+    run.head_repository?.full_name !== repository ||
+    typeof run.id !== "number" ||
+    !Number.isSafeInteger(run.id) ||
+    run.id < 1
+  )
+    throw new Error("Invalid rehearsal cleanup event");
+  return run.id;
+}
+
+/** Checkpoint artifacts are named for their stage and run, so each names exactly one stage. */
+export function rehearsalCheckpoints(artifacts: unknown, runId: number): Array<{ id: number; subject: StageSubject }> {
+  if (!Array.isArray(artifacts) || artifacts.length >= 100) throw new Error("Invalid rehearsal cleanup artifacts");
+  const pattern = new RegExp(`^release-rehearsal-cleanup-(rehearsal-[1-9][0-9]{0,9})-${runId}$`);
+  return artifacts.flatMap((item: { id?: unknown; name?: unknown; expired?: unknown } | null) => {
+    if (!item || typeof item.name !== "string" || item.expired) return [];
+    const match = pattern.exec(item.name);
+    const { id } = item;
+    if (!match || typeof id !== "number" || !Number.isSafeInteger(id)) return [];
+    return [{ id, subject: parseSubjectArgument(match[1]) }];
+  });
+}
+
+const gh = (path: string) =>
+  execFileSync("gh", ["api", path], { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 2 * 1024 * 1024 });
+
+async function main(): Promise<void> {
+  const repository = process.env.GITHUB_REPOSITORY;
+  if (process.env.GITHUB_ACTIONS !== "true" || !process.env.GITHUB_EVENT_PATH || !repository)
+    throw new Error("Rehearsal cleanup runs only from a trusted Actions event");
+  const runId = rehearsalCleanupRun(JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8")), repository);
+  const { artifacts } = JSON.parse(gh(`repos/${repository}/actions/runs/${runId}/artifacts?per_page=100`).toString());
+  const root = process.cwd();
+  const privateRoot = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "basalt-rehearsal-cleanup-"));
+  const failures: unknown[] = [];
+  let sequence = 0;
+  try {
+    await mkdir(join(root, ".local"), { recursive: true, mode: 0o700 });
+    // A run cancelled before its checkpoint upload created nothing: the upload precedes any provider write.
+    for (const { id, subject } of rehearsalCheckpoints(artifacts, runId)) {
+      const { slug } = stageNames(subject);
+      const operation = (mode: string) =>
+        privateOperation({
+          label: mode, command: process.execPath, args: ["scripts/preview/lifecycle.ts", mode, slug], directory: root,
+          environment: { ...process.env, GITHUB_OUTPUT: undefined, GITHUB_ENV: undefined },
+          logPath: join(privateRoot, `${++sequence}-${mode}.log`), timeoutMs: 15 * 60_000,
+        });
+      try {
+        const zipPath = join(privateRoot, `${slug}.zip`);
+        await writeFile(zipPath, gh(`repos/${repository}/actions/artifacts/${id}/zip`), { mode: 0o600 });
+        const entries = execFileSync("unzip", ["-Z1", zipPath], { encoding: "utf8" }).trim().split(/\r?\n/);
+        if (entries.length !== 1 || entries[0] !== "preview-plan.json.enc") throw new Error("Invalid rehearsal checkpoint archive");
+        const encryptedPath = join(privateRoot, `${slug}.json.enc`);
+        await writeFile(encryptedPath, execFileSync("unzip", ["-p", zipPath, "preview-plan.json.enc"], { maxBuffer: 2 * 1024 * 1024 }), { mode: 0o600 });
+        await checkpoint("restore", root, encryptedPath, process.env.PREVIEW_STATE_KEY ?? "", subject);
+        let failure: unknown;
+        try { await operation("destroy"); } catch (error) { failure = error; }
+        await operation("verify");
+        if (failure) throw failure;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, "Rehearsal cleanup did not finish");
+    console.log("Temporary release rehearsal resources are absent");
+  } finally {
+    await rm(privateRoot, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1]?.endsWith("/rehearsal-cleanup.ts")) {
+  try { await main(); }
+  catch { console.error("Rehearsal cleanup failed; provider resource absence is not established"); process.exitCode = 1; }
+}

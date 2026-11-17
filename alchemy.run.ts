@@ -27,38 +27,43 @@ import AppPages from "./.upstream/apps/hosted/cloud/src/app-ui.ts";
 import { Api } from "./.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { stackState } from "./.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
 import { releaseStackState } from "./scripts/release-barrier/read-only-state.ts";
+import { stackNameForStage } from "./scripts/release-barrier/release-stage.ts";
+import { stageNames, subjectFromStage } from "./scripts/preview/subject.ts";
 import { previewDatabase } from "./.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
 
 export default Alchemy.Stack(
-  "basalt",
+  stackNameForStage(process.env.ALCHEMY_STAGE),
   { providers: cloudProviders, state: releaseStackState(stackState) },
   Effect.gen(function* () {
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
     const stage = yield* Stage;
-    const previewNumber = /^test-pr-([1-9][0-9]*)$/.exec(stage)?.[1];
+    // The stack name is fixed before evaluation from ALCHEMY_STAGE; a differing --stage would land elsewhere.
+    if (stackNameForStage(stage) !== stackNameForStage(process.env.ALCHEMY_STAGE))
+      return yield* Effect.die(new Error("The deploy stage and ALCHEMY_STAGE name different stacks."));
+    // PR previews and release rehearsals are the disposable stages; every other stage is production.
+    const previewSubject = subjectFromStage(stage);
     const preview =
-      previewNumber === undefined
+      previewSubject === undefined
         ? undefined
         : {
-            number: previewNumber,
+            names: stageNames(previewSubject),
             domain: yield* Config.NonEmptyString("TEST_STAGE_DOMAIN"),
             sourceNamespace: yield* Config.NonEmptyString("CLOUD_SOURCE_NAMESPACE"),
             databaseName: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
           };
     if (preview !== undefined) {
-      const expectedNamespace = `basalt-preview-pr-${preview.number}-apps`;
-      if (preview.sourceNamespace !== expectedNamespace)
+      if (preview.sourceNamespace !== preview.names.sourceNamespace)
         return yield* Effect.die(
           new Error("Preview Artifacts namespace does not match its stage."),
         );
-      const expectedDatabase = `basalt-preview-pr-${preview.number}`;
-      if (preview.databaseName !== expectedDatabase)
+      if (preview.databaseName !== preview.names.databaseName)
         return yield* Effect.die(
           new Error("Preview PlanetScale database does not match its stage."),
         );
     }
     const zoneName = preview?.domain ?? brand.zone;
-    const host = preview === undefined ? brand.host : `app.pr-${preview.number}.${preview.domain}`;
+    const host =
+      preview === undefined ? brand.host : `app.${preview.names.slug}.${preview.domain}`;
     const zone = yield* Cloudflare.Zone.findZoneByName({ accountId, name: zoneName }).pipe(
       Effect.orDie,
     );
@@ -127,9 +132,9 @@ export default Alchemy.Stack(
     if (preview !== undefined) {
       const migration = yield* previewDatabase({
         name: stage,
-        slug: `pr-${preview.number}`,
+        slug: preview.names.slug,
         domain: preview.domain,
-        origin: previewStageOrigin(`pr-${preview.number}`, preview.domain, false),
+        origin: previewStageOrigin(preview.names.slug, preview.domain, false),
       });
       const seedScript = fileURLToPath(new URL("./scripts/preview-auth/seed.ts", import.meta.url));
       yield* Command.Exec("PreviewAuthSeed", {
@@ -138,7 +143,7 @@ export default Alchemy.Stack(
         env: {
           ALCHEMY_STAGE: stage,
           TEST_STAGE_DOMAIN: preview.domain,
-          BETTER_AUTH_URL: previewStageOrigin(`pr-${preview.number}`, preview.domain),
+          BETTER_AUTH_URL: previewStageOrigin(preview.names.slug, preview.domain),
           DATABASE_URL: migration.migrationUrl,
           TEST_STAGE_DATABASE_BRANCH: migration.branchName,
           TEST_STAGE_DATABASE_NAME: migration.databaseName,

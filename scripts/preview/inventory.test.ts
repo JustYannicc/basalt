@@ -5,6 +5,8 @@ import {
   capturePreviewInventory,
   inventoryResourceCount,
   mergePreviewInventories,
+  parsePreviewInventory,
+  previewStacks,
   type PreviewStateEntry,
   type StateCommand,
 } from "./inventory.ts";
@@ -107,4 +109,33 @@ test("cleanup retries retain the first exact provider readback when later state 
   assert.deepEqual(merged.providers.containers, [{ applicationId: "app-id", applicationName: "app-name" }]);
   assert.deepEqual(merged.providers.domains, [{ id: "domain-id", hostname: "preview.example.invalid", service: "router" }]);
   assert.deepEqual(merged.stacks.basalt.map((entry) => entry.path), previous.stacks.basalt.map((entry) => entry.path));
+});
+
+test("a rehearsal reads its own stack name and refuses records from a PR stack", async () => {
+  const rehearsal = "test-rehearsal-17";
+  const router = { ...row("Router", "Cloudflare.Worker"), path: `basalt-rehearsal/${rehearsal}/Router` };
+  const reads: string[] = [];
+  const reader = alchemyPreviewStateReader({
+    command: (args) => {
+      if (args.includes("list")) return { status: 0, stdout: `${router.path}\n` };
+      reads.push(args.find((value) => value.includes("/"))!);
+      return { status: 0, stdout: JSON.stringify(router.value) };
+    },
+    environment: {},
+  });
+  const inventory = await capturePreviewInventory({ stage: rehearsal }, reader, "2026-10-24T00:00:00.000Z");
+  assert.deepEqual(Object.keys(inventory.stacks), [
+    "basalt-rehearsal",
+    "basalt-preview-database",
+    "basalt-rehearsal-fixture",
+  ]);
+  assert.deepEqual(reads, [`basalt-rehearsal/${rehearsal}`]);
+  assert.equal(inventoryResourceCount(inventory), 1);
+  assert.deepEqual(previewStacks(stage), ["basalt", "basalt-preview-database"]);
+  assert.throws(() => parsePreviewInventory({
+    ...inventory,
+    stacks: { basalt: inventory.stacks["basalt-rehearsal"], "basalt-preview-database": [], "basalt-rehearsal-fixture": [] },
+  }, rehearsal), /unexpected fields/);
+  for (const other of ["production", "test-e2e-17", "test-pr-0"])
+    await assert.rejects(reader.read(other));
 });

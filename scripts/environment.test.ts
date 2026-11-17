@@ -16,6 +16,8 @@ import {
   requiredPreviewDeploySecrets,
   requiredPreviewSecrets,
   requiredSecrets,
+  stageCleanupEnvironment,
+  stageEnvironment,
 } from "./environment.ts";
 
 test("missing credentials fail with a name and never a value", () => {
@@ -265,6 +267,56 @@ test("preview config rejects unsafe PRs, hostnames, keys and real-person smoke a
   assert.throws(
     () => previewEnvironment(1, { ...source, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
     /reserved example.invalid/,
+  );
+});
+
+test("a rehearsal environment mirrors a PR's but shares no name or key with the same number", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  const rehearsal = stageEnvironment({ kind: "rehearsal", number: 1419 }, source);
+  const pr = previewEnvironment(1419, source);
+  assert.deepEqual(stageEnvironment({ kind: "pr", number: 1419 }, source), pr);
+  assert.equal(rehearsal.rehearsal, 1419);
+  assert.equal(rehearsal.pullRequest, undefined);
+  assert.equal(rehearsal.stage, "test-rehearsal-1419");
+  assert.equal(rehearsal.sourceNamespace, "basalt-preview-rehearsal-1419-apps");
+  assert.equal(rehearsal.databaseName, "basalt-preview-rehearsal-1419");
+  assert.equal(rehearsal.origin, "https://app.rehearsal-1419.preview.example.invalid");
+  assert.equal(rehearsal.deploy.ALCHEMY_STAGE, "test-rehearsal-1419");
+  assert.equal(rehearsal.deploy.CLOUD_SOURCE_NAMESPACE, "basalt-preview-rehearsal-1419-apps");
+  assert.equal(rehearsal.deploy.TEST_STAGE_DATABASE, "basalt-preview-rehearsal-1419");
+  assert.equal(rehearsal.deploy.PLANETSCALE_DATABASE_NAME, "basalt-preview-rehearsal-1419");
+  assert.equal(rehearsal.deploy.BETTER_AUTH_URL, rehearsal.origin);
+  assert.equal(rehearsal.deploy.AUTH_EMAIL_DOMAIN, "auth.rehearsal-1419.preview.example.invalid");
+  assert.deepEqual(Object.keys(rehearsal.deploy).sort(), Object.keys(pr.deploy).sort());
+  for (const name of [
+    "POOL_DEPLOYMENT_KEY",
+    "POOL_APP_SIGNING_KEY",
+    "POOL_MANAGEMENT_KEY",
+    "BETTER_AUTH_SECRET",
+    "EXECUTOR_ENCRYPTION_KEY",
+    "MCP_SESSION_KEY_CURRENT",
+    "MCP_SESSION_KEY_PREVIOUS",
+    "APP_DOMAIN_CONTROL_SECRET",
+    "TELEMETRY_RELAY_KEY",
+    "GOOGLE_CLIENT_SECRET",
+    "GITHUB_CLIENT_SECRET",
+  ]) {
+    assert.match(rehearsal.deploy[name]!, /^[a-f0-9]{64}$/, name);
+    assert.notEqual(rehearsal.deploy[name], pr.deploy[name], name);
+  }
+  const cleanup = stageCleanupEnvironment({ kind: "rehearsal", number: 1419 }, source);
+  assert.equal(cleanup.providers.ALCHEMY_STAGE, "test-rehearsal-1419");
+  assert.equal(cleanup.providers.TEST_STAGE_DATABASE, "basalt-preview-rehearsal-1419");
+  assert.equal(cleanup.providers.CLOUD_SOURCE_NAMESPACE, "basalt-preview-rehearsal-1419-apps");
+  assert.throws(
+    () => stageEnvironment({ kind: "rehearsal", number: 0 }, source),
+    /Rehearsal number must be a positive integer/,
   );
 });
 

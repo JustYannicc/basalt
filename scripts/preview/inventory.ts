@@ -2,9 +2,21 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
+import {
+  previewDatabaseStack,
+  rehearsalFixtureStack,
+  requireDisposableStage,
+  stageNames,
+  subjectFromStage,
+} from "./subject.ts";
 
-export const previewStacks = ["basalt", "basalt-preview-database"] as const;
-export type PreviewStack = (typeof previewStacks)[number];
+/** The application stack is named per subject; the database parent stack is shared, split by stage. */
+export function previewStacks(stage: string): readonly string[] {
+  const subject = requireDisposableStage(stage);
+  const stacks = [stageNames(subject).stack, previewDatabaseStack];
+  return subject.kind === "rehearsal" ? [...stacks, rehearsalFixtureStack] : stacks;
+}
+export type PreviewStack = string;
 
 export type PreviewStateEntry = { readonly path: string; readonly value: unknown };
 export type PreviewContainerReference = { readonly applicationId: string; readonly applicationName: string };
@@ -51,9 +63,10 @@ export function parsePreviewInventory(value: unknown, stage: string): PreviewInv
     throw new Error("Preview remote inventory is invalid");
   }
   const stacks = assertRecord(inventory.stacks);
-  assertExactKeys(stacks, previewStacks);
+  const names = previewStacks(stage);
+  assertExactKeys(stacks, names);
   const parsed = {} as Record<PreviewStack, readonly PreviewStateEntry[]>;
-  for (const stack of previewStacks) {
+  for (const stack of names) {
     const values = stacks[stack];
     if (!Array.isArray(values)) throw new Error("Preview remote inventory is invalid");
     const seen = new Set<string>();
@@ -160,7 +173,7 @@ function parseStageValues(stdout: string, stack: PreviewStack, stage: string, pa
   });
 }
 
-/** Reads exact PR stage records from the configured Cloudflare state backend. */
+/** Reads exact disposable stage records from the configured Cloudflare state backend. */
 export function alchemyPreviewStateReader(options: {
   readonly command?: StateCommand;
   readonly environment?: NodeJS.ProcessEnv;
@@ -169,7 +182,8 @@ export function alchemyPreviewStateReader(options: {
   const source = options.environment ?? process.env;
   return {
     async read(stage) {
-      if (!/^test-pr-[1-9][0-9]*$/.test(stage)) throw new Error("Remote state reads are restricted to PR stages");
+      if (subjectFromStage(stage) === undefined)
+        throw new Error("Remote state reads are restricted to PR and rehearsal stages");
       const env = { ...source, ALCHEMY_STAGE: stage, CI: "true" };
       const listed = runStateCommand(command, [
         "--log-level", "none", "state", "list", "--recursive", "--config", stateConfig,
@@ -177,7 +191,7 @@ export function alchemyPreviewStateReader(options: {
       ], env);
       const allPaths = parsePaths(listed);
       const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
-      for (const stack of previewStacks) {
+      for (const stack of previewStacks(stage)) {
         const prefix = `${stack}/${stage}/`;
         const paths = allPaths.filter((path) => path.startsWith(prefix)).sort((a, b) => a.localeCompare(b, "en"));
         if (paths.length === 0) {
@@ -211,7 +225,7 @@ export async function capturePreviewInventory(
 }
 
 export function inventoryResourceCount(inventory: PreviewInventory): number {
-  return previewStacks.reduce((count, stack) => count + inventory.stacks[stack].filter((entry) => !entry.path.endsWith("/output")).length, 0);
+  return Object.values(inventory.stacks).reduce((count, entries) => count + entries.filter((entry) => !entry.path.endsWith("/output")).length, 0);
 }
 
 /** Keep earlier physical identities when a failed cleanup is retried from newer stage state. */
@@ -224,7 +238,7 @@ export function mergePreviewInventories(
   const prior = parsePreviewInventory(previous, stage);
   const next = parsePreviewInventory(current, stage);
   const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
-  for (const stack of previewStacks) {
+  for (const stack of previewStacks(stage)) {
     const rows = new Map<string, PreviewStateEntry>();
     for (const entry of [...prior.stacks[stack], ...next.stacks[stack]]) {
       const fingerprint = `${entry.path}\0${JSON.stringify(entry.value)}`;

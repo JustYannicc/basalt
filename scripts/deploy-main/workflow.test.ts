@@ -140,16 +140,21 @@ test("Deploy looks for a newer passing commit first, then skips whichever commit
     steps[3]!,
     /^name: [^\n]+\n        id: live\n        run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$\{NEWER:-\$RELEASE_CANDIDATE_SHA\}"\n        env:\n          NEWER: \$\{\{ steps\.newer\.outputs\.newer \}\}$/,
   );
-  // Every check, the report and through it the deploy and the unresolved refusal wait on both.
-  const gated = steps.slice(4, steps.findIndex((step) => /\n\s+id: report\n/.test(step)) + 1);
+  // Nothing deploys until the rehearsal passed on this exact commit; its own handoff releases it otherwise.
+  assert.match(
+    steps[4]!,
+    /^name: [^\n]+\n(?:        #[^\n]*\n)*        id: rehearsed\n        if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == ''\n        run: node scripts\/release-merge\/rehearsal-gate\.ts ready$/,
+  );
+  // Every check, the report and through it the deploy and the unresolved refusal wait on all three.
+  const gated = steps.slice(5, steps.findIndex((step) => /\n\s+id: report\n/.test(step)) + 1);
   assert.equal(gated.length, 13);
   for (const step of gated)
     assert.match(
       step,
-      /^(?:(?:name|id): [^\n]+\n        )*if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == ''\n/,
+      /^(?:(?:name|id): [^\n]+\n        )*if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == '' && steps\.rehearsed\.outputs\.ready == 'true'\n/,
       step,
     );
-  const after = steps.slice(4 + gated.length);
+  const after = steps.slice(5 + gated.length);
   assert.equal(after.length, 5);
   for (const step of after.slice(0, 3))
     assert.match(step, /\n        if: steps\.report\.outputs\./, step);
@@ -232,7 +237,13 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   assert.ok(backup.indexOf("id: live") > backup.indexOf("id: candidate"));
   // Nothing after the guard runs once production has the candidate: no worktree, report, backup or artifact.
   const steps = guarded.split(/\n      - /).slice(1);
-  assert.equal(steps.length, 11);
+  assert.equal(steps.length, 12);
+  // Production writes, the backup included, wait on a passed rehearsal of exactly the selected candidate.
+  assert.match(
+    steps[0]!,
+    /^name: [^\n]+\n        if: steps\.live\.outputs\.already_live == 'false'\n        run: node scripts\/release-merge\/rehearsal-gate\.ts require\n        env:\n          RELEASE_CANDIDATE_SHA: \$\{\{ steps\.candidate\.outputs\.head \}\}$/,
+  );
+  assert.ok(backup.indexOf("rehearsal-gate.ts require") < backup.indexOf("release.ts backup-only"));
   for (const step of steps)
     assert.match(
       step,
@@ -295,4 +306,20 @@ test("runtime startup recovery uses the existing trusted deploy job and excludes
   ])
     assert.ok(deploy.includes(`name: ${name}\n        if: inputs.runtime_abort == ''`));
   assert.doesNotMatch(deploy, /run: [^\n]*\$\{\{ inputs.runtime_abort/);
+});
+
+test("production waits on a rehearsal only while main pushes start one", () => {
+  const read = (name: string) =>
+    readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), "utf8");
+  const rehearsal = read("release-rehearsal.yml");
+  const gated = ["release-main.yml", "deploy.yml"].filter((name) =>
+    /scripts\/release-merge\/rehearsal-gate\.ts (?:require|ready)/.test(read(name)),
+  );
+  // A gate without the trigger would stop every production release: no main commit could pass.
+  if (gated.length)
+    assert.match(
+      rehearsal,
+      /^on:\n(?:  [^\n]*\n|    [^\n]*\n)*  push:\n    branches: \[main\]$/m,
+      `${gated.join(" and ")} wait on a rehearsal that main pushes never start`,
+    );
 });

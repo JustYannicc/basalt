@@ -68,12 +68,20 @@ jobs:
         run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts newest
         env:
           MAIN_RELEASE_CANDIDATE: ${{ inputs.candidate }}
+          MAIN_RELEASE_REQUIRE_REHEARSAL: "true"
       # Check runs can finish out of order, so a newer release may already have shipped this commit.
       - name: Stop when production already contains the candidate
         id: live
         run: node scripts/deploy-safety/release.ts already-live --candidate "$RELEASE_HEAD"
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      # The rehearsal ran this candidate's own write phases on a disposable stack. Without a pass on exactly this
+      # commit, production would be the first place those phases run.
+      - name: Require a passed release rehearsal for the exact candidate
+        if: steps.live.outputs.already_live == 'false'
+        run: node scripts/release-merge/rehearsal-gate.ts require
+        env:
+          RELEASE_CANDIDATE_SHA: ${{ steps.candidate.outputs.head }}
       - name: Select the validated release source
         if: steps.live.outputs.already_live == 'false'
         run: |

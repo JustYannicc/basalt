@@ -29,3 +29,39 @@ test("preview numbers cannot become paths or option arguments", () => {
     assert.throws(() => previewNumber(value));
   }
 });
+
+test("a rehearsal checkpoint lives beside a PR's and neither restores as the other", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rehearsal-checkpoint-")), key = "ab".repeat(32);
+  const rehearsal = { kind: "rehearsal", number: 17 } as const;
+  const path = manifestPath(root, rehearsal), encrypted = join(root, "rehearsal.json.enc");
+  const prEncrypted = join(root, "pr.json.enc");
+  try {
+    assert.equal(path, join(root, ".local", "previews", "rehearsal-17.json"));
+    assert.notEqual(path, manifestPath(root, 17));
+    await mkdir(dirname(path), { recursive: true });
+    const value = { version: 1, rehearsal: 17, stage: "test-rehearsal-17" };
+    await writeFile(path, JSON.stringify(value));
+    await writeFile(manifestPath(root, 17), JSON.stringify({ version: 1, pullRequest: 17, stage: "test-pr-17" }));
+    await checkpoint("seal", root, encrypted, key, rehearsal);
+    await checkpoint("seal", root, prEncrypted, key, 17);
+    await rm(path);
+    await rm(manifestPath(root, 17));
+    await assert.rejects(checkpoint("restore", root, encrypted, key, 17), /authentication failed/);
+    await assert.rejects(checkpoint("restore", root, prEncrypted, key, rehearsal), /authentication failed/);
+    await checkpoint("restore", root, encrypted, key, rehearsal);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), value);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a rehearsal checkpoint refuses a plaintext that names a PR", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rehearsal-checkpoint-owner-")), key = "ab".repeat(32);
+  const rehearsal = { kind: "rehearsal", number: 17 } as const;
+  const encrypted = join(root, "rehearsal.json.enc");
+  try {
+    await mkdir(dirname(manifestPath(root, rehearsal)), { recursive: true });
+    await writeFile(manifestPath(root, rehearsal), JSON.stringify({ version: 1, rehearsal: 17, pullRequest: 17 }));
+    await checkpoint("seal", root, encrypted, key, rehearsal);
+    await rm(manifestPath(root, rehearsal));
+    await assert.rejects(checkpoint("restore", root, encrypted, key, rehearsal), /different rehearsal/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

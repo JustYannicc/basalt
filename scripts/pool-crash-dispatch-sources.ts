@@ -72,6 +72,9 @@ export async function readReleaseTarget(
   const { releaseStateStack } = await import("./release-barrier/release-state-stack.ts");
   const { assertReleaseStateVersion } = await import("./release-barrier/release-state-version.ts");
   const { withReleaseRuntime } = await import("./release-barrier/runtime.ts");
+  const { releaseTarget } = await import("./release-barrier/release-stage.ts");
+  // A rehearsal reads its own disposable stage; production stays the default.
+  const { stage } = releaseTarget(env);
   const { CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: apiToken } = env;
   const encryptionKey = env.EXECUTOR_ENCRYPTION_KEY;
   if (!accountId || !apiToken || !encryptionKey)
@@ -104,7 +107,7 @@ export async function readReleaseTarget(
             },
           };
         }).pipe(Effect.provideContext(compiled.services)),
-      { stage: "production" },
+      { stage },
     );
     const exit = await Effect.runPromiseExit(
       program.pipe(

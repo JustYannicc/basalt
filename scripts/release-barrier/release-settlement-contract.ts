@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { ControllerCode, SlotIdentity } from "../../src/pool/runtime-slots/contract.ts";
 import { BaselineController } from "./baseline-controller.ts";
 import { canonical, digest } from "./manifest.ts";
+import { ReleaseStackName, ReleaseStageName } from "./release-stage.ts";
 
 export const SettlementHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
@@ -84,8 +85,8 @@ export const ReleaseSettlementManifest = Schema.Struct({
   format: Schema.Literal("pool-release-settlement-v1"),
   candidate: commit,
   sourceCandidate: commit,
-  stack: Schema.Literal("basalt"),
-  stage: Schema.Literal("production"),
+  stack: ReleaseStackName,
+  stage: ReleaseStageName,
   accountId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)),
   operationId: Schema.NonEmptyString,
   imageHeadDigest: SettlementHash,

@@ -5,9 +5,15 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { requiredPreviewDeploySecrets } from "../environment.ts";
 import type { LifecycleServices } from "./lifecycle.ts";
-import { deployPreview, planPreview } from "./lifecycle.ts";
+import {
+  deployPreview,
+  destroyStage,
+  planPreview,
+  planStage,
+  verifyStageAbsent,
+} from "./lifecycle.ts";
 import { manifestPath } from "../release-preview/checkpoint.ts";
-import { readPreviewManifest } from "./manifest.ts";
+import { readPreviewManifest, updatePreviewManifest } from "./manifest.ts";
 
 const originalBrand = `export const brand = {
   host: "app.production.example.invalid",
@@ -86,6 +92,85 @@ test("a failed deploy restores the tracked brand source", async () => {
     await planPreview(root, 17, source);
     await assert.rejects(deployPreview(root, 17, source, services(root, [], true)), /fixture deployment failed/);
     assert.equal(await readFile(join(root, "brand.ts"), "utf8"), originalBrand);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a rehearsal deploys only its database parent, then destroys and verifies its own stage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rehearsal-lifecycle-"));
+  const source = environment();
+  const subject = { kind: "rehearsal", number: 17 } as const;
+  const calls: string[] = [];
+  const row = (stack: string, fqn: string) => ({
+    path: `${stack}/test-rehearsal-17/${fqn}`,
+    value: { resourceType: "Cloudflare.Worker", attr: { workerName: fqn } },
+  });
+  let deployed = false;
+  const live: LifecycleServices = {
+    stateReader: (environment) => ({
+      read: async (stage) => {
+        assert.equal(stage, "test-rehearsal-17");
+        assert.equal(environment.ALCHEMY_STAGE, "test-rehearsal-17");
+        return deployed
+          ? { "basalt-rehearsal": [row("basalt-rehearsal", "Router")], "basalt-preview-database": [], "basalt-rehearsal-fixture": [] }
+          : { "basalt-rehearsal": [], "basalt-preview-database": [], "basalt-rehearsal-fixture": [] };
+      },
+    }),
+    captureProviders: async () => ({ complete: true, containers: [], domains: [] }),
+    build: async () => assert.fail("a rehearsal database deploy builds nothing"),
+    deploy: async () => assert.fail("this test never deploys the application"),
+    destroyStack: async (stack, identity, environment) => {
+      calls.push(`destroy:${stack}:${identity.stage}:${environment.ALCHEMY_STAGE}`);
+    },
+    deleteArtifacts: async (namespace) => {
+      calls.push(`artifacts:${namespace}`);
+      deployed = false;
+    },
+    verifyProviders: async (identity) => {
+      calls.push(`verify:${identity.stage}`);
+    },
+  };
+  try {
+    const planned = await planStage(root, subject, source);
+    assert.equal(planned.rehearsal, 17);
+    assert.equal(planned.stage, "test-rehearsal-17");
+    assert.equal(manifestPath(root, subject), join(root, ".local", "previews", "rehearsal-17.json"));
+    await assert.rejects(readPreviewManifest(manifestPath(root, subject), 17), /identity or phase is invalid/);
+    // A rehearsal's releases deploy the stage; destroy must find it from the deploying checkpoint alone.
+    await updatePreviewManifest(manifestPath(root, subject), subject, "deploying");
+    deployed = true;
+    await destroyStage(root, subject, source, live);
+    await verifyStageAbsent(root, subject, source, live);
+    assert.deepEqual(calls, [
+      "destroy:fixture:test-rehearsal-17:test-rehearsal-17",
+      "destroy:basalt:test-rehearsal-17:test-rehearsal-17",
+      "destroy:database:test-rehearsal-17:test-rehearsal-17",
+      "artifacts:basalt-preview-rehearsal-17-apps",
+      "verify:test-rehearsal-17",
+    ]);
+    await assert.rejects(readFile(manifestPath(root, subject)), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a PR manifest never reads back as a rehearsal of the same number", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rehearsal-lifecycle-cross-"));
+  const source = environment();
+  try {
+    await planPreview(root, 17, source);
+    await writeFile(
+      manifestPath(root, { kind: "rehearsal", number: 17 }),
+      await readFile(manifestPath(root, 17)),
+    );
+    await assert.rejects(
+      readPreviewManifest(manifestPath(root, { kind: "rehearsal", number: 17 }), {
+        kind: "rehearsal",
+        number: 17,
+      }),
+      /identity or phase is invalid/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

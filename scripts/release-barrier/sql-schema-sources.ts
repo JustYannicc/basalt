@@ -5,6 +5,7 @@ import pg from "pg";
 import { clientConfig } from "../pool-database-provisioning.ts";
 import type { SqlJournalSource } from "./sql-schema-read.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { releaseScope } from "./release-stage.ts";
 
 const resourceStatuses = [
   "creating",
@@ -154,7 +155,7 @@ export const inspectionSqlSource = (state: StateService) =>
   Effect.gen(function* () {
     const tools = yield* commandEnv(
       state,
-      { name: "basalt", stage: "production" },
+      { name: releaseScope().stack, stage: releaseScope().stage },
       "Migrations",
       true,
     );
