@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-embedded-activation-observation",
+  "file": "0666-embedded-activation-observation.patch",
+  "content_sha256": "c2e09e01b86306ddfd287b55336172e0091d2dcc37298288ab80eaa60f52a45c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

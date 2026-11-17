@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Embedded activation proof splits only the target app read through the existing routed-read adapter, requires its successful GET response to decode the exact activeVersion, and retains observations received before the final wait. Unrelated streamed siblings and location-request counts cannot confirm activation. The fifteen-second deadline and mounted-frame assertions stay unchanged."
+    }
+  }
+}
