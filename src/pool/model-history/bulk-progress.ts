@@ -38,10 +38,8 @@ export async function validateBulkTargets(
   definition: BulkDefinition,
 ) {
   return withHistoryDatabase(connectionString, async (db) => {
-    await db.query("BEGIN");
     try {
-      await db.query("SET LOCAL lock_timeout = '500ms'");
-      await db.query("SET LOCAL statement_timeout = '5s'");
+      await db.query("BEGIN; SET LOCAL lock_timeout = '500ms'; SET LOCAL statement_timeout = '5s'");
       await eligibleTargets(db, definition);
       await db.query("COMMIT");
     } catch (error) {
@@ -73,10 +71,8 @@ export async function commitBulkChunk(
   const chunk = definition.manifest.chunks[index]!;
   return withHistoryDatabase(connectionString, async (db) => {
     const startedAt = Date.now();
-    await db.query("BEGIN");
     try {
-      await db.query("SET LOCAL lock_timeout = '500ms'");
-      await db.query("SET LOCAL statement_timeout = '5s'");
+      await db.query("BEGIN; SET LOCAL lock_timeout = '500ms'; SET LOCAL statement_timeout = '5s'");
       const writer = await db.query(
         "SELECT pg_try_advisory_xact_lock(hashtextextended('basalt:model-history:bulk-writer-v1',0)) AS acquired",
       );
@@ -98,9 +94,15 @@ export async function commitBulkChunk(
       );
       const job = (
         await db.query(
-          `SELECT pool,organization,owner,manifest_digest,map_digest,
-        total_rows::text,total_chunks FROM basalt_model_import_jobs WHERE id=$1 FOR UPDATE`,
-          [definition.job],
+          `SELECT j.pool,j.organization,j.owner,j.manifest_digest,j.map_digest,
+        j.total_rows::text,j.total_chunks,r.input_sha,r.ids_sha,r.rows,r.inserted,r.existing,r.elapsed_ms,
+        CASE WHEN r.job IS NULL THEN
+          (SELECT COALESCE(sum(rows),0)::int FROM basalt_model_import_receipts WHERE job=j.id AND chunk=$2)
+        END AS committed_rows
+        FROM basalt_model_import_jobs j
+        LEFT JOIN basalt_model_import_receipts r ON r.job=j.id AND r.chunk=$2 AND r.start_row=$3
+        WHERE j.id=$1 FOR UPDATE OF j`,
+          [definition.job, index, start],
         )
       ).rows[0];
       if (
@@ -114,13 +116,8 @@ export async function commitBulkChunk(
         Number(job.total_chunks) !== definition.manifest.chunks.length
       )
         throw new HistoryConflict();
-      const saved = (
-        await db.query(
-          `SELECT input_sha,ids_sha,rows,inserted,existing,elapsed_ms
-        FROM basalt_model_import_receipts WHERE job=$1 AND chunk=$2 AND start_row=$3`,
-          [definition.job, index, start],
-        )
-      ).rows[0];
+      // The writer lock serializes receipt changes, so these reads share one stable snapshot.
+      const saved = job.input_sha == null ? null : job;
       if (saved) {
         if (
           saved.input_sha !== chunk.sha256 ||
@@ -136,13 +133,7 @@ export async function commitBulkChunk(
           elapsedMs: Number(saved.elapsed_ms),
         };
       }
-      const committed = (
-        await db.query(
-          "SELECT COALESCE(sum(rows),0)::int AS rows FROM basalt_model_import_receipts WHERE job=$1 AND chunk=$2",
-          [definition.job, index],
-        )
-      ).rows[0];
-      if (Number(committed?.rows) !== start) throw new HistoryConflict();
+      if (Number(job.committed_rows) !== start) throw new HistoryConflict();
       await eligibleTargets(db, definition);
       const result = await insertBulkRequests(db, records);
       if (result.count !== rows) throw new HistoryConflict();
