@@ -62,19 +62,6 @@ export interface DispatchInput {
 /** A refusal whose message names the exact field and is safe to publish. */
 class DispatchRefusal extends Error {}
 
-const canonicalJson = (value: unknown): string =>
-  Array.isArray(value)
-    ? `[${value.map(canonicalJson).join(",")}]`
-    : value !== null && typeof value === "object"
-      ? `{${Object.keys(value)
-          .sort()
-          .map(
-            (key) =>
-              `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`,
-          )
-          .join(",")}}`
-      : JSON.stringify(value);
-
 function assertGo(go: string) {
   if (!go.trim()) throw new DispatchRefusal("coordinator_go is empty");
   if (/[<>]/u.test(go)) throw new DispatchRefusal("coordinator_go contains a bracket");
@@ -153,7 +140,8 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     } catch {
       throw new DispatchRefusal("packet is not valid JSON");
     }
-    packetDigest = createHash("sha256").update(canonicalJson(parsed)).digest("hex");
+    // The consumer binds the result to the exact input it sent, so hash the raw string unparsed.
+    packetDigest = createHash("sha256").update(input.packet).digest("hex");
     const preflight = async () => {
       if (input.ref !== "refs/heads/main")
         throw new DispatchRefusal("workflow must be dispatched on refs/heads/main");

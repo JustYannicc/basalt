@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -152,18 +152,15 @@ test("malformed dispatch inputs refuse by field before any read or send", async 
   }
 });
 
-test("the packet digest is canonical over the packet as supplied", async () => {
+test("the packet digest is the sha256 of the exact raw packet input", async () => {
   const { deps } = fakes();
-  const reordered = JSON.stringify({
-    operator: "fixture-operator",
-    nonce,
-    identity,
-    controllerCode,
-  });
+  const raw = input({ mode: "inspect" }).packet;
+  const spaced = ` ${raw}`;
   const first = await runCrashDispatch(input({ mode: "inspect" }), deps);
-  const second = await runCrashDispatch(input({ mode: "inspect", packet: reordered }), deps);
-  assert.match(first.packetDigest ?? "", /^[a-f0-9]{64}$/u);
-  assert.equal(first.packetDigest, second.packetDigest);
+  const second = await runCrashDispatch(input({ mode: "inspect", packet: spaced }), deps);
+  assert.equal(first.packetDigest, createHash("sha256").update(raw).digest("hex"));
+  assert.equal(second.packetDigest, createHash("sha256").update(spaced).digest("hex"));
+  assert.notEqual(first.packetDigest, second.packetDigest);
 });
 
 test("an earlier run titled with the nonce or a re-run forces inspect", async () => {
