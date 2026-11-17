@@ -46,7 +46,9 @@ export async function runtimeReleaseClientFixture(
     closeMs: number;
     healthReplyMs: number;
     healthReply?: (result: { identity: SlotIdentity; leaseMs: number }) => unknown;
+    onConnect?: () => Promise<void>;
   } = { setupMs: 0, closeMs: 0, healthReplyMs: 0 };
+  const journal: { onWrite?: (next: ReleasePromotionAttempt) => Promise<void> } = {};
   let closes = 0;
   let promotion: ReleasePromotionAttempt | undefined;
   const attempts: ReleasePromotionAttempt[] = [];
@@ -129,6 +131,7 @@ export async function runtimeReleaseClientFixture(
         write: async (next) => {
           promotion = structuredClone(next);
           attempts.push(structuredClone(next));
+          await journal.onWrite?.(next);
         },
       },
       desiredConfiguration: runtimeConfiguration(f.candidate.env),
@@ -136,6 +139,7 @@ export async function runtimeReleaseClientFixture(
         ...state.target,
         connect: async () => {
           await delay(bridge.setupMs);
+          await bridge.onConnect?.();
           return {
             env: {
               POOL_OPERATIONS: {
@@ -200,6 +204,7 @@ export async function runtimeReleaseClientFixture(
     client,
     commands,
     bridge,
+    journal,
     attempts,
     closes: () => closes,
     reconstructRoot: () => {

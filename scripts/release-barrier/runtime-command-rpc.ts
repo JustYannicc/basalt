@@ -31,21 +31,23 @@ export type RuntimeCommandCall = (
  * One send only. An unknown response must be recovered through the retained operation's read path.
  * `dispatched` receives the monotonic time just before the request is built for the already-open
  * bridge and `received` the time its 200 body was read, before the bridge closes. A caller bounding
- * a remote lease between the two never counts bridge setup or close against it.
+ * a remote lease between the two never counts bridge setup or close against it. A command given as
+ * a function is built once the bridge is open, so its timed proofs never count setup either.
  */
 export async function sendRuntimeCommand(
-  command: RuntimeHandoffCommand,
+  command: RuntimeHandoffCommand | (() => Promise<RuntimeHandoffCommand>),
   signingKey: string,
   target: PoolOperationsTarget,
-  assertCurrent: () => void,
+  assertCurrent: (command: RuntimeHandoffCommand) => void,
   signal?: AbortSignal,
   dispatched?: (requestedAt: number) => void,
   received?: (receivedAt: number) => void,
 ) {
-  const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, command);
   const bridge = await openPoolOperations(target);
   try {
-    assertCurrent();
+    const frozen = typeof command === "function" ? await command() : command;
+    const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, frozen);
+    assertCurrent(frozen);
     dispatched?.(performance.now());
     const response = await bridge.service.fetch(
       new Request(`http://pool-operations${runtimeHandoffPath}`, {
@@ -60,7 +62,7 @@ export async function sendRuntimeCommand(
     if (response.status !== 200) {
       const detail = await refusalDetail(response);
       const providerCause =
-        command.action === "provider-observe" && response.status === 409
+        frozen.action === "provider-observe" && response.status === 409
           ? response.headers.get(providerObservationFailureHeader)
           : null;
       const reason =
@@ -79,7 +81,7 @@ export async function sendRuntimeCommand(
         ...delta,
         changed: [
           ...delta.changed,
-          { path: "handoff.command.action", old: null, new: command.action },
+          { path: "handoff.command.action", old: null, new: frozen.action },
           { path: "handoff.response.step", old: null, new: detail.step },
           { path: "handoff.response.reason", old: null, new: detail.reason },
           { path: "handoff.response.code", old: null, new: detail.code },

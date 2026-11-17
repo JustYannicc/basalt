@@ -14,7 +14,11 @@ import { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts"
 import { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
 import { decodeRuntimeHandoffCommand } from "../../src/pool/runtime-slots/handoff-command.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
-import { sendRuntimeCommand, type RuntimeCommandAction } from "./runtime-command-rpc.ts";
+import {
+  sendRuntimeCommand,
+  type RuntimeCommandAction,
+  type RuntimeCommandCall,
+} from "./runtime-command-rpc.ts";
 import {
   releasePromotionGate,
   retainReleaseStartup,
@@ -26,7 +30,11 @@ import {
   runtimeHandoffDigest,
   type RuntimeHandoffManifest,
 } from "./runtime-slot-manifest.ts";
-import { authorizeRuntimeStart, attestRuntimeRelease } from "./runtime-slot-admission.ts";
+import {
+  authorizeRuntimeStart,
+  signRuntimeRelease,
+  witnessRuntimeRelease,
+} from "./runtime-slot-admission.ts";
 import { signRuntimeAdmission } from "./runtime-slot-proof.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 import { readFirstHandoffAdoption } from "./first-handoff-runtime.ts";
@@ -97,8 +105,9 @@ export const runtimeReleaseClient = (input: {
     const { state, code, writer } = input;
     const target = input.target ?? state.target;
     const signingKey = state.deploymentKey;
-    const call = (
-      action: RuntimeCommandAction,
+    // An action given as a function is built after the bridge opens; see sendRuntimeCommand.
+    const prepared = (
+      action: RuntimeCommandAction | (() => Promise<RuntimeCommandAction>),
       mutation = false,
       signal?: AbortSignal,
       dispatched?: (requestedAt: number) => void,
@@ -106,16 +115,19 @@ export const runtimeReleaseClient = (input: {
     ) => {
       const send = () => {
         writer.assert();
-        const at = Date.now();
-        const command = decodeRuntimeHandoffCommand(
-          { ...action, controllerCode: code, at, expiresAt: at + 60_000 },
-          at,
-        );
+        const build = async () => {
+          const value = typeof action === "function" ? await action() : action;
+          const at = Date.now();
+          return decodeRuntimeHandoffCommand(
+            { ...value, controllerCode: code, at, expiresAt: at + 60_000 },
+            at,
+          );
+        };
         return sendRuntimeCommand(
-          command,
+          build,
           signingKey,
           target,
-          () => {
+          (command) => {
             writer.assert();
             decodeRuntimeHandoffCommand(command);
           },
@@ -126,6 +138,7 @@ export const runtimeReleaseClient = (input: {
       };
       return mutation ? writer.exclusive(send) : send();
     };
+    const call: RuntimeCommandCall = (action, ...rest) => prepared(action, ...rest);
     const inspect = async () => {
       const value = result(Snapshot, await call({ action: "inspect" }));
       sameProvisioningValue("runtime-release.controller-code", code, value.controllerCode);
@@ -334,6 +347,7 @@ export const runtimeReleaseClient = (input: {
           gate,
           operationId: promotionOperationId,
           beforePromotion,
+          promotionRefused,
         } = await releasePromotionGate({
           operationId,
           candidate: identity,
@@ -344,9 +358,8 @@ export const runtimeReleaseClient = (input: {
           call,
         });
         sameProvisioningValue("runtime-release.public-candidate", identity, gate.ticket.candidate);
-        const joined = await run(
-          attestRuntimeRelease({ ...options, selection: retained.selection }),
-        );
+        const attestation = { ...options, selection: retained.selection };
+        const witness = await run(witnessRuntimeRelease(attestation));
         const intent = {
           operationId: promotionOperationId,
           controllerCode: code,
@@ -355,11 +368,21 @@ export const runtimeReleaseClient = (input: {
           candidate: identity,
           policyDigest: retained.selection.policyDigest,
         };
-        await beforePromotion();
-        const receipt = result(
-          PromotionReceipt,
-          await call({ action: "promote", intent, proof: joined.envelope }, true),
-        );
+        let reply: unknown;
+        try {
+          reply = await prepared(async () => {
+            // The provider observation's 30 s window starts here, after the bridge is open.
+            const joined = await run(signRuntimeRelease(attestation, witness));
+            await beforePromotion();
+            return { action: "promote", intent, proof: joined.envelope };
+          }, true);
+        } catch (error) {
+          // A non-200 is the controller's answer, so a fresh attempt may follow. A lost reply stays unknown.
+          if (error instanceof BarrierRefusal && error.reason === "runtime-handoff-response-refused")
+            await promotionRefused();
+          throw error;
+        }
+        const receipt = result(PromotionReceipt, reply);
         sameProvisioningValue("runtime-release.promotion-intent", intent, receipt.intent);
         sameProvisioningValue("runtime-release.promotion-status", "promoted", receipt.status);
         await health();
