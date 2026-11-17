@@ -27,18 +27,13 @@ test("a settlement archive crosses the pinned State HTTP router and client with 
     return response;
   };
   const run = <A, E>(effect: Effect.Effect<A, E>) =>
-    Effect.runPromise(
-      effect.pipe(
-        Effect.provide(FetchHttpClient.layer),
-        Effect.provideService(FetchHttpClient.Fetch, fetch),
-      ),
-    );
+    Effect.runPromise(effect.pipe(Effect.provideService(FetchHttpClient.Fetch, fetch)));
   const state = await run(
     makeHttpStateStore({
       id: "settlement-http-fixture",
       url: "https://state.example.test",
       authToken: fullToken,
-    }),
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
   const key = releaseSettlementKey(scope, source, target);
   assert.equal(await run(state.getOutput(key)), undefined);
