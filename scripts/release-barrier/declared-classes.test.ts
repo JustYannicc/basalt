@@ -30,7 +30,7 @@ test("an acknowledged expansion resumes by observation after a failed read, with
   });
   await Effect.runPromise(proof.effect);
   assert.equal(proof.failures.length, 1);
-  assert.deepEqual(proof.events, ["expand", "upload", "create-bucket", "activate"]);
+  assert.deepEqual(proof.events, ["expand", "upload", "upload", "create-bucket", "activate"]);
 });
 
 test("an applied expansion with a lost response never retries and cannot invent its missing startup evidence", async () => {
@@ -93,7 +93,7 @@ for (const [option, reason] of [
     await Effect.runPromise(proof.effect);
     assert.equal(proof.failures.length, 1);
     assert.match(String(proof.failures[0]), reason);
-    assert.deepEqual(proof.events, ["expand", "upload", "create-bucket", "activate"]);
+    assert.deepEqual(proof.events, ["expand", "upload", "upload", "create-bucket", "activate"]);
   });
 
 test("public recovery refuses a pre-migration Worker version before any restore", async () => {
@@ -117,8 +117,10 @@ test("provisioning finishes in expansion, admission, bucket order and a complete
   assert.deepEqual(proof.events, [
     "expand",
     "upload",
+    "upload",
     "create-bucket",
     "activate",
+    "upload",
     "upload",
     "activate",
   ]);
@@ -188,7 +190,7 @@ test("combined provisioning preserves its frozen bucket identity through expansi
   const evidence = releaseEvidence(join(root, "barrier"), "a".repeat(40), "b".repeat(64));
   const proof = classProvisioning({ evidence });
   await Effect.runPromise(proof.effect);
-  assert.deepEqual(proof.events, ["expand", "upload", "create-bucket", "activate"]);
+  assert.deepEqual(proof.events, ["expand", "upload", "upload", "create-bucket", "activate"]);
   const receipt = JSON.parse(
     await readFile(join(root, "barrier", "declared-changes.json"), "utf8"),
   );

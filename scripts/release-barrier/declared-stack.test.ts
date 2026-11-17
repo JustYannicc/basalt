@@ -9,7 +9,7 @@ test("provisioning creates a declared bucket only after whole-candidate admissio
   const row = await Effect.runPromise(proof.effect);
   assert.equal(row?.status, "created");
   assert.equal(row?.removalPolicy, "retain");
-  assert.deepEqual(proof.events, ["upload", "admitted", "create-bucket", "activate"]);
+  assert.deepEqual(proof.events, ["upload", "upload", "admitted", "create-bucket", "activate"]);
 });
 
 test("completed provisioning cannot recreate a bucket after its native row is lost", async () => {
@@ -21,7 +21,7 @@ test("completed provisioning cannot recreate a bucket after its native row is lo
 test("a later candidate refuses a missing live bucket even when its native row survives", async () => {
   const proof = provisioning({ missingPrerequisite: true });
   await assert.rejects(Effect.runPromise(proof.effect), /declared-prerequisite-missing/);
-  assert.equal(proof.events.filter((event) => event === "upload").length, 1);
+  assert.equal(proof.events.filter((event) => event === "upload").length, 2);
   assert.equal(proof.readiness.at(-1)?.resources[0]?.ready, false);
 });
 
@@ -96,7 +96,7 @@ test("the actual native R2 resource and provider plan commit the generated owned
   assert.equal(row.removalPolicy, "retain");
   assert.equal(row.attr.accountId, "fixture");
   assert.match(row.attr.bucketName, /^fixture-driverecords-production-[a-z0-9]+$/);
-  assert.deepEqual(proof.events, ["upload", "admitted", "create-bucket", "activate"]);
+  assert.deepEqual(proof.events, ["upload", "upload", "admitted", "create-bucket", "activate"]);
 });
 
 test("acknowledged creation resumes with the actual native provider recovery read", async () => {

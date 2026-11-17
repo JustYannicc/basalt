@@ -1,6 +1,7 @@
 import { Cause, Effect } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
+import { uploadDiagnosticText } from "./upload-diagnostic-text.ts";
 
 const field = (value: unknown, key: string): unknown =>
   typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
@@ -29,8 +30,20 @@ function messageClass(error: unknown) {
   return "unclassified";
 }
 
-export function uploadResponseDiagnostic(status: number, body: unknown) {
-  return { status, codes: safeProviderFailure(body).codes, messageClass: messageClass(body) };
+export function uploadResponseDiagnostic(
+  status: number,
+  body: unknown,
+  secrets: readonly string[] = [],
+) {
+  const text = uploadDiagnosticText(body, secrets);
+  return {
+    status,
+    codes: safeProviderFailure(text.decoded).codes,
+    messageClass: messageClass(text.decoded),
+    bodyClass: text.bodyClass,
+    message: text.message,
+    bodyExcerpt: text.bodyExcerpt,
+  };
 }
 type ResponseDiagnostic = ReturnType<typeof uploadResponseDiagnostic>;
 
@@ -53,6 +66,9 @@ export function uploadFailure(error: unknown, worker: string, response?: Respons
       { path: "$upload.status", old: null, new: response?.status ?? provider.status ?? null },
       { path: "$upload.codes", old: null, new: codes?.join(",") ?? null },
       { path: "$upload.messageClass", old: null, new: classification },
+      { path: "$upload.bodyClass", old: null, new: response?.bodyClass ?? "unavailable" },
+      { path: "$upload.message", old: null, new: response?.message || null },
+      { path: "$upload.bodyExcerpt", old: null, new: response?.bodyExcerpt || null },
     ],
     why: [
       "No confirmed version was returned. Upload intent remains pending; no activation was attempted.",

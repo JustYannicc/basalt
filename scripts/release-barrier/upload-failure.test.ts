@@ -16,6 +16,13 @@ import { reportRefusal } from "./refusal-report.ts";
 test("a rejected startup confirmation retains the first measurement and terminates before writes", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "startup-confirmation-"));
   context.after(() => rm(root, { recursive: true, force: true }));
+  const envName = "BASALT_UPLOAD_DIAGNOSTIC_SECRET";
+  const previousSecret = process.env[envName];
+  process.env[envName] = "synthetic-environment-secret";
+  context.after(() => {
+    if (previousSecret === undefined) delete process.env[envName];
+    else process.env[envName] = previousSecret;
+  });
   const evidence = releaseEvidence(root, "a".repeat(40));
   const requests: string[] = [];
   const client = HttpClient.make((request, url) => {
@@ -32,7 +39,11 @@ test("a rejected startup confirmation retains the first measurement and terminat
             {
               success: false,
               errors: [
-                { code: 100312, message: "synthetic-private-token https://private.invalid" },
+                {
+                  code: 100312,
+                  message:
+                    "An unknown error has occurred. env=synthetic-environment-secret Authorization: Bearer synthetic-private-token https://private.invalid/upload?email=owner@example.invalid source: export default privateValue",
+                },
               ],
             },
             { status: 400 },
@@ -70,6 +81,17 @@ test("a rejected startup confirmation retains the first measurement and terminat
   assert.deepEqual(receipt.pendingUpload, { worker: "Api" });
   assert.equal(proof.writes(), 0);
   assert.deepEqual(failure.activated, []);
+  const uploadFields = new Map(
+    failure.delta?.changed.map((row) => [row.path, "new" in row ? row.new : null]),
+  );
+  assert.equal(uploadFields.get("$upload.codes"), "100312");
+  assert.equal(uploadFields.get("$upload.messageClass"), "unclassified");
+  assert.equal(uploadFields.get("$upload.bodyClass"), "cloudflare-errors-json");
+  assert.match(String(uploadFields.get("$upload.message")), /An unknown error has occurred/);
+  assert.match(String(uploadFields.get("$upload.message")), /\[redacted-source\]/);
+  assert.match(String(uploadFields.get("$upload.bodyExcerpt")), /100312/);
+  assert.ok(String(uploadFields.get("$upload.message")).length <= 512);
+  assert.ok(String(uploadFields.get("$upload.bodyExcerpt")).length <= 1024);
   assert.equal(
     proof.events.some((event) => event.startsWith("activate:")),
     false,
@@ -85,8 +107,13 @@ test("a rejected startup confirmation retains the first measurement and terminat
   ]) {
     assert.ok(output.includes("400"), output);
     assert.ok(output.includes("100312"), output);
+    assert.ok(output.includes("An unknown error has occurred"), output);
+    assert.ok(output.includes("cloudflare-errors-json"), output);
     assert.ok(!output.includes("synthetic-private-token"), output);
     assert.ok(!output.includes("private.invalid"), output);
+    assert.ok(!output.includes("owner@example.invalid"), output);
+    assert.ok(!output.includes("synthetic-environment-secret"), output);
+    assert.ok(!output.includes("privateValue"), output);
   }
 });
 
@@ -182,7 +209,7 @@ for (const scenario of [
     const exit = await Effect.runPromiseExit(proof.effect);
     if (scenario === "success") {
       assert.ok(Exit.isSuccess(exit));
-      assert.deepEqual(requests, ["Api", "McpServer", "Router"]);
+      assert.deepEqual(requests, ["Api", "Api", "McpServer", "McpServer", "Router", "Router"]);
       assert.equal(proof.receipts.at(-1)?.phase, "complete");
       return;
     }
@@ -195,7 +222,7 @@ for (const scenario of [
     );
     assert.deepEqual(
       requests,
-      scenario === "timeout" || scenario === "abort" ? ["Api"] : ["Api", "McpServer"],
+      scenario === "timeout" || scenario === "abort" ? ["Api", "Api"] : ["Api", "Api", "McpServer"],
     );
     assert.deepEqual(failure.activated, []);
     assert.equal(proof.writes(), 0);

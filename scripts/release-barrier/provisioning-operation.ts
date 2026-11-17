@@ -33,6 +33,15 @@ import {
   type AdoptionProof,
 } from "./journal-restore-contract.ts";
 import { applyJournalRestore, inspectJournalRestore } from "./journal-restore.ts";
+import {
+  ReleaseSettlementManifest,
+  releaseSettlementDigest,
+} from "./release-settlement-contract.ts";
+import {
+  applyReleaseSettlement,
+  inspectReleaseSettlement,
+  type SettlementOperationIo,
+} from "./release-settlement-operation.ts";
 
 export const ProvisioningOperation = Schema.Union([
   Schema.Struct({
@@ -45,6 +54,10 @@ export const ProvisioningOperation = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("observation-store-restore"),
     manifest: JournalRestoreManifest,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("release-settlement"),
+    manifest: ReleaseSettlementManifest,
   }),
 ]);
 export type ProvisioningOperation = typeof ProvisioningOperation.Type;
@@ -75,6 +88,8 @@ const manifestDigest = (operation: ProvisioningOperation) => {
       return observationStoreDigest(operation.manifest);
     case "observation-store-restore":
       return journalRestoreDigest(operation.manifest);
+    case "release-settlement":
+      return releaseSettlementDigest(operation.manifest);
   }
 };
 const operationResource = (operation: ProvisioningOperation) => {
@@ -86,6 +101,8 @@ const operationResource = (operation: ProvisioningOperation) => {
     case "observation-store":
     case "observation-store-restore":
       return "PoolObservationSecrets";
+    case "release-settlement":
+      return "PoolWorker";
   }
 };
 
@@ -158,6 +175,8 @@ export const inspectDeclaredProvisioning = (
     const operation = packet.operation;
     if (operation.kind === "observation-store-restore")
       return yield* inspectJournalRestore(stack, operation.manifest);
+    if (operation.kind === "release-settlement")
+      return yield* inspectReleaseSettlement(stack, operation.manifest, encryptionKey);
     const manifest = manifestDigest(operation);
     const store = stateProvisioningStore(state, stack, encryptionKey, async () => {
       throw new Error("Inspection cannot write provisioning state");
@@ -199,6 +218,7 @@ export const runDeclaredProvisioning = (
     connect?: PoolOperationsTarget["connect"];
     fetcher?: Fetcher;
     adoptionProof?: AdoptionProof;
+    settlement?: SettlementOperationIo;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -232,6 +252,19 @@ export const runDeclaredProvisioning = (
     };
     const store = stateProvisioningStore(state, stack, encryptionKey, exclusive);
     const operation = packet.operation;
+    if (operation.kind === "release-settlement") {
+      if (!io.settlement) throw new Error("Settlement requires retained operation evidence");
+      const work = applyReleaseSettlement(
+        stack,
+        operation.manifest,
+        encryptionKey,
+        enable,
+        io.settlement,
+        now,
+      );
+      const context = yield* Effect.context<Effect.Services<typeof work>>();
+      return yield* Effect.promise(() => exclusive(() => Effect.runPromiseWith(context)(work)));
+    }
     if (operation.kind === "observation-store-restore") {
       if (!io.adoptionProof) throw new Error("Restore requires a verified adoption artifact");
       const work = applyJournalRestore(

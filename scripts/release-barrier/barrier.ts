@@ -1,6 +1,6 @@
 import { ReleaseOperationFailure } from "./operation-failure.ts";
 import { assertSqlSchemas, type SqlSchemaReceipt } from "./sql-schema-contract.ts";
-import { uploadFailure } from "./upload-failure.ts";
+import { admitWorkerStartup } from "./startup-admission.ts";
 import type { ResourceDelta } from "./prop-diff.ts";
 import {
   BarrierRefusal,
@@ -122,44 +122,16 @@ export async function releaseWorkers(
     for (const container of manifest.containers ?? [])
       await options.containers!.verifySource(container);
     for (const worker of manifest.workers) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        unchanged();
-        receipt.pendingUpload = { worker: worker.id };
-        await record();
-        let uploaded;
-        try {
-          uploaded = await options.provider.upload(worker);
-        } catch (error) {
-          throw uploadFailure(error, worker.id);
-        }
-        receipt.pendingUpload = {
-          worker: worker.id,
-          ...(uploaded.versionId ? { versionId: uploaded.versionId } : {}),
-          ...(typeof uploaded.startupTimeMs === "number" && Number.isFinite(uploaded.startupTimeMs)
-            ? { startupTimeMs: uploaded.startupTimeMs }
-            : {}),
-        };
-        if (!uploaded.versionId?.trim()) throw new BarrierRefusal("missing-version-id", worker.id);
-        const startup = uploaded.startupTimeMs;
-        if (typeof startup !== "number" || !Number.isFinite(startup) || startup < 0)
-          throw new BarrierRefusal("missing-or-invalid-startup-evidence", worker.id);
-        const measurement = {
-          worker: worker.id,
-          versionId: uploaded.versionId,
-          startupTimeMs: startup,
-        };
-        receipt.startupMeasurements!.push(measurement);
-        await record();
-        if (startup > ceilingMs) {
-          // Provider startup measurements vary even for identical uploads. Confirm once without activation.
-          if (attempt === 0) continue;
-          throw new BarrierRefusal("startup-headroom", worker.id);
-        }
-        receipt.accepted.push(measurement);
-        delete receipt.pendingUpload;
-        await record();
-        break;
-      }
+      receipt.accepted.push(
+        await admitWorkerStartup(worker, receipt, {
+          ceilingMs,
+          upload: (frozen) => options.provider.upload(frozen),
+          unchanged,
+          record,
+        }),
+      );
+      delete receipt.pendingUpload;
+      await record();
     }
     unchanged();
     receipt.phase = "admitted";

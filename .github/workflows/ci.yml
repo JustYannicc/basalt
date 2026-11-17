@@ -137,7 +137,8 @@ jobs:
         run: node scripts/ci/probe-candidate.ts
         env:
           BASALT_PROBE_HEAD: ${{ github.event.pull_request.head.sha }}
-      - run: npm run prepare:upstream
+      - id: prepare-upstream
+        run: npm run prepare:upstream
         env:
           GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
       - name: Compare every production Worker setting and container baseline through the release client
@@ -203,6 +204,18 @@ jobs:
           POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
 
+      - name: Rehearse baseline controller reconciliation read-only
+        if: >-
+          always() && !cancelled() &&
+          steps.probe-candidate.outcome == 'success' &&
+          steps.prepare-upstream.outcome == 'success'
+        run: bun scripts/release-barrier/release-resume-rehearsal-entry.ts
+        env:
+          GITHUB_SHA: ${{ steps.probe-candidate.outputs.candidate }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -210,6 +223,7 @@ jobs:
           path: |
             .local/baseline-probe.json
             .local/forward-probe/preparation.json
+            .local/release-resume-rehearsal/receipt.json
             .local/probe-candidate.json
           include-hidden-files: true
           if-no-files-found: warn
@@ -219,6 +233,15 @@ jobs:
         with:
           name: forward-reconciliation
           path: .local/forward-probe/*.json
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-resume-baseline-rehearsal
+          path: .local/release-resume-rehearsal/receipt.json
           include-hidden-files: true
           retention-days: 3
           if-no-files-found: warn
