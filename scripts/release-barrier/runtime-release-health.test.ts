@@ -19,7 +19,7 @@ test(
     const healthy = await f.client.health();
     assert.equal(
       healthy.instanceId,
-      (await f.client.inspect()).selection!.active.identity.instanceId,
+      (await f.client.inspect()).selection?.active.identity?.instanceId,
     );
   },
 );
