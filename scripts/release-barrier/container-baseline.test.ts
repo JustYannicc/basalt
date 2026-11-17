@@ -1,4 +1,4 @@
-// Regression: container-baseline-drift (the 11th production refusal on a recorded pre-rollout v25 baseline)
+// Regression: container-baseline-drift (a recorded pre-rollout baseline must converge to its expanded readback, not refuse as drift)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
