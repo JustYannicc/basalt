@@ -97,6 +97,12 @@ export function runtimeFailureDiagnostic(
 export function runtimeFailureCode(diagnostic: RuntimeRouteDiagnostic) {
   return `runtime_${diagnostic.runtimeStep}_${diagnostic.runtimeReason}`;
 }
+/** Whether a reported code is one this module can emit; anything else is untrusted text. */
+export function knownRuntimeFailureCode(code: string) {
+  return steps.some((runtimeStep) =>
+    reasons.some((runtimeReason) => code === runtimeFailureCode({ runtimeStep, runtimeReason })),
+  );
+}
 export function runtimeFailureHeaders(error: unknown, step: RuntimeRouteDiagnostic["runtimeStep"]) {
   const diagnostic = runtimeFailureDiagnostic(error, step);
   return { [stepHeader]: diagnostic.runtimeStep, [reasonHeader]: diagnostic.runtimeReason };
