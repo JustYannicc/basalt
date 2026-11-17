@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Account-view work proofs accept one completed execution or one speculative execution followed by exactly one fresh fallback. Every execution retains its own source RPC releases and catalog lookup, while missing parents and incomplete executions fail. Single-execution budgets remain unchanged, and at least one unforced view must complete in a single execution so falling back on every unforced view fails; the deterministic head-change proof measures the fresh fallback against separately named SQL and SDK ceilings, retaining the renamed account and checking subsequent unlink revocation."
+    }
+  }
+}
