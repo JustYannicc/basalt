@@ -181,28 +181,21 @@ async function assertImages(
   )
     throw new SafetyGateError("Candidate image input is not a 16-hex image input");
   const fleet = bindings && boundFleet(bindings, receipt.applicationId);
-  // Once a fleet is bound, the release pins the root to its baseline image, so a root instance
-  // proves this candidate only when the root's own input (already matched to POOL_IMAGE_HASH) is the
-  // candidate's: an unchanged pool image is never promoted and the root keeps serving it. Otherwise
-  // a release proves the fleet. The baseline probe, which has no candidate input, keeps the root
-  // shortcut while the root still serves.
-  if (
-    !fleet ||
-    worker?.candidateImageInput === undefined ||
-    worker.inputHash === worker.candidateImageInput
-  ) {
+  const candidateInput = worker?.candidateImageInput;
+  const rootProof = async () => {
     const instances = await listInstances(get, account, receipt.applicationId, {
       label: "Pool",
       digest: receipt.digest,
       expected: "the published candidate digest",
     });
-    if (instances.length) return { verifiedPath: "root", instances };
+    return instances.length ? ({ verifiedPath: "root", instances } as const) : undefined;
+  };
+  // The baseline probe has no candidate input, and without a bound fleet only the root can serve.
+  if (!fleet || candidateInput === undefined) {
+    const root = await rootProof();
+    if (root) return root;
     if (!fleet) throw new PoolImagePending("Pool has no running instance to verify");
-  }
-  if (
-    worker?.candidateImageInput !== undefined &&
-    fleet.desiredImageInput !== worker.candidateImageInput
-  )
+  } else if (fleet.desiredImageInput !== candidateInput)
     throw new PoolImagePending(
       "Pool Worker binding POOL_DESIRED_IMAGE_INPUT differs from this candidate's image input",
     );
@@ -230,15 +223,23 @@ async function assertImages(
   if (new Set(all).size !== all.length)
     throw new SafetyGateError("A pool fleet instance is listed by both fleet applications");
   if (
-    !observed.some(
+    observed.some(
       (application) =>
         application.imageInput === fleet.desiredImageInput && application.instances.length,
     )
   )
-    throw new PoolImagePending(
-      `Pool has no running instance in its root or in a bound fleet application on POOL_DESIRED_IMAGE_INPUT ${fleet.desiredImageInput}`,
-    );
-  return { verifiedPath: "bound-fleet", instances: all, fleet: observed };
+    return { verifiedPath: "bound-fleet", instances: all, fleet: observed };
+  // A release proves the fleet first. The root, pinned to its baseline image once a fleet is
+  // bound, proves this candidate only when its own input (already matched to POOL_IMAGE_HASH) is
+  // the candidate's: an unchanged image with unchanged configuration is not promoted, so the root
+  // keeps serving it.
+  if (candidateInput !== undefined && worker?.inputHash === candidateInput) {
+    const root = await rootProof();
+    if (root) return root;
+  }
+  throw new PoolImagePending(
+    `Pool has no running instance in its root or in a bound fleet application on POOL_DESIRED_IMAGE_INPUT ${fleet.desiredImageInput}`,
+  );
 }
 
 /** Returns the application's immutable image digest after checking its identity and image. */

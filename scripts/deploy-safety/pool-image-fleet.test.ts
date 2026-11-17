@@ -289,8 +289,13 @@ test("without a bound fleet a release keeps the root proof of its published dige
 });
 
 test("an unchanged pool image still serving from the root verifies through the root with a fleet bound", async () => {
-  // A bootstrapped fleet binds reference-hash inputs that never equal the candidate's context input.
-  const f = fixture({ instances: { root: [instance("root", "1")], blue: [], green: [] } });
+  const f = fixture({
+    // The Worker desires the root's own input; the bootstrapped fleet carries reference-hash inputs.
+    bindings: bindings().map((value) =>
+      value.name === "POOL_DESIRED_IMAGE_INPUT" ? { ...value, text: receipt.inputHash } : value,
+    ),
+    instances: { root: [instance("root", "1")], blue: [], green: [] },
+  });
   const result = await assertPoolImage(
     receipt,
     candidate,
@@ -300,4 +305,23 @@ test("an unchanged pool image still serving from the root verifies through the r
   );
   assert.equal(result.verifiedPath, "root");
   assert.deepEqual(result.instances, ["root-instance"]);
+});
+
+test("a config-only promotion proves the serving fleet before a retiring root cell can stall it", async () => {
+  const unchanged = receipt.inputHash;
+  const desired = (name: string) =>
+    name === "POOL_DESIRED_IMAGE_INPUT" || name === "POOL_BLUE_IMAGE_HASH";
+  const f = fixture({
+    bindings: bindings().map((value) =>
+      desired(value.name) ? { ...value, text: unchanged } : value,
+    ),
+    instances: {
+      root: [{ ...instance("root", "1"), status: { state: "stopping" } }],
+      blue: [instance("blue", "3")],
+      green: [],
+    },
+  });
+  const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher, unchanged);
+  assert.equal(result.verifiedPath, "bound-fleet");
+  assert.ok(f.calls.every((path) => !path.endsWith("/applications/root/instances-v2")));
 });
