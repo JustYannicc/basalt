@@ -12,6 +12,7 @@ import {
   type ControllerCode,
 } from "../../src/pool/runtime-slots/contract.ts";
 import { NativeMemberships } from "../../src/pool/membership.ts";
+import type { MembershipState } from "../../src/pool/membership-state.ts";
 import {
   membershipPrefix,
   modelUseAssertionTtlMs,
@@ -41,7 +42,8 @@ export const slotIdentity = (name: string): SlotIdentity => ({
   bootId: `boot-${name}`,
 });
 
-export async function slotFixture() {
+/** Extra membership rows sit beside the base "pool" row, which they cannot replace. */
+export async function slotFixture(options: { memberships?: Record<string, MembershipState> } = {}) {
   let controllerCode: ControllerCode = { candidate: "a".repeat(40), workerInput: "1".repeat(64) };
   const memory = new SlotMemory(),
     storage = new RuntimeSlotStorage(memory),
@@ -59,6 +61,7 @@ export async function slotFixture() {
     expiresAt: now + 15_000,
   };
   await memory.put(nativeMembershipKey, {
+    ...options.memberships,
     pool: {
       ...policy,
       native: true,
@@ -223,22 +226,22 @@ export async function slotFixture() {
   await slots.adopt(old);
   const request = () =>
     new Request("http://private/v1/responses", { method: "POST", body: "fixture request" });
-  const forward = (authorize?: (signal: AbortSignal) => Promise<Request>) => {
+  const forward = (authorize?: (signal: AbortSignal) => Promise<Request>, pool = "pool") => {
     const input = request();
     return router.forward(
-      "pool",
+      pool,
       input,
       8317,
       authorize ??
         (async (signal) => {
-          const current = await memberships.authority("pool");
+          const current = await memberships.authority(pool);
           assert.ok(current);
           await hooks.authorize();
           return new Request(input, {
             signal,
             headers: {
               [policyHeader]: await signEnvelope(secret, policyUsePrefix, {
-                pool: "pool",
+                pool,
                 revision: current.revision,
                 expiresAt: Date.now() + modelUseAssertionTtlMs,
               }),
