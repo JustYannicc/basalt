@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Pool account-view proofs attribute PostgreSQL cycles using each statement's real trace context and retain unrelated traffic only as global diagnostics. Exact source results and SQL and SDK operation budgets remain gates. Three pool-fact cohorts must submit every independent member before any cohort response is released: authority and links, metadata and policies, then presentation facts. Separately traced read-only SQL runs while those replies are held. Trace-filtered disjoint intervals remain scheduling-sensitive diagnostics, not a whole-query dependency bound. Other parallel cohorts require separate response-barrier coverage. The observer preserves wire order, ignores connection login, and handles parsed and simple query cycles without recording bound values."
+    }
+  }
+}
