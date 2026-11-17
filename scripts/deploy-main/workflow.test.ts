@@ -232,7 +232,7 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   assert.ok(backup.indexOf("id: live") > backup.indexOf("id: candidate"));
   // Nothing after the guard runs once production has the candidate: no worktree, report, backup or artifact.
   const steps = guarded.split(/\n      - /).slice(1);
-  assert.equal(steps.length, 8);
+  assert.equal(steps.length, 10);
   for (const step of steps)
     assert.match(
       step,
@@ -240,6 +240,11 @@ test("Manual release of main releases a dispatched candidate main contains, and 
       step,
     );
   assert.ok(backup.indexOf("baseline-probe-entry.ts") < backup.indexOf("release.ts backup-only"));
+  // Every release read runs against production before the backup, so a refusal costs no release.
+  assert.ok(
+    backup.indexOf("release-preflight-entry.ts") > backup.indexOf("baseline-probe-entry.ts") &&
+      backup.indexOf("release-preflight-entry.ts") < backup.indexOf("release.ts backup-only"),
+  );
   assert.match(
     deploy,
     /^    if: always\(\) && !cancelled\(\) && github\.ref == 'refs\/heads\/main' && inputs\.migration_activation == '' && \(inputs\.runtime_abort != '' \|\| needs\.backup\.outputs\.already_live == 'false'\)$/m,
