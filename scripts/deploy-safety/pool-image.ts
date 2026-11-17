@@ -180,6 +180,8 @@ async function assertImages(
         label,
         digest,
         expected: "its configured digest",
+        // Demand-driven cells start and stop under live traffic; only serving instances count.
+        servingOnly: true,
       }),
     });
   }
@@ -248,10 +250,11 @@ async function listInstances(
   get: Get,
   account: string,
   applicationId: string,
-  expected: { label: string; digest: string; expected: string },
+  expected: { label: string; digest: string; expected: string; servingOnly?: boolean },
 ) {
   const base = `${account}/containers/applications/${encodePathSegment(applicationId)}`;
   const ids = new Set<string>();
+  const seen = new Set<string>();
   const tokens = new Set<string>();
   let token: string | undefined;
   for (let page = 0; page < 100; page++) {
@@ -263,13 +266,16 @@ async function listInstances(
     for (const value of reply.result) {
       const instance = record(value, `${expected.label} instance`);
       const id = stringField(instance.id, `${expected.label} instance id`);
-      if (ids.has(id) || instance.application_id !== applicationId)
+      if (seen.has(id) || instance.application_id !== applicationId)
         throw new SafetyGateError(
           `${expected.label} instance list contains a duplicate or foreign instance`,
         );
-      ids.add(id);
-      if (record(instance.status, `${expected.label} instance status`).state !== "running")
+      seen.add(id);
+      if (record(instance.status, `${expected.label} instance status`).state !== "running") {
+        if (expected.servingOnly) continue;
         throw new PoolImagePending(`${expected.label} has an active instance that is not running`);
+      }
+      ids.add(id);
       assertDigest(
         instance.image,
         expected.digest,

@@ -345,3 +345,21 @@ test("an observe whose health read is lost, not refused, fails instead of record
   assert.equal(observed.ok, false);
   assert.equal(observed.error, "active-health outcome unknown");
 });
+
+test("the public result replaces the account wherever a raw controller reply carries it", async () => {
+  const { deps } = fakes({
+    observe: async (action) => ({
+      result:
+        action === "inspect"
+          ? { selection: { slot: "primary" } }
+          : { permission: { configuration: { applications: [{ accountId, color: "blue" }] } } },
+    }),
+  });
+  const observed = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(observed.ok, true);
+  assert.doesNotMatch(JSON.stringify(observed), new RegExp(accountId));
+  assert.match(JSON.stringify(observed.observe), /redacted-account/);
+});

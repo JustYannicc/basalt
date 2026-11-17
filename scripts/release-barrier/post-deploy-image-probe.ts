@@ -122,6 +122,10 @@ try {
           ? error.message
           : failure.type,
     statusCode: failure.status ?? null,
+    // A native-state refusal carries its field path and State diagnostic beside the reason.
+    ...(error instanceof BarrierRefusal
+      ? { field: error.worker ?? null, stateStore: error.stateStore ?? null }
+      : {}),
   };
 } finally {
   globalThis.fetch = nativeFetch;

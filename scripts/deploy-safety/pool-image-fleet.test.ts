@@ -115,7 +115,8 @@ test("each missing, stale, foreign or inconsistent fleet fact refuses with its o
     },
     {
       instances: { root: [], blue: [{ ...instance("blue", "3"), status: { state: "stopping" } }] },
-      reason: /: Pool BLUE fleet application has an active instance that is not running/,
+      reason:
+        /no running instance in its root or in a bound fleet application on POOL_DESIRED_IMAGE_INPUT/,
     },
     {
       instances: { root: [], blue: [{ ...instance("blue", "3"), application_id: "other" }] },
@@ -233,4 +234,13 @@ test("the post-deploy wait keeps retrying while the fleet starts and then accept
   );
   assert.equal(verified.verifiedPath, "bound-fleet");
   assert.equal(rounds, 3);
+});
+
+test("a starting or stopping fleet cell does not stall verification while another serves", async () => {
+  const stopping = { ...instance("blue", "5"), id: "blue-old", status: { state: "stopping" } };
+  const f = fixture({
+    instances: { root: [], blue: [stopping, instance("blue", "3")], green: [] },
+  });
+  const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher);
+  assert.deepEqual(result.instances, ["blue-instance"]);
 });

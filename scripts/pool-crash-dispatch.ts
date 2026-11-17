@@ -97,10 +97,28 @@ function replyResult(reply: unknown, action: string) {
 }
 
 // Raw messages from the bridge can name the account or worker; only fixed codes reach a public artifact.
+/**
+ * The artifact is public on this repository. Raw controller replies can name the account (fleet
+ * applications carry it), so its exact value is replaced while every other identity field stays raw
+ * for the consumer's field-by-field comparison.
+ */
+function redactAccount<T>(value: T, accountId: string): T {
+  if (!accountId) return value;
+  return JSON.parse(
+    JSON.stringify(value, (_key, field: unknown) =>
+      field === accountId ? "redacted-account" : field,
+    ),
+  ) as T;
+}
+
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
   const code =
-    error instanceof BarrierRefusal || error instanceof SlotRefused ? `: ${error.reason}` : "";
+    error instanceof BarrierRefusal
+      ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}`
+      : error instanceof SlotRefused
+        ? `: ${error.reason}`
+        : "";
   return `${phase}${code}`;
 }
 
@@ -173,7 +191,10 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
         if (cause instanceof SlotRefused || cause instanceof BarrierRefusal) return null;
         throw cause;
       });
-      output.observe = { selection: inspected.selection, fleet, activeHealth };
+      output.observe = redactAccount(
+        { selection: inspected.selection, fleet, activeHealth },
+        input.accountId,
+      );
     } else {
       const packet = decodePacket(
         CrashPacket,
@@ -203,9 +224,8 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
               : publicError(cause, phase),
           );
         });
-      // Raw controller replies hold slot identity and audit state; account and worker are never added.
-      if (sent.inspection) output.inspection = sent.result;
-      else output.result = sent.result;
+      if (sent.inspection) output.inspection = redactAccount(sent.result, input.accountId);
+      else output.result = redactAccount(sent.result, input.accountId);
     }
   } catch (cause) {
     error = publicError(cause, phase);
