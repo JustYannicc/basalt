@@ -2,11 +2,17 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Schema } from "effect";
-import { ControllerCode, SlotIdentity, SlotRefused } from "../src/pool/runtime-slots/contract.ts";
+import { runtimeRecoveryPath } from "../src/pool/recovery-approval.ts";
+import {
+  ControllerCode,
+  SlotIdentity,
+  SlotRefused,
+  type SlotTarget,
+} from "../src/pool/runtime-slots/contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { runCrashOperator } from "./pool-crash-operator.ts";
-import type { PoolOperationsTarget } from "./pool-operations.ts";
+import { openPoolOperations, type PoolOperationsTarget } from "./pool-operations.ts";
 import { nodePoolOperations } from "./pool-operations-node.ts";
 import { BarrierRefusal } from "./release-barrier/refusal.ts";
 import { sendRuntimeCommand } from "./release-barrier/runtime-command-rpc.ts";
@@ -15,6 +21,7 @@ import {
   workflowRunLister,
   RunListRefused,
   type ReleaseTarget,
+  type RootApplication,
 } from "./pool-crash-dispatch-sources.ts";
 
 const Name = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9-]{1,128}$/u));
@@ -27,19 +34,23 @@ const CrashPacket = Schema.Struct({
 });
 type CrashPacket = typeof CrashPacket.Type;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const observeActions = ["inspect", "fleet-inspect", "active-health"] as const;
+const observeActions = ["inspect", "fleet-inspect", "active-health", "witness"] as const;
 type ObserveAction = (typeof observeActions)[number];
 type Connect = PoolOperationsTarget["connect"];
 
 export interface DispatchDependencies {
   listRuns(): Promise<readonly { id: number; displayTitle: string }[]>;
-  readTarget(): Promise<ReleaseTarget>;
+  readTarget(): Promise<ReleaseTarget & { root?: RootApplication }>;
   observe(
     action: ObserveAction,
     controllerCode: ControllerCode,
     target: ReleaseTarget,
     signingKey: string,
+    slot?: SlotTarget,
   ): Promise<unknown>;
+  /** The root PoolContainer's unsigned recovery status read: identity and boot, never a restart. */
+  rootHealth(target: ReleaseTarget): Promise<unknown>;
+  sleep(ms: number): Promise<void>;
   crash(request: {
     packet: CrashPacket & ReleaseTarget;
     mode: "apply" | "inspect";
@@ -127,12 +138,152 @@ async function replayed(input: DispatchInput, deps: DispatchDependencies) {
   return runs.some((run) => run.id !== input.runId && run.displayTitle.includes(input.requestId));
 }
 
+const fingerprint = (value: string) =>
+  createHash("sha256").update(value).digest("hex").slice(0, 16);
+const fields = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+const text = (value: unknown) => (typeof value === "string" ? value : null);
+
+// Pool, organization and account identifiers reach the public artifact only as fingerprints.
+function memberships(rows: unknown) {
+  if (!Array.isArray(rows)) return null;
+  return rows.map((row) => {
+    const value = fields(row);
+    return {
+      pool: typeof value.pool === "string" ? fingerprint(value.pool) : null,
+      organization: typeof value.organization === "string" ? fingerprint(value.organization) : null,
+      revision: typeof value.revision === "number" ? value.revision : null,
+      expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : null,
+      dirty: typeof value.dirty === "boolean" ? value.dirty : null,
+      accounts: Array.isArray(value.accounts)
+        ? value.accounts.map((account) =>
+            typeof account === "string" ? fingerprint(account) : null,
+          )
+        : null,
+    };
+  });
+}
+
+function membershipState(inspected: unknown, observedAt: number) {
+  const value = fields(inspected);
+  return {
+    observedAt,
+    selectionPresent: value.selection !== undefined && value.selection !== null,
+    policies: memberships(value.policies),
+    denials: memberships(value.denials),
+    digest: text(value.digest),
+  };
+}
+
+const RootHealth = Schema.Struct({
+  instanceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  imageHash: Schema.String,
+  running: Schema.Boolean,
+  ready: Schema.Boolean,
+  bootId: Schema.optional(Schema.String),
+});
+
+type Step<T> = { ok: true; value: T } | { ok: false; refused?: string; error?: string };
+async function step<T>(read: () => Promise<T>, phase: string): Promise<Step<T>> {
+  try {
+    return { ok: true, value: await read() };
+  } catch (cause) {
+    return cause instanceof ControllerRefused
+      ? { ok: false, refused: cause.reason }
+      : { ok: false, error: publicError(cause, phase) };
+  }
+}
+
+/**
+ * Reads only: two membership inspects about 6 s apart (is renewal moving?), fleet enablement, the
+ * health refusal, the root container's boot, and the legacy slot's retained admission witness.
+ */
+async function diagnose(input: {
+  inspected: unknown;
+  observedAt: number;
+  fleet: unknown;
+  healthRefusal: string | undefined;
+  root: RootApplication | undefined;
+  controllerCode: ControllerCode;
+  target: ReleaseTarget;
+  deps: DispatchDependencies;
+  send: (action: ObserveAction, slot?: SlotTarget) => Promise<unknown>;
+}) {
+  const fleet = fields(input.fleet);
+  const permission = fields(fleet.permission);
+  const health = await step(
+    async () => Schema.decodeUnknownSync(RootHealth)(await input.deps.rootHealth(input.target)),
+    "root health read failed",
+  );
+  const root = input.root;
+  const witness: Step<unknown> = !root
+    ? { ok: false, error: "root application unavailable in release state; witness not sent" }
+    : !/^sha256:[a-f0-9]{64}$/u.test(root.imageDigest)
+      ? { ok: false, error: "root image digest unavailable in release state; witness not sent" }
+      : !health.ok
+        ? { ok: false, error: "root health unavailable; witness not sent" }
+        : await step(async () => {
+            const value = fields(
+              await input.send("witness", {
+                format: "pool-runtime-slot-v1",
+                controllerId: health.value.instanceId,
+                instanceId: health.value.instanceId,
+                slotId: "legacy",
+                ...root,
+              }),
+            );
+            // An attested slot answers with its startup witness nested; an unattested adoption
+            // answers flat (controller) or under its authorization (endpoint shape).
+            const retained = value.kind === "witness" ? fields(value.witness) : value;
+            const authorization = fields(value.authorization);
+            return {
+              kind: text(value.kind),
+              operationId: text(retained.operationId) ?? text(authorization.operationId),
+              manifestDigest: text(retained.manifestDigest) ?? text(authorization.manifestDigest),
+              bootId: text(retained.bootId) ?? text(fields(value.identity).bootId),
+            };
+          }, "witness outcome unknown");
+  await input.deps.sleep(6_000);
+  const second = await step(
+    async () => membershipState(await input.send("inspect"), input.deps.now()),
+    "second inspect outcome unknown",
+  );
+  return {
+    inspect: [
+      membershipState(input.inspected, input.observedAt),
+      second.ok ? second.value : second,
+    ],
+    fleet: {
+      enabled: typeof permission.enabled === "boolean" ? permission.enabled : null,
+      resources: Array.isArray(fleet.resources) ? fleet.resources.length : null,
+      bindings: Array.isArray(fleet.bindings) ? fleet.bindings.length : null,
+    },
+    activeHealth: { refused: input.healthRefusal ?? null },
+    root: health.ok
+      ? {
+          instanceId: fingerprint(health.value.instanceId),
+          imageHash: health.value.imageHash,
+          stateImageInput: root?.imageInput ?? null,
+          running: health.value.running,
+          ready: health.value.ready,
+          bootId: health.value.bootId ?? null,
+        }
+      : health,
+    witness: witness.ok ? witness.value : witness,
+  };
+}
+
 export async function runCrashDispatch(input: DispatchInput, deps: DispatchDependencies) {
   const startedAt = deps.now();
   let packetDigest: string | null = null;
   let forcedInspect = false;
   let phase = "input validation failed";
-  const output: { observe?: unknown; inspection?: unknown; result?: unknown } = {};
+  const output: {
+    observe?: unknown;
+    diagnostic?: unknown;
+    inspection?: unknown;
+    result?: unknown;
+  } = {};
   let error: string | null = null;
   try {
     if (!["observe", "inspect", "apply"].includes(input.mode))
@@ -167,25 +318,42 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     if (input.mode === "observe") {
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
-      const target = await readTarget();
-      const send = (action: ObserveAction) => {
+      const { root, ...target } = await readTarget();
+      const send = (action: ObserveAction, slot?: SlotTarget) => {
         phase = `${action} outcome unknown`;
         return deps
-          .observe(action, packet.controllerCode, target, input.signingKey)
+          .observe(action, packet.controllerCode, target, input.signingKey, slot)
           .then((reply) => replyResult(reply, action));
       };
       const inspected = await send("inspect");
-      if (inspected === null || typeof inspected !== "object" || !("selection" in inspected))
-        throw new DispatchRefusal("inspect reply has no result.selection");
+      if (inspected === null || typeof inspected !== "object")
+        throw new DispatchRefusal("inspect reply has no result");
+      const observedAt = deps.now();
       const fleet = await send("fleet-inspect");
       // A controller refusal of the health read is evidence in itself; the selection and fleet
       // still stand. Any other failure (lost reply, timeout, malformed reply) fails the observe.
+      let healthRefusal: string | undefined;
       const activeHealth = await send("active-health").catch((cause: unknown) => {
-        if (cause instanceof ControllerRefused) return null;
-        throw cause;
+        if (!(cause instanceof ControllerRefused)) throw cause;
+        healthRefusal = cause.reason;
+        return null;
       });
-      output.observe = redactAccount(
-        { selection: inspected.selection, fleet, activeHealth },
+      // An absent selection is the state to diagnose, so it is recorded instead of ending the read.
+      const selection = "selection" in inspected ? inspected.selection : null;
+      output.observe = redactAccount({ selection, fleet, activeHealth }, input.accountId);
+      phase = "diagnostic read failed";
+      output.diagnostic = redactAccount(
+        await diagnose({
+          inspected,
+          observedAt,
+          fleet,
+          healthRefusal,
+          root,
+          controllerCode: packet.controllerCode,
+          target,
+          deps,
+          send,
+        }),
         input.accountId,
       );
     } else {
@@ -205,7 +373,7 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
         : "runtime-crash-inspect outcome unknown";
       const sent = await deps
         .crash({
-          packet: { ...packet, ...target },
+          packet: { ...packet, accountId: target.accountId, worker: target.worker },
           mode: apply ? "apply" : "inspect",
           signingKey: input.signingKey,
         })
@@ -284,10 +452,10 @@ export class ControllerRefused extends Error {
 
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
-  async (action, controllerCode, target, signingKey) => {
+  async (action, controllerCode, target, signingKey, slot) => {
     const at = signedNow();
     const command = decodeRuntimeHandoffCommand(
-      { controllerCode, action, at, expiresAt: at + 25_000 },
+      { controllerCode, action, at, expiresAt: at + 25_000, ...(slot ? { target: slot } : {}) },
       at,
     );
     // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
@@ -338,6 +506,27 @@ export const observeSender =
     }
   };
 
+/** Unsigned GET of the root container's recovery status; the POST path is the only one that restarts. */
+export const rootHealthReader =
+  (connect?: Connect): DispatchDependencies["rootHealth"] =>
+  async (target) => {
+    const connection = await openPoolOperations({ ...target, connect });
+    try {
+      const response = await connection.service.fetch(
+        new Request(`http://pool-operations${runtimeRecoveryPath}`, {
+          signal: AbortSignal.timeout(15_000),
+        }),
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new DispatchRefusal(`root health HTTP ${response.status}`);
+      }
+      return await response.json();
+    } finally {
+      await connection.close();
+    }
+  };
+
 export async function writeDispatchResult(directory: string, result: object) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFile(join(directory, "result.json"), JSON.stringify(result), { mode: 0o600 });
@@ -372,6 +561,8 @@ if (import.meta.main) {
         readTarget: () => readReleaseTarget(env),
         observe: observeSender(),
         crash: crashSender(temporary),
+        rootHealth: rootHealthReader(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: Date.now,
       },
     );
