@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { randomUUID } from "node:crypto";
+import pg from "pg";
 import {
   historyInsertFixture,
   insertAudit,
   insertPools,
   rowVersion,
 } from "./history-insert-fixture.ts";
-import { migrateModelHistory } from "../../src/pool/model-history/schema.ts";
+import {
+  migrateModelHistory,
+  historySchemaMigrations,
+} from "../../src/pool/model-history/schema.ts";
 import { readPoolHistoryChanges } from "../../src/pool/model-history/change-revisions.ts";
 
 test("every direct history partition keeps the same invalidation as before v11", async () => {
@@ -164,4 +169,67 @@ test("a blocked v11 migration rolls back its DDL and marker and leaves the old i
     const hints = await readPoolHistoryChanges(reader, insertPools[0]!);
     assert.equal(hints.find((hint) => hint.topic === "pool-usage")!.revision, "2");
   });
+});
+
+test("v11 refuses non-UTF8 hashing atomically and preserves retained legacy history", async () => {
+  const source = process.env.POOL_TEST_ADMIN_URL;
+  assert.ok(source && ["127.0.0.1", "localhost"].includes(new URL(source).hostname));
+  const name = `history_encoding_${randomUUID().replaceAll("-", "")}`;
+  const admin = new pg.Client({ connectionString: source });
+  const url = new URL(source);
+  url.pathname = `/${name}`;
+  const db = new pg.Client({ connectionString: url.href });
+  await admin.connect();
+  try {
+    await admin.query(
+      `CREATE DATABASE "${name}" TEMPLATE template0 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C'`,
+    );
+    await db.connect();
+    await db.query(
+      "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+    );
+    await db.query("ALTER SCHEMA public OWNER TO basalt_pool_owner; SET ROLE basalt_pool_owner");
+    await db.query(
+      "CREATE TABLE basalt_model_history_migrations(name text PRIMARY KEY,completed_at timestamptz DEFAULT CURRENT_TIMESTAMP)",
+    );
+    for (const migration of historySchemaMigrations.filter((item) => item.name !== rowVersion)) {
+      for (const sql of migration.statements) await db.query(sql);
+      await db.query("INSERT INTO basalt_model_history_migrations(name) VALUES($1)", [
+        migration.name,
+      ]);
+    }
+    await db.query(
+      `INSERT INTO basalt_model_requests
+      (id,source,source_record,timestamp,timestamp_exact,token_quality,failed,cost_basis,attribution)
+      VALUES($1,$2,$3,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','legacy',false,'unpriced','unknown')`,
+      ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+    );
+    const before = (await db.query("SELECT * FROM basalt_model_requests")).rows;
+    await assert.rejects(
+      migrateModelHistory(db),
+      (error: unknown) =>
+        typeof error === "object" && error !== null && "code" in error && error.code === "0A000",
+    );
+    assert.deepEqual((await db.query("SELECT * FROM basalt_model_requests")).rows, before);
+    assert.equal(
+      (
+        await db.query("SELECT name FROM basalt_model_history_migrations WHERE name=$1", [
+          rowVersion,
+        ])
+      ).rowCount,
+      0,
+    );
+    assert.equal(
+      (await db.query("SELECT to_regprocedure('basalt_pool_history_hash(text)') AS hash")).rows[0]!
+        .hash,
+      null,
+    );
+  } finally {
+    await db.end();
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
+    } finally {
+      await admin.end();
+    }
+  }
 });
