@@ -98,6 +98,7 @@ export async function readReleaseTarget(
             root: {
               applicationId: root.attributes.applicationId,
               applicationVersion: String(root.attributes.version),
+              // An image without a pinned digest leaves this empty; the witness then reports "not sent".
               imageDigest: root.attributes.configuration.image.split("@")[1] ?? "",
               imageInput: root.image.inputHash,
             },

@@ -217,33 +217,32 @@ async function diagnose(input: {
   );
   const root = input.root;
   const witness: Step<unknown> = !root
-    ? { ok: false, error: "root application unavailable in release state" }
-    : !health.ok
-      ? { ok: false, error: "root health unavailable; witness not sent" }
-      : await step(async () => {
-          const value = fields(
-            await input.send("witness", {
-              format: "pool-runtime-slot-v1",
-              controllerId: health.value.instanceId,
-              instanceId: health.value.instanceId,
-              slotId: "legacy",
-              ...root,
-            }),
-          );
-          const authorization = fields(value.authorization);
-          const code = fields(value.controllerCode);
-          return {
-            kind: text(value.kind),
-            operationId: text(value.operationId) ?? text(authorization.operationId),
-            manifestDigest: text(value.manifestDigest) ?? text(authorization.manifestDigest),
-            controllerCodeMatches:
-              value.controllerCode === undefined
-                ? null
-                : code.candidate === input.controllerCode.candidate &&
-                  code.workerInput === input.controllerCode.workerInput,
-            bootId: text(fields(value.identity).bootId),
-          };
-        }, "witness outcome unknown");
+    ? { ok: false, error: "root application unavailable in release state; witness not sent" }
+    : !/^sha256:[a-f0-9]{64}$/u.test(root.imageDigest)
+      ? { ok: false, error: "root image digest unavailable in release state; witness not sent" }
+      : !health.ok
+        ? { ok: false, error: "root health unavailable; witness not sent" }
+        : await step(async () => {
+            const value = fields(
+              await input.send("witness", {
+                format: "pool-runtime-slot-v1",
+                controllerId: health.value.instanceId,
+                instanceId: health.value.instanceId,
+                slotId: "legacy",
+                ...root,
+              }),
+            );
+            // An attested slot answers with its startup witness nested; an unattested adoption
+            // answers flat (controller) or under its authorization (endpoint shape).
+            const retained = value.kind === "witness" ? fields(value.witness) : value;
+            const authorization = fields(value.authorization);
+            return {
+              kind: text(value.kind),
+              operationId: text(retained.operationId) ?? text(authorization.operationId),
+              manifestDigest: text(retained.manifestDigest) ?? text(authorization.manifestDigest),
+              bootId: text(retained.bootId) ?? text(fields(value.identity).bootId),
+            };
+          }, "witness outcome unknown");
   await input.deps.sleep(6_000);
   const second = await step(
     async () => membershipState(await input.send("inspect"), input.deps.now()),
@@ -264,6 +263,7 @@ async function diagnose(input: {
       ? {
           instanceId: fingerprint(health.value.instanceId),
           imageHash: health.value.imageHash,
+          stateImageInput: root?.imageInput ?? null,
           running: health.value.running,
           ready: health.value.ready,
           bootId: health.value.bootId ?? null,

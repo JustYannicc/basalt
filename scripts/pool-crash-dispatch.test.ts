@@ -435,6 +435,7 @@ test("a missing selection is diagnosed with reads only and hashed membership ide
     root: {
       instanceId: hashed(rootInstance),
       imageHash: "h",
+      stateImageInput: root.imageInput,
       running: true,
       ready: true,
       bootId: "rb",
@@ -446,29 +447,67 @@ test("a missing selection is diagnosed with reads only and hashed membership ide
     assert.ok(!published.includes(raw));
 });
 
-test("a retained adoption witness is reported by operation and code, and lost reads stay evidence", async () => {
-  const witnessed = await runCrashDispatch(
+test("both retained witness shapes report their operation, and lost reads stay evidence", async () => {
+  const operationId = `adopt-${"c".repeat(40)}`;
+  const witnessOf = async (reply: unknown) =>
+    (
+      (
+        await runCrashDispatch(
+          input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+          fakes({
+            observe: async (action) => ({ result: action === "witness" ? reply : { action } }),
+          }).deps,
+        )
+      ).diagnostic as { witness: unknown }
+    ).witness;
+  // The controller's unattested adoption readback is flat.
+  assert.deepEqual(
+    await witnessOf({
+      kind: "unattested-active",
+      controllerCode,
+      operationId,
+      manifestDigest: "m",
+      identity: { ...identity, bootId: "old-boot" },
+      configurationFingerprint: "f",
+      selection: {},
+    }),
+    { kind: "unattested-active", operationId, manifestDigest: "m", bootId: "old-boot" },
+  );
+  // An attested slot nests its startup witness.
+  assert.deepEqual(
+    await witnessOf({
+      kind: "witness",
+      controllerCode,
+      witness: { operationId: "start-1", manifestDigest: "n", bootId: "attested-boot" },
+    }),
+    { kind: "witness", operationId: "start-1", manifestDigest: "n", bootId: "attested-boot" },
+  );
+  const lostWitness = await runCrashDispatch(
     input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
     fakes({
-      observe: async (action) => ({
-        result:
-          action === "witness"
-            ? {
-                kind: "unattested-active",
-                controllerCode,
-                identity: { ...identity, bootId: "old-boot" },
-                authorization: { operationId: `adopt-${"c".repeat(40)}`, manifestDigest: "m" },
-              }
-            : { action },
+      observe: async (action) => {
+        if (action === "witness") throw new Error("synthetic lost reply");
+        return { result: { action } };
+      },
+    }).deps,
+  );
+  assert.deepEqual((lostWitness.diagnostic as { witness: unknown }).witness, {
+    ok: false,
+    error: "witness outcome unknown",
+  });
+  const undigested = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    fakes({
+      readTarget: async () => ({
+        accountId,
+        worker: "synthetic-pool",
+        root: { ...root, imageDigest: "" },
       }),
     }).deps,
   );
-  assert.deepEqual((witnessed.diagnostic as { witness: unknown }).witness, {
-    kind: "unattested-active",
-    operationId: `adopt-${"c".repeat(40)}`,
-    manifestDigest: "m",
-    controllerCodeMatches: true,
-    bootId: "old-boot",
+  assert.deepEqual((undigested.diagnostic as { witness: unknown }).witness, {
+    ok: false,
+    error: "root image digest unavailable in release state; witness not sent",
   });
   const { deps, calls } = fakes({
     rootHealth: async () => {
