@@ -308,7 +308,7 @@ test("free-form inputs never reach the log line", async () => {
 test("observe keeps the selection and fleet when only the health read is refused", async () => {
   const { deps } = fakes({
     observe: async (action) => {
-      if (action === "active-health") throw new ControllerRefused("active-health refused");
+      if (action === "active-health") throw new ControllerRefused("active-health", "unhealthy");
       return { result: action === "inspect" ? { selection: { slot: "primary" } } : { action } };
     },
   });
@@ -399,4 +399,19 @@ test("a refused run list names its HTTP status and refuses apply", async () => {
   const result = await runCrashDispatch(input(), deps);
   assert.equal(result.ok, false);
   assert.equal(result.error, "workflow run list unavailable (HTTP 403); apply refused");
+});
+
+test("a controller refusal of inspect publishes its fixed code, unlike an unknown failure", async () => {
+  const { deps } = fakes({
+    observe: async (action) => {
+      if (action === "inspect") throw new ControllerRefused("inspect", "unhealthy");
+      return { result: { action } };
+    },
+  });
+  const result = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "inspect outcome unknown: runtime-handoff-refused (unhealthy)");
 });

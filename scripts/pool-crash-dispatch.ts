@@ -103,11 +103,13 @@ function redactAccount<T>(value: T, accountId: string): T {
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
   const code =
-    error instanceof BarrierRefusal
-      ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}`
-      : error instanceof SlotRefused
-        ? `: ${error.reason}`
-        : "";
+    error instanceof ControllerRefused
+      ? `: runtime-handoff-refused (${error.reason})`
+      : error instanceof BarrierRefusal
+        ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}`
+        : error instanceof SlotRefused
+          ? `: ${error.reason}`
+          : "";
   return `${phase}${code}`;
 }
 
@@ -271,7 +273,14 @@ export const crashSender =
   };
 
 /** The controller answered with its own handoff refusal (409 runtime-handoff-refused). */
-export class ControllerRefused extends Error {}
+export class ControllerRefused extends Error {
+  /** The controller's fixed runtime failure code, safe to publish. */
+  readonly reason: string;
+  constructor(action: string, reason: string) {
+    super(`${action} refused by the controller`);
+    this.reason = reason;
+  }
+}
 
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
@@ -283,7 +292,7 @@ export const observeSender =
     );
     // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
     // refused; a defect, auth rejection or bridge failure must not read as a refusal.
-    let refused = false;
+    let refused: string | undefined;
     const observed: NonNullable<Connect> = async (path) => {
       const platform = await (connect
         ? connect(path)
@@ -300,11 +309,18 @@ export const observeSender =
                   .clone()
                   .json()
                   .catch(() => undefined);
-                refused =
-                  !!body &&
+                if (
+                  body &&
                   typeof body === "object" &&
                   "error" in body &&
-                  body.error === "runtime-handoff-refused";
+                  body.error === "runtime-handoff-refused"
+                )
+                  refused =
+                    "reason" in body &&
+                    typeof body.reason === "string" &&
+                    /^[a-z0-9_-]{1,64}$/u.test(body.reason)
+                      ? body.reason
+                      : "unspecified";
               }
               return response;
             },
@@ -317,7 +333,7 @@ export const observeSender =
         decodeRuntimeHandoffCommand(command, signedNow());
       });
     } catch (cause) {
-      if (refused) throw new ControllerRefused(`${action} refused by the controller`);
+      if (refused) throw new ControllerRefused(action, refused);
       throw cause;
     }
   };
