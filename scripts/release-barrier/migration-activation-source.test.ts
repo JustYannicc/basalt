@@ -141,6 +141,7 @@ test("main's client refuses to describe production with pool migrations the cand
   // Every differing file is named at once, so one restore on main is enough to get out.
   for (const drifted of [
     ["src/pool/model-history/change-schema.ts"],
+    ["src/pool/model-history/history-row-schema.ts"],
     ["brand.ts", "src/pool/model-history/schema.ts"],
   ]) {
     const tree = candidateTree(context, drifted);
