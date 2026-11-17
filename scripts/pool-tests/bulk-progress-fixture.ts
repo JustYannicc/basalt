@@ -4,7 +4,11 @@ import type { BulkDefinition } from "../../src/pool/model-history/bulk-contract.
 
 export async function bulkProgressFixture(schema: string, count = 4) {
   const source = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-  const identity = { pool: "fixture-pool", organization: "fixture-org", owner: "fixture-owner" };
+  const identity = {
+    pool: "app_bulk_progress_fixture",
+    organization: "fixture-org",
+    owner: "fixture-owner",
+  };
   const data = Array.from({ length: count }, (_, index) =>
     JSON.stringify({
       source_id: index + 1,

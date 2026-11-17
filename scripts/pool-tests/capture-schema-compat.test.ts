@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { historyBulkInvalidationVersion } from "../../src/pool/model-history/history-bulk-schema.ts";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import pg from "pg";
@@ -51,7 +52,8 @@ test("capture preserves old-schema history and begins pending delivery after the
       if (
         migration.name === "model_request_history_v5_change_revisions" ||
         migration.name === historyJournalPrepareVersion ||
-        migration.name === historyRowSchemaVersion
+        migration.name === historyRowSchemaVersion ||
+        migration.name === historyBulkInvalidationVersion
       )
         continue;
       for (const statement of migration.statements) await db.query(statement);

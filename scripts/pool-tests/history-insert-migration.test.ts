@@ -50,7 +50,24 @@ test("every direct history partition keeps the same invalidation as before v11",
     });
     const original = await catalog();
     await migrateModelHistory(a);
-    assert.deepEqual(await catalog(), original);
+    const current = await catalog();
+    assert.deepEqual(current.watcher, original.watcher);
+    const added = current.triggers.filter((row) =>
+      String(row.sql).includes("CREATE TRIGGER basalt_pool_history_insert"),
+    );
+    assert.equal(added.length, 17);
+    for (const row of added)
+      assert.match(String(row.sql), /FOR EACH ROW WHEN .*basalt.history_bulk_pool/);
+    assert.deepEqual(
+      current.triggers.filter((row) => !added.includes(row)),
+      original.triggers.map((row) => ({
+        // Only the history table and its partitions move INSERT to the bulk-aware trigger.
+        sql: String(row.sql).replace(
+          /basalt_pool_change_write AFTER INSERT OR UPDATE (ON \S+\.basalt_model_requests(?:_\d+)? )/,
+          "basalt_pool_change_write AFTER UPDATE $1",
+        ),
+      })),
+    );
     await instrumentTriggers();
     for (let part = 0; part < 16; part++) {
       await a.query("TRUNCATE fixture_invalidations,fixture_trigger_calls,fixture_write_calls");

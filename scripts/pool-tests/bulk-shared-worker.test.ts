@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { sharedWorker } from "./bulk-shared-bundle.fixture.ts";
 import { Miniflare } from "../pool-test-runtime/index.ts";
-import { seriesFixture, pool } from "./series-fixture.ts";
+import { seriesFixture } from "./series-fixture.ts";
 import { digest } from "../../src/pool/backend-users.ts";
 import { openEnvelope, signEnvelope } from "../../src/pool/token.ts";
 import { parseBulkUsageImport } from "../../src/pool/model-history/import.ts";
 import { bulkDefinition, bulkImportPath } from "../../src/pool/model-history/bulk-contract.ts";
 
+const pool = "app_bulk_worker_fixture";
 const signingKey = "ab".repeat(32);
 const identity = { pool, organization: "fixture-org", owner: "fixture-owner" };
 

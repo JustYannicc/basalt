@@ -5,7 +5,11 @@ import { HistoryConflict, historyRecordLayout, recordValues } from "./store.ts";
 export const historyBulkBatchSize = 5000;
 
 /** The caller owns the transaction and must roll it back on any refusal. Counts use unique IDs. */
-export async function insertBulkRequests(db: HistoryDatabase, records: readonly ModelRequest[]) {
+export async function insertBulkRequests(
+  db: HistoryDatabase,
+  records: readonly ModelRequest[],
+  pool?: string,
+) {
   if (records.length > historyBulkBatchSize)
     throw new Error("Model usage bulk batch exceeds its limit");
   if (!records.length) return { inserted: 0, existing: 0, count: 0 };
@@ -37,12 +41,18 @@ export async function insertBulkRequests(db: HistoryDatabase, records: readonly 
   const retained = await existing(values);
   const missing = values.filter((row) => !retained.has(row.id));
   if (!missing.length) return { inserted: 0, existing: values.length, count: values.length };
-  const result = await db.query(
-    `INSERT INTO basalt_model_requests (${selected})
+  const result =
+    pool === undefined
+      ? await db.query(
+          `INSERT INTO basalt_model_requests (${selected})
     SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
     ORDER BY id ON CONFLICT (id) DO NOTHING RETURNING id`,
-    [JSON.stringify(missing)],
-  );
+          [JSON.stringify(missing)],
+        )
+      : await db.query(
+          "SELECT id FROM basalt_model_history_bulk_insert($1,$2::jsonb) AS inserted(id)",
+          [pool, JSON.stringify(missing)],
+        );
   // Only concurrent conflicts can differ: retained rows are append-only, and RETURNING proves
   // which missing rows this transaction wrote. A new statement sees a conflicting writer's commit.
   const insertedIds = new Set(result.rows.map((row) => String(row.id)));

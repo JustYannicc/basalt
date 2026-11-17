@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import pg from "pg";
 import { Miniflare } from "../pool-test-runtime/index.ts";
-import { seriesFixture, pool } from "./series-fixture.ts";
+import { seriesFixture } from "./series-fixture.ts";
 import { digest } from "../../src/pool/backend-users.ts";
 import { signEnvelope, openEnvelope } from "../../src/pool/token.ts";
 import { parseUsageImport, parseBulkUsageImport } from "../../src/pool/model-history/import.ts";
@@ -18,6 +18,7 @@ import {
 } from "../../src/pool/model-history/bulk-contract.ts";
 import type { ImportAccountMapping } from "../../src/pool/model-history/import-account-mapping.ts";
 
+const pool = "app_bulk_worker_fixture";
 const signingKey = "ab".repeat(32);
 const identity = { pool, organization: "fixture-org", owner: "fixture-owner" };
 const accountRef = "a".repeat(64);
