@@ -155,13 +155,19 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
       const target = await readTarget();
-      const replies: unknown[] = [];
-      for (const action of observeActions) {
+      const send = (action: ObserveAction) => {
         phase = `${action} outcome unknown`;
-        const reply = await deps.observe(action, packet.controllerCode, target, input.signingKey);
-        replies.push(replyResult(reply, action));
-      }
-      output.observe = { selection: replies[0], fleet: replies[1], activeHealth: replies[2] };
+        return deps
+          .observe(action, packet.controllerCode, target, input.signingKey)
+          .then((reply) => replyResult(reply, action));
+      };
+      const inspected = await send("inspect");
+      if (inspected === null || typeof inspected !== "object" || !("selection" in inspected))
+        throw new DispatchRefusal("inspect reply has no result.selection");
+      const fleet = await send("fleet-inspect");
+      // A refused health read is evidence in itself; the selection and fleet still stand.
+      const activeHealth = await send("active-health").catch(() => null);
+      output.observe = { selection: inspected.selection, fleet, activeHealth };
     } else {
       const packet = decodePacket(
         CrashPacket,
@@ -195,7 +201,8 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     error = publicError(cause, phase);
   }
   return {
-    mode: input.mode,
+    // A forced inspect reports what actually ran, so a consumer never reads it as an apply.
+    mode: forcedInspect ? "inspect" : input.mode,
     requestId: input.requestId,
     packetDigest,
     coordinatorGo: input.coordinatorGo,
@@ -208,6 +215,9 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   };
 }
 
+// The controller refuses a command signed in its future; a runner clock a little ahead must not do that.
+const signedNow = () => Date.now() - 2_000;
+
 /** The operator's receipt stays in a private runner directory; only its controller reply leaves it. */
 export const crashSender =
   (directory: string, connect?: Connect): DispatchDependencies["crash"] =>
@@ -219,6 +229,7 @@ export const crashSender =
       await writeFile(path, JSON.stringify(packet), { mode: 0o600, flag: "wx" });
       const { receiptPath } = await runCrashOperator({ packet: path, apply }, signingKey, {
         connect,
+        now: signedNow,
       });
       const receipt = Schema.decodeUnknownSync(
         Schema.Struct({
@@ -237,13 +248,13 @@ export const crashSender =
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
   async (action, controllerCode, target, signingKey) => {
-    const at = Date.now();
+    const at = signedNow();
     const command = decodeRuntimeHandoffCommand(
       { controllerCode, action, at, expiresAt: at + 25_000 },
       at,
     );
     return sendRuntimeCommand(command, signingKey, { ...target, connect }, () => {
-      decodeRuntimeHandoffCommand(command, Date.now());
+      decodeRuntimeHandoffCommand(command, signedNow());
     });
   };
 

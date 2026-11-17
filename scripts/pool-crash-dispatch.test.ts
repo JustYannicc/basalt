@@ -62,7 +62,9 @@ function fakes(overrides: Partial<DispatchDependencies> = {}) {
     },
     observe: async (action) => {
       calls.push(`observe:${action}`);
-      return { result: { action } };
+      return {
+        result: action === "inspect" ? { action, selection: { slot: "primary" } } : { action },
+      };
     },
     crash: async (_packet, apply) => {
       calls.push(apply ? "crash:apply" : "crash:inspect");
@@ -178,6 +180,7 @@ test("an earlier run titled with the nonce or a re-run forces inspect", async ()
   const replay = await runCrashDispatch(input(), earlier.deps);
   assert.deepEqual(earlier.calls, ["readTarget", "crash:inspect"]);
   assert.equal(replay.forcedInspect, true);
+  assert.equal(replay.mode, "inspect");
   assert.equal(replay.ok, true);
   assert.deepEqual(replay.inspection, { status: "audited" });
   assert.equal(replay.result, undefined);
@@ -232,6 +235,7 @@ test("result.json carries raw controller results but never the key or a signed e
   const signingKey = randomBytes(32).toString("hex");
   const envelopes: string[] = [];
   const actions: string[] = [];
+  const signedAhead: number[] = [];
   const connect = async () => ({
     dispose: async () => {},
     env: {
@@ -239,14 +243,18 @@ test("result.json carries raw controller results but never the key or a signed e
         fetch: async (request: Request) => {
           const { envelope } = (await request.json()) as { envelope: string };
           envelopes.push(envelope);
-          const { action } = (await openEnvelope(
+          const { action, at } = (await openEnvelope(
             signingKey,
             deploymentReadinessPrefix,
             envelope,
-          )) as { action: string };
+          )) as { action: string; at: number };
           actions.push(action);
+          signedAhead.push(Date.now() - at);
           return Response.json(
-            { result: { action, identity } },
+            {
+              result:
+                action === "inspect" ? { action, selection: { identity } } : { action, identity },
+            },
             { headers: { "x-private-header": "header-sentinel" } },
           );
         },
@@ -264,11 +272,16 @@ test("result.json carries raw controller results but never the key or a signed e
   assert.deepEqual(actions, ["inspect", "fleet-inspect", "active-health", "runtime-crash-inspect"]);
   assert.equal(observed.ok && inspected.ok, true);
   assert.deepEqual(observed.observe, {
-    selection: { action: "inspect", identity },
+    selection: { identity },
     fleet: { action: "fleet-inspect", identity },
     activeHealth: { action: "active-health", identity },
   });
   assert.deepEqual(inspected.inspection, { action: "runtime-crash-inspect", identity });
+  // Commands are signed about two seconds in the past so a runner clock ahead of the controller passes.
+  assert.ok(
+    signedAhead.every((lag) => lag >= 2_000 && lag < 10_000),
+    String(signedAhead),
+  );
   assert.deepEqual(await readdir(scratch), []);
   for (const result of [observed, inspected]) {
     const output = join(directory, result.mode);
@@ -290,4 +303,28 @@ test("free-form inputs never reach the log line", async () => {
     deps,
   );
   assert.equal(logLine(result), "mode=invalid request_id=invalid ok=false forcedInspect=false\n");
+});
+
+test("observe keeps the selection and fleet when only the health read is refused", async () => {
+  const { deps } = fakes({
+    observe: async (action) => {
+      if (action === "active-health") throw new Error("refused");
+      return { result: action === "inspect" ? { selection: { slot: "primary" } } : { action } };
+    },
+  });
+  const observed = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(observed.ok, true);
+  assert.deepEqual(observed.observe, {
+    selection: { slot: "primary" },
+    fleet: { action: "fleet-inspect" },
+    activeHealth: null,
+  });
+  const missing = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    fakes({ observe: async (action) => ({ result: { action } }) }).deps,
+  );
+  assert.equal(missing.error, "inspect reply has no result.selection");
 });
