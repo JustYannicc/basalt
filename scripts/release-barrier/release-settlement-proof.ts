@@ -10,7 +10,7 @@ import {
 } from "./baseline-controller.ts";
 import { observeContainer } from "./container-cloudflare.ts";
 import { containerSnapshot, imageDigest, sameContainerState } from "./container.ts";
-import { controllerForwardHealth } from "./controller-forward-health.ts";
+import { assertBaselinePlacement, controllerForwardHealth } from "./controller-forward-health.ts";
 import { encodedRecordHash, readForwardPacket } from "./forward-model.ts";
 import { journalKey } from "./forward-journal.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
@@ -24,7 +24,10 @@ import {
   releaseImageJournalKey,
   type ReleaseSettlementDisposition,
 } from "./release-settlement-contract.ts";
-import { readUnadoptedController } from "./release-settlement-controller-reads.ts";
+import {
+  readAdoptedController,
+  readUnadoptedController,
+} from "./release-settlement-controller-reads.ts";
 import { readActivatedLive } from "./release-settlement-live.ts";
 import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 import { settlementSourceFailure } from "./release-settlement-source.ts";
@@ -63,7 +66,7 @@ export const collectReleaseSettlementProof = (
 ) =>
   Effect.gen(function* () {
     const refuse = () => notSettleable(disposition);
-    const activated = disposition === "controller-active-unadopted";
+    const activated = disposition !== "abandoned-before-controller";
     const state = yield* yield* State;
     const image = yield* state.getOutput(releaseImageJournalKey(stack));
     const forward = yield* state.getOutput(journalKey(stack));
@@ -97,7 +100,12 @@ export const collectReleaseSettlementProof = (
     const recorded = yield* readBaselineController(stack);
     // Scale-out code phases defer the readiness command, so its record still names the controller
     // that ran before the source. The signed reads below prove the source code live instead.
-    const baseline = sourceController ? { ...recorded, code: sourceController } : recorded;
+    // An abandoned source never activated its own controller, so the live one is the controller its
+    // image record froze; after an earlier settlement the deferred readiness row can be older still.
+    const baseline = {
+      ...recorded,
+      code: sourceController ?? record.baselineController?.code ?? recorded.code,
+    };
     const signingKey = yield* readBaselineControllerKey(stack);
     const native = yield* runtimeReleaseState(stack);
     if (
@@ -107,6 +115,7 @@ export const collectReleaseSettlementProof = (
       signingKey !== record.baseline.deploymentKey
     )
       throw new BarrierRefusal("release-settlement-image-baseline-drift", "PoolWorker");
+    const target = { ...baseline.target, connect: io.connect };
     const deny = () => Effect.die(new BarrierRefusal("release-settlement-state-write-refused"));
     const readOnly: StateService = {
       ...state,
@@ -127,7 +136,7 @@ export const collectReleaseSettlementProof = (
           baselineControllerHealth({
             baseline,
             key: signingKey,
-            target: { ...baseline.target, connect: io.connect },
+            target,
             record: io.runtimeRead,
           }),
         candidateReady: async () => {
@@ -155,11 +164,33 @@ export const collectReleaseSettlementProof = (
         const { instanceId, bootId, workers } = report;
         return { evidence: report, native: report.before, instanceId, bootId, workers };
       });
+    // Adopt committed a selection, so the recovery read refuses; the signed reads prove the root.
+    const adoptedHealth = (
+      container: Parameters<typeof controllerForwardHealth>[0]["container"],
+      observation: Parameters<typeof controllerForwardHealth>[0]["observation"],
+    ) => {
+      assertBaselinePlacement(baseline, container, observation);
+      return readAdoptedController({
+        controller: baseline,
+        key: signingKey,
+        sourceCandidate,
+        root: record.baseline.applications.root,
+        instances: observation.instances.map((instance) => instance.id),
+        target,
+        record: io.runtimeRead,
+      });
+    };
     // A finished controller phase completed its forward head, so there is nothing to reconcile.
     const readOnlyState = Effect.provideService(State, Effect.succeed(readOnly));
-    const live = activated
-      ? yield* readActivatedLive(stack, packet, io, baselineHealth).pipe(readOnlyState)
-      : yield* reconcileAbandoned().pipe(readOnlyState);
+    const adopted =
+      disposition === "controller-active-adopted"
+        ? yield* readActivatedLive(stack, packet, io, adoptedHealth).pipe(readOnlyState)
+        : undefined;
+    const live =
+      adopted ??
+      (activated
+        ? yield* readActivatedLive(stack, packet, io, baselineHealth).pipe(readOnlyState)
+        : yield* reconcileAbandoned().pipe(readOnlyState));
     const workers: (typeof ReleaseSettlementProof.Type)["workers"][number][] = [];
     for (const worker of packet.manifest.workers) {
       const active = live.workers.find((row) => row.worker === worker.id)?.versions;
@@ -253,18 +284,19 @@ export const collectReleaseSettlementProof = (
         }),
       });
     }
-    const controllerReads = activated
-      ? yield* Effect.promise(() =>
-          readUnadoptedController({
-            controller: baseline,
-            key: signingKey,
-            root: record.baseline.applications.root,
-            instanceId: live.instanceId,
-            target: { ...baseline.target, connect: io.connect },
-            record: io.runtimeRead,
-          }),
-        )
-      : undefined;
+    const controllerReads =
+      disposition === "controller-active-unadopted"
+        ? yield* Effect.promise(() =>
+            readUnadoptedController({
+              controller: baseline,
+              key: signingKey,
+              root: record.baseline.applications.root,
+              instanceId: live.instanceId,
+              target,
+              record: io.runtimeRead,
+            }),
+          )
+        : adopted?.health.reads;
     for (const resource of nativeResources) {
       const row = yield* state.get({ stack: stack.name, stage: stack.stage, fqn: resource.fqn });
       if (encodedRecordHash(row) !== resource.digest)
