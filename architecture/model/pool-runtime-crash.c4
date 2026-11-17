@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Runtime crash injection uses the private operator-signed handoff command, bound to the current controller and selected primary boot, a single durable nonce and a thirty-second expiry. A healthy serving sibling with spare capacity is mandatory. The container owner verifies a controller-signed capacity observation lasting at most one second, checks current boot health, persists an audit before SIGKILL, and never retires, fences, promotes or repairs the target. A consumed or uncertain nonce cannot signal again. Inspection only reads audit, identity and readiness. Normal bounded recovery detects and restarts the crashed compute; production recovery acceptance requires concurrent successful real requests and measured detection-to-ready evidence."
+    }
+  }
+}
