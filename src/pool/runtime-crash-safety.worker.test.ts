@@ -199,3 +199,26 @@ test(
     assert.deepEqual(f.old.calls.signals, []);
   },
 );
+
+test(
+  "a boot change during audit persistence cannot signal the replacement boot",
+  { timeout: 15_000 },
+  async (context) => {
+    const { f, command } = await ready(context);
+    const afterCommit = f.old.storage.afterCommit;
+    let changed = false;
+    f.old.storage.afterCommit = (keys) => {
+      afterCommit(keys);
+      if (!changed && keys.includes(crashAuditKey(command.nonce))) {
+        changed = true;
+        f.old.replaceBoot();
+      }
+    };
+    const response = await f.command("runtime-crash", command);
+    assert.equal(changed, true);
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.deepEqual(f.old.calls.signals, []);
+    assert.equal(f.old.ctx.container.running, true);
+    assert.notEqual(f.old.identity().bootId, command.identity.bootId);
+  },
+);

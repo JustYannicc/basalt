@@ -59,6 +59,8 @@ export async function crashOwnedRuntime(
     valid();
     await transaction.put(key, armed);
   });
+  // The runtime can restart while audit persistence is pending.
+  await health(command.identity);
   valid();
   ctx.container!.signal!(9);
   const receipt = { ...armed, signalledAt: Date.now(), status: "signalled" as const };

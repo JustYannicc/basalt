@@ -117,9 +117,9 @@ export class RuntimeEndpoint {
         this.code,
         envelope,
         async (identity) => {
-          await this.health(identity, AbortSignal.timeout(1_000));
           if ((await this.activity.inspect(identity))?.phase !== "open")
             throw new SlotRefused("draining");
+          await this.health(identity, AbortSignal.timeout(1_000));
         },
       ),
     );
