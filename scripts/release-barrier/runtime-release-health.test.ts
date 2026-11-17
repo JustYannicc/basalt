@@ -3,26 +3,27 @@ import { test } from "node:test";
 import { BarrierRefusal } from "./refusal.ts";
 import { runtimeReleaseClientFixture as fixture } from "./test/runtime-release-client-fixture.ts";
 
-// The policy lease is 1,500 ms; a CI runner's bridge setup alone takes longer than that.
+// The policy lease is 1,500 ms; a CI runner's bridge setup or close alone takes longer than that.
 const ciBridgeSetupMs = 2_000;
 
 const refused = (error: unknown, reason: string) =>
   error instanceof BarrierRefusal && error.reason === reason ? error : undefined;
 
-test(
-  "bridge setup longer than the lease does not expire a live active-health lease",
-  { timeout: 20_000 },
-  async (context) => {
-    const f = await fixture();
-    context.after(() => f.cleanup());
-    f.bridge.setupMs = ciBridgeSetupMs;
-    const healthy = await f.client.health();
-    assert.equal(
-      healthy.instanceId,
-      (await f.client.inspect()).selection?.active.identity?.instanceId,
-    );
-  },
-);
+for (const phase of ["setupMs", "closeMs"] as const)
+  test(
+    `bridge ${phase === "setupMs" ? "setup" : "close"} longer than the lease does not expire a live active-health lease`,
+    { timeout: 20_000 },
+    async (context) => {
+      const f = await fixture();
+      context.after(() => f.cleanup());
+      f.bridge[phase] = ciBridgeSetupMs;
+      const healthy = await f.client.health();
+      assert.equal(
+        healthy.instanceId,
+        (await f.client.inspect()).selection?.active.identity?.instanceId,
+      );
+    },
+  );
 
 test(
   "a reply that arrives after its lease ran out still refuses",

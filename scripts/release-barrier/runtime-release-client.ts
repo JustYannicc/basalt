@@ -102,6 +102,7 @@ export const runtimeReleaseClient = (input: {
       mutation = false,
       signal?: AbortSignal,
       dispatched?: (requestedAt: number) => void,
+      received?: (receivedAt: number) => void,
     ) => {
       const send = () => {
         writer.assert();
@@ -120,6 +121,7 @@ export const runtimeReleaseClient = (input: {
           },
           signal,
           dispatched,
+          received,
         );
       };
       return mutation ? writer.exclusive(send) : send();
@@ -182,17 +184,27 @@ export const runtimeReleaseClient = (input: {
       target,
     });
     const health = async () => {
-      // The lease runs from dispatch over the open bridge, as the controller's own slot driver
-      // bounds it; bridge setup from a CI runner alone can outlast the whole lease.
+      // The lease runs from dispatch to the reply over the open bridge, as the controller's own
+      // slot driver bounds it; bridge setup or close from a CI runner alone can outlast the lease.
       let requestedAt: number | undefined;
-      const reply = await call({ action: "active-health" }, false, undefined, (at) => {
-        requestedAt = at;
-      });
+      let receivedAt: number | undefined;
+      const reply = await call(
+        { action: "active-health" },
+        false,
+        undefined,
+        (at) => {
+          requestedAt = at;
+        },
+        (at) => {
+          receivedAt = at;
+        },
+      );
       const value = result(
         Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number }),
         reply,
       );
-      const elapsedMs = requestedAt === undefined ? null : performance.now() - requestedAt;
+      const elapsedMs =
+        requestedAt === undefined || receivedAt === undefined ? null : receivedAt - requestedAt;
       if (elapsedMs === null || !(value.leaseMs > elapsedMs))
         throw new BarrierRefusal("runtime-release-health-expired", "PoolWorker", {
           fqn: "PoolWorker",
