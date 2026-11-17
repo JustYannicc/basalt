@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "A recorded account check stays pending until an already-observed saved-account projection accepts its fenced reconciliation. The mutation never publishes an unfenced list body, starts no idle read and adds no polling or timer. Closed views and retained derived values are not observers; failed fences remain failures."
+      constraint "A recorded account check stays pending until an already-observed saved-account projection accepts its fenced reconciliation. The mutation never publishes an unfenced list body, starts no idle read and adds no polling or timer. Closed views and retained derived values are not observers; failed fences remain failures. A grouped check shows the host's answer as soon as it arrives; only its pending state waits for the fence."
     }
   }
 }
