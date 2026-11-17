@@ -1,4 +1,4 @@
-import { State } from "alchemy/State/State";
+import { State, type StateService } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
 import { Effect, Schema } from "effect";
 import type { ProvisioningEnable } from "./provisioning-contract.ts";
@@ -48,6 +48,20 @@ export function assertReleaseSettlementPlanGo(
     throw new BarrierRefusal("release-settlement-plan-not-enabled", "PoolWorker");
 }
 
+export const assertReleaseSettlementArchiveAbsent = (
+  state: Pick<StateService, "getOutput">,
+  stack: Pick<CompiledStack, "name" | "stage">,
+  source: string,
+  target: string,
+) =>
+  Effect.gen(function* () {
+    if ((yield* state.getOutput(releaseSettlementKey(stack, source, target))) !== undefined)
+      throw new BarrierRefusal(
+        "release-settlement-already-recorded-inspect-required",
+        "PoolWorker",
+      );
+  });
+
 export const planReleaseSettlement = (
   stack: CompiledStack,
   request: typeof ReleaseSettlementPlanRequest.Type,
@@ -66,15 +80,12 @@ export const planReleaseSettlement = (
     )
       throw new BarrierRefusal("release-settlement-scope-refused", "PoolWorker");
     const state = yield* yield* State;
-    if (
-      (yield* state.getOutput(
-        releaseSettlementKey(stack, request.sourceCandidate, writer.candidate),
-      )) !== undefined
-    )
-      throw new BarrierRefusal(
-        "release-settlement-already-recorded-inspect-required",
-        "PoolWorker",
-      );
+    yield* assertReleaseSettlementArchiveAbsent(
+      state,
+      stack,
+      request.sourceCandidate,
+      writer.candidate,
+    );
     const collected = yield* collectReleaseSettlementProof(
       stack,
       request.sourceCandidate,

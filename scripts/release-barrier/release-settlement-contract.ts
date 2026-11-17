@@ -72,6 +72,7 @@ export const releaseSettlementKey = (
   source: string,
   target: string,
 ) => ({
-  stack: `${scope.name}-release-settlement-${source}-${target}`,
+  // State's HTTP router limits each path parameter to 100 characters.
+  stack: `${scope.name}-release-settlement-${digest(canonical({ source, target }))}`,
   stage: scope.stage,
 });
