@@ -77,6 +77,37 @@ test("Check selects the same-repository rehearsal only for affected release-barr
   assert.doesNotMatch(step.run, /deploy|release\.ts/);
 });
 
+test("Check runs the post-deploy image probe whenever the verifier or its probe changes", () => {
+  for (const path of [
+    "scripts/deploy-safety/pool-image.ts",
+    "scripts/deploy-safety/pool-image-fleet.ts",
+    "scripts/deploy-safety/capture-pool-image.ts",
+    "scripts/deploy-safety/assert-pool-image.ts",
+    "scripts/release-barrier/post-deploy-image-probe.ts",
+  ])
+    assert.equal(probeNeeded([path]), true, path);
+  assert.equal(probeNeeded(["scripts/deploy-safety/release-runner.test.ts"]), false);
+  const steps = workflow.jobs["baseline-probe"].steps;
+  const step = steps.find(
+    (candidate: { name?: string }) =>
+      candidate.name === "Probe the real post-deploy image reads without deployment",
+  );
+  assert.ok(step);
+  assert.match(step.if, /always\(\).*steps\.probe-candidate\.outcome == 'success'/s);
+  assert.match(step.if, /steps\.prepare-upstream\.outcome == 'success'/);
+  assert.equal(step.run, "bun scripts/release-barrier/post-deploy-image-probe.ts");
+  assert.deepEqual(Object.keys(step.env).sort(), [
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "EXECUTOR_ENCRYPTION_KEY",
+    "GITHUB_SHA",
+  ]);
+  const upload = steps.find((candidate: { uses?: string }) =>
+    candidate.uses?.startsWith("actions/upload-artifact"),
+  );
+  assert.ok(upload.with.path.includes(".local/post-deploy-image-probe.json"));
+});
+
 test("the rehearsal executable records a refusal without credentials or a trusted CI event", async () => {
   const directory = await mkdtemp(join(tmpdir(), "release-rehearsal-entry-"));
   try {

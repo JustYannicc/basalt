@@ -10,11 +10,15 @@ import {
   type Fetcher,
 } from "./http.ts";
 import { waitForPoolStatus } from "../pool-readiness.ts";
-import {
-  assertBoundFleetImages,
-  PoolImagePending,
-  type PoolImageObservation,
-} from "./pool-image-fleet.ts";
+import { boundFleet, type BoundFleetApplication } from "./pool-image-fleet.ts";
+
+export class PoolImagePending extends SafetyGateError {}
+
+export interface PoolImageObservation {
+  verifiedPath: "root" | "bound-fleet";
+  instances: string[];
+  fleet?: (BoundFleetApplication & { digest: string; instances: string[] })[];
+}
 
 export function poolImageReceipt(value: unknown, candidate: string) {
   const receipt = record(value, "Pool image publication receipt");
@@ -68,7 +72,10 @@ export interface ContainerImageTarget {
   digest: string;
 }
 
-/** Recovery must prove old instances before it can restore the old Worker and its input hash. */
+/**
+ * Recovery must prove old instances before it can restore the old Worker and its input hash. It
+ * reads no Worker bindings, so it can never substitute a fleet for its exact recorded container.
+ */
 export async function assertContainerImage(
   target: ContainerImageTarget,
   credentials: CloudflareCredentials,
@@ -95,18 +102,18 @@ export async function assertPoolImageTarget(
   return assertImages(target, credentials, fetcher, worker);
 }
 
+type Get = (url: string, label: string) => Promise<{ result: unknown; resultInfo: unknown }>;
+
 async function assertImages(
   receipt: ContainerImageTarget,
   credentials: CloudflareCredentials,
   fetcher: Fetcher,
   worker?: { workerName: string; inputHash: string },
-  allowEmpty = false,
 ): Promise<PoolImageObservation> {
   if (receipt.accountId !== credentials.accountId)
     throw new SafetyGateError("Pool image receipt belongs to another account");
-  const applications = `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/containers/applications/`;
-  const base = applications + encodePathSegment(receipt.applicationId);
-  const get = async (url: string, label: string) =>
+  const account = `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}`;
+  const get: Get = async (url, label) =>
     cloudflareResult(
       (
         await requestJson(fetcher, "Cloudflare", url, {
@@ -117,20 +124,17 @@ async function assertImages(
       ).body,
       label,
     );
-  const application = record((await get(base, "pool application")).result, "Pool application");
-  if (application.id !== receipt.applicationId || application.account_id !== receipt.accountId)
-    throw new SafetyGateError("Pool application identity differs from its publication receipt");
-  assertDigest(
-    record(application.configuration, "Pool configuration").image,
-    receipt.digest,
-    "application",
-  );
+  await readApplication(get, account, receipt, {
+    label: "Pool application",
+    source: "its publication receipt",
+    digest: receipt.digest,
+  });
   let bindings: unknown[] | undefined;
   if (worker) {
     const settings = record(
       (
         await get(
-          `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/workers/scripts/${encodePathSegment(worker.workerName)}/settings`,
+          `${account}/workers/scripts/${encodePathSegment(worker.workerName)}/settings`,
           "Pool Worker settings",
         )
       ).result,
@@ -151,58 +155,147 @@ async function assertImages(
         "Pool Worker input hash differs from this candidate's publication receipt",
       );
   }
+  const instances = await listInstances(get, account, receipt.applicationId, {
+    label: "Pool",
+    digest: receipt.digest,
+    expected: "the published candidate digest",
+  });
+  if (instances.length) return { verifiedPath: "root", instances };
+  // A scale-out release retires the root runtime once a bound fleet primary serves, so an empty
+  // root is only acceptable when the PoolWorker's own bindings name a serving fleet.
+  const fleet = bindings && boundFleet(bindings, receipt.applicationId);
+  if (!fleet) throw new PoolImagePending("Pool has no running instance to verify");
+  const observed: NonNullable<PoolImageObservation["fleet"]> = [];
+  for (const application of fleet.applications) {
+    const label = `Pool ${application.color} fleet application`;
+    const digest = await readApplication(get, account, receipt, {
+      label,
+      source: `its PoolWorker binding POOL_${application.color}_APPLICATION_ID`,
+      applicationId: application.applicationId,
+    });
+    observed.push({
+      ...application,
+      digest,
+      instances: await listInstances(get, account, application.applicationId, {
+        label,
+        digest,
+        expected: "its configured digest",
+      }),
+    });
+  }
+  const all = observed.flatMap((application) => application.instances);
+  const repeated = all.find((id, index) => all.indexOf(id) !== index);
+  if (repeated)
+    throw new SafetyGateError(
+      `Pool fleet instance ${repeated} is listed by both fleet applications`,
+    );
+  if (
+    !observed.some(
+      (application) =>
+        application.imageInput === fleet.desiredImageInput && application.instances.length,
+    )
+  )
+    throw new PoolImagePending(
+      `Pool has no running instance in its root or in a bound fleet application on POOL_DESIRED_IMAGE_INPUT ${fleet.desiredImageInput}`,
+    );
+  return { verifiedPath: "bound-fleet", instances: all, fleet: observed };
+}
 
+/** Returns the application's immutable image digest after checking its identity and image. */
+async function readApplication(
+  get: Get,
+  account: string,
+  receipt: ContainerImageTarget,
+  expected: { label: string; source: string; digest?: string; applicationId?: string },
+) {
+  const applicationId = expected.applicationId ?? receipt.applicationId;
+  const application = record(
+    (
+      await get(
+        `${account}/containers/applications/${encodePathSegment(applicationId)}`,
+        expected.label,
+      )
+    ).result,
+    expected.label,
+  );
+  if (application.id !== applicationId)
+    throw new SafetyGateError(`${expected.label} identity differs from ${expected.source}: id`);
+  if (application.account_id !== receipt.accountId)
+    throw new SafetyGateError(
+      `${expected.label} identity differs from ${expected.source}: account_id`,
+    );
+  const image = record(application.configuration, `${expected.label} configuration`).image;
+  if (expected.digest) {
+    assertDigest(
+      image,
+      expected.digest,
+      `${expected.label} image`,
+      "the published candidate digest",
+    );
+    return expected.digest;
+  }
+  const digest =
+    typeof image === "string" ? /@(sha256:[a-f0-9]{64})$/u.exec(image)?.[1] : undefined;
+  if (!digest)
+    throw new SafetyGateError(
+      `${expected.label} configuration.image is not pinned by an immutable digest`,
+    );
+  if (!(image as string).startsWith(`registry.cloudflare.com/${receipt.accountId}/`))
+    throw new SafetyGateError(
+      `${expected.label} configuration.image is outside this account's registry`,
+    );
+  return digest;
+}
+
+async function listInstances(
+  get: Get,
+  account: string,
+  applicationId: string,
+  expected: { label: string; digest: string; expected: string },
+) {
+  const base = `${account}/containers/applications/${encodePathSegment(applicationId)}`;
   const ids = new Set<string>();
   const tokens = new Set<string>();
   let token: string | undefined;
   for (let page = 0; page < 100; page++) {
     const query = new URLSearchParams({ state: "active", per_page: "100" });
     if (token) query.set("page_token", token);
-    const reply = await get(`${base}/instances-v2?${query}`, "pool instances");
-    if (!Array.isArray(reply.result)) throw new SafetyGateError("Pool instance list is missing");
+    const reply = await get(`${base}/instances-v2?${query}`, `${expected.label} instances`);
+    if (!Array.isArray(reply.result))
+      throw new SafetyGateError(`${expected.label} instance list is missing`);
     for (const value of reply.result) {
-      const instance = record(value, "Pool instance");
-      const id = stringField(instance.id, "Pool instance id");
-      if (ids.has(id) || instance.application_id !== receipt.applicationId)
-        throw new SafetyGateError("Pool instance list contains a duplicate or foreign instance");
-      ids.add(id);
-      if (record(instance.status, "Pool instance status").state !== "running")
-        throw new PoolImagePending("Pool has an active instance that is not running");
-      assertDigest(instance.image, receipt.digest, "instance");
-    }
-    const info = record(reply.resultInfo, "Pool instance pagination");
-    const next = info.next_page_token;
-    if (next === undefined || next === "") {
-      if (ids.size === 0 && bindings)
-        return assertBoundFleetImages(
-          bindings,
-          receipt,
-          async (id) =>
-            (await get(applications + encodePathSegment(id), "pool fleet application")).result,
-          (id, digest) =>
-            assertImages(
-              { ...receipt, applicationId: id, digest },
-              credentials,
-              fetcher,
-              undefined,
-              true,
-            ),
+      const instance = record(value, `${expected.label} instance`);
+      const id = stringField(instance.id, `${expected.label} instance id`);
+      if (ids.has(id) || instance.application_id !== applicationId)
+        throw new SafetyGateError(
+          `${expected.label} instance list contains a duplicate or foreign instance (${id})`,
         );
-      if (ids.size === 0 && !allowEmpty)
-        throw new PoolImagePending("Pool has no running instance to verify");
-      return { instances: [...ids] };
+      ids.add(id);
+      if (record(instance.status, `${expected.label} instance status`).state !== "running")
+        throw new PoolImagePending(
+          `${expected.label} has an active instance that is not running (${id})`,
+        );
+      assertDigest(
+        instance.image,
+        expected.digest,
+        `${expected.label} instance image`,
+        expected.expected,
+      );
     }
+    const info = record(reply.resultInfo, `${expected.label} instance pagination`);
+    const next = info.next_page_token;
+    if (next === undefined || next === "") return [...ids];
     if (typeof next !== "string" || tokens.has(next))
-      throw new SafetyGateError("Pool instance pagination is inconsistent");
+      throw new SafetyGateError(`${expected.label} instance pagination is inconsistent`);
     tokens.add(next);
     token = next;
   }
-  throw new SafetyGateError("Pool instance pagination exceeded its bound");
+  throw new SafetyGateError(`${expected.label} instance pagination exceeded its bound`);
 }
 
-function assertDigest(image: unknown, expected: string, label: string) {
+function assertDigest(image: unknown, expected: string, label: string, describe: string) {
   if (typeof image !== "string" || !image.endsWith(`@${expected}`))
-    throw new PoolImagePending(`Pool ${label} image differs from the published candidate digest`);
+    throw new PoolImagePending(`${label} differs from ${describe}`);
 }
 
 export async function waitForPoolImage(

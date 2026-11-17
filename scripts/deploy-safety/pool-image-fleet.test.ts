@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertContainerImage, assertPoolImage } from "./pool-image.ts";
+import { assertContainerImage, assertPoolImage, waitForPoolImage } from "./pool-image.ts";
 
 const candidate = "a".repeat(40);
 const digest = (value: string) => `sha256:${value.repeat(64)}`;
-const image = (value: string) => `registry.cloudflare.com/fixture/pool@${digest(value)}`;
+const image = (value: string, account = "fixture") =>
+  `registry.cloudflare.com/${account}/pool@${digest(value)}`;
 const receipt = {
   candidate,
   applicationId: "root",
@@ -20,6 +21,7 @@ const credentials = { accountId: "fixture", apiToken: "synthetic-never-sent" };
 const binding = (name: string, text: string) => ({ name, type: "plain_text", text });
 const bindings = () => [
   binding("POOL_IMAGE_HASH", receipt.inputHash),
+  binding("POOL_DESIRED_IMAGE_INPUT", "c".repeat(16)),
   binding("POOL_BLUE_APPLICATION_ID", "blue"),
   binding("POOL_BLUE_IMAGE_HASH", "c".repeat(16)),
   binding("POOL_GREEN_APPLICATION_ID", "green"),
@@ -31,108 +33,171 @@ const instance = (application: string, value: string) => ({
   image: image(value),
   status: { state: "running" },
 });
+const configured: Record<string, string> = { root: "1", blue: "3", green: "4" };
+const application = (id: string) => ({
+  id,
+  account_id: "fixture",
+  configuration: { image: image(configured[id]!) },
+});
 
-function fixture(
-  options: {
-    bindings?: unknown[];
-    instances?: Record<string, unknown[]>;
-    application?: (id: string) => unknown;
-  } = {},
-) {
+interface Fixture {
+  bindings?: unknown[];
+  instances?: Record<string, unknown[]>;
+  fleetApplication?: (id: string) => unknown;
+}
+
+function fixture(options: Fixture = {}) {
   const calls: string[] = [];
   const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
     assert.equal(init?.method ?? "GET", "GET");
     const url = new URL(String(input));
     calls.push(url.pathname);
+    const reply = (result: unknown) =>
+      Response.json({ success: true, errors: [], result, result_info: {} });
     if (url.pathname.endsWith("/settings"))
-      return Response.json({
-        success: true,
-        errors: [],
-        result: { bindings: options.bindings ?? bindings() },
-      });
-    const id = url.pathname.split("/").at(url.pathname.endsWith("/instances-v2") ? -2 : -1)!;
-    const result = url.pathname.endsWith("/instances-v2")
-      ? ((options.instances ?? { root: [], blue: [instance("blue", "3")], green: [] })[id] ?? [])
-      : (options.application?.(id) ?? {
-          id,
-          account_id: "fixture",
-          configuration: { image: image(id === "root" ? "1" : id === "blue" ? "3" : "4") },
-        });
-    return Response.json({ success: true, errors: [], result, result_info: {} });
+      return reply({ bindings: options.bindings ?? bindings() });
+    if (url.pathname.endsWith("/instances-v2")) {
+      const id = url.pathname.split("/").at(-2)!;
+      return reply(
+        (options.instances ?? { root: [], blue: [instance("blue", "3")], green: [] })[id] ?? [],
+      );
+    }
+    const id = url.pathname.split("/").at(-1)!;
+    return reply(id === "root" ? application(id) : (options.fleetApplication ?? application)(id));
   };
   return { calls, fetcher };
 }
 
-test("retired root accepts a serving bound fleet on its own digest and observes every bound app", async () => {
+test("a retired root accepts the fleet serving the desired input on its own configured digest", async () => {
   const f = fixture();
   const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher);
+  assert.equal(result.verifiedPath, "bound-fleet");
   assert.deepEqual(result.instances, ["blue-instance"]);
   assert.deepEqual(
-    result.fleet?.map((app) => [app.applicationId, app.digest]),
+    result.fleet?.map((app) => [app.color, app.applicationId, app.digest, app.instances.length]),
     [
-      ["blue", digest("3")],
-      ["green", digest("4")],
+      ["BLUE", "blue", digest("3"), 1],
+      ["GREEN", "green", digest("4"), 0],
     ],
   );
-  assert.ok(f.calls.some((path) => path.includes("green/instances-v2")));
+  assert.equal(f.calls.filter((path) => path.endsWith("/applications/green")).length, 1);
 });
 
-test("an active root retains the original verification path", async () => {
+test("an active root keeps the original verification path and reads no fleet application", async () => {
   const f = fixture({ instances: { root: [instance("root", "1")] } });
   const result = await assertPoolImage(receipt, candidate, credentials, f.fetcher);
+  assert.equal(result.verifiedPath, "root");
   assert.deepEqual(result.instances, ["root-instance"]);
-  assert.equal(result.fleet, undefined);
   assert.ok(f.calls.every((path) => !path.includes("blue") && !path.includes("green")));
 });
 
-test("fleet fallback refuses empty, stale, nonrunning, foreign and duplicate evidence", async () => {
-  const cases: (NonNullable<Parameters<typeof fixture>[0]> & { reason: RegExp })[] = [
-    { instances: { root: [], blue: [], green: [] }, reason: /no running instance/ },
-    { instances: { root: [], blue: [instance("blue", "5")] }, reason: /instance image differs/ },
+test("each missing, stale, foreign or inconsistent fleet fact refuses with its own reason", async () => {
+  const without = (name: string) => bindings().filter((value) => value.name !== name);
+  const replace = (name: string, text: string) =>
+    bindings().map((value) => (value.name === name ? { ...value, text } : value));
+  const cases: (Fixture & { reason: RegExp })[] = [
+    {
+      bindings: [binding("POOL_IMAGE_HASH", receipt.inputHash)],
+      reason: /: Pool has no running instance to verify$/,
+    },
+    {
+      instances: { root: [], blue: [], green: [] },
+      reason:
+        /no running instance in its root or in a bound fleet application on POOL_DESIRED_IMAGE_INPUT/,
+    },
+    {
+      instances: { root: [], green: [instance("green", "4")] },
+      reason: /on POOL_DESIRED_IMAGE_INPUT c{16}/,
+    },
+    {
+      instances: { root: [], blue: [instance("blue", "5")] },
+      reason: /: Pool BLUE fleet application instance image differs from its configured digest$/,
+    },
     {
       instances: { root: [], blue: [{ ...instance("blue", "3"), status: { state: "stopping" } }] },
-      reason: /not running/,
+      reason: /: Pool BLUE fleet application has an active instance that is not running/,
     },
     {
-      instances: { root: [], blue: [{ ...instance("blue", "3"), application_id: "foreign" }] },
-      reason: /foreign/,
+      instances: { root: [], blue: [{ ...instance("blue", "3"), application_id: "other" }] },
+      reason:
+        /: Pool BLUE fleet application instance list contains a duplicate or foreign instance/,
     },
-    { bindings: [binding("POOL_IMAGE_HASH", receipt.inputHash)], reason: /no running instance/ },
+    {
+      instances: {
+        root: [],
+        blue: [instance("blue", "3")],
+        green: [{ ...instance("blue", "4"), application_id: "green" }],
+      },
+      reason: /listed by both fleet applications/,
+    },
     {
       bindings: [...bindings(), binding("POOL_BLUE_APPLICATION_ID", "other")],
-      reason: /duplicate/,
+      reason: /: Pool Worker binding POOL_BLUE_APPLICATION_ID is duplicated$/,
     },
     {
-      bindings: bindings().filter((value) => value.name !== "POOL_BLUE_IMAGE_HASH"),
-      reason: /inconsistent/,
+      bindings: without("POOL_BLUE_IMAGE_HASH"),
+      reason:
+        /: Pool Worker binding POOL_BLUE_IMAGE_HASH is missing while POOL_BLUE_APPLICATION_ID is set$/,
+    },
+    {
+      bindings: without("POOL_GREEN_APPLICATION_ID"),
+      reason:
+        /: Pool Worker binding POOL_GREEN_APPLICATION_ID is missing while POOL_GREEN_IMAGE_HASH is set$/,
+    },
+    {
+      bindings: replace("POOL_BLUE_IMAGE_HASH", "mutable"),
+      reason: /: Pool Worker binding POOL_BLUE_IMAGE_HASH is not a 16-hex image input$/,
+    },
+    {
+      bindings: replace("POOL_GREEN_APPLICATION_ID", "blue"),
+      reason: /: Pool Worker binding POOL_GREEN_APPLICATION_ID reuses application blue$/,
+    },
+    {
+      bindings: replace("POOL_BLUE_APPLICATION_ID", "root"),
+      reason: /: Pool Worker binding POOL_BLUE_APPLICATION_ID reuses application root$/,
+    },
+    {
+      bindings: without("POOL_DESIRED_IMAGE_INPUT"),
+      reason: /: Pool Worker binding POOL_DESIRED_IMAGE_INPUT is missing/,
     },
     {
       bindings: bindings().map((value) =>
-        value.name === "POOL_GREEN_APPLICATION_ID" ? { ...value, text: "blue" } : value,
+        value.name === "POOL_BLUE_IMAGE_HASH" ? { ...value, type: "secret_text" } : value,
       ),
-      reason: /inconsistent/,
+      reason: /: Pool Worker binding POOL_BLUE_IMAGE_HASH is not plain text$/,
     },
     {
-      application: (id: string) => ({
-        id,
-        account_id: "foreign",
-        configuration: { image: image("3") },
-      }),
-      reason: /identity/,
+      fleetApplication: (id) => ({ ...application(id), id: "other" }),
+      reason:
+        /: Pool BLUE fleet application identity differs from its PoolWorker binding POOL_BLUE_APPLICATION_ID: id$/,
     },
     {
-      application: (id: string) => ({
-        id,
-        account_id: "fixture",
-        configuration: { image: "mutable-tag" },
+      fleetApplication: (id) => ({ ...application(id), account_id: "foreign" }),
+      reason:
+        /: Pool BLUE fleet application identity differs from its PoolWorker binding POOL_BLUE_APPLICATION_ID: account_id$/,
+    },
+    {
+      fleetApplication: (id) => ({
+        ...application(id),
+        configuration: { image: "registry.cloudflare.com/fixture/pool:latest" },
       }),
-      reason: /image differs|immutable/,
+      reason:
+        /: Pool BLUE fleet application configuration.image is not pinned by an immutable digest$/,
+    },
+    {
+      fleetApplication: (id) => ({
+        ...application(id),
+        configuration: { image: image(configured[id]!, "foreign") },
+      }),
+      reason:
+        /: Pool BLUE fleet application configuration.image is outside this account's registry$/,
     },
   ];
   for (const { reason, ...options } of cases)
     await assert.rejects(
       assertPoolImage(receipt, candidate, credentials, fixture(options).fetcher),
       reason,
+      String(reason),
     );
 });
 
@@ -140,7 +205,30 @@ test("recorded container recovery never substitutes a fleet for its exact old co
   const f = fixture();
   await assert.rejects(
     assertContainerImage(receipt, credentials, f.fetcher),
-    /no running instance/,
+    /: Pool has no running instance to verify$/,
   );
   assert.ok(f.calls.every((path) => !path.includes("settings") && !path.includes("blue")));
+});
+
+test("the post-deploy wait keeps retrying while the fleet starts and then accepts it", async () => {
+  let rounds = 0;
+  const f = fixture();
+  const starting = fixture({ instances: { root: [], blue: [], green: [] } });
+  let now = 0;
+  const verified = await waitForPoolImage(
+    receipt,
+    candidate,
+    credentials,
+    "https://pool.fixture.invalid",
+    async (input, init) => {
+      if (new URL(String(input)).hostname === "pool.fixture.invalid") {
+        rounds++;
+        return new Response(null, { status: 401 });
+      }
+      return (rounds < 3 ? starting : f).fetcher(input, init);
+    },
+    { now: () => now, sleep: async (ms: number) => void (now += ms) },
+  );
+  assert.equal(verified.verifiedPath, "bound-fleet");
+  assert.equal(rounds, 3);
 });

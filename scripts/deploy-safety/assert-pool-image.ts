@@ -20,17 +20,20 @@ console.log(
       platform: result.platform,
       inputHash: result.inputHash,
       digest: result.digest,
-      activeInstances: result.instances.length,
       configDigest: result.configDigest,
       capabilityLabel: result.capabilityLabel,
+      verifiedPath: result.verifiedPath,
+      // A retired root has no instances; fleet instances run their own configured digests.
       ...(result.fleet
         ? {
             fleet: result.fleet.map((app) => ({
+              color: app.color,
+              imageInput: app.imageInput,
               digest: app.digest,
               activeInstances: app.instances.length,
             })),
           }
-        : {}),
+        : { activeInstances: result.instances.length }),
     },
   }),
 );

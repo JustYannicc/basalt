@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Cause, ConfigProvider, Context, Effect, Exit, Logger } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { State } from "alchemy/State/State";
 import { evalStack } from "alchemy/Stack";
+import { SafetyGateError } from "../deploy-safety/contracts.ts";
 import { assertPoolImageTarget } from "../deploy-safety/pool-image.ts";
 import { assertProbeCandidate } from "../ci/probe-candidate.ts";
 import { assertReadOnlyRehearsalContext } from "./release-resume-rehearsal-receipt.ts";
@@ -17,6 +18,7 @@ import { releaseStateStack } from "./release-state-stack.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
+import { BarrierRefusal } from "./manifest.ts";
 
 const counters = createRehearsalCounters();
 const nativeFetch = globalThis.fetch;
@@ -27,11 +29,13 @@ try {
   const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH ?? "", "utf8"));
   const context = assertReadOnlyRehearsalContext(process.env, event);
   const pinned = assertProbeCandidate(process.cwd(), context.head);
-  if (pinned.candidate !== context.candidate) throw new Error("Probe candidate drift");
+  if (pinned.candidate !== context.candidate)
+    throw new BarrierRefusal("post-deploy-image-candidate-drift", "PoolWorker");
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CLOUDFLARE_API_TOKEN;
   const encryptionKey = process.env.EXECUTOR_ENCRYPTION_KEY;
-  if (!accountId || !apiToken || !encryptionKey) throw new Error("Probe credentials unavailable");
+  if (!accountId || !apiToken || !encryptionKey)
+    throw new BarrierRefusal("post-deploy-image-credentials-unavailable", "PoolWorker");
   const guarded = countReadOnlyProbeFetch(accountId, counters, nativeFetch);
   globalThis.fetch = guarded;
   const program = evalStack(
@@ -43,21 +47,26 @@ try {
         const services = Context.add(compiled.services, State, Effect.succeed(state));
         const baseline = yield* runtimeReleaseState(compiled).pipe(Effect.provideContext(services));
         const root = baseline.applications.root.image;
-        const observed = yield* Effect.promise(() =>
-          assertPoolImageTarget(
-            // The verifier refuses a target whose account differs from the credentials it reads with.
-            { ...root, accountId: baseline.target.accountId },
-            { workerName: baseline.target.worker, inputHash: root.inputHash },
-            { accountId, apiToken },
-            guarded,
-          ),
-        );
+        const observed = yield* Effect.tryPromise({
+          try: () =>
+            assertPoolImageTarget(
+              // The retained native image carries no account, so bind the baseline target's account.
+              { ...root, accountId: baseline.target.accountId },
+              { workerName: baseline.target.worker, inputHash: root.inputHash },
+              { accountId, apiToken },
+              guarded,
+            ),
+          // Verifier refusals carry fixed text naming the binding or application field.
+          catch: (error) => error,
+        });
         return {
           rootInputHash: root.inputHash,
           rootDigest: root.digest,
           instanceCount: observed.instances.length,
-          verifiedPath: observed.fleet ? "bound-fleet" : "root",
+          verifiedPath: observed.verifiedPath,
           fleet: observed.fleet?.map((app) => ({
+            color: app.color,
+            imageInput: app.imageInput,
             digest: app.digest,
             instanceCount: app.instances.length,
           })),
@@ -88,7 +97,7 @@ try {
   );
   if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
   if (counters.state.writeAttempts || counters.fetch.blockedMutationAttempts)
-    throw new Error("Read-only image probe attempted a mutation");
+    throw new BarrierRefusal("post-deploy-image-mutation-attempted", "PoolWorker");
   receipt = {
     status: "complete",
     candidate: context.candidate,
@@ -104,7 +113,12 @@ try {
   receipt = {
     status: "refused",
     phase: "post-deploy-image",
-    type: failure.type,
+    reason:
+      error instanceof BarrierRefusal
+        ? error.reason
+        : error instanceof SafetyGateError
+          ? error.message
+          : failure.type,
     statusCode: failure.status ?? null,
   };
 } finally {
@@ -116,16 +130,18 @@ await writeFile(
   JSON.stringify({
     receipt,
     counters,
-    mutations: { state: 0, infrastructure: 0, runtime: 0 },
+    mutations: {
+      state: counters.state.writeAttempts,
+      infrastructure: counters.fetch.blockedMutationAttempts,
+      runtime: 0,
+    },
     observedAt: new Date().toISOString(),
   }),
   { mode: 0o600 },
 );
 if (process.env.GITHUB_STEP_SUMMARY)
-  await import("node:fs/promises").then((fs) =>
-    fs.appendFile(
-      process.env.GITHUB_STEP_SUMMARY!,
-      `\nPost-deploy image read-path probe: ${failed ? "REFUSED" : "PASS"}. State writes: 0. Infrastructure/runtime mutations: 0.\n`,
-    ),
+  await appendFile(
+    process.env.GITHUB_STEP_SUMMARY,
+    `\nPost-deploy image read-path probe: ${failed ? `REFUSED (${(receipt as { reason?: string }).reason})` : "PASS"}. State write attempts: ${counters.state.writeAttempts}. Blocked provider mutations: ${counters.fetch.blockedMutationAttempts}.\n`,
   );
 if (failed) process.exitCode = 1;
