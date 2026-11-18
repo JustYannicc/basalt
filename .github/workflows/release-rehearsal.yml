@@ -21,8 +21,10 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
-       contains(github.event.pull_request.labels.*.name, 'release-rehearsal') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'release-rehearsal'))
+       (contains(github.event.pull_request.labels.*.name, 'release-rehearsal') ||
+        contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer')) &&
+       (github.event.action != 'labeled' || github.event.label.name == 'release-rehearsal' ||
+        github.event.label.name == 'release-rehearsal-single-writer'))
     # On the job, so a skipped run for an unrelated event can't cancel a rehearsal in flight. Main keeps one pending
     # run behind the running one and never cancels it: a busy main would otherwise never finish a rehearsal. A pull
     # request's newer head does replace its older rehearsal; release-cleanup tears the cancelled stage down.
@@ -35,7 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(github.event_name == 'push' && '["straight"]' || '["straight","drain-resume"]') }}
+        # A single-change pull request rehearses only the PoolWorker class path it changes.
+        scenario: ${{ fromJSON(github.event_name == 'push' && '["straight"]' || contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer') && '["single-writer"]' || '["straight","drain-resume"]') }}
     env:
       REHEARSAL_SCENARIO: ${{ matrix.scenario }}
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -65,7 +68,7 @@ jobs:
         run: node scripts/release-preview/rehearsal-stage.ts "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$REHEARSAL_SCENARIO" >> "$GITHUB_OUTPUT"
       - name: Commit the baseline and previous candidate, this tree with the previous pool source
         id: previous
-        run: node scripts/release-preview/rehearsal-previous.ts "$RUNNER_TEMP/previous" >> "$GITHUB_OUTPUT"
+        run: node scripts/release-preview/rehearsal-previous.ts "$RUNNER_TEMP/previous" "$REHEARSAL_SCENARIO" >> "$GITHUB_OUTPUT"
       - name: Prepare both pinned builds
         run: |
           npm run prepare:upstream

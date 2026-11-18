@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -395,6 +396,26 @@ export async function withStageBuild(
     if (build) await services.build(root, config, source);
     await action();
   });
+}
+
+/**
+ * A plain alchemy deploy of an already released rehearsal stage, as production's next ordinary
+ * deploy would be. `extra` changes deploy inputs; the stage's sign-in seed gets a fresh output.
+ */
+export async function redeployStage(
+  root: string,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  extra: NodeJS.ProcessEnv,
+  services = liveServices(source),
+): Promise<void> {
+  if (subject.kind !== "rehearsal") throw new Error("Only a rehearsal stage is redeployed plainly");
+  const config = stageEnvironment(subject, source);
+  const seedFile = join(root, ".local", "previews", `seed-${stageNames(subject).slug}-${randomUUID()}.json`);
+  await mkdir(dirname(seedFile), { recursive: true, mode: 0o700 });
+  await materializePreviewBrand(root, config, () =>
+    services.deploy(config, { ...config.deploy, ...config.seed, ...extra, PREVIEW_AUTH_SEED_OUTPUT: seedFile }, seedFile),
+  );
 }
 
 /**

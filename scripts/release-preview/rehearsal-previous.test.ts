@@ -60,3 +60,30 @@ test("each run, attempt and scenario gets its own rehearsal stage number", () =>
   assert.throws(() => rehearsalNumber("812", undefined, "straight"), /attempt/);
   assert.throws(() => rehearsalScenario("chaos"), /Unknown/);
 });
+
+test("a single-change rehearsal's baseline is its merge candidate's first parent", async (t) => {
+  const { checkoutChangeBaseline } = await import("./rehearsal-previous.ts");
+  const root = mkdtempSync(join(tmpdir(), "basalt-change-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo");
+  git(root, "init", "-q", "-b", "branch", repo);
+  writeFileSync(join(repo, "a.ts"), "1");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD");
+  git(repo, "checkout", "-q", "-b", "fix");
+  writeFileSync(join(repo, "b.ts"), "fix");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "fix");
+  git(repo, "checkout", "-q", "branch");
+  writeFileSync(join(repo, "c.ts"), "rehearsal");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "rehearsal");
+  const rehearsal = git(repo, "rev-parse", "HEAD");
+  assert.throws(() => checkoutChangeBaseline(repo, join(root, "early")), /merge candidate/);
+  git(repo, "merge", "-q", "--no-edit", "fix");
+  assert.notEqual(base, rehearsal);
+  assert.equal(checkoutChangeBaseline(repo, join(root, "baseline")), rehearsal);
+  assert.equal(readFileSync(join(root, "baseline", "c.ts"), "utf8"), "rehearsal");
+  assert.throws(() => readFileSync(join(root, "baseline", "b.ts")));
+});

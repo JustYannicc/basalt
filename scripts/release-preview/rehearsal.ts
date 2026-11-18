@@ -22,7 +22,8 @@ import { requireSettlementApplied, settlementPacket, settlementPlanRequest } fro
 import { poolWorkerRevision } from "../pool-worker-revision.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
-import { applyRehearsalFixture, withStageBuild } from "../preview/lifecycle.ts";
+import { applyRehearsalFixture, redeployStage, withStageBuild } from "../preview/lifecycle.ts";
+import { singleWriterSteps } from "./rehearsal-single-writer.ts";
 import { PreviewClient } from "../pool-acceptance/preview-client.ts";
 import { previewConfigFromEnvironment } from "../pool-acceptance/preview-config.ts";
 
@@ -49,7 +50,14 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   // Three commits as production has them: an older baseline, the previous candidate on it, this one.
   const baseline = head(previousRoot);
   const previous = source.REHEARSAL_PREVIOUS_SHA ?? "";
-  if (baseline !== source.REHEARSAL_BASELINE_SHA || parent(baseline) !== candidate || !/^[a-f0-9]{40}$/u.test(previous) || parent(previous) !== baseline)
+  // A single change is rehearsed against its merge's first parent, which carries no previous candidate.
+  const firstParent = execFileSync("git", ["rev-parse", `${candidate}^1`], { cwd: root, encoding: "utf8" }).trim();
+  if (
+    baseline !== source.REHEARSAL_BASELINE_SHA ||
+    (scenario === "single-writer"
+      ? baseline !== firstParent || previous !== ""
+      : parent(baseline) !== candidate || !/^[a-f0-9]{40}$/u.test(previous) || parent(previous) !== baseline)
+  )
     throw new Error("The baseline and previous candidate are not this candidate's rehearsal commits");
   const { stage, slug } = stageNames(subject);
   const privateRoot = await mkdtemp(join(source.RUNNER_TEMP ?? tmpdir(), "basalt-release-rehearsal-"));
@@ -225,7 +233,36 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         return JSON.parse(await readFile(resultPath, "utf8")) as unknown;
       },
     };
-    const steps = rehearsalSteps(scenario, hooks);
+    const shapeRecord = join(privateRoot, "worker-shape.json");
+    const steps =
+      scenario === "single-writer"
+        ? singleWriterSteps({
+            deployBaseline: hooks.deployBaseline,
+            seedPools: hooks.seedPools,
+            release: hooks.release,
+            serve: hooks.serve,
+            shape: async (phase, label) => {
+              await operation(`shape-${label}`, root, "scripts/release-preview/rehearsal-worker-shape.ts", [phase, shapeRecord], candidateEnvironment(), 5, "bun");
+              await mkdir(join(root, ".local", "release-barrier"), { recursive: true });
+              await copyFile(shapeRecord, join(root, ".local", "release-barrier", `worker-shape-${label}.json`));
+            },
+            preflight: async () => {
+              // Read-only against the seeded stage, from the pull request context the preflight trusts.
+              await operation("preflight", root, "scripts/release-barrier/release-preflight-entry.ts", [], {
+                ...candidateEnvironment(),
+                GITHUB_EVENT_NAME: source.GITHUB_EVENT_NAME,
+                GITHUB_EVENT_PATH: source.GITHUB_EVENT_PATH,
+                GITHUB_SHA: candidate,
+              }, 10, "bun").catch(() => {});
+              const report = await readFile(join(root, ".local", "release-preflight", "report.json"), "utf8");
+              await mkdir(join(root, ".local", "release-barrier"), { recursive: true });
+              await writeFile(join(root, ".local", "release-barrier", "preflight-report.json"), report, { mode: 0o600 });
+              return JSON.parse(report) as unknown;
+            },
+            redeploy: (change) =>
+              redeployStage(root, subject, deployEnvironment, change ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
+          })
+        : rehearsalSteps(scenario, hooks);
     const outcome = await runPreview({
       prepare: async () => {
         await readFile(manifestPath(root, subject));
@@ -243,7 +280,10 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       destroy: () => operation("destroy", root, "scripts/preview/lifecycle.ts", ["destroy", slug], cleanupEnvironment, 15),
       verifyAbsent: () => operation("verify-absence", root, "scripts/preview/lifecycle.ts", ["verify", slug], cleanupEnvironment, 15),
     });
-    const receipt = rehearsalReceipt(steps.record, { candidate, previous, stage }, outcome.teardown);
+    const receipt =
+      "steps" in steps.record
+        ? { version: 1, candidate, baseline, stage, ...steps.record, serving: true, teardown: outcome.teardown }
+        : rehearsalReceipt(steps.record, { candidate, previous, stage }, outcome.teardown);
     await writeFile(join(root, "rehearsal-receipt.json"), `${JSON.stringify(receipt)}\n`, { flag: "wx", mode: 0o600 });
     console.log("Release rehearsal and remote teardown passed");
   } finally {

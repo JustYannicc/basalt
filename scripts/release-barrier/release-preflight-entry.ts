@@ -22,6 +22,7 @@ import {
 } from "./release-resume-rehearsal.ts";
 import { releaseStateStack } from "./release-state-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
+import { releaseTarget } from "./release-stage.ts";
 
 const directory = resolve(".local/release-preflight");
 const env = process.env;
@@ -66,7 +67,7 @@ try {
             attempts: controllerAttempts,
           });
         }).pipe(Effect.provideContext(compiled.services)),
-      { stage: "production" },
+      { stage: releaseTarget(env).stage },
     ).pipe(
       withReleaseRuntime,
       Effect.provide(Logger.layer([])),
@@ -75,7 +76,7 @@ try {
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
             env: {
-              ALCHEMY_STAGE: "production",
+              ALCHEMY_STAGE: releaseTarget(env).stage,
               CI: "true",
               CLOUDFLARE_ACCOUNT_ID: accountId,
               CLOUDFLARE_API_TOKEN: apiToken,

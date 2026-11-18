@@ -50,9 +50,26 @@ export function commitPreviousCandidate(
   return { baseline, previous };
 }
 
+/**
+ * A single change rehearsed on its own: the candidate is a merge of that change onto this branch,
+ * so its first parent is everything production runs today without it. That is the baseline.
+ */
+export function checkoutChangeBaseline(root: string, destination: string): string {
+  if (existsSync(destination)) throw new Error("The baseline checkout already exists");
+  const head = git(root, ["rev-parse", "HEAD"]);
+  const parents = git(root, ["rev-list", "--parents", "-n", "1", head]).split(" ").slice(1);
+  if (parents.length !== 2) throw new Error("A single-change rehearsal needs a merge candidate");
+  git(root, ["worktree", "add", "--detach", destination, parents[0]!]);
+  return parents[0]!;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const destination = process.argv[2];
-  if (!destination) throw new Error("Usage: rehearsal-previous.ts DESTINATION");
-  const { baseline, previous } = commitPreviousCandidate(process.cwd(), resolve(destination));
-  process.stdout.write(`baseline=${baseline}\nsha=${previous}\n`);
+  if (!destination) throw new Error("Usage: rehearsal-previous.ts DESTINATION [scenario]");
+  if (process.argv[3] === "single-writer") {
+    process.stdout.write(`baseline=${checkoutChangeBaseline(process.cwd(), resolve(destination))}\nsha=\n`);
+  } else {
+    const { baseline, previous } = commitPreviousCandidate(process.cwd(), resolve(destination));
+    process.stdout.write(`baseline=${baseline}\nsha=${previous}\n`);
+  }
 }
