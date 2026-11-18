@@ -16,7 +16,9 @@ import { openReleaseSettlement } from "./release-settlement-archive.ts";
 import { runtimeReleaseJournal } from "./runtime-release-journal.ts";
 import { journalKey } from "./forward-journal.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
-import { baselineControllerHealth } from "./baseline-controller.ts";
+import { baselineControllerHealth, readBaselineController } from "./baseline-controller.ts";
+import { planSettlement } from "./test/settlement-plan.ts";
+import { canonical, digest } from "./manifest.ts";
 import {
   decodeProvisioningPacket,
   provisioningOperationDigest,
@@ -310,4 +312,46 @@ test("the main provisioning path validates the exact settlement packet and inspe
   assert.equal("disposition" in inspection ? inspection.disposition : undefined, "archived");
   assert.equal(f.calls.length, calls);
   assert.equal(f.writes(), 1);
+});
+
+test("an abandoned source settles against the controller its image record froze, not a stale readiness row", async (context) => {
+  const f = await releaseSettlementFixture(context, { staleReadiness: true });
+  const recorded = await Effect.runPromise(f.provide(readBaselineController(f.scope)));
+  assert.notDeepEqual(recorded.code, f.code);
+  const manifest = await planSettlement(f, "omitted");
+  assert.equal(manifest.proof.disposition, "abandoned-before-controller");
+  assert.deepEqual(manifest.proof.controller, { ...recorded, code: f.code });
+  assert.deepEqual(
+    f.runtimeReads.map((call) => `${call.method} ${call.action ?? call.path}`),
+    ["POST inspect", "GET /runtime-recovery"],
+  );
+  const receipt = await Effect.runPromise(
+    f.provide(
+      applyReleaseSettlement(
+        f.compiled,
+        manifest,
+        f.key,
+        {
+          coordinatorGo: "apply-reviewed-packet",
+          writerLease: f.provisioningWriter.lease,
+          manifest: releaseSettlementDigest(manifest),
+          expiresAt: Date.now() + 60_000,
+        },
+        f.io,
+      ),
+    ),
+  );
+  assert.equal(receipt.stateWrites, 1);
+});
+
+test("an abandoned source without a frozen controller keeps the readiness row's controller", async (context) => {
+  const f = await releaseSettlementFixture(context);
+  const recorded = await Effect.runPromise(f.provide(readBaselineController(f.scope)));
+  const manifest = await planSettlement(f, "omitted");
+  assert.deepEqual(manifest.proof.controller, recorded);
+  // The proof this fixture produced before the frozen controller was read; it must not move.
+  assert.equal(
+    digest(canonical(manifest.proof)),
+    "ac98394c0c862691e7fbb50f749d835546e00ce210528085e1b2075ba1e5d4ae",
+  );
 });
