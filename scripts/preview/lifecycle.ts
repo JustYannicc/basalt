@@ -205,7 +205,7 @@ async function materializePreviewBrand(
   if (failed) throw failure;
 }
 
-function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
+export function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
   return {
     stateReader: (environment) => alchemyPreviewStateReader({ environment }),
     captureProviders: (identity, inventory, environment) =>
@@ -308,8 +308,8 @@ export async function destroyPreview(
   ] as const) {
     try {
       await action();
-    } catch {
-      failures.push(new Error("Preview " + stack + " cleanup failed"));
+    } catch (cause) {
+      failures.push(new Error("Preview " + stack + " cleanup failed", { cause }));
     }
   }
   if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");
@@ -356,10 +356,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     await main();
     console.log("Preview lifecycle step passed");
   } catch (error) {
-    await reportFailure(error, {
-      title: "Preview lifecycle step failed",
-      summaryPath: process.env.GITHUB_STEP_SUMMARY,
-    });
+    // To the error output only: a caller that keeps this step's output private keeps the report.
+    await reportFailure(error, { title: "Preview lifecycle step failed" });
     console.error("Remote provider absence is not established");
     process.exitCode = 1;
   }

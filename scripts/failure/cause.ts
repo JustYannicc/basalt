@@ -1,4 +1,4 @@
-import { publicText } from "./redact.ts";
+import { publicGuidance, publicText } from "./redact.ts";
 
 /**
  * What caused a failure, in a form that may be printed. Provider messages, bodies, URLs and stacks
@@ -10,6 +10,8 @@ export interface PublicCause {
   reason?: string;
   status?: number;
   code?: string;
+  /** A provider's own numeric error codes. */
+  codes?: number[];
   request?: { method: string; path: string };
   message?: string;
 }
@@ -37,36 +39,59 @@ const knownTypes = new Set([
   "HeadersTimeoutError",
   "BodyTimeoutError",
   "RequestAbortedError",
+  "WorkerNotFound",
+  "WorkerVersionNotFound",
+  "NoSuchBucket",
+  "BadRequest",
+  "Unauthorized",
+  "Forbidden",
+  "NotFound",
+  "Conflict",
+  "UnprocessableEntity",
+  "Locked",
+  "TooManyRequests",
+  "InternalServerError",
+  "BadGateway",
+  "ServiceUnavailable",
+  "GatewayTimeout",
 ]);
 // A class this repository names: letters only, with a suffix no credential ends in.
 const ownType =
   /^[A-Z][A-Za-z]{2,63}(?:Error|Refused|Refusal|Failure|Failed|Unavailable|Possible|Timeout)$/;
-const codes = new Set([
-  "MODULE_NOT_FOUND",
-  "ERR_MODULE_NOT_FOUND",
-  "ENOENT",
-  "EACCES",
-  "EPERM",
+/** A request with one of these never left: nothing changed at the service, under Node or Bun. */
+export const neverSent = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
   "ECONNREFUSED",
-  "ECONNRESET",
-  "ETIMEDOUT",
   "EHOSTUNREACH",
   "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "ConnectionRefused",
+  "FailedToOpenSocket",
+]);
+/** The connection broke or went silent after the request may have been sent. */
+export const interrupted = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
   "EPIPE",
+  "UND_ERR_SOCKET",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "ConnectionClosed",
+]);
+const codes = new Set([
+  ...neverSent,
+  ...interrupted,
+  "MODULE_NOT_FOUND",
+  "ERR_MODULE_NOT_FOUND",
+  "ERR_INVALID_ARG_VALUE",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
   "CERT_HAS_EXPIRED",
   "DEPTH_ZERO_SELF_SIGNED_CERT",
   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_HEADERS_TIMEOUT",
-  "UND_ERR_BODY_TIMEOUT",
-  "UND_ERR_SOCKET",
 ]);
-/** Codes of a request that never reached the service: a rerun can succeed. */
-export const unreachable = new Set(
-  [...codes].filter((code) => !/MODULE|ENOENT|EACCES|EPERM|CERT|SIGNATURE/.test(code)),
-);
 const httpReasons = new Set([
   "TransportError",
   "EncodeError",
@@ -163,8 +188,19 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
   const type = typeName(error);
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
-  const status = field(error, "status") ?? field(field(httpReason, "response"), "status");
+  const status =
+    field(error, "status") ??
+    field(field(httpReason, "response"), "status") ??
+    field(field(error, "http"), "status");
   const code = field(error, "code");
+  const entries = field(error, "errors");
+  const numbers = [
+    code,
+    ...(Array.isArray(entries) ? entries.slice(0, 8) : []).map((entry) => field(entry, "code")),
+  ].filter(
+    (value): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+  );
   const request = requestShape(field(httpReason, "request") ?? field(error, "request"));
   const why = field(error, "why");
   const message = field(error, "message");
@@ -175,16 +211,23 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
       ? { status }
       : {}),
     ...(typeof code === "string" && codes.has(code) ? { code } : {}),
+    ...(numbers.length ? { codes: [...new Set(numbers)] } : {}),
     ...(request ? { request } : {}),
     // A refusal's own reason is written for the log. Of the rest only fetch's TypeErrors explain a
     // failure without quoting a response; parser and server messages can carry bodies.
     ...(typeof why === "string"
-      ? { message: publicText(why, environment) }
+      ? { message: publicGuidance(why, environment) }
       : error instanceof TypeError && typeof message === "string"
         ? { message: publicText(message, environment) }
         : {}),
   };
 }
+
+/** What a failure wraps. Effect's HTTP client keeps fetch's error under its reason; a collection shows its first member. */
+export const wrapped = (error: unknown): unknown =>
+  field(field(error, "reason"), "cause") ??
+  field(error, "cause") ??
+  (Array.isArray(field(error, "errors")) ? field(field(error, "errors"), "0") : undefined);
 
 /** The failure and what it wrapped, outermost first. */
 export function causeChain(
@@ -197,8 +240,7 @@ export function causeChain(
   while (current !== undefined && current !== null && chain.length < 6 && !seen.has(current)) {
     seen.add(current);
     chain.push(publicCause(current, environment));
-    // Effect's HTTP client keeps fetch's own error under its reason.
-    current = field(field(current, "reason"), "cause") ?? field(current, "cause");
+    current = wrapped(current);
   }
   return chain;
 }
@@ -207,6 +249,7 @@ export const causeLine = (cause: PublicCause) =>
   [
     [cause.type, cause.reason, cause.code].filter(Boolean).join(" "),
     cause.status === undefined ? undefined : `HTTP ${cause.status}`,
+    cause.codes ? `provider code ${cause.codes.join(", ")}` : undefined,
     cause.request ? `${cause.request.method} ${cause.request.path}` : undefined,
     cause.message,
   ]

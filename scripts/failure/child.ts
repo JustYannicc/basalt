@@ -32,8 +32,12 @@ export class ChildProcessFailure extends Error {
 }
 
 /**
- * Runs a command and keeps the end of its output for the failure. `forward` also passes the output
- * on as it arrives. Settles on exit: a descendant that inherited the pipes cannot hold the caller.
+ * Runs a command and keeps the end of its output for the failure. Settles on exit: a descendant
+ * that inherited the pipes cannot hold the caller.
+ *
+ * `forward` stands in for inherited output: everything is passed on as it arrives, the command
+ * reads the caller's input, and an interrupt is left to reach the command the way it reaches this
+ * process, once. Without it the command is this process's alone, so an interrupt is passed on.
  */
 export function captureChild(
   command: string,
@@ -69,7 +73,9 @@ export function captureChild(
         }
       });
     const signals = ["SIGINT", "SIGTERM"] as const;
-    const pass = Object.fromEntries(signals.map((signal) => [signal, () => child.kill(signal)]));
+    const pass = Object.fromEntries(
+      signals.map((signal) => [signal, () => void (options.forward || child.kill(signal))]),
+    );
     for (const signal of signals) process.once(signal, pass[signal]!);
     let settled = false;
     const settle = (failure?: Omit<ChildReport, "command" | "tail">) => {

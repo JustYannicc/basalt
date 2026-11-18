@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ChildProcessFailure } from "./failure/child.ts";
@@ -91,4 +93,46 @@ test("standard input reaches the command", () => {
     { encoding: "utf8", input: "typed input\n" },
   );
   assert.equal(child.stdout, "typed input\n");
+});
+
+test("the caller's NODE_OPTIONS reach the command and nothing in between", () => {
+  // A preload that does not exist would stop any Node process it is loaded into.
+  const options = "--require=/basalt-no-such-preload.cjs";
+  run(
+    "sh",
+    ["-c", `test "$NODE_OPTIONS" = "${options}" && test -z "$BASALT_RUN_NODE_OPTIONS"`],
+    undefined,
+    {
+      PATH: process.env.PATH,
+      NODE_OPTIONS: options,
+    },
+  );
+});
+
+test("an interrupt sent to the whole group reaches the command once", () => {
+  const module = fileURLToPath(new URL("./process.ts", import.meta.url));
+  // The command counts its interrupts, says when it is ready, and reports the count as it leaves.
+  const command = `let count = 0;
+    process.on("SIGINT", () => { if (++count === 1) setTimeout(() => { console.log("interrupts " + count); process.exit(0); }, 300); });
+    console.log("ready"); setInterval(() => {}, 1000);`;
+  const parent = `import { run } from ${JSON.stringify(module)};
+    run(process.execPath, ["-e", ${JSON.stringify(command)}]);`;
+  // The shell puts the caller and its command in one group, waits for "ready", interrupts the
+  // group, and reads what the command wrote as it left.
+  const result = spawnSync(
+    "sh",
+    [
+      "-c",
+      `set -m; "$0" --input-type=module -e "$1" > "$2" & pid=$!
+       until grep -q ready "$2" 2>/dev/null; do :; done
+       kill -INT -- -$pid; wait $pid
+       until grep -q interrupts "$2"; do :; done
+       cat "$2"; rm -f "$2"`,
+      node,
+      parent,
+      join(tmpdir(), `basalt-run-interrupt-${process.pid}`),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.match(result.stdout, /^ready\ninterrupts 1\n$/, result.stderr);
 });

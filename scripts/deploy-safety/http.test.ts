@@ -37,7 +37,7 @@ test("a request that fails before a response keeps fetch's cause for the report"
   assert.match(lines[0]!, /\n {2}why: It was caused by Error ECONNREFUSED\./);
   assert.match(
     lines[0]!,
-    /\n {2}fix: The service was not reached, so nothing changed there\. Rerun/,
+    /\n {2}fix: The request never left, so nothing changed at the service\. Rerun/,
   );
   assert.match(
     lines[0]!,
