@@ -115,7 +115,8 @@ export async function readSqlSnapshot<A>(
   }
 }
 
-async function readDatabase(
+/** One bounded read-only snapshot of one database's journals; refusals become unreadable observations. */
+export async function readSqlObservations(
   source: SqlJournalSource,
   expectations: SqlSchemaExpectation[],
 ): Promise<SqlSchemaObservation[]> {
@@ -179,7 +180,7 @@ export async function readSqlSchemas(options: {
   const observations = [];
   for (const database of ["tools", "pool"] as const) {
     observations.push(
-      ...(await readDatabase(
+      ...(await readSqlObservations(
         options.sources[database],
         options.expectations.filter((entry) => entry.database === database),
       )),

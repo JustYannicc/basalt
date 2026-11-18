@@ -158,6 +158,22 @@ export async function loadSqlSchemaExpectations(
 ): Promise<SqlSchemaExpectation[]> {
   if (!Number.isSafeInteger(homeVersion) || homeVersion < 1)
     refuse("invalid candidate Home version");
+  const expectations: SqlSchemaExpectation[] = [
+    ...(await loadRegistrySqlExpectations()),
+    {
+      namespace: "home",
+      database: "pool",
+      journal: "home_schema_migration",
+      kind: "home",
+      expected: [String(homeVersion)],
+    },
+  ];
+  validateSqlExpectations(expectations);
+  return expectations;
+}
+
+/** Every namespace whose target comes from the candidate's source; Home's comes from its image. */
+export async function loadRegistrySqlExpectations(): Promise<SqlSchemaExpectation[]> {
   const [hosted, cloud, registrySource, sdk, registry, history] = await Promise.all([
     readFile(
       resolve(root, ".upstream/apps/hosted/server/src/implementation/migrations.ts"),
@@ -199,7 +215,7 @@ export async function loadSqlSchemaExpectations(
     declaredHistoryActivation.name === "model_request_history_v10_change_journal_activate"
       ? [declaredHistoryActivation.name]
       : [];
-  const expectations: SqlSchemaExpectation[] = [
+  return [
     {
       namespace: "hosted",
       database: "tools",
@@ -239,14 +255,5 @@ export async function loadSqlSchemaExpectations(
       expected: historyVersions,
       ...(historyActivation.length ? { optional: historyActivation } : {}),
     },
-    {
-      namespace: "home",
-      database: "pool",
-      journal: "home_schema_migration",
-      kind: "home",
-      expected: [String(homeVersion)],
-    },
   ];
-  validateSqlExpectations(expectations);
-  return expectations;
 }
