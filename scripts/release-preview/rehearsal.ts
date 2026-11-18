@@ -64,6 +64,12 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       signal: label === "destroy" || label === "verify-absence" ? undefined : controller.signal,
     });
   let access: RehearsalPoolAccess | undefined;
+  /** The stage's own keys and the rehearsal writer's identity, for operations on the candidate. */
+  const candidateEnvironment = () => {
+    const writer: NodeJS.ProcessEnv = { ...deployEnvironment, ALCHEMY_STAGE: stage, BASALT_RELEASE_CANDIDATE: candidate };
+    for (const name of writerInputs) if (source[name]) writer[name] = source[name];
+    return rehearsalReleaseEnvironment(writer);
+  };
   let cleanPool = "";
   let model = "";
   let emptyPools: readonly string[] = [];
@@ -159,9 +165,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         verifyRehearsalPolicies(policies as RehearsalPolicy[], { cleanPool, emptyPools });
       },
       settle: async () => {
-        const writer: NodeJS.ProcessEnv = { ...deployEnvironment, ALCHEMY_STAGE: stage, BASALT_RELEASE_CANDIDATE: candidate };
-        for (const name of writerInputs) if (source[name]) writer[name] = source[name];
-        const environment = rehearsalReleaseEnvironment(writer);
+        const environment = candidateEnvironment();
         const step = async (mode: "plan" | "apply", packet: unknown) => {
           const directory = join(privateRoot, `settlement-${mode}`);
           await operation(`settlement-${mode}`, root, "scripts/release-barrier/provisioning-entry.ts", [], {
@@ -179,6 +183,24 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         const planned = await step("plan", settlementPlanRequest({ previous, workerInput: poolWorkerRevision, number: subject.number, now: Date.now() }));
         const packet = settlementPacket(planned, Date.now());
         requireSettlementApplied(await step("apply", packet), packet.go.manifest);
+      },
+      restart: async () => {
+        const path = join(privateRoot, "restart.json");
+        let ran = true;
+        await operation("restart-check", root, "scripts/release-preview/rehearsal-restart.ts", [], {
+          ...candidateEnvironment(),
+          REHEARSAL_MODEL_URL: access?.modelUrl,
+          REHEARSAL_MODEL_KEY: access?.modelKey,
+          REHEARSAL_MODEL: model,
+          REHEARSAL_RESTART_RESULT: path,
+        }, 25, "bun").catch(() => { ran = false; });
+        const text = await readFile(path, "utf8").catch(() => "{}");
+        await mkdir(join(root, ".local", "release-barrier"), { recursive: true });
+        await writeFile(join(root, ".local", "release-barrier", "rehearsal-restart.json"), text, { mode: 0o600 });
+        const result = JSON.parse(text) as Record<string, unknown>;
+        if (!ran || "refused" in result || typeof result.cellConcurrency !== "number")
+          throw new Error(`The restart check refused: ${typeof result.refused === "string" ? result.refused : "no result"}`);
+        return result as unknown as Awaited<ReturnType<RehearsalHooks["restart"]>>;
       },
       holdConnection: async () => holdModelSocket(access!),
       startTraffic: () => modelTraffic(access!, model, controller.signal),

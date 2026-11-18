@@ -39,6 +39,7 @@ function world(outcomes: ReleaseOutcome[], overrides: Partial<RehearsalHooks> = 
     startTraffic: () => (events.push("traffic"), { stop: async () => (events.push("traffic-stop"), { ok: 12, failed: 0 }) }),
     waits: async () => [{ name: "old-generation-drain", outcome: "observed", milliseconds: 61_000 }],
     serve: async () => (events.push("serve"), smoke),
+    restart: async () => (events.push("restart"), { cellConcurrency: 4, siblingObserves: 3, signalToReadyMs: 30_000, servedWhileDown: 5, failedRequests: 0 }),
     ...overrides,
   };
   return { hooks, events, requests };
@@ -59,7 +60,7 @@ test("the straight rehearsal stops the previous candidate after adopt, then rele
   const steps = rehearsalSteps("straight", hooks);
   assert.deepEqual(await run(steps, events), { smoke, teardown: true });
   assert.deepEqual(events, [
-    "baseline", "seed", "release:previous", "adopted:clean", "settle", "traffic", "release:candidate", "traffic-stop", "serve", "destroy", "verify",
+    "baseline", "seed", "release:previous", "adopted:clean", "settle", "traffic", "release:candidate", "traffic-stop", "serve", "restart", "destroy", "verify",
   ]);
   assert.deepEqual(requests[0], { candidate: "previous", stop: "after-adopt", cleanPool: "clean" });
   assert.deepEqual(requests[1], { candidate: "candidate", cleanPool: "clean" });

@@ -1,4 +1,5 @@
 import type { RehearsalScenario } from "./rehearsal-stage.ts";
+import type { RestartResult } from "./rehearsal-restart-plan.ts";
 
 export type ReleaseOutcome = { ok: true } | { ok: false; reason: string; worker?: string };
 export type ReleaseRequest = {
@@ -25,6 +26,8 @@ export interface RehearsalHooks {
   startTraffic(cleanPool: string): Traffic;
   waits(): Promise<Wait[]>;
   serve(): Promise<unknown>;
+  /** Restarts the serving runtime once through the controller and proves serving continued. */
+  restart(): Promise<RestartResult>;
 }
 
 export type RehearsalRecord = {
@@ -32,6 +35,7 @@ export type RehearsalRecord = {
   releases: Array<ReleaseRequest & { outcome: ReleaseOutcome }>;
   traffic: { ok: number; failed: number };
   waits: Wait[];
+  restart?: RestartResult;
 };
 
 const drainCapMs = 120_000;
@@ -104,7 +108,9 @@ export function rehearsalSteps(scenario: RehearsalScenario, hooks: RehearsalHook
       record.waits = await hooks.waits();
       if (!record.waits.some((wait) => wait.name === "old-generation-drain" && wait.outcome === "observed"))
         throw new Error("The rehearsal did not observe the old-generation drain");
-      return hooks.serve();
+      const served = await hooks.serve();
+      record.restart = await hooks.restart();
+      return served;
     },
   };
 }
@@ -118,6 +124,7 @@ export type RehearsalReceipt = {
   releases: RehearsalRecord["releases"];
   traffic: RehearsalRecord["traffic"];
   waits: Wait[];
+  restart: RestartResult;
   serving: true;
   teardown: true;
 };
@@ -130,6 +137,7 @@ export function rehearsalReceipt(
   if (!/^[a-f0-9]{40}$/u.test(identity.candidate) || !/^[a-f0-9]{40}$/u.test(identity.previous))
     throw new Error("A rehearsal receipt requires exact candidate and previous commits");
   if (!teardown) throw new Error("Rehearsal resource teardown has not been verified");
-  const { releases, traffic, waits, scenario } = record;
-  return { version: 1, ...identity, scenario, releases, traffic, waits, serving: true, teardown: true };
+  const { releases, traffic, waits, scenario, restart } = record;
+  if (!restart) throw new Error("The rehearsal did not restart the serving runtime");
+  return { version: 1, ...identity, scenario, releases, traffic, waits, restart, serving: true, teardown: true };
 }
