@@ -1,9 +1,4 @@
 {
-  "basalt/no-alchemy-auto-approve": {
-    "scripts/owned-lint/plugin/alchemy.test.ts": "The rule's own test cases quote the commands it refuses.",
-    "scripts/preview/lifecycle.ts": "Preview stages still deploy through the CLI; the Alchemy release entry replaces this call, and this entry goes with it.",
-    "scripts/scale-test/run.mjs": "The manual scale test deploys its own scratch stage through the CLI; it moves to the release entry with the preview call, and this entry goes with it."
-  },
   "basalt/no-direct-cloudflare-api": {
     "src/pool/runtime-provider/read.ts": {
       "count": 2,

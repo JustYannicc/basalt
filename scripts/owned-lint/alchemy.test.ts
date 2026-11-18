@@ -3,10 +3,10 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { lint } from "../check.ts";
-import { commandAutoApprovesAlchemy } from "./alchemy.mjs";
+import { lint } from "./check.ts";
+import { commandAutoApprovesAlchemy } from "./plugin/alchemy.mjs";
 
-const repository = join(import.meta.dirname, "../../..");
+const repository = join(import.meta.dirname, "../..");
 const cases: Record<string, string> = {
   // production: scripts/preview/lifecycle.ts:149 at 1d75a5f1, every preview deploy and destroy.
   "scripts/preview/lifecycle.ts": `
@@ -22,10 +22,21 @@ export const args = (action: string, config: string, stage: string) => [
 ];
 `,
   "scripts/stage.ts": `
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 execSync("bunx alchemy destroy --stage scratch -y"); // expect: basalt/no-alchemy-auto-approve
 execSync("bunx alchemy deploy --dry-run --stage scratch");
-export const unrelated = ["deploy", "--yes"];
+export const deploy = (stage: string) => {
+  execFileSync("alchemy", ["deploy", "--stage", stage, "--yes"]); // expect: basalt/no-alchemy-auto-approve
+  execSync(\`bunx alchemy deploy --stage \${stage} --yes\`); // expect: basalt/no-alchemy-auto-approve
+  execSync("bunx alchemy deploy --stage " + stage + " --yes"); // expect: basalt/no-alchemy-auto-approve
+  const args = ["deploy", "--stage", stage];
+  args.push("-y"); // expect: basalt/no-alchemy-auto-approve
+  return [...args, "--no-input"];
+};
+`,
+  "scripts/unrelated.ts": `
+import { execFileSync } from "node:child_process";
+export const install = () => execFileSync("apt-get", ["install", "--yes", "jq"]);
 `,
 };
 
@@ -73,4 +84,8 @@ test("recognises the command shapes Alchemy's CLI accepts", () => {
   assert.equal(commandAutoApprovesAlchemy("run: bunx alchemy destroy --stage pr-1 -y"), true);
   assert.equal(commandAutoApprovesAlchemy("bunx alchemy deploy --dry-run"), false);
   assert.equal(commandAutoApprovesAlchemy("npx wrangler deploy --yes"), false);
+  assert.equal(
+    commandAutoApprovesAlchemy("bunx alchemy deploy --stage ${{ inputs.stage }} --yes"),
+    true,
+  );
 });

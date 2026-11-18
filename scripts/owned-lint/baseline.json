@@ -1,4 +1,10 @@
 {
+  "basalt/no-alchemy-auto-approve": {
+    "scripts/alchemy.test.ts": 1,
+    "scripts/owned-lint/alchemy.test.ts": 5,
+    "scripts/preview/lifecycle.ts": 1,
+    "scripts/scale-test/run.mjs": 1
+  },
   "basalt/no-direct-cloudflare-api": {
     "scripts/deploy-safety/cloudflare.ts": 1,
     "scripts/deploy-safety/pool-image-metadata.ts": 1,
