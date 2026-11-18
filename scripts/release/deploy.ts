@@ -177,6 +177,7 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
+const { havePropsChanged } = await import("alchemy/Diff");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -336,7 +337,8 @@ const changes = (snapshot: Snapshot) =>
       const before = node?.state?.props ?? {};
       const after: Record<string, unknown> = (node && "props" in node ? node.props : {}) ?? {};
       const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
-        (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
+        // Alchemy's own diff: a stored, provider-normalised value is not a change.
+        (key) => havePropsChanged({ value: before[key] }, { value: after[key] }),
       );
       return {
         fqn: row.fqn,
