@@ -94,16 +94,16 @@ async function seedHome(owner: pg.Client) {
     "INSERT INTO channel_group VALUES(1,$1,false,NULL),(2,$2,false,NULL),(3,'unrelated',false,NULL)",
     [`signalbox-pool-${pools[0]}`, `signalbox-pool-${pools[1]}`],
   );
-    await owner.query(`INSERT INTO channel_group_detail VALUES(1,1,'acct-a',NULL),(2,2,'acct-b',NULL);
+  await owner.query(`INSERT INTO channel_group_detail VALUES(1,1,'acct-a',NULL),(2,2,'acct-b',NULL);
       INSERT INTO auth VALUES('acct-a','a','0','codex','active','{"status_message":"ok","model_states":{"m":{"status":"ok","updated_at":"t0"}}}',now()),
         ('acct-b','b','1','codex','active','{}',now());
       INSERT INTO quota_snapshot VALUES('acct-a','ok',NULL);
       INSERT INTO api_key VALUES(1,1,'key',NULL);
       INSERT INTO kv_store VALUES('billing.settings',convert_to('{"allow_unpriced_models":true}','UTF8'))`);
-    await owner.query(`INSERT INTO "user" VALUES(1,$1,100,now()),(2,$2,100,now())`, [
-      await backendUserName("person", pools[0]),
-      await backendUserName("person", pools[1]),
-    ]);
+  await owner.query(`INSERT INTO "user" VALUES(1,$1,100,now()),(2,$2,100,now())`, [
+    await backendUserName("person", pools[0]),
+    await backendUserName("person", pools[1]),
+  ]);
 }
 
 /** What this open transaction has produced: its journal keys, or the legacy heads it bumped. */

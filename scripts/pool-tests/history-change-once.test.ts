@@ -137,7 +137,8 @@ async function steps(): Promise<Step[]> {
 
 async function run(client: pg.Client, statement: Statement) {
   if (typeof statement === "string") return client.query(statement);
-  if (typeof statement[0] === "string") return client.query(statement[0], statement[1] as unknown[]);
+  if (typeof statement[0] === "string")
+    return client.query(statement[0], statement[1] as unknown[]);
   return insertHistory(client, statement as ModelRequest[]);
 }
 
@@ -146,15 +147,15 @@ async function replay(version: Version, journal: boolean, script: readonly Step[
     version,
     journal,
     async ({ a }) => {
-    const observed = [];
-    for (const step of script) {
-      await a.query("BEGIN");
-      for (const statement of step.statements) await run(a, statement);
-      const inside = await produced(a);
-      await a.query(step.end ?? "COMMIT");
-      observed.push({ step: step.name, inside, after: (await produced(a)).heads });
-    }
-    return observed;
+      const observed = [];
+      for (const step of script) {
+        await a.query("BEGIN");
+        for (const statement of step.statements) await run(a, statement);
+        const inside = await produced(a);
+        await a.query(step.end ?? "COMMIT");
+        observed.push({ step: step.name, inside, after: (await produced(a)).heads });
+      }
+      return observed;
     },
     home,
   );
@@ -198,7 +199,12 @@ for (const journal of [true, false])
       { name: "two statements", statements: [first, second] },
       {
         name: "savepoint",
-        statements: ["SAVEPOINT s", saved, "ROLLBACK TO SAVEPOINT s", await historyRows([pools[1]])],
+        statements: [
+          "SAVEPOINT s",
+          saved,
+          "ROLLBACK TO SAVEPOINT s",
+          await historyRows([pools[1]]),
+        ],
       },
       { name: "rolled back", statements: [await historyRows([pools[0]])], end: "ROLLBACK" },
     ];
@@ -217,7 +223,13 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   const chunk = await historyRows(Array.from({ length: 5000 }, () => pools[0]));
   const counts: Record<
     string,
-    { request: number; projection: number; registration: number; bulk: number; requestKeys: unknown }
+    {
+      request: number;
+      projection: number;
+      registration: number;
+      bulk: number;
+      requestKeys: unknown;
+    }
   > = {};
   for (const version of ["v11", "v12"] as const)
     await homeChangeFixture(version, true, async ({ a }) => {
@@ -225,7 +237,9 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
       const db = counter.measured;
       await db.query("BEGIN");
       await db.query('SELECT id FROM "user" WHERE id=1 FOR UPDATE');
-      await db.query("INSERT INTO billing_charge(usage_id,amount,user_id,api_key_id) VALUES(1,0,1,1)");
+      await db.query(
+        "INSERT INTO billing_charge(usage_id,amount,user_id,api_key_id) VALUES(1,0,1,1)",
+      );
       await db.query('UPDATE "user" SET credits=credits-1,updated_at=now() WHERE id=1');
       await db.query("UPDATE billing_charge SET amount=1 WHERE usage_id=1");
       const billing = (await produced(db)).dirty;
