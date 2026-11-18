@@ -4,6 +4,7 @@ export type Step = {
   "continue-on-error"?: boolean;
   "working-directory"?: string;
 };
+type Matrix = Record<string, unknown> & { include?: Record<string, unknown>[] };
 export type Workflow = {
   jobs: Record<
     string,
@@ -11,30 +12,24 @@ export type Workflow = {
       if?: string | boolean;
       "continue-on-error"?: boolean;
       steps?: Step[];
-      strategy?: { matrix?: unknown };
+      strategy?: { matrix?: Matrix };
     }
   >;
 };
 
 // A step gated on a matrix value runs in every shard whose row carries that value.
-const matrixCanRun = (expression: string, matrix: unknown) => {
+const matrixCanRun = (expression: string, matrix: Matrix | undefined) => {
   const match =
     /^contains\(matrix\.(\w+), '([\w-]+)'\)$/.exec(expression) ??
     /^matrix\.(\w+) == '?([\w-]+)'?$/.exec(expression);
-  if (!match || !matrix || typeof matrix !== "object") return false;
-  const [, key, value] = match;
-  const axes = matrix as Record<string, unknown>;
-  const rows = Array.isArray(axes.include) ? (axes.include as Record<string, unknown>[]) : [];
-  return [axes[key!], ...rows.map((row) => row[key!])]
+  if (!match || !matrix) return false;
+  const [, key = "", value] = match;
+  return [matrix[key], ...(matrix.include ?? []).map((row) => row[key])]
     .flat()
     .some((candidate) => String(candidate) === value);
 };
 
-const conditionCanRun = (
-  condition: string | boolean | undefined,
-  job = false,
-  matrix: unknown = undefined,
-) => {
+const conditionCanRun = (condition: string | boolean | undefined, job = false, matrix?: Matrix) => {
   if (condition === undefined || condition === true) return true;
   if (typeof condition !== "string") return false;
   const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");

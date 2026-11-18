@@ -143,10 +143,10 @@ test("built compatibility images are reused only for a byte-identical context", 
   const data = fixture();
   try {
     preparePoolCompatibilityContext(root, data.context, data.cache, data.manifest);
-    const key = compatibilityImagesKey(data.context, "x64");
-    assert.match(key, /^pool-compatibility-images-v1-x64-[a-f0-9]{64}$/);
+    const key = compatibilityImagesKey(data.context, "amd64");
+    assert.match(key, /^pool-compatibility-images-v1-amd64-[a-f0-9]{64}$/);
     assert.notEqual(compatibilityImagesKey(data.context, "arm64"), key);
-    assert.equal(compatibilityImagesKey(data.context, "x64"), key);
+    assert.equal(compatibilityImagesKey(data.context, "amd64"), key);
     const archive = join(
       data.context,
       ".release-archives",
@@ -154,16 +154,16 @@ test("built compatibility images are reused only for a byte-identical context", 
     );
     const bytes = readFileSync(archive);
     writeFileSync(archive, Buffer.concat([bytes, Buffer.from("x")]));
-    assert.notEqual(compatibilityImagesKey(data.context, "x64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64"), key);
     writeFileSync(archive, bytes);
-    assert.equal(compatibilityImagesKey(data.context, "x64"), key);
+    assert.equal(compatibilityImagesKey(data.context, "amd64"), key);
     const script = join(data.context, "fetch_releases.py");
     const mode = statSync(script).mode & 0o777;
     chmodSync(script, mode ^ 0o100);
-    assert.notEqual(compatibilityImagesKey(data.context, "x64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64"), key);
     chmodSync(script, mode);
     writeFileSync(join(data.context, "extra.txt"), "");
-    assert.notEqual(compatibilityImagesKey(data.context, "x64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64"), key);
   } finally {
     rmSync(data.temporary, { recursive: true, force: true });
   }

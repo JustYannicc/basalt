@@ -107,6 +107,8 @@ export function compatibilityImagesKey(context: string, architecture: string) {
   return `pool-compatibility-images-v1-${architecture}-${hash.digest("hex")}`;
 }
 
+const dockerArchitecture = () => ({ x64: "amd64", arm64: "arm64" })[arch()] ?? arch();
+
 function main(mode: string | undefined) {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   if (!process.env.RUNNER_TEMP) throw new Error("Expected runner temp directory");
@@ -139,7 +141,7 @@ function main(mode: string | undefined) {
     if (process.env.GITHUB_OUTPUT)
       appendFileSync(
         process.env.GITHUB_OUTPUT,
-        `context=${process.argv[3]}\nkey=${compatibilityImagesKey(process.argv[3], arch())}\n`,
+        `context=${process.argv[3]}\nkey=${compatibilityImagesKey(process.argv[3], dockerArchitecture())}\n`,
       );
   } else throw new Error("Expected identify, warm, verify or context with its path");
 }

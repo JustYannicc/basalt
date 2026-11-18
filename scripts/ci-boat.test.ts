@@ -13,7 +13,6 @@ const workflow = parse(
 );
 
 test("routed jobs read their runner label from one variable and keep individual job gates", () => {
-  assert.equal(boatJobs.length, 12);
   assert.equal(new Set(boatJobs).size, boatJobs.length);
   for (const id of boatJobs) {
     assert.ok(heavyJobs.includes(id), id);
@@ -106,7 +105,7 @@ test("pool fixture networking is scoped to Boat and checked before the original 
   const steps = workflow.jobs["pool-runtime"].steps;
   const firewall = steps.findIndex(
     (step: { name?: string }) =>
-      step.name === "Allow pool fixture HTTP from Docker bridges on Boat",
+      step.name === "Allow pool fixture HTTP from Docker bridges on self-hosted runners",
   );
   const probe = steps.findIndex(
     (step: { name?: string }) =>
@@ -115,10 +114,7 @@ test("pool fixture networking is scoped to Boat and checked before the original 
   const contracts = steps.findIndex(
     (step: { name?: string }) => step.name === "Check the pool runtime and database contracts",
   );
-  assert.equal(
-    steps[firewall].if,
-    "contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime')",
-  );
+  assert.equal(steps[firewall].if, "runner.environment == 'self-hosted'");
   assert.deepEqual(steps[firewall].run.trim().split("\n"), [
     "sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT",
     "sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT",

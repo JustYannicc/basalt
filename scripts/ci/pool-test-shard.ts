@@ -21,13 +21,9 @@ export function poolTestFiles(root: string, shard: (typeof poolTestShards)[numbe
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const shard = process.argv[2];
-  if (!poolTestShards.includes(shard as (typeof poolTestShards)[number]))
-    throw new Error("Expected a pool test shard: " + poolTestShards.join(" or "));
-  const files = poolTestFiles(
-    fileURLToPath(new URL("../../", import.meta.url)),
-    shard as (typeof poolTestShards)[number],
-  );
+  const shard = poolTestShards.find((name) => name === process.argv[2]);
+  if (!shard) throw new Error("Expected a pool test shard: " + poolTestShards.join(" or "));
+  const files = poolTestFiles(fileURLToPath(new URL("../../", import.meta.url)), shard);
   if (!files.length) throw new Error("Pool test shard has no files: " + shard);
   process.stdout.write(files.join("\n") + "\n");
 }
