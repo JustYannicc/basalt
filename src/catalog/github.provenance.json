@@ -2,8 +2,8 @@
   "package": "@executor.sh/github",
   "publishedUrl": "https://catalog.executor.sh/apps/github.json",
   "publishedSha256": "bb4d9169a37b1952da925cc8f240ca6a483a4b27700221a02256b80fc5099577",
-  "carriedSha256": "cf9093f6096c4ac68cc2e0aa4e8ab49a254eba6a48b6c102e98259bf51dc0b4c",
-  "patchSha256": "02a15d49de159fe12eaddaede63a40e26add6d02b443a003f2737fea65ba9e58",
+  "carriedSha256": "53405c1112ae12439f415f88323e0bed0f19942853d7ed9533b88326d50530b4",
+  "patchSha256": "fc8d32bbbb79f89d240fb469c489599e215e7558c172569351245cd6db197ab5",
   "appsVersion": "0.0.1-beta.104-basalt.15",
   "license": "Not declared in the published package",
   "contribution": {
