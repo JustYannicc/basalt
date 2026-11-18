@@ -198,14 +198,14 @@ export function createArtifactsStores(input: {
     } catch (error) {
       // A lost reply or a report we can't read: the remote ref is the only truth.
       if (await settle()) return { landed: true };
-      // Transport errors carry fixed text; anything else may hold remote or local detail.
+      // Transport errors carry fixed text; any other message may hold remote or local detail.
       const reason =
         error instanceof AuthFailed ||
         error instanceof NotFound ||
         error instanceof ProtocolError ||
         error instanceof Unavailable
           ? `${error.name}: ${error.message}`
-          : "unreadable push reply";
+          : `${error instanceof Error ? error.name : "Unknown"}: unreadable push reply`;
       return refusedPush(ref, reason);
     }
     if (result.applied && result.results[ref] === "ok") {

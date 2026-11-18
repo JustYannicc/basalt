@@ -104,7 +104,7 @@ export function createDriveDispatcher(
                 limit: error.limit,
                 ...(error.resetAt === null ? {} : { resetAt: error.resetAt }),
               }
-            : // Holds no client input; after a refused push it names the repository's reason.
+            : // Fixed engine text, plus a refused push's bounded and redacted remote reason.
               error instanceof DriveError && error.code === "contended"
               ? { message: error.message }
               : {}),

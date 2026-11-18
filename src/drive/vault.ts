@@ -157,8 +157,8 @@ export async function openVault(input: {
         author: { name: "Basalt", email: "drive@example.invalid", timestamp, timezoneOffset: 0 },
       });
     /**
-     * One write. The engine retries a refused push as a lost race and drops its reason, so a
-     * failure after a refusal names the repository's last bounded reason.
+     * One write. The engine retries a refused push as a lost race and drops its reason, so a write
+     * that runs out of retries names the repository's last bounded reason.
      */
     const write = async <T>(operation: string, use: (drive: Drive) => Promise<T>) => {
       let refused: string | undefined;
@@ -174,12 +174,8 @@ export async function openVault(input: {
       try {
         return await use(make(await author(operation), store));
       } catch (error) {
-        // Subclasses such as QuotaExceeded carry their own fields and pass through untouched.
-        if (
-          refused === undefined ||
-          !(error instanceof DriveError) ||
-          error.constructor !== DriveError
-        )
+        // Other failures, QuotaExceeded included, keep their own identity and fields.
+        if (refused === undefined || !(error instanceof DriveError) || error.code !== "contended")
           throw error;
         throw new DriveError(error.code, `${error.message} (last refusal: ${refused})`);
       }
