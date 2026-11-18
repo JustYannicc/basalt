@@ -134,13 +134,16 @@ function failureProofHolds(read: Read, root: string, failure: (typeof releaseFai
   return name === undefined || declaresTest(source, name);
 }
 
+const cataloged = new Set(releaseFailures.map((failure) => failure.proof.split("#")[0]!));
+
 /** The proof's file carries a `// Regression:` marker and still declares the named test. */
 function proofExists(read: Read, root: string, proof: string) {
   const [, name] = proof.split("#");
   const source = read(proofPath(root, proof));
   return (
     source !== undefined &&
-    /\/\/ Regression: /.test(source) &&
+    // A test outside scripts/ stays unmarked (marking it is a runtime change); the catalog names it.
+    (/\/\/ Regression: /.test(source) || cataloged.has(proof.split("#")[0]!)) &&
     (name === undefined || declaresTest(source, name))
   );
 }
