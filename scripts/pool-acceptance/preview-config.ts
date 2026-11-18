@@ -57,13 +57,18 @@ function trustedStage(env: NodeJS.ProcessEnv): {
 } {
   // A release rehearsal names its own run-scoped stage; a preview takes its pull request's.
   const rehearsal = env.PREVIEW_SMOKE_REHEARSAL?.trim();
-  const raw = rehearsal || env.PREVIEW_SMOKE_PULL_REQUEST?.trim() || required(env, "GITHUB_EVENT_PULL_REQUEST_NUMBER");
+  const raw =
+    rehearsal ||
+    env.PREVIEW_SMOKE_PULL_REQUEST?.trim() ||
+    required(env, "GITHUB_EVENT_PULL_REQUEST_NUMBER");
   const number = Number(raw);
   if (
     !/^[1-9][0-9]*$/.test(raw) ||
     !Number.isSafeInteger(number) ||
     (rehearsal && env.PREVIEW_SMOKE_PULL_REQUEST?.trim()) ||
-    (!rehearsal && env.GITHUB_EVENT_PULL_REQUEST_NUMBER && env.GITHUB_EVENT_PULL_REQUEST_NUMBER !== raw)
+    (!rehearsal &&
+      env.GITHUB_EVENT_PULL_REQUEST_NUMBER &&
+      env.GITHUB_EVENT_PULL_REQUEST_NUMBER !== raw)
   ) {
     throw new AcceptanceFailure("Preview requires one matching pull request or rehearsal identity");
   }

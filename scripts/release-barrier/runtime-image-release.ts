@@ -69,7 +69,9 @@ export const releaseRuntimeImage = <A, StackError>(
       plan: ImageReleasePlan,
       use: (compiled: CompiledStack) => Effect.Effect<A, E, R>,
     ) =>
-      evalStack(stack, (compiled) => provideCompiled(compiled, use(compiled)), { stage }).pipe(Effect.provideService(RuntimeImageReleasePlan, plan));
+      evalStack(stack, (compiled) => provideCompiled(compiled, use(compiled)), { stage }).pipe(
+        Effect.provideService(RuntimeImageReleasePlan, plan),
+      );
     const initial = yield* evaluate({ images: {} }, (compiled) =>
       Effect.gen(function* () {
         yield* assertReleaseStateVersion(compiled);
@@ -341,20 +343,20 @@ export const releaseRuntimeImage = <A, StackError>(
         yield* Effect.promise(() =>
           timeRehearsalWait(options.directory, "image-capacity", () =>
             waitReleaseObservation(
-            async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
-            (value) => {
-              const selection = value.slots.selection;
-              const primaries = [
-                selection?.active,
-                selection?.candidate,
-                selection?.draining,
-              ].filter(
-                (slot) => slot && slot.target.instanceId !== slot.target.controllerId,
-              ).length;
-              const maximum = value.fleet.permission?.configuration.maximum;
-              return maximum !== undefined && value.fleet.resources.length + primaries < maximum;
-            },
-            resource,
+              async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
+              (value) => {
+                const selection = value.slots.selection;
+                const primaries = [
+                  selection?.active,
+                  selection?.candidate,
+                  selection?.draining,
+                ].filter(
+                  (slot) => slot && slot.target.instanceId !== slot.target.controllerId,
+                ).length;
+                const maximum = value.fleet.permission?.configuration.maximum;
+                return maximum !== undefined && value.fleet.resources.length + primaries < maximum;
+              },
+              resource,
             ),
           ),
         );

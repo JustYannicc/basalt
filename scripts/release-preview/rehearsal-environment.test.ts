@@ -44,9 +44,17 @@ test("a rehearsal release carries its stage, seed and release controls, and none
 
 test("a rehearsal release refuses production's stage, other stages, and a target without its own Sentry", () => {
   for (const stage of ["production", "test-pr-12", undefined])
-    assert.throws(() => rehearsalReleaseEnvironment({ ...source, ALCHEMY_STAGE: stage }), /rehearsal stage/);
+    assert.throws(
+      () => rehearsalReleaseEnvironment({ ...source, ALCHEMY_STAGE: stage }),
+      /rehearsal stage/,
+    );
   assert.throws(
-    () => rehearsalReleaseEnvironment({ ...source, POOL_AVAILABILITY_TARGET: "app_clean", RELEASE_REHEARSAL_SENTRY_DSN: "" }),
+    () =>
+      rehearsalReleaseEnvironment({
+        ...source,
+        POOL_AVAILABILITY_TARGET: "app_clean",
+        RELEASE_REHEARSAL_SENTRY_DSN: "",
+      }),
     /RELEASE_REHEARSAL_SENTRY_DSN/,
   );
   assert.equal(rehearsalReleaseEnvironment(source).SENTRY_DSN === source.SENTRY_DSN, false);

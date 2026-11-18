@@ -22,7 +22,9 @@ const originalBrand = `export const brand = {
 `;
 
 function environment(): NodeJS.ProcessEnv {
-  const source = Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])) as NodeJS.ProcessEnv;
+  const source = Object.fromEntries(
+    requiredPreviewDeploySecrets.map((name) => [name, "fixture"]),
+  ) as NodeJS.ProcessEnv;
   Object.assign(source, {
     GITHUB_ACTIONS: "true",
     PREVIEW_MANIFEST_CHECKPOINTED: "1",
@@ -46,14 +48,18 @@ function services(root: string, observations: string[], failDeploy = false): Lif
       const source = await readFile(join(root, "brand.ts"), "utf8");
       observations.push("deploy:" + source);
       if (failDeploy) throw new Error("fixture deployment failed");
-      await writeFile(seedFile, `${JSON.stringify({
-        version: 1,
-        stage: identity.stage,
-        origin: identity.origin,
-        userId: "preview-user-17",
-        organization: { id: "organization-17", slug: "preview-smoke-17" },
-        poolAppId: "pool-app-17",
-      })}\n`, { flag: "wx", mode: 0o600 });
+      await writeFile(
+        seedFile,
+        `${JSON.stringify({
+          version: 1,
+          stage: identity.stage,
+          origin: identity.origin,
+          userId: "preview-user-17",
+          organization: { id: "organization-17", slug: "preview-smoke-17" },
+          poolAppId: "pool-app-17",
+        })}\n`,
+        { flag: "wx", mode: 0o600 },
+      );
     },
     destroyStack: async () => {},
     deleteArtifacts: async () => {},
@@ -93,7 +99,10 @@ test("a failed deploy restores the tracked brand source", async () => {
   try {
     await writeFile(join(root, "brand.ts"), originalBrand, { mode: 0o600 });
     await planPreview(root, 17, source);
-    await assert.rejects(deployPreview(root, 17, source, services(root, [], true)), /fixture deployment failed/);
+    await assert.rejects(
+      deployPreview(root, 17, source, services(root, [], true)),
+      /fixture deployment failed/,
+    );
     assert.equal(await readFile(join(root, "brand.ts"), "utf8"), originalBrand);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -116,8 +125,16 @@ test("a rehearsal deploys only its database parent, then destroys and verifies i
         assert.equal(stage, "test-rehearsal-17");
         assert.equal(environment.ALCHEMY_STAGE, "test-rehearsal-17");
         return deployed
-          ? { "basalt-rehearsal": [row("basalt-rehearsal", "Router")], "basalt-preview-database": [], "basalt-rehearsal-fixture": [] }
-          : { "basalt-rehearsal": [], "basalt-preview-database": [], "basalt-rehearsal-fixture": [] };
+          ? {
+              "basalt-rehearsal": [row("basalt-rehearsal", "Router")],
+              "basalt-preview-database": [],
+              "basalt-rehearsal-fixture": [],
+            }
+          : {
+              "basalt-rehearsal": [],
+              "basalt-preview-database": [],
+              "basalt-rehearsal-fixture": [],
+            };
       },
     }),
     captureProviders: async () => ({ complete: true, containers: [], domains: [] }),
@@ -147,8 +164,14 @@ test("a rehearsal deploys only its database parent, then destroys and verifies i
     const planned = await planStage(root, subject, source);
     assert.equal(planned.rehearsal, 17);
     assert.equal(planned.stage, "test-rehearsal-17");
-    assert.equal(manifestPath(root, subject), join(root, ".local", "previews", "rehearsal-17.json"));
-    await assert.rejects(readPreviewManifest(manifestPath(root, subject), 17), /identity or phase is invalid/);
+    assert.equal(
+      manifestPath(root, subject),
+      join(root, ".local", "previews", "rehearsal-17.json"),
+    );
+    await assert.rejects(
+      readPreviewManifest(manifestPath(root, subject), 17),
+      /identity or phase is invalid/,
+    );
     // A rehearsal's releases deploy the stage; destroy must find it from the deploying checkpoint alone.
     await updatePreviewManifest(manifestPath(root, subject), subject, "deploying");
     deployed = true;
@@ -198,16 +221,37 @@ test("the stage brand replaces only the brand object's host and zone in the real
   const { previewBrandSource } = await import("./lifecycle.ts");
   const { appHosting, brand } = await import("../../brand.ts");
   const real = await readFile(new URL("../../brand.ts", import.meta.url), "utf8");
-  const changed = previewBrandSource(real, "app.rehearsal-1.preview.example.invalid", "preview.example.invalid");
+  const changed = previewBrandSource(
+    real,
+    "app.rehearsal-1.preview.example.invalid",
+    "preview.example.invalid",
+  );
   const before = real.split("\n");
   const after = changed.split("\n");
   assert.equal(after.length, before.length);
-  const edits = before.flatMap((line, index) => (line === after[index] ? [] : [[line, after[index]]]));
+  const edits = before.flatMap((line, index) =>
+    line === after[index] ? [] : [[line, after[index]]],
+  );
   assert.deepEqual(edits, [
-    [`  host: ${JSON.stringify(brand.host)},`, '  host: "app.rehearsal-1.preview.example.invalid",'],
+    [
+      `  host: ${JSON.stringify(brand.host)},`,
+      '  host: "app.rehearsal-1.preview.example.invalid",',
+    ],
     [`  zone: ${JSON.stringify(brand.zone)},`, '  zone: "preview.example.invalid",'],
   ]);
   // appHosting keeps production's own zone line.
-  assert.ok(after.slice(after.indexOf("export const appHosting = {")).includes(`  zone: ${JSON.stringify(appHosting.zone)},`));
-  assert.throws(() => previewBrandSource(real.replace("export const brand = {", "export const label = {"), "a", "b"), /seam changed/);
+  assert.ok(
+    after
+      .slice(after.indexOf("export const appHosting = {"))
+      .includes(`  zone: ${JSON.stringify(appHosting.zone)},`),
+  );
+  assert.throws(
+    () =>
+      previewBrandSource(
+        real.replace("export const brand = {", "export const label = {"),
+        "a",
+        "b",
+      ),
+    /seam changed/,
+  );
 });

@@ -117,7 +117,8 @@ export async function seedRehearsalPools(input: RehearsalSeedInput): Promise<Reh
   if (!Number.isSafeInteger(emptyCount) || emptyCount < 0 || emptyCount > 20)
     throw new AcceptanceFailure("Rehearsal empty pool count must be between 0 and 20");
   if (!input.infraOnly) requireAccounts(input.accounts);
-  else if (input.accounts.length) throw new AcceptanceFailure("An infra-only seed takes no accounts");
+  else if (input.accounts.length)
+    throw new AcceptanceFailure("An infra-only seed takes no accounts");
   const preview = new PreviewClient(input, { fetch: input.fetch });
   await preview.signIn();
   try {

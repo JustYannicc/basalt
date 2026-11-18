@@ -68,7 +68,9 @@ try {
   if (rehearsalStage) process.env.ALCHEMY_STAGE = rehearsalStage;
   const settings = rehearsalStage
     ? {
-        ...(await load("scripts/release-preview/rehearsal-environment.ts")).rehearsalReleaseEnvironment({
+        ...(
+          await load("scripts/release-preview/rehearsal-environment.ts")
+        ).rehearsalReleaseEnvironment({
           ...synthetic,
           ALCHEMY_STAGE: rehearsalStage,
           TEST_STAGE_DOMAIN: "preview.fixture.invalid",
@@ -80,20 +82,20 @@ try {
         TEST_STAGE_EXPIRES_AT: "4070908800000",
       }
     : previewConnection
-    ? {
-        ...previewEnvironment(1, {
-          ...synthetic,
-          TEST_STAGE_DOMAIN: "preview.fixture.invalid",
-          PREVIEW_STATE_KEY: "a".repeat(64),
+      ? {
+          ...previewEnvironment(1, {
+            ...synthetic,
+            TEST_STAGE_DOMAIN: "preview.fixture.invalid",
+            PREVIEW_STATE_KEY: "a".repeat(64),
+            PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
+            PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
+          }).deploy,
           PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
           PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
-        }).deploy,
-        PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
-        PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
-        PREVIEW_AUTH_SEED_OUTPUT: "fixture-auth-seed.json",
-        TEST_STAGE_EXPIRES_AT: "4070908800000",
-      }
-    : deployEnvironment(synthetic);
+          PREVIEW_AUTH_SEED_OUTPUT: "fixture-auth-seed.json",
+          TEST_STAGE_EXPIRES_AT: "4070908800000",
+        }
+      : deployEnvironment(synthetic);
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";

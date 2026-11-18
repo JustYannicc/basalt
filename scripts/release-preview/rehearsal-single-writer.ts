@@ -57,8 +57,11 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
       await step("0-shape-untagged", () => hooks.shape("baseline", "baseline"));
       await step("0-baseline-probe", async () => requireBaselineProbe(await hooks.baselineProbe()));
       await step("0-baseline-probe-undeclared-class", async () =>
-        requireUndeclaredClassRefused(await hooks.baselineProbe(undeclaredPoolClass)));
-      await step("0-preflight-runtime-bootstrap", async () => requireRuntimeBootstrap(await hooks.preflight()));
+        requireUndeclaredClassRefused(await hooks.baselineProbe(undeclaredPoolClass)),
+      );
+      await step("0-preflight-runtime-bootstrap", async () =>
+        requireRuntimeBootstrap(await hooks.preflight()),
+      );
     },
     seed: async () => {
       ({ cleanPool } = await hooks.seedPools());
@@ -89,13 +92,24 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
  * declared roles to its inventory; here every row must pass, once per role, PoolWorker included.
  */
 export function requireBaselineProbe(rows: unknown) {
-  const list = Array.isArray(rows) ? (rows as { role?: unknown; ok?: unknown; reason?: unknown }[]) : [];
+  const list = Array.isArray(rows)
+    ? (rows as { role?: unknown; ok?: unknown; reason?: unknown }[])
+    : [];
   const failed = list.filter((row) => row.ok !== true);
   if (failed.length)
-    throw new Error(`The baseline probe refused: ${failed.map((row) => `${String(row.role)}: ${String(row.reason)}`).join("; ").slice(0, 600)}`);
+    throw new Error(
+      `The baseline probe refused: ${failed
+        .map((row) => `${String(row.role)}: ${String(row.reason)}`)
+        .join("; ")
+        .slice(0, 600)}`,
+    );
   const roles = list.map((row) => row.role);
   const known: readonly unknown[] = baselineRoles;
-  if (!roles.includes("PoolWorker") || new Set(roles).size !== roles.length || roles.some((role) => !known.includes(role)))
+  if (
+    !roles.includes("PoolWorker") ||
+    new Set(roles).size !== roles.length ||
+    roles.some((role) => !known.includes(role))
+  )
     throw new Error("The baseline probe did not read PoolWorker and each Worker role once");
 }
 
@@ -104,13 +118,23 @@ export function requireBaselineProbe(rows: unknown) {
  * name, must refuse PoolWorker for its classes and pass every other Worker.
  */
 export function requireUndeclaredClassRefused(rows: unknown) {
-  const list = Array.isArray(rows) ? (rows as { role?: unknown; ok?: unknown; reason?: unknown }[]) : [];
+  const list = Array.isArray(rows)
+    ? (rows as { role?: unknown; ok?: unknown; reason?: unknown }[])
+    : [];
   const pool = list.filter((row) => row.role === "PoolWorker");
   if (pool.length !== 1 || pool[0]!.ok !== false)
     throw new Error("The baseline probe did not refuse an undeclared PoolWorker class");
-  if (pool[0]!.reason !== "durable-object-class-drift" && pool[0]!.reason !== "declared-class-binding-mismatch")
-    throw new Error(`The baseline probe refused the undeclared class for another reason: ${String(pool[0]!.reason)}`);
-  requireBaselineProbe([...list.filter((row) => row.role !== "PoolWorker"), { role: "PoolWorker", ok: true }]);
+  if (
+    pool[0]!.reason !== "durable-object-class-drift" &&
+    pool[0]!.reason !== "declared-class-binding-mismatch"
+  )
+    throw new Error(
+      `The baseline probe refused the undeclared class for another reason: ${String(pool[0]!.reason)}`,
+    );
+  requireBaselineProbe([
+    ...list.filter((row) => row.role !== "PoolWorker"),
+    { role: "PoolWorker", ok: true },
+  ]);
 }
 
 /**
@@ -121,9 +145,14 @@ export function requireUndeclaredClassRefused(rows: unknown) {
 export function requireReadOnlyPreflight(report: unknown) {
   const value = report as {
     fatal?: unknown;
-    mutations?: { deniedStateWrites?: unknown; blockedHttpMutations?: unknown; refusedBridgeRequests?: unknown };
+    mutations?: {
+      deniedStateWrites?: unknown;
+      blockedHttpMutations?: unknown;
+      refusedBridgeRequests?: unknown;
+    };
   } | null;
-  if (value?.fatal !== undefined) throw new Error(`The release preflight ended fatally: ${String(value.fatal)}`);
+  if (value?.fatal !== undefined)
+    throw new Error(`The release preflight ended fatally: ${String(value.fatal)}`);
   const mutations = value?.mutations;
   if (
     !mutations ||
@@ -138,16 +167,23 @@ export function requireRuntimeBootstrap(report: unknown) {
   requireReadOnlyPreflight(report);
   const steps = (report as { steps?: unknown } | null)?.steps;
   const step = Array.isArray(steps)
-    ? (steps as { step?: unknown; status?: unknown; summary?: unknown }[]).find((entry) => entry.step === "runtime-bootstrap")
+    ? (steps as { step?: unknown; status?: unknown; summary?: unknown }[]).find(
+        (entry) => entry.step === "runtime-bootstrap",
+      )
     : undefined;
-  if (step?.status !== "pass") throw new Error("The release preflight's runtime-bootstrap step did not pass");
+  if (step?.status !== "pass")
+    throw new Error("The release preflight's runtime-bootstrap step did not pass");
   const summary = step.summary as { colors?: unknown; migrationTag?: unknown } | undefined;
   if (summary?.migrationTag !== "untagged")
     throw new Error("The release preflight did not read PoolWorker as untagged");
-  const colors = Array.isArray(summary.colors) ? (summary.colors as { color?: unknown; source?: unknown }[]) : [];
+  const colors = Array.isArray(summary.colors)
+    ? (summary.colors as { color?: unknown; source?: unknown }[])
+    : [];
   for (const color of ["blue", "green"])
     if (!colors.some((entry) => entry.color === color && entry.source === "declared"))
-      throw new Error(`The release preflight did not plan ${color} through the declared class step`);
+      throw new Error(
+        `The release preflight did not plan ${color} through the declared class step`,
+      );
 }
 
 /**
@@ -155,10 +191,18 @@ export function requireRuntimeBootstrap(report: unknown) {
  * classes its tags still name. The plan must say so; only the lines that show it are kept.
  */
 export function requireDeletedFleetClasses(plan: string): string[] {
-  const lines = plan.split("\n").map((line) => line.trim()).filter(Boolean);
-  const deletion = (line: string) => /deleted_classes|deletedClasses|\bdelet/iu.test(line) || line.startsWith("-");
+  const lines = plan
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const deletion = (line: string) =>
+    /deleted_classes|deletedClasses|\bdelet/iu.test(line) || line.startsWith("-");
   const shown = ["PoolRuntimeBlue", "PoolRuntimeGreen"].map((name) => {
-    const evidence = lines.filter((line) => line.includes(name) && (deletion(line) || lines.some((other) => /deleted_classes|deletedClasses/u.test(other))));
+    const evidence = lines.filter(
+      (line) =>
+        line.includes(name) &&
+        (deletion(line) || lines.some((other) => /deleted_classes|deletedClasses/u.test(other))),
+    );
     if (!evidence.length) throw new Error(`The negative control's plan does not delete ${name}`);
     return evidence[0]!.slice(0, 240);
   });

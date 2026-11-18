@@ -44,7 +44,11 @@ export type RehearsalRecord = {
 const drainCapMs = 120_000;
 
 function expectRefusal(outcome: ReleaseOutcome, reason: string, worker?: string) {
-  if (outcome.ok || outcome.reason !== reason || (worker !== undefined && outcome.worker !== worker))
+  if (
+    outcome.ok ||
+    outcome.reason !== reason ||
+    (worker !== undefined && outcome.worker !== worker)
+  )
     throw new Error(`The rehearsal expected the release to stop at ${reason}`);
 }
 
@@ -109,7 +113,11 @@ export function rehearsalSteps(scenario: RehearsalScenario, hooks: RehearsalHook
       if (record.traffic.failed !== 0 || record.traffic.ok === 0)
         throw new Error("Requests through the rehearsal pool failed during the release");
       record.waits = await hooks.waits();
-      if (!record.waits.some((wait) => wait.name === "old-generation-drain" && wait.outcome === "observed"))
+      if (
+        !record.waits.some(
+          (wait) => wait.name === "old-generation-drain" && wait.outcome === "observed",
+        )
+      )
         throw new Error("The rehearsal did not observe the old-generation drain");
       const served = await hooks.serve();
       record.restart = await hooks.restart();
@@ -142,5 +150,15 @@ export function rehearsalReceipt(
   if (!teardown) throw new Error("Rehearsal resource teardown has not been verified");
   const { releases, traffic, waits, scenario, restart } = record;
   if (!restart) throw new Error("The rehearsal did not restart the serving runtime");
-  return { version: 1, ...identity, scenario, releases, traffic, waits, restart, serving: true, teardown: true };
+  return {
+    version: 1,
+    ...identity,
+    scenario,
+    releases,
+    traffic,
+    waits,
+    restart,
+    serving: true,
+    teardown: true,
+  };
 }

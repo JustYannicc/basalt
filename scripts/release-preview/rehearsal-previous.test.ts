@@ -40,7 +40,10 @@ test("the previous candidate is the candidate with the pool source from before i
   assert.equal(git(destination, "rev-parse", "HEAD^"), candidate);
   assert.equal(git(destination, "rev-parse", `${previous}^`), baseline);
   assert.equal(git(destination, "diff", "--name-only", baseline, previous), "");
-  assert.equal(readFileSync(join(destination, "containers/pool/releases.json"), "utf8"), '{"node":"v1"}');
+  assert.equal(
+    readFileSync(join(destination, "containers/pool/releases.json"), "utf8"),
+    '{"node":"v1"}',
+  );
   assert.equal(readFileSync(join(destination, "containers/pool/patch.diff"), "utf8"), "old patch");
   assert.equal(readFileSync(join(destination, "app.ts"), "utf8"), "app 2");
   assert.deepEqual(git(destination, "diff", "--name-only", "HEAD^", "HEAD").split("\n").sort(), [
@@ -89,9 +92,14 @@ test("a single-change rehearsal's baseline is its merge candidate's first parent
 });
 
 test("only a single-writer rehearsal may run infra-only, and only when asked exactly", () => {
-  for (const scenario of ["single-writer", "single-writer-resume", "single-writer-rollback"] as const) {
+  for (const scenario of [
+    "single-writer",
+    "single-writer-resume",
+    "single-writer-rollback",
+  ] as const) {
     assert.equal(rehearsalInfraOnly("true", scenario), true);
-    for (const off of [undefined, "", "false"]) assert.equal(rehearsalInfraOnly(off, scenario), false);
+    for (const off of [undefined, "", "false"])
+      assert.equal(rehearsalInfraOnly(off, scenario), false);
     assert.throws(() => rehearsalInfraOnly("1", scenario), /Invalid/);
   }
   for (const scenario of ["straight", "drain-resume"] as const)

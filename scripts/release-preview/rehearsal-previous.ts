@@ -20,7 +20,15 @@ export function commitPreviousCandidate(
 ): { baseline: string; previous: string } {
   const head = git(root, ["rev-parse", "HEAD"]);
   if (existsSync(destination)) throw new Error("The previous candidate checkout already exists");
-  const change = git(root, ["log", "-n", "1", "--format=%H", head, "--", "containers/pool/releases.json"]);
+  const change = git(root, [
+    "log",
+    "-n",
+    "1",
+    "--format=%H",
+    head,
+    "--",
+    "containers/pool/releases.json",
+  ]);
   if (!/^[a-f0-9]{40}$/u.test(change)) throw new Error("No pool pin change to step back from");
   git(root, ["worktree", "add", "--detach", destination, head]);
   git(destination, ["rm", "-r", "-q", "--", "containers/pool"]);
@@ -45,7 +53,10 @@ export function commitPreviousCandidate(
   const baseline = commit("rehearsal: baseline with the previous pool source");
   const previous = commit("rehearsal: previous candidate", "--allow-empty");
   git(destination, ["checkout", "-q", "--detach", baseline]);
-  if (git(destination, ["rev-parse", `${baseline}^`]) !== head || git(destination, ["rev-parse", `${previous}^`]) !== baseline)
+  if (
+    git(destination, ["rev-parse", `${baseline}^`]) !== head ||
+    git(destination, ["rev-parse", `${previous}^`]) !== baseline
+  )
     throw new Error("The rehearsal commits are not stacked on the candidate");
   return { baseline, previous };
 }
@@ -67,7 +78,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const destination = process.argv[2];
   if (!destination) throw new Error("Usage: rehearsal-previous.ts DESTINATION [scenario]");
   if (process.argv[3]?.startsWith("single-writer")) {
-    process.stdout.write(`baseline=${checkoutChangeBaseline(process.cwd(), resolve(destination))}\nsha=\n`);
+    process.stdout.write(
+      `baseline=${checkoutChangeBaseline(process.cwd(), resolve(destination))}\nsha=\n`,
+    );
   } else {
     const { baseline, previous } = commitPreviousCandidate(process.cwd(), resolve(destination));
     process.stdout.write(`baseline=${baseline}\nsha=${previous}\n`);

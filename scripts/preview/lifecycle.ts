@@ -155,10 +155,14 @@ function runChild(
       if (tooMuchOutput)
         return rejectPromise(new Error("Preview command output exceeded its private bound"));
       if (code !== 0) {
-        const lines = tail.split(/\r?\n/u).filter((line) => line.trim() && !/^\s+at /u.test(line)).slice(-80);
+        const lines = tail
+          .split(/\r?\n/u)
+          .filter((line) => line.trim() && !/^\s+at /u.test(line))
+          .slice(-80);
         return rejectPromise(
           new Error(
-            "Preview command failed" + (signal ? " with " + signal : " with exit " + code) +
+            "Preview command failed" +
+              (signal ? " with " + signal : " with exit " + code) +
               (lines.length ? ":\n" + redactor(environment, process.env)(lines.join("\n")) : ""),
           ),
         );
@@ -176,7 +180,16 @@ async function runAlchemy(
 ): Promise<void> {
   await runChild(
     "bun",
-    alchemyArgs("--log-level", "none", action, config, "--stage", identity.stage, "--yes", "--no-input"),
+    alchemyArgs(
+      "--log-level",
+      "none",
+      action,
+      config,
+      "--stage",
+      identity.stage,
+      "--yes",
+      "--no-input",
+    ),
     cloudDirectory,
     environment,
   );
@@ -451,10 +464,19 @@ export async function redeployStage(
 ): Promise<void> {
   if (subject.kind !== "rehearsal") throw new Error("Only a rehearsal stage is redeployed plainly");
   const config = stageEnvironment(subject, source);
-  const seedFile = join(root, ".local", "previews", `seed-${stageNames(subject).slug}-${randomUUID()}.json`);
+  const seedFile = join(
+    root,
+    ".local",
+    "previews",
+    `seed-${stageNames(subject).slug}-${randomUUID()}.json`,
+  );
   await mkdir(dirname(seedFile), { recursive: true, mode: 0o700 });
   await materializePreviewBrand(root, config, () =>
-    services.deploy(config, { ...config.deploy, ...config.seed, ...extra, PREVIEW_AUTH_SEED_OUTPUT: seedFile }, seedFile),
+    services.deploy(
+      config,
+      { ...config.deploy, ...config.seed, ...extra, PREVIEW_AUTH_SEED_OUTPUT: seedFile },
+      seedFile,
+    ),
   );
 }
 
@@ -472,8 +494,14 @@ export async function planStageVariant(
   const config = stageEnvironment(subject, source);
   const path = join(root, edit.path);
   const original = await readFile(path, "utf8");
-  if (original.split(edit.from).length !== 2) throw new Error("The negative control's source seam changed");
-  const seedFile = join(root, ".local", "previews", `seed-${stageNames(subject).slug}-${randomUUID()}.json`);
+  if (original.split(edit.from).length !== 2)
+    throw new Error("The negative control's source seam changed");
+  const seedFile = join(
+    root,
+    ".local",
+    "previews",
+    `seed-${stageNames(subject).slug}-${randomUUID()}.json`,
+  );
   let output = "";
   await materializePreviewBrand(root, config, async () => {
     await writeFile(path, original.replace(edit.from, edit.to));
@@ -507,7 +535,8 @@ export async function planStageVariant(
       await writeFile(path, original);
     }
   });
-  if ((await readFile(path, "utf8")) !== original) throw new Error("The negative control's source was not restored");
+  if ((await readFile(path, "utf8")) !== original)
+    throw new Error("The negative control's source was not restored");
   return output;
 }
 
@@ -520,7 +549,8 @@ export async function applyRehearsalFixture(
   source: NodeJS.ProcessEnv,
   input: { organization: string; pools: readonly string[] },
 ): Promise<void> {
-  if (subject.kind !== "rehearsal") throw new Error("Only a rehearsal stage takes the seed fixture");
+  if (subject.kind !== "rehearsal")
+    throw new Error("Only a rehearsal stage takes the seed fixture");
   const config = stageCleanupEnvironment(subject, source);
   let failure: unknown;
   try {
@@ -637,10 +667,7 @@ async function main(): Promise<void> {
   else if (mode === "deploy") await deployStage(root, subject, process.env);
   else if (mode === "destroy") await destroyStage(root, subject, process.env);
   else if (mode === "verify") await verifyStageAbsent(root, subject, process.env);
-  else
-    throw new Error(
-      "Usage: lifecycle.ts plan|deploy|destroy|verify PR_NUMBER|rehearsal-N",
-    );
+  else throw new Error("Usage: lifecycle.ts plan|deploy|destroy|verify PR_NUMBER|rehearsal-N");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

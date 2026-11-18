@@ -1,5 +1,6 @@
 /** Names whose values never reach a public log: credentials, keys, identities and account names. */
-const secretName = /TOKEN|KEY|SECRET|PASSWORD|DSN|AUTH|COOKIE|SESSION|CREDENTIAL|ACCOUNT_ID|ORGANIZATION|EMAIL/u;
+const secretName =
+  /TOKEN|KEY|SECRET|PASSWORD|DSN|AUTH|COOKIE|SESSION|CREDENTIAL|ACCOUNT_ID|ORGANIZATION|EMAIL/u;
 
 /**
  * Removes every secret-named environment value, then bearer tokens, JWTs and long hex strings, from
@@ -11,7 +12,9 @@ export function redactor(...sources: NodeJS.ProcessEnv[]): (text: string) => str
     ...new Set(
       sources.flatMap((source) =>
         Object.entries(source).flatMap(([name, value]) =>
-          secretName.test(name) && typeof value === "string" && value.trim().length >= 6 ? [value.trim()] : [],
+          secretName.test(name) && typeof value === "string" && value.trim().length >= 6
+            ? [value.trim()]
+            : [],
         ),
       ),
     ),
@@ -30,10 +33,19 @@ export function redactor(...sources: NodeJS.ProcessEnv[]): (text: string) => str
 export function describeError(error: unknown, redact: (text: string) => string, depth = 0): string {
   if (depth > 4) return "";
   if (error instanceof AggregateError)
-    return [redact(error.message), ...error.errors.map((item) => describeError(item, redact, depth + 1))].join("\n");
+    return [
+      redact(error.message),
+      ...error.errors.map((item) => describeError(item, redact, depth + 1)),
+    ].join("\n");
   if (error instanceof Error) {
-    const stack = (error.stack ?? `${error.name}: ${error.message}`).split("\n").slice(0, 8).join("\n");
-    const cause = error.cause === undefined ? "" : `\ncaused by: ${describeError(error.cause, redact, depth + 1)}`;
+    const stack = (error.stack ?? `${error.name}: ${error.message}`)
+      .split("\n")
+      .slice(0, 8)
+      .join("\n");
+    const cause =
+      error.cause === undefined
+        ? ""
+        : `\ncaused by: ${describeError(error.cause, redact, depth + 1)}`;
     return redact(stack) + cause;
   }
   return redact(String(error));

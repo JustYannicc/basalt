@@ -42,7 +42,10 @@ const same = (left?: SlotIdentity | null, right?: SlotIdentity | null) =>
 /** The controller's own choice: ready, identified, another instance, below the fleet's target. */
 export function readySibling(observation: Observation, active: SlotIdentity) {
   const targetActive = observation.fleet?.permission?.configuration?.targetActive;
-  if (observation.fleet?.permission?.enabled !== true || !(typeof targetActive === "number" && targetActive > 0))
+  if (
+    observation.fleet?.permission?.enabled !== true ||
+    !(typeof targetActive === "number" && targetActive > 0)
+  )
     throw new RestartRefusal("baseline-fleet-policy");
   return (observation.fleet.resources ?? []).some(
     (row) =>
@@ -71,10 +74,17 @@ export type RestartResult = {
   failedRequests: number;
 };
 
-export async function runRestartCheck(deps: RestartDependencies, plan = restartPlan): Promise<RestartResult> {
+export async function runRestartCheck(
+  deps: RestartDependencies,
+  plan = restartPlan,
+): Promise<RestartResult> {
   const baseline = await deps.observe();
   const active = baseline.selection?.active?.identity;
-  if (!active || !same(baseline.activeHealth?.identity, active) || !((baseline.activeHealth?.leaseMs ?? 0) > 0))
+  if (
+    !active ||
+    !same(baseline.activeHealth?.identity, active) ||
+    !((baseline.activeHealth?.leaseMs ?? 0) > 0)
+  )
     throw new RestartRefusal("baseline-active-health");
   let cellConcurrency = 0;
   let siblingObserves = 0;
@@ -107,7 +117,9 @@ export async function runRestartCheck(deps: RestartDependencies, plan = restartP
       same(observation.activeHealth?.identity, fresh) &&
       (observation.activeHealth?.leaseMs ?? 0) > 0
     ) {
-      const during = deps.requests().filter((request) => request.ok && request.startedAt >= signal && request.endedAt <= now);
+      const during = deps
+        .requests()
+        .filter((request) => request.ok && request.startedAt >= signal && request.endedAt <= now);
       if (during.length === 0) throw new RestartRefusal("no-service-while-primary-down");
       return {
         cellConcurrency,

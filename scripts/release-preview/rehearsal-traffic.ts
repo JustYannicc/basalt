@@ -50,13 +50,20 @@ export function modelTraffic(
 type Socket = {
   readyState: number;
   close(): void;
-  addEventListener(type: string, listener: (event: unknown) => void, options?: { once?: boolean }): void;
+  addEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: { once?: boolean },
+  ): void;
 };
 type SocketFactory = (url: string, headers: Record<string, string>) => Socket;
 
 /** Node's WebSocket accepts headers, which the pool's bearer-authenticated upgrade needs. */
 const nodeSocket: SocketFactory = (url, headers) =>
-  new (WebSocket as unknown as new (url: string, init: { headers: Record<string, string> }) => Socket)(url, {
+  new (WebSocket as unknown as new (
+    url: string,
+    init: { headers: Record<string, string> },
+  ) => Socket)(url, {
     headers,
   });
 
@@ -73,16 +80,24 @@ export async function holdModelSocket(
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const socket = open(url.href, { Authorization: `Bearer ${access.modelKey}` });
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("The held model socket did not open")), timeoutMs);
+    const timer = setTimeout(
+      () => reject(new Error("The held model socket did not open")),
+      timeoutMs,
+    );
     socket.addEventListener("open", () => (clearTimeout(timer), resolve()), { once: true });
-    socket.addEventListener("error", () => (clearTimeout(timer), reject(new Error("The held model socket failed to open"))), { once: true });
+    socket.addEventListener(
+      "error",
+      () => (clearTimeout(timer), reject(new Error("The held model socket failed to open"))),
+      { once: true },
+    );
   });
   let closedEarly = false;
   socket.addEventListener("close", () => void (closedEarly = true), { once: true });
   return {
     close: async () => {
       // A socket the pool closed before the drain deadline would make the timeout scenario meaningless.
-      if (closedEarly) throw new Error("The held model socket closed before the rehearsal released it");
+      if (closedEarly)
+        throw new Error("The held model socket closed before the rehearsal released it");
       await new Promise<void>((resolve) => {
         socket.addEventListener("close", () => resolve(), { once: true });
         socket.close();

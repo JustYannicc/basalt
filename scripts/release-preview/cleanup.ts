@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { describeError, redactor } from "./redact.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpoint } from "./checkpoint.ts";
@@ -115,9 +114,5 @@ async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith("/cleanup.ts")) {
   try { await main(); }
-  catch (error) {
-    console.error(describeError(error, redactor(process.env)));
-    console.error("Preview cleanup failed; provider resource absence is not established");
-    process.exitCode = 1;
-  }
+  catch { console.error("Preview cleanup failed; provider resource absence is not established"); process.exitCode = 1; }
 }

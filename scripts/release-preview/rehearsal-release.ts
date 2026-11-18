@@ -41,7 +41,11 @@ export async function releaseWaits(directory: string): Promise<Wait[]> {
     .filter(Boolean)
     .map((line) => {
       const wait = JSON.parse(line) as Wait;
-      if (typeof wait.name !== "string" || typeof wait.outcome !== "string" || !Number.isSafeInteger(wait.milliseconds))
+      if (
+        typeof wait.name !== "string" ||
+        typeof wait.outcome !== "string" ||
+        !Number.isSafeInteger(wait.milliseconds)
+      )
         throw new Error("Invalid rehearsal wait record");
       return wait;
     });
@@ -62,7 +66,8 @@ export async function releaseInput(
     // Production sets the availability target to its clean pool and leaves automatic recovery unset.
     POOL_AVAILABILITY_TARGET: request.cleanPool,
     BASALT_REHEARSAL_STOP: request.stop ?? "",
-    BASALT_REHEARSAL_DRAIN_CAP_MS: request.drainCapMs === undefined ? "" : String(request.drainCapMs),
+    BASALT_REHEARSAL_DRAIN_CAP_MS:
+      request.drainCapMs === undefined ? "" : String(request.drainCapMs),
   };
 }
 
@@ -76,7 +81,11 @@ export async function adoptedSnapshot(directory: string): Promise<{ policies: un
     policies?: unknown;
   };
   const selection = value.selection;
-  if (selection?.epoch !== 1 || selection.active?.target?.slotId !== "legacy" || selection.active.fenced !== false)
+  if (
+    selection?.epoch !== 1 ||
+    selection.active?.target?.slotId !== "legacy" ||
+    selection.active.fenced !== false
+  )
     throw new Error("The previous release did not leave the legacy root adopted at epoch 1");
   if (!Array.isArray(value.policies)) throw new Error("The adopted snapshot has no policies");
   return { policies: value.policies };

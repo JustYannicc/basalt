@@ -12,7 +12,8 @@ export async function rehearsalOutputStacks(
   stacks: readonly string[],
   holds: (stack: string) => Promise<boolean>,
 ): Promise<string[]> {
-  if (!isRehearsalStage(stage)) throw new Error("Stage outputs are removed only for rehearsal stages");
+  if (!isRehearsalStage(stage))
+    throw new Error("Stage outputs are removed only for rehearsal stages");
   const present: string[] = [];
   for (const stack of stacks) {
     if (!stack.startsWith(`${rehearsalStack}-`) || stack === rehearsalFixtureStack) continue;
@@ -55,7 +56,8 @@ async function main(mode: string | undefined, stage: string | undefined) {
     { stage },
   );
   const { CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN } = process.env;
-  if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_API_TOKEN) throw new Error("Cloudflare credentials are missing");
+  if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_API_TOKEN)
+    throw new Error("Cloudflare credentials are missing");
   const exit = await Effect.runPromiseExit(
     program.pipe(
       withReleaseRuntime,

@@ -1,4 +1,8 @@
-import { isRehearsalStage, productionRelease, rehearsalStack } from "../release-barrier/release-stage.ts";
+import {
+  isRehearsalStage,
+  productionRelease,
+  rehearsalStack,
+} from "../release-barrier/release-stage.ts";
 
 /**
  * What a disposable stack exists for: one PR's preview, or one release rehearsal run. Everything a
@@ -38,7 +42,9 @@ export const rehearsalSubject = (number: number) => stageSubject("rehearsal", nu
 
 /** PR call sites still pass a bare number; it always means a pull request. */
 export function toSubject(value: number | StageSubject): StageSubject {
-  return typeof value === "number" ? pullRequestSubject(value) : stageSubject(value.kind, value.number);
+  return typeof value === "number"
+    ? pullRequestSubject(value)
+    : stageSubject(value.kind, value.number);
 }
 
 export function stageNames(value: number | StageSubject): StageNames {
@@ -61,7 +67,8 @@ export function subjectFromStage(stage: string | undefined): StageSubject | unde
   if (stage === undefined || !/^test-(?:pr|rehearsal)-/.test(stage)) return undefined;
   const pr = /^test-pr-([1-9][0-9]*)$/.exec(stage)?.[1];
   if (pr !== undefined && Number.isSafeInteger(Number(pr))) return pullRequestSubject(Number(pr));
-  if (isRehearsalStage(stage)) return rehearsalSubject(Number(stage.slice("test-rehearsal-".length)));
+  if (isRehearsalStage(stage))
+    return rehearsalSubject(Number(stage.slice("test-rehearsal-".length)));
   throw new Error("Disposable stage name is malformed");
 }
 
@@ -79,8 +86,7 @@ export function requireDisposableStage(stage: string | undefined): StageSubject 
  */
 export function requireCleanupStage(stage: string, configured: string | undefined): StageSubject {
   const subject = requireDisposableStage(stage);
-  if (stage !== configured)
-    throw new Error("Preview cleanup stage does not match ALCHEMY_STAGE.");
+  if (stage !== configured) throw new Error("Preview cleanup stage does not match ALCHEMY_STAGE.");
   return subject;
 }
 

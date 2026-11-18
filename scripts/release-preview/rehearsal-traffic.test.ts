@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { holdModelSocket, modelTraffic } from "./rehearsal-traffic.ts";
 
-const access = { computerId: "computer", modelUrl: "https://app.rehearsal-11.example.invalid", modelKey: "key" };
+const access = {
+  computerId: "computer",
+  modelUrl: "https://app.rehearsal-11.example.invalid",
+  modelKey: "key",
+};
 
 test("traffic counts real request outcomes until stopped", async () => {
   let calls = 0;

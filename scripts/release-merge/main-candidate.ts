@@ -193,7 +193,9 @@ export async function passedMainRehearsal(
   commit: string,
   fetcher: MainCandidateFetch = fetch,
 ): Promise<boolean> {
-  return new MainHistory(repository, token, fetcher).passedRehearsal(fullSha(commit, "main commit"));
+  return new MainHistory(repository, token, fetcher).passedRehearsal(
+    fullSha(commit, "main commit"),
+  );
 }
 
 /**

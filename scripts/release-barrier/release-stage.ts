@@ -90,7 +90,10 @@ export function rehearsalDrainCap(env: NodeJS.ProcessEnv = process.env): number 
     );
   const milliseconds = Number(value);
   if (!/^[1-9][0-9]{3,6}$/u.test(value) || milliseconds > 30 * 60_000)
-    throw new BarrierRefusal("release-rehearsal-drain-cap-invalid", "BASALT_REHEARSAL_DRAIN_CAP_MS");
+    throw new BarrierRefusal(
+      "release-rehearsal-drain-cap-invalid",
+      "BASALT_REHEARSAL_DRAIN_CAP_MS",
+    );
   return milliseconds;
 }
 
@@ -113,7 +116,9 @@ export function rehearsalJobCandidate(env: NodeJS.ProcessEnv, root: string): str
     env.GITHUB_ACTIONS !== "true" ||
     env.GITHUB_REPOSITORY !== "JustYannicc/basalt" ||
     env.GITHUB_JOB !== "rehearsal" ||
-    !env.GITHUB_WORKFLOW_REF?.startsWith("JustYannicc/basalt/.github/workflows/release-rehearsal.yml@") ||
+    !env.GITHUB_WORKFLOW_REF?.startsWith(
+      "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@",
+    ) ||
     !/^[a-f0-9]{40}$/u.test(candidate)
   )
     return undefined;

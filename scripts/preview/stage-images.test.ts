@@ -14,24 +14,34 @@ const catalog = [
 ];
 
 test("only this rehearsal stage's repositories under the rehearsal stack are selected", () => {
-  assert.deepEqual(stageRepositories(catalog, account, "test-rehearsal-81231"), catalog.slice(0, 3));
+  assert.deepEqual(
+    stageRepositories(catalog, account, "test-rehearsal-81231"),
+    catalog.slice(0, 3),
+  );
   for (const stage of ["production", "test-pr-12"])
     assert.throws(() => stageRepositories(catalog, account, stage), /only for rehearsal stages/);
 });
 
 test("every tagged manifest in those repositories is deleted by digest, then verify sees none", async () => {
   const deleted: string[] = [];
-  const tags = new Map([[catalog[0]!, ["one", "two"]], [catalog[1]!, ["four"]], [catalog[2]!, ["three"]]]);
+  const tags = new Map([
+    [catalog[0]!, ["one", "two"]],
+    [catalog[1]!, ["four"]],
+    [catalog[2]!, ["three"]],
+  ]);
   const fetcher = (async (input: string | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes("/credentials")) return Response.json({ success: true, result: { username: "u", password: "p" } });
+    if (url.includes("/credentials"))
+      return Response.json({ success: true, result: { username: "u", password: "p" } });
     if (url.endsWith("_catalog?n=10000")) return Response.json({ repositories: catalog });
     const repository = catalog.find((name) => url.includes(`/v2/${name}/`));
     assert.ok(repository, url);
     assert.ok(tags.has(repository), "a production or foreign repository was touched");
     if (url.endsWith("/tags/list")) return Response.json({ tags: tags.get(repository) });
     if (init?.method === "HEAD")
-      return new Response(null, { headers: { "docker-content-digest": `sha256:${"a".repeat(64)}` } });
+      return new Response(null, {
+        headers: { "docker-content-digest": `sha256:${"a".repeat(64)}` },
+      });
     if (init?.method === "DELETE") {
       deleted.push(repository);
       tags.set(repository, []);

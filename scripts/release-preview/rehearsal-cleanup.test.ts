@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ownRehearsalRun, provenTeardown, rehearsalCheckpoints, rehearsalCleanupRun } from "./rehearsal-cleanup.ts";
+import {
+  ownRehearsalRun,
+  provenTeardown,
+  rehearsalCheckpoints,
+  rehearsalCleanupRun,
+} from "./rehearsal-cleanup.ts";
 import { nothingDeployedReceipt } from "./rehearsal.ts";
 
 const repository = "owner/basalt";
@@ -28,7 +33,10 @@ test("only an unsuccessful run of this repository's rehearsal workflow is cleane
     { head_repository: { full_name: "fork/basalt" } },
     { id: 0 },
   ])
-    assert.throws(() => rehearsalCleanupRun(event(run), repository), /Invalid rehearsal cleanup event/);
+    assert.throws(
+      () => rehearsalCleanupRun(event(run), repository),
+      /Invalid rehearsal cleanup event/,
+    );
 });
 
 test("each checkpoint artifact of exactly that run names one rehearsal stage", () => {
@@ -48,12 +56,22 @@ test("each checkpoint artifact of exactly that run names one rehearsal stage", (
     { id: 2, subject: { kind: "rehearsal", number: 8122 } },
   ]);
   assert.throws(() => rehearsalCheckpoints({}, 99), /Invalid/);
-  assert.throws(() => rehearsalCheckpoints(Array.from({ length: 100 }, () => ({})), 99), /Invalid/);
+  assert.throws(
+    () =>
+      rehearsalCheckpoints(
+        Array.from({ length: 100 }, () => ({})),
+        99,
+      ),
+    /Invalid/,
+  );
 });
 
 test("only a receipt for exactly that stage with verified teardown skips its cleanup", () => {
   const subject = { kind: "rehearsal", number: 8121 } as const;
-  assert.equal(provenTeardown({ version: 1, stage: "test-rehearsal-8121", teardown: true }, subject), true);
+  assert.equal(
+    provenTeardown({ version: 1, stage: "test-rehearsal-8121", teardown: true }, subject),
+    true,
+  );
   for (const receipt of [
     undefined,
     { version: 1, stage: "test-rehearsal-8122", teardown: true },
@@ -64,15 +82,34 @@ test("only a receipt for exactly that stage with verified teardown skips its cle
 });
 
 test("the rehearsal's own cleanup job cleans only its own run", () => {
-  const env = { GITHUB_JOB: "cleanup", GITHUB_RUN_ID: "99", GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/release-rehearsal.yml@refs/pull/7/merge` };
+  const env = {
+    GITHUB_JOB: "cleanup",
+    GITHUB_RUN_ID: "99",
+    GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/release-rehearsal.yml@refs/pull/7/merge`,
+  };
   assert.equal(ownRehearsalRun(env, repository), 99);
-  for (const change of [{ GITHUB_JOB: "rehearsal" }, { GITHUB_RUN_ID: "0" }, { GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/deploy.yml@refs/heads/main` }])
-    assert.throws(() => ownRehearsalRun({ ...env, ...change }, repository), /Invalid rehearsal cleanup event/);
+  for (const change of [
+    { GITHUB_JOB: "rehearsal" },
+    { GITHUB_RUN_ID: "0" },
+    { GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/deploy.yml@refs/heads/main` },
+  ])
+    assert.throws(
+      () => ownRehearsalRun({ ...env, ...change }, repository),
+      /Invalid rehearsal cleanup event/,
+    );
 });
 
 test("a rehearsal that failed before deploying proves its stage holds nothing, for that stage only", () => {
   const subject = { kind: "rehearsal", number: 8121 } as const;
-  assert.deepEqual(nothingDeployedReceipt(subject), { version: 1, stage: "test-rehearsal-8121", deployed: false, teardown: true });
+  assert.deepEqual(nothingDeployedReceipt(subject), {
+    version: 1,
+    stage: "test-rehearsal-8121",
+    deployed: false,
+    teardown: true,
+  });
   assert.equal(provenTeardown(nothingDeployedReceipt(subject), subject), true);
-  assert.equal(provenTeardown(nothingDeployedReceipt({ kind: "rehearsal", number: 8122 }), subject), false);
+  assert.equal(
+    provenTeardown(nothingDeployedReceipt({ kind: "rehearsal", number: 8122 }), subject),
+    false,
+  );
 });

@@ -9,19 +9,36 @@ const loginFiles = {
 } as const;
 
 /** Lifecycle children provision resources; subscription files belong only to the native runner. */
-export function lifecycleEnvironment(source: NodeJS.ProcessEnv, mode: "deploy" | "cleanup"): NodeJS.ProcessEnv {
+export function lifecycleEnvironment(
+  source: NodeJS.ProcessEnv,
+  mode: "deploy" | "cleanup",
+): NodeJS.ProcessEnv {
   const names = [
-    "PATH", "HOME", "TMPDIR", "LANG", "BUN_INSTALL", "ALCHEMY_HOME", "RUNNER_TEMP", "GITHUB_ACTIONS",
-    "PREVIEW_STATE_KEY", "PREVIEW_MANIFEST_CHECKPOINTED",
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "BUN_INSTALL",
+    "ALCHEMY_HOME",
+    "RUNNER_TEMP",
+    "GITHUB_ACTIONS",
+    "PREVIEW_STATE_KEY",
+    "PREVIEW_MANIFEST_CHECKPOINTED",
     ...(mode === "deploy"
       ? [...requiredPreviewDeploySecrets, "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]
       : requiredPreviewCleanupSecrets),
   ];
-  return Object.fromEntries(names.flatMap(name => source[name] === undefined ? [] : [[name, source[name]]]));
+  return Object.fromEntries(
+    names.flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
+  );
 }
 
 /** The subscription-backed inputs: provider accounts, model traffic and the native serving check. */
-export const subscriptionSmokeInputs = ["PREVIEW_CLAUDE_MODEL", "PREVIEW_CODEX_MODEL", ...Object.keys(loginFiles)] as const;
+export const subscriptionSmokeInputs = [
+  "PREVIEW_CLAUDE_MODEL",
+  "PREVIEW_CODEX_MODEL",
+  ...Object.keys(loginFiles),
+] as const;
 
 /** The product sign-in a stage's pools are created through; needed even without subscriptions. */
 export function validateSmokeIdentity(source: NodeJS.ProcessEnv): void {
@@ -40,7 +57,9 @@ export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
   }
   for (const name of Object.keys(loginFiles)) {
     let value: unknown;
-    try { value = JSON.parse(source[name]!); } catch {
+    try {
+      value = JSON.parse(source[name]!);
+    } catch {
       throw new Error(`Preview smoke input must contain JSON: ${name}`);
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {

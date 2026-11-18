@@ -14,9 +14,14 @@ const stages = [
 const name = (role: string, stage: string) => `basalt-${role.toLowerCase()}-${stage}`;
 // As alchemy.run.ts declares them: a rehearsal stage has no apex site and no app pages.
 const roles = (stage: string): readonly string[] =>
-  stage === "production" ? baselineRoles : baselineRoles.filter((role) => role !== "PublicSite" && role !== "AppPages");
+  stage === "production"
+    ? baselineRoles
+    : baselineRoles.filter((role) => role !== "PublicSite" && role !== "AppPages");
 
-async function probe(context: { after: (fn: () => Promise<void>) => void }, environment: NodeJS.ProcessEnv) {
+async function probe(
+  context: { after: (fn: () => Promise<void>) => void },
+  environment: NodeJS.ProcessEnv,
+) {
   const requests: { method: string | undefined; path: string }[] = [];
   const server = createServer(async (request, response) => {
     for await (const _chunk of request);
@@ -58,7 +63,12 @@ async function probe(context: { after: (fn: () => Promise<void>) => void }, envi
         resources: {
           bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: "a".repeat(16) }],
           script_runtime: {},
-          script: { placement: { mode: "targeted", target: [{ id: 39, type: "region", region: "aws:eu-central-1" }] } },
+          script: {
+            placement: {
+              mode: "targeted",
+              target: [{ id: 39, type: "region", region: "aws:eu-central-1" }],
+            },
+          },
         },
       };
     else {
@@ -117,8 +127,16 @@ for (const { stage, environment } of [
     assert.equal(error, undefined);
     assert.ok(rows);
     assert.deepEqual(rows.map((row) => row.role).sort(), [...roles(stage)].sort());
-    assert.ok(rows.every((row) => row.ok), JSON.stringify(rows.filter((row) => !row.ok).map((row) => [row.role, row.reason])));
-    assert.deepEqual(projected.sort(), roles(stage).map((role) => name(role, stage)).sort());
+    assert.ok(
+      rows.every((row) => row.ok),
+      JSON.stringify(rows.filter((row) => !row.ok).map((row) => [row.role, row.reason])),
+    );
+    assert.deepEqual(
+      projected.sort(),
+      roles(stage)
+        .map((role) => name(role, stage))
+        .sort(),
+    );
     assert.ok(requests.every((request) => request.method === "GET"));
     const reads = requests.filter((request) => !request.path.endsWith("/scripts"));
     assert.ok(reads.length >= roles(stage).length * 2);

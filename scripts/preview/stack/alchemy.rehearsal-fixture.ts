@@ -12,7 +12,9 @@ import { postgresUrl } from "../../../.upstream/apps/hosted/cloud/src/infrastruc
 import { isRehearsalStage } from "../../release-barrier/release-stage.ts";
 import { rehearsalFixtureStack } from "../subject.ts";
 
-const fixture = fileURLToPath(new URL("../../release-preview/rehearsal-fixture-sql.ts", import.meta.url));
+const fixture = fileURLToPath(
+  new URL("../../release-preview/rehearsal-fixture-sql.ts", import.meta.url),
+);
 
 /**
  * Production's six empty policies stay dirty because the host reads those pools as not native,
@@ -21,16 +23,25 @@ const fixture = fileURLToPath(new URL("../../release-preview/rehearsal-fixture-s
  */
 export default Alchemy.Stack(
   rehearsalFixtureStack,
-  { providers: Layer.mergeAll(Cloudflare.providers(), Planetscale.providers(), Command.providers()), state: stackState },
+  {
+    providers: Layer.mergeAll(Cloudflare.providers(), Planetscale.providers(), Command.providers()),
+    state: stackState,
+  },
   Effect.gen(function* () {
     const stage = yield* Stage;
     if (!isRehearsalStage(stage))
-      return yield* Effect.die(new Error("The rehearsal fixture is restricted to rehearsal stages."));
+      return yield* Effect.die(
+        new Error("The rehearsal fixture is restricted to rehearsal stages."),
+      );
     const database = yield* Config.NonEmptyString("TEST_STAGE_DATABASE");
     if (database !== `basalt-preview-${stage.slice("test-".length)}`)
-      return yield* Effect.die(new Error("The rehearsal fixture database does not match its stage."));
+      return yield* Effect.die(
+        new Error("The rehearsal fixture database does not match its stage."),
+      );
     // Destroy evaluates the stack without the fixture's inputs, so it declares nothing.
-    const organization = yield* Config.String("REHEARSAL_ORGANIZATION").pipe(Config.withDefault(""));
+    const organization = yield* Config.String("REHEARSAL_ORGANIZATION").pipe(
+      Config.withDefault(""),
+    );
     const pools = yield* Config.String("REHEARSAL_UNREGISTERED_POOLS").pipe(Config.withDefault(""));
     if (!organization || !pools) return { stage };
     const role = yield* Planetscale.PostgresRole("RehearsalFixtureRole", {

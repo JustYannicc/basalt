@@ -27,7 +27,9 @@ export const provisioningStack = Stack(
   },
   Effect.gen(function* () {
     if (stackNameForStage(yield* Stage) !== stackNameForStage(process.env.ALCHEMY_STAGE))
-      return yield* Effect.die(new Error("The release stage and ALCHEMY_STAGE name different stacks."));
+      return yield* Effect.die(
+        new Error("The release stage and ALCHEMY_STAGE name different stacks."),
+      );
     return yield* provisioningDeclarations;
   }),
 );

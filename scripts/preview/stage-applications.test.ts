@@ -6,7 +6,11 @@ import { ownedByStage } from "./stage-images.ts";
 const stage = "test-rehearsal-81231";
 
 test("only this stage's resources are owned, by whole stage name", () => {
-  for (const name of [`basalt-${stage}-pool-runtime-blue`, `basalt-${stage}-pool-runtime`, `basalt-rehearsal-poolcontainer-${stage}-abc`])
+  for (const name of [
+    `basalt-${stage}-pool-runtime-blue`,
+    `basalt-${stage}-pool-runtime`,
+    `basalt-rehearsal-poolcontainer-${stage}-abc`,
+  ])
     assert.equal(ownedByStage(name, stage), true, name);
   for (const name of [
     "basalt-production-pool-runtime-blue",
@@ -38,7 +42,10 @@ test("retained fleet applications of the stage are deleted, and verify refuses a
     return Response.json({ success: true, result: apps });
   }) as typeof fetch;
   const input = { accountId: "1".repeat(32), token: "t", stage };
-  assert.deepEqual(await stageApplications("delete", input, fetcher), [`basalt-${stage}-pool-runtime-blue`, `basalt-${stage}-pool-runtime-green`]);
+  assert.deepEqual(await stageApplications("delete", input, fetcher), [
+    `basalt-${stage}-pool-runtime-blue`,
+    `basalt-${stage}-pool-runtime-green`,
+  ]);
   assert.deepEqual(deleted, ["a", "b"]);
   await stageApplications("verify", input, fetcher);
   apps.push({ id: "d", name: `basalt-${stage}-pool-runtime-blue` });

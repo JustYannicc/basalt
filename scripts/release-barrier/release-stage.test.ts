@@ -86,7 +86,10 @@ test("rehearsal controls refuse on production instead of being ignored", async (
     { BASALT_REHEARSAL_STOP: "after-adopt" },
   ]) {
     assert.throws(() => rehearsalStop(env), refusal("release-rehearsal-stop-on-production"));
-    await assert.rejects(stopAfterAdopt(inspector, "unused", env), refusal("release-rehearsal-stop-on-production"));
+    await assert.rejects(
+      stopAfterAdopt(inspector, "unused", env),
+      refusal("release-rehearsal-stop-on-production"),
+    );
   }
   assert.throws(
     () => releaseEntryTarget({ ...production, BASALT_REHEARSAL_STOP: "after-adopt" }),
@@ -115,10 +118,13 @@ test("a rehearsal stops after adopt only when asked, and caps the drain within b
       stopAfterAdopt(inspector, directory, { ...env, BASALT_REHEARSAL_STOP: "after-adopt" }),
       refusal("release-rehearsal-stopped-after-adopt"),
     );
-    assert.deepEqual(JSON.parse(await readFile(join(directory, "rehearsal-adopted.json"), "utf8")), {
-      selection: { expectedEpoch: 1 },
-      policies: [{ pool: "clean", dirty: false }],
-    });
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "rehearsal-adopted.json"), "utf8")),
+      {
+        selection: { expectedEpoch: 1 },
+        policies: [{ pool: "clean", dirty: false }],
+      },
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -175,7 +181,10 @@ test("only a rehearsal records how long it waited", async (t) => {
       { name: "image-capacity", outcome: "refused", milliseconds: 5_000 },
     ]);
     await timeRehearsalWait(root, "production", async () => 1, { ALCHEMY_STAGE: "production" });
-    assert.equal((await readFile(join(root, "rehearsal-waits.jsonl"), "utf8")).split("\n").length, 3);
+    assert.equal(
+      (await readFile(join(root, "rehearsal-waits.jsonl"), "utf8")).split("\n").length,
+      3,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -188,8 +197,12 @@ test("after promote a rehearsal refuses unless the fleet permission names the se
     { color: "green", applicationId: "green-app" },
   ];
   const client = (active: string, serving: string | undefined, permission = true) => ({
-    fleet: async () => ({ permission: permission ? { configuration: { active, applications } } : undefined }),
-    inspect: async () => ({ selection: serving ? { active: { target: { applicationId: serving } } } : undefined }),
+    fleet: async () => ({
+      permission: permission ? { configuration: { active, applications } } : undefined,
+    }),
+    inspect: async () => ({
+      selection: serving ? { active: { target: { applicationId: serving } } } : undefined,
+    }),
   });
   const env = { ALCHEMY_STAGE: rehearsal };
   await assertRehearsalFleetActive(client("green", "green-app"), env);
@@ -216,8 +229,14 @@ test("only a rehearsal stage admits its stage's sign-in seed and pool budget com
   process.env.ALCHEMY_STAGE = rehearsal;
   assert.equal(supportedCommand("PreviewAuthSeed"), true);
   assert.equal(commandPhase("PreviewAuthSeed", seed), "database");
-  assert.equal(commandPhase("PreviewPoolSize", { command: "node scripts/database-pool-budget.ts" }), "database");
-  assert.throws(() => commandPhase("PreviewAuthSeed", { command: "node other.ts" }), refusal("unsupported-command"));
+  assert.equal(
+    commandPhase("PreviewPoolSize", { command: "node scripts/database-pool-budget.ts" }),
+    "database",
+  );
+  assert.throws(
+    () => commandPhase("PreviewAuthSeed", { command: "node other.ts" }),
+    refusal("unsupported-command"),
+  );
   assert.equal(commandPhase("Migrations", { command: "node src/migrate.ts" }), "database");
 });
 
@@ -229,16 +248,28 @@ test("every rehearsal stop point refuses on production and fires only at its own
       () => stopAt(point, { ALCHEMY_STAGE: "production", BASALT_REHEARSAL_STOP: point }),
       refusal("release-rehearsal-stop-on-production"),
     );
-    assert.throws(() => stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: point }), refusal(`release-rehearsal-stopped-${point}`));
+    assert.throws(
+      () => stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: point }),
+      refusal(`release-rehearsal-stopped-${point}`),
+    );
     for (const other of rehearsalStops.filter((candidate) => candidate !== point))
-      assert.doesNotThrow(() => stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: other }));
+      assert.doesNotThrow(() =>
+        stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: other }),
+      );
     assert.doesNotThrow(() => stopAt(point, { ALCHEMY_STAGE: "production" }));
   }
   assert.throws(
-    () => stopBeforePromotionGate({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "before-promotion-gate" }),
+    () =>
+      stopBeforePromotionGate({
+        ALCHEMY_STAGE: rehearsal,
+        BASALT_REHEARSAL_STOP: "before-promotion-gate",
+      }),
     refusal("release-rehearsal-stopped-before-promotion-gate"),
   );
-  assert.throws(() => rehearsalStop({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "after-bind-red" }), refusal("release-rehearsal-stop-unknown"));
+  assert.throws(
+    () => rehearsalStop({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "after-bind-red" }),
+    refusal("release-rehearsal-stop-unknown"),
+  );
 });
 
 test("the preflight trusts a rehearsal only from the rehearsal job, for the checked-out candidate", async () => {
@@ -250,14 +281,29 @@ test("the preflight trusts a rehearsal only from the rehearsal job, for the chec
     GITHUB_ACTIONS: "true",
     GITHUB_REPOSITORY: "JustYannicc/basalt",
     GITHUB_JOB: "rehearsal",
-    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
+    GITHUB_WORKFLOW_REF:
+      "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
     BASALT_RELEASE_CANDIDATE: head,
   };
-  assert.deepEqual(assertPreflightContext(env, undefined, process.cwd()), { candidate: head, mode: "check" });
-  for (const change of [{ GITHUB_JOB: "deploy" }, { BASALT_RELEASE_CANDIDATE: "a".repeat(40) }, { GITHUB_REPOSITORY: "fork/basalt" }, { GITHUB_ACTIONS: "false" }])
-    assert.throws(() => assertPreflightContext({ ...env, ...change }, undefined, process.cwd()), refusal("release-preflight-untrusted-context"));
+  assert.deepEqual(assertPreflightContext(env, undefined, process.cwd()), {
+    candidate: head,
+    mode: "check",
+  });
+  for (const change of [
+    { GITHUB_JOB: "deploy" },
+    { BASALT_RELEASE_CANDIDATE: "a".repeat(40) },
+    { GITHUB_REPOSITORY: "fork/basalt" },
+    { GITHUB_ACTIONS: "false" },
+  ])
+    assert.throws(
+      () => assertPreflightContext({ ...env, ...change }, undefined, process.cwd()),
+      refusal("release-preflight-untrusted-context"),
+    );
   // Production's own contexts are untouched: without a stage it still demands the trusted main dispatch.
-  assert.throws(() => assertPreflightContext({ ...env, ALCHEMY_STAGE: undefined }, undefined, process.cwd()), refusal("release-preflight-untrusted-context"));
+  assert.throws(
+    () => assertPreflightContext({ ...env, ALCHEMY_STAGE: undefined }, undefined, process.cwd()),
+    refusal("release-preflight-untrusted-context"),
+  );
 });
 
 test("only the rehearsal job reads a rehearsal stage, and a production context never does", async () => {
@@ -268,7 +314,8 @@ test("only the rehearsal job reads a rehearsal stage, and a production context n
     GITHUB_ACTIONS: "true",
     GITHUB_REPOSITORY: "JustYannicc/basalt",
     GITHUB_JOB: "rehearsal",
-    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
+    GITHUB_WORKFLOW_REF:
+      "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
     BASALT_RELEASE_CANDIDATE: head,
   };
   assert.equal(rehearsalJobCandidate(env, process.cwd()), head);
@@ -276,10 +323,11 @@ test("only the rehearsal job reads a rehearsal stage, and a production context n
     { ALCHEMY_STAGE: undefined },
     { ALCHEMY_STAGE: "production" },
     { GITHUB_JOB: "backup" },
-    { GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-main.yml@refs/heads/main" },
+    {
+      GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-main.yml@refs/heads/main",
+    },
     { GITHUB_WORKFLOW_REF: undefined },
     { BASALT_RELEASE_CANDIDATE: "a".repeat(40) },
   ])
     assert.equal(rehearsalJobCandidate({ ...env, ...change }, process.cwd()), undefined);
 });
-

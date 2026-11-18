@@ -5,7 +5,10 @@ type AdoptedReader = { inspect(): Promise<{ selection?: unknown; policies: unkno
 type FleetReader = {
   fleet(): Promise<{
     permission?: {
-      configuration: { active: string; applications: readonly { color: string; applicationId: string }[] };
+      configuration: {
+        active: string;
+        applications: readonly { color: string; applicationId: string }[];
+      };
     };
   }>;
   inspect(): Promise<{ selection?: { active: { target: { applicationId: string } } } }>;

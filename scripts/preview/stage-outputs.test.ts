@@ -12,12 +12,24 @@ const stages: Record<string, readonly string[]> = {
 };
 
 test("only this rehearsal stage's barrier output stacks are named for removal", async () => {
-  const present = await rehearsalOutputStacks("test-rehearsal-81211", Object.keys(stages), async (stack) => (stages[stack] ?? []).includes("test-rehearsal-81211"));
-  assert.deepEqual(present, ["basalt-rehearsal-runtime-image-release", "basalt-rehearsal-release-barrier"]);
+  const present = await rehearsalOutputStacks(
+    "test-rehearsal-81211",
+    Object.keys(stages),
+    async (stack) => (stages[stack] ?? []).includes("test-rehearsal-81211"),
+  );
+  assert.deepEqual(present, [
+    "basalt-rehearsal-runtime-image-release",
+    "basalt-rehearsal-release-barrier",
+  ]);
   assert.deepEqual(
-    await rehearsalOutputStacks("test-rehearsal-99991", Object.keys(stages), async (stack) => (stages[stack] ?? []).includes("test-rehearsal-99991")),
+    await rehearsalOutputStacks("test-rehearsal-99991", Object.keys(stages), async (stack) =>
+      (stages[stack] ?? []).includes("test-rehearsal-99991"),
+    ),
     [],
   );
   for (const stage of ["production", "test-pr-12"])
-    await assert.rejects(rehearsalOutputStacks(stage, Object.keys(stages), async () => true), /only for rehearsal stages/);
+    await assert.rejects(
+      rehearsalOutputStacks(stage, Object.keys(stages), async () => true),
+      /only for rehearsal stages/,
+    );
 });

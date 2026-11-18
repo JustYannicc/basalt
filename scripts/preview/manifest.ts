@@ -46,18 +46,29 @@ function assertManifest(value: unknown, owner: number | StageSubject): PreviewMa
   if (Object.keys(manifest).some((key) => !keys.includes(key as (typeof keys)[number])))
     throw new Error("Preview manifest contains unsupported fields");
   if (
-    manifest.version !== 1 || manifest[field] !== subject.number || other in manifest ||
+    manifest.version !== 1 ||
+    manifest[field] !== subject.number ||
+    other in manifest ||
     manifest.stage !== names.stage ||
     manifest.sourceNamespace !== names.sourceNamespace ||
     manifest.databaseName !== names.databaseName ||
-    typeof manifest.origin !== "string" || !/^https:\/\/[^/]+$/.test(manifest.origin) ||
-    !["planned", "deploying", "deployed", "seeded", "destroying", "destroyed"].includes(String(manifest.phase))
-  ) throw new Error("Preview manifest identity or phase is invalid");
-  if (manifest.phase === "seeded" &&
-    (typeof manifest.organizationId !== "string" || typeof manifest.poolAppId !== "string"))
+    typeof manifest.origin !== "string" ||
+    !/^https:\/\/[^/]+$/.test(manifest.origin) ||
+    !["planned", "deploying", "deployed", "seeded", "destroying", "destroyed"].includes(
+      String(manifest.phase),
+    )
+  )
+    throw new Error("Preview manifest identity or phase is invalid");
+  if (
+    manifest.phase === "seeded" &&
+    (typeof manifest.organizationId !== "string" || typeof manifest.poolAppId !== "string")
+  )
     throw new Error("Seeded preview manifest is missing its smoke IDs");
   for (const key of ["organizationId", "poolAppId"] as const) {
-    if (manifest[key] !== undefined && (typeof manifest[key] !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(manifest[key])))
+    if (
+      manifest[key] !== undefined &&
+      (typeof manifest[key] !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(manifest[key]))
+    )
       throw new Error("Preview manifest contains an invalid seed ID");
   }
   const phase = manifest.phase as PreviewManifestPhase;
@@ -67,14 +78,17 @@ function assertManifest(value: unknown, owner: number | StageSubject): PreviewMa
     databaseName: names.databaseName,
     origin: manifest.origin,
   };
-  const identity: PreviewIdentity = subject.kind === "pr"
-    ? { pullRequest: subject.number, ...fields }
-    : { rehearsal: subject.number, ...fields };
+  const identity: PreviewIdentity =
+    subject.kind === "pr"
+      ? { pullRequest: subject.number, ...fields }
+      : { rehearsal: subject.number, ...fields };
   return {
     version: 1,
     ...identity,
     phase,
-    ...(manifest.organizationId === undefined ? {} : { organizationId: manifest.organizationId as string }),
+    ...(manifest.organizationId === undefined
+      ? {}
+      : { organizationId: manifest.organizationId as string }),
     ...(manifest.poolAppId === undefined ? {} : { poolAppId: manifest.poolAppId as string }),
     ...(manifest.remoteInventory === undefined
       ? {}
@@ -125,12 +139,15 @@ export async function updatePreviewManifest(
   remoteInventory?: PreviewInventory,
 ): Promise<PreviewManifest> {
   const current = await readPreviewManifest(path, owner);
-  const next = assertManifest({
-    ...current,
-    phase,
-    ...(seed ?? {}),
-    ...(remoteInventory === undefined ? {} : { remoteInventory }),
-  }, owner);
+  const next = assertManifest(
+    {
+      ...current,
+      phase,
+      ...seed,
+      ...(remoteInventory === undefined ? {} : { remoteInventory }),
+    },
+    owner,
+  );
   await writePreviewManifest(path, next);
   return next;
 }

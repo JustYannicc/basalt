@@ -49,22 +49,38 @@ export function singleWriterHooks(context: SingleWriterContext) {
   const candidateEnvironment = () => rehearsalReleaseEnvironment(context.writerEnvironment());
   const shapeRecord = join(privateRoot, "worker-shape.json");
   const shape = async (phase: ShapePhase, label: string, selection = false) => {
-    await operation(`shape-${label}`, root, "scripts/release-preview/rehearsal-worker-shape.ts", [phase, shapeRecord], {
-      ...candidateEnvironment(),
-      // Once a release installed its controller, its selection must hold across re-dispatches.
-      REHEARSAL_CONTROLLER_CANDIDATE: selection ? context.current() : undefined,
-    }, 5, "bun");
+    await operation(
+      `shape-${label}`,
+      root,
+      "scripts/release-preview/rehearsal-worker-shape.ts",
+      [phase, shapeRecord],
+      {
+        ...candidateEnvironment(),
+        // Once a release installed its controller, its selection must hold across re-dispatches.
+        REHEARSAL_CONTROLLER_CANDIDATE: selection ? context.current() : undefined,
+      },
+      5,
+      "bun",
+    );
     await mkdir(receipts(root), { recursive: true });
     await copyFile(shapeRecord, join(receipts(root), `worker-shape-${label}.json`));
   };
   const preflight = async () => {
     // Read-only against the seeded stage, in the preflight's rehearsal context for this candidate.
     await rm(join(root, ".local", "release-preflight", "report.json"), { force: true });
-    await operation("preflight", root, "scripts/release-barrier/release-preflight-entry.ts", [], {
-      ...candidateEnvironment(),
-      GITHUB_EVENT_NAME: undefined,
-      GITHUB_EVENT_PATH: undefined,
-    }, 10, "bun").catch(() => {});
+    await operation(
+      "preflight",
+      root,
+      "scripts/release-barrier/release-preflight-entry.ts",
+      [],
+      {
+        ...candidateEnvironment(),
+        GITHUB_EVENT_NAME: undefined,
+        GITHUB_EVENT_PATH: undefined,
+      },
+      10,
+      "bun",
+    ).catch(() => {});
     const report = await readFile(join(root, ".local", "release-preflight", "report.json"), "utf8");
     await keep(root, `preflight-report-${context.current().slice(0, 12)}.json`, report);
     return JSON.parse(report) as unknown;
@@ -77,35 +93,74 @@ export function singleWriterHooks(context: SingleWriterContext) {
     let exit: unknown;
     const path = edit && join(root, edit.path);
     const original = path && (await readFile(path, "utf8"));
-    if (edit && original!.split(edit.from).length !== 2) throw new Error("The baseline probe's source seam changed");
-    await withStageBuild(root, subject, deployEnvironment, async () => {
-      if (edit) await writeFile(path!, original!.replace(edit.from, edit.to));
-      try {
-        // A refused row also exits non-zero; the rows say why, so only a missing report is fatal here.
-        await operation(edit ? "baseline-probe-variant" : "baseline-probe", root, "scripts/release-preview/rehearsal-baseline-probe.ts", [], {
-          ...context.writerEnvironment(),
-          BASALT_RELEASE_ATTEMPT: randomUUID(),
-        }, 5, "bun").catch((error: unknown) => { exit = error; });
-      } finally {
-        if (edit) await writeFile(path!, original!);
-      }
-    }, undefined, { build: false });
+    if (edit && original!.split(edit.from).length !== 2)
+      throw new Error("The baseline probe's source seam changed");
+    await withStageBuild(
+      root,
+      subject,
+      deployEnvironment,
+      async () => {
+        if (edit) await writeFile(path!, original!.replace(edit.from, edit.to));
+        try {
+          // A refused row also exits non-zero; the rows say why, so only a missing report is fatal here.
+          await operation(
+            edit ? "baseline-probe-variant" : "baseline-probe",
+            root,
+            "scripts/release-preview/rehearsal-baseline-probe.ts",
+            [],
+            {
+              ...context.writerEnvironment(),
+              BASALT_RELEASE_ATTEMPT: randomUUID(),
+            },
+            5,
+            "bun",
+          ).catch((error: unknown) => {
+            exit = error;
+          });
+        } finally {
+          if (edit) await writeFile(path!, original!);
+        }
+      },
+      undefined,
+      { build: false },
+    );
     const rows = await readFile(output, "utf8").catch(() => {
       throw new Error(`The baseline probe wrote no report: ${String(exit ?? "it exited cleanly")}`);
     });
-    await keep(root, `baseline-probe-${edit ? "undeclared-class-" : ""}${context.current().slice(0, 12)}.json`, rows);
+    await keep(
+      root,
+      `baseline-probe-${edit ? "undeclared-class-" : ""}${context.current().slice(0, 12)}.json`,
+      rows,
+    );
     return JSON.parse(rows) as unknown;
   };
   /** Runs the release barrier's entry for the current candidate with the stage's brand in place. */
   const entry = async (label: string, args: string[]) => {
     await rm(join(receipts(root), "failure.json"), { force: true });
     let exited = true;
-    await withStageBuild(root, subject, deployEnvironment, async () => {
-      await operation(label, root, "scripts/release-barrier/entry.ts", args, {
-        ...candidateEnvironment(),
-        PREVIEW_AUTH_SEED_OUTPUT: join(privateRoot, `seed-${label}.json`),
-      }, 30, "bun").catch(() => { exited = false; });
-    }, undefined, { build: false });
+    await withStageBuild(
+      root,
+      subject,
+      deployEnvironment,
+      async () => {
+        await operation(
+          label,
+          root,
+          "scripts/release-barrier/entry.ts",
+          args,
+          {
+            ...candidateEnvironment(),
+            PREVIEW_AUTH_SEED_OUTPUT: join(privateRoot, `seed-${label}.json`),
+          },
+          30,
+          "bun",
+        ).catch(() => {
+          exited = false;
+        });
+      },
+      undefined,
+      { build: false },
+    );
     return exited;
   };
 
@@ -125,7 +180,12 @@ export function singleWriterHooks(context: SingleWriterContext) {
         to: "...fleet,",
       }),
     redeploy: (change) =>
-      redeployStage(root, subject, deployEnvironment, change ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
+      redeployStage(
+        root,
+        subject,
+        deployEnvironment,
+        change ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {},
+      ),
   };
 
   const recovery: RecoveryHooks = {
@@ -135,14 +195,20 @@ export function singleWriterHooks(context: SingleWriterContext) {
     shape,
     baselineProbe,
     preflight,
-    release: ({ cleanPool, stop, commit }) => hooks.release({ candidate: "candidate", cleanPool, stop, commit }),
+    release: ({ cleanPool, stop, commit }) =>
+      hooks.release({ candidate: "candidate", cleanPool, stop, commit }),
     abort: async () => {
       // The documented abort: plan, then apply exactly the planned digest. Each call writes a fresh receipt.
       const receipt = join(receipts(root), "runtime-abort.json");
       await rm(receipt, { force: true });
-      if (!(await entry("abort-plan", ["--abort-runtime", "plan"]))) throw new Error("The runtime abort plan failed");
-      const planned = JSON.parse(await readFile(receipt, "utf8")) as { fingerprint?: unknown; candidate?: unknown };
-      if (planned.candidate !== context.current()) throw new Error("The runtime abort plan names another candidate");
+      if (!(await entry("abort-plan", ["--abort-runtime", "plan"])))
+        throw new Error("The runtime abort plan failed");
+      const planned = JSON.parse(await readFile(receipt, "utf8")) as {
+        fingerprint?: unknown;
+        candidate?: unknown;
+      };
+      if (planned.candidate !== context.current())
+        throw new Error("The runtime abort plan names another candidate");
       if (typeof planned.fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(planned.fingerprint))
         throw new Error("The runtime abort plan has no digest");
       await keep(root, "runtime-abort-plan.json", JSON.stringify(planned));
@@ -154,12 +220,44 @@ export function singleWriterHooks(context: SingleWriterContext) {
     },
     nextCandidate: async () => {
       // A new, empty rehearsal commit: a different candidate with the same tree.
-      if (execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" }).trim())
-        throw new Error("The candidate checkout has changes; the next candidate must have the same tree");
-      execFileSync("git", ["-c", "user.name=Release rehearsal", "-c", "user.email=release-rehearsal@users.noreply.github.com",
-        "commit", "-q", "--allow-empty", "--no-verify", "-m", "rehearsal: next candidate"], { cwd: root });
-      const next = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-      await operation("next-prepare", root, "run", ["prepare:upstream"], deployEnvironment, 30, "npm");
+      if (
+        execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim()
+      )
+        throw new Error(
+          "The candidate checkout has changes; the next candidate must have the same tree",
+        );
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=Release rehearsal",
+          "-c",
+          "user.email=release-rehearsal@users.noreply.github.com",
+          "commit",
+          "-q",
+          "--allow-empty",
+          "--no-verify",
+          "-m",
+          "rehearsal: next candidate",
+        ],
+        { cwd: root },
+      );
+      const next = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+      await operation(
+        "next-prepare",
+        root,
+        "run",
+        ["prepare:upstream"],
+        deployEnvironment,
+        30,
+        "npm",
+      );
       context.advance(next);
       return next;
     },
@@ -172,18 +270,42 @@ export function singleWriterHooks(context: SingleWriterContext) {
         });
       await rm(join(directory, "failure.json"), { force: true });
       let exited = true;
-      await withStageBuild(root, subject, deployEnvironment, async () => {
-        await operation("recover", root, "scripts/deploy.ts", ["--recover", join(directory, "manifest.json"), join(directory, "receipt.json")], {
-          ...candidateEnvironment(),
-          // Stated, not inferred: true only when the recovered and current trees share a database.
-          BASALT_RECOVERY_DATABASE_COMPATIBLE: String(databaseCompatible),
-          PREVIEW_AUTH_SEED_OUTPUT: join(privateRoot, `seed-recover-${Date.now()}.json`),
-        }, 60).catch(() => { exited = false; });
-      }, undefined, { build: false });
-      const failure = await readFile(join(directory, "failure.json"), "utf8").then((text) => JSON.parse(text) as { reason?: unknown; worker?: unknown }, () => undefined);
+      await withStageBuild(
+        root,
+        subject,
+        deployEnvironment,
+        async () => {
+          await operation(
+            "recover",
+            root,
+            "scripts/deploy.ts",
+            ["--recover", join(directory, "manifest.json"), join(directory, "receipt.json")],
+            {
+              ...candidateEnvironment(),
+              // Stated, not inferred: true only when the recovered and current trees share a database.
+              BASALT_RECOVERY_DATABASE_COMPATIBLE: String(databaseCompatible),
+              PREVIEW_AUTH_SEED_OUTPUT: join(privateRoot, `seed-recover-${Date.now()}.json`),
+            },
+            60,
+          ).catch(() => {
+            exited = false;
+          });
+        },
+        undefined,
+        { build: false },
+      );
+      const failure = await readFile(join(directory, "failure.json"), "utf8").then(
+        (text) => JSON.parse(text) as { reason?: unknown; worker?: unknown },
+        () => undefined,
+      );
       if (failure) {
-        if (typeof failure.reason !== "string") throw new Error("The recovery failed without a recorded refusal");
-        return { ok: false, reason: failure.reason, ...(typeof failure.worker === "string" ? { worker: failure.worker } : {}) };
+        if (typeof failure.reason !== "string")
+          throw new Error("The recovery failed without a recorded refusal");
+        return {
+          ok: false,
+          reason: failure.reason,
+          ...(typeof failure.worker === "string" ? { worker: failure.worker } : {}),
+        };
       }
       if (!exited) throw new Error("The recovery ended without a recorded refusal");
       return { ok: true };

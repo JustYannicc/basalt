@@ -20,7 +20,8 @@ const requestGapMs = 250;
 
 /** Runs only against a rehearsal stage, with that stage's own deployment key. */
 async function main(env: NodeJS.ProcessEnv) {
-  if (!isRehearsalStage(env.ALCHEMY_STAGE)) throw new Error("The restart check runs only on a rehearsal stage");
+  if (!isRehearsalStage(env.ALCHEMY_STAGE))
+    throw new Error("The restart check runs only on a rehearsal stage");
   const key = env.POOL_DEPLOYMENT_KEY ?? "";
   const candidate = env.BASALT_RELEASE_CANDIDATE ?? "";
   const output = env.REHEARSAL_RESTART_RESULT ?? "";
@@ -54,10 +55,12 @@ async function main(env: NodeJS.ProcessEnv) {
   const worker = async () => {
     while (!stopped) {
       const startedAt = Date.now();
-      const ok = await client.sendTurn(modelKey, model, { id: randomUUID(), expectedRecords: 1 }).then(
-        () => true,
-        () => false,
-      );
+      const ok = await client
+        .sendTurn(modelKey, model, { id: randomUUID(), expectedRecords: 1 })
+        .then(
+          () => true,
+          () => false,
+        );
       requests.push({ ok, startedAt, endedAt: Date.now() });
       await new Promise((resolve) => setTimeout(resolve, requestGapMs));
     }

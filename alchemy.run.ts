@@ -39,7 +39,9 @@ export default Alchemy.Stack(
     const stage = yield* Stage;
     // The stack name is fixed before evaluation from ALCHEMY_STAGE; a differing --stage would land elsewhere.
     if (stackNameForStage(stage) !== stackNameForStage(process.env.ALCHEMY_STAGE))
-      return yield* Effect.die(new Error("The deploy stage and ALCHEMY_STAGE name different stacks."));
+      return yield* Effect.die(
+        new Error("The deploy stage and ALCHEMY_STAGE name different stacks."),
+      );
     // PR previews and release rehearsals are the disposable stages; every other stage is production.
     const previewSubject = subjectFromStage(stage);
     const preview =
@@ -62,8 +64,7 @@ export default Alchemy.Stack(
         );
     }
     const zoneName = preview?.domain ?? brand.zone;
-    const host =
-      preview === undefined ? brand.host : `app.${preview.names.slug}.${preview.domain}`;
+    const host = preview === undefined ? brand.host : `app.${preview.names.slug}.${preview.domain}`;
     const zone = yield* Cloudflare.Zone.findZoneByName({ accountId, name: zoneName }).pipe(
       Effect.orDie,
     );

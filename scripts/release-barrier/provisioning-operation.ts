@@ -117,11 +117,10 @@ function validateIdentity(packet: ProvisioningPacket, writer: ProvisioningWriter
   const manifest = operation.manifest;
   const fingerprint = provisioningOperationDigest(operation);
   sameProvisioningValue("provisioning.operation.candidate", writer.candidate, manifest.candidate);
-  sameProvisioningValue(
-    "provisioning.operation.scope",
-    releaseScope(),
-    { stack: manifest.stack, stage: manifest.stage },
-  );
+  sameProvisioningValue("provisioning.operation.scope", releaseScope(), {
+    stack: manifest.stack,
+    stage: manifest.stage,
+  });
   sameProvisioningValue(
     "provisioning.operation.account",
     writer.accountId,

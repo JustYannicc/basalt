@@ -29,7 +29,11 @@ export function settlementPlanRequest(input: {
 
 /** The reviewed packet production's operator builds from a plan receipt, with the rehearsal's GO. */
 export function settlementPacket(receipt: unknown, now: number) {
-  const value = receipt as { disposition?: unknown; operation?: { kind?: unknown }; operationDigest?: unknown };
+  const value = receipt as {
+    disposition?: unknown;
+    operation?: { kind?: unknown };
+    operationDigest?: unknown;
+  };
   if (
     value?.disposition !== "plan" ||
     value.operation?.kind !== "release-settlement" ||
@@ -39,7 +43,11 @@ export function settlementPacket(receipt: unknown, now: number) {
     throw new Error("The settlement plan wrote no release-settlement operation");
   return {
     operation: value.operation,
-    go: { coordinatorGo: rehearsalGo, manifest: value.operationDigest, expiresAt: now + goLifetimeMs },
+    go: {
+      coordinatorGo: rehearsalGo,
+      manifest: value.operationDigest,
+      expiresAt: now + goLifetimeMs,
+    },
   };
 }
 

@@ -1,28 +1,56 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ReleaseOutcome } from "./rehearsal-plan.ts";
-import { requireAbortedPrior, resumeSteps, rollbackSteps, type RecoveryHooks } from "./rehearsal-recovery.ts";
+import {
+  requireAbortedPrior,
+  resumeSteps,
+  rollbackSteps,
+  type RecoveryHooks,
+} from "./rehearsal-recovery.ts";
 import { baselineRoles } from "../release-barrier/baseline-probe.ts";
 
 function world(outcomes: Record<string, ReleaseOutcome>, overrides: Partial<RecoveryHooks> = {}) {
   const events: string[] = [];
   const hooks: RecoveryHooks = {
     deployBaseline: async () => void events.push("baseline"),
-    shape: async (phase, label, selection) => void events.push(`shape:${phase}:${label}:${selection}`),
+    shape: async (phase, label, selection) =>
+      void events.push(`shape:${phase}:${label}:${selection}`),
     baselineProbe: async (edit) => (
       events.push(edit ? "baseline-probe-undeclared" : "baseline-probe"),
-      baselineRoles.map((role) => ({ role, ...(edit && role === "PoolWorker" ? { ok: false, reason: "durable-object-class-drift" } : { ok: true }) }))
+      baselineRoles.map((role) => ({
+        role,
+        ...(edit && role === "PoolWorker"
+          ? { ok: false, reason: "durable-object-class-drift" }
+          : { ok: true }),
+      }))
     ),
-    preflight: async () => (events.push("preflight"), { mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} }, steps: [{ step: "release-journal", summary: { prior: "prior-settled-or-aborted", baseline: "journal-source" } }] }),
+    preflight: async () => (
+      events.push("preflight"),
+      {
+        mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} },
+        steps: [
+          {
+            step: "release-journal",
+            summary: { prior: "prior-settled-or-aborted", baseline: "journal-source" },
+          },
+        ],
+      }
+    ),
     seedPools: async () => (events.push("seed"), { cleanPool: "clean" }),
     release: async ({ stop, commit }) => {
       const key = `${stop ?? "complete"}${commit ? `@${commit}` : ""}`;
       events.push(`release:${key}`);
-      return outcomes[key] ?? (stop ? { ok: false, reason: `release-rehearsal-stopped-${stop}` } : { ok: true });
+      return (
+        outcomes[key] ??
+        (stop ? { ok: false, reason: `release-rehearsal-stopped-${stop}` } : { ok: true })
+      );
     },
     abort: async () => (events.push("abort"), { status: "aborted" }),
     nextCandidate: async () => (events.push("next"), "n".repeat(40)),
-    recover: async ({ databaseCompatible }) => (events.push(`recover:${databaseCompatible}`), { ok: true }),
+    recover: async ({ databaseCompatible }) => (
+      events.push(`recover:${databaseCompatible}`),
+      { ok: true }
+    ),
     serve: async () => (events.push("serve"), "served"),
     ...overrides,
   };
@@ -36,7 +64,9 @@ const run = async (steps: ReturnType<typeof resumeSteps>) => {
 };
 
 test("resume re-dispatches the same candidate from each bind point, aborts the pending startup, then releases the next", async () => {
-  const { events, hooks } = world({ complete: { ok: false, reason: "runtime-release-candidate-aborted-or-pending" } });
+  const { events, hooks } = world({
+    complete: { ok: false, reason: "runtime-release-candidate-aborted-or-pending" },
+  });
   const steps = resumeSteps(hooks);
   assert.equal(await run(steps), "served");
   assert.deepEqual(events.slice(5), [
@@ -57,21 +87,32 @@ test("resume re-dispatches the same candidate from each bind point, aborts the p
 });
 
 test("resume refuses an abort that did not settle, and an aborted candidate that is not refused", async () => {
-  await assert.rejects(run(resumeSteps(world({}, { abort: async () => ({ status: "pending" }) }).hooks)), /abort ended pending/);
+  await assert.rejects(
+    run(resumeSteps(world({}, { abort: async () => ({ status: "pending" }) }).hooks)),
+    /abort ended pending/,
+  );
   await assert.rejects(run(resumeSteps(world({}).hooks)), /aborted candidate was not refused/);
   const early = world({ "after-bind-green": { ok: true } });
-  await assert.rejects(run(resumeSteps(early.hooks)), /did not stop at after-bind-green: it completed/);
+  await assert.rejects(
+    run(resumeSteps(early.hooks)),
+    /did not stop at after-bind-green: it completed/,
+  );
 });
 
 test("rollback refuses recovery to the pre-expansion version, completes the expansion, then recovers the next release", async () => {
   let recoveries = 0;
-  const { events, hooks } = world({}, {
-    recover: async ({ databaseCompatible }) => {
-      events.push(`recover:${databaseCompatible}`);
-      recoveries += 1;
-      return recoveries === 1 ? { ok: false, reason: "declared-class-recovery-export-missing" } : { ok: true };
+  const { events, hooks } = world(
+    {},
+    {
+      recover: async ({ databaseCompatible }) => {
+        events.push(`recover:${databaseCompatible}`);
+        recoveries += 1;
+        return recoveries === 1
+          ? { ok: false, reason: "declared-class-recovery-export-missing" }
+          : { ok: true };
+      },
     },
-  });
+  );
   assert.equal(await run(rollbackSteps(hooks)), "served");
   assert.deepEqual(events.slice(5), [
     "release:after-controller",
@@ -92,14 +133,36 @@ test("rollback refuses recovery to the pre-expansion version, completes the expa
 });
 
 test("rollback fails if the pre-expansion recovery is accepted or refused for another reason", async () => {
-  for (const outcome of [{ ok: true }, { ok: false, reason: "declared-class-identity-changed" }] as ReleaseOutcome[])
-    await assert.rejects(run(rollbackSteps(world({}, { recover: async () => outcome }).hooks)), /pre-expansion version was not refused/);
+  for (const outcome of [
+    { ok: true },
+    { ok: false, reason: "declared-class-identity-changed" },
+  ] as ReleaseOutcome[])
+    await assert.rejects(
+      run(rollbackSteps(world({}, { recover: async () => outcome }).hooks)),
+      /pre-expansion version was not refused/,
+    );
 });
 
 test("the next candidate's preflight must read the aborted prior through the journal", () => {
-  const clean = { mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} } };
-  requireAbortedPrior({ ...clean, steps: [{ summary: "prior-settled-or-aborted journal-source" }] });
-  assert.throws(() => requireAbortedPrior({ ...clean, steps: [{ summary: "prior-settled-or-aborted" }] }), /journal/);
+  const clean = {
+    mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} },
+  };
+  requireAbortedPrior({
+    ...clean,
+    steps: [{ summary: "prior-settled-or-aborted journal-source" }],
+  });
+  assert.throws(
+    () => requireAbortedPrior({ ...clean, steps: [{ summary: "prior-settled-or-aborted" }] }),
+    /journal/,
+  );
   assert.throws(() => requireAbortedPrior(clean), /aborted prior/);
-  assert.throws(() => requireAbortedPrior({ ...clean, fatal: "x", steps: [{ summary: "prior-settled-or-aborted journal-source" }] }), /fatally/);
+  assert.throws(
+    () =>
+      requireAbortedPrior({
+        ...clean,
+        fatal: "x",
+        steps: [{ summary: "prior-settled-or-aborted journal-source" }],
+      }),
+    /fatally/,
+  );
 });

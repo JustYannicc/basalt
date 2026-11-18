@@ -64,7 +64,10 @@ function fakeHost(options: Host = {}) {
     links.set(pool, selected);
     if (rest === "data/query" && body.name === "view") {
       const ids = pool === "app_preview" ? (options.previewAccounts ?? []) : [...selected];
-      return Response.json({ ok: true, value: { isOwner: true, accounts: ids.map((id) => ({ id })) } });
+      return Response.json({
+        ok: true,
+        value: { isOwner: true, accounts: ids.map((id) => ({ id })) },
+      });
     }
     if (rest === "data/query" && body.name === "computerContext")
       return Response.json({ ok: true, value: { href: `${origin}/setup#intent=intent-${pool}` } });
@@ -75,21 +78,40 @@ function fakeHost(options: Host = {}) {
     }
     if (rest === "accounts/app")
       return Response.json(
-        accounts.filter((a) => selected.has(a.id)).map((a) => ({ requirement: a.requirement, account: { id: a.id } })),
+        accounts
+          .filter((a) => selected.has(a.id))
+          .map((a) => ({ requirement: a.requirement, account: { id: a.id } })),
       );
     return new Response(null, { status: 404 });
   }) as typeof globalThis.fetch;
   const setupFetch = (async (url: URL, init: RequestInit) => {
     const path = new URL(url).pathname;
     if (path === "/setup/v1/links") {
-      calls.push({ method: "POST", path, cookie: new Headers(init.headers).get("cookie"), body: JSON.parse(String(init.body)) });
-      return Response.json({ computerId: "cmp_fixture", prompt: `Open ${origin}/setup/claim/${claim}` });
+      calls.push({
+        method: "POST",
+        path,
+        cookie: new Headers(init.headers).get("cookie"),
+        body: JSON.parse(String(init.body)),
+      });
+      return Response.json({
+        computerId: "cmp_fixture",
+        prompt: `Open ${origin}/setup/claim/${claim}`,
+      });
     }
     if (path === `/setup/claim/${claim}`) {
-      calls.push({ method: "GET", path, cookie: new Headers(init.headers).get("cookie"), body: undefined });
+      calls.push({
+        method: "GET",
+        path,
+        cookie: new Headers(init.headers).get("cookie"),
+        body: undefined,
+      });
       return Response.json({
         version: 1,
-        brand: { name: "Preview", mcpServerName: "preview", setup: { id: "setup", marker: "setup" } },
+        brand: {
+          name: "Preview",
+          mcpServerName: "preview",
+          setup: { id: "setup", marker: "setup" },
+        },
         credentials,
         instructions: "",
       });
@@ -140,18 +162,33 @@ test("request ids are stable v4 UUIDs so a retried job replays the same pools", 
 test("seeding refuses a used preview pool, a failed or reused creation and bad accounts", async () => {
   const cases: Array<[Host, RegExp]> = [
     [{ previewAccounts: ["acc_openai"] }, /was not empty/],
-    [{ created: () => Response.json({ _tag: "PoolCreationUnavailable" }, { status: 503 }) }, /HTTP 503/],
+    [
+      { created: () => Response.json({ _tag: "PoolCreationUnavailable" }, { status: 503 }) },
+      /HTTP 503/,
+    ],
     [{ created: () => Response.json({ name: "no id" }) }, /did not return an app id/],
-    [{ created: () => Response.json({ id: "app_preview", reused: true }) }, /reused an existing pool/],
-    [{ created: () => Response.json({ id: "app_same", reused: false }) }, /reused an existing pool/],
+    [
+      { created: () => Response.json({ id: "app_preview", reused: true }) },
+      /reused an existing pool/,
+    ],
+    [
+      { created: () => Response.json({ id: "app_same", reused: false }) },
+      /reused an existing pool/,
+    ],
   ];
   for (const [options, message] of cases) {
     const host = fakeHost(options);
-    await assert.rejects(seedRehearsalPools({ ...input, emptyCount: 2, fetch: host.fetch }), message);
+    await assert.rejects(
+      seedRehearsalPools({ ...input, emptyCount: 2, fetch: host.fetch }),
+      message,
+    );
     assert.equal(host.calls.filter((call) => call.method === "PUT").length, 0);
   }
   const host = fakeHost();
-  await assert.rejects(seedRehearsalPools({ ...input, emptyCount: -1, fetch: host.fetch }), /between/);
+  await assert.rejects(
+    seedRehearsalPools({ ...input, emptyCount: -1, fetch: host.fetch }),
+    /between/,
+  );
   await assert.rejects(
     seedRehearsalPools({ ...input, accounts: [accounts[0]], fetch: host.fetch }),
     /OpenAI and Anthropic/,
@@ -203,10 +240,19 @@ test("the verifier refuses any other policy shape", () => {
 
 test("an infra-only seed creates the same pools with no accounts and claims no traffic computer", async () => {
   const host = fakeHost();
-  const seed = await seedRehearsalPools({ ...input, accounts: [], infraOnly: true, emptyCount: 2, fetch: host.fetch });
+  const seed = await seedRehearsalPools({
+    ...input,
+    accounts: [],
+    infraOnly: true,
+    emptyCount: 2,
+    fetch: host.fetch,
+  });
   assert.deepEqual(seed, { cleanPool: "app_pool0", emptyPools: ["app_pool1", "app_pool2"] });
   for (const pool of ["app_preview", "app_pool0", ...seed.emptyPools])
     assert.equal(host.links.get(pool)?.size ?? 0, 0, pool);
   assert.ok(host.calls.every((call) => call.method !== "PUT" && !call.path.includes("computer")));
-  await assert.rejects(seedRehearsalPools({ ...input, infraOnly: true, emptyCount: 2, fetch: host.fetch }), /no accounts/);
+  await assert.rejects(
+    seedRehearsalPools({ ...input, infraOnly: true, emptyCount: 2, fetch: host.fetch }),
+    /no accounts/,
+  );
 });

@@ -31,11 +31,16 @@ const row = (fqn: string, resourceType: string): PreviewStateEntry => ({
 });
 
 test("reads exact stage rows and resource values from the configured Alchemy state backend", async () => {
-  const primary = [row("PoolContainer", "Cloudflare.Container"), row("Router", "Cloudflare.Worker")];
-  const database = [{
-    ...row("PreviewDatabaseParent", "Planetscale.PostgresDatabase"),
-    path: `basalt-preview-database/${stage}/PreviewDatabaseParent`,
-  }];
+  const primary = [
+    row("PoolContainer", "Cloudflare.Container"),
+    row("Router", "Cloudflare.Worker"),
+  ];
+  const database = [
+    {
+      ...row("PreviewDatabaseParent", "Planetscale.PostgresDatabase"),
+      path: `basalt-preview-database/${stage}/PreviewDatabaseParent`,
+    },
+  ];
   const calls: string[] = [];
   const command: StateCommand = (args, _cwd, env) => {
     calls.push(args.join(" "));
@@ -44,23 +49,33 @@ test("reads exact stage rows and resource values from the configured Alchemy sta
     if (args.includes("list")) {
       // Each stack lists its stage directories; only then is the one stage listed recursively.
       const at = args[args.indexOf("list") + 1];
-      if (at === "--config") return { status: 0, stdout: "basalt/\nbasalt-preview-database/\nbasalt-rehearsal/\n" };
+      if (at === "--config")
+        return { status: 0, stdout: "basalt/\nbasalt-preview-database/\nbasalt-rehearsal/\n" };
       if (at === "basalt") return { status: 0, stdout: `basalt/test-pr-99/\nbasalt/${stage}/\n` };
-      if (at === "basalt-preview-database") return { status: 0, stdout: `basalt-preview-database/${stage}/\n` };
+      if (at === "basalt-preview-database")
+        return { status: 0, stdout: `basalt-preview-database/${stage}/\n` };
       if (at === `basalt/${stage}`)
-        return { status: 0, stdout: [...primary.map((entry) => entry.path), `basalt/${stage}/output`].join("\n") + "\n" };
-      if (at === `basalt-preview-database/${stage}`) return { status: 0, stdout: database.map((entry) => entry.path).join("\n") };
+        return {
+          status: 0,
+          stdout:
+            [...primary.map((entry) => entry.path), `basalt/${stage}/output`].join("\n") + "\n",
+        };
+      if (at === `basalt-preview-database/${stage}`)
+        return { status: 0, stdout: database.map((entry) => entry.path).join("\n") };
       throw new Error(`unexpected list ${at}`);
     }
-    const requested = args.find((value) => value === `basalt/${stage}` || value === `basalt-preview-database/${stage}`);
-    if (requested === `basalt/${stage}`) return {
-      status: 0,
-      stdout: JSON.stringify({
-        [primary[0]!.path]: primary[0]!.value,
-        [primary[1]!.path]: primary[1]!.value,
-        [`basalt/${stage}/output`]: null,
-      }),
-    };
+    const requested = args.find(
+      (value) => value === `basalt/${stage}` || value === `basalt-preview-database/${stage}`,
+    );
+    if (requested === `basalt/${stage}`)
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          [primary[0]!.path]: primary[0]!.value,
+          [primary[1]!.path]: primary[1]!.value,
+          [`basalt/${stage}/output`]: null,
+        }),
+      };
     return { status: 0, stdout: JSON.stringify(database[0]!.value) };
   };
 
@@ -70,13 +85,19 @@ test("reads exact stage rows and resource values from the configured Alchemy sta
     "2026-10-24T00:00:00.000Z",
   );
   assert.equal(inventoryResourceCount(inventory), 3);
-  assert.deepEqual(inventory.stacks.basalt.map((entry) => entry.path), [
-    `basalt/${stage}/output`,
-    `basalt/${stage}/PoolContainer`,
-    `basalt/${stage}/Router`,
-  ]);
-  assert.deepEqual(inventory.stacks["basalt-preview-database"].map((entry) => entry.path), database.map((entry) => entry.path));
-  assert.ok(calls.every((call) => call.includes("--backend configured") && call.includes("alchemy.cleanup.ts")));
+  assert.deepEqual(
+    inventory.stacks.basalt.map((entry) => entry.path),
+    [`basalt/${stage}/output`, `basalt/${stage}/PoolContainer`, `basalt/${stage}/Router`],
+  );
+  assert.deepEqual(
+    inventory.stacks["basalt-preview-database"].map((entry) => entry.path),
+    database.map((entry) => entry.path),
+  );
+  assert.ok(
+    calls.every(
+      (call) => call.includes("--backend configured") && call.includes("alchemy.cleanup.ts"),
+    ),
+  );
 });
 
 test("an authenticated empty response differs from a failed remote-state read", async () => {
@@ -94,39 +115,68 @@ test("an authenticated empty response differs from a failed remote-state read", 
 });
 
 test("cleanup retries retain the first exact provider readback when later state is partial", async () => {
-  const previous = await capturePreviewInventory({ stage }, {
-    read: async () => ({ basalt: [row("Router", "Cloudflare.Worker")], "basalt-preview-database": [] }),
-  }, "2026-10-24T00:00:00.000Z");
-  const current = await capturePreviewInventory({ stage }, {
-    read: async () => ({ basalt: [], "basalt-preview-database": [] }),
-  }, "2026-10-24T00:01:00.000Z");
-  const merged = mergePreviewInventories({
-    ...previous,
-    providers: {
-      complete: true,
-      containers: [{ applicationId: "app-id", applicationName: "app-name" }],
-      domains: [{ id: "domain-id", hostname: "preview.example.invalid", service: "router" }],
+  const previous = await capturePreviewInventory(
+    { stage },
+    {
+      read: async () => ({
+        basalt: [row("Router", "Cloudflare.Worker")],
+        "basalt-preview-database": [],
+      }),
     },
-  }, current, stage);
+    "2026-10-24T00:00:00.000Z",
+  );
+  const current = await capturePreviewInventory(
+    { stage },
+    {
+      read: async () => ({ basalt: [], "basalt-preview-database": [] }),
+    },
+    "2026-10-24T00:01:00.000Z",
+  );
+  const merged = mergePreviewInventories(
+    {
+      ...previous,
+      providers: {
+        complete: true,
+        containers: [{ applicationId: "app-id", applicationName: "app-name" }],
+        domains: [{ id: "domain-id", hostname: "preview.example.invalid", service: "router" }],
+      },
+    },
+    current,
+    stage,
+  );
   assert.equal(merged.providers.complete, true);
-  assert.deepEqual(merged.providers.containers, [{ applicationId: "app-id", applicationName: "app-name" }]);
-  assert.deepEqual(merged.providers.domains, [{ id: "domain-id", hostname: "preview.example.invalid", service: "router" }]);
-  assert.deepEqual(merged.stacks.basalt.map((entry) => entry.path), previous.stacks.basalt.map((entry) => entry.path));
+  assert.deepEqual(merged.providers.containers, [
+    { applicationId: "app-id", applicationName: "app-name" },
+  ]);
+  assert.deepEqual(merged.providers.domains, [
+    { id: "domain-id", hostname: "preview.example.invalid", service: "router" },
+  ]);
+  assert.deepEqual(
+    merged.stacks.basalt.map((entry) => entry.path),
+    previous.stacks.basalt.map((entry) => entry.path),
+  );
 });
 
 test("a rehearsal reads its own stack name and refuses records from a PR stack", async () => {
   const rehearsal = "test-rehearsal-17";
-  const router = { ...row("Router", "Cloudflare.Worker"), path: `basalt-rehearsal/${rehearsal}/Router` };
+  const router = {
+    ...row("Router", "Cloudflare.Worker"),
+    path: `basalt-rehearsal/${rehearsal}/Router`,
+  };
   const reads: string[] = [];
   const reader = alchemyPreviewStateReader({
     command: (args) => {
       if (args.includes("list")) {
         const at = args[args.indexOf("list") + 1];
         // The fixture stack was never written: it is absent from the stack names, never listed.
-        if (at === "--config") return { status: 0, stdout: "basalt/\nbasalt-rehearsal/\nbasalt-preview-database/\n" };
-        if (at === "basalt-rehearsal-fixture") return { status: 1, stdout: "error: basalt-rehearsal-fixture: path does not exist" };
-        if (at === "basalt-rehearsal") return { status: 0, stdout: `basalt-rehearsal/${rehearsal}/\n` };
-        if (at === `basalt-rehearsal/${rehearsal}`) return { status: 0, stdout: `${router.path}\n` };
+        if (at === "--config")
+          return { status: 0, stdout: "basalt/\nbasalt-rehearsal/\nbasalt-preview-database/\n" };
+        if (at === "basalt-rehearsal-fixture")
+          return { status: 1, stdout: "error: basalt-rehearsal-fixture: path does not exist" };
+        if (at === "basalt-rehearsal")
+          return { status: 0, stdout: `basalt-rehearsal/${rehearsal}/\n` };
+        if (at === `basalt-rehearsal/${rehearsal}`)
+          return { status: 0, stdout: `${router.path}\n` };
         return { status: 0, stdout: "" };
       }
       reads.push(args.find((value) => value.includes("/"))!);
@@ -134,7 +184,11 @@ test("a rehearsal reads its own stack name and refuses records from a PR stack",
     },
     environment: {},
   });
-  const inventory = await capturePreviewInventory({ stage: rehearsal }, reader, "2026-10-24T00:00:00.000Z");
+  const inventory = await capturePreviewInventory(
+    { stage: rehearsal },
+    reader,
+    "2026-10-24T00:00:00.000Z",
+  );
   assert.deepEqual(Object.keys(inventory.stacks), [
     "basalt-rehearsal",
     "basalt-preview-database",
@@ -143,10 +197,21 @@ test("a rehearsal reads its own stack name and refuses records from a PR stack",
   assert.deepEqual(reads, [`basalt-rehearsal/${rehearsal}`]);
   assert.equal(inventoryResourceCount(inventory), 1);
   assert.deepEqual(previewStacks(stage), ["basalt", "basalt-preview-database"]);
-  assert.throws(() => parsePreviewInventory({
-    ...inventory,
-    stacks: { basalt: inventory.stacks["basalt-rehearsal"], "basalt-preview-database": [], "basalt-rehearsal-fixture": [] },
-  }, rehearsal), /unexpected fields/);
+  assert.throws(
+    () =>
+      parsePreviewInventory(
+        {
+          ...inventory,
+          stacks: {
+            basalt: inventory.stacks["basalt-rehearsal"],
+            "basalt-preview-database": [],
+            "basalt-rehearsal-fixture": [],
+          },
+        },
+        rehearsal,
+      ),
+    /unexpected fields/,
+  );
   for (const other of ["production", "test-e2e-17", "test-pr-0"])
     await assert.rejects(reader.read(other));
 });
@@ -154,10 +219,15 @@ test("a rehearsal reads its own stack name and refuses records from a PR stack",
 test("no script launches a package bin with a bare bun exec, which drops its arguments or misses the bin", async () => {
   const { execFileSync } = await import("node:child_process");
   const { readFileSync } = await import("node:fs");
-  const files = execFileSync("git", ["ls-files", "scripts/*.ts", "scripts/**/*.ts"], { encoding: "utf8" })
-    .split("\n").filter((file) => file && !file.endsWith(".test.ts"));
+  const files = execFileSync("git", ["ls-files", "scripts/*.ts", "scripts/**/*.ts"], {
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter((file) => file && !file.endsWith(".test.ts"));
   // "bun" then "exec" then a bare bin name, on one line or split across lines.
-  const offenders = files.filter((file) => /"bun",\s*\[?\s*"exec",\s*"[a-z]/u.test(readFileSync(file, "utf8")));
+  const offenders = files.filter((file) =>
+    /"bun",\s*\[?\s*"exec",\s*"[a-z]/u.test(readFileSync(file, "utf8")),
+  );
   assert.deepEqual(offenders, []);
 });
 
@@ -168,12 +238,21 @@ test("the state reader runs the CLI with this process's PATH, and a failure show
     environment: { CLOUDFLARE_API_TOKEN: "fixture-secret-token" },
     command: (_args, _cwd, env) => {
       seen.push(env);
-      return { status: 1, stdout: "Error: Cloudflare State store not found", stderr: "used fixture-secret-token" };
+      return {
+        status: 1,
+        stdout: "Error: Cloudflare State store not found",
+        stderr: "used fixture-secret-token",
+      };
     },
   });
-  await assert.rejects(reader.read("test-rehearsal-7"), (error: Error) =>
-    /exit 1/.test(error.message) && /State store not found/.test(error.message) &&
-    /used \[redacted\]/.test(error.message) && !error.message.includes("fixture-secret-token"));
+  await assert.rejects(
+    reader.read("test-rehearsal-7"),
+    (error: Error) =>
+      /exit 1/.test(error.message) &&
+      /State store not found/.test(error.message) &&
+      /used \[redacted\]/.test(error.message) &&
+      !error.message.includes("fixture-secret-token"),
+  );
   assert.equal(seen[0]!.PATH, process.env.PATH);
   assert.equal(seen[0]!.ALCHEMY_STAGE, "test-rehearsal-7");
 });
@@ -185,13 +264,18 @@ test("a listing line outside the stage is refused and named, with secrets redact
       const at = args[args.indexOf("list") + 1];
       if (at === "--config") return { status: 0, stdout: "basalt/\n" };
       if (at === "basalt") return { status: 0, stdout: `basalt/${stage}/\n` };
-      if (at === `basalt/${stage}`) return { status: 0, stdout: "basalt/production/Router fixture-secret-token\n" };
+      if (at === `basalt/${stage}`)
+        return { status: 0, stdout: "basalt/production/Router fixture-secret-token\n" };
       return { status: 0, stdout: "" };
     },
   });
-  await assert.rejects(reader.read(stage), (error: Error) =>
-    error.message.includes("malformed remote state path") && error.message.includes("[redacted]") &&
-    !error.message.includes("fixture-secret-token"));
+  await assert.rejects(
+    reader.read(stage),
+    (error: Error) =>
+      error.message.includes("malformed remote state path") &&
+      error.message.includes("[redacted]") &&
+      !error.message.includes("fixture-secret-token"),
+  );
 });
 
 test("a brand-new stage whose stacks the store never held reads as empty without listing them", async () => {
@@ -202,12 +286,15 @@ test("a brand-new stage whose stacks the store never held reads as empty without
       const at = args[args.indexOf("list") + 1]!;
       listed.push(at);
       if (at === "--config") return { status: 0, stdout: "basalt/\nbasalt-preview-database/\n" };
-      if (at === "basalt" || at === "basalt-preview-database") return { status: 0, stdout: `${at}/production/\n` };
+      if (at === "basalt" || at === "basalt-preview-database")
+        return { status: 0, stdout: `${at}/production/\n` };
       return { status: 1, stdout: `error: ${at}: path does not exist` };
     },
   });
   assert.deepEqual(await reader.read("test-rehearsal-9"), {
-    "basalt-rehearsal": [], "basalt-preview-database": [], "basalt-rehearsal-fixture": [],
+    "basalt-rehearsal": [],
+    "basalt-preview-database": [],
+    "basalt-rehearsal-fixture": [],
   });
   assert.deepEqual(listed, ["--config", "basalt-preview-database"]);
 });
@@ -217,7 +304,8 @@ test("alchemy's progress lines on stdout are not state paths", async () => {
     environment: {},
     command: (args) => {
       const at = args[args.indexOf("list") + 1];
-      const progress = "• Refreshing Cloudflare State Store credentials\n✓ Refreshing Cloudflare State Store credentials\n";
+      const progress =
+        "• Refreshing Cloudflare State Store credentials\n✓ Refreshing Cloudflare State Store credentials\n";
       if (at === "--config") return { status: 0, stdout: `${progress}basalt/\n` };
       if (at === "basalt") return { status: 0, stdout: `${progress}basalt/production/\n` };
       return { status: 1, stdout: "" };

@@ -10,12 +10,7 @@ import { isSigningKey } from "../src/pool/token.ts";
 import { feedbackEndpoints } from "../src/feedback/ui.ts";
 import { validSentryDsn } from "../src/telemetry/sentry-target.ts";
 import { deriveStageSecrets, stageKey } from "./release-preview/keys.ts";
-import {
-  pullRequestSubject,
-  stageNames,
-  toSubject,
-  type StageSubject,
-} from "./preview/subject.ts";
+import { pullRequestSubject, stageNames, toSubject, type StageSubject } from "./preview/subject.ts";
 import { assertOAuthClientId } from "./oauth-client-config.ts";
 
 export const requiredSecrets = [

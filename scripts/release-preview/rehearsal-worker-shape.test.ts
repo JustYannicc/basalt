@@ -4,11 +4,21 @@ import { encodeDurableObjectTags } from "alchemy/Cloudflare/Workers";
 import { checkWorkerShape, type WorkerShape } from "./rehearsal-worker-shape.ts";
 
 const worker = "rehearsal-poolworker";
-const identity = ["alchemy:stack:basalt-rehearsal", "alchemy:stage:test-rehearsal-81231", "alchemy:id:PoolWorker"];
-const dos = (...classes: string[]) => encodeDurableObjectTags(classes.map((name) => ({ logicalId: name, className: name })));
+const identity = [
+  "alchemy:stack:basalt-rehearsal",
+  "alchemy:stage:test-rehearsal-81231",
+  "alchemy:id:PoolWorker",
+];
+const dos = (...classes: string[]) =>
+  encodeDurableObjectTags(classes.map((name) => ({ logicalId: name, className: name })));
 const bindings = [
   { type: "durable_object_namespace", name: "PoolContainer", class_name: "PoolContainer" },
-  { type: "durable_object_namespace", name: "TOOLS", class_name: "Tools", script_name: "tools-worker" },
+  {
+    type: "durable_object_namespace",
+    name: "TOOLS",
+    class_name: "Tools",
+    script_name: "tools-worker",
+  },
 ];
 const container = { id: "container-ns", class: "PoolContainer", script: worker, use_sqlite: true };
 const baselineShape: WorkerShape = {
@@ -29,17 +39,48 @@ const releasedShape: WorkerShape = {
 test("production's untagged PoolWorker shape is accepted and anything else refuses before the release", () => {
   const record = checkWorkerShape(baselineShape, worker, "baseline");
   // A null field is the same as an absent one.
-  checkWorkerShape({ ...baselineShape, version: { resources: { script_runtime: { migration_tag: null, exports: null }, bindings } } }, worker, "baseline");
-  assert.deepEqual(record, { phase: "baseline", classes: {}, containerNamespace: "container-ns", applications: {} });
+  checkWorkerShape(
+    {
+      ...baselineShape,
+      version: { resources: { script_runtime: { migration_tag: null, exports: null }, bindings } },
+    },
+    worker,
+    "baseline",
+  );
+  assert.deepEqual(record, {
+    phase: "baseline",
+    classes: {},
+    containerNamespace: "container-ns",
+    applications: {},
+  });
   const cases: Array<[string, WorkerShape]> = [
-    ["migration tag", { ...baselineShape, tags: [...baselineShape.tags, "alchemy:migration-tag:v1"] }],
-    ["version migration tag", { ...baselineShape, version: { resources: { script_runtime: { migration_tag: "v1" }, bindings } } }],
-    ["exports", { ...baselineShape, version: { resources: { script_runtime: { exports: [{ name: "default" }] }, bindings } } }],
-    ["no cross-script binding", { ...baselineShape, version: { resources: { bindings: bindings.slice(0, 1) } } }],
+    [
+      "migration tag",
+      { ...baselineShape, tags: [...baselineShape.tags, "alchemy:migration-tag:v1"] },
+    ],
+    [
+      "version migration tag",
+      {
+        ...baselineShape,
+        version: { resources: { script_runtime: { migration_tag: "v1" }, bindings } },
+      },
+    ],
+    [
+      "exports",
+      {
+        ...baselineShape,
+        version: { resources: { script_runtime: { exports: [{ name: "default" }] }, bindings } },
+      },
+    ],
+    [
+      "no cross-script binding",
+      { ...baselineShape, version: { resources: { bindings: bindings.slice(0, 1) } } },
+    ],
     ["fleet class already", { ...baselineShape, namespaces: releasedShape.namespaces }],
     ["missing identity tag", { ...baselineShape, tags: baselineShape.tags.slice(1) }],
   ];
-  for (const [name, shape] of cases) assert.throws(() => checkWorkerShape(shape, worker, "baseline"), /shape refused/, name);
+  for (const [name, shape] of cases)
+    assert.throws(() => checkWorkerShape(shape, worker, "baseline"), /shape refused/, name);
 });
 
 test("after the release both fleet classes exist untagged and PoolContainer keeps its namespace", () => {
@@ -48,11 +89,36 @@ test("after the release both fleet classes exist untagged and PoolContainer keep
   assert.deepEqual(released.classes, { PoolRuntimeBlue: "blue-ns", PoolRuntimeGreen: "green-ns" });
   // A later plain deploy must leave every namespace as it was.
   assert.deepEqual(checkWorkerShape(releasedShape, worker, "classes", released), released);
-  const moved = { ...releasedShape, namespaces: [{ ...container, id: "new-ns" }, ...releasedShape.namespaces.slice(1)] };
-  assert.throws(() => checkWorkerShape(moved, worker, "classes", baseline), /PoolContainer namespace changed/);
-  const recreated = { ...releasedShape, namespaces: [container, { ...releasedShape.namespaces[1]!, id: "blue-2" }, releasedShape.namespaces[2]!] };
-  assert.throws(() => checkWorkerShape(recreated, worker, "classes", released), /changed the fleet class namespaces/);
-  assert.throws(() => checkWorkerShape({ ...releasedShape, tags: [...identity, ...dos("PoolContainer")] }, worker, "classes", baseline), /does not name PoolRuntimeBlue/);
+  const moved = {
+    ...releasedShape,
+    namespaces: [{ ...container, id: "new-ns" }, ...releasedShape.namespaces.slice(1)],
+  };
+  assert.throws(
+    () => checkWorkerShape(moved, worker, "classes", baseline),
+    /PoolContainer namespace changed/,
+  );
+  const recreated = {
+    ...releasedShape,
+    namespaces: [
+      container,
+      { ...releasedShape.namespaces[1]!, id: "blue-2" },
+      releasedShape.namespaces[2]!,
+    ],
+  };
+  assert.throws(
+    () => checkWorkerShape(recreated, worker, "classes", released),
+    /changed the fleet class namespaces/,
+  );
+  assert.throws(
+    () =>
+      checkWorkerShape(
+        { ...releasedShape, tags: [...identity, ...dos("PoolContainer")] },
+        worker,
+        "classes",
+        baseline,
+      ),
+    /does not name PoolRuntimeBlue/,
+  );
 });
 
 test("a class's application is created once and the selection holds across re-dispatches", () => {
@@ -61,11 +127,32 @@ test("a class's application is created once and the selection holds across re-di
     applications: blue.map((id) => ({ id, durable_objects: { namespace_id: "blue-ns" } })),
     ...(selection === undefined ? {} : { selection }),
   });
-  const first = checkWorkerShape(withApps(["app-1"], { active: "legacy", epoch: 1 }), worker, "classes");
+  const first = checkWorkerShape(
+    withApps(["app-1"], { active: "legacy", epoch: 1 }),
+    worker,
+    "classes",
+  );
   assert.deepEqual(first.applications, { PoolRuntimeBlue: "app-1" });
-  assert.deepEqual(checkWorkerShape(withApps(["app-1"], { active: "legacy", epoch: 1 }), worker, "classes", first).applications, { PoolRuntimeBlue: "app-1" });
-  assert.throws(() => checkWorkerShape(withApps(["app-2"]), worker, "classes", first), /application changed/);
-  assert.throws(() => checkWorkerShape(withApps(["app-1", "app-2"]), worker, "classes", first), /more than one container application/);
-  assert.throws(() => checkWorkerShape(withApps([]), worker, "classes", first), /application changed/);
-  assert.throws(() => checkWorkerShape(withApps(["app-1"], { active: "blue", epoch: 2 }), worker, "classes", first), /selection changed/);
+  assert.deepEqual(
+    checkWorkerShape(withApps(["app-1"], { active: "legacy", epoch: 1 }), worker, "classes", first)
+      .applications,
+    { PoolRuntimeBlue: "app-1" },
+  );
+  assert.throws(
+    () => checkWorkerShape(withApps(["app-2"]), worker, "classes", first),
+    /application changed/,
+  );
+  assert.throws(
+    () => checkWorkerShape(withApps(["app-1", "app-2"]), worker, "classes", first),
+    /more than one container application/,
+  );
+  assert.throws(
+    () => checkWorkerShape(withApps([]), worker, "classes", first),
+    /application changed/,
+  );
+  assert.throws(
+    () =>
+      checkWorkerShape(withApps(["app-1"], { active: "blue", epoch: 2 }), worker, "classes", first),
+    /selection changed/,
+  );
 });

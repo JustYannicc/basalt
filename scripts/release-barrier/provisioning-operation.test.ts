@@ -111,7 +111,8 @@ test("a rehearsal writer comes only from the rehearsal job, and neither writer p
     GITHUB_REF: "refs/pull/7/merge",
     GITHUB_JOB: "rehearsal",
     GITHUB_REPOSITORY: "JustYannicc/basalt",
-    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
+    GITHUB_WORKFLOW_REF:
+      "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
     GITHUB_RUN_ID: "123",
     GITHUB_RUN_ATTEMPT: "2",
     CLOUDFLARE_ACCOUNT_ID: account,
@@ -125,15 +126,22 @@ test("a rehearsal writer comes only from the rehearsal job, and neither writer p
   });
   for (const change of [
     { GITHUB_JOB: "deploy" },
-    { GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/pool-runtime-provision.yml@refs/pull/7/merge" },
+    {
+      GITHUB_WORKFLOW_REF:
+        "JustYannicc/basalt/.github/workflows/pool-runtime-provision.yml@refs/pull/7/merge",
+    },
     { GITHUB_REPOSITORY: "fork/basalt" },
     { BASALT_RELEASE_CANDIDATE: "main" },
     { GITHUB_REF: "refs/tags/v1" },
   ])
-    assert.throws(() => provisioningWorkflowWriter({ ...env, ...change }), /rehearsal job's exclusive writer/);
+    assert.throws(
+      () => provisioningWorkflowWriter({ ...env, ...change }),
+      /rehearsal job's exclusive writer/,
+    );
   // The production workflow on a rehearsal stage, or the rehearsal job on production, is refused.
   assert.throws(
-    () => provisioningWorkflowWriter({ ...env, ALCHEMY_STAGE: "production", GITHUB_SHA: candidate }),
+    () =>
+      provisioningWorkflowWriter({ ...env, ALCHEMY_STAGE: "production", GITHUB_SHA: candidate }),
     /exclusive production writer/,
   );
 });

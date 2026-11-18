@@ -21,7 +21,9 @@ export default Alchemy.Stack(
     const stage = yield* Stage;
     const subject = subjectFromStage(stage);
     if (!subject)
-      return yield* Effect.die(new Error("Preview database stack is restricted to PR and rehearsal stages."));
+      return yield* Effect.die(
+        new Error("Preview database stack is restricted to PR and rehearsal stages."),
+      );
     const databaseName = yield* Config.NonEmptyString("TEST_STAGE_DATABASE");
     if (databaseName !== stageNames(subject).databaseName)
       return yield* Effect.die(new Error("Preview database name does not match its stage."));

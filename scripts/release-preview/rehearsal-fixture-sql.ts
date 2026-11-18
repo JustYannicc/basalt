@@ -5,7 +5,12 @@ const appId = /^app_[A-Za-z0-9_-]{1,120}$/u;
 
 export function unregisteredPools(value: string | undefined): string[] {
   const pools = (value ?? "").split(",").map((pool) => pool.trim());
-  if (pools.length < 1 || pools.length > 20 || pools.some((pool) => !appId.test(pool)) || new Set(pools).size !== pools.length)
+  if (
+    pools.length < 1 ||
+    pools.length > 20 ||
+    pools.some((pool) => !appId.test(pool)) ||
+    new Set(pools).size !== pools.length
+  )
     throw new Error("The rehearsal fixture needs distinct pool app ids");
   return pools;
 }
@@ -29,7 +34,8 @@ export async function unregisterPools(
       "select data_type from information_schema.columns where table_schema = current_schema() and table_name = 'organization' and column_name = 'metadata'",
     );
     const type = column.rows[0]?.data_type;
-    if (type !== "text" && type !== "jsonb") throw new Error("Unexpected organization metadata column");
+    if (type !== "text" && type !== "jsonb")
+      throw new Error("Unexpected organization metadata column");
     const result = await client.query<{ removed: string }>(
       `with target as (
          select o.id, coalesce(o.metadata::jsonb, '{}'::jsonb) as m from organization o where o.id = $1 for update

@@ -5,7 +5,8 @@ import { derivePreviewSecrets, deriveStageSecrets, previewKey, stageKey } from "
 
 test("preview keys stay stable for cleanup while differing by PR, key and purpose", () => {
   const key = "ab".repeat(32);
-  const a = derivePreviewSecrets(key, 17), b = derivePreviewSecrets(key, 18);
+  const a = derivePreviewSecrets(key, 17),
+    b = derivePreviewSecrets(key, 18);
   assert.deepEqual(derivePreviewSecrets(key, 17), a);
   assert.equal(new Set(Object.values(a)).size, Object.values(a).length);
   assert.equal(a.POOL_APP_SIGNING_KEY_PREVIOUS, undefined);
@@ -22,7 +23,8 @@ test("preview keys stay stable for cleanup while differing by PR, key and purpos
 test("PR keys keep their original derivation and a rehearsal of the same number shares none", () => {
   const key = "ab".repeat(32);
   const original = createHmac("sha256", Buffer.from(key, "hex"))
-    .update("basalt-preview-v1\u000017\u0000POOL_DEPLOYMENT_KEY").digest("hex");
+    .update("basalt-preview-v1\u000017\u0000POOL_DEPLOYMENT_KEY")
+    .digest("hex");
   assert.equal(previewKey(key, 17, "POOL_DEPLOYMENT_KEY"), original);
   assert.equal(stageKey(key, { kind: "pr", number: 17 }, "POOL_DEPLOYMENT_KEY"), original);
   const rehearsal = stageKey(key, { kind: "rehearsal", number: 17 }, "POOL_DEPLOYMENT_KEY");

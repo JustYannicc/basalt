@@ -48,7 +48,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const { ready } = await rehearsalGate(process.env, process.argv[2]);
     process.stdout.write(`ready=${ready}\n`);
   } catch (error) {
-    console.error(`::error::${error instanceof Error ? error.message : "Release rehearsal gate failed"}`);
+    console.error(
+      `::error::${error instanceof Error ? error.message : "Release rehearsal gate failed"}`,
+    );
     process.exitCode = 1;
   }
 }
