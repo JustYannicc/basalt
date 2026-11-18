@@ -156,19 +156,13 @@ if (stage === "production") {
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
 
+const { decodeReleasePolicy } = await import("./policy.ts");
 const policy = values.policy
-  ? JSON.parse(await readFile(resolve(values.policy), "utf8"))
+  ? decodeReleasePolicy(JSON.parse(await readFile(resolve(values.policy), "utf8")))
   : undefined;
-// A policy may only switch the cutover's declaration settings, never supply other configuration.
-for (const [name, value] of Object.entries((policy?.env ?? {}) as Record<string, unknown>)) {
-  if (
-    !["POOL_FLEET_BUILD", "POOL_FLEET_CLASSES", "POOL_WORKER_VERSION_TRAFFIC"].includes(name) ||
-    typeof value !== "string"
-  )
-    throw new Error(`Policy may not set ${name}`);
-  process.env[name] = value;
-}
-const include: string[] = values.include?.length ? values.include : (policy?.include ?? []);
+for (const [name, value] of Object.entries(policy?.env ?? {}))
+  if (value !== undefined) process.env[name] = value;
+const include: string[] = values.include?.length ? values.include : [...(policy?.include ?? [])];
 if (stage === "production" && !policy) throw new Error("Production needs a policy");
 
 process.chdir(cloud);
@@ -248,11 +242,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
         const guarded = Effect.gen(function* () {
           yield* WireGuard.selfTest();
           yield* storeCannotBootstrap;
-          for (const [fqn, classes] of Object.entries(
-            (policy?.wire?.sqliteClasses ?? {}) as Record<string, string[]>,
-          ))
+          for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
             wire.sqliteClasses[yield* scriptName(fqn)] = classes;
-          for (const fqn of (policy?.wire?.expectLiveModule ?? []) as string[]) {
+          for (const fqn of policy?.wire.expectLiveModule ?? []) {
             const script = yield* scriptName(fqn);
             const digest = yield* liveMainModuleSha256({
               accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
