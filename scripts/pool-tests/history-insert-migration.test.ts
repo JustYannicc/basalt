@@ -51,7 +51,8 @@ test("every direct history partition keeps the same invalidation as before v11",
     });
     const original = await catalog();
     await migrateModelHistory(a);
-    assert.deepEqual(await catalog(), original);
+    // v12 replaces only the watcher function, so no trigger DDL locks Home's tables.
+    assert.deepEqual((await catalog()).triggers, original.triggers);
     await instrumentTriggers();
     for (let part = 0; part < 16; part++) {
       await a.query("TRUNCATE fixture_invalidations,fixture_trigger_calls,fixture_write_calls");
