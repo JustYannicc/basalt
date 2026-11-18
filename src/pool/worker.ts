@@ -127,6 +127,7 @@ import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
+import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -589,6 +590,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
+  /** The minute check-in's request reliability, computed once per five-minute capture. */
+  async reliabilitySlo(pool: string) {
+    return capturedReliability(this.ctx.storage, pool, (now) => {
+      if (this.env.POOL_MODEL_HISTORY_ENABLED !== "true")
+        throw new Error("Model request history is disabled");
+      return withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+        readPoolReliabilitySlo(db, pool, now),
+      );
+    });
+  }
+
   async automaticRecoveryObservation(pool: string) {
     if (await this.handoff.selected()) throw new RecoveryRefused(409);
     const [runtime, condition] = await Promise.all([
@@ -691,6 +703,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
               await deliverPoolHistoryChanges(db, result.pending, (changes) =>
                 publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
               );
+              const target = this.env.POOL_AVAILABILITY_TARGET;
+              if (validProbeTarget(target))
+                await recordReliability(this.ctx.storage, target, (now) =>
+                  readPoolReliabilitySlo(db, target, now),
+                ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
             }),
           ),
         );
@@ -1127,13 +1144,7 @@ export default {
       await runAvailabilityProbe(
         env,
         (pool) => singleton(env).availabilityProbe(pool, true),
-        (pool) => {
-          if (env.POOL_MODEL_HISTORY_ENABLED !== "true")
-            throw new Error("Model request history is disabled");
-          return withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-            readPoolReliabilitySlo(db, pool),
-          );
-        },
+        (pool) => singleton(env).reliabilitySlo(pool),
         productionOpsRelease,
       );
       return;
