@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home opens a second, separately capped database pool of two connections for cluster coordination: its heartbeats, election, master lookup and node liveness, including the node connection lifecycle commands. Request, billing, usage, log, purge and management work keep the six-connection main pool, so a saturated main pool cannot delay heartbeats past their timeout. Each Home holds up to eight pooler client connections."
+    }
+  }
+}

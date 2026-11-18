@@ -117,6 +117,7 @@ def cluster_yaml(database_url: str, schema_owner: str = "") -> str:
         "  max-idle-conns: 6\n"
         "  conn-max-idle-time: 5m\n"
         "  conn-max-lifetime: 30m\n"
+        "  coordination-max-open-conns: 2\n"
         "node:\n"
         "  external-ip: 127.0.0.1\n"
         f"  external-port: {identity.advertised_port}\n"

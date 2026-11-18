@@ -1,0 +1,336 @@
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+index c2b36ee..1871ef9 100644
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -251,6 +251,27 @@ func run() int {
+ 	}
+ 	repo := cluster.NewRepository(clusterDB)
+ 	clusterRepo = repo
++	coordinationRepo := repo
++	if dbBackend == cluster.DatabaseBackendPostgres && clusterCfg != nil {
++		coordinationDB, errCoordinationOpen := cluster.OpenCoordination(runCtx, clusterCfg.PGSQL)
++		if errCoordinationOpen != nil {
++			log.Errorf("failed to open coordination database pool: %v", errCoordinationOpen)
++			return 1
++		}
++		if coordinationDB != nil {
++			coordinationSQLDB, errCoordinationSQLDB := coordinationDB.DB()
++			if errCoordinationSQLDB != nil {
++				log.Errorf("failed to get coordination sql db: %v", errCoordinationSQLDB)
++				return 1
++			}
++			defer func() {
++				if errCloseSQL := coordinationSQLDB.Close(); errCloseSQL != nil {
++					log.Warnf("failed to close coordination sql db: %v", errCloseSQL)
++				}
++			}()
++			coordinationRepo = cluster.NewRepository(coordinationDB)
++		}
++	}
+ 	nodeCfg := resolveDatabaseNodeConfig(clusterCfg, clusterExists)
+ 	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(runCtx, nodeCfg.HeartbeatTimeout); errEnsureLifecycle != nil {
+ 		log.Errorf("failed to initialize lifecycle configuration: %v", errEnsureLifecycle)
+@@ -411,11 +432,12 @@ func run() int {
+ 			StartupRecovery: func(recoveryCtx context.Context, incarnation cluster.HomeIncarnationID) error {
+ 				return recoverCPAFences(recoveryCtx, clusterRepo, incarnation, respSrv)
+ 			},
++			CoordinationRepository: coordinationRepo,
+ 		})
+ 		refreshController := cluster.NewRefreshController(coordinator, rt, clusterRepo, clusterTLSConfig)
+ 		coordinator.SetOnMasterChanged(refreshController.OnMasterChanged)
+ 		rt.SetClusterRefreshHandler(refreshController.RefreshNowObserved)
+-		clusterRESPHandler = cluster.NewRESPHandler(coordinator, refreshController, clusterRepo)
++		clusterRESPHandler = cluster.NewRESPHandler(coordinator, refreshController, coordinationRepo)
+ 		if clusterAdapter == nil {
+ 			log.Errorf("failed to init cluster runtime adapter")
+ 			return 1
+diff --git a/internal/cluster/config.go b/internal/cluster/config.go
+index ee3494d..36c4405 100644
+--- a/internal/cluster/config.go
++++ b/internal/cluster/config.go
+@@ -36,6 +36,9 @@ type PGSQLConfig struct {
+ 	Database           string        `yaml:"database"`
+ 	SSLMode            string        `yaml:"sslmode"`
+ 	SlowQueryThreshold time.Duration `yaml:"slow-query-threshold"`
++
++	// CoordinationMaxOpenConns gives heartbeats, election and node liveness their own pool.
++	CoordinationMaxOpenConns int `yaml:"coordination-max-open-conns"`
+ }
+ 
+ type SQLiteConfig struct {
+@@ -235,6 +238,9 @@ func (c PGSQLConfig) Validate() error {
+ 	if _, errPool := c.poolSettings(); errPool != nil {
+ 		return errPool
+ 	}
++	if c.CoordinationMaxOpenConns < 0 {
++		return fmt.Errorf("pgsql.coordination-max-open-conns must not be negative")
++	}
+ 	if strings.TrimSpace(c.PostgresURI) != "" {
+ 		if strings.TrimSpace(c.Host) != "" ||
+ 			c.Port != 0 ||
+diff --git a/internal/cluster/coordination_pool_postgres_test.go b/internal/cluster/coordination_pool_postgres_test.go
+new file mode 100644
+index 0000000..e518c27
+--- /dev/null
++++ b/internal/cluster/coordination_pool_postgres_test.go
+@@ -0,0 +1,166 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"os"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
++)
++
++// newCoordinationPoolFixture opens a capped main pool and, when coordinationConns is positive, a
++// separate coordination pool on one fresh schema.
++func newCoordinationPoolFixture(t testing.TB, mainConns int, coordinationConns int) (*gorm.DB, *Coordinator) {
++	t.Helper()
++	dsn := strings.TrimSpace(os.Getenv("HOME_TEST_POSTGRES_DSN"))
++	if dsn == "" {
++		dsn = strings.TrimSpace(os.Getenv("CLIPROXY_HOME_TEST_POSTGRES_DSN"))
++	}
++	if dsn == "" {
++		t.Skip("HOME_TEST_POSTGRES_DSN is not configured")
++	}
++	adminDB, errAdmin := gorm.Open(postgres.Open(dsn), databaseGORMConfig(defaultDatabaseSlowQueryThreshold))
++	if errAdmin != nil {
++		t.Fatalf("open postgres admin database: %v", errAdmin)
++	}
++	adminSQLDB, errAdminSQL := adminDB.DB()
++	if errAdminSQL != nil {
++		t.Fatal(errAdminSQL)
++	}
++	schema := "coordination_pool_" + strconv.FormatInt(time.Now().UnixNano(), 10)
++	if errCreate := adminDB.Exec("CREATE SCHEMA " + schema).Error; errCreate != nil {
++		t.Fatalf("create postgres schema: %v", errCreate)
++	}
++	cfg := PGSQLConfig{
++		PostgresURI:              postgresDSNWithSearchPath(dsn, schema),
++		MaxOpenConns:             &mainConns,
++		CoordinationMaxOpenConns: coordinationConns,
++	}
++	mainDB, errOpen := Open(context.Background(), cfg)
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	coordinationDB, errCoordination := OpenCoordination(context.Background(), cfg)
++	if errCoordination != nil {
++		t.Fatal(errCoordination)
++	}
++	t.Cleanup(func() {
++		for _, db := range []*gorm.DB{mainDB, coordinationDB} {
++			if db == nil {
++				continue
++			}
++			if sqlDB, errDB := db.DB(); errDB == nil {
++				if errClose := sqlDB.Close(); errClose != nil {
++					t.Errorf("close postgres database: %v", errClose)
++				}
++			}
++		}
++		if errDrop := adminDB.Exec("DROP SCHEMA " + schema + " CASCADE").Error; errDrop != nil {
++			t.Errorf("drop postgres schema: %v", errDrop)
++		}
++		if errClose := adminSQLDB.Close(); errClose != nil {
++			t.Errorf("close postgres admin database: %v", errClose)
++		}
++	})
++	if errMigrate := AutoMigrate(mainDB); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	options := CoordinatorOptions{HeartbeatInterval: time.Second, HeartbeatTimeout: 20 * time.Second}
++	if coordinationDB != nil {
++		options.CoordinationRepository = NewRepository(coordinationDB)
++	}
++	coordinator := NewCoordinator(NewRepository(mainDB), NodeIdentity{IP: "127.0.0.1", Port: 18317, StartedAt: time.Now()}, options)
++	if errInitialize := coordinator.Initialize(context.Background()); errInitialize != nil {
++		t.Fatal(errInitialize)
++	}
++	return mainDB, coordinator
++}
++
++// holdMainPool keeps every main-pool connection busy until the returned release is called.
++func holdMainPool(t testing.TB, db *gorm.DB, conns int) func() {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	var wg sync.WaitGroup
++	started := make(chan struct{}, conns)
++	for range conns {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			_ = db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
++				started <- struct{}{}
++				<-ctx.Done()
++				return nil
++			})
++		}()
++	}
++	for range conns {
++		<-started
++	}
++	return func() {
++		cancel()
++		wg.Wait()
++	}
++}
++
++func heartbeatOnce(ctx context.Context, coordinator *Coordinator) error {
++	home, errHome := coordinator.heartbeatHomeIncarnation(ctx)
++	if errHome != nil {
++		return errHome
++	}
++	return coordinator.heartbeatAndElect(ctx, home)
++}
++
++func TestHomeDBPoolCoordinationKeepsHeartbeatsOffASaturatedMainPool(t *testing.T) {
++	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 1)
++	release := holdMainPool(t, mainDB, 2)
++	defer release()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	if errHeartbeat := heartbeatOnce(ctx, coordinator); errHeartbeat != nil {
++		t.Fatalf("heartbeat with a separate coordination pool: %v", errHeartbeat)
++	}
++	if !coordinator.IsMaster() {
++		t.Fatal("the only live Home was not elected")
++	}
++	if _, errMaster := coordinator.CurrentMaster(ctx); errMaster != nil {
++		t.Fatalf("master lookup with a separate coordination pool: %v", errMaster)
++	}
++}
++
++func TestHomeDBPoolCoordinationSharedPoolWaitsBehindSaturation(t *testing.T) {
++	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 0)
++	release := holdMainPool(t, mainDB, 2)
++	defer release()
++	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
++	defer cancel()
++	if errHeartbeat := heartbeatOnce(ctx, coordinator); !errors.Is(errHeartbeat, context.DeadlineExceeded) {
++		t.Fatalf("heartbeat on the shared saturated pool = %v, want the caller deadline", errHeartbeat)
++	}
++}
++
++func TestHomeDBPoolCoordinationIsOptionalAndSeparatelyCapped(t *testing.T) {
++	if db, errOpen := OpenCoordination(context.Background(), PGSQLConfig{PostgresURI: "postgres://unused.invalid/db"}); db != nil || errOpen != nil {
++		t.Fatalf("OpenCoordination without a limit = %v, %v; want no pool", db, errOpen)
++	}
++	if errValidate := (PGSQLConfig{PostgresURI: "postgres://unused.invalid/db", CoordinationMaxOpenConns: -1}).Validate(); errValidate == nil {
++		t.Fatal("a negative coordination-max-open-conns was accepted")
++	}
++	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 1)
++	coordinationSQLDB, errSQL := coordinator.coordination.db.DB()
++	if errSQL != nil {
++		t.Fatal(errSQL)
++	}
++	mainSQLDB, errMainSQL := mainDB.DB()
++	if errMainSQL != nil {
++		t.Fatal(errMainSQL)
++	}
++	if coordinationSQLDB == mainSQLDB || coordinationSQLDB.Stats().MaxOpenConnections != 1 {
++		t.Fatalf("coordination pool max open = %d, want a separate pool of 1", coordinationSQLDB.Stats().MaxOpenConnections)
++	}
++}
+diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
+index a5e724d..d992786 100644
+--- a/internal/cluster/coordinator.go
++++ b/internal/cluster/coordinator.go
+@@ -36,10 +36,13 @@ type CoordinatorOptions struct {
+ 	HeartbeatTimeout  time.Duration
+ 	OnMasterChanged   func(bool)
+ 	StartupRecovery   StartupRecovery
++	// CoordinationRepository serves heartbeats, election and master lookup when set.
++	CoordinationRepository *Repository
+ }
+ 
+ type Coordinator struct {
+ 	repo              *Repository
++	coordination      *Repository
+ 	node              NodeIdentity
+ 	heartbeatInterval time.Duration
+ 	heartbeatTimeout  time.Duration
+@@ -84,8 +87,13 @@ func NewCoordinator(repo *Repository, node NodeIdentity, opts CoordinatorOptions
+ 		node.Secret = generateNodeSecret()
+ 	}
+ 
++	coordination := opts.CoordinationRepository
++	if coordination == nil {
++		coordination = repo
++	}
+ 	return &Coordinator{
+ 		repo:              repo,
++		coordination:      coordination,
+ 		node:              node,
+ 		heartbeatInterval: interval,
+ 		heartbeatTimeout:  timeout,
+@@ -331,7 +339,7 @@ func (c *Coordinator) UpdateClientCount(ctx context.Context, clientCount int) er
+ 	if clientCount < 0 {
+ 		clientCount = 0
+ 	}
+-	db, errDB := c.repo.database()
++	db, errDB := c.coordination.database()
+ 	if errDB != nil {
+ 		return errDB
+ 	}
+@@ -367,7 +375,7 @@ func (c *Coordinator) CurrentMaster(ctx context.Context) (*ClusterNodeRecord, er
+ 	if c.repo == nil {
+ 		return nil, fmt.Errorf("cluster coordinator repository is nil")
+ 	}
+-	db, errDB := c.repo.database()
++	db, errDB := c.coordination.database()
+ 	if errDB != nil {
+ 		return nil, errDB
+ 	}
+@@ -393,7 +401,7 @@ func (c *Coordinator) CurrentMaster(ctx context.Context) (*ClusterNodeRecord, er
+ // heartbeatAndElect handles a heartbeat and elect.
+ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnationID) error {
+ 	// Keep validation before state changes so failures leave existing data intact.
+-	db, errDB := c.repo.database()
++	db, errDB := c.coordination.database()
+ 	if errDB != nil {
+ 		return errDB
+ 	}
+@@ -473,7 +481,7 @@ func (c *Coordinator) heartbeatHomeIncarnation(ctx context.Context) (HomeIncarna
+ 	if !initialized {
+ 		return HomeIncarnationID{}, fmt.Errorf("cluster coordinator is not initialized")
+ 	}
+-	if errHeartbeat := c.repo.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
++	if errHeartbeat := c.coordination.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
+ 		return HomeIncarnationID{}, errHeartbeat
+ 	}
+ 	return incarnation, nil
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+index 85a8252..b82ed6e 100644
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -66,6 +66,21 @@ func Open(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
+ 	return db, nil
+ }
+ 
++// OpenCoordination opens the pool used only by cluster coordination: heartbeats, election,
++// master lookup and node liveness. It returns nil when pgsql.coordination-max-open-conns is 0,
++// and coordination then shares the main pool. With a capped main pool, request work can hold
++// every connection for seconds; a separate pool keeps heartbeats inside their timeout.
++func OpenCoordination(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
++	if cfg.CoordinationMaxOpenConns <= 0 {
++		return nil, nil
++	}
++	coordination := cfg
++	conns := cfg.CoordinationMaxOpenConns
++	coordination.MaxOpenConns = &conns
++	coordination.MaxIdleConns = &conns
++	return Open(ctx, coordination)
++}
++
+ // OpenSQLite opens a SQLite database.
+ func OpenSQLite(ctx context.Context, path string, configuredSlowQueryThreshold ...time.Duration) (*gorm.DB, error) {
+ 	if ctx == nil {
