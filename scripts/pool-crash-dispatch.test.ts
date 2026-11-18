@@ -245,6 +245,9 @@ test("a release state for another account refuses before sending", async () => {
 });
 
 test("result.json carries raw controller results but never the key or a signed envelope", async (context) => {
+  const { bootId: _bootId, ...target } = identity;
+  const selection = { epoch: 1, active: { target, identity, fenced: false } };
+  const witnessed: unknown[] = [];
   const directory = await mkdtemp(join(tmpdir(), "pool-crash-dispatch-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const signingKey = randomBytes(32).toString("hex");
@@ -258,17 +261,23 @@ test("result.json carries raw controller results but never the key or a signed e
         fetch: async (request: Request) => {
           const { envelope } = (await request.json()) as { envelope: string };
           envelopes.push(envelope);
-          const { action, at } = (await openEnvelope(
-            signingKey,
-            deploymentReadinessPrefix,
-            envelope,
-          )) as { action: string; at: number };
+          const opened = (await openEnvelope(signingKey, deploymentReadinessPrefix, envelope)) as {
+            action: string;
+            at: number;
+            target?: unknown;
+          };
+          const { action, at } = opened;
           actions.push(action);
+          if (action === "witness") witnessed.push(opened.target);
           signedAhead.push(Date.now() - at);
           return Response.json(
             {
               result:
-                action === "inspect" ? { action, selection: { identity } } : { action, identity },
+                action === "inspect"
+                  ? { action, selection }
+                  : action === "witness"
+                    ? { kind: "witness", witness: { bootId: identity.bootId } }
+                    : { action, identity },
             },
             { headers: { "x-private-header": "header-sentinel" } },
           );
@@ -293,8 +302,10 @@ test("result.json carries raw controller results but never the key or a signed e
     "runtime-crash-inspect",
   ]);
   assert.equal(observed.ok && inspected.ok, true);
+  // The signed witness names the selected primary exactly as the controller reported it.
+  assert.deepEqual(witnessed, [target]);
   assert.deepEqual(observed.observe, {
-    selection: { identity },
+    selection,
     fleet: { action: "fleet-inspect", identity },
     activeHealth: { action: "active-health", identity },
   });
@@ -471,7 +482,13 @@ test("both retained witness shapes report their operation, and lost reads stay e
       configurationFingerprint: "f",
       selection: {},
     }),
-    { kind: "unattested-active", operationId, manifestDigest: "m", bootId: "old-boot" },
+    {
+      slotId: "legacy",
+      kind: "unattested-active",
+      operationId,
+      manifestDigest: "m",
+      bootId: "old-boot",
+    },
   );
   // An attested slot nests its startup witness.
   assert.deepEqual(
@@ -480,7 +497,13 @@ test("both retained witness shapes report their operation, and lost reads stay e
       controllerCode,
       witness: { operationId: "start-1", manifestDigest: "n", bootId: "attested-boot" },
     }),
-    { kind: "witness", operationId: "start-1", manifestDigest: "n", bootId: "attested-boot" },
+    {
+      slotId: "legacy",
+      kind: "witness",
+      operationId: "start-1",
+      manifestDigest: "n",
+      bootId: "attested-boot",
+    },
   );
   const lostWitness = await runCrashDispatch(
     input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
@@ -498,6 +521,7 @@ test("both retained witness shapes report their operation, and lost reads stay e
   const undigested = await runCrashDispatch(
     input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
     fakes({
+      observe: async (action) => ({ result: { action } }),
       readTarget: async () => ({
         accountId,
         worker: "synthetic-pool",

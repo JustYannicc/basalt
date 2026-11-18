@@ -43,8 +43,8 @@ test("candidate policy400 preserves active availability and never changes select
   f.emit(f.old.bootId, "still old");
   assert.equal(new TextDecoder().decode((await old.reader.read()).value), "still old");
   const intent = await f.intent();
-  await assert.rejects(f.slots.promote(intent), /policy400/);
-  assert.equal((await f.slots.receipt(intent.operationId))?.status, "started");
+  assert.equal((await f.slots.promote(intent)).status, "refused");
+  assert.equal((await f.slots.receipt(intent.operationId))?.status, "refused");
   assert.equal((await f.slots.inspect()).selection?.epoch, 1);
   assert.equal(f.calls.retire.length, 0);
 });

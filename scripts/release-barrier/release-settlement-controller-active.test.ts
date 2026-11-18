@@ -95,6 +95,11 @@ test("an activated controller that never adopted its runtime is archived and let
   await assert.rejects(next.read(), /prior-candidate-unsettled/);
   const manifest = await planSettlement(f);
   assert.equal(f.writes(), 0);
+  // The proof this fixture produced before the adopted disposition existed; it must not move.
+  assert.equal(
+    digest(canonical(manifest.proof)),
+    "dd28557acc3014362bae14550b7a462a1977a87f0d3fced5e2005709c8c01bec",
+  );
   assert.ok("controllerReads" in manifest.proof);
   assert.deepEqual(manifest.proof.controllerReads, {
     // sha256 of the canonical empty fleet result {"bindings":[],"resources":[]}

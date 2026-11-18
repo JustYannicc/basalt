@@ -19,14 +19,14 @@ type ForwardIo = NonNullable<Parameters<typeof resumeForwardRelease>[1]["io"]>;
  * journaled root record is the unchanged baseline, every Worker is on its accepted version, and the
  * root still serves the baseline image under the given health read.
  */
-export const readActivatedLive = (
+export const readActivatedLive = <Health extends { instanceId: string; bootId: string }>(
   stack: Pick<CompiledStack, "name" | "stage">,
   packet: ForwardPacket,
   io: { forward?: ForwardIo; container?: typeof observeContainer },
   health: (
     container: FrozenContainer,
     observation: ForwardControllerObservation,
-  ) => Promise<{ instanceId: string; bootId: string }>,
+  ) => Promise<Health>,
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
@@ -79,6 +79,7 @@ export const readActivatedLive = (
       }),
     );
     return {
+      health: proven,
       instanceId: proven.instanceId,
       bootId: proven.bootId,
       native: adoption.receipt.before,

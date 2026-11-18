@@ -157,9 +157,9 @@ export const applyReleaseSettlement = (
       io.directory,
       io,
       manifest.proof.disposition,
-      manifest.proof.disposition === "controller-active-unadopted"
-        ? manifest.proof.controller.code
-        : undefined,
+      manifest.proof.disposition === "abandoned-before-controller"
+        ? undefined
+        : manifest.proof.controller.code,
     );
     if (
       hash(collected.source.image) !== manifest.imageHeadDigest ||

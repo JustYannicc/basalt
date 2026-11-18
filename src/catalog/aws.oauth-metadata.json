@@ -1,0 +1,25 @@
+{
+  "authorization_endpoint": "https://us-east-1.oauth.signin.aws/v1/authorize",
+  "authorization_grant_profiles_supported": [
+    "urn:ietf:params:oauth:grant-profile:id-jag"
+  ],
+  "authorization_response_iss_parameter_supported": false,
+  "code_challenge_methods_supported": [
+    "S256"
+  ],
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:token-exchange",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer"
+  ],
+  "issuer": "https://us-east-1.oauth.signin.aws",
+  "registration_endpoint": "https://us-east-1.oauth.signin.aws/v1/register",
+  "response_types_supported": [
+    "code"
+  ],
+  "token_endpoint": "https://us-east-1.oauth.signin.aws/v1/token",
+  "token_endpoint_auth_methods_supported": [
+    "none"
+  ]
+}

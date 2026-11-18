@@ -7,7 +7,7 @@ import {
   ControllerCode,
   SlotIdentity,
   SlotRefused,
-  type SlotTarget,
+  SlotTarget,
 } from "../src/pool/runtime-slots/contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
 import { isSigningKey } from "../src/pool/token.ts";
@@ -48,7 +48,10 @@ export interface DispatchDependencies {
     signingKey: string,
     slot?: SlotTarget,
   ): Promise<unknown>;
-  /** The root PoolContainer's unsigned recovery status read: identity and boot, never a restart. */
+  /**
+   * The root PoolContainer's unsigned recovery status read: identity and boot, never a restart.
+   * Only meaningful without a selection; the controller refuses it once one exists.
+   */
   rootHealth(target: ReleaseTarget): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   crash(request: {
@@ -194,9 +197,71 @@ async function step<T>(read: () => Promise<T>, phase: string): Promise<Step<T>> 
   }
 }
 
+// Only the active target is read, so a newer controller's other selection fields never hide it.
+const Selected = Schema.Struct({
+  selection: Schema.Struct({ active: Schema.Struct({ target: SlotTarget }) }),
+});
+
+/** The selected primary's target, or undefined when no selection exists. */
+function selectedTarget(inspected: unknown): Step<SlotTarget> | undefined {
+  const selection = fields(inspected).selection;
+  if (selection === undefined || selection === null) return undefined;
+  try {
+    return {
+      ok: true,
+      value: Schema.decodeUnknownSync(Selected)(inspected).selection.active.target,
+    };
+  } catch {
+    return { ok: false, error: "selection active target unreadable; witness not sent" };
+  }
+}
+
+/** Without a selection the root container is the primary; its legacy slot is named from its health read. */
+async function legacyPrimary(input: {
+  root: RootApplication | undefined;
+  target: ReleaseTarget;
+  deps: DispatchDependencies;
+}): Promise<{ root: unknown; primary: Step<SlotTarget> }> {
+  const health = await step(
+    async () => Schema.decodeUnknownSync(RootHealth)(await input.deps.rootHealth(input.target)),
+    "root health read failed",
+  );
+  const root = input.root;
+  return {
+    root: health.ok
+      ? {
+          instanceId: fingerprint(health.value.instanceId),
+          imageHash: health.value.imageHash,
+          stateImageInput: root?.imageInput ?? null,
+          running: health.value.running,
+          ready: health.value.ready,
+          bootId: health.value.bootId ?? null,
+        }
+      : health,
+    primary: !root
+      ? { ok: false, error: "root application unavailable in release state; witness not sent" }
+      : !/^sha256:[a-f0-9]{64}$/u.test(root.imageDigest)
+        ? { ok: false, error: "root image digest unavailable in release state; witness not sent" }
+        : !health.ok
+          ? { ok: false, error: "root health unavailable; witness not sent" }
+          : {
+              ok: true,
+              value: {
+                format: "pool-runtime-slot-v1",
+                controllerId: health.value.instanceId,
+                instanceId: health.value.instanceId,
+                slotId: "legacy",
+                ...root,
+              },
+            },
+  };
+}
+
 /**
  * Reads only: two membership inspects about 6 s apart (is renewal moving?), fleet enablement, the
- * health refusal, the root container's boot, and the legacy slot's retained admission witness.
+ * health refusal, and the primary's retained admission witness. Once a selection exists the
+ * controller owns recovery and refuses the root status read, so the witness names the selected
+ * primary directly; the root boot is read only while no selection exists.
  */
 async function diagnose(input: {
   inspected: unknown;
@@ -211,38 +276,26 @@ async function diagnose(input: {
 }) {
   const fleet = fields(input.fleet);
   const permission = fields(fleet.permission);
-  const health = await step(
-    async () => Schema.decodeUnknownSync(RootHealth)(await input.deps.rootHealth(input.target)),
-    "root health read failed",
-  );
-  const root = input.root;
-  const witness: Step<unknown> = !root
-    ? { ok: false, error: "root application unavailable in release state; witness not sent" }
-    : !/^sha256:[a-f0-9]{64}$/u.test(root.imageDigest)
-      ? { ok: false, error: "root image digest unavailable in release state; witness not sent" }
-      : !health.ok
-        ? { ok: false, error: "root health unavailable; witness not sent" }
-        : await step(async () => {
-            const value = fields(
-              await input.send("witness", {
-                format: "pool-runtime-slot-v1",
-                controllerId: health.value.instanceId,
-                instanceId: health.value.instanceId,
-                slotId: "legacy",
-                ...root,
-              }),
-            );
-            // An attested slot answers with its startup witness nested; an unattested adoption
-            // answers flat (controller) or under its authorization (endpoint shape).
-            const retained = value.kind === "witness" ? fields(value.witness) : value;
-            const authorization = fields(value.authorization);
-            return {
-              kind: text(value.kind),
-              operationId: text(retained.operationId) ?? text(authorization.operationId),
-              manifestDigest: text(retained.manifestDigest) ?? text(authorization.manifestDigest),
-              bootId: text(retained.bootId) ?? text(fields(value.identity).bootId),
-            };
-          }, "witness outcome unknown");
+  const selected = selectedTarget(input.inspected);
+  const { root, primary } = selected
+    ? { root: { skipped: "selection-present" }, primary: selected }
+    : await legacyPrimary(input);
+  const witness: Step<unknown> = !primary.ok
+    ? primary
+    : await step(async () => {
+        const value = fields(await input.send("witness", primary.value));
+        // An attested slot answers with its startup witness nested; an unattested adoption
+        // answers flat (controller) or under its authorization (endpoint shape).
+        const retained = value.kind === "witness" ? fields(value.witness) : value;
+        const authorization = fields(value.authorization);
+        return {
+          slotId: primary.value.slotId,
+          kind: text(value.kind),
+          operationId: text(retained.operationId) ?? text(authorization.operationId),
+          manifestDigest: text(retained.manifestDigest) ?? text(authorization.manifestDigest),
+          bootId: text(retained.bootId) ?? text(fields(value.identity).bootId),
+        };
+      }, "witness outcome unknown");
   await input.deps.sleep(6_000);
   const second = await step(
     async () => membershipState(await input.send("inspect"), input.deps.now()),
@@ -259,16 +312,7 @@ async function diagnose(input: {
       bindings: Array.isArray(fleet.bindings) ? fleet.bindings.length : null,
     },
     activeHealth: { refused: input.healthRefusal ?? null },
-    root: health.ok
-      ? {
-          instanceId: fingerprint(health.value.instanceId),
-          imageHash: health.value.imageHash,
-          stateImageInput: root?.imageInput ?? null,
-          running: health.value.running,
-          ready: health.value.ready,
-          bootId: health.value.bootId ?? null,
-        }
-      : health,
+    root,
     witness: witness.ok ? witness.value : witness,
   };
 }
