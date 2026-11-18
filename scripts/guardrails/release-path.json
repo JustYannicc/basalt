@@ -18,7 +18,6 @@
     "scripts/pool-fleet/**",
     "scripts/release-barrier/**",
     "scripts/release-phases/**",
-    "scripts/release-merge/**",
     "scripts/deploy-safety/**",
     "scripts/deploy-main/**",
     "scripts/deploy.ts",
