@@ -26,7 +26,7 @@ async function assertProductionShape(read: Read, accountId: string, scriptName: 
     deployments: { versions: { version_id: string }[] }[];
   };
   const active = deployments.deployments[0]!.versions[0]!.version_id;
-  const version = await result(`${base}/workers/${scriptName}/versions/${active}`);
+  const version = await result(`${base}/workers/${scriptName}/versions/${active}?include=modules`);
   assert.deepEqual(Object.keys(version), [...productionVersionKeys]);
   const settings = (await result(`${base}/scripts/${scriptName}/settings`)) as { tags: string[] };
   assert.deepEqual(
@@ -42,10 +42,17 @@ async function assertProductionShape(read: Read, accountId: string, scriptName: 
 
 test("the GET-only stand-in serves PoolWorker's version, settings and runtime as production reads", async () => {
   const worker = productionWorker();
-  await assertProductionShape(
-    async (path) => productionWorkerResponse(worker, "GET", new URL(`${origin}${path}`)),
-    worker.accountId,
-    worker.scriptName,
+  const read: Read = async (path) =>
+    productionWorkerResponse(worker, "GET", new URL(`${origin}${path}`));
+  await assertProductionShape(read, worker.accountId, worker.scriptName);
+  // Without include=modules production omits the key entirely.
+  const response = await read(
+    `/accounts/${worker.accountId}/workers/workers/${worker.scriptName}/versions/${worker.versionId}`,
+  );
+  const { result } = (await response!.json()) as { result: Record<string, unknown> };
+  assert.deepEqual(
+    Object.keys(result),
+    productionVersionKeys.filter((key) => key !== "modules"),
   );
 });
 
