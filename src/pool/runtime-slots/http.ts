@@ -8,6 +8,7 @@ import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
 import { runtimeErrorResponse } from "./request-error.ts";
 import { runtimeResponseCause, runtimeResponseDiagnostic } from "../runtime-route-diagnostic.ts";
+import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 import { openEnvelope } from "../token.ts";
 import {
   sameControllerCode,
@@ -23,7 +24,6 @@ import type {
 } from "../runtime-fleet/configuration.ts";
 import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/image-update.ts";
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
-import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 
 export interface HandoffFleet {
   crash?(command: RuntimeCrashCommand): Promise<unknown>;
