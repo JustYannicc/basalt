@@ -164,7 +164,10 @@ export const preflightSteps = (
             : record
               ? { record: "this-candidate", complete: record.complete }
               : sourceController
-                ? { record: "prior-settled-or-aborted", sourceCandidate: sourceController.candidate }
+                ? {
+                    record: "prior-settled-or-aborted",
+                    sourceCandidate: sourceController.candidate,
+                  }
                 : { record: "none" },
       );
       // After a controller-active settlement the readiness row names an older controller than the
