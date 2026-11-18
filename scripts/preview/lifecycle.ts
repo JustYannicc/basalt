@@ -128,15 +128,18 @@ function runChild(
     });
     let size = 0;
     let tooMuchOutput = false;
-    const discard = (chunk: Buffer) => {
+    // Only a bounded tail is kept, so a failure can say why without holding the whole output.
+    let tail = "";
+    const keep = (chunk: Buffer) => {
       size += chunk.length;
+      tail = (tail + chunk.toString("utf8")).slice(-64 * 1024);
       if (size > 24 * 1024 * 1024 && !tooMuchOutput) {
         tooMuchOutput = true;
         child.kill("SIGTERM");
       }
     };
-    child.stdout.on("data", discard);
-    child.stderr.on("data", discard);
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
     const onInterrupt = () => child.kill("SIGINT");
     const onTerminate = () => child.kill("SIGTERM");
     process.once("SIGINT", onInterrupt);
@@ -151,10 +154,15 @@ function runChild(
       process.removeListener("SIGTERM", onTerminate);
       if (tooMuchOutput)
         return rejectPromise(new Error("Preview command output exceeded its private bound"));
-      if (code !== 0)
+      if (code !== 0) {
+        const lines = tail.split(/\r?\n/u).filter((line) => line.trim() && !/^\s+at /u.test(line)).slice(-80);
         return rejectPromise(
-          new Error("Preview command failed" + (signal ? " with " + signal : " with exit " + code)),
+          new Error(
+            "Preview command failed" + (signal ? " with " + signal : " with exit " + code) +
+              (lines.length ? ":\n" + redactor(environment, process.env)(lines.join("\n")) : ""),
+          ),
         );
+      }
       resolvePromise();
     });
   });

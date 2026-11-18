@@ -211,3 +211,17 @@ test("a brand-new stage whose stacks the store never held reads as empty without
   });
   assert.deepEqual(listed, ["--config", "basalt-preview-database"]);
 });
+
+test("alchemy's progress lines on stdout are not state paths", async () => {
+  const reader = alchemyPreviewStateReader({
+    environment: {},
+    command: (args) => {
+      const at = args[args.indexOf("list") + 1];
+      const progress = "• Refreshing Cloudflare State Store credentials\n✓ Refreshing Cloudflare State Store credentials\n";
+      if (at === "--config") return { status: 0, stdout: `${progress}basalt/\n` };
+      if (at === "basalt") return { status: 0, stdout: `${progress}basalt/production/\n` };
+      return { status: 1, stdout: "" };
+    },
+  });
+  assert.deepEqual(await reader.read(stage), { basalt: [], "basalt-preview-database": [] });
+});

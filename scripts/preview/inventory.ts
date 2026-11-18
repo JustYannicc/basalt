@@ -152,7 +152,9 @@ function runStateCommand(
   return result.stdout;
 }
 
-const stdoutLines = (stdout: string) => stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+// Alchemy writes progress lines ("• Refreshing …", "✓ Refreshing …") to stdout beside its result.
+const stdoutLines = (stdout: string) =>
+  stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !/^[•✓✗✔✖⚠ℹ]\s/u.test(line));
 
 function parsePaths(stdout: string, prefix: string, redact: (text: string) => string): string[] {
   const paths = stdoutLines(stdout);
