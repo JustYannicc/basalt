@@ -251,6 +251,7 @@ test("the preflight trusts a rehearsal only from the rehearsal job, for the chec
     GITHUB_ACTIONS: "true",
     GITHUB_REPOSITORY: "JustYannicc/basalt",
     GITHUB_JOB: "rehearsal",
+    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
     BASALT_RELEASE_CANDIDATE: head,
   };
   assert.deepEqual(assertPreflightContext(env, undefined, process.cwd()), { candidate: head, mode: "check" });
@@ -268,10 +269,18 @@ test("only the rehearsal job reads a rehearsal stage, and a production context n
     GITHUB_ACTIONS: "true",
     GITHUB_REPOSITORY: "JustYannicc/basalt",
     GITHUB_JOB: "rehearsal",
+    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-rehearsal.yml@refs/pull/7/merge",
     BASALT_RELEASE_CANDIDATE: head,
   };
   assert.equal(rehearsalJobCandidate(env, process.cwd()), head);
-  for (const change of [{ ALCHEMY_STAGE: undefined }, { ALCHEMY_STAGE: "production" }, { GITHUB_JOB: "backup" }, { BASALT_RELEASE_CANDIDATE: "a".repeat(40) }])
+  for (const change of [
+    { ALCHEMY_STAGE: undefined },
+    { ALCHEMY_STAGE: "production" },
+    { GITHUB_JOB: "backup" },
+    { GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/release-main.yml@refs/heads/main" },
+    { GITHUB_WORKFLOW_REF: undefined },
+    { BASALT_RELEASE_CANDIDATE: "a".repeat(40) },
+  ])
     assert.equal(rehearsalJobCandidate({ ...env, ...change }, process.cwd()), undefined);
 });
 
