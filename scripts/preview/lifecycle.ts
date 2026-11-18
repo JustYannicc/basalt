@@ -157,7 +157,8 @@ function runChild(
       if (code !== 0) {
         const lines = tail
           .split(/\r?\n/u)
-          .filter((line) => line.trim() && !/^\s+at /u.test(line))
+          // Stack frames go; Effect's schema paths (`at ["field"]`) stay, they say what failed.
+          .filter((line) => line.trim() && !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line))
           .slice(-80);
         return rejectPromise(
           new Error(
