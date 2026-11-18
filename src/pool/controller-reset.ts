@@ -65,7 +65,7 @@ function modelCall(request: Request): boolean {
   );
 }
 
-type Held = { body: Uint8Array } | { refused: "body_too_large" | "body_unreadable" };
+type Held = { body: Uint8Array<ArrayBuffer> } | { refused: "body_too_large" | "body_unreadable" };
 
 /** Reads a tee of the body beside the real send, and gives up past the bound. */
 function hold(body: ReadableStream<Uint8Array> | null) {
