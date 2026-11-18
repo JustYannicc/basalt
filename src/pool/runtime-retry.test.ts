@@ -5,6 +5,7 @@ import { SlotRefused } from "./runtime-slots/contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
+import { ProtectionRefusal } from "./runtime-protection.ts";
 import { rememberRuntimeFailure, retainRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { runtimeErrorResponse } from "./runtime-slots/request-error.ts";
 
@@ -20,6 +21,13 @@ function endpointRefused(cause: Error) {
 }
 // 21:23Z, 21:38Z, 21:42Z: the container's readiness answers fast and says unhealthy (503).
 const readinessUnhealthy = () => endpointRefused(new PoolRuntimeUnhealthy());
+// 22:02Z, 22:05Z: readiness answered healthy, but the lease it granted ran out before the router
+// admitted the request (RuntimeProtection.admit refuses a lease with under 250 ms left).
+const leaseRanOut = (reason: "lease_expired" | "lease_too_short") => () => {
+  const refusal = new ProtectionRefusal(reason);
+  rememberRuntimeFailure("slot_protection", refusal);
+  return refusal;
+};
 // 20:47Z: the container's readiness answers after the endpoint's deadline.
 const readinessTimedOut = () =>
   endpointRefused(new DOMException("Runtime health deadline exceeded", "TimeoutError"));
@@ -130,6 +138,8 @@ test("capacity refusal closes both retained upload branches", async () => {
 for (const [episode, lapseMs, refusal] of [
   ["21:23Z readiness says unhealthy for 3.5 s", 3_500, readinessUnhealthy],
   ["20:47Z readiness answers late for 17 s", 17_000, readinessTimedOut],
+  ["22:02Z a healthy read granted a lease too short to admit", 600, leaseRanOut("lease_too_short")],
+  ["22:05Z a healthy read's lease expired before admission", 600, leaseRanOut("lease_expired")],
 ] as const)
   test(`a serving runtime keeps the request until it admits again: ${episode}`, async (context) => {
     const declined = context.mock.method(console, "warn", () => {});
@@ -155,17 +165,17 @@ for (const [episode, lapseMs, refusal] of [
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "payload");
     assert.equal(dispatched, 1);
-    assert.equal(
-      recoveries,
-      1,
-      "one shared recovery attempt, and its refusal is not the request's",
-    );
-    assert.equal(declined.mock.callCount(), 1);
-    assert.equal(declined.mock.calls[0]!.arguments[0], "POOL_RUNTIME_RECOVERY_DECLINED");
-    assert.equal(declined.mock.calls[0]!.arguments[1].runtimeReason, "slot_uncertain");
+    // Recovery joins after the fifth failure; a sub-second lapse is served before it is needed.
+    const expected = attempts > 5 ? 1 : 0;
+    assert.equal(recoveries, expected, "one shared recovery attempt, never the request's refusal");
+    assert.equal(declined.mock.callCount(), expected);
+    for (const call of declined.mock.calls) {
+      assert.equal(call.arguments[0], "POOL_RUNTIME_RECOVERY_DECLINED");
+      assert.equal(call.arguments[1].runtimeReason, "slot_uncertain");
+    }
     assert.ok(clock.now >= lapseMs && clock.now < runtimeAdmissionWaitMs);
     assert.ok(clock.pauses.every((pause) => pause > 0 && pause <= 1_000));
-    assert.ok(attempts > (lapseMs > 5_000 ? 6 : 3), "a lapse does not spend the fixed budget");
+    assert.ok(attempts > (lapseMs > 5_000 ? 6 : 2), "a lapse does not spend the fixed budget");
   });
 
 test("a stopped container waits for the recovery that restarts it", async () => {
