@@ -135,7 +135,8 @@ export const preflightSteps = (
       await step(
         "sql-schemas",
         ["state-version"],
-        async () => releaseSchemaPlan((await read(deploymentSqlSources(state, compiled))).sources),
+        async () =>
+          releaseSchemaPlan((await read(deploymentSqlSources(state, compiled, "next"))).sources),
         (applies) => applies,
       );
       const journal = await step(

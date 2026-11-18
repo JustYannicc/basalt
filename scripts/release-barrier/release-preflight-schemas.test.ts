@@ -13,12 +13,12 @@ const source = (database: PGlite): SqlJournalSource => ({
     end: async () => {},
   }),
 });
-const blocked = (namespace: string) => (error: unknown) =>
+const blocked = (namespace: string, cause: string) => (error: unknown) =>
   error instanceof BarrierRefusal &&
-  error.reason === "release-preflight-schema-blocked" &&
+  error.reason === `release-preflight-schema-${cause}` &&
   error.worker === `SQL.${namespace}`;
 
-test("the release preflight names the migrations the release will apply and refuses journals it could not reach ready", async () => {
+test("the release preflight names the migrations the release will apply and refuses only journals its migrators could not bring to ready", async () => {
   const expected = Object.fromEntries(
     (await loadRegistrySqlExpectations()).map((entry) => [entry.namespace, entry.expected]),
   );
@@ -57,16 +57,45 @@ test("the release preflight names the migrations the release will apply and refu
       "model-history": [history.at(-1)],
     });
 
-    // A hole is not a state any previous release leaves; the barrier would refuse after the writes.
+    // History migrations apply by name, so a migration that landed out of order is still applied.
     await pool.query("DELETE FROM basalt_model_history_migrations WHERE name = $1", [history[0]]);
-    await assert.rejects(releaseSchemaPlan(sources), blocked("model-history"));
+    assert.deepEqual((await releaseSchemaPlan(sources))["model-history"], [
+      history[0],
+      history.at(-1),
+    ]);
     await pool.query("INSERT INTO basalt_model_history_migrations VALUES ($1)", [history[0]]);
+
+    // Product migrations run only above the journal's latest id, so a missing lower id never would.
+    const hosted = expected.hosted!;
+    const [, holeId] = /^(\d+)_/.exec(hosted[0]!)!;
+    await tools.query("DELETE FROM private_hosted_migrations WHERE migration_id = $1", [
+      Number(holeId),
+    ]);
+    await assert.rejects(releaseSchemaPlan(sources), blocked("hosted", "out-of-order"));
+    await tools.query("DELETE FROM private_hosted_migrations WHERE migration_id = $1", [
+      Number(/^(\d+)_/.exec(hosted.at(-1)!)![1]),
+    ]);
+    await assert.rejects(releaseSchemaPlan(sources), blocked("hosted", "out-of-order"));
+    await tools.query("DELETE FROM private_hosted_migrations");
+    for (const marker of hosted.slice(0, -1)) {
+      const [, id, name] = /^(\d+)_(.+)$/.exec(marker)!;
+      await tools.query("INSERT INTO private_hosted_migrations VALUES ($1, $2)", [
+        Number(id),
+        name,
+      ]);
+    }
+    assert.deepEqual((await releaseSchemaPlan(sources)).hosted, [hosted.at(-1)]);
+    const [, lastId, lastName] = /^(\d+)_(.+)$/.exec(hosted.at(-1)!)!;
+    await tools.query("INSERT INTO private_hosted_migrations VALUES ($1, $2)", [
+      Number(lastId),
+      lastName,
+    ]);
 
     // A marker the candidate does not register means production is ahead of it.
     await pool.query(
       "INSERT INTO basalt_model_history_migrations VALUES ('model_request_history_v99_unknown')",
     );
-    await assert.rejects(releaseSchemaPlan(sources), blocked("model-history"));
+    await assert.rejects(releaseSchemaPlan(sources), blocked("model-history", "unexpected"));
     await pool.query(
       "DELETE FROM basalt_model_history_migrations WHERE name = 'model_request_history_v99_unknown'",
     );
@@ -75,7 +104,10 @@ test("the release preflight names the migrations the release will apply and refu
     assert.deepEqual((await releaseSchemaPlan(sources))["model-history"], []);
 
     await tools.exec("DROP TABLE private_cloud_migrations");
-    await assert.rejects(releaseSchemaPlan(sources), blocked("cloud"));
+    await assert.rejects(
+      releaseSchemaPlan(sources),
+      blocked("cloud", "unreadable-journal-missing"),
+    );
   } finally {
     await tools.close();
     await pool.close();
