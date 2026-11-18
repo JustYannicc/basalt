@@ -331,3 +331,14 @@ test("the self-test's own refused probe does not end the deploy it guards", asyn
   assert.ok(Exit.isFailure(pending));
   assert.equal(Cause.squash(pending.cause) instanceof WireRefused, false);
 });
+
+test("a disposable stage may create any new SQLite class but still never delete one", async (t) => {
+  const created = await guarded(t, { anyNewSqliteClass: true }, () =>
+    Workers.putScript(poolWorkerUpload({ newSqliteClasses: ["X", "Y"] })),
+  );
+  assert.ok(Exit.isSuccess(created.exit));
+  const deleted = await guarded(t, { anyNewSqliteClass: true }, () =>
+    Workers.putScript(poolWorkerUpload({ deletedClasses: ["PoolContainer"] })),
+  );
+  assert.equal(refusalOf(deleted.exit).field, "migrations.deleted_classes");
+});

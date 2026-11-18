@@ -488,8 +488,12 @@ export const checkPlan = (
     if (policy.mode === "code-only")
       for (const change of changes)
         if (
-          change.action !== "update" ||
-          (change.fqn !== policy.poolWorker && change.fqn !== policy.poolContainer.fqn)
+          // `allow` names what else a reviewer accepted, such as the per-attempt PoolDatabase command.
+          !policy.allow.some(
+            (entry) => entry.fqn === change.fqn && entry.action === change.action,
+          ) &&
+          (change.action !== "update" ||
+            (change.fqn !== policy.poolWorker && change.fqn !== policy.poolContainer.fqn))
         )
           outside(
             change,

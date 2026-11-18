@@ -267,6 +267,11 @@ test("a code-only release is admitted without, and refused with, a new binding",
   assert.deepEqual((await refused(full.plan, { mode: "code-only" })).rules, [
     "outside-code-only PoolDatabase",
   ]);
+  // A reviewer can name the per-attempt database command in `allow`; nothing else follows.
+  await admitted(full.plan, {
+    mode: "code-only",
+    allow: [{ fqn: "PoolDatabase", action: "update" }],
+  });
 });
 
 test("a filtered plan needs the policy's include list, and the list needs a filtered plan", async (context) => {

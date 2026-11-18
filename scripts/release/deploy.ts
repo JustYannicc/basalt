@@ -120,7 +120,7 @@ process.chdir(cloud);
 const { Effect } = await import("effect");
 const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
-const { checkPlan, planDigest } = await import("./plan-check.ts");
+const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
@@ -165,28 +165,40 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
       Effect.gen(function* () {
         // Installed before any Alchemy layer is built: Effect caches the default fetch on first read.
         // The class change must re-upload the live code byte for byte (R2); the guard compares it.
+        // Script names carry the stage, so policies name FQNs and the State rows supply the names.
         const wire = {
-          sqliteClasses: policy?.wire?.sqliteClasses ?? {},
+          sqliteClasses: {} as Record<string, ReadonlyArray<string>>,
           mainModuleSha256: {} as Record<string, string>,
+          // A fresh disposable stage creates every class on its first deploy; production never does.
+          anyNewSqliteClass: stage !== "production" && !policy,
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
         const guarded = Effect.gen(function* () {
           yield* WireGuard.selfTest();
           yield* storeCannotBootstrap;
+          const scriptOf = (fqn: string) =>
+            Effect.gen(function* () {
+              const state = yield* Alchemist.State.store({
+                backend: "configured",
+                ...target,
+              } as never) as unknown as Fx.Effect<any, unknown, never>;
+              const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<
+                any,
+                unknown,
+                never
+              >;
+              const script = row?.attr?.workerName;
+              if (typeof script !== "string" || !script)
+                return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
+              return script as string;
+            });
+          for (const [fqn, classes] of Object.entries(
+            (policy?.wire?.sqliteClasses ?? {}) as Record<string, string[]>,
+          ))
+            wire.sqliteClasses[yield* scriptOf(fqn)] = classes;
           for (const fqn of (policy?.wire?.expectLiveModule ?? []) as string[]) {
-            const state = yield* Alchemist.State.store({
-              backend: "configured",
-              ...target,
-            } as never) as unknown as Fx.Effect<any, unknown, never>;
-            const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<
-              any,
-              unknown,
-              never
-            >;
-            const script = row?.attr?.workerName;
-            if (typeof script !== "string" || !script)
-              return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
+            const script = yield* scriptOf(fqn);
             const digest = yield* liveMainModuleSha256({
               accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
               token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
@@ -261,7 +273,7 @@ try {
       Effect.gen(function* () {
         const snapshot = yield* planOf("deploy");
         const checked = checkPolicy();
-        if (checked) yield* checkPlan(snapshot.native, checked);
+        if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
         if (command === "plan") return { snapshot, digest };
         if (command === "apply" && values["plan-digest"] !== digest)

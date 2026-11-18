@@ -43,6 +43,8 @@ export class WireGuardSelfTestFailed extends Data.TaggedError("WireGuardSelfTest
 export interface WireGuardConfig {
   /** Classes each script (by name) may add as `new_sqlite_classes`; none by default. */
   readonly sqliteClasses?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /** Disposable stages only: a first deploy creates every class; creating one never loses data. */
+  readonly anyNewSqliteClass?: boolean;
   /** Expected sha256 (hex) of each script's uploaded main module. */
   readonly mainModuleSha256?: Readonly<Record<string, string>>;
 }
@@ -167,12 +169,13 @@ const checkUpload = (config: WireGuardConfig, request: Request, at: At, script: 
         ]
       : [];
     const allowed = config.sqliteClasses?.[script] ?? [];
+    const anyNew = config.anyNewSqliteClass === true;
     for (const [step, value] of steps) {
       for (const key of CHANGES)
         if (value[key]?.length)
           return yield* refuse(at, "change", `${step}.${key}`, JSON.stringify(value[key]));
       const extra = (value.new_sqlite_classes ?? []).filter((name) => !allowed.includes(name));
-      if (extra.length)
+      if (extra.length && !anyNew)
         return yield* refuse(at, "sqlite", `${step}.new_sqlite_classes`, JSON.stringify(extra));
     }
     for (const [name, entry] of Object.entries(meta.exports ?? {}))
