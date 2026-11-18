@@ -2,6 +2,7 @@ import { DriveError } from "../shared/.generated/strata/errors.js";
 import { createObjectCache } from "./object-cache.ts";
 import { createFetchStaging } from "./fetch-staging.ts";
 import type { FetchInput } from "./fetch-stream.ts";
+import { AuthFailed, NotFound, ProtocolError, Unavailable } from "./wire.ts";
 import { referencedOids } from "../shared/.generated/strata/git/objects.js";
 import { createSqliteRefStore, validateTransaction } from "../shared/.generated/strata/sqlite.js";
 import type { TransactionStorage } from "../shared/strata/sqlite.ts";
@@ -163,18 +164,25 @@ export function createArtifactsStores(input: {
     clearIntent();
     return landed;
   };
+  /** Log a push that left the remote ref where it was, so a limit is told apart from a race. */
+  const refusedPush = (ref: string, reason: string) => {
+    console.warn(
+      "VAULT_PUSH_REFUSED " + JSON.stringify({ ref: ref === main ? "main" : "conflict", reason }),
+    );
+    return { landed: false as const, refused: reason };
+  };
   /**
    * Push one ref. Any refusal, in any wording, counts as a lost compare-and-swap: the caller merges
    * again from the remote main and keeps the work on its branch. Nothing is ever forced. The
-   * remote's bounded reason is logged and returned, so a limit or permission refusal is not
-   * mistaken for a race.
+   * reason is logged and returned: the remote's bounded text, or our own fixed text for a push
+   * that failed before the remote reported a status.
    */
   const pushRef = async (
     transaction: RefTransaction,
     ref: string,
     old: string | null,
     next: string,
-  ): Promise<{ landed: boolean; refused?: string }> => {
+  ): Promise<{ landed: true } | { landed: false; refused: string }> => {
     const sent = unpushed(next);
     storage.transactionSync(() =>
       sql.exec(
@@ -187,21 +195,25 @@ export function createArtifactsStores(input: {
     let result: Awaited<ReturnType<VaultRepository["push"]>>;
     try {
       result = await repository.push({ updates: [{ ref, old, next }], objects: sent });
-    } catch {
+    } catch (error) {
       // A lost reply or a report we can't read: the remote ref is the only truth.
-      return { landed: (await settle()) === true };
+      if (await settle()) return { landed: true };
+      // Transport errors carry fixed text; anything else may hold remote or local detail.
+      const reason =
+        error instanceof AuthFailed ||
+        error instanceof NotFound ||
+        error instanceof ProtocolError ||
+        error instanceof Unavailable
+          ? `${error.name}: ${error.message}`
+          : "unreadable push reply";
+      return refusedPush(ref, reason);
     }
     if (result.applied && result.results[ref] === "ok") {
       pushed(sent);
       return { landed: true };
     }
     clearIntent();
-    const refused = result.results[ref] ?? "unspecified";
-    console.warn(
-      "VAULT_PUSH_REFUSED " +
-        JSON.stringify({ ref: ref === main ? "main" : "conflict", reason: refused }),
-    );
-    return { landed: false, refused };
+    return refusedPush(ref, result.results[ref] ?? "unspecified");
   };
   const setLocal = (ref: string, oid: string) =>
     storage.transactionSync(() =>
@@ -234,10 +246,11 @@ export function createArtifactsStores(input: {
       ) as Record<string, string | null>;
       if (transaction.changes.some((change) => current[change.ref] !== change.expected))
         return { applied: false, current };
-      const lost = async ({ refused }: { refused?: string }): Promise<Published> => ({
+      // The engine sees a lost race; the vault's write wrapper reads `refused` for its error.
+      const lost = async (refused: string): Promise<Published & { refused: string }> => ({
         applied: false,
         current: { ...current, [main]: await adoptRemoteMain() },
-        ...(refused === undefined ? {} : { refused }),
+        refused,
       });
       // Record the transaction locally, then retire its push intent. A settle after a lost reply
       // may already have recorded it.
@@ -254,7 +267,7 @@ export function createArtifactsStores(input: {
       );
       if (moved) {
         const push = await pushRef(transaction, main, moved.expected, moved.next);
-        return push.landed ? finish() : lost(push);
+        return push.landed ? finish() : lost(push.refused);
       }
       if (transaction.receipt.state === "conflict") {
         // Kept conflicts are part of the record, so other devices and agents can review them. A
@@ -263,7 +276,7 @@ export function createArtifactsStores(input: {
           remote = (await repository.refs())[ref] ?? null;
         if (remote !== transaction.receipt.oid) {
           const push = await pushRef(transaction, ref, remote, transaction.receipt.oid);
-          if (!push.landed) return lost(push);
+          if (!push.landed) return lost(push.refused);
         }
       }
       return finish();

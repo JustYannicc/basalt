@@ -7,14 +7,16 @@ import { device, remoteMain, repository, type Backend } from "./test/vault.ts";
 import { storageFixture } from "../fixture.ts";
 import { openVault } from "../vault.ts";
 import { createArtifactsStores, type VaultRepository } from "./stores.ts";
+import { createDriveDispatcher } from "../dispatch.ts";
+import { Effect } from "effect";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
  * Refuse the next `times` pushes on the server itself, so the ref really stays put, and reword
- * the report so the client sees a reason it has never seen.
+ * the report so the client sees a reason it has never seen. `unpack` is the report's first line.
  */
-const refuseNextPush = (server: Backend, reason: string, times = 1) => {
+const refuseNextPush = (server: Backend, reason: string, times = 1, unpack = "unpack ok") => {
   const hooks = join(server.bare, "hooks"),
     counter = join(server.root, "refusals");
   writeFileSync(counter, String(times));
@@ -27,7 +29,7 @@ const refuseNextPush = (server: Backend, reason: string, times = 1) => {
   const report = pkt(
     Buffer.concat([
       Buffer.from([1]),
-      pkt("unpack ok\n"),
+      pkt(`${unpack}\n`),
       pkt(`ng refs/heads/main ${reason}\n`),
       Buffer.from("0000"),
     ]),
@@ -153,45 +155,70 @@ test("a push refused every time keeps the work on its branch and never forces ma
   }
 });
 
-test("a refused push logs and returns its reason, bounded and without paths or tokens", async (t) => {
+/** Apply one edit the way an installed app does, through the drive dispatcher; return its failure. */
+const failedApply = (vault: Awaited<ReturnType<typeof device>>, operation: string) =>
+  Effect.runPromise(
+    Effect.flip(
+      createDriveDispatcher(vault.drive)({
+        method: "apply",
+        input: { base: vault.root, operation, edits: [{ path: "note.md", content: "kept" }] },
+      }),
+    ),
+  );
+const refusals = (calls: readonly { arguments: readonly unknown[] }[]) =>
+  calls
+    .map((call) => String(call.arguments[0]))
+    .filter((line) => line.startsWith("VAULT_PUSH_REFUSED "))
+    .map((line) => JSON.parse(line.slice("VAULT_PUSH_REFUSED ".length)) as Record<string, string>);
+
+test("a refused push logs its bounded reason and the app's failure names it", async (t) => {
   const server = await backend();
   const vault = await device(server);
   const warn = t.mock.method(console, "warn", () => {});
   try {
-    const before = remoteMain(server);
+    const before = remoteMain(server),
+      pushes = server.control.pushes;
     const allow = refuseNextPush(
       server,
       `storage\x00limit\x1b reached\tfor notes/private/diagnosis.md ${"a1".repeat(30)} ${"padding ".repeat(80)}`,
       100,
     );
-    const error: unknown = await vault.service
-      .apply({
-        base: vault.root,
-        operation: "bounded-refusal",
-        edits: [{ path: "note.md", content: "kept" }],
-      })
-      .then(
-        () => assert.fail("a push refused every time cannot land"),
-        (failure: unknown) => failure,
-      );
+    const failure = await failedApply(vault, "bounded-refusal");
+    allow();
+    const logged = refusals(warn.mock.calls);
+    assert.equal(logged.length, server.control.pushes - pushes, "every refused push is logged");
+    assert.equal(remoteMain(server), before);
+    for (const line of logged) {
+      assert.equal(line.ref, "main");
+      assert.ok(line.reason!.length <= 120, line.reason);
+      assert.match(line.reason!, /^storage limit reached for /);
+      assert.doesNotMatch(line.reason!, /[^\x20-\x7e]|notes|diagnosis|a1a1/);
+    }
+    // The app still sees a lost race, now with the repository's reason.
+    assert.equal(failure.reason, "contended");
+    assert.match(failure.message ?? "", /Main kept advancing/);
+    assert.ok(failure.message?.includes(logged.at(-1)!.reason!), failure.message);
+  } finally {
+    vault.close();
+    await server.close();
+  }
+});
+
+test("a push that fails before any ref status is logged with our own text", async (t) => {
+  const server = await backend();
+  const vault = await device(server);
+  const warn = t.mock.method(console, "warn", () => {});
+  try {
+    const before = remoteMain(server);
+    // Git's own report for a pack it cannot store.
+    const allow = refuseNextPush(server, "unpacker error", 100, "unpack index-pack abnormal exit");
+    const failure = await failedApply(vault, "unpack-refusal");
     allow();
     assert.equal(remoteMain(server), before);
-    const lines = warn.mock.calls
-      .map((call) => String(call.arguments[0]))
-      .filter((line) => line.startsWith("VAULT_PUSH_REFUSED "));
-    assert.ok(lines.length > 0, "every refusal is logged");
-    const logged = JSON.parse(lines.at(-1)!.slice("VAULT_PUSH_REFUSED ".length));
-    assert.equal(logged.ref, "main");
-    const reason = String(logged.reason);
-    assert.equal(reason.length, 120, reason);
-    assert.match(reason, /^storage limit reached for \[redacted\] \[redacted\] padding padding /);
-    assert.match(reason, /\.\.\.$/);
-    assert.doesNotMatch(reason, /[^\x20-\x7e]|notes|diagnosis|a1a1/);
-    // The caller still sees a lost race, now with the repository's reason.
-    assert.ok(error instanceof Error, String(error));
-    assert.equal((error as Error & { code?: string }).code, "contended");
-    assert.match(error.message, /Main kept advancing/);
-    assert.ok(error.message.includes(reason), error.message);
+    const reason = "ProtocolError: Git remote could not unpack push";
+    assert.deepEqual(refusals(warn.mock.calls).at(-1), { ref: "main", reason });
+    assert.equal(failure.reason, "contended");
+    assert.ok(failure.message?.includes(`last refusal: ${reason}`), failure.message);
   } finally {
     vault.close();
     await server.close();

@@ -431,7 +431,7 @@ test("the status word decides a push and a refusal's reason comes back bounded",
     return remote.push({ updates: [{ ref, old: first.oid, next: first.oid }], objects: [] });
   };
   // A refusal whose text reads "ok" is still a refusal.
-  assert.deepEqual(await refused("ok"), { applied: false, results: { [ref]: "ok" } });
+  assert.deepEqual(await refused("ok"), { applied: false, results: { [ref]: "unspecified" } });
   const long = await refused(
     `limit\x00reached\x1b for vault/notes/x.md by someone@example.invalid ${"c0ffee".repeat(8)} ${"more ".repeat(60)}`,
   );

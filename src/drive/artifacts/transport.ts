@@ -54,18 +54,18 @@ export {
 const refusalLimit = 120;
 /**
  * A remote's refusal text as it may be logged and shown: printable ASCII on one line, capped, with
- * any word that could name a path, ref, address or credential redacted.
+ * path-, address- and token-like words redacted. It never reads "ok", which marks an accepted ref.
  */
 const refusal = (text: string) => {
-  const reason =
-    text
-      .replace(/[^\x21-\x7e]+/g, " ")
-      .trim()
-      .split(" ")
-      .map((word) =>
-        /[/\\@]|\w\.\w/.test(word) || (word.length >= 32 && /\d/.test(word)) ? "[redacted]" : word,
-      )
-      .join(" ") || "unspecified";
+  const reason = text
+    .replace(/[^\x21-\x7e]+/g, " ")
+    .trim()
+    .split(" ")
+    .map((word) =>
+      /[/\\@]|\w\.\w/.test(word) || (word.length >= 32 && /\d/.test(word)) ? "[redacted]" : word,
+    )
+    .join(" ");
+  if (!reason || reason === "ok") return "unspecified";
   return reason.length > refusalLimit ? `${reason.slice(0, refusalLimit - 3)}...` : reason;
 };
 
