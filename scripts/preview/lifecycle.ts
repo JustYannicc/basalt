@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { alchemyArgs } from "../alchemy.ts";
 import { describeError, redactor } from "../release-preview/redact.ts";
@@ -130,9 +131,15 @@ function runChild(
     let tooMuchOutput = false;
     // Only a bounded tail is kept, so a failure can say why without holding the whole output.
     let tail = "";
+    // A defect trace can run past 64 KB of frames; 4 MiB keeps the message above it in view.
+    const log = process.env.BASALT_STAGE_OUTPUT_DIR
+      ? join(process.env.BASALT_STAGE_OUTPUT_DIR, `child-${Date.now()}-${child.pid}.log`)
+      : undefined;
+    if (log) mkdirSync(dirname(log), { recursive: true, mode: 0o700 });
     const keep = (chunk: Buffer) => {
       size += chunk.length;
-      tail = (tail + chunk.toString("utf8")).slice(-64 * 1024);
+      tail = (tail + chunk.toString("utf8")).slice(-4 * 1024 * 1024);
+      if (log) appendFileSync(log, chunk, { mode: 0o600 });
       if (size > 24 * 1024 * 1024 && !tooMuchOutput) {
         tooMuchOutput = true;
         child.kill("SIGTERM");
@@ -179,21 +186,19 @@ async function runAlchemy(
   identity: PreviewIdentity,
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
+  // The release entry never lets a deploy or destroy redeploy the shared State store; the CLI's
+  // --yes can (StateStore/State.ts bootstrap). Without the entry this fails instead of falling back.
   await runChild(
     "bun",
-    alchemyArgs(
-      "--log-level",
-      // Alchemy reports a failed apply only through its progress lines, which "error" and "none" hide.
-      "info",
+    [
+      "../../../../scripts/release/deploy.ts",
       action,
-      config,
       "--stage",
       identity.stage,
-      "--yes",
-      "--no-input",
-    ),
+      "--config",
+      config,
+    ],
     cloudDirectory,
-    // Provider credentials alone have no PATH or HOME; the CLI needs both to start.
     { ...safeEnvironment(process.env), ...environment },
   );
 }

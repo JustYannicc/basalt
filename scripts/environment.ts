@@ -364,6 +364,11 @@ export function stageEnvironment(value: StageSubject, source = process.env): Pre
     "ALCHEMY_HOME",
     "RUNNER_TEMP",
     "GITHUB_ACTIONS",
+    // The fleet declaration switches a standing rehearsal stage moves between (baseline, cutover).
+    "POOL_FLEET_CLASSES",
+    "POOL_FLEET_BUILD",
+    "POOL_FLEET_IMAGES",
+    "POOL_WORKER_VERSION_TRAFFIC",
     ...requiredPreviewSecrets,
   ]) {
     if (source[name] !== undefined) deploy[name] = source[name];
