@@ -109,13 +109,20 @@ export const readinessRetryMs = 5_000;
 type Readiness = Awaited<ReturnType<typeof openDeploymentReadiness>>;
 
 /**
+ * Refusals that pass by themselves while an upload settles: 409 from an entrypoint still on the
+ * previous version, 503 from one whose controller object still is, and 429 or any other 5xx from
+ * the platform in between. The release layer's identity check asks again on the same 5xx and 429.
+ */
+const settles = (status: number) => status === 409 || status === 429 || status >= 500;
+
+/**
  * Asks for runtime readiness until it is granted or the caller's deadline ends.
  *
  * After an upload the new entrypoint answers at once, but the platform may keep an active
  * controller object on its previous code for up to 300 seconds. Until the object adopts the new
- * code its identity does not match and the entrypoint answers 503; an entrypoint still on the
- * previous version answers 409. Both pass by themselves, so only they are asked again. A refusal
- * that lasts until the deadline is the failure.
+ * code its identity does not match, so readiness is refused although nothing is wrong. A deadline
+ * that ends a pause fails with the last refusal. A call still in flight at the deadline ends as
+ * an abort, as a stalled call always has.
  */
 export async function readyAfterAdoption(
   connection: Pick<Readiness, "ready"> & Partial<Pick<Readiness, "adoption">>,
@@ -127,10 +134,10 @@ export async function readyAfterAdoption(
   },
 ): Promise<RuntimeReady> {
   const { signal } = options;
+  let observed: Pick<ReadinessRefusal, "adopted" | "candidateMatches"> = {};
   for (;;) {
     const answer = await bounded(connection.ready(signal), signal).catch((error: unknown) => {
-      if (error instanceof ReadinessResponseError && [503, 409].includes(error.status))
-        return error;
+      if (error instanceof ReadinessResponseError && settles(error.status)) return error;
       throw error;
     });
     if (!(answer instanceof ReadinessResponseError)) return answer;
@@ -139,21 +146,22 @@ export async function readyAfterAdoption(
     const adoption = connection.adoption
       ? await withinDeadline(connection.adoption(signal), readinessRetryMs).catch(() => undefined)
       : undefined;
+    if (adoption)
+      observed = {
+        adopted: adoption.adopted,
+        candidateMatches: adoption.observed.candidate === target.candidate,
+      };
+    // A deadline that cuts the check short leaves its previous answer on the record.
+    else if (!signal.aborted) observed = {};
     options.refused({
       status: answer.status,
       ...(answer.outcome ? { outcome: answer.outcome } : {}),
       ...(answer.stage ? { stage: answer.stage } : {}),
-      ...(adoption
-        ? {
-            adopted: adoption.adopted,
-            candidateMatches: adoption.observed.candidate === target.candidate,
-          }
-        : {}),
+      ...observed,
     });
     try {
       await options.pause(signal);
     } catch {
-      // The deadline ended the wait: the refusal is the failure, not the abort.
       throw answer;
     }
   }
