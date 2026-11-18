@@ -20,6 +20,13 @@ import { verifyContainerHealth } from "./container-health.ts";
 import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { forwardHeadCandidate, journalKey } from "./forward-journal.ts";
+import {
+  preflightSettlementProof,
+  type PreflightSettlementIo,
+} from "./release-preflight-settlement.ts";
+import type { RehearsalCounters } from "./release-resume-rehearsal.ts";
+import { canonical } from "./manifest.ts";
 import {
   NotApplicable,
   SettlementRequired,
@@ -89,10 +96,11 @@ const controllerSteps = [
 ];
 
 /**
- * The release's production reads in release order, each through the release's own function.
- * Not reachable read-only: backup, code adoption, candidate-code reads before its controller
- * phase, the stack plan and forward resume (baseline-probe job), the settlement proof (rehearsal
- * step), and every adopt, bind, promote, fleet, image, upload, version or deploy write.
+ * The release's production reads in release order, each through the release's own function, plus
+ * the settlement plan's proof for an unsettled prior. Not reachable read-only: backup, code
+ * adoption, candidate-code reads before its controller phase, the stack plan and forward resume
+ * (baseline-probe job), and every adopt, bind, promote, fleet, image, upload, version, deploy or
+ * settlement archive write.
  */
 export const preflightSteps = (
   compiled: CompiledStack,
@@ -110,6 +118,10 @@ export const preflightSteps = (
     attempts: ControllerAttempt[];
     /** The repository's reviewed release declarations, as the release loads them. */
     declarations?: DeclaredChanges;
+    /** The entry's read counters, so the settlement proof reports the reads it added. */
+    counters?: RehearsalCounters;
+    /** Test stand-ins for the settlement proof's Cloudflare readers; production uses the real ones. */
+    settlementIo?: PreflightSettlementIo;
   },
 ) =>
   Effect.gen(function* () {
@@ -160,9 +172,14 @@ export const preflightSteps = (
               throw error;
             // Which settlement it needs depends on the live controller; release-settlement decides.
             const head = await read(state.getOutput(releaseImageJournalKey(compiled)));
+            const priorRecord = decodeRuntimeReleaseHead(head, encryptionKey).record;
+            const forward = forwardHeadCandidate(await read(state.getOutput(journalKey(compiled))));
             return {
               head: { record: undefined, sourceController: undefined },
-              prior: decodeRuntimeReleaseHead(head, encryptionKey).record.candidate,
+              prior: priorRecord.candidate,
+              // A prior that stopped before its forward packet froze the controller still live.
+              priorController: priorRecord.baselineController?.code,
+              forwardCandidate: forward,
             };
           }
         },
@@ -251,7 +268,7 @@ export const preflightSteps = (
           migrationTag,
         }),
       );
-      if (native && baseline) await controllerReads(native, baseline, journal?.prior);
+      if (native && baseline) await controllerReads(native, baseline, journal);
       else
         for (const name of [...controllerSteps, ...(journal?.prior ? ["release-settlement"] : [])])
           await step(name, ["baseline-controller", "runtime-state"], async () => {});
@@ -283,8 +300,15 @@ export const preflightSteps = (
         recorded: typeof ControllerCode.Type | undefined;
         key: string;
       },
-      prior: string | undefined,
+      journal:
+        | {
+            prior?: string;
+            priorController?: typeof ControllerCode.Type;
+            forwardCandidate?: string;
+          }
+        | undefined,
     ) {
+      const prior = journal?.prior;
       const target = {
         ...native.target,
         connect: readOnlyPoolOperations(nodeBridgeFromConfig, native.deploymentKey, bridge),
@@ -336,7 +360,12 @@ export const preflightSteps = (
           };
           // The release's own choice goes first; it is the readiness code when its source is.
           const chosen = { source: baseline.source, code: baseline.controller.code };
-          const release = chosen.source === "recorded" ? undefined : chosen;
+          const release =
+            chosen.source !== "recorded"
+              ? chosen
+              : journal?.priorController
+                ? { source: "prior-journal-record", code: journal.priorController }
+                : undefined;
           let first: unknown;
           try {
             return await attempt(chosen.source, chosen.code);
@@ -351,7 +380,7 @@ export const preflightSteps = (
             running: await runningRelease(target),
             receipts: input.receipts,
             workerInput: poolWorkerRevision,
-          }).slice(1);
+          }).filter((option) => canonical(option.code) !== canonical(chosen.code));
           for (const option of options)
             try {
               return await attempt(option.source, option.code);
@@ -379,13 +408,34 @@ export const preflightSteps = (
             prior,
             liveCandidate: code.candidate,
             selected: !!selection,
+            ...(journal?.forwardCandidate ? { forwardCandidate: journal.forwardCandidate } : {}),
           });
           if (!verdict.supported)
             throw new BarrierRefusal(
               "release-preflight-settlement-unsupported",
               verdict.disposition,
             );
-          throw new SettlementRequired(verdict.disposition);
+          // The plan's own proof, on the preflight's read-only clients, so the Check shows whether
+          // this candidate can settle the prior; the release still blocks until it is applied.
+          throw new SettlementRequired(
+            verdict.disposition,
+            await preflightSettlementProof({
+              compiled,
+              state,
+              read,
+              candidate,
+              prior,
+              disposition: verdict.disposition,
+              liveCode: code,
+              accountId,
+              encryptionKey,
+              directory,
+              connect: target.connect,
+              bridge,
+              ...(input.counters ? { counters: input.counters } : {}),
+              ...(input.settlementIo ? { io: input.settlementIo } : {}),
+            }),
+          );
         });
 
       await step(

@@ -159,7 +159,12 @@ for (const scenario of ["transport", "forbidden"] as const)
       assert.deepEqual(
         failure.provider,
         scenario === "transport"
-          ? { type: "HttpClientError", reason: "TransportError" }
+          ? {
+              type: "HttpClientError",
+              reason: "TransportError",
+              request: { method: "GET", path: "/accounts/{id}/workers/scripts/{id}/deployments" },
+              cause: [{ type: "Error" }],
+            }
           : { type: "Forbidden" },
       );
       assert.equal(failure.manifest, null);

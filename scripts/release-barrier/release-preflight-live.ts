@@ -74,20 +74,25 @@ export const supportedDispositions: readonly string[] = ReleaseSettlementDisposi
 
 /**
  * Which settlement an unsettled prior candidate needs: once its controller runs, adopted or not by
- * whether a slot is selected; before that, abandoned. Supported means this candidate can settle it.
+ * whether a slot is selected; before that, abandoned, and before its forward packet when the forward
+ * head still belongs to another release. Supported means this candidate can settle it.
  */
 export function settlementVerdict(input: {
   prior: string;
   liveCandidate: string;
   selected: boolean;
+  /** The forward journal head's candidate. */
+  forwardCandidate?: string;
   supported?: readonly string[];
 }) {
-  const disposition =
-    input.liveCandidate !== input.prior
-      ? "abandoned-before-controller"
-      : input.selected
+  const disposition: typeof ReleaseSettlementDisposition.Type =
+    input.liveCandidate === input.prior
+      ? input.selected
         ? "controller-active-adopted"
-        : "controller-active-unadopted";
+        : "controller-active-unadopted"
+      : input.forwardCandidate !== undefined && input.forwardCandidate !== input.prior
+        ? "abandoned-before-forward"
+        : "abandoned-before-controller";
   return {
     disposition,
     supported: (input.supported ?? supportedDispositions).includes(disposition),

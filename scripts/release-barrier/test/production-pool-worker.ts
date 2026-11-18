@@ -21,6 +21,7 @@ import {
   productionScriptVersionBody,
   productionSdkLayer,
   productionSettingsBody,
+  providerTriggeredBy,
   productionTags,
   productionVersionBody,
 } from "./production-pool-worker-shape.ts";
@@ -160,6 +161,11 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
         main_module: string;
       };
       log.puts.push(metadata);
+      // Cloudflare refused an upload that copied its own annotation (State Worker, 2026-11-08).
+      if (metadata.annotations?.[providerTriggeredBy] !== undefined) {
+        log.refusals.push("provider-managed-annotation");
+        return failure("annotations: workers/triggered_by is read-only");
+      }
       const migration = metadata.migrations ?? {};
       if (migration.old_tag || migration.new_tag) {
         log.refusals.push("migration-tag-on-untagged-script");
@@ -194,17 +200,24 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
           })),
         ),
         mainModule: metadata.main_module,
-        ...(metadata.annotations ? { annotations: metadata.annotations } : {}),
+        annotations: { ...metadata.annotations, [providerTriggeredBy]: "upload" },
       });
       tags.splice(0, tags.length, ...metadata.tags);
       return ok({ id: scriptName, tag: scriptName, startup_time_ms: 100 });
     }
     if (method === "POST" && path === `${base}/workers/${scriptName}/versions`) {
-      const clone = (await body()) as Record<string, unknown>;
+      const clone = (await body()) as Record<string, unknown> & {
+        annotations?: Record<string, string>;
+      };
+      if (clone.annotations?.[providerTriggeredBy] !== undefined) {
+        log.refusals.push("provider-managed-annotation");
+        return failure("annotations: workers/triggered_by is read-only");
+      }
       const id = `clone-${++serial}`;
       latest = id;
       clones.set(id, {
         ...clone,
+        annotations: { ...clone.annotations, [providerTriggeredBy]: "version_upload" },
         id,
         number: 1,
         created_on: "2026-11-17T00:00:00Z",
