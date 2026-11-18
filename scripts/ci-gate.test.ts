@@ -126,6 +126,51 @@ test("a selected real restore preparation proof must pass the Check CLI, includi
   }
 });
 
+test("a selected release preflight must pass the Check CLI, and runs only for same-repo PRs", () => {
+  const needs = Object.fromEntries(
+    workflow.jobs.check.needs.map((job: string) => [
+      job,
+      {
+        result:
+          job === "reuse" || fastJobs.includes(job) || job === "release-preflight"
+            ? "success"
+            : "skipped",
+      },
+    ]),
+  );
+  const invoke = (result: string) =>
+    spawnSync(process.execPath, [gate], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_REF: "refs/pull/1/merge",
+        CI_REUSED: "",
+        CI_NEEDS: JSON.stringify({ ...needs, "release-preflight": { result } }),
+        CI_JOBS: "[]",
+        CI_BOAT_JOBS: "[]",
+        CI_FULL_SUITE: "false",
+        CI_BASELINE_PROBE: "false",
+        CI_RESTORE_PREPARATION_PROBE: "false",
+        CI_RELEASE_PREFLIGHT: "true",
+      },
+    });
+  assert.equal(invoke("success").status, 0);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    const refused = invoke(result);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /release-preflight: expected success/);
+  }
+  const job = workflow.jobs["release-preflight"];
+  assert.match(job.if, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.match(job.if, /needs\.select\.outputs\.release_preflight == 'true'/);
+  assert.equal(
+    workflow.jobs.check.steps.find((step: { id?: string }) => step.id === "gate").env
+      .CI_RELEASE_PREFLIGHT,
+    "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.release_preflight == 'true' }}",
+  );
+});
+
 test("only the read-only preparation job consumes its frozen input with the dispatch token permissions", () => {
   const dispatch = parse(
     readFileSync(
