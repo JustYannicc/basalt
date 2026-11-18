@@ -98,19 +98,32 @@ test("a missing Home schema after the deploy refuses", async () => {
   assert.match(failure(exit), /home-schemas/u);
 });
 
-async function planetScale(states: string[], name = "basalt-release-v3-test") {
+async function planetScale(
+  states: string[],
+  name = "basalt-release-v3-test",
+  options: { protectable?: boolean } = {},
+) {
   const seen: string[] = [];
   const server = createServer((request, response) => {
     seen.push(
       `${request.method} ${request.url} ${request.headers.authorization === "id:secret" ? "auth" : "no-auth"}`,
     );
-    const state = request.method === "POST" ? "pending" : (states.shift() ?? "pending");
+    const patch = request.method === "PATCH";
+    const state =
+      request.method === "POST" ? "pending" : patch ? "success" : (states.shift() ?? "pending");
     response.writeHead(request.method === "POST" ? 201 : 200, {
       "content-type": "application/json",
     });
     // Extra keys like the real API returns; decoding must ignore them.
     response.end(
-      JSON.stringify({ id: "bk1", name, state, protected: false, size: 1, type: "Backup" }),
+      JSON.stringify({
+        id: "bk1",
+        name,
+        state,
+        protected: patch && options.protectable !== false,
+        size: 1,
+        type: "Backup",
+      }),
     );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -140,6 +153,7 @@ test("the backup is created once and waited until PlanetScale reports success", 
       "POST /v1/organizations/org/databases/basalt/branches/main/backups auth",
       "GET /v1/organizations/org/databases/basalt/branches/main/backups/bk1 auth",
       "GET /v1/organizations/org/databases/basalt/branches/main/backups/bk1 auth",
+      "PATCH /v1/organizations/org/databases/basalt/branches/main/backups/bk1 auth",
     ]);
   } finally {
     api.close();
@@ -262,4 +276,34 @@ test("a stale or missing CPU series refuses", async () => {
   } finally {
     empty.close();
   }
+});
+
+test("an unknown backup state refuses instead of waiting", async () => {
+  const api = await planetScale(["archiving"]);
+  try {
+    assert.match(
+      failure(await Effect.runPromiseExit(backup(api.origin))),
+      /backup-failed.*"state":"archiving"/u,
+    );
+  } finally {
+    api.close();
+  }
+});
+
+test("a backup that cannot be protected refuses", async () => {
+  const api = await planetScale(["success"], "basalt-release-v3-test", { protectable: false });
+  try {
+    assert.match(failure(await Effect.runPromiseExit(backup(api.origin))), /backup-unprotected/u);
+  } finally {
+    api.close();
+  }
+});
+
+test("a database with no Home tables refuses instead of comparing two empty lists", async () => {
+  const database = new PGlite();
+  await database.exec(`
+    CREATE TABLE public.basalt_model_requests (id text);
+  `);
+  const session: Session = { query: (text, values) => database.query(text, values) as never };
+  assert.match(failure(await Effect.runPromiseExit(readSnapshot(session))), /home-schema-missing/u);
 });
