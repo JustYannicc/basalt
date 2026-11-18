@@ -99,7 +99,8 @@ export function compatibilityImagesKey(context: string, architecture: string) {
     const path = join(context, file);
     const stat = lstatSync(path);
     if (stat.isDirectory()) continue;
-    if (!stat.isFile()) throw new Error("Unexpected non-file in pool compatibility context: " + file);
+    if (!stat.isFile())
+      throw new Error("Unexpected non-file in pool compatibility context: " + file);
     hash.update(JSON.stringify([relative(context, path), stat.mode & 0o777, stat.size]));
     hash.update(readFileSync(path));
   }

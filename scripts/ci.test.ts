@@ -514,7 +514,9 @@ test("coverage counts a matrix-gated step only when some shard carries its value
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
   const names = (job: string) =>
-    activeSteps(workflow.jobs[job]).map((step: { name?: string; run: string }) => step.name ?? step.run);
+    activeSteps(workflow.jobs[job]).map(
+      (step: { name?: string; run: string }) => step.name ?? step.run,
+    );
   for (const check of [
     "Verify the Cloud inventory and exact-ID token retirement tooling",
     "Verify authorized native pool removal intent",
