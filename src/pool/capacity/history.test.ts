@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capacityWeight } from "./weights.ts";
+import { capacityWeight as resolveWeight } from "./weights.ts";
 import { CapacityHistory, type CapacityExpectedCohort } from "./history.ts";
 import type { CapacityReading } from "./normalize.ts";
 import { ChunkStorage, type UsageStorage } from "../usage-storage.ts";
@@ -22,6 +22,10 @@ class Memory implements UsageStorage {
 
 const hour = 3_600_000;
 const start = Date.parse("2026-11-03T10:05:00Z");
+// Seed allowances expire on a date, so the real clock would turn a known policy unknown.
+const weightClock = Date.parse("2026-11-13T12:00:00Z");
+const capacityWeight = (provider: string, plan: string, seconds: number) =>
+  resolveWeight(provider, plan, seconds, { now: weightClock });
 const expected = (accounts: number): CapacityExpectedCohort[] => [
   { provider: "claude", windowSeconds: 18_000, accounts },
 ];
