@@ -10,10 +10,41 @@ import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.t
 import { providerDeclaration } from "../../.upstream/packages/apps/src/implementation/host.ts";
 import { identifyProvider } from "../../.upstream/packages/sdk/src/implementation/provider.ts";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
-import { addLink } from "../../.upstream/apps/hosted/server/src/implementation/app-accounts.ts";
-import { productionMigrations } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts";
-import { runProductionOperation } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts";
-import { openArtifact } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts";
+
+// Cloud and hosted-server modules load at runtime, as the other production-operations tests do,
+// so root types never compile the whole hosted product.
+const upstream = new URL("../../.upstream/", import.meta.url);
+const load = (path: string) => import(new URL(path, upstream).href);
+type Operated = {
+  readonly action: string;
+  readonly artifact: { readonly sha256: string };
+  readonly backupSha256: string;
+  readonly repeated?: boolean;
+};
+type Migration = {
+  readonly inspect: (request: unknown) => Effect.Effect<unknown, unknown, SqlClient.SqlClient>;
+};
+const { productionMigrations } = (await load(
+  "apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+)) as { productionMigrations: Readonly<Record<string, Migration | undefined>> };
+const { runProductionOperation } = (await load(
+  "apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
+)) as {
+  runProductionOperation: (
+    settings: unknown,
+    operation: unknown,
+  ) => Effect.Effect<Operated, unknown, SqlClient.SqlClient>;
+};
+const { openArtifact } = (await load(
+  "apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts",
+)) as { openArtifact: (artifact: unknown, key: string, target: string) => Promise<unknown> };
+const { addLink } = (await load("apps/hosted/server/src/implementation/app-accounts.ts")) as {
+  addLink: (
+    sql: SqlClient.SqlClient,
+    webhooks: unknown,
+    input: unknown,
+  ) => Effect.Effect<boolean, unknown, SqlClient.SqlClient>;
+};
 
 const crypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
@@ -117,17 +148,13 @@ const link = (app: string, account: string) =>
     const sql = yield* SqlClient.SqlClient;
     return yield* sql
       .withTransaction(
-        addLink(
-          sql,
-          webhooks as never,
-          {
-            app,
-            requirement: "cloudflare",
-            subject: "user-a",
-            account,
-            linkedBy: "user-a",
-          } as never,
-        ),
+        addLink(sql, webhooks, {
+          app,
+          requirement: "cloudflare",
+          subject: "user-a",
+          account,
+          linkedBy: "user-a",
+        }),
       )
       .pipe(
         Effect.as("linked"),
@@ -185,10 +212,11 @@ test("a Cloudflare account connected under the first catalog definition links to
         productionMigrations["cloudflare-family-adoption-v1"],
         "the Cloudflare family adoption is a registered production migration",
       );
-      const reasons = yield* Effect.promise(
-        () =>
-          import("../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts"),
-      );
+      const reasons = (yield* Effect.promise(() =>
+        load(
+          "apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts",
+        ),
+      )) as { cloudflareFamilyAdoptionReasons: readonly string[] };
       const operator = yield* Effect.promise(
         () => import("../production-ops/cloudflare-family-adoption-reasons.ts"),
       );
@@ -208,7 +236,7 @@ test("a Cloudflare account connected under the first catalog definition links to
           accounts: [{ account: "acc_cloudflare", generation: 3 }],
         },
       };
-      const dry = yield* runProductionOperation(settings, input as never);
+      const dry = yield* runProductionOperation(settings, input);
       assert.ok(dry.action === "dry-run");
       assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "RequirementMismatch:provider");
       const reviewed = (yield* Effect.promise(() =>
@@ -243,7 +271,7 @@ test("a Cloudflare account connected under the first catalog definition links to
         planSha256: dry.artifact.sha256,
         go: `GO ${dry.artifact.sha256}`,
       };
-      const applied = yield* runProductionOperation(settings, apply as never);
+      const applied = yield* runProductionOperation(settings, apply);
       assert.ok(applied.action === "apply" && applied.repeated === false);
 
       assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "linked");
@@ -279,7 +307,7 @@ test("a Cloudflare account connected under the first catalog definition links to
         "RequirementMismatch:provider",
         "a different provider still refuses",
       );
-      const replay = yield* runProductionOperation(settings, apply as never);
+      const replay = yield* runProductionOperation(settings, apply);
       assert.ok(
         replay.action === "apply" && replay.repeated === true,
         "replay verifies without writing, after people link the moved account",
@@ -296,7 +324,7 @@ test("family adoption refuses other providers, changed selections and work in pr
       const migration = productionMigrations["cloudflare-family-adoption-v1"];
       assert.ok(migration, "the Cloudflare family adoption is a registered production migration");
       const refusal = (request: unknown) =>
-        Effect.flip(migration.inspect(request as never)).pipe(
+        Effect.flip(migration.inspect(request)).pipe(
           Effect.map((error) => (error as { reasonCode?: string }).reasonCode),
         );
       const base = {
