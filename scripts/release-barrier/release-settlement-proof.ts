@@ -25,12 +25,21 @@ import {
   type ReleaseSettlementDisposition,
 } from "./release-settlement-contract.ts";
 import {
+  assertSelectionUnchanged,
   readAdoptedController,
   readUnadoptedController,
 } from "./release-settlement-controller-reads.ts";
 import { readActivatedLive } from "./release-settlement-live.ts";
-import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
+import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
+import type { RuntimeColor } from "../../src/pool/image-release-plan.ts";
+import {
+  sameControllerCode,
+  type ControllerCode,
+  type SlotIdentity,
+} from "../../src/pool/runtime-slots/contract.ts";
 import { settlementSourceFailure } from "./release-settlement-source.ts";
+import { fleetColors } from "./runtime-release-fleet.ts";
+import { readFleetAttachedController } from "./release-settlement-fleet-reads.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { readServingObservation } from "./serving-observation.ts";
 
@@ -42,11 +51,16 @@ const forwardHeader = Schema.Struct({
   complete: Schema.Boolean,
   sealed: Schema.Unknown,
 });
-// The earlier disposition keeps its message; the later one names the guard that failed.
+// The earliest disposition keeps its message; the later ones name the guard that failed.
 const notSettleable = (disposition: ReleaseSettlementDisposition, guard?: string) =>
   disposition === "abandoned-before-controller"
     ? new BarrierRefusal("release-settlement-not-pre-controller", "PoolWorker")
-    : new BarrierRefusal("release-settlement-not-controller-active", guard ?? "PoolWorker");
+    : new BarrierRefusal(
+        disposition === "fleet-attached-unstarted"
+          ? "release-settlement-not-fleet-attached-unstarted"
+          : "release-settlement-not-controller-active",
+        guard ?? "PoolWorker",
+      );
 export type ReleaseSettlementIo = {
   forward?: NonNullable<Parameters<typeof resumeForwardRelease>[1]["io"]>;
   container?: typeof observeContainer;
@@ -63,6 +77,8 @@ export const collectReleaseSettlementProof = (
   io: ReleaseSettlementIo,
   disposition: ReleaseSettlementDisposition,
   sourceController?: typeof ControllerCode.Type,
+  /** The selection the reviewed plan recorded, which an adopted apply must still find. */
+  expectedSelection?: { epoch: number; identity: SlotIdentity },
 ) =>
   Effect.gen(function* () {
     const refuse = () => notSettleable(disposition);
@@ -108,6 +124,13 @@ export const collectReleaseSettlementProof = (
       ...recorded,
       code: sourceController ?? record.baselineController?.code ?? recorded.code,
     };
+    // A retained fleet configuration names the controller it was built for: the live one.
+    if (
+      Object.values(record.configurations).some(
+        (value) => !sameControllerCode(value.controllerCode, baseline.code),
+      )
+    )
+      throw notSettleable(disposition, "record.configurations");
     const signingKey = yield* readBaselineControllerKey(stack);
     const native = yield* runtimeReleaseState(stack);
     if (
@@ -167,27 +190,48 @@ export const collectReleaseSettlementProof = (
         return { evidence: report, native: report.before, instanceId, bootId, workers };
       });
     // Adopt committed a selection, so the recovery read refuses; the signed reads prove the root.
-    const adoptedHealth = (
+    const adoptedHealth = async (
       container: Parameters<typeof controllerForwardHealth>[0]["container"],
       observation: Parameters<typeof controllerForwardHealth>[0]["observation"],
     ) => {
       assertBaselinePlacement(baseline, container, observation);
-      return readAdoptedController({
-        controller: baseline,
-        key: signingKey,
-        sourceCandidate,
-        root: record.baseline.applications.root,
-        instances: observation.instances.map((instance) => instance.id),
-        target,
-        record: io.runtimeRead,
-      });
+      const instances = observation.instances.map((instance) => instance.id);
+      if (disposition === "fleet-attached-unstarted")
+        return readFleetAttachedController({
+          controller: baseline,
+          key: signingKey,
+          sourceCandidate,
+          record,
+          colors: fleetColors(record),
+          instances,
+          target,
+          ...(io.runtimeRead ? { read: io.runtimeRead } : {}),
+        });
+      const servingColor: RuntimeColor | undefined = undefined;
+      return {
+        ...(await readAdoptedController({
+          controller: baseline,
+          key: signingKey,
+          sourceCandidate,
+          root: record.baseline.applications.root,
+          instances,
+          target,
+          record: io.runtimeRead,
+        })),
+        servingColor,
+      };
     };
     // A finished controller phase completed its forward head, so there is nothing to reconcile.
     const readOnlyState = Effect.provideService(State, Effect.succeed(readOnly));
     const adopted =
-      disposition === "controller-active-adopted"
+      disposition === "controller-active-adopted" || disposition === "fleet-attached-unstarted"
         ? yield* readActivatedLive(stack, packet, io, adoptedHealth).pipe(readOnlyState)
         : undefined;
+    // A restart between the reviewed plan and its apply names where the selection moved.
+    if (adopted && expectedSelection)
+      assertSelectionUnchanged(expectedSelection, adopted.health.reads.selection);
+    // Under a permission the fleet serves demand only on its active colour's application.
+    const servingColor = adopted?.health.servingColor;
     const live =
       adopted ??
       (activated
@@ -267,16 +311,24 @@ export const collectReleaseSettlementProof = (
             AbortSignal.timeout(15_000),
           ),
         );
+        const fleetApplication =
+          !!servingColor && application.resource === fleetClassName(servingColor);
         if (
           inactivePlacements.version !== application.attributes.version ||
           inactivePlacements.digest !== application.image.digest ||
           inactivePlacements.activeRolloutId ||
-          inactivePlacements.instances.length
+          (fleetApplication
+            ? inactivePlacements.instances.some(
+                (instance) => instance.digest !== application.image.digest,
+              )
+            : inactivePlacements.instances.length)
         )
           throw new BarrierRefusal(
             "release-settlement-inactive-application-serving",
             application.resource,
           );
+        // Demand moves a serving fleet's instances between plan and apply; only their image counts.
+        if (fleetApplication) inactivePlacements = { ...inactivePlacements, instances: [] };
       }
       applications.push({
         resource: application.resource,

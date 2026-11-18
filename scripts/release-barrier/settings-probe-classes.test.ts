@@ -34,7 +34,8 @@ const bulkImport = {
 const cases: {
   mode: string;
   poolMetadata: Workers.PutScriptMetadata;
-  live: boolean;
+  /** Which of the declared classes the live settings already hold. */
+  live: boolean | "blue-only";
   reason?: string;
 }[] = [
   { mode: "declared fleet classes before the class step", poolMetadata: declared, live: false },
@@ -57,7 +58,45 @@ const cases: {
     live: false,
     reason: "durable-object-class-drift",
   },
+  {
+    mode: "a changed stage tag beside the declared classes",
+    poolMetadata: {
+      ...declared,
+      tags: declared.tags!.map((tag) =>
+        tag.startsWith("alchemy:stage:") ? "alchemy:stage:preview" : tag,
+      ),
+    },
+    live: false,
+    reason: "declared-class-tags-mismatch",
+  },
+  {
+    mode: "live settings that hold only PoolRuntimeBlue of the declared classes",
+    poolMetadata: declared,
+    live: "blue-only",
+    reason: "declared-class-binding-mismatch",
+  },
 ];
+/** The live bindings for each case: the baseline's PoolContainer, then the live declared classes. */
+const liveBindings = (live: boolean | "blue-only") =>
+  live === true
+    ? declared.bindings!
+    : live === "blue-only"
+      ? declared.bindings!.filter(
+          (binding) =>
+            "name" in binding && ["PoolContainer", "PoolRuntimeBlue"].includes(binding.name),
+        )
+      : declared.bindings!.slice(0, 1);
+const liveTags = (live: boolean | "blue-only") =>
+  live === true
+    ? declared.tags
+    : [
+        "alchemy:stack:basalt",
+        "alchemy:stage:production",
+        "alchemy:id:PoolWorker",
+        live === "blue-only"
+          ? "alchemy:dos:PoolContainer;PoolRuntimeBlue"
+          : "alchemy:dos:PoolContainer",
+      ];
 
 for (const { mode, poolMetadata, live, reason } of cases)
   test(`the baseline probe judges ${mode} on the production PoolWorker shape`, async (context) => {
@@ -89,17 +128,10 @@ for (const { mode, poolMetadata, live, reason } of cases)
               // Production: alchemy made PoolWorker untagged, with only PoolContainer as a local class.
               logpush: false,
               observability: snake(declared.observability),
-              tags: live
-                ? declared.tags
-                : [
-                    "alchemy:stack:basalt",
-                    "alchemy:stage:production",
-                    "alchemy:id:PoolWorker",
-                    "alchemy:dos:PoolContainer",
-                  ],
+              tags: liveTags(live),
               bindings: [
                 { name: "POOL_IMAGE_HASH", type: "plain_text", text: "b".repeat(16) },
-                ...(live ? declared.bindings! : declared.bindings!.slice(0, 1)).map((binding) => ({
+                ...liveBindings(live).map((binding) => ({
                   ...(snake(binding) as Record<string, unknown>),
                   namespace_id: `namespace-${"name" in binding ? binding.name : ""}`,
                 })),

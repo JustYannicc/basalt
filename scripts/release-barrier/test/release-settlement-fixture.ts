@@ -24,11 +24,22 @@ import type { SettlementOperationIo } from "../release-settlement-operation.ts";
 import type { BaselineRead } from "../baseline-controller.ts";
 import { legacyAdoptionTarget } from "../legacy-adoption-target.ts";
 import { slotSelectionKey } from "../../../src/pool/runtime-slots/storage.ts";
+import { fleetClassName } from "../../../src/pool/fleet-deployment.ts";
+import { referenceImageInput } from "../runtime-release-bootstrap.ts";
+import type { RuntimeColor } from "../../../src/pool/image-release-plan.ts";
 import {
   activatedReceipt,
   previousController,
   settlementController,
 } from "./settlement-controller.ts";
+import {
+  bootstrapInstance,
+  bootstrapManifest,
+  bootstrappedApplication,
+  bootstrappedFleet,
+  fleetConfiguration,
+  type BootstrapShape,
+} from "./settlement-bootstrap.ts";
 
 /**
  * `controllerActive` is the source after its controller phase: every Worker activated, nothing
@@ -37,6 +48,8 @@ import {
  * twice, leaving the selection at epoch 3.
  * `staleReadiness` is an abandoned source whose release froze the controller an earlier settlement
  * proved live, while the deferred readiness row still names the one before it.
+ * `bootstrapped` is an adopted source that then attached idle fleet applications, and maybe bound
+ * and configured them, before any startup was staged.
  */
 export async function releaseSettlementFixture(
   context: TestContext,
@@ -45,6 +58,7 @@ export async function releaseSettlementFixture(
     adopted?: boolean;
     recovered?: boolean;
     staleReadiness?: boolean;
+    bootstrapped?: BootstrapShape;
   } = {},
 ) {
   context.mock.method(globalThis, "fetch", async () => {
@@ -102,6 +116,7 @@ export async function releaseSettlementFixture(
     resourceType: string,
     props: Record<string, unknown>,
     attr: Record<string, unknown>,
+    instanceId = "2".repeat(32),
   ) =>
     Effect.runPromise(
       memory.set({
@@ -113,7 +128,7 @@ export async function releaseSettlementFixture(
           namespace: undefined,
           fqn,
           logicalId: fqn,
-          instanceId: "2".repeat(32),
+          instanceId,
           providerVersion: 1,
           status: "updated",
           downstream: [],
@@ -143,6 +158,23 @@ export async function releaseSettlementFixture(
       { accountId, workerName: worker },
     );
   await put("PoolContainer", "Cloudflare.Container", {}, previous);
+  const fleet = new Map<RuntimeColor, ReturnType<typeof bootstrappedApplication>>();
+  const fleetInput = await Effect.runPromise(referenceImageInput(previous.configuration.image));
+  /** The native row a candidate's bootstrap of `color` leaves, under its declared instance. */
+  const attachFleet = async (color: RuntimeColor, candidate: string) => {
+    const application = bootstrappedApplication(previous, color, fleetInput);
+    fleet.set(color, application);
+    await put(
+      fleetClassName(color),
+      "Cloudflare.Container",
+      {},
+      application,
+      bootstrapInstance(candidate, color),
+    );
+  };
+  for (const color of options.bootstrapped?.colors ?? []) await attachFleet(color, sourceCandidate);
+  const fleetInstances = new Map<string, number>();
+  const fleetImages = new Map<string, string>();
   // Scale-out code phases defer the readiness command, so after the source's controller phase it
   // still records the controller that ran before the source.
   const readinessCode =
@@ -264,6 +296,13 @@ export async function releaseSettlementFixture(
   const journal = await Effect.runPromise(
     provide(runtimeReleaseJournal(scope, writer(sourceCandidate), key)),
   );
+  const legacy = {
+    ...legacyAdoptionTarget(baseline.applications.root, instanceId),
+    bootId: "baseline-boot",
+  };
+  const configurations: RuntimeReleaseRecord["configurations"] = options.bootstrapped?.configured
+    ? { [`configure-${sourceCandidate}`]: fleetConfiguration({ code, legacy, baseline }) }
+    : {};
   const record: RuntimeReleaseRecord = {
     format: "pool-image-release-v1",
     candidate: sourceCandidate,
@@ -276,8 +315,19 @@ export async function releaseSettlementFixture(
         : {}),
     desiredInput: "d".repeat(16),
     desiredConfiguration: baseline.configuration,
-    bootstrap: {},
-    configurations: {},
+    bootstrap: Object.fromEntries(
+      [...fleet.keys()].map((color) => [
+        color,
+        bootstrapManifest({
+          color,
+          source: sourceCandidate,
+          accountId,
+          rootApplicationId: previous.applicationId,
+          epoch: 1,
+        }),
+      ]),
+    ),
+    configurations,
   };
   await journal.write(record);
   const description = {
@@ -337,6 +387,9 @@ export async function releaseSettlementFixture(
       legacyAdoptionTarget(baseline.applications.root, instanceId),
       `adopt-${sourceCandidate}`,
     );
+  // Production order: bootstrap, bind and configure follow adopt; selected-runtime recovery later.
+  if (options.bootstrapped)
+    controller.fleet = bootstrappedFleet(options.bootstrapped, baseline, configurations);
   if (options.recovered) {
     await controller.restart("recovered-boot-1");
     await controller.restart("recovered-boot-2");
@@ -346,7 +399,11 @@ export async function releaseSettlementFixture(
     intent: async (value) => {
       intents.push(value);
     },
-    container: () => Effect.succeed(previous),
+    container: (attributes) =>
+      Effect.succeed(
+        [...fleet.values()].find((app) => app.applicationId === attributes.applicationId) ??
+          previous,
+      ),
     placement: (_account, worker, versionId) => {
       calls.push(`GET placement ${worker}`);
       return Effect.succeed({ id: versionId, placement: { mode: placement }, bindings: [] });
@@ -356,13 +413,29 @@ export async function releaseSettlementFixture(
         calls.push(`GET baseline ${worker.scriptName}`);
         return Effect.succeed([...active.get(worker.scriptName)!]);
       },
-      observation: async () => ({
-        version: previous.version,
-        digest: previous.hash!.digest!,
-        instances: [
-          { id: instanceId, state: "running", digest: previous.hash!.digest!, startedAt: 1 },
-        ],
-      }),
+      // A fleet application serves only the instances a test gives it.
+      observation: async (target) =>
+        target.applicationId === previous.applicationId
+          ? {
+              version: previous.version,
+              digest: previous.hash!.digest!,
+              instances: [
+                { id: instanceId, state: "running", digest: previous.hash!.digest!, startedAt: 1 },
+              ],
+            }
+          : {
+              version: previous.version,
+              digest: previous.hash!.digest!,
+              instances: Array.from(
+                { length: fleetInstances.get(target.applicationId) ?? 0 },
+                (_, index) => ({
+                  id: `${target.applicationId}-${index}`,
+                  state: "running",
+                  digest: fleetImages.get(target.applicationId) ?? previous.hash!.digest!,
+                  startedAt: 1,
+                }),
+              ),
+            },
     },
     runtimeRead: async (call) => {
       runtimeReads.push(call);
@@ -399,6 +472,7 @@ export async function releaseSettlementFixture(
     code,
     /** The source controller code a controller-active request names; tests may change it. */
     sourceController: (options.controllerActive ? code : undefined) as typeof code | undefined,
+    legacy,
     scope,
     accountId,
     key,
@@ -427,6 +501,15 @@ export async function releaseSettlementFixture(
     },
     changePlacement: () => {
       placement = "smart";
+    },
+    attachFleet,
+    /** Starts `count` instances on a fleet application, as a scale-up would. */
+    serveFleet: (applicationId: string, count: number) => {
+      fleetInstances.set(applicationId, count);
+    },
+    /** Runs that application's instances on another image digest. */
+    serveFleetImage: (applicationId: string, imageDigest: string) => {
+      fleetImages.set(applicationId, imageDigest);
     },
   };
 }

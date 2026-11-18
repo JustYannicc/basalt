@@ -1,6 +1,7 @@
 import type { TestContext } from "node:test";
 import { Effect } from "effect";
 import { releaseSettlementFixture } from "./release-settlement-fixture.ts";
+import type { BootstrapShape } from "./settlement-bootstrap.ts";
 import { planReleaseSettlement } from "../release-settlement-operation.ts";
 import type { ReleaseSettlementPlanRequest } from "../release-settlement-contract.ts";
 
@@ -17,6 +18,23 @@ export const controllerAdoptedFixture = (context: TestContext) =>
 /** That adopted root after selected-runtime recovery restarted it twice, as production later found it. */
 export const controllerRecoveredFixture = (context: TestContext) =>
   releaseSettlementFixture(context, { controllerActive: true, adopted: true, recovered: true });
+
+/**
+ * The recovered root (or, with `recovered: false`, adopt's own epoch-1 selection) after the source
+ * then bootstrapped `colors`, as a release stopped past bootstrap or bind and before any startup
+ * leaves it.
+ */
+export const fleetAttachedFixture = (
+  context: TestContext,
+  bootstrapped: BootstrapShape = { colors: ["blue"] },
+  options: { recovered?: boolean } = {},
+) =>
+  releaseSettlementFixture(context, {
+    controllerActive: true,
+    adopted: true,
+    recovered: options.recovered ?? true,
+    bootstrapped,
+  });
 
 /** The never-adopted legacy slot the fixture's source controller would retain. */
 export const fixtureAdoptionTarget = {
@@ -46,7 +64,8 @@ export const planSettlement = (
           expiresAt: Date.now() + 60_000,
           ...(disposition === "omitted" ? {} : { disposition }),
           ...((disposition === "controller-active-unadopted" ||
-            disposition === "controller-active-adopted") &&
+            disposition === "controller-active-adopted" ||
+            disposition === "fleet-attached-unstarted") &&
           f.sourceController
             ? { sourceController: f.sourceController }
             : {}),

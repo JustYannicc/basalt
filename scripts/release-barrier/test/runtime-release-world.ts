@@ -155,6 +155,28 @@ export function createWorld() {
     bootId: `boot-${++controller.boots}`,
   });
 
+  /** Fleet runtimes the enabled permission started, each on its application's own pins. */
+  let fleetRows: { target: SlotTarget; phase: string; active: number }[] = [];
+  /** Demand starts a fleet runtime on the latest permission's active application. */
+  const serveFleet = () => {
+    const permission = controller.latest
+      ? controller.permissions.get(controller.latest)
+      : undefined;
+    if (!permission?.enabled) throw new BarrierRefusal("runtime-fleet-not-enabled", "PoolWorker");
+    const pins = permission.configuration.applications.find(
+      (app) => app.color === permission.configuration.active,
+    )!;
+    const app = applications.get(pins.applicationId)!;
+    fleetRows.push({
+      target: {
+        ...target(app, `fleet-${fleetRows.length + 1}`, `fleet-${app.id}`),
+        homePeerOrdinal: fleetRows.length + 1,
+      },
+      phase: "ready",
+      active: 1,
+    });
+    events.push(`fleet-serve:${app.id}`);
+  };
   /**
    * The controller alarm's retirement of a drained primary, mirroring src/pool/runtime-slots:
    * retirement.ts:100-103 fences the slot and records `started`; retirement.ts:109-114 and :128 call
@@ -166,6 +188,15 @@ export function createWorld() {
    */
   const retirementTick = () => {
     const selection = controller.selection;
+    // Once a primary is promoted, the fleet drains runtimes on any other application on idle.
+    const active = selection?.active.target;
+    if (active && active.slotId !== "legacy") {
+      const drained = fleetRows.filter((row) => row.target.applicationId !== active.applicationId);
+      if (drained.length) {
+        fleetRows = fleetRows.filter((row) => row.target.applicationId === active.applicationId);
+        for (const row of drained) events.push(`fleet-drain:${row.target.applicationId}`);
+      }
+    }
     const draining = selection?.draining;
     if (!selection || !draining) return;
     if (!draining.retirement) {
@@ -212,7 +243,7 @@ export function createWorld() {
       : controller.latest
         ? controller.permissions.get(controller.latest)
         : undefined,
-    resources: [] as { target: SlotTarget; phase: string; active: number }[],
+    resources: [...fleetRows],
     bindings: (["blue", "green"] as const).flatMap((color) => {
       const prefix = `POOL_${color.toUpperCase()}`;
       const id = settings.find((row) => row.name === `${prefix}_APPLICATION_ID`)?.text;
@@ -418,6 +449,7 @@ export function createWorld() {
     inspect,
     health,
     fleet,
+    serveFleet,
     adopt,
     promote,
     configure,
