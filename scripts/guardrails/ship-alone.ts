@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { matchesGlob } from "node:path";
-import { onReleasePath } from "./release-path.ts";
+import { onReleasePath, releasePaths, releasePathsAt, unionOfPaths } from "./release-path.ts";
 
 // A change to how releases are made ships alone, so a failed release can be traced to it and
 // reverted without taking product work with it. Release-path files may travel only with the
@@ -9,10 +9,11 @@ export const companions = ["architecture/**", "docs/releases.md", "package.json"
 
 export type ShipAlone = { pass: boolean; releasePath: string[]; other: string[] };
 
-export function shipAlone(files: string[]): ShipAlone {
-  const releasePath = files.filter((file) => onReleasePath(file));
+export function shipAlone(files: string[], paths: readonly string[] = releasePaths): ShipAlone {
+  const releasePath = files.filter((file) => onReleasePath(file, paths));
   const other = files.filter(
-    (file) => !onReleasePath(file) && !companions.some((pattern) => matchesGlob(file, pattern)),
+    (file) =>
+      !onReleasePath(file, paths) && !companions.some((pattern) => matchesGlob(file, pattern)),
   );
   return { pass: releasePath.length === 0 || other.length === 0, releasePath, other };
 }
@@ -28,7 +29,9 @@ export function changedFiles(base: string, head: string): string[] {
 
 if (import.meta.main) {
   const [base = "origin/main", head = "HEAD"] = process.argv.slice(2);
-  const result = shipAlone(changedFiles(base, head));
+  // Both sides' lists, so a change that narrows release-path.json is still judged by the old one.
+  const paths = unionOfPaths(releasePathsAt(".", base), releasePathsAt(".", head));
+  const result = shipAlone(changedFiles(base, head), paths.length ? paths : releasePaths);
   if (result.pass) {
     console.log(
       result.releasePath.length

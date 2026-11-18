@@ -3,7 +3,7 @@ name: Guardrails
 # Deterministic checks on how release work enters main. Each job names what it refused and why.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   # Re-judges open pull requests while time passes, so a stale green cannot merge into a freeze.
   schedule:
     - cron: "*/30 * * * *"
@@ -16,6 +16,7 @@ jobs:
   release-path:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: read
@@ -38,8 +39,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/guardrails/budget.ts "$BASE_SHA"
 
-  release-freshness:
+  # Named apart from the release-freshness status it posts, so its own green run is never
+  # mistaken for that status.
+  freeze:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       deployments: read
