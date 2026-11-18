@@ -262,15 +262,19 @@ test("a code-only release is admitted without, and refused with, a new binding",
     message,
     /bindings\.PoolRuntimeBlue: absent -> durable_object_namespace PoolRuntimeBlue/u,
   );
-  // Outside the selection the release command runs too, which is not code.
+  // A whole-stack code release: every changed Worker's code plus the release's migration command.
   const full = await planned(context, { settle: ["ArtifactsCredentials"] });
-  assert.deepEqual((await refused(full.plan, { mode: "code-only" })).rules, [
-    "outside-code-only PoolDatabase",
-  ]);
-  // A reviewer can name the per-attempt database command in `allow`; nothing else follows.
-  await admitted(full.plan, {
+  assert.ok((await admitted(full.plan, { mode: "code-only" })).includes("update PoolDatabase"));
+  // The bulk-import store's Worker moves only when a policy names it.
+  const unsettled = await planned(context);
+  assert.ok(
+    (await refused(unsettled.plan, { mode: "code-only" })).rules.includes(
+      "outside-code-only ArtifactsCredentials",
+    ),
+  );
+  await admitted(unsettled.plan, {
     mode: "code-only",
-    allow: [{ fqn: "PoolDatabase", action: "update" }],
+    allow: [{ fqn: "ArtifactsCredentials", action: "update" }],
   });
 });
 
