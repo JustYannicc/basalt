@@ -5,6 +5,8 @@
 // reach the live controller are stand-ins (test/runtime-release-standins.ts); the controller client
 // is the real one over a fake pool-operations bridge with production's setup latency, and only its
 // adopt and promote mutations go straight to the fake controller.
+// PoolWorker's classes go through the real reviewed class path (prepareDeclaredClasses and its
+// SDK reads and PUT) against a production-shaped, untagged Worker (test/production-pool-worker.ts).
 // Not covered: fleet bootstrap provisioning internals, container staging (runtimeImage prepare and
 // verify), the client's promotion internals and startup abort, forward-resume after a failed
 // phase, and the database phase with a real migration.
@@ -24,9 +26,31 @@ import { Resource } from "alchemy/Resource";
 import { Stack, evalStack } from "alchemy/Stack";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
+import * as Cloudflare from "alchemy/Cloudflare";
 import type { Worker } from "alchemy/Cloudflare";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
-import { RuntimeImageReleasePlan } from "../../src/pool/image-release-plan.ts";
+import { encodeDurableObjectTags, getDurableObjectTagMap } from "alchemy/Cloudflare/Workers";
+import {
+  RuntimeImageReleasePlan,
+  type ImageReleasePlan,
+} from "../../src/pool/image-release-plan.ts";
+import {
+  fleetBindings,
+  fleetInfrastructure,
+  plannedContainerClasses,
+} from "../../src/pool/fleet-deployment.ts";
+import {
+  deleteClassClone,
+  deployClassExpansion,
+  readClassClone,
+  readClassContent,
+  readDeclaredClass,
+  stageClassClone,
+} from "./class-cloudflare.ts";
+import type { ClassProvider, ClassProgress } from "./declared-class-contract.ts";
+import { decodeDeclaredChanges } from "./declared-change-schema.ts";
+import { productionPoolWorker } from "./test/production-pool-worker.ts";
+import { poolWorkerClassEntry, repositoryDeclarations } from "./test/repository-declarations.ts";
 import { capturePoolImage } from "../deploy-safety/capture-pool-image.ts";
 import { waitForPoolImage } from "../deploy-safety/pool-image.ts";
 import { executeRelease, type CommandResult } from "../deploy-safety/release-runner.ts";
@@ -47,9 +71,123 @@ import {
   installWorld,
   origin,
   runtimeEnvironment,
+  workerName,
   type World,
   type WorldOptions,
 } from "./test/runtime-release-world.ts";
+
+type ProductionWorker = ReturnType<typeof productionPoolWorker>;
+const target = { accountId, scriptName: workerName };
+/** The reviewed class path's own Cloudflare calls, against the production-shaped PoolWorker. */
+const classProvider = (worker: ProductionWorker): ClassProvider => {
+  // The model's layer supplies the SDK's HTTP client, credentials and configuration.
+  const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(worker.layer)) as Effect.Effect<A, E, never>);
+  return {
+    read: (value) => run(readDeclaredClass(value, worker.fetcher)),
+    content: (value, version) => run(readClassContent(value, version, worker.fetcher)),
+    deploy: (request) => run(deployClassExpansion(request)),
+    stageClone: (request) => run(stageClassClone(request)),
+    clone: (value, version) => run(readClassClone(value, version)),
+    removeClone: (value, version) => run(deleteClassClone(value, version)),
+  };
+};
+// The repository's reviewed PoolWorker class intent, on its own: storage entries need other providers.
+const repository = await repositoryDeclarations();
+const poolWorkerEntry = await poolWorkerClassEntry();
+const poolWorkerDeclaration = () =>
+  decodeDeclaredChanges({ ...repository, changes: [poolWorkerEntry] });
+const fleetClasses = ["PoolRuntimeBlue", "PoolRuntimeGreen"];
+
+/**
+ * The container links alchemy derives for a phase, independently of plannedContainerClasses: each
+ * Container the real fleet declarations bind for this plan contributes its class to the upload's
+ * `containers` (alchemy WorkerAsyncBindings.ts:398, WorkerProvider.ts:4043), beside PoolContainer.
+ */
+async function declaredContainerClasses(plan: ImageReleasePlan | undefined) {
+  const stack = Stack(
+    "basalt",
+    {
+      providers: Layer.empty,
+      state: Layer.effect(State, Effect.map(InMemoryService(), Effect.succeed)),
+    },
+    Effect.gen(function* () {
+      return yield* Cloudflare.Worker("PoolWorker", {
+        main: fileURLToPath(import.meta.url),
+        env: fleetBindings(yield* fleetInfrastructure),
+      });
+    }),
+  );
+  const compiled = await Effect.runPromise(
+    evalStack(stack, Effect.succeed, { stage: "production" }).pipe(
+      Effect.provideService(Cloudflare.CloudflareEnvironment, Effect.succeed({ accountId })),
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      Effect.provideService(RuntimeImageReleasePlan, plan),
+      withReleaseRuntime,
+    ),
+  );
+  return [
+    "PoolContainer",
+    ...Object.values(compiled.resources)
+      .filter((resource) => resource.Type === "Cloudflare.Container")
+      .map((resource) => (resource.Props as { className: string }).className),
+  ].sort();
+}
+
+/**
+ * PoolWorker's upload as alchemy builds it from the live Worker (WorkerProvider.ts): its four
+ * reserved tags with the packed DO map and no migration tag, untagged migrations adding only the
+ * classes the live tag map and bindings do not already name, and the plan's container links.
+ */
+async function alchemyUpload(worker: ProductionWorker, plan: ImageReleasePlan | undefined) {
+  const live = await classProvider(worker).read(target);
+  const known = getDurableObjectTagMap(live.settings.tags ?? []);
+  const bound = (live.settings.bindings ?? []).map((binding) => binding.name);
+  const hosted = ["PoolContainer", ...fleetClasses];
+  const containers = await declaredContainerClasses(plan);
+  // The preflight predicts the class step with plannedContainerClasses; a divergence here would
+  // make that prediction wrong, so the release proof refuses it.
+  assert.deepEqual(containers, plannedContainerClasses(plan), JSON.stringify(plan));
+  const base = preparedUpload("PoolWorker");
+  return {
+    ...base,
+    request: {
+      ...base.request,
+      accountId,
+      scriptName: workerName,
+      metadata: {
+        ...base.request.metadata,
+        bindings: [
+          ...hosted.map((name) => ({
+            type: "durable_object_namespace" as const,
+            name,
+            className: name,
+          })),
+          { type: "plain_text" as const, name: "POOL_PRESERVE_LEGACY_IMAGE", text: "true" },
+        ],
+        containers: containers.map((className) => ({ className })),
+        migrations: {
+          oldTag: undefined,
+          newTag: undefined,
+          newClasses: [],
+          deletedClasses: [],
+          renamedClasses: [],
+          transferredClasses: [],
+          newSqliteClasses: fleetClasses.filter(
+            (name) => !Object.values(known).includes(name) && !bound.includes(name),
+          ),
+        },
+        tags: [
+          "alchemy:stack:basalt",
+          "alchemy:stage:production",
+          "alchemy:id:PoolWorker",
+          ...encodeDurableObjectTags(hosted.map((name) => ({ logicalId: name, className: name }))),
+        ],
+      },
+    },
+    previousSettings: live.settings,
+  };
+}
 
 // Only runtime-image-release.ts's own imports of these modules are redirected; every other importer,
 // including deployStack and the real fleet and image helpers, keeps the production module.
@@ -99,26 +237,45 @@ const unwrap = (env: Record<string, unknown> = {}): Record<string, string> =>
  * publication receipt Command declared as src/pool/deployment.ts:120-142 declares it.
  * Its receipt names the root PoolContainer application, as deployment.ts:132 does.
  */
-function releaseGraph(w: World, receipts: { runs: number; seeding: boolean }, isolate: boolean) {
+function releaseGraph(
+  w: World,
+  receipts: { runs: number; seeding: boolean },
+  isolate: boolean,
+  production: ProductionWorker,
+) {
+  let plan: ImageReleasePlan | undefined;
+  // Alchemy reports the live Worker after its upload: its tags and DO namespace ids.
+  const poolAttributes = (id: string) => ({
+    ...attributes(id),
+    accountId,
+    workerName: id,
+    tags: [...production.settings().tags],
+    durableObjectNamespaces: production.classes(),
+  });
   const memory = Effect.runSync(InMemoryService());
   const state = Layer.succeed(State, Effect.succeed(memory));
   standin.installProvisioningState(memory);
   const workers = Provider.succeed(FixtureWorker, {
-    precreate: ({ id }) => Effect.succeed(attributes(id)),
+    precreate: ({ id }) => Effect.succeed(poolAttributes(id)),
     read: (input) => Effect.succeed(input.output),
     diff: () => Effect.succeed({ action: "update" }),
     reconcile: (input) =>
       Effect.gen(function* () {
-        const result = attributes(input.id);
+        const result = poolAttributes(input.id);
         const hook = yield* Effect.serviceOption(WorkerUploadHook);
         if (Option.isNone(hook)) return result;
+        const phase = plan;
+        const upload = yield* Effect.promise(() => alchemyUpload(production, phase));
         return yield* hook.value.capture({
-          ...preparedUpload(input.id),
+          ...upload,
+          previous: poolAttributes(input.id),
           proposed: result,
           activate: () =>
             Effect.sync(() => {
               w.activatePoolWorker();
-              return result;
+              // The code phase's ordinary upload links exactly the plan's container classes.
+              production.deployCode(plannedContainerClasses(phase));
+              return poolAttributes(input.id);
             }),
         });
       }),
@@ -149,7 +306,7 @@ function releaseGraph(w: World, receipts: { runs: number; seeding: boolean }, is
     "basalt",
     { providers: Layer.mergeAll(workers, commands), state },
     Effect.gen(function* () {
-      const plan = yield* RuntimeImageReleasePlan;
+      plan = yield* RuntimeImageReleasePlan;
       // The stack evaluated with `build` publishes the candidate image to that inactive application.
       if (plan?.build) w.buildInactive(plan.build);
       yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
@@ -211,10 +368,16 @@ async function firstScaleOutRelease(
     beforeImageCheck?: (w: World) => void;
     world?: WorldOptions;
     sourceController?: { candidate: string; workerInput: string };
+    /** Omit the reviewed PoolWorker class intent: the code phase then creates no fleet class. */
+    withoutClassIntent?: boolean;
   } = {},
 ) {
   const w = createWorld(options.world);
   installWorld(w);
+  const production = productionPoolWorker(target);
+  standin.installProductionWorker(production);
+  standin.resetBootstrap();
+  const expansions: ClassProgress[] = [];
   standin.resetJournal(options.sourceController);
   const scratch = mkdtempSync(join(tmpdir(), "runtime-image-release-"));
   const network = globalThis.fetch;
@@ -233,7 +396,7 @@ async function firstScaleOutRelease(
       "receipt.json",
     );
     const receipts = { runs: 0, seeding: true };
-    const stack = releaseGraph(w, receipts, options.isolateReceipt ?? false);
+    const stack = releaseGraph(w, receipts, options.isolateReceipt ?? false, production);
     const config = ConfigProvider.layer(
       ConfigProvider.fromEnv({
         env: {
@@ -290,7 +453,18 @@ async function firstScaleOutRelease(
             forwardEncryptionKey: "b".repeat(64),
             record: async () => {},
             manifest: async () => {},
+            ...(options.withoutClassIntent
+              ? {}
+              : {
+                  declarations: poolWorkerDeclaration(),
+                  declared: async () => {},
+                  declaredReadiness: async () => {},
+                  expansion: async (value: ClassProgress) => {
+                    expansions.push(value);
+                  },
+                }),
             io: {
+              classes: classProvider(production),
               sqlSchemas: async () => readySqlSchemas(candidate),
               placements: (_worker, baseline) =>
                 Effect.succeed(
@@ -348,7 +522,17 @@ async function firstScaleOutRelease(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error: String(error) }),
     );
-    return { w, outcome, failures, marks, receipts, verified, journal: standin.readJournal() };
+    return {
+      w,
+      outcome,
+      failures,
+      marks,
+      receipts,
+      verified,
+      journal: standin.readJournal(),
+      production,
+      expansions,
+    };
   } finally {
     globalThis.fetch = network;
     rmSync(scratch, { recursive: true, force: true });
@@ -367,6 +551,42 @@ const explain = (result: Awaited<ReturnType<typeof firstScaleOutRelease>>) =>
 
 test("a first scale-out release runs every phase, retires the root runtime and is marked deployed", async () => {
   const result = await firstScaleOutRelease();
+  // The controller phase's class path sent alchemy's untagged migration once, keeping PoolContainer
+  // linked; no later phase migrated a class again, and Cloudflare refused nothing.
+  assert.deepEqual(
+    result.production.log.puts.map((metadata) => ({
+      migrations: metadata.migrations,
+      containers: metadata.containers,
+    })),
+    [
+      {
+        migrations: { new_sqlite_classes: ["PoolRuntimeBlue", "PoolRuntimeGreen"] },
+        containers: [{ class_name: "PoolContainer" }],
+      },
+    ],
+    explain(result),
+  );
+  assert.deepEqual(result.production.log.refusals, []);
+  // Each bootstrap attached to the class the code phase created and never wrote the Worker; each
+  // bind phase then linked its container, and the class record stayed ready through both.
+  assert.deepEqual(
+    standin.bootstrapAttachments.map(({ className, namespaceId }) => [className, namespaceId]),
+    [
+      ["PoolRuntimeBlue", "poolruntimeblue-namespace"],
+      ["PoolRuntimeGreen", "poolruntimegreen-namespace"],
+    ],
+    explain(result),
+  );
+  assert.equal(standin.bootstrapCalls.writes, 0);
+  assert.deepEqual(result.production.containers(), [
+    "PoolContainer",
+    "PoolRuntimeBlue",
+    "PoolRuntimeGreen",
+  ]);
+  assert.ok(
+    result.expansions.some((value) => value.outcome === "ready"),
+    explain(result),
+  );
   // The memo:false receipt Command re-runs in every deployStack phase of one deploy command, so
   // each later phase must overwrite the receipt the earlier one wrote.
   assert.deepEqual(
@@ -405,6 +625,17 @@ test("a first scale-out release runs every phase, retires the root runtime and i
     explain(result),
   );
   assert.deepEqual(result.marks, ["success"]);
+});
+
+test("without the PoolWorker class intent, alchemy's class migration refuses in the code phase before any write", async () => {
+  const result = await firstScaleOutRelease({ withoutClassIntent: true });
+  assert.notEqual(result.outcome.ok, true, explain(result));
+  // The ordinary version path admits no class migration; only the reviewed class path sends one.
+  assert.match(explain(result), /durable-object-migration/u);
+  assert.ok(!result.w.events.includes("create:application-blue"), explain(result));
+  assert.deepEqual(standin.bootstrapAttachments, []);
+  assert.equal(standin.bootstrapCalls.writes, 0);
+  assert.deepEqual(result.production.log.puts, []);
 });
 
 test("a release after a settled or aborted prior candidate freezes that candidate's live controller", async () => {

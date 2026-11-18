@@ -22,7 +22,9 @@ import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-rele
 import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { bootstrapReleaseApplication } from "./runtime-release-bootstrap.ts";
+import { bootstrapImagePlan, releaseImagePlan } from "./runtime-release-plan.ts";
 import { configureReleaseFleet } from "./runtime-release-fleet.ts";
+import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
 import { assertReleaseImageCapacity, runtimeReleaseImage } from "./runtime-release-image.ts";
 import {
   releaseCodeReady,
@@ -34,8 +36,8 @@ import { BarrierRefusal } from "./refusal.ts";
 import type { RuntimeReleasePhase } from "./runtime-image-release-phases.ts";
 import {
   baselineControllerHealth,
-  readBaselineController,
   readBaselineControllerKey,
+  releaseBaselineController,
 } from "./baseline-controller.ts";
 import { controllerForwardHealth } from "./controller-forward-health.ts";
 
@@ -81,7 +83,10 @@ export const releaseRuntimeImage = <A, StackError>(
         if (record?.abort)
           throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
-          const baselineController = yield* readBaselineController(compiled, head.sourceController);
+          const { controller: baselineController } = yield* releaseBaselineController(
+            compiled,
+            head,
+          );
           const key = yield* readBaselineControllerKey(compiled);
           yield* resumeForwardRelease(compiled, {
             directory: options.directory,
@@ -129,30 +134,7 @@ export const releaseRuntimeImage = <A, StackError>(
       await initial.journal.write(next);
       record = next;
     };
-    const plan = (): ImageReleasePlan => ({
-      ...(record.baseline.applications.legacy
-        ? {
-            legacy: {
-              image: record.baseline.applications.legacy.image.image,
-              props: record.baseline.applications.legacy.props,
-            },
-          }
-        : {}),
-      images: Object.fromEntries(
-        (["blue", "green"] as const).flatMap((color) => {
-          const application = record.baseline.applications[color];
-          return application ? [[color, application.image.image]] : [];
-        }),
-      ),
-      ...(record.update
-        ? {
-            candidateConfiguration: {
-              applicationId: record.update.baseline.applicationId,
-              configuration: record.desiredConfiguration,
-            },
-          }
-        : {}),
-    });
+    const plan = () => releaseImagePlan(record);
     const clientFor = () =>
       runtimeReleaseClient({
         state: record.baseline,
@@ -184,8 +166,9 @@ export const releaseRuntimeImage = <A, StackError>(
       evaluate(plan(), (compiled) =>
         Effect.gen(function* () {
           const client = yield* clientFor();
-          const baselineController =
-            record.baselineController ?? (yield* readBaselineController(compiled));
+          const { controller: baselineController } = yield* releaseBaselineController(compiled, {
+            record,
+          });
           const forward = yield* resumeForwardRelease(compiled, {
             directory: options.directory,
             runtime: (container, _observed, observation) =>
@@ -255,10 +238,7 @@ export const releaseRuntimeImage = <A, StackError>(
 
     for (const color of ["blue", "green"] as const) {
       if (record.baseline.applications[color]) continue;
-      const createPlan = {
-        ...plan(),
-        images: { ...plan().images, [color]: record.baseline.applications.root.image.image },
-      };
+      const createPlan = bootstrapImagePlan(record, color);
       yield* evalStack(
         provisioningStack,
         (compiled) =>
@@ -309,7 +289,7 @@ export const releaseRuntimeImage = <A, StackError>(
         )?.color === "green"
           ? "blue"
           : "green");
-      const resource = inactive === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
+      const resource = fleetClassName(inactive);
       if (selected.selection?.candidate) {
         if (
           selected.selection.candidate.target.applicationId !==

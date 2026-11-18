@@ -12,7 +12,7 @@ import {
   provisioningManifestDigest,
 } from "./provisioning-contract.ts";
 import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
-import { runtimeNamespaceRequest } from "./provisioning-namespace.ts";
+import { runtimeNamespaceAttachment } from "./provisioning-namespace.ts";
 import { provisionDeclaredRuntime } from "./provisioning-declarations.ts";
 import { stateProvisioningStore } from "./provisioning-state.ts";
 import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
@@ -22,8 +22,50 @@ import type { RuntimeReleaseRecord } from "./runtime-release-journal.ts";
 import { runtimeApplicationPins } from "./runtime-release-state.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 import { applicationTemplateDigest, expectedApplicationRequest } from "./provisioning-wire.ts";
+import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
 
-/** Create one source-declared idle application through the existing namespace-first, one-send journal. */
+/** The reviewed create declaration for one fleet color, from its compiled props and the root image. */
+export const bootstrapDeclaration = (input: {
+  name: "PoolRuntimeBlue" | "PoolRuntimeGreen";
+  props: unknown;
+  candidate: string;
+  root: RuntimeReleaseRecord["baseline"]["applications"]["root"];
+  metadata: Awaited<ReturnType<typeof inspectPoolImage>>;
+}) =>
+  Effect.gen(function* () {
+    const { name, root, metadata } = input;
+    const imageInput = (yield* sha256Object({
+      image: root.image.image,
+      imageName: undefined,
+    })).slice(0, 16);
+    const require = createRequire(import.meta.url);
+    const sdk = new URL(
+      "../src/Cloudflare/Containers/ContainerProvider.ts",
+      pathToFileURL(require.resolve("alchemy")),
+    );
+    return decodeRuntimeCreate({
+      action: "create-container",
+      type: "Cloudflare.Container",
+      fqn: name,
+      disposition: "provision-only",
+      baseline: "absent",
+      accountId: root.attributes.accountId,
+      instanceId: digest(`${input.candidate}:${name}`).slice(0, 32),
+      namespace: { workerFqn: "PoolWorker", className: name, binding: name },
+      props: input.props,
+      publication: {
+        inputHash: imageInput,
+        imageConfigDigest: metadata.configDigest,
+        platform: metadata.platform,
+        capabilityLabel: metadata.capabilityLabel,
+      },
+      sdkSourceDigest: digest(readFileSync(sdk)),
+      removalPolicy: "retain",
+      retention: { data: true, nativeStateRow: true, recoveryDescriptor: true },
+    });
+  });
+
+/** Create one source-declared idle application on the class the alchemy deploy already created, through the one-send journal. */
 export const bootstrapReleaseApplication = (
   stack: CompiledStack,
   input: {
@@ -37,7 +79,7 @@ export const bootstrapReleaseApplication = (
 ) =>
   Effect.gen(function* () {
     const { color, record, writer, client } = input;
-    const name = color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
+    const name = fleetClassName(color);
     const state = yield* yield* State;
     let manifest = record.bootstrap[color];
     if (!manifest) {
@@ -52,34 +94,12 @@ export const bootstrapReleaseApplication = (
           apiToken: Redacted.value(token),
         }),
       );
-      const imageInput = (yield* sha256Object({
-        image: root.image.image,
-        imageName: undefined,
-      })).slice(0, 16);
-      const require = createRequire(import.meta.url);
-      const sdk = new URL(
-        "../src/Cloudflare/Containers/ContainerProvider.ts",
-        pathToFileURL(require.resolve("alchemy")),
-      );
-      const declaration = decodeRuntimeCreate({
-        action: "create-container",
-        type: "Cloudflare.Container",
-        fqn: name,
-        disposition: "provision-only",
-        baseline: "absent",
-        accountId: root.attributes.accountId,
-        instanceId: digest(`${writer.candidate}:${name}`).slice(0, 32),
-        namespace: { workerFqn: "PoolWorker", className: name, binding: name },
+      const declaration = yield* bootstrapDeclaration({
+        name,
         props: resource.Props,
-        publication: {
-          inputHash: imageInput,
-          imageConfigDigest: metadata.configDigest,
-          platform: metadata.platform,
-          capabilityLabel: metadata.capabilityLabel,
-        },
-        sdkSourceDigest: digest(readFileSync(sdk)),
-        removalPolicy: "retain",
-        retention: { data: true, nativeStateRow: true, recoveryDescriptor: true },
+        candidate: writer.candidate,
+        root,
+        metadata,
       });
       const namespace = yield* runtimeNamespaceReader(
         root.attributes.accountId,
@@ -87,7 +107,7 @@ export const bootstrapReleaseApplication = (
       );
       const baseline = yield* Effect.promise(() => namespace.baseline());
       const operationId = `bootstrap-${color}-${writer.candidate}`;
-      const request = runtimeNamespaceRequest(baseline, declaration, operationId);
+      const attachment = runtimeNamespaceAttachment(baseline, declaration);
       const snapshot = yield* Effect.promise(() => client.inspect());
       const active = snapshot.selection?.active.identity;
       if (!active) throw new BarrierRefusal("runtime-release-bootstrap-active-missing", name);
@@ -105,7 +125,7 @@ export const bootstrapReleaseApplication = (
         operationId,
         declaration,
         namespaceBaselineDigest: digest(canonical(baseline)),
-        namespaceRequestDigest: digest(canonical(request)),
+        namespaceRequestDigest: digest(canonical(attachment)),
         applicationTemplateDigest: digest(canonical(declaration.props)),
         active: {
           applicationId: active.applicationId,
