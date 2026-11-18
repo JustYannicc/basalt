@@ -1,7 +1,0 @@
-model {
-  extend basalt.build {
-    metadata {
-      constraint "External test-service setup and cleanup make at most four attempts within one 30-second budget and log each retry. Emulator setup also abandons and repeats a request that hangs for 6 seconds, because its instance, keyed-credential and reset calls converge when repeated; billing catalog seeding never retries a timeout. Scenario requests stay single-attempt, and exhausted failures keep their real cause, attempt count and redacted diagnostics."
-    }
-  }
-}
