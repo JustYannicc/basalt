@@ -2,6 +2,7 @@ import type { HomeClient, PoolHome } from "./control.ts";
 import { accountsView } from "./accounts-view.ts";
 import { fail, json, post, unavailable } from "./json.ts";
 import { ProviderResets } from "./reset-provider.ts";
+import type { ResetConfirmation } from "../../apps/pool/action-contract.ts";
 import { ResetRedemption, type ActionStorage } from "./reset-redemption.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 
@@ -117,8 +118,36 @@ export class AccountActions {
       typeof body.creditId !== "string"
     )
       return fail(400, "invalid_query", "Provide a reset credit id and request id.");
+    const confirmed = confirmation(body);
+    if (confirmed === null)
+      return fail(400, "invalid_query", "Name the confirmed reset's kind and scope, or neither.");
     return json(
-      await this.redemption.use(resets, body.requestId, body.creditId, signal, stillMember),
+      await this.redemption.use(
+        resets,
+        body.requestId,
+        body.creditId,
+        signal,
+        stillMember,
+        confirmed,
+      ),
     );
   }
+}
+
+const kinds = ["session", "weekly", "full", "model", "unknown"] as const;
+const scopes = ["account", "model", "unknown"] as const;
+/**
+ * The reset kind a spend was confirmed for, undefined when a caller predates kinds, or null when
+ * it is malformed. A partial or unknown confirmation is refused, never read as "any kind".
+ */
+function confirmation(body: object): ResetConfirmation | undefined | null {
+  const { kind, scope } = body as { kind?: unknown; scope?: unknown };
+  if (kind === undefined && scope === undefined) return undefined;
+  const named = kinds.find((entry) => entry === kind);
+  if (named === undefined || typeof scope !== "object" || scope === null) return null;
+  const { kind: scopeKind, id } = scope as { kind?: unknown; id?: unknown };
+  const area = scopes.find((entry) => entry === scopeKind);
+  if (area === undefined || (id !== undefined && (typeof id !== "string" || id.length > 64)))
+    return null;
+  return { kind: named, scope: id === undefined ? { kind: area } : { kind: area, id } };
 }

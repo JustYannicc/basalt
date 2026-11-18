@@ -5,7 +5,7 @@ import type {
   ResetWindow,
 } from "../../apps/pool/action-contract.ts";
 import type { HomeClient } from "./control.ts";
-import { fail, object, post, rows, text, unavailable, type Json } from "./json.ts";
+import { object, post, rows, text, unavailable, type Json } from "./json.ts";
 
 export const resetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const grantId = /^[a-z0-9_-]{1,40}$/;
@@ -17,6 +17,48 @@ function timestamp(value: unknown): string | null {
   return typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toISOString()
     : unavailable();
+}
+
+const unclassified = { kind: "unknown", scope: { kind: "unknown" } } as const;
+const slug = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+/**
+ * What a Claude grant refills, by the rule the pool's Home applies to the reset observations the
+ * Accounts counts come from (CLIProxyAPI carry 0526, `claudeResetScope`), so a spend can never
+ * take a different kind than the count it was shown from. Giving back weekly use is a model's
+ * reset: Anthropic lists it as clearing the weekly overage window, which alone reads as weekly.
+ */
+function grantKind(
+  type: unknown,
+  givesBackWeekly: boolean,
+  clears: readonly string[],
+): Pick<ResetCredit, "kind" | "scope"> {
+  if (givesBackWeekly) return { kind: "model", scope: { kind: "model", id: "fable" } };
+  const kind = (["session", "weekly", "full"] as const).find((entry) => entry === type);
+  if (kind === undefined && type !== undefined && type !== null && type !== "") return unclassified;
+  let session = false,
+    weekly = false,
+    model: string | undefined;
+  for (const window of clears) {
+    if (window === "five_hour") session = true;
+    else if (window === "seven_day" || window === "seven_day_overage_included") weekly = true;
+    else if (window.startsWith("seven_day_")) {
+      const id = slug(window.slice("seven_day_".length));
+      if (!id || (model !== undefined && model !== id)) return unclassified;
+      model = id;
+    } else return unclassified;
+  }
+  if (model !== undefined)
+    return weekly ? unclassified : { kind: "model", scope: { kind: "model", id: model } };
+  if (kind !== undefined) return { kind, scope: { kind: "account" } };
+  if (session && weekly) return { kind: "full", scope: { kind: "account" } };
+  if (weekly) return { kind: "weekly", scope: { kind: "account" } };
+  if (session) return { kind: "session", scope: { kind: "account" } };
+  return unclassified;
 }
 
 /** Provider URLs and token substitution stay behind this interface; callers supply only account and credit IDs. */
@@ -122,6 +164,9 @@ export class ProviderResets {
           usableNow: null,
           requiresLimit: false,
           clears: null,
+          // Codex decides which of the account's limits a reset clears; none is a model's.
+          kind: "unknown",
+          scope: { kind: "account" },
         });
       }
     } else {
@@ -157,6 +202,8 @@ export class ProviderResets {
             continue;
           if (!Array.isArray(row.clears) || row.clears.some((value) => typeof value !== "string"))
             return unavailable();
+          if (row.gives_back_weekly !== undefined && typeof row.gives_back_weekly !== "boolean")
+            return unavailable();
           const clears = windows.filter((window) => (row.clears as string[]).includes(window));
           credits.push({
             id,
@@ -167,6 +214,7 @@ export class ProviderResets {
               !cooling && row.usable_now && (!row.use_requires_limit || status.at_limit === true),
             requiresLimit: row.use_requires_limit,
             clears,
+            ...grantKind(row.type, row.gives_back_weekly === true, row.clears as string[]),
           });
         }
     }

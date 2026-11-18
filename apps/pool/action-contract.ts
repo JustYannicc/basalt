@@ -1,3 +1,5 @@
+import type { ResetMetadata, ResetScope } from "./reset-observation-contract.ts";
+
 export type ResetWindow = "five_hour" | "seven_day" | "seven_day_overage_included";
 
 export interface ResetCredit {
@@ -10,6 +12,18 @@ export interface ResetCredit {
   readonly requiresLimit: boolean;
   /** Null for Codex, which decides which limited windows the reset clears. */
   readonly clears: readonly ResetWindow[] | null;
+  /**
+   * What the credit refills, by the rule the pool's Home applies to its reset observations, so a
+   * spend and the count it was shown from always agree on the kind.
+   */
+  readonly kind: ResetMetadata["kind"];
+  readonly scope: ResetScope;
+}
+
+/** The kind a person confirmed spending; a credit of any other kind is refused unspent. */
+export interface ResetConfirmation {
+  readonly kind: ResetMetadata["kind"];
+  readonly scope: ResetScope;
 }
 
 export interface ResetCredits {

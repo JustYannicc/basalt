@@ -1,4 +1,9 @@
-import type { ResetAttempt, ResetResult } from "../../apps/pool/action-contract.ts";
+import type {
+  ResetAttempt,
+  ResetConfirmation,
+  ResetCredit,
+  ResetResult,
+} from "../../apps/pool/action-contract.ts";
 import type { HomeClient } from "./control.ts";
 import { digest } from "./backend-users.ts";
 import { fail, post } from "./json.ts";
@@ -16,6 +21,10 @@ interface Attempt {
   sent: boolean;
   result: ResetResult;
 }
+const sameKind = (credit: ResetCredit, confirmed: ResetConfirmation) =>
+  credit.kind === confirmed.kind &&
+  credit.scope.kind === confirmed.scope.kind &&
+  credit.scope.id === confirmed.scope.id;
 const succeeded = (result: ResetResult) =>
   ["reset", "already_redeemed", "already_used"].includes(result.outcome);
 
@@ -53,6 +62,7 @@ export class ResetRedemption {
     creditId: string,
     signal: AbortSignal,
     stillMember: () => Promise<void>,
+    confirmed?: ResetConfirmation,
   ): Promise<ResetResult> {
     if (!resetUuid.test(requestId) || !creditId || creditId.length > 256) {
       return fail(
@@ -83,6 +93,13 @@ export class ResetRedemption {
       const credits = await provider.credits(signal);
       const credit = credits.credits.find((credit) => credit.id === creditId);
       if (!credit) return fail(404, "not_found", "This reset credit is no longer available.");
+      // The person confirmed a kind of reset; nothing else may be spent in its name.
+      if (confirmed !== undefined && !sameKind(credit, confirmed))
+        return fail(
+          409,
+          "invalid_query",
+          "This reset credit is a different kind than the one confirmed.",
+        );
       if (credit.usableNow === false)
         return fail(409, "invalid_query", "This reset cannot be used right now.");
       const organization = await provider.organization(signal);
