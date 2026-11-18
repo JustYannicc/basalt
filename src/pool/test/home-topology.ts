@@ -1,3 +1,5 @@
+import { homeTopologyPath } from "../runtime-crash-cell.ts";
+
 /**
  * `GET /v8/management/topology` as documented by the upstream Home management reference:
  * docs/management/api.md lines 505-580 at v1.1.6, with every key and value unchanged. The
@@ -125,4 +127,18 @@ export function masterlessTopology() {
       healthy: false,
     })),
   };
+}
+
+interface HomeDouble {
+  override?: (
+    path: string,
+    init?: RequestInit,
+  ) => Response | undefined | Promise<Response | undefined>;
+}
+
+/** Makes a fixture Home answer its topology read and leaves every other management call alone. */
+export function answerTopology(home: HomeDouble, reply: () => Response) {
+  const previous = home.override;
+  home.override = (path, init) =>
+    path.startsWith(homeTopologyPath) ? reply() : previous?.(path, init);
 }

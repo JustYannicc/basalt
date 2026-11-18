@@ -3,6 +3,7 @@ import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/imple
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Command from "alchemy/Command";
+import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
@@ -44,6 +45,19 @@ export const poolWorkerVersion = Effect.gen(function* () {
   return { version: { traffic: traffic.value } };
 });
 
+/**
+ * Killing the elected Home master can lose a provider token rotation, which logs an account out.
+ * Only a disposable stage, which holds test accounts, may do it. Every other stage, production
+ * included, carries no binding, and the controller then refuses.
+ */
+export const masterCrashBinding = Effect.gen(function* () {
+  // Annotated so the absent case stays an absent key, which is what a Worker binding map accepts.
+  const binding: { POOL_ALLOW_MASTER_CRASH?: string } = (yield* Stage).startsWith("test-")
+    ? { POOL_ALLOW_MASTER_CRASH: "true" }
+    : {};
+  return binding;
+});
+
 export const poolWorker = Effect.gen(function* () {
   const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
   if (probeTarget && !validProbeTarget(probeTarget))
@@ -78,6 +92,7 @@ export const poolWorker = Effect.gen(function* () {
       ...fleetBindings(fleet, yield* fleetClasses),
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       POOL_PRESERVE_LEGACY_IMAGE: "true",
+      ...(yield* masterCrashBinding),
       POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
       ...(imageRelease?.candidateConfiguration
         ? {

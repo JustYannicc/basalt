@@ -4,6 +4,7 @@ import { signEnvelope } from "./token.ts";
 import {
   crashNonceKey,
   currentCrashCommand,
+  targetsCell,
   type RuntimeCrashCommand,
 } from "./runtime-crash-contract.ts";
 import {
@@ -55,16 +56,18 @@ export class RuntimeCrash {
     if (await storage.get(crashNonceKey(command.nonce))) throw new SlotRefused("selection");
     const snapshot = await handoff.storage.inspect();
     const selection = snapshot.selection;
-    const cell = command.kind === "cell";
+    const cell = targetsCell(command);
     if (
       !selection ||
       selection.candidate ||
       selection.draining ||
       selection.active.fenced ||
-      selection.active.retirement ||
-      sameIdentity(selection.active.identity, command.identity) === cell
+      selection.active.retirement
     )
       throw new SlotRefused("identity");
+    const namesPrimary = sameIdentity(selection.active.identity, command.identity);
+    // A cell packet must not name the primary, and a primary packet must name nothing else.
+    if (cell ? namesPrimary : !namesPrimary) throw new SlotRefused("identity");
     const permission = await configuration.inspect();
     if (!permission?.enabled) throw new SlotRefused("selection");
     configuration.assertBindings(permission.configuration);

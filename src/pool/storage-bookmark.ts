@@ -31,6 +31,29 @@ export const storageRestoreNonceKey = (nonce: string) => `storage-restore-v1:com
 /** The platform keeps point-in-time recovery for 30 days. */
 export const bookmarkRetentionMs = 30 * 24 * 60 * 60 * 1_000;
 const issuedLimit = 32;
+/**
+ * The signed bookmark read is what arms a restore, and it stays armed this long. A read made
+ * hours earlier in a long session, by a release run for instance, cannot become a restore.
+ */
+export const restoreArmWindowMs = 10 * 60 * 1_000;
+
+export const restoreRefusals = [
+  "stale-envelope",
+  "replayed",
+  "unknown-bookmark",
+  "arm-expired",
+  "not-before-current",
+  "expected-current-mismatch",
+] as const;
+export type RestoreRefusal = (typeof restoreRefusals)[number];
+/** Keeps the wire reason every handoff refusal has, and names the restore rule that refused. */
+export class StorageRestoreRefused extends SlotRefused {
+  readonly restore: RestoreRefusal;
+  constructor(restore: RestoreRefusal) {
+    super(restore === "replayed" ? "selection" : "identity");
+    this.restore = restore;
+  }
+}
 
 export function currentRestoreCommand(value: unknown, now = Date.now()) {
   const command = runtimeInput(() =>
@@ -42,7 +65,7 @@ export function currentRestoreCommand(value: unknown, now = Date.now()) {
     command.expiresAt <= command.at ||
     command.expiresAt > command.at + 30_000
   )
-    throw new SlotRefused("identity");
+    throw new StorageRestoreRefused("stale-envelope");
   return command;
 }
 
@@ -66,11 +89,13 @@ interface Dependencies {
 /**
  * A restore rolls back the stored nonce with everything else, so the nonce only stops a replay
  * while this session lives. The session itself is the second fence: a restore is accepted only
- * against a current bookmark this session handed out, and every restore ends the session.
+ * against a current bookmark this session handed out a short while ago, and every restore ends
+ * the session.
  */
 export class StorageBookmarks {
   private deps: Dependencies;
-  private issued = new Set<string>();
+  /** Current bookmarks this session handed out, with when. */
+  private issued = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
   constructor(deps: Dependencies) {
     this.deps = deps;
@@ -83,8 +108,8 @@ export class StorageBookmarks {
     if (time === undefined) {
       const bookmark = await this.deps.port.current();
       this.issued.delete(bookmark);
-      this.issued.add(bookmark);
-      for (const oldest of this.issued) {
+      this.issued.set(bookmark, now);
+      for (const oldest of this.issued.keys()) {
         if (this.issued.size <= issuedLimit) break;
         this.issued.delete(oldest);
       }
@@ -96,7 +121,17 @@ export class StorageBookmarks {
     return { bookmark: await this.deps.port.forTime(at), at: new Date(at).toISOString() };
   }
   restore(value: StorageRestoreCommand) {
-    const pending = this.queue.then(() => this.apply(value));
+    const pending = this.queue.then(() =>
+      this.apply(value).catch((error: unknown) => {
+        // The reply carries only the shared wire reason, so this line names the rule that refused.
+        if (error instanceof StorageRestoreRefused)
+          console.warn(
+            "POOL_STORAGE_RESTORE_REFUSED",
+            JSON.stringify({ reason: error.restore, nonce: value.nonce, operator: value.operator }),
+          );
+        throw error;
+      }),
+    );
     this.queue = pending.catch(() => {});
     return pending;
   }
@@ -104,14 +139,19 @@ export class StorageBookmarks {
     const { storage, port } = this.deps;
     const command = currentRestoreCommand(value, this.now());
     const key = storageRestoreNonceKey(command.nonce);
-    if (await storage.get(key)) throw new SlotRefused("selection");
-    if (!this.issued.has(command.expectedCurrent)) throw new SlotRefused("identity");
+    if (await storage.get(key)) throw new StorageRestoreRefused("replayed");
+    const armedAt = this.issued.get(command.expectedCurrent);
+    if (armedAt === undefined) throw new StorageRestoreRefused("unknown-bookmark");
+    if (this.now() - armedAt > restoreArmWindowMs) throw new StorageRestoreRefused("arm-expired");
+    if (command.target >= command.expectedCurrent)
+      throw new StorageRestoreRefused("not-before-current");
     const live = await port.current();
-    if (command.target >= command.expectedCurrent || command.expectedCurrent > live)
-      throw new SlotRefused("identity");
+    // A live point behind what the caller saw is not this object's timeline.
+    if (command.expectedCurrent > live)
+      throw new StorageRestoreRefused("expected-current-mismatch");
     await storage.transaction(async (transaction) => {
       currentRestoreCommand(command, this.now());
-      if (await transaction.get(key)) throw new SlotRefused("selection");
+      if (await transaction.get(key)) throw new StorageRestoreRefused("replayed");
       await transaction.put(key, { command, live, at: this.now(), status: "submitted" });
     });
     const undo = await port.restoreOnNextSession(command.target);
