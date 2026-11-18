@@ -93,7 +93,7 @@
           "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
           "retirement": {
             "mode": "manual",
-            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+            "requires": "remove when the pin moves to ≥ v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
         },
         {
@@ -256,6 +256,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when pinned Home excludes expired OAuth credentials and its five-minute dispatch safety window before model-state, scheduler, full-credential and affinity admission. Prove no stale upstream dispatch, next-account fallback, clean temporary unavailability, same-UUID fresh replacement and quota-deadline compatibility through native public requests."
+          }
+        },
+        {
+          "identity": "cliproxy-home-coordination-pool",
+          "file": "0691-home-coordination-pool.patch",
+          "sha256": "1784bf1fa7378396c1c47fc9414f2edd3d8d8d8e9dc3ae9f299eb195555600aa",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup and node liveness while the main pool is saturated, and passes the saturated-main-pool heartbeat regression."
           }
         }
       ]

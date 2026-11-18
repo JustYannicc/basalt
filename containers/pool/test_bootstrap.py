@@ -97,7 +97,7 @@ class BootstrapContractTests(unittest.TestCase):
             {**urllib.parse.parse_qs(expected.query), "application_name": ["basalt-home"]},
         )
         config = cluster_yaml(dsn)
-        for field in ("max-open-conns: 6", "max-idle-conns: 6", "conn-max-idle-time: 5m", "conn-max-lifetime: 30m"):
+        for field in ("max-open-conns: 6", "max-idle-conns: 6", "conn-max-idle-time: 5m", "conn-max-lifetime: 30m", "coordination-max-open-conns: 2"):
             self.assertIn(field, config)
 
     def test_cluster_overrides_only_home_application_name(self) -> None:
