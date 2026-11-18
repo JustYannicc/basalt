@@ -184,4 +184,24 @@ export const regressionCoverage: readonly Coverage[] = [
       "scripts/release-barrier/release-preflight-schemas.test.ts#the release preflight names the migrations the release will apply and refuses only journals its migrators could not bring to ready",
     landsWith: "fix/import-completion-resumable",
   },
+  {
+    step: "refusal:declared-class-container-drift",
+    proof:
+      "scripts/release-barrier/class-observation.test.ts#a ready class read refuses PoolContainer losing its container link",
+  },
+  {
+    step: "refusal:provisioning-class-not-declared",
+    proof:
+      "scripts/release-barrier/runtime-bootstrap-preflight.test.ts#a Worker on declarative exports cannot take the class migration, so the bootstrap refuses",
+  },
+  {
+    step: "refusal:provisioning-class-step-containers-mismatch",
+    proof:
+      "scripts/release-barrier/runtime-bootstrap-preflight.test.ts#alchemy's planned container links must equal the live Worker's, or the class step would refuse",
+  },
+  {
+    step: "refusal:provisioning-class-record-container-drift",
+    proof:
+      "scripts/release-barrier/runtime-bootstrap-preflight.test.ts#an entry that declares only blue would break its own record once green binds",
+  },
 ];

@@ -1,3 +1,4 @@
+// Regression: provisioning-class-refusals (the bootstrap preflight refuses class steps alchemy could not write)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bootstrapNamespacePlan, declaredNamespaceId } from "./runtime-bootstrap-preflight.ts";

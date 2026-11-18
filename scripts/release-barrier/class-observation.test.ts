@@ -1,3 +1,4 @@
+// Regression: declared-class-container-drift (a ready class read must refuse PoolContainer losing its container link)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { assertClassObservation } from "./class-observation.ts";
