@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,22 +100,37 @@ export const render = (d: Diagnostic) =>
   `${d.file ? `${d.file}(${d.line},${d.column}): ` : ""}${d.severity}` +
   `${d.code ? ` TS${d.code}` : ""}: ${d.message}`;
 
-// Runs one program; prints everything except Effect diagnostics, which the gate reports.
-export function compile(compiler: string, config: string): Program {
+function runCompiler(compiler: string, config: string) {
   const args = ["--noEmit", "--pretty", "false", "--listFiles", "-p", config];
-  const result = spawnSync(compiler, args, {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 1 << 30,
-    stdio: ["ignore", "pipe", "inherit"],
+  return new Promise<{ stdout: string; status: number | null }>((done, fail) => {
+    const child = spawn(compiler, args, { cwd: root, stdio: ["ignore", "pipe", "inherit"] });
+    const chunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.on("error", fail);
+    child.on("close", (status) => done({ stdout: Buffer.concat(chunks).toString("utf8"), status }));
   });
-  if (result.error) throw result.error;
-  const parsed = parseCompilerOutput(result.stdout, root);
-  const printed = [...parsed.other, ...parsed.diagnostics.filter((d) => !isEffect(d)).map(render)];
-  if (printed.length) process.stdout.write(printed.join("\n") + "\n");
-  if (result.status !== 0)
-    throw new Error(`${compiler} -p ${config} failed with exit ${result.status}`);
-  return { ...parsed, gated: carriesPlugin(config) };
+}
+
+// The programs are independent, so they check concurrently, which keeps the type check faster
+// than it was before the Effect plugin. Everything except Effect diagnostics, which the gate
+// reports, is printed in program order.
+export async function compilePrograms(compiler: string, configs: readonly string[]) {
+  const results = await Promise.all(configs.map((config) => runCompiler(compiler, config)));
+  const programs: Program[] = [];
+  const failed: string[] = [];
+  results.forEach(({ stdout, status }, index) => {
+    const config = configs[index]!;
+    const parsed = parseCompilerOutput(stdout, root);
+    const printed = [
+      ...parsed.other,
+      ...parsed.diagnostics.filter((d) => !isEffect(d)).map(render),
+    ];
+    if (printed.length) process.stdout.write(printed.join("\n") + "\n");
+    if (status !== 0) failed.push(`${compiler} -p ${config} failed with exit ${status}`);
+    programs.push({ ...parsed, gated: carriesPlugin(config) });
+  });
+  if (failed.length) throw new Error(failed.join("; "));
+  return programs;
 }
 
 function carriesPlugin(config: string) {

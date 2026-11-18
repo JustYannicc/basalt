@@ -1,17 +1,15 @@
-import { compile, recordEffectDiagnostics, type Program } from "./effect-diagnostics-record.ts";
+import { compilePrograms, recordEffectDiagnostics } from "./effect-diagnostics-record.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const compiler = ".upstream/node_modules/.bin/tsc-rs";
-const programs: Program[] = [compile(compiler, "tsconfig.json")];
 // Resource declarations use the same module and optional-property semantics as the upstream stack.
-programs.push(compile(compiler, "tsconfig.stack.json"));
-programs.push(compile(compiler, "tsconfig.worker.json"));
+const configs = ["tsconfig.json", "tsconfig.stack.json", "tsconfig.worker.json"];
 // The fast gate reads public source exports; the production gate checks the shipped declarations.
 // Each bundled app with a browser screen has its own config over the same React and apps types.
 for (const name of ["pool", "obsidian"]) {
   if (!process.argv.includes("--source")) {
-    programs.push(compile(compiler, `tsconfig.${name}.json`));
+    configs.push(`tsconfig.${name}.json`);
     continue;
   }
   const root = fileURLToPath(new URL("../", import.meta.url));
@@ -42,6 +40,6 @@ for (const name of ["pool", "obsidian"]) {
     config,
     JSON.stringify({ extends: join(root, `tsconfig.${name}.json`), compilerOptions: { paths } }),
   );
-  programs.push(compile(compiler, config));
+  configs.push(config);
 }
-recordEffectDiagnostics(programs);
+recordEffectDiagnostics(await compilePrograms(compiler, configs));
