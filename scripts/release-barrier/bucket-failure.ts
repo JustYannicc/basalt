@@ -1,4 +1,4 @@
-import { safeProviderFailure } from "./operation-failure.ts";
+import { providerChanges, safeProviderFailure } from "./operation-failure.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import type { PropChange } from "./prop-diff.ts";
 
@@ -14,7 +14,7 @@ export type BucketOperation =
   | "record-intent"
   | "commit-native-state";
 
-/** Provider text and URLs are private. Retain only closed tags and bounded numeric diagnostics. */
+/** Provider text and URLs are private. Retain only closed tags, bounded numbers and sanitized request shapes. */
 export function bucketFailure(
   error: unknown,
   fqn: string,
@@ -23,15 +23,10 @@ export function bucketFailure(
   type = "Cloudflare.R2.Bucket",
 ) {
   if (error instanceof BarrierRefusal) return error;
-  const changed: PropChange[] = [{ path: "$operation", old: null, new: operation }];
-  const provider = safeProviderFailure(error);
-  changed.push({ path: "$provider.type", old: null, new: provider.type });
-  if (provider.reason !== undefined)
-    changed.push({ path: "$provider.reason", old: null, new: provider.reason });
-  if (provider.status !== undefined)
-    changed.push({ path: "$provider.status", old: null, new: provider.status });
-  for (const [index, code] of (provider.codes ?? []).entries())
-    changed.push({ path: `$provider.codes.${index}`, old: null, new: code });
+  const changed: PropChange[] = [
+    { path: "$operation", old: null, new: operation },
+    ...providerChanges(safeProviderFailure(error)),
+  ];
   return new BarrierRefusal(reason, fqn, { fqn, type, changed });
 }
 
