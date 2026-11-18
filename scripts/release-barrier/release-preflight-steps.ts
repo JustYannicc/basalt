@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Exit, Schema } from "effect";
+import { Cause, Context, Effect, Exit } from "effect";
 import type { StateService } from "alchemy/State/State";
 import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
@@ -15,7 +15,7 @@ import {
   type BaselineController,
 } from "./baseline-controller.ts";
 import { verifyContainerHealth } from "./container-health.ts";
-import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
+import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import {
@@ -44,7 +44,7 @@ import {
   type PreflightBridgeCounters,
 } from "./release-preflight-guard.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
-import { runtimeReleaseClient, type RuntimeReleaseClient } from "./runtime-release-client.ts";
+import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import { assertReleaseImageCapacity } from "./runtime-release-image.ts";
 import { decodeRuntimeReleaseHead, runtimeReleaseJournal } from "./runtime-release-journal.ts";
 import { verifyBoundProviderObservation } from "./runtime-provider-observation.ts";
@@ -52,16 +52,18 @@ import { releaseSelectedReady } from "./runtime-release-readiness.ts";
 import { runtimeReleaseState, type RuntimeReleaseState } from "./runtime-release-state.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 
-/** The controller's own witness kind; an adopted legacy root stays unattested until promote. */
-export async function activeUnattested(
-  client: Pick<RuntimeReleaseClient, "call">,
-  target: typeof SlotTarget.Type,
+/**
+ * The release promotes a fleet primary before finalize, so it never reads readiness from the legacy
+ * root, whether adopt's unattested grant or a recovery restart is its witness.
+ */
+export async function finalReadiness<T>(
+  selection: { active: { target: SlotTarget } } | undefined,
+  ready: () => Promise<T>,
 ) {
-  const witness = Schema.decodeUnknownSync(
-    Schema.Struct({ result: Schema.Struct({ kind: Schema.String }) }),
-    { onExcessProperty: "ignore" },
-  )(await client.call({ action: "witness", target }));
-  return witness.result.kind === "unattested-active";
+  if (!selection) throw new NotApplicable("no selection; finalize runs after promotion");
+  if (isLegacyAdoptionTarget(selection.active.target))
+    throw new NotApplicable("post-promote-only: the active slot is the legacy root");
+  return ready();
 }
 
 // Steps that need the live controller, in release order; listed so a missing input still reports each.
@@ -370,15 +372,10 @@ export const preflightSteps = (
           throw new NotApplicable("image input unchanged; the release keeps the live image");
         return assertReleaseImageCapacity(client);
       });
-      await step("final-readiness", ["live-controller"], async () => {
-        if (!selection) throw new NotApplicable("no selection; finalize runs after promotion");
-        // The controller refuses readiness for an unattested active slot, the adopted legacy root;
-        // the release promotes an attested slot before finalize, so this read is post-promote-only.
-        if (await activeUnattested(client, selection.active.target))
-          throw new NotApplicable(
-            "post-promote-only: the active slot is the unattested adopted root",
-          );
-        return releaseSelectedReady(live, code, client, selection.active.target.imageInput);
-      });
+      await step("final-readiness", ["live-controller"], () =>
+        finalReadiness(selection, () =>
+          releaseSelectedReady(live, code, client, selection!.active.target.imageInput),
+        ),
+      );
     }
   });
