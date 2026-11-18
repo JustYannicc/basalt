@@ -135,16 +135,19 @@ async function runAlchemy(
   identity: PreviewIdentity,
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
-  // The release entry never lets a deploy or destroy redeploy the shared State store; the CLI's --yes can.
   await runChild(
     "bun",
     [
-      "../../../../scripts/release/deploy.ts",
+      "exec",
+      "alchemy",
+      "--log-level",
+      "none",
       action,
+      config,
       "--stage",
       identity.stage,
-      "--config",
-      config,
+      "--yes",
+      "--no-input",
     ],
     cloudDirectory,
     environment,
