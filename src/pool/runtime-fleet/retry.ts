@@ -7,24 +7,50 @@ import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
 import { nativeRuntimeUnavailable, nativeRuntimeStream } from "../runtime-unavailable.ts";
 
 const safeReads = new Set(["/v1/models", "/typesafe/v1/models"]);
-// The runtime answered but cannot admit yet: its readiness or policy lease is not current. Only
-// these wait; a gone, replaced or fenced runtime keeps its immediate refusal or retry budget.
+// Readiness or the policy lease is not current yet: the container's readiness said unhealthy or
+// answered too late, a lease ran out, or the container is stopped and recovery will restart it.
+// These wait. Fenced, deselected and policy refusals throw at once; a replaced boot or an endpoint
+// that does not answer keeps the unpaced six-attempt budget.
 const notAdmittingYet = new Set([
   "unhealthy",
   "slot_unhealthy",
   "protection_lease_expired",
   "protection_lease_too_short",
 ]);
-/** How long an undispatched request waits for a live runtime to admit it before a retryable 503. */
+function waitsForAdmission(error: unknown) {
+  const { runtimeStep, runtimeReason } = runtimeFailureDiagnostic(error, "fleet_forward");
+  return (
+    notAdmittingYet.has(runtimeReason) ||
+    (runtimeReason === "timeout" && runtimeStep === "endpoint_health")
+  );
+}
+/** How long an undispatched request waits for admission before the retryable 503. */
 export const runtimeAdmissionWaitMs = 30_000;
 const admissionPace = (waits: number) => Math.min(1_000, 125 * 2 ** waits);
 export interface RetryTiming {
   now(): number;
-  pause(milliseconds: number): Promise<void>;
+  pause(milliseconds: number, signal: AbortSignal): Promise<void>;
 }
 const realTiming: RetryTiming = {
-  now: () => Date.now(),
-  pause: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  // Monotonic, so tests and callers that move Date.now cannot stretch the wait.
+  now: () => performance.now(),
+  pause: (milliseconds, signal) =>
+    new Promise<void>((resolve, reject) => {
+      const stop = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      // Jitter keeps requests that failed together from polling readiness in lockstep.
+      const timer = setTimeout(
+        () => {
+          signal.removeEventListener("abort", stop);
+          resolve();
+        },
+        milliseconds * (0.8 + Math.random() * 0.4),
+      );
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
+    }),
 };
 function recoverable(error: unknown) {
   if (
@@ -67,14 +93,18 @@ export async function forwardRecoverably(
   let refusals = 0;
   let waits = 0;
   let waitingSince: number | undefined;
-  // Recovery may find the runtime still running and decline to restart it. That is not the
-  // request's refusal: the request's own next admission decides, inside its wait.
+  // Recovery is advisory. It declines to restart a runtime that is still running, and may fail for
+  // other reasons; the request's own next admission re-checks selection, fence, policy and health.
   const tryRecovery = async () => {
     recovered = true;
     try {
       await awaitProbe(recover!, signal);
     } catch (error) {
       if (signal.aborted) throw error;
+      console.warn(
+        "POOL_RUNTIME_RECOVERY_DECLINED",
+        runtimeFailureDiagnostic(error, "fleet_forward"),
+      );
     }
   };
   try {
@@ -115,15 +145,17 @@ export async function forwardRecoverably(
           if (recovered || !recover) return nativeRuntimeUnavailable(request, error);
           await tryRecovery();
         }
-        const waiting = notAdmittingYet.has(
-          runtimeFailureDiagnostic(error, "fleet_forward").runtimeReason,
-        );
+        const waiting = waitsForAdmission(error);
         if (waiting) {
           waitingSince ??= timing.now();
           if (timing.now() - waitingSince >= runtimeAdmissionWaitMs) break;
         } else if (++refusals >= 6) break;
-        if (++failures === 5 && !recovered && recover) await tryRecovery();
-        if (waiting) await awaitProbe(() => timing.pause(admissionPace(waits++)), signal);
+        if (++failures === 5 && !recovered && recover) {
+          // A restart that finished is used at once; a declined one is followed by the next read.
+          await tryRecovery();
+          continue;
+        }
+        if (waiting) await timing.pause(admissionPace(waits++), signal);
       }
     }
     return nativeRuntimeUnavailable(request, failure);

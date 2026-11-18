@@ -396,10 +396,13 @@ export class PoolRuntimeFleet {
   }
   async recoverAdmission(signal: AbortSignal) {
     if (!(await this.deps.handoff.selected())) return false;
+    // Advisory, as for model forwarding: the caller re-reads the membership authority next.
     await awaitProbe(
       () => (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()),
       signal,
-    );
+    ).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+    });
     return true;
   }
   async install(policy: NativeMembershipPolicy) {

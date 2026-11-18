@@ -8,17 +8,21 @@ import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { rememberRuntimeFailure, retainRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { runtimeErrorResponse } from "./runtime-slots/request-error.ts";
 
-// 20:47Z: Home answers slowly, the container's /ready says 503, the endpoint refuses the
-// controller's /health with 409 runtime-refused and the slot driver retains that refusal.
-function leaseLapsed() {
-  const unhealthy = new PoolRuntimeUnhealthy();
-  rememberRuntimeFailure("endpoint_health", unhealthy);
-  const refused = runtimeErrorResponse(unhealthy, "endpoint");
+// The endpoint refuses the controller's /health with 409 runtime-refused and the slot driver
+// retains that refusal, as router.ts does through BoundSlotDriver.health.
+function endpointRefused(cause: Error) {
+  rememberRuntimeFailure("endpoint_health", cause);
+  const refused = runtimeErrorResponse(cause, "endpoint");
   assert.equal(refused.status, 409);
   const error = retainRuntimeFailure(refused, new SlotRefused("uncertain"));
   rememberRuntimeFailure("slot_health", error);
   return error;
 }
+// 21:23Z, 21:38Z, 21:42Z: the container's readiness answers fast and says unhealthy (503).
+const readinessUnhealthy = () => endpointRefused(new PoolRuntimeUnhealthy());
+// 20:47Z: the container's readiness answers after the endpoint's deadline.
+const readinessTimedOut = () =>
+  endpointRefused(new DOMException("Runtime health deadline exceeded", "TimeoutError"));
 // What selected recovery throws when its witness says the container is still running.
 const stillRunning = async () => {
   throw new SlotRefused("uncertain");
@@ -123,33 +127,93 @@ test("capacity refusal closes both retained upload branches", async () => {
   await cancelled.promise;
 });
 
-test("a live runtime whose lease lapsed for seconds keeps the request until it admits again", async () => {
+for (const [episode, lapseMs, refusal] of [
+  ["21:23Z readiness says unhealthy for 3.5 s", 3_500, readinessUnhealthy],
+  ["20:47Z readiness answers late for 17 s", 17_000, readinessTimedOut],
+] as const)
+  test(`a serving runtime keeps the request until it admits again: ${episode}`, async (context) => {
+    const declined = context.mock.method(console, "warn", () => {});
+    const { clock, timing } = fakeTiming();
+    let attempts = 0,
+      dispatched = 0,
+      recoveries = 0;
+    const response = await forwardRecoverably(
+      modelRequest(),
+      async (request, dispatch) => {
+        attempts++;
+        if (clock.now < lapseMs) throw refusal();
+        dispatch();
+        return new Response(await request.text());
+      },
+      () => dispatched++,
+      () => {
+        recoveries++;
+        return stillRunning();
+      },
+      timing,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "payload");
+    assert.equal(dispatched, 1);
+    assert.equal(
+      recoveries,
+      1,
+      "one shared recovery attempt, and its refusal is not the request's",
+    );
+    assert.equal(declined.mock.callCount(), 1);
+    assert.equal(declined.mock.calls[0]!.arguments[0], "POOL_RUNTIME_RECOVERY_DECLINED");
+    assert.equal(declined.mock.calls[0]!.arguments[1].runtimeReason, "slot_uncertain");
+    assert.ok(clock.now >= lapseMs && clock.now < runtimeAdmissionWaitMs);
+    assert.ok(clock.pauses.every((pause) => pause > 0 && pause <= 1_000));
+    assert.ok(attempts > (lapseMs > 5_000 ? 6 : 3), "a lapse does not spend the fixed budget");
+  });
+
+test("a stopped container waits for the recovery that restarts it", async () => {
   const { clock, timing } = fakeTiming();
-  let attempts = 0,
-    dispatched = 0,
+  let restarted = false,
     recoveries = 0;
   const response = await forwardRecoverably(
     modelRequest(),
     async (request, dispatch) => {
-      attempts++;
-      if (clock.now < 17_000) throw leaseLapsed();
+      if (!restarted) {
+        // channel.health refuses a stopped container before reading readiness.
+        const stopped = new SlotRefused("unhealthy");
+        rememberRuntimeFailure("endpoint_identity", stopped);
+        throw stopped;
+      }
       dispatch();
       return new Response(await request.text());
     },
-    () => dispatched++,
-    () => {
+    () => {},
+    async () => {
       recoveries++;
-      return stillRunning();
+      restarted = true;
     },
     timing,
   );
-  assert.equal(response.status, 200);
   assert.equal(await response.text(), "payload");
-  assert.equal(dispatched, 1);
-  assert.equal(recoveries, 1, "one shared recovery attempt, and its refusal is not the request's");
-  assert.ok(clock.now >= 17_000 && clock.now < runtimeAdmissionWaitMs);
-  assert.ok(clock.pauses.every((pause) => pause > 0 && pause <= 1_000));
-  assert.ok(attempts > 6, "a lapse does not spend the fixed retry budget");
+  assert.equal(recoveries, 1);
+  assert.ok(clock.now < 2_000, "recovery starts after the fifth failure, within two seconds");
+});
+
+test("an endpoint that does not answer keeps the unpaced six-attempt budget", async () => {
+  const { clock, timing } = fakeTiming();
+  let attempts = 0;
+  const response = await forwardRecoverably(
+    modelRequest(),
+    async () => {
+      attempts++;
+      const silent = new DOMException("The operation timed out", "TimeoutError");
+      rememberRuntimeFailure("slot_health", silent);
+      throw silent;
+    },
+    () => assert.fail("an unanswered request must not be sent"),
+    async () => {},
+    timing,
+  );
+  assert.equal(response.status, 503);
+  assert.equal(attempts, 6);
+  assert.deepEqual(clock.pauses, []);
 });
 
 test("a runtime that never admits again is refused with a retryable 503 once the wait is spent", async () => {
@@ -158,7 +222,7 @@ test("a runtime that never admits again is refused with a retryable 503 once the
   const response = await forwardRecoverably(
     modelRequest(),
     async () => {
-      throw leaseLapsed();
+      throw readinessUnhealthy();
     },
     () => dispatched++,
     async () => {},
@@ -227,7 +291,7 @@ test("a caller that leaves during the wait ends it", async () => {
       modelRequest(client.signal),
       async () => {
         attempts++;
-        throw leaseLapsed();
+        throw readinessUnhealthy();
       },
       () => assert.fail("an abandoned request must not be sent"),
       stillRunning,
