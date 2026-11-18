@@ -36,6 +36,12 @@ export function rehearsalCleanupRun(
   return run.id;
 }
 
+/** A passed scenario proved its own teardown; its receipt names the stage it tore down. */
+export function provenTeardown(receipt: unknown, subject: StageSubject): boolean {
+  const value = receipt as { version?: unknown; stage?: unknown; teardown?: unknown } | null;
+  return value?.version === 1 && value.stage === stageNames(subject).stage && value.teardown === true;
+}
+
 /** Checkpoint artifacts are named for their stage and run, so each names exactly one stage. */
 export function rehearsalCheckpoints(artifacts: unknown, runId: number): Array<{ id: number; subject: StageSubject }> {
   if (!Array.isArray(artifacts) || artifacts.length >= 100) throw new Error("Invalid rehearsal cleanup artifacts");
@@ -67,6 +73,23 @@ async function main(): Promise<void> {
     // A run cancelled before its checkpoint upload created nothing: the upload precedes any provider write.
     for (const { id, subject } of rehearsalCheckpoints(artifacts, runId)) {
       const { slug } = stageNames(subject);
+      const receiptArtifact = (artifacts as Array<{ id?: unknown; name?: unknown; expired?: unknown }>).find(
+        (item) => item.name === `release-rehearsal-${slug}` && !item.expired && typeof item.id === "number",
+      );
+      if (receiptArtifact) {
+        const zipPath = join(privateRoot, `${slug}-receipt.zip`);
+        await writeFile(zipPath, gh(`repos/${repository}/actions/artifacts/${receiptArtifact.id}/zip`), { mode: 0o600 });
+        const text = (() => {
+          try {
+            return execFileSync("unzip", ["-p", zipPath, "rehearsal-receipt.json"], { encoding: "utf8" });
+          } catch {
+            return "";
+          }
+        })();
+        let receipt: unknown;
+        try { receipt = JSON.parse(text); } catch { receipt = undefined; }
+        if (provenTeardown(receipt, subject)) continue;
+      }
       const operation = (mode: string) =>
         privateOperation({
           label: mode, command: process.execPath, args: ["scripts/preview/lifecycle.ts", mode, slug], directory: root,

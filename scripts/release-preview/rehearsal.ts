@@ -19,7 +19,7 @@ import {
 import { holdModelSocket, modelTraffic } from "./rehearsal-traffic.ts";
 import { rehearsalReleaseEnvironment } from "./rehearsal-environment.ts";
 import { requireSettlementApplied, settlementPacket, settlementPlanRequest } from "./rehearsal-settlement.ts";
-import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
+import { poolWorkerRevision } from "../pool-worker-revision.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
 import { applyRehearsalFixture, withStageBuild } from "../preview/lifecycle.ts";
@@ -44,9 +44,13 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   const scenario = rehearsalScenario(source.REHEARSAL_SCENARIO);
   const previousRoot = resolve(source.REHEARSAL_PREVIOUS_ROOT ?? "");
   const candidate = head(root);
-  const previous = head(previousRoot);
-  if (previous !== source.REHEARSAL_PREVIOUS_SHA || execFileSync("git", ["rev-parse", "HEAD^"], { cwd: previousRoot, encoding: "utf8" }).trim() !== candidate)
-    throw new Error("The previous candidate is not this candidate's rehearsal commit");
+  const parent = (commit: string) =>
+    execFileSync("git", ["rev-parse", `${commit}^`], { cwd: previousRoot, encoding: "utf8" }).trim();
+  // Three commits as production has them: an older baseline, the previous candidate on it, this one.
+  const baseline = head(previousRoot);
+  const previous = source.REHEARSAL_PREVIOUS_SHA ?? "";
+  if (baseline !== source.REHEARSAL_BASELINE_SHA || parent(baseline) !== candidate || !/^[a-f0-9]{40}$/u.test(previous) || parent(previous) !== baseline)
+    throw new Error("The baseline and previous candidate are not this candidate's rehearsal commits");
   const { stage, slug } = stageNames(subject);
   const privateRoot = await mkdtemp(join(source.RUNNER_TEMP ?? tmpdir(), "basalt-release-rehearsal-"));
   const controller = new AbortController();
@@ -73,7 +77,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   let cleanPool = "";
   let model = "";
   let emptyPools: readonly string[] = [];
-  let built = false;
+  const built = new Set<string>();
   const runner: NodeJS.ProcessEnv = {};
   try {
     const materialized = await materializeSmokeSecrets(source, join(privateRoot, "credentials"));
@@ -111,10 +115,15 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         }, 10);
       };
       // Each checkout bundles Workers as the stage's own brand; the candidate builds once here.
-      if (which === root && !built) {
-        await withStageBuild(root, subject, deployEnvironment, run);
-        built = true;
-      } else await withStageBuild(which, subject, deployEnvironment, run, undefined, { build: false });
+      if (request.candidate === "previous" && head(previousRoot) !== previous) {
+        // The baseline deployed from this checkout; prepared again, it names the previous candidate.
+        execFileSync("git", ["checkout", "-q", "--detach", previous], { cwd: previousRoot });
+        await operation("previous-prepare", previousRoot, "run", ["prepare:upstream"], deployEnvironment, 30, "npm");
+        built.delete(previousRoot);
+      }
+      // Each checkout bundles Workers as the stage's own brand and builds once per commit.
+      await withStageBuild(which, subject, deployEnvironment, run, undefined, { build: !built.has(which) });
+      built.add(which);
       if (!outcome) throw new Error("The rehearsed release recorded no outcome");
       return outcome;
     };
@@ -180,7 +189,9 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
           await writeFile(join(root, ".local", "release-barrier", `settlement-${mode}.json`), receipt, { mode: 0o600 });
           return JSON.parse(receipt) as unknown;
         };
-        const planned = await step("plan", settlementPlanRequest({ previous, workerInput: poolWorkerRevision, number: subject.number, now: Date.now() }));
+        // The previous controller reports the revision its own checkout was prepared with.
+        const workerInput = poolWorkerRevision(previousRoot);
+        const planned = await step("plan", settlementPlanRequest({ previous, workerInput, number: subject.number, now: Date.now() }));
         const packet = settlementPacket(planned, Date.now());
         requireSettlementApplied(await step("apply", packet), packet.go.manifest);
       },

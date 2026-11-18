@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { rehearsalCheckpoints, rehearsalCleanupRun } from "./rehearsal-cleanup.ts";
+import { provenTeardown, rehearsalCheckpoints, rehearsalCleanupRun } from "./rehearsal-cleanup.ts";
 
 const repository = "owner/basalt";
 const event = (run: Record<string, unknown>) => ({
@@ -48,4 +48,16 @@ test("each checkpoint artifact of exactly that run names one rehearsal stage", (
   ]);
   assert.throws(() => rehearsalCheckpoints({}, 99), /Invalid/);
   assert.throws(() => rehearsalCheckpoints(Array.from({ length: 100 }, () => ({})), 99), /Invalid/);
+});
+
+test("only a receipt for exactly that stage with verified teardown skips its cleanup", () => {
+  const subject = { kind: "rehearsal", number: 8121 } as const;
+  assert.equal(provenTeardown({ version: 1, stage: "test-rehearsal-8121", teardown: true }, subject), true);
+  for (const receipt of [
+    undefined,
+    { version: 1, stage: "test-rehearsal-8122", teardown: true },
+    { version: 1, stage: "test-rehearsal-8121", teardown: false },
+    { version: 2, stage: "test-rehearsal-8121", teardown: true },
+  ])
+    assert.equal(provenTeardown(receipt, subject), false);
 });

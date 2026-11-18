@@ -33,9 +33,13 @@ test("the previous candidate is the candidate with the pool source from before i
   const candidate = git(repo, "rev-parse", "HEAD");
 
   const destination = join(root, "previous");
-  const previous = commitPreviousCandidate(repo, destination);
-  assert.notEqual(previous, candidate);
+  const { baseline, previous } = commitPreviousCandidate(repo, destination);
+  // Three distinct commits, as production has: an older baseline, the previous candidate, this one.
+  assert.equal(new Set([baseline, previous, candidate]).size, 3);
+  assert.equal(git(destination, "rev-parse", "HEAD"), baseline);
   assert.equal(git(destination, "rev-parse", "HEAD^"), candidate);
+  assert.equal(git(destination, "rev-parse", `${previous}^`), baseline);
+  assert.equal(git(destination, "diff", "--name-only", baseline, previous), "");
   assert.equal(readFileSync(join(destination, "containers/pool/releases.json"), "utf8"), '{"node":"v1"}');
   assert.equal(readFileSync(join(destination, "containers/pool/patch.diff"), "utf8"), "old patch");
   assert.equal(readFileSync(join(destination, "app.ts"), "utf8"), "app 2");

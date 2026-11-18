@@ -4,18 +4,19 @@ import { rehearsalFixtureStack } from "./subject.ts";
 
 /**
  * The barrier keeps journals and receipts as outputs of `<stack>-<purpose>` stacks, which the
- * stage's own destroy never reaches. Only this rehearsal stage's rows of those stacks qualify.
+ * stage's own destroy never reaches. A stage's rows there are resources or a stack output, and
+ * listing stages sees only resources, so both are checked. Only this rehearsal stage qualifies.
  */
 export async function rehearsalOutputStacks(
   stage: string,
   stacks: readonly string[],
-  stagesOf: (stack: string) => Promise<readonly string[]>,
+  holds: (stack: string) => Promise<boolean>,
 ): Promise<string[]> {
   if (!isRehearsalStage(stage)) throw new Error("Stage outputs are removed only for rehearsal stages");
   const present: string[] = [];
   for (const stack of stacks) {
     if (!stack.startsWith(`${rehearsalStack}-`) || stack === rehearsalFixtureStack) continue;
-    if ((await stagesOf(stack)).includes(stage)) present.push(stack);
+    if (await holds(stack)) present.push(stack);
   }
   return present;
 }
@@ -35,11 +36,15 @@ async function main(mode: string | undefined, stage: string | undefined) {
       Effect.gen(function* () {
         const state = yield* yield* State;
         const stacks = yield* state.listStacks();
-        const stages = new Map<string, readonly string[]>();
-        for (const stack of stacks)
-          if (stack.startsWith(`${rehearsalStack}-`)) stages.set(stack, yield* state.listStages(stack));
+        const held = new Set<string>();
+        for (const stack of stacks) {
+          if (!stack.startsWith(`${rehearsalStack}-`)) continue;
+          const resources = (yield* state.listStages(stack)).includes(stage);
+          const output = (yield* state.getOutput({ stack, stage })) !== undefined;
+          if (resources || output) held.add(stack);
+        }
         const present = yield* Effect.promise(() =>
-          rehearsalOutputStacks(stage, stacks, async (stack) => stages.get(stack) ?? []),
+          rehearsalOutputStacks(stage, stacks, async (stack) => held.has(stack)),
         );
         if (mode === "verify") {
           if (present.length) return yield* Effect.die(new Error("Rehearsal stage outputs remain"));

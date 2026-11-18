@@ -7,12 +7,17 @@ const git = (cwd: string, args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
 /**
- * Production's root runtime runs an older pool than the candidate wants, and its last release
- * adopted the controller under different controller code. The previous candidate reproduces both:
- * this tree with `containers/pool/` from before the last pool pin change, as its own commit.
- * The whole directory moves together because carried patches target specific pool versions.
+ * Production's root runtime runs an older pool than the candidate wants. It was deployed by an
+ * older release, and the last release adopted it under its own, different controller code. Two
+ * commits reproduce that: the baseline is this tree with `containers/pool/` from before the last
+ * pool pin change, and the previous candidate is one empty commit on top of it. The whole
+ * directory moves together because carried patches target specific pool versions. The checkout
+ * is left at the baseline.
  */
-export function commitPreviousCandidate(root: string, destination: string): string {
+export function commitPreviousCandidate(
+  root: string,
+  destination: string,
+): { baseline: string; previous: string } {
   const head = git(root, ["rev-parse", "HEAD"]);
   if (existsSync(destination)) throw new Error("The previous candidate checkout already exists");
   const change = git(root, ["log", "-n", "1", "--format=%H", head, "--", "containers/pool/releases.json"]);
@@ -22,25 +27,32 @@ export function commitPreviousCandidate(root: string, destination: string): stri
   git(destination, ["checkout", `${change}^`, "--", "containers/pool"]);
   if (!git(destination, ["diff", "--cached", "--name-only"]))
     throw new Error("The previous pool source equals the candidate's");
-  git(destination, [
-    "-c",
-    "user.name=Release rehearsal",
-    "-c",
-    "user.email=release-rehearsal@users.noreply.github.com",
-    "commit",
-    "-q",
-    "--no-verify",
-    "-m",
-    "rehearsal: previous candidate with the previous pool source",
-  ]);
-  const previous = git(destination, ["rev-parse", "HEAD"]);
-  if (previous === head || git(destination, ["rev-parse", "HEAD^"]) !== head)
-    throw new Error("The previous candidate is not one commit on top of the candidate");
-  return previous;
+  const commit = (message: string, ...extra: string[]) => {
+    git(destination, [
+      "-c",
+      "user.name=Release rehearsal",
+      "-c",
+      "user.email=release-rehearsal@users.noreply.github.com",
+      "commit",
+      "-q",
+      "--no-verify",
+      ...extra,
+      "-m",
+      message,
+    ]);
+    return git(destination, ["rev-parse", "HEAD"]);
+  };
+  const baseline = commit("rehearsal: baseline with the previous pool source");
+  const previous = commit("rehearsal: previous candidate", "--allow-empty");
+  git(destination, ["checkout", "-q", "--detach", baseline]);
+  if (git(destination, ["rev-parse", `${baseline}^`]) !== head || git(destination, ["rev-parse", `${previous}^`]) !== baseline)
+    throw new Error("The rehearsal commits are not stacked on the candidate");
+  return { baseline, previous };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const destination = process.argv[2];
   if (!destination) throw new Error("Usage: rehearsal-previous.ts DESTINATION");
-  process.stdout.write(`sha=${commitPreviousCandidate(process.cwd(), resolve(destination))}\n`);
+  const { baseline, previous } = commitPreviousCandidate(process.cwd(), resolve(destination));
+  process.stdout.write(`baseline=${baseline}\nsha=${previous}\n`);
 }

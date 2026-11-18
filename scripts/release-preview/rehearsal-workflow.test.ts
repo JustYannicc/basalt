@@ -24,6 +24,8 @@ test("each attempt has its own stage, and its checkpoint is saved before anythin
   const run = rehearsal.indexOf("run: node scripts/release-preview/rehearsal.ts");
   assert.ok(upload > 0 && upload < run);
   assert.match(rehearsal, /RELEASE_REHEARSAL_SENTRY_DSN: \$\{\{ secrets\.RELEASE_REHEARSAL_SENTRY_DSN \}\}/);
+  // Cleanup finds a passed scenario's receipt by its stage, so the name carries the attempt too.
+  assert.match(rehearsal, /name: release-rehearsal-\$\{\{ steps\.stage\.outputs\.subject \}\}\n/);
   assert.doesNotMatch(rehearsal, /secrets\.(?:SENTRY_DSN|POOL_DEPLOYMENT_KEY|POOL_APP_SIGNING_KEY|EXECUTOR_ENCRYPTION_KEY)\b/);
 });
 

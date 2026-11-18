@@ -63,7 +63,7 @@ jobs:
       - name: Name this rehearsal's disposable stage
         id: stage
         run: node scripts/release-preview/rehearsal-stage.ts "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$REHEARSAL_SCENARIO" >> "$GITHUB_OUTPUT"
-      - name: Commit the previous candidate, this tree with the previous pool source
+      - name: Commit the baseline and previous candidate, this tree with the previous pool source
         id: previous
         run: node scripts/release-preview/rehearsal-previous.ts "$RUNNER_TEMP/previous" >> "$GITHUB_OUTPUT"
       - name: Prepare both pinned builds
@@ -96,6 +96,7 @@ jobs:
           REHEARSAL_SUBJECT: ${{ steps.stage.outputs.subject }}
           REHEARSAL_PREVIOUS_ROOT: ${{ runner.temp }}/previous
           REHEARSAL_PREVIOUS_SHA: ${{ steps.previous.outputs.sha }}
+          REHEARSAL_BASELINE_SHA: ${{ steps.previous.outputs.baseline }}
           PREVIEW_MANIFEST_CHECKPOINTED: "1"
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_REHEARSAL_SENTRY_DSN: ${{ secrets.RELEASE_REHEARSAL_SENTRY_DSN }}
@@ -121,7 +122,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-rehearsal-${{ matrix.scenario }}-${{ env.CANDIDATE_SHA }}
+          name: release-rehearsal-${{ steps.stage.outputs.subject }}
           include-hidden-files: true
           path: |
             rehearsal-receipt.json
