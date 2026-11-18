@@ -3,6 +3,7 @@ import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
+import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
 import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
 import { PoolChanges, publishPoolChanges } from "./change-revisions.ts";
 import { poolChangesPath, readCommittedPoolChanges } from "./change-http.ts";
@@ -165,6 +166,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private homeUpkeepTask?: Promise<void>;
   private control: PoolControl;
   private mirrorHome: HomeClient;
+  private homeDatabasePool: HomeDatabasePoolMonitor;
   private computers: Computers;
   private appModels: AppModels;
   private candidateProbe: RuntimeCandidateProbe;
@@ -208,6 +210,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
         ),
         selectedChanged: () => this.alarms.schedule("fleet", Date.now() + 2_000),
+        // Reading Home inside active-health would spend the lease that release tooling times.
+        databasePool: () => this.homeDatabasePool.observation(),
         recovery: {
           provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
           beforeCommit: (previous, next, transaction) =>
@@ -321,6 +325,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             code: "pool_protection_unavailable",
             count,
             ...diagnostic,
+            homeDatabasePool: this.homeDatabasePool.observation(),
           },
         );
         ctx.waitUntil(captureError(env, "pool_failure", "/v1"));
@@ -344,6 +349,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
+    this.homeDatabasePool = new HomeDatabasePoolMonitor((signal) =>
+      this.mirrorHome.data("/capabilities", { signal }),
+    );
     this.candidateProbe = new RuntimeCandidateProbe({
       storage: ctx.storage,
       slots: this.handoff.storage,
@@ -665,6 +673,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await trace
       .run("app_models", () => this.appModels.tick())
       .catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
+    this.ctx.waitUntil(
+      this.homeDatabasePool.report((observation) =>
+        trace.event("home_database_pool", { homeDatabasePool: observation }),
+      ),
+    );
     await trace.run("memberships", () => this.memberships.tick());
     await trace.run("computers", () => this.computers.expire());
     await trace.run("warm", () =>
@@ -975,6 +988,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       streams: this.modelStreams,
       lifecycle: this.lifecycle,
       protection: this.protection,
+      databasePool: this.homeDatabasePool,
       route: (request, target, pool, legacy, beforeDispatch, identity) => {
         if (request.headers.has(candidateProbeHeader))
           return this.candidateProbe.route(request, identity, beforeDispatch);

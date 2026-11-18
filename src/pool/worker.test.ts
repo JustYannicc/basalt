@@ -1600,6 +1600,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
         },
         changes: { deliver: async () => {} },
         appModels: { tick: async () => {} },
+        homeDatabasePool: { report: async () => {} },
         memberships: {
           tick: async () => {
             calls.membership++;
@@ -1717,6 +1718,7 @@ test("committed change delivery survives a shared Home task without delaying fle
         },
       },
       appModels: { tick: async () => {} },
+      homeDatabasePool: { report: async () => {} },
       memberships: {
         tick: async () => {
           counts.membership++;
