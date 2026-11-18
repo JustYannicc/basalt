@@ -9,6 +9,7 @@ import {
 } from "../src/pool/deployment-readiness.ts";
 import { openPoolOperations, type PoolOperationsPlatform } from "./pool-operations.ts";
 import { signEnvelope } from "../src/pool/token.ts";
+import type { ReadinessRefusal } from "./database-budget-receipt.ts";
 
 export class ReadinessResponseError extends Error {
   override readonly name = "ResponseError";
@@ -104,6 +105,60 @@ export async function openDeploymentReadiness(options: {
   };
 }
 
+export const readinessRetryMs = 5_000;
+type Readiness = Awaited<ReturnType<typeof openDeploymentReadiness>>;
+
+/**
+ * Asks for runtime readiness until it is granted or the caller's deadline ends.
+ *
+ * After an upload the new entrypoint answers at once, but the platform may keep an active
+ * controller object on its previous code for up to 300 seconds. Until the object adopts the new
+ * code its identity does not match and the entrypoint answers 503; an entrypoint still on the
+ * previous version answers 409. Both pass by themselves, so only they are asked again. A refusal
+ * that lasts until the deadline is the failure.
+ */
+export async function readyAfterAdoption(
+  connection: Pick<Readiness, "ready"> & Partial<Pick<Readiness, "adoption">>,
+  target: Pick<RuntimeReady, "candidate">,
+  options: {
+    signal: AbortSignal;
+    pause: (signal: AbortSignal) => Promise<void>;
+    refused: (refusal: ReadinessRefusal) => void;
+  },
+): Promise<RuntimeReady> {
+  const { signal } = options;
+  for (;;) {
+    const answer = await bounded(connection.ready(signal), signal).catch((error: unknown) => {
+      if (error instanceof ReadinessResponseError && [503, 409].includes(error.status))
+        return error;
+      throw error;
+    });
+    if (!(answer instanceof ReadinessResponseError)) return answer;
+    // Says which side refused: an object still on the old code, or the runtime behind a new one.
+    // One slow answer may not use up the wait, so it gets no longer than a pause.
+    const adoption = connection.adoption
+      ? await withinDeadline(connection.adoption(signal), readinessRetryMs).catch(() => undefined)
+      : undefined;
+    options.refused({
+      status: answer.status,
+      ...(answer.outcome ? { outcome: answer.outcome } : {}),
+      ...(answer.stage ? { stage: answer.stage } : {}),
+      ...(adoption
+        ? {
+            adopted: adoption.adopted,
+            candidateMatches: adoption.observed.candidate === target.candidate,
+          }
+        : {}),
+    });
+    try {
+      await options.pause(signal);
+    } catch {
+      // The deadline ended the wait: the refusal is the failure, not the abort.
+      throw answer;
+    }
+  }
+}
+
 /** Remote service bridges may ignore Request.signal; the caller still owns its deadline. */
 export function bounded<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -120,6 +175,22 @@ export function liveDeadline(milliseconds: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), milliseconds);
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+
+/** A pause between attempts that the caller's deadline cuts short. */
+export async function pause(milliseconds: number, signal: AbortSignal, schedule = liveDeadline) {
+  const elapsed = schedule(milliseconds);
+  try {
+    await bounded(
+      new Promise<void>((resolve) => {
+        if (elapsed.signal.aborted) resolve();
+        else elapsed.signal.addEventListener("abort", () => resolve(), { once: true });
+      }),
+      signal,
+    );
+  } finally {
+    elapsed.dispose();
+  }
 }
 
 export async function withinDeadline<T>(
