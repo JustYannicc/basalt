@@ -55,15 +55,46 @@ async function fixture() {
     workers: f.manifest.workers.map(describeWorker),
     containers: f.manifest.containers!.map(describeContainer),
   };
-  const packet = readForwardPacket({
+  const input = {
     schemaVersion: 1,
     manifest,
     frozen: { ...manifest, containers: f.manifest.containers },
     receipt: f.receipts.at(-1),
     nativeBefore: encodeState(saved),
-  });
-  return { ...f, saved, packet, observed: { ...f.proposed, version: 2 } };
+  };
+  const packet = readForwardPacket(input);
+  return { ...f, saved, input, packet, observed: { ...f.proposed, version: 2 } };
 }
+
+// barrier.ts records ReleaseOperationFailure.provider verbatim; the next release must read it back.
+for (const provider of [
+  { type: "HttpClientError", code: "ECONNRESET" },
+  { type: "TypeError", message: "fetch failed" },
+  {
+    type: "HttpClientError",
+    reason: "TransportError",
+    request: { method: "GET", path: "/accounts/{id}/workers/scripts/{id}/versions/{id}" },
+  },
+  {
+    type: "HttpClientError",
+    reason: "TransportError",
+    cause: [
+      { type: "TypeError", message: "Request with GET/HEAD method cannot have body." },
+      { type: "Error", code: "ECONNRESET" },
+    ],
+  },
+])
+  test(`a recorded refusal's provider ${Object.keys(provider).at(-1)} survives the forward packet read`, async () => {
+    const f = await fixture();
+    const failure = {
+      reason: "release-operation-failed",
+      worker: "PoolWorker",
+      operation: "read-class-expansion",
+      provider,
+    };
+    const packet = readForwardPacket({ ...f.input, receipt: { ...f.input.receipt, failure } });
+    assert.deepEqual(packet.receipt.failure, failure);
+  });
 
 test("forward guard adopts only verified attrs and hash, preserving exact metadata and secrets", async () => {
   const f = await fixture();
