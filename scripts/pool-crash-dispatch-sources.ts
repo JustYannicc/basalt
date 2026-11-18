@@ -119,7 +119,7 @@ export async function readReleaseTarget(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
-                ALCHEMY_STAGE: "production",
+                ALCHEMY_STAGE: stage,
                 CI: "true",
                 CLOUDFLARE_ACCOUNT_ID: accountId,
                 CLOUDFLARE_API_TOKEN: apiToken,

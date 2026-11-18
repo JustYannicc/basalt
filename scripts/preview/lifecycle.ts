@@ -76,6 +76,12 @@ export interface LifecycleServices {
     inventory: PreviewInventory,
     environment: NodeJS.ProcessEnv,
   ) => Promise<void>;
+  /** A rehearsal's release barrier keeps outputs outside the stage's own stacks. */
+  readonly stageOutputs: (
+    mode: "delete" | "verify",
+    identity: PreviewIdentity,
+    environment: NodeJS.ProcessEnv,
+  ) => Promise<void>;
 }
 
 function safeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -282,6 +288,13 @@ function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
     },
     verifyProviders: (identity, inventory, environment) =>
       verifyPreviewProvidersAbsent(identity, inventory, providerReadbacks(environment)),
+    stageOutputs: (mode, identity, environment) =>
+      runChild(
+        "bun",
+        [join(rootFromModule, "scripts/preview/stage-outputs.ts"), mode, identity.stage],
+        rootFromModule,
+        { ...environment, ALCHEMY_STAGE: identity.stage },
+      ),
   };
 }
 
@@ -433,6 +446,9 @@ export async function destroyStage(
     ["basalt", () => services.destroyStack("basalt", config, config.providers)],
     ["database", () => services.destroyStack("database", config, config.providers)],
     ["artifacts", () => services.deleteArtifacts(config.sourceNamespace, config.providers)],
+    ...(subject.kind === "rehearsal"
+      ? ([["outputs", () => services.stageOutputs("delete", config, config.providers)]] as const)
+      : []),
   ] as const) {
     try {
       await action();
@@ -470,6 +486,7 @@ export async function verifyStageAbsent(
   if (inventoryResourceCount(remaining) !== 0)
     throw new Error("Preview Alchemy stage state is still present");
   await services.verifyProviders(config, inventory, config.providers);
+  if (subject.kind === "rehearsal") await services.stageOutputs("verify", config, config.providers);
   if (inventoryResourceCount(inventory) === 0)
     throw new Error("Preview was not backed by a non-empty pre-destroy remote inventory");
 

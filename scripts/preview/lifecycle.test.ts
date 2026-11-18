@@ -58,6 +58,7 @@ function services(root: string, observations: string[], failDeploy = false): Lif
     destroyStack: async () => {},
     deleteArtifacts: async () => {},
     verifyProviders: async () => {},
+    stageOutputs: async () => {},
   };
 }
 
@@ -130,6 +131,9 @@ test("a rehearsal deploys only its database parent, then destroys and verifies i
     verifyProviders: async (identity) => {
       calls.push(`verify:${identity.stage}`);
     },
+    stageOutputs: async (mode, identity) => {
+      calls.push(`outputs:${mode}:${identity.stage}`);
+    },
   };
   try {
     const planned = await planStage(root, subject, source);
@@ -147,7 +151,9 @@ test("a rehearsal deploys only its database parent, then destroys and verifies i
       "destroy:basalt:test-rehearsal-17:test-rehearsal-17",
       "destroy:database:test-rehearsal-17:test-rehearsal-17",
       "artifacts:basalt-preview-rehearsal-17-apps",
+      "outputs:delete:test-rehearsal-17",
       "verify:test-rehearsal-17",
+      "outputs:verify:test-rehearsal-17",
     ]);
     await assert.rejects(readFile(manifestPath(root, subject)), /ENOENT/);
   } finally {
