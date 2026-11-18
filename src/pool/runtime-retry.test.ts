@@ -1,9 +1,48 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { forwardRecoverably } from "./runtime-fleet/retry.ts";
+import { forwardRecoverably, runtimeAdmissionWaitMs } from "./runtime-fleet/retry.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
+import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
+import { rememberRuntimeFailure, retainRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { runtimeErrorResponse } from "./runtime-slots/request-error.ts";
+
+// 20:47Z: Home answers slowly, the container's /ready says 503, the endpoint refuses the
+// controller's /health with 409 runtime-refused and the slot driver retains that refusal.
+function leaseLapsed() {
+  const unhealthy = new PoolRuntimeUnhealthy();
+  rememberRuntimeFailure("endpoint_health", unhealthy);
+  const refused = runtimeErrorResponse(unhealthy, "endpoint");
+  assert.equal(refused.status, 409);
+  const error = retainRuntimeFailure(refused, new SlotRefused("uncertain"));
+  rememberRuntimeFailure("slot_health", error);
+  return error;
+}
+// What selected recovery throws when its witness says the container is still running.
+const stillRunning = async () => {
+  throw new SlotRefused("uncertain");
+};
+function fakeTiming(onPause: (count: number) => void = () => {}) {
+  const clock = { now: 0, pauses: [] as number[] };
+  return {
+    clock,
+    timing: {
+      now: () => clock.now,
+      pause: async (milliseconds: number) => {
+        clock.pauses.push(milliseconds);
+        onPause(clock.pauses.length);
+        clock.now += milliseconds;
+      },
+    },
+  };
+}
+const modelRequest = (signal?: AbortSignal) =>
+  new Request("http://pool/v1/responses", {
+    method: "POST",
+    body: "payload",
+    ...(signal ? { signal } : {}),
+  });
 
 test("a healthy accepted model request retains its caller deadline while waiting for headers", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
@@ -82,4 +121,120 @@ test("capacity refusal closes both retained upload branches", async () => {
   );
   assert.equal(response.status, 503);
   await cancelled.promise;
+});
+
+test("a live runtime whose lease lapsed for seconds keeps the request until it admits again", async () => {
+  const { clock, timing } = fakeTiming();
+  let attempts = 0,
+    dispatched = 0,
+    recoveries = 0;
+  const response = await forwardRecoverably(
+    modelRequest(),
+    async (request, dispatch) => {
+      attempts++;
+      if (clock.now < 17_000) throw leaseLapsed();
+      dispatch();
+      return new Response(await request.text());
+    },
+    () => dispatched++,
+    () => {
+      recoveries++;
+      return stillRunning();
+    },
+    timing,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "payload");
+  assert.equal(dispatched, 1);
+  assert.equal(recoveries, 1, "one shared recovery attempt, and its refusal is not the request's");
+  assert.ok(clock.now >= 17_000 && clock.now < runtimeAdmissionWaitMs);
+  assert.ok(clock.pauses.every((pause) => pause > 0 && pause <= 1_000));
+  assert.ok(attempts > 6, "a lapse does not spend the fixed retry budget");
+});
+
+test("a runtime that never admits again is refused with a retryable 503 once the wait is spent", async () => {
+  const { clock, timing } = fakeTiming();
+  let dispatched = 0;
+  const response = await forwardRecoverably(
+    modelRequest(),
+    async () => {
+      throw leaseLapsed();
+    },
+    () => dispatched++,
+    async () => {},
+    timing,
+  );
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("Retry-After"), "1");
+  assert.equal(dispatched, 0);
+  assert.ok(clock.now >= runtimeAdmissionWaitMs && clock.now <= runtimeAdmissionWaitMs + 1_000);
+});
+
+test("a fenced or deselected runtime is refused at once without waiting", async () => {
+  const { clock, timing } = fakeTiming();
+  const fenced = new SlotRefused("selection");
+  rememberRuntimeFailure("slot_selection", fenced);
+  let attempts = 0;
+  await assert.rejects(
+    forwardRecoverably(
+      modelRequest(),
+      async () => {
+        attempts++;
+        throw fenced;
+      },
+      () => assert.fail("a fenced runtime must not receive the request"),
+      stillRunning,
+      timing,
+    ),
+    (error) => error === fenced,
+  );
+  assert.equal(attempts, 1);
+  assert.deepEqual(clock.pauses, []);
+});
+
+test("a replaced boot keeps its bounded retries and never waits on the old one", async () => {
+  const { clock, timing } = fakeTiming();
+  let attempts = 0,
+    recoveries = 0;
+  const response = await forwardRecoverably(
+    modelRequest(),
+    async () => {
+      attempts++;
+      const replaced = new SlotRefused("identity");
+      rememberRuntimeFailure("endpoint_identity", replaced);
+      throw replaced;
+    },
+    () => assert.fail("a replaced runtime must not receive the request"),
+    async () => {
+      recoveries++;
+    },
+    timing,
+  );
+  assert.equal(response.status, 503);
+  assert.equal(attempts, 6);
+  assert.equal(recoveries, 1);
+  assert.deepEqual(clock.pauses, []);
+});
+
+test("a caller that leaves during the wait ends it", async () => {
+  const client = new AbortController();
+  const { clock, timing } = fakeTiming((count) => {
+    if (count === 3) client.abort(new DOMException("client left", "AbortError"));
+  });
+  let attempts = 0;
+  await assert.rejects(
+    forwardRecoverably(
+      modelRequest(client.signal),
+      async () => {
+        attempts++;
+        throw leaseLapsed();
+      },
+      () => assert.fail("an abandoned request must not be sent"),
+      stillRunning,
+      timing,
+    ),
+  );
+  assert.equal(client.signal.aborted, true);
+  assert.equal(attempts, 3);
+  assert.equal(clock.pauses.length, 3);
 });
