@@ -151,8 +151,9 @@ test("a dispatched apply applies exactly the reviewed plan, and every record nam
   const plan = step("Plan and check");
   assert.match(plan, /\$\{ATTEMPT_INPUT:\+--attempt "\$ATTEMPT_INPUT"\}/u);
   assert.match(plan, /"\$digest" != "\$PLAN_DIGEST_INPUT"[\s\S]*exit 1/u);
+  assert.match(plan, /PLAN_DIGEST=%s\\nATTEMPT=%s\\n' "\$digest" "\$attempt" >> "\$GITHUB_ENV"/u);
   const apply = step("Apply the reviewed plan");
-  assert.match(apply, /PLAN_DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
+  assert.match(apply, /--plan-digest "\$PLAN_DIGEST" --attempt "\$ATTEMPT"/u);
   assert.doesNotMatch(apply, /inputs\.plan_digest/u);
   assert.match(step("Record the deployment"), /DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
 });
@@ -186,4 +187,21 @@ test("every production entry call the workflow makes is one the entry accepts", 
     if (command === "plan" || command === "apply")
       assert.match(rest!, /--policy "\$POLICY"/u, line);
   }
+});
+
+test("production secrets reach only the steps that run the entry", () => {
+  const env = /\n    env:\n([\s\S]*?)\n    steps:/u.exec(job("release"))?.[1] ?? "";
+  assert.doesNotMatch(env, /secrets\./u, "no secret in the job env");
+  const secretSteps = workflow
+    .split("\n      - ")
+    .filter((block) => /secrets\.|\*release-secrets/u.test(block))
+    .map((block) => /^name: (.*)$/mu.exec(block)?.[1] ?? block.split("\n")[0]);
+  for (const name of secretSteps) assert.match(step(name), /deploy\.ts /u, name);
+  for (const name of [
+    "Prepare",
+    "Build and measure Worker startup",
+    "Keep the plan and the counts",
+  ])
+    assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
+  assert.equal(secretSteps.length, 10);
 });
