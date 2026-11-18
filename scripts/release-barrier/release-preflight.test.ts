@@ -19,7 +19,7 @@ import {
   preflightRefusal,
   preflightRunner,
 } from "./release-preflight.ts";
-import { activeUnattested } from "./release-preflight-steps.ts";
+import { finalReadiness } from "./release-preflight-steps.ts";
 import {
   liveControllerCodes,
   releaseReceiptCodes,
@@ -458,11 +458,40 @@ test("a refused readiness read keeps the server's fixed outcome and stage, never
   });
 });
 
-test("final readiness is post-promote-only while the active slot is the unattested adopted root", async () => {
-  const client = (kind: string) => ({
-    call: async () => ({ result: { kind, controllerCode: "ignored" } }),
-  });
-  const target = {} as never;
-  assert.equal(await activeUnattested(client("unattested-active"), target), true);
-  assert.equal(await activeUnattested(client("witness"), target), false);
+const legacyRoot = {
+  format: "pool-runtime-slot-v1",
+  controllerId: "f".repeat(64),
+  instanceId: "f".repeat(64),
+  slotId: "legacy",
+  applicationId: "pool-app",
+  applicationVersion: "57",
+  imageDigest: `sha256:${"1".repeat(64)}`,
+  imageInput: "a".repeat(16),
+} as const;
+const readinessFor = async (target: typeof legacyRoot | typeof fleetPrimary) => {
+  let read = 0;
+  const selection = {
+    epoch: 3,
+    active: { target, identity: { ...target, bootId: "recovered-boot" }, fenced: false },
+  };
+  const outcome = await finalReadiness(selection, async () => {
+    read++;
+    return "ready";
+  }).catch((error: unknown) => error);
+  return { read, outcome };
+};
+const fleetPrimary = {
+  ...legacyRoot,
+  slotId: "fleet-blue",
+  applicationId: "blue-app",
+  instanceId: "c".repeat(64),
+};
+
+test("final readiness is post-promote-only while the legacy root is active, adopted or recovered", async () => {
+  // A recovered root at epoch 3 answers an attested restart witness, yet is still the legacy slot.
+  const { read, outcome } = await readinessFor(legacyRoot);
+  assert.equal(read, 0);
+  assert.ok(outcome instanceof NotApplicable);
+  assert.equal(outcome.why, "post-promote-only: the active slot is the legacy root");
+  assert.deepEqual(await readinessFor(fleetPrimary), { read: 1, outcome: "ready" });
 });
