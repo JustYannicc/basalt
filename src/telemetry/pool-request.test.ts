@@ -163,6 +163,14 @@ test("a call the Durable Object never answered is all queue", async (context) =>
   assert.deepEqual(spans[0]!.status, { code: 2 });
 });
 
+test("a call the Durable Object's own code failed is unanswered, not queue", async (context) => {
+  const h = harness(context, { arrivedAt: undefined, started: undefined, kind: undefined });
+  h.event.end({ outcome: "controller_failed" });
+  const { event } = await h.emitted();
+
+  assert.deepEqual(timings(event), { totalMs: 9_000, workerMs: 30, unansweredMs: 8_970 });
+});
+
 test("the trace carries the event on its root span and one span per hop that took time", async (context) => {
   const parent = "0af7651916cd43dd8448eb211c80319c";
   const h = harness(context, { traceparent: `00-${parent}-b7ad6b7169203331-01` });
@@ -217,7 +225,15 @@ test("the trace carries the event on its root span and one span per hop that too
 });
 
 test("free text, malformed identifiers and unknown keys never become fields", async (context) => {
-  const h = harness(context, { method: "PRIVATE-VERB", traceparent: "private-trace-header" });
+  const h = harness(context, {
+    method: "PRIVATE-VERB",
+    traceparent: "private-trace-header",
+    route: "/v1/private path?key=1",
+    requestId: "private-request-id",
+    kind: "private-kind" as "other",
+    port: Number.NaN,
+    inFlight: -1,
+  });
   h.event.set({
     guard: "private text with spaces",
     cause: "https://private.example/path?key=1",
@@ -230,10 +246,12 @@ test("free text, malformed identifiers and unknown keys never become fields", as
   const { event, sent } = await h.emitted();
 
   assert.equal(event.method, "OTHER");
+  assert.equal(event.path, "/other");
+  assert.match(String(event.requestId), /^[0-9a-f-]{36}$/);
   assert.equal(event.outcome, "unavailable");
   assert.equal(event.refusalReason, "runtime_port");
   assert.equal(event.boot, "11111111-1111-4111-8111-111111111111");
-  for (const key of ["guard", "cause", "responseRequestId", "prompt"])
+  for (const key of ["guard", "cause", "responseRequestId", "prompt", "kind", "port", "inFlight"])
     assert.equal(event[key], undefined, key);
   assert.doesNotMatch(JSON.stringify([event, sent]), /private/i);
 });

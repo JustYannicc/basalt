@@ -169,6 +169,41 @@ for (const [slow, options, hop, other] of [
     assert.ok(Number(event![hop]) >= Number(event![other]) + 50, `${other} ${event![other]}`);
   });
 
+test("a refusal routing builds after dispatch is unanswered and names its step", async (context) => {
+  const h = harness(context);
+  const response = await h.forward(modelRequest(), {
+    route: async (
+      _request: Request,
+      _port: number,
+      _pool: string | undefined,
+      _legacy: unknown,
+      beforeDispatch: () => void,
+    ) => {
+      beforeDispatch();
+      await wait(40);
+      return new Response(null, {
+        status: 503,
+        headers: {
+          "X-Signalbox-Runtime-Failure-Step": "fleet_forward",
+          "X-Signalbox-Runtime-Failure-Reason": "transport",
+        },
+      });
+    },
+  });
+  await h.drain();
+
+  assert.equal(response.status, 503);
+  const [event] = h.events;
+  assert.equal(event!.outcome, "runtime_refused");
+  assert.equal(event!.runtimeStep, "fleet_forward");
+  assert.equal(event!.runtimeReason, "transport");
+  assert.ok(Number(event!.unansweredMs) >= 35, `unansweredMs ${event!.unansweredMs}`);
+  assert.equal(event!.firstByteMs, undefined);
+  // The refusal answered under the pool's own request ID, so there is no second one to record.
+  assert.equal(event!.requestId, response.headers.get("X-Request-Id"));
+  assert.equal(event!.responseRequestId, undefined);
+});
+
 test("a request that cannot be observed is still forwarded", async (context) => {
   const h = harness(context);
   const failures = context.mock.method(console, "error", () => {});

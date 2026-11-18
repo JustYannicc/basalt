@@ -94,7 +94,7 @@ test(
     const requestId = quick.headers.get("X-Request-Id");
     assert.match(requestId ?? "", /^[0-9a-f-]{36}$/);
 
-    const queued = await call("occupied=150");
+    const queued = await call("occupied=400");
     assert.equal(queued.status, 200);
     await queued.text();
 
@@ -117,7 +117,7 @@ test(
     assert.equal(events.length, 3);
     const first = events.find((event) => event.requestId === requestId)!;
     const second = events.find((event) => event.requestId === queued.headers.get("X-Request-Id"))!;
-    const third = events.find((event) => event.outcome === "controller_unavailable")!;
+    const third = events.find((event) => event.outcome === "controller_failed")!;
 
     // The event is the caller's request: same id the response carried, a fixed route, no content.
     assert.equal(first.method, "POST");
@@ -143,7 +143,7 @@ test(
     // A request that waited for a busy Durable Object shows that wait as queue time, and the
     // request held by its key lookup shows that as Worker time: neither leaks into the other.
     assert.ok(
-      Number(second.queueMs) >= Number(first.queueMs) + 100,
+      Number(second.queueMs) >= Number(first.queueMs) + 200,
       `queueMs ${second.queueMs} after ${first.queueMs}`,
     );
     assert.ok(
@@ -152,11 +152,13 @@ test(
     );
     assert.ok(Number(second.firstByteMs) >= 35, `firstByteMs ${second.firstByteMs}`);
 
-    // A call the Durable Object never answered is reported by the Worker, as queue time only.
+    // A call the Durable Object's own code failed is reported by the Worker. The handler ran, so
+    // the wait is unanswered time, not queue time.
+    assert.ok(third, JSON.stringify(events.map((event) => event.outcome)));
     assert.equal(third.path, "/v1/chat/completions");
     assert.equal(third.cause, "Error");
-    assert.equal(typeof third.queueMs, "number");
-    for (const hop of ["admissionMs", "dispatchMs", "firstByteMs", "status"])
+    assert.equal(typeof third.unansweredMs, "number");
+    for (const hop of ["queueMs", "admissionMs", "dispatchMs", "firstByteMs", "status"])
       assert.equal(third[hop], undefined, hop);
 
     // The diagnostic project received each as one trace: the event on the root span, a span per hop.

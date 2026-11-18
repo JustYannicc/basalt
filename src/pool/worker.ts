@@ -1004,25 +1004,31 @@ async function callController(
   try {
     return await singleton(env).fetch(stampPoolReceive(request, receivedAt, calledAt));
   } catch (error) {
-    const pathname = new URL(request.url).pathname;
-    const event = startPoolRequestEvent(env, () => ({
-      requestId: crypto.randomUUID(),
-      method: request.method,
-      route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
-      port: poolPort(pathname),
-      receivedAt,
-      calledAt,
-      traceparent: request.headers.get("traceparent"),
-      defer,
-    }));
-    event?.set({
-      cause:
-        error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
-      // Cloudflare marks an error from an object that has more work queued than it can take.
-      overloaded:
-        typeof error === "object" && error !== null && Reflect.get(error, "overloaded") === true,
-    });
-    event?.end({ outcome: "controller_unavailable" });
+    try {
+      const pathname = new URL(request.url).pathname;
+      // Cloudflare marks an error the object's own code threw, and one from an object with more
+      // work queued than it can take. Only the first means the handler ran.
+      const flag = (name: string) =>
+        typeof error === "object" && error !== null && Reflect.get(error, name) === true;
+      const event = startPoolRequestEvent(env, () => ({
+        requestId: crypto.randomUUID(),
+        method: request.method,
+        route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
+        port: poolPort(pathname),
+        receivedAt,
+        calledAt,
+        traceparent: request.headers.get("traceparent"),
+        defer,
+      }));
+      event?.set({
+        cause:
+          error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
+        overloaded: flag("overloaded"),
+      });
+      event?.end({ outcome: flag("remote") ? "controller_failed" : "controller_unavailable" });
+    } catch {
+      console.error("POOL_REQUEST_EVENT_UNAVAILABLE");
+    }
     throw error;
   }
 }

@@ -43,6 +43,7 @@ const outcomes = [
   "refused",
   "outcome_unknown",
   "controller_unavailable",
+  "controller_failed",
 ] as const;
 export type PoolRequestOutcome = (typeof outcomes)[number];
 const labelKeys = [
@@ -61,6 +62,10 @@ export type PoolRequestLabels = Partial<
 >;
 const label = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const routeLabel = /^\/[A-Za-z0-9/:._-]{0,95}$/;
+const kinds = ["model", "socket", "other"];
+const count = (value: number | undefined) =>
+  value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 
 export interface HomeDispatchStage {
   stage: string;
@@ -132,6 +137,11 @@ export function poolRequestEvent(
   wall: () => number = () => Date.now(),
 ): PoolRequestEvent {
   const method = methods.has(input.method) ? input.method : "OTHER";
+  const route = routeLabel.test(input.route) ? input.route : "/other";
+  const requestId = uuid.test(input.requestId) ? input.requestId : crypto.randomUUID();
+  const kind = input.kind !== undefined && kinds.includes(input.kind) ? input.kind : undefined;
+  const port = count(input.port);
+  const inFlight = count(input.inFlight);
   const parent = parseTraceparent(input.traceparent);
   const trace = {
     traceId: parent?.traceId ?? randomHex(16),
@@ -147,8 +157,8 @@ export function poolRequestEvent(
   let exported: OtlpSpan[] = [];
   const { logger, finish } = createMiddlewareLogger({
     method,
-    path: input.route,
-    requestId: input.requestId,
+    path: route,
+    requestId,
     waitUntil: input.defer,
     // evlog writes the event to the Worker's log itself. Its Sentry drain follows redirects, which
     // this module's exporters refuse, so the diagnostic project receives the event as a trace.
@@ -159,8 +169,11 @@ export function poolRequestEvent(
     const durations: Partial<Record<Hop, number>> = {};
     if (input.receivedAt !== undefined && input.calledAt !== undefined) {
       durations.worker = whole(input.calledAt - input.receivedAt);
-      // A call that never arrived waited for the Durable Object until it failed.
-      durations.queue = whole((input.arrivedAt ?? finishedAt) - input.calledAt);
+      // A call that failed without an answer waited for the Durable Object, unless the object's own
+      // code threw: then its handler ran and the Worker cannot tell the wait from the work.
+      if (input.arrivedAt === undefined && result.outcome === "controller_failed")
+        durations.unanswered = whole(finishedAt - input.calledAt);
+      else durations.queue = whole((input.arrivedAt ?? finishedAt) - input.calledAt);
     }
     if (input.arrivedAt !== undefined || input.calledAt === undefined) {
       // Only an observed body has a stream to time; otherwise the event ends with the headers.
@@ -179,9 +192,9 @@ export function poolRequestEvent(
     }
     const totalMs = hops.reduce((total, hop) => total + (durations[hop] ?? 0), 0);
     const labels: Record<string, string | number | boolean> = {
-      ...(input.kind === undefined ? {} : { kind: input.kind }),
-      ...(input.port === undefined ? {} : { port: input.port }),
-      ...(input.inFlight === undefined ? {} : { inFlight: input.inFlight }),
+      ...(kind === undefined ? {} : { kind }),
+      ...(port === undefined ? {} : { port }),
+      ...(inFlight === undefined ? {} : { inFlight }),
       ...fields,
       outcome: outcomes.includes(result.outcome) ? result.outcome : "unavailable",
       ...(result.bytes === undefined ? {} : { bytes: result.bytes }),
@@ -196,15 +209,15 @@ export function poolRequestEvent(
       exported = [
         {
           ...trace,
-          name: `pool ${method} ${input.route}`,
+          name: `pool ${method} ${route}`,
           kind: 2,
           startUnixNano: nano(startedAt),
           endUnixNano: nano(startedAt + totalMs),
           attributes: {
             "http.request.method": method,
-            "http.route": input.route,
+            "http.route": route,
             ...(result.status === undefined ? {} : { "http.response.status_code": result.status }),
-            "pool.requestId": input.requestId,
+            "pool.requestId": requestId,
             ...Object.fromEntries(
               Object.entries({ ...labels, ...timings }).map(([key, value]) => [
                 `pool.${key}`,

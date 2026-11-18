@@ -227,8 +227,9 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch, identity)
       : await legacy(outbound);
     guard = "upstream_response";
-    event?.firstByte();
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    // Routing builds a refusal itself when a runtime never answered: that is not a first byte.
+    if (!runtimeRefusal) event?.firstByte();
     const runtimeRequestId = endpointRequestId(upstream) ?? requestId;
     if (runtimeRefusal)
       console.error("POOL_RUNTIME_ROUTE_FAILURE", {
@@ -240,7 +241,11 @@ export async function forwardPoolRequest(
     event?.home(logDispatchTiming(upstream.headers.get(dispatchTimingHeader)));
     // A runtime's refusal answers under the runtime's own request ID.
     if (runtimeRefusal)
-      event?.set({ ...runtimeRefusal, runtimeRefused: true, responseRequestId: runtimeRequestId });
+      event?.set({
+        ...runtimeRefusal,
+        runtimeRefused: true,
+        ...(runtimeRequestId === requestId ? {} : { responseRequestId: runtimeRequestId }),
+      });
     let response = await rewriteCapResponse(upstream, pathname);
     if (modelCall && request.method === "POST" && response.ok)
       deps.defer(
