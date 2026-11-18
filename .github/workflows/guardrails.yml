@@ -1,0 +1,24 @@
+name: Guardrails
+
+# Deterministic checks on how release work enters main. Each job names what it refused and why.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ship-alone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Release-path changes ship alone
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/guardrails/ship-alone.ts "$BASE_SHA" "$HEAD_SHA"
