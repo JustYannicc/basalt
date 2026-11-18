@@ -83,11 +83,11 @@ const setup = Effect.gen(function* () {
     ('app_pipeline','code_pipeline',${owner},'Pipeline','pipeline','dpl_pipeline',now())`;
   yield* sql`insert into hosted_app_account_links values
     ('app_tool','cloudflare','user-a','acc_cloudflare','user-a',now())`;
-  yield* sql`insert into executor_account_connections (id,owner,provider,reconnect_account,state,revision,oauth_attempt,created_at,expires_at)
+  yield* sql`insert into executor_account_connections (id,owner,provider,reconnect_account,state,revision,oauth_attempt,created_at,expires_at,target)
     values ('con_cloudflare',${owner},${retained},null,${JSON.stringify({
       status: "completed",
       account: { id: "acc_cloudflare", owner, provider: retained, method: "apiToken" },
-    })},'r1',null,now(),now())`;
+    })},'r1',null,now(),now(),${JSON.stringify({ app: "app_tool", requirement: "cloudflare" })})`;
   return { retained, family: family.identity, other: other.identity };
 });
 
@@ -134,6 +134,20 @@ test("a Cloudflare account connected under the first catalog definition links to
 
       const migration = productionMigrations["cloudflare-family-adoption-v1"];
       assert.ok(migration, "the Cloudflare family adoption is a registered production migration");
+      const reasons = yield* Effect.promise(
+        () =>
+          import(
+            "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts"
+          ),
+      );
+      const operator = yield* Effect.promise(
+        () => import("../production-ops/cloudflare-family-adoption-reasons.ts"),
+      );
+      assert.deepEqual(
+        operator.cloudflareFamilyAdoptionReasons,
+        reasons.cloudflareFamilyAdoptionReasons,
+        "the operator decodes every refusal reason the runtime reports",
+      );
       const request = {
         organization,
         from: ids.retained,
