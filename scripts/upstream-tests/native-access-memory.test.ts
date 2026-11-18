@@ -216,10 +216,7 @@ test("revoking the device's grant refuses its very next check", async (t) => {
   assert.equal((await d.access(bearer)).status, 401);
 });
 
-test("a revoked access token is refused once the bound has passed", async (t) => {
-  const d = await devices(t);
-  const bearer = await d.first();
-  assert.equal((await d.access(bearer)).status, 200);
+async function revokeAccessToken(d: Awaited<ReturnType<typeof devices>>, bearer: string) {
   const revoked = await d.f.raw("/oauth2/revoke", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -230,8 +227,25 @@ test("a revoked access token is refused once the bound has passed", async (t) =>
     }),
   });
   assert.equal(revoked.status, 200, await revoked.clone().text());
+}
+
+test("a revoked access token is refused once the bound has passed", async (t) => {
+  const d = await devices(t);
+  const bearer = await d.first();
+  assert.equal((await d.access(bearer)).status, 200);
+  await revokeAccessToken(d, bearer);
   d.tick(bound);
   assert.equal((await d.access(bearer)).status, 401);
+});
+
+test("a remembered answer that ages out while the pool answers is read again", async (t) => {
+  const d = await devices(t);
+  const bearer = await d.first();
+  assert.equal((await d.access(bearer)).status, 200);
+  await revokeAccessToken(d, bearer);
+  d.tick(bound - 1);
+  d.slowPool(2_000);
+  assert.equal((await d.access(bearer)).status, 401, "the bound holds when the reply is sent");
 });
 
 test("leaving the device's team refuses it once the bound has passed", async (t) => {
