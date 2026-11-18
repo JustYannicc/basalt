@@ -148,25 +148,17 @@ export function classPlanChanges(node: Plan.Apply, entry: SqliteClassDeclaration
 export const classPlanMatches = (node: Plan.Apply, entry: SqliteClassDeclaration) =>
   classPlanChanges(node, entry).length === 0;
 
-/** This verdict is reused by plan admission and both concrete request checks; it authorizes only the declared additive delta. */
-export function classRequestVerdict(
-  upload: PreparedWorkerUpload,
+type ClassSettings = Workers.GetScriptScriptAndVersionSettingResponse;
+
+/** The exact declared binding delta, without `location`; anything else added or dropped refuses. */
+function classBindingDelta(
+  old: ClassSettings,
+  metadata: Workers.PutScriptMetadata,
   entry: SqliteClassDeclaration,
-  proof?: WorkerBaseline,
+  scriptName: string,
 ) {
-  const metadata = upload.request.metadata;
-  const old = upload.previousSettings;
-  const fail = (reason: string, expected: unknown, actual: unknown): never => {
-    throw declaredMismatch(reason, entry.fqn, expected, actual, entry.type);
-  };
-  if (upload.fqn !== entry.fqn || !old || !upload.previous || upload.previous.namespace)
-    fail(
-      "declared-class-target-mismatch",
-      { fqn: entry.fqn, existing: true },
-      { fqn: upload.fqn, existing: !!upload.previous },
-    );
-  const before = local(old!.bindings ?? [], upload.request.scriptName);
-  const after = local(metadata.bindings ?? [], upload.request.scriptName);
+  const before = local(old.bindings ?? [], scriptName);
+  const after = local(metadata.bindings ?? [], scriptName);
   const expected = entry.addedBindings.map(({ location: _location, ...binding }) => binding);
   const project = (binding: (typeof after)[number]) => ({
     type: binding.type,
@@ -187,11 +179,102 @@ export function classRequestVerdict(
       ),
     )
   )
-    fail(
+    throw declaredMismatch(
       "declared-class-binding-mismatch",
+      entry.fqn,
       { bindings: [...before.map(project), ...expected] },
       { bindings: after.map(project) },
+      entry.type,
     );
+  return expected;
+}
+
+/**
+ * Project exactly this declaration's class and tag delta onto the observed settings, so the
+ * ordinary settings comparison treats the declared classes as live and still refuses anything else.
+ */
+export function projectDeclaredClasses(
+  previousSettings: ClassSettings,
+  metadata: Workers.PutScriptMetadata,
+  entry: SqliteClassDeclaration,
+  scriptName: string,
+): ClassSettings {
+  const expected = classBindingDelta(previousSettings, metadata, entry, scriptName);
+  const oldMap = getDurableObjectTagMap(previousSettings.tags ?? []);
+  const nextMap = getDurableObjectTagMap(metadata.tags ?? []);
+  if (
+    Object.entries(oldMap).some(([key, value]) => nextMap[key] !== value) ||
+    Object.entries(nextMap).some(
+      ([key, value]) => !Object.hasOwn(oldMap, key) && !entry.newSqliteClasses.includes(value),
+    )
+  )
+    throw declaredMismatch("declared-class-tags-mismatch", entry.fqn, oldMap, nextMap, entry.type);
+  const stripDoTags = (tags: readonly string[] = []) =>
+    tags
+      .filter(
+        (tag) =>
+          !tag.startsWith("alchemy:dos:") &&
+          !tag.startsWith("alchemy:do:") &&
+          !tag.startsWith("alchemy:migration-tag:"),
+      )
+      .sort();
+  if (canonical(stripDoTags(previousSettings.tags ?? [])) !== canonical(stripDoTags(metadata.tags)))
+    throw declaredMismatch(
+      "declared-class-tags-mismatch",
+      entry.fqn,
+      { tags: stripDoTags(previousSettings.tags ?? []) },
+      { tags: stripDoTags(metadata.tags) },
+      entry.type,
+    );
+  return {
+    ...previousSettings,
+    bindings: [...(previousSettings.bindings ?? []), ...expected],
+    tags: metadata.tags,
+  };
+}
+
+/**
+ * Settings that read-only admissions compare against before the class step runs. Only a candidate
+ * that binds a declared class the live Worker lacks is projected; once the classes are live, or for
+ * any Worker without a declaration, the observed settings apply unchanged.
+ */
+export function declaredClassSettings(
+  previousSettings: ClassSettings,
+  metadata: Workers.PutScriptMetadata,
+  entries: readonly SqliteClassDeclaration[],
+  fqn: string,
+  scriptName: string,
+): ClassSettings {
+  const entry = entries.find((value) => value.fqn === fqn);
+  if (!entry) return previousSettings;
+  const live = new Set(local(previousSettings.bindings ?? [], scriptName).map((b) => b.className));
+  const adding = local(metadata.bindings ?? [], scriptName).some(
+    (binding) => entry.newSqliteClasses.includes(binding.className) && !live.has(binding.className),
+  );
+  return adding
+    ? projectDeclaredClasses(previousSettings, metadata, entry, scriptName)
+    : previousSettings;
+}
+
+/** This verdict is reused by plan admission and both concrete request checks; it authorizes only the declared additive delta. */
+export function classRequestVerdict(
+  upload: PreparedWorkerUpload,
+  entry: SqliteClassDeclaration,
+  proof?: WorkerBaseline,
+) {
+  const metadata = upload.request.metadata;
+  const old = upload.previousSettings;
+  const fail = (reason: string, expected: unknown, actual: unknown): never => {
+    throw declaredMismatch(reason, entry.fqn, expected, actual, entry.type);
+  };
+  if (upload.fqn !== entry.fqn || !old || !upload.previous || upload.previous.namespace)
+    fail(
+      "declared-class-target-mismatch",
+      { fqn: entry.fqn, existing: true },
+      { fqn: upload.fqn, existing: !!upload.previous },
+    );
+  // Binding, then migration, then tag refusals: the order a caller sees is unchanged.
+  const expected = classBindingDelta(old!, metadata, entry, upload.request.scriptName);
   const migration = metadata.migrations;
   // Either alchemy's tagged step from the Worker's one tag to the next, or its untagged step on a
   // Worker that has never had a tag. Untagged carries no old_tag precondition, so the class and
@@ -229,40 +312,13 @@ export function classRequestVerdict(
       { newSqliteClasses: entry.newSqliteClasses, additiveOnly: true },
       { migrations: migration ?? null },
     );
-  const oldMap = getDurableObjectTagMap(old!.tags ?? []);
-  const nextMap = getDurableObjectTagMap(metadata.tags ?? []);
-  if (
-    Object.entries(oldMap).some(([key, value]) => nextMap[key] !== value) ||
-    Object.entries(nextMap).some(
-      ([key, value]) => !Object.hasOwn(oldMap, key) && !entry.newSqliteClasses.includes(value),
-    )
-  )
-    fail("declared-class-tags-mismatch", oldMap, nextMap);
-  const stripDoTags = (tags: readonly string[] = []) =>
-    tags
-      .filter(
-        (tag) =>
-          !tag.startsWith("alchemy:dos:") &&
-          !tag.startsWith("alchemy:do:") &&
-          !tag.startsWith("alchemy:migration-tag:"),
-      )
-      .sort();
-  if (canonical(stripDoTags(old!.tags ?? [])) !== canonical(stripDoTags(metadata.tags)))
-    fail(
-      "declared-class-tags-mismatch",
-      { tags: stripDoTags(old!.tags ?? []) },
-      { tags: stripDoTags(metadata.tags) },
-    );
+  const projected = projectDeclaredClasses(old!, metadata, entry, upload.request.scriptName);
   // Keep the ordinary settings and metadata guards. Only this exact declaration's class/tag delta is projected as observed.
   versionMetadata(
     {
       ...upload,
       request: { ...upload.request, metadata: { ...metadata, migrations: undefined } },
-      previousSettings: {
-        ...old!,
-        bindings: [...(old!.bindings ?? []), ...expected],
-        tags: metadata.tags,
-      },
+      previousSettings: projected,
     },
     proof?.versions,
     proof?.baseline,
