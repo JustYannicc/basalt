@@ -4,7 +4,12 @@ import { Schema } from "effect";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { discoverScriptSettings } from "../../scripts/architecture/native-stack.ts";
 import { preparedUpload } from "../../scripts/release-barrier/fixture.ts";
-import { freezeUpload } from "../../scripts/release-barrier/version-request.ts";
+import {
+  freezeUpload,
+  type WorkerVersionInput,
+} from "../../scripts/release-barrier/version-request.ts";
+import { declaredClassSettings } from "../../scripts/release-barrier/declared-class-contract.ts";
+import { poolWorkerClassEntry } from "../../scripts/release-barrier/test/repository-declarations.ts";
 import { workerObservability } from "../telemetry/deployment.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
@@ -55,32 +60,82 @@ const versions = [
   },
 ];
 
+const entries = [await poolWorkerClassEntry()];
+// The read-only baseline probe runs before the class step, so it admits through the same projection.
+const beforeClassStep = (value: WorkerVersionInput) => ({
+  ...value,
+  previousSettings: declaredClassSettings(
+    value.previousSettings!,
+    value.request.metadata,
+    entries,
+    value.fqn,
+    value.request.scriptName,
+  ),
+});
+
 test("the deployed PoolWorker declaration admits the existing PoolContainer baseline", async () => {
-  await assert.doesNotReject(() => freezeUpload(upload, baseline, versions));
+  await assert.doesNotReject(() => freezeUpload(beforeClassStep(upload), baseline, versions));
+});
+
+test("once the declared fleet classes are live the PoolWorker declaration admits unprojected", async () => {
+  const live = {
+    ...upload,
+    previousSettings: {
+      ...upload.previousSettings,
+      bindings: declaration.metadata.bindings!.filter(
+        (binding) => binding.type === "durable_object_namespace",
+      ),
+      tags: declaration.metadata.tags,
+    },
+  };
+  assert.equal(beforeClassStep(live).previousSettings, live.previousSettings);
+  await assert.doesNotReject(() => freezeUpload(beforeClassStep(live), baseline, versions));
+});
+
+const withBulkImport = (value: typeof upload) => ({
+  ...value,
+  request: {
+    ...value.request,
+    metadata: {
+      ...value.request.metadata,
+      bindings: [
+        ...(value.request.metadata.bindings ?? []),
+        {
+          type: "durable_object_namespace" as const,
+          name: "BulkUsageImport",
+          className: "BulkUsageImport",
+        },
+      ],
+    },
+  },
 });
 
 test("the b81 undeclared BulkUsageImport addition still refuses before upload", async () => {
-  const b81 = {
+  const b81 = withBulkImport({
     ...upload,
     request: {
       ...upload.request,
       metadata: {
         ...upload.request.metadata,
-        bindings: [
-          ...upload.previousSettings.bindings,
-          {
-            type: "durable_object_namespace" as const,
-            name: "BulkUsageImport",
-            className: "BulkUsageImport",
-          },
-        ],
+        bindings: [...upload.previousSettings.bindings],
         tags: upload.previousSettings.tags.map((tag) =>
           tag === "alchemy:dos:PoolContainer" ? "alchemy:dos:BulkUsageImport;PoolContainer" : tag,
         ),
       },
     },
-  };
+  });
   await assert.rejects(() => freezeUpload(b81, baseline, versions), /durable-object-class-drift/);
+  await assert.rejects(
+    () => freezeUpload(beforeClassStep(b81), baseline, versions),
+    /durable-object-class-drift/,
+  );
+});
+
+test("an undeclared class beside the declared fleet classes refuses before upload", async () => {
+  await assert.rejects(
+    async () => freezeUpload(beforeClassStep(withBulkImport(upload)), baseline, versions),
+    /declared-class-binding-mismatch/,
+  );
 });
 
 test("an authenticated bulk command refuses with its provisioning code before job work", async () => {

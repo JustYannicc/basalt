@@ -6,12 +6,10 @@ import { Effect } from "effect";
 import { applyRuntimeCreate, decodeCreatedRuntime } from "./provisioning-apply.ts";
 import { containerAttributes } from "./container-observation.ts";
 import {
-  assertProvisioningEnable,
   type ProvisioningEnable,
   type RuntimeProvisioningManifest,
 } from "./provisioning-contract.ts";
 import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
-import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import type { RuntimeProvisioningProvider } from "./runtime-provisioning.ts";
 import { runtimeNativeState } from "./provisioning-native.ts";
 
@@ -34,40 +32,10 @@ export const runtimeProvisioningProvider = (input: {
     const { manifest, scriptName } = input;
     const accountId = manifest.declaration.accountId;
     const now = input.now ?? Date.now;
-    const enabled = () => assertProvisioningEnable(manifest, input.enable, now());
     const namespaces = yield* runtimeNamespaceReader(accountId, scriptName);
     const provider: RuntimeProvisioningProvider = {
       active: input.active,
       namespaceBaseline: namespaces.baseline,
-      stageNamespace: async (request) => {
-        enabled();
-        sameProvisioningValue(
-          "namespace.stage.target",
-          { accountId, workerId: scriptName, deploy: false },
-          { accountId: request.accountId, workerId: request.workerId, deploy: request.deploy },
-        );
-        const result = await run(Workers.createBetaWorkerVersion(request).pipe(Retry.none));
-        return { versionId: result.id };
-      },
-      readNamespaceVersion: namespaces.version,
-      activateNamespace: async (versionId) => {
-        enabled();
-        const result = await run(
-          Workers.createScriptDeployment({
-            accountId,
-            scriptName,
-            strategy: "percentage",
-            versions: [{ percentage: 100, versionId }],
-            annotations: { workersMessage: `runtime-provisioning:${manifest.operationId}` },
-          }).pipe(Retry.none),
-        );
-        sameProvisioningValue(
-          "namespace.activation.versions",
-          [{ percentage: 100, versionId }],
-          result.versions,
-        );
-        return { deploymentId: result.id };
-      },
       observeNamespace: namespaces.observe,
       applicationAbsent: async () => {
         const apps = await run(
