@@ -1,3 +1,11 @@
+import {
+  correlateEndpointRequest,
+  endpointRequestId,
+  runtimeResponseRefusal,
+} from "../runtime-route-diagnostic.ts";
+
+export { endpointRequestId, retainEndpointRequestId } from "../runtime-route-diagnostic.ts";
+
 const names = [
   "Error",
   "TypeError",
@@ -36,7 +44,6 @@ const actions = [
   "/retirement",
   "/failed",
 ] as const;
-const correlations = new WeakMap<object, string>();
 const responses = new WeakMap<Response, EndpointTrace>();
 const requests = new WeakMap<Request, EndpointTrace>();
 const object = (value: unknown): value is object =>
@@ -90,18 +97,15 @@ interface Attempt {
   stub: number;
   outcome: "pending" | "response" | "error";
   status?: number;
+  elapsedMs?: number;
+  refusal?: ReturnType<typeof runtimeResponseRefusal>;
   error?: ReturnType<typeof shape>;
 }
+const elapsed = (started: number) =>
+  Math.max(0, Math.min(86_400_000, Math.round(performance.now() - started)));
 
-export function endpointRequestId(error: unknown) {
-  return object(error) ? correlations.get(error) : undefined;
-}
 export function failEndpointResponse(response: Response, error: unknown) {
   responses.get(response)?.finish(error);
-}
-export function retainEndpointRequestId(source: object, destination: object) {
-  const id = correlations.get(source);
-  if (id) correlations.set(destination, id);
 }
 
 /** One bounded record preserves both attempts without copying exception text or request data. */
@@ -146,12 +150,27 @@ export class EndpointTrace {
   async send(stub: number, work: () => Promise<Response>) {
     const attempt = this.attempts.length + 1;
     this.attempts.push({ attempt, stub, outcome: "pending" });
+    const started = performance.now();
     try {
       const response = await work();
-      this.attempts[attempt - 1] = { attempt, stub, outcome: "response", status: response.status };
+      const refusal = runtimeResponseRefusal(response);
+      this.attempts[attempt - 1] = {
+        attempt,
+        stub,
+        outcome: "response",
+        status: response.status,
+        elapsedMs: elapsed(started),
+        ...(refusal ? { refusal } : {}),
+      };
       return response;
     } catch (error) {
-      this.attempts[attempt - 1] = { attempt, stub, outcome: "error", error: shape(error) };
+      this.attempts[attempt - 1] = {
+        attempt,
+        stub,
+        outcome: "error",
+        elapsedMs: elapsed(started),
+        error: shape(error),
+      };
       throw error;
     }
   }
@@ -166,8 +185,8 @@ export class EndpointTrace {
     return repeated.outcome;
   }
   finish(result: unknown) {
-    if (object(result) && correlations.has(result) && correlations.get(result) !== this.requestId)
-      return;
+    const correlated = endpointRequestId(result);
+    if (correlated !== undefined && correlated !== this.requestId) return;
     if (result instanceof Response) {
       if (responses.has(result) && responses.get(result) !== this) return;
       responses.set(result, this);
@@ -178,7 +197,7 @@ export class EndpointTrace {
       (!this.request.headers.has("X-Signalbox-Runtime-Identity") ||
         result.headers.has("X-Signalbox-Runtime-Failure-Step"));
     if (this.logged) {
-      if (object(result)) correlations.set(result, this.requestId);
+      if (object(result)) correlateEndpointRequest(result, this.requestId);
       return;
     }
     if (
@@ -188,7 +207,7 @@ export class EndpointTrace {
     )
       return;
     this.logged = true;
-    if (object(result)) correlations.set(result, this.requestId);
+    if (object(result)) correlateEndpointRequest(result, this.requestId);
     const path = new URL(this.request.url).pathname;
     console.error(
       "POOL_RUNTIME_ENDPOINT_FAILURE",
