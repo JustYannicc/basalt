@@ -47,12 +47,18 @@ export interface Declaration {
   bucketStorageClass?: "Standard" | "InfrequentAccess";
   /** Declares the retained scratch bucket under a new id that claims its old row. */
   renamedScratch?: boolean;
+  /** Declares the retained scratch bucket under its own id, in this jurisdiction. */
+  scratchJurisdiction?: "eu" | "default";
   /** Adds a binding that State has never recorded. */
   newClass?: boolean;
+  /** Binds the two fleet classes (PoolRuntimeBlue, PoolRuntimeGreen), as the cutover declares them. */
+  fleetClasses?: boolean;
   /** Declares the retained Secrets Store; when false its seeded row has no declaration. */
   observationStore?: boolean;
   /** Declares the release command; when false its seeded row has no declaration. */
   databaseCommand?: boolean;
+  /** Binds the vault bucket to PoolWorker; when false the binding is dropped. */
+  vaultBinding?: boolean;
 }
 
 /** The recorded production body of the root application read, with synthetic identifiers. */
@@ -102,13 +108,13 @@ const applicationBody = (image: string) => ({
 });
 
 /** The recorded production body of a Worker settings read (2026-11-18), with synthetic names. */
-const settingsBody = (bindings: readonly object[]) => ({
+const settingsBody = (bindings: readonly object[], tags: readonly string[]) => ({
   result: {
     placement: {},
     compatibility_date: "2026-09-08",
     compatibility_flags: ["nodejs_compat", "new_module_registry"],
     usage_model: "standard",
-    tags: ["alchemy:stack:basalt", "alchemy:stage:production", "alchemy:id:ArtifactsCredentials"],
+    tags,
     tail_consumers: [],
     logpush: false,
     observability: {
@@ -125,32 +131,82 @@ const settingsBody = (bindings: readonly object[]) => ({
   errors: [],
   messages: [],
 });
-const recordedSettings: Record<string, readonly object[]> = {
-  "basalt-production-artifactscredentials": [
+const stackTags = (id: string) => [
+  "alchemy:stack:basalt",
+  "alchemy:stage:production",
+  `alchemy:id:${id}`,
+];
+const recordedSettings: Record<string, { tags: readonly string[]; bindings: readonly object[] }> = {
+  "basalt-production-artifactscredentials": {
+    tags: stackTags("ArtifactsCredentials"),
+    bindings: [
+      {
+        class_name: "ArtifactsTokenCoordinator",
+        name: "Coordinator",
+        namespace_id: "namespace-coordinator",
+        type: "durable_object_namespace",
+      },
+    ],
+  },
+};
+/**
+ * PoolWorker's settings as production answers them (recorded 2026-11-18): untagged migrations,
+ * the class map tag naming only PoolContainer, one local and one cross-script class binding.
+ */
+const poolWorkerSettings = {
+  tags: [...stackTags("PoolWorker"), "alchemy:dos:PoolContainer"],
+  bindings: [
+    { name: "POOL_MODE", text: "synthetic", type: "plain_text" },
     {
       class_name: "ArtifactsTokenCoordinator",
-      name: "Coordinator",
+      name: "BulkUsageImport",
       namespace_id: "namespace-coordinator",
+      script_name: "basalt-production-artifactscredentials",
+      type: "durable_object_namespace",
+    },
+    { name: "POOL_MANAGEMENT_KEY", type: "secret_text" },
+    {
+      class_name: "PoolContainer",
+      name: "PoolContainer",
+      namespace_id: "namespace-pool-container",
       type: "durable_object_namespace",
     },
   ],
 };
 
-async function cloudflare(context: TestContext) {
+async function cloudflare(context: TestContext, shadow: boolean) {
+  const settingsByScript = shadow
+    ? { ...recordedSettings, "basalt-production-poolworker": poolWorkerSettings }
+    : recordedSettings;
   const requests: string[] = [];
   const server = createServer((request, response) => {
     requests.push(`${request.method} ${request.url}`);
     response.setHeader("content-type", "application/json");
     const application = `/accounts/${accountId}/containers/applications/${applicationId}`;
-    if (request.method === "GET" && request.url === application) {
+    if (
+      (request.method === "GET" || (shadow && request.method === "PATCH")) &&
+      request.url === application
+    ) {
       response.end(JSON.stringify(applicationBody(pinnedImage)));
+      return;
+    }
+    // The list as recorded (result_info is an empty object), here for an account where no
+    // application carries the declared name: what a provider sees for a row State lost.
+    if (
+      request.method === "GET" &&
+      request.url === `/accounts/${accountId}/containers/applications`
+    ) {
+      response.end(
+        JSON.stringify({ success: true, result: [], messages: [], errors: [], result_info: {} }),
+      );
       return;
     }
     const settings = new RegExp(`^/accounts/${accountId}/workers/scripts/([a-z-]+)/settings$`, "u")
       .exec(request.url ?? "")
       ?.at(1);
-    if (request.method === "GET" && settings && recordedSettings[settings]) {
-      response.end(JSON.stringify(settingsBody(recordedSettings[settings])));
+    const recorded = settings ? settingsByScript[settings] : undefined;
+    if (request.method === "GET" && recorded) {
+      response.end(JSON.stringify(settingsBody(recorded.bindings, recorded.tags)));
       return;
     }
     // Planning is read-only and reads nothing else; an unexpected request must fail the plan.
@@ -237,6 +293,10 @@ const program = (declared: Declaration) =>
         retain(),
         renamedFrom("ScratchRecords"),
       );
+    if (declared.scratchJurisdiction)
+      yield* Cloudflare.R2.Bucket("ScratchRecords", {
+        jurisdiction: declared.scratchJurisdiction,
+      }).pipe(retain());
     if (declared.observationStore !== false)
       yield* Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
     if (declared.databaseCommand !== false)
@@ -267,6 +327,16 @@ const program = (declared: Declaration) =>
       env: {
         PoolContainer: image,
         ...(ledger ? { PoolLedger: Cloudflare.DurableObject("PoolLedger", ledger) } : {}),
+        ...(declared.fleetClasses
+          ? {
+              PoolRuntimeBlue: Cloudflare.DurableObject("PoolRuntimeBlue", {
+                className: "PoolRuntimeBlue",
+              }),
+              PoolRuntimeGreen: Cloudflare.DurableObject("PoolRuntimeGreen", {
+                className: "PoolRuntimeGreen",
+              }),
+            }
+          : {}),
         ...(declared.newClass
           ? {
               PoolRuntimeBlue: Cloudflare.DurableObject("PoolRuntimeBlue", {
@@ -278,7 +348,7 @@ const program = (declared: Declaration) =>
           className: "ArtifactsTokenCoordinator",
           scriptName: credentials.workerName,
         }),
-        VAULT: vault,
+        ...(declared.vaultBinding === false ? {} : { VAULT: vault }),
         WAITLIST: waitlist,
         POOL_MANAGEMENT_KEY: Redacted.make("synthetic-management-secret"),
       },
@@ -503,8 +573,25 @@ export const productionRows = (): Record<string, ResourceState> => ({
   ),
 });
 
+/** An action row from an older release (a migration step the stack no longer declares). */
+export const recordedActionRow = (fqn: string) =>
+  ({
+    kind: "action",
+    actionType: "Release.Migration",
+    namespace: undefined,
+    fqn,
+    logicalId: fqn,
+    status: "ran",
+    downstream: [],
+    inputHash: "recorded",
+    input: { step: "synthetic" },
+    output: null,
+  }) as unknown as ResourceState;
+
 export interface PlanInput {
   declared?: Declaration;
+  /** Builds Alchemy's destroy plan for the stage instead of the deploy plan. */
+  destroy?: boolean;
   /** Rows written into State before planning, keyed by FQN. */
   rows?: Readonly<Record<string, ResourceState>>;
   include?: readonly string[];
@@ -513,11 +600,23 @@ export interface PlanInput {
    * row it records carries the hashes of this checkout, so the next plan can find them unchanged.
    */
   settle?: readonly string[];
+  /**
+   * Settle only these of the selected nodes; every other one is held at its recorded row (noop),
+   * so its own provider never runs.
+   */
+  settleOnly?: readonly string[];
+  /** Receives each settled Worker's prepared upload; by default it is never sent. */
+  capture?: WorkerUploadHook["Service"]["capture"];
+  /**
+   * A shadow reconcile of PoolWorker: serve its recorded production settings, and answer the root
+   * application's hash-only PATCH (which settling PoolWorker applies first) with the recorded read.
+   */
+  shadow?: boolean;
 }
 
 /** Plans the declared stack against the given State with Alchemy's real planner and providers. */
 export async function makePlan(context: TestContext, input: PlanInput = {}) {
-  const api = await cloudflare(context);
+  const api = await cloudflare(context, input.shadow === true);
   const memory = await Effect.runPromise(InMemoryService());
   for (const [fqn, value] of Object.entries(input.rows ?? {}))
     await Effect.runPromise(memory.set({ ...scope, fqn, value }));
@@ -536,17 +635,32 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
       (compiled) =>
         Effect.gen(function* () {
           if (input.settle?.length) {
-            const settling = yield* Plan.make(compiled, { include: input.settle });
+            const selected = yield* Plan.make(compiled, { include: input.settle });
+            const only = input.settleOnly;
+            const settling = only
+              ? {
+                  ...selected,
+                  resources: Object.fromEntries(
+                    Object.entries(selected.resources).map(([fqn, node]) => [
+                      fqn,
+                      only.includes(fqn) || !node ? node : { ...node, action: "noop" as const },
+                    ]),
+                  ) as typeof selected.resources,
+                }
+              : selected;
             yield* Apply.apply(settling).pipe(
               Effect.provideService(WorkerUploadHook, {
-                // The upload is prepared and never sent: the attributes are the provider's own.
-                capture: (upload) =>
-                  upload.proposed
-                    ? Effect.succeed(upload.proposed)
-                    : Effect.fail(new Error(`${upload.fqn} has no recorded row to settle`)),
+                // By default the upload is prepared and never sent: the attributes are the provider's own.
+                capture:
+                  input.capture ??
+                  ((upload) =>
+                    upload.proposed
+                      ? Effect.succeed(upload.proposed)
+                      : Effect.fail(new Error(`${upload.fqn} has no recorded row to settle`))),
               }),
             );
           }
+          if (input.destroy) return yield* Plan.destroy({ name: scope.stack, stage: scope.stage });
           return yield* Plan.make(compiled, input.include ? { include: input.include } : {});
         }).pipe(Effect.provideService(State, Context.get(compiled.services, State))),
       { stage: scope.stage },

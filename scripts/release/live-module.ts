@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Data, Effect, Redacted } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import { servingVersion } from "./worker-version.ts";
 
 export class LiveModuleUnavailable extends Data.TaggedError("LiveModuleUnavailable")<{
   readonly script: string;
@@ -11,9 +12,10 @@ export class LiveModuleUnavailable extends Data.TaggedError("LiveModuleUnavailab
 
 /**
  * The sha256 of the main module the live script is serving. The class-change deploy must upload
- * exactly these bytes (R2: no code moves with the irreversible step); the wire guard compares them.
- * The content endpoint returns multipart with the module (`application/javascript+module`) and its
- * source map (recorded production shape: hunt prod-shapes 04).
+ * exactly these bytes, so no code moves with the step that cannot be rolled back; the wire guard
+ * compares them. The latest upload is not necessarily what serves (a version can be uploaded
+ * without being deployed), so the read names the one version serving 100%. The content endpoint
+ * returns multipart: the module (`application/javascript+module`) and its source map.
  */
 export const liveMainModuleSha256 = (input: {
   accountId: string;
@@ -29,8 +31,11 @@ export const liveMainModuleSha256 = (input: {
         fix: "Do not run the class change; read the live script again",
         ...(cause === undefined ? {} : { cause }),
       });
+    const version = yield* servingVersion(input).pipe(
+      Effect.mapError((cause) => fail("the serving version could not be resolved", cause)),
+    );
     const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-    const url = `${input.apiOrigin ?? "https://api.cloudflare.com/client/v4"}/accounts/${encodeURIComponent(input.accountId)}/workers/scripts/${encodeURIComponent(input.script)}/content/v2`;
+    const url = `${input.apiOrigin ?? "https://api.cloudflare.com/client/v4"}/accounts/${encodeURIComponent(input.accountId)}/workers/scripts/${encodeURIComponent(input.script)}/content/v2?version=${encodeURIComponent(version)}`;
     const response = yield* client
       .execute(
         HttpClientRequest.get(url).pipe(HttpClientRequest.bearerToken(Redacted.value(input.token))),
