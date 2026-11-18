@@ -1,5 +1,6 @@
 import { bindModelLifetime } from "./model-lifetime.worker.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
+import { reportStreamBroken } from "./stream-broken.ts";
 
 export function nativeControlPair(headers: Headers) {
   const pair = new WebSocketPair();
@@ -78,6 +79,7 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
           } else controller.enqueue(value.value);
         } catch (error) {
           if (ended) return;
+          reportStreamBroken("native", error);
           failing = true;
           try {
             await lease.failed?.(error);

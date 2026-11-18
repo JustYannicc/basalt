@@ -3,6 +3,7 @@ import {
   type TerminalOutcome,
   type TerminalCompletion,
 } from "./terminal-protocol.ts";
+import { reportStreamBroken } from "./stream-broken.ts";
 
 export type TerminalFinish = (outcome: TerminalOutcome, status: number, bytes: number) => void;
 
@@ -84,6 +85,7 @@ export function terminalResponse(
           }
         } catch (error) {
           if (ended) return;
+          reportStreamBroken("terminal", error);
           end("truncated");
           controller.error(error);
         }

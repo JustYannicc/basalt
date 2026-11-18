@@ -156,6 +156,10 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   TOOLS_SERVICE: Fetcher;
 }
 
+// Random values are refused at global scope, so the isolate is named on its first construction.
+let controllerIsolate: { id: string; startedAt: number } | undefined;
+let controllerConstructions = 0;
+
 export class PoolContainer extends DurableObject<PoolEnvironment> {
   private lifecycle: Promise<PoolLifecycle>;
   private handoff: RuntimeHandoff;
@@ -184,6 +188,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
+    // A new isolate means the platform replaced it; a later construction in one rebuilt the object.
+    controllerIsolate ??= { id: crypto.randomUUID(), startedAt: Date.now() };
+    console.info("POOL_CONTROLLER_INSTANCE", {
+      at: Date.now(),
+      isolate: controllerIsolate.id,
+      isolateAgeMs: Date.now() - controllerIsolate.startedAt,
+      construction: ++controllerConstructions,
+      containerRunning: ctx.container?.running ?? null,
+    });
     this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
     this.changes = new PoolChanges(
       ctx.storage,
