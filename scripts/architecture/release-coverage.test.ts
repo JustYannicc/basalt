@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { releaseCoverageGaps } from "./release-coverage.ts";
 
 // Uncovered release steps when the gate landed.
-const DEBT_CEILING = 586;
+const DEBT_CEILING = 560;
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 
 test("every release step is proven by a regression scenario, the preflight or the rehearsal", () => {

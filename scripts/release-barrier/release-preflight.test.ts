@@ -1,3 +1,4 @@
+// Regression: release-preflight-refusals (the read-only preflight refuses mutations and unsupported settlements before a release starts)
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

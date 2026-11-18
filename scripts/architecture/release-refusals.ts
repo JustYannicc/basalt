@@ -14,6 +14,11 @@ type Callable = ts.FunctionLikeDeclaration;
  * or a local whose initializer chooses the code). All four shapes failed in production.
  */
 export function barrierRefusalCodes(root: string) {
+  return [...barrierRefusalSites(root).keys()].sort();
+}
+
+/** Each refusal code with the first `file:line` that raises it, so a gap names where it came from. */
+export function barrierRefusalSites(root: string) {
   const files = releaseSources(root).map((path) =>
     ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true),
   );
@@ -58,17 +63,20 @@ export function barrierRefusalCodes(root: string) {
           node.initializer.text,
         ]);
     });
-  const codes = new Set<string>();
+  const codes = new Map<string, string>();
   for (const file of files) {
     const refuses = /\bBarrierRefusal\b/.test(file.text);
     visit(file, (node) => {
       const reason =
         sinkReason(node, sinks, subclasses) ?? (refuses ? planReason(node) : undefined);
-      if (reason)
-        for (const value of literals(reason, file)) if (code.test(value)) codes.add(value);
+      if (!reason) return;
+      const line = file.getLineAndCharacterOfPosition(reason.getStart(file)).line + 1;
+      for (const value of literals(reason, file))
+        if (code.test(value) && !codes.has(value))
+          codes.set(value, `${relative(root, file.fileName)}:${line}`);
     });
   }
-  return [...codes].sort();
+  return codes;
 
   function extendsSink(node: ts.ClassLikeDeclaration) {
     return (node.heritageClauses ?? []).some((clause) =>
@@ -120,15 +128,16 @@ function forwards(callable: Callable, parameter: string, sinks: readonly string[
   return found;
 }
 
+/** The `reason` of a plan refusal object; only those (they name a resource `fqn`) reach a barrier. */
 function planReason(node: ts.Node) {
-  if (ts.isShorthandPropertyAssignment(node) && node.name.text === "reason") return node.name;
-  if (
-    ts.isPropertyAssignment(node) &&
-    ts.isIdentifier(node.name) &&
-    node.name.text === "reason" &&
-    ts.isObjectLiteralExpression(node.parent)
-  )
-    return node.initializer;
+  if (!ts.isObjectLiteralElementLike(node) || !node.name || !ts.isIdentifier(node.name)) return;
+  if (node.name.text !== "reason" || !ts.isObjectLiteralExpression(node.parent)) return;
+  const names = node.parent.properties.map((property) =>
+    property.name && ts.isIdentifier(property.name) ? property.name.text : undefined,
+  );
+  if (!names.includes("fqn")) return;
+  if (ts.isShorthandPropertyAssignment(node)) return node.name;
+  if (ts.isPropertyAssignment(node)) return node.initializer;
   return undefined;
 }
 
@@ -165,6 +174,19 @@ function literals(expression: ts.Node, file: ts.SourceFile, seen = new Set<strin
   }
   // A call's arguments are its inputs, not the reason it returns.
   if (ts.isCallExpression(expression)) return [];
+  // A condition chooses the reason; only the branches can be it.
+  if (ts.isConditionalExpression(expression))
+    return [
+      ...literals(expression.whenTrue, file, seen),
+      ...literals(expression.whenFalse, file, seen),
+    ];
+  if (ts.isBinaryExpression(expression)) {
+    const operator = expression.operatorToken.kind;
+    if (operator === ts.SyntaxKind.AmpersandAmpersandToken)
+      return literals(expression.right, file, seen);
+    if (operator !== ts.SyntaxKind.QuestionQuestionToken && operator !== ts.SyntaxKind.BarBarToken)
+      return [];
+  }
   const values: string[] = [];
   ts.forEachChild(expression, (child) => {
     values.push(...literals(child, file, seen));

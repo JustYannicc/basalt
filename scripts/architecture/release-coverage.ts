@@ -4,7 +4,8 @@ import { knownUncovered } from "../release-barrier/release-coverage/debt.ts";
 import { preflightCoverage } from "../release-barrier/release-coverage/preflight.ts";
 import { regressionCoverage } from "../release-barrier/release-coverage/regressions.ts";
 import { rehearsalCoverage } from "../release-barrier/release-coverage/rehearsal.ts";
-import { barrierRefusalCodes } from "./release-refusals.ts";
+import { execFileSync } from "node:child_process";
+import { barrierRefusalSites } from "./release-refusals.ts";
 import {
   releaseSteps,
   type Coverage,
@@ -17,7 +18,8 @@ import {
  * added after it can't merge untested.
  */
 export function releaseCoverageGaps(root: string) {
-  const steps = releaseSteps(barrierRefusalCodes(root));
+  const sites = barrierRefusalSites(root);
+  const steps = releaseSteps([...sites.keys()].sort());
   const known = new Set(steps);
   const all: readonly Coverage[] = [
     ...regressionCoverage,
@@ -35,7 +37,9 @@ export function releaseCoverageGaps(root: string) {
   return {
     steps,
     debt: knownUncovered.length,
-    uncovered: steps.filter((step) => !covered.has(step) && !debt.has(step)),
+    uncovered: steps
+      .filter((step) => !covered.has(step) && !debt.has(step))
+      .map((step) => `${step} (from ${origin(root, step, sites)})`),
     // A debt entry that is now covered, or no longer a step, must leave the list.
     settledDebt: knownUncovered.filter((step) => covered.has(step) || !known.has(step)),
     unknownSteps: all.filter((entry) => !known.has(entry.step)).map((entry) => entry.step),
@@ -52,6 +56,33 @@ export function releaseCoverageGaps(root: string) {
       .filter((entry) => !throughReleaseClient(read, root, entry))
       .map((entry) => `${entry.step} -> ${entry.proof}`),
   };
+}
+
+const stepSources = {
+  command: "src/pool/runtime-slots/handoff-command.ts",
+  operation: "scripts/release-barrier/operation-failure.ts",
+  phase: "scripts/release-barrier/runtime-image-release-phases.ts or barrier.ts",
+} as const;
+
+/**
+ * Where an uncovered step comes from, so whoever composes a batch can tell which change owes the
+ * proof: the line that raises it and, when git history is available, the commit that added it.
+ */
+function origin(root: string, step: ReleaseStepId, sites: ReadonlyMap<string, string>) {
+  const [kind, ...rest] = step.split(":");
+  const site = kind === "refusal" ? sites.get(rest.join(":")) : undefined;
+  if (!site) return stepSources[kind as keyof typeof stepSources] ?? "unknown";
+  const [file, line] = site.split(":");
+  try {
+    const commit = execFileSync(
+      "git",
+      ["-C", root, "log", "-1", "--format=%h %s", `-L${line},${line}:${file}`, "--no-patch"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000 },
+    ).trim();
+    return commit ? `${site}, added in ${commit}` : site;
+  } catch {
+    return site;
+  }
 }
 
 /** A test that redirects or mocks the release client module never runs its real commands. */
@@ -95,8 +126,19 @@ function proofExists(read: Read, root: string, proof: string) {
   return (
     source !== undefined &&
     /\/\/ Regression: /.test(source) &&
-    (name === undefined || source.includes(`test(${JSON.stringify(name)}`))
+    (name === undefined || declaresTest(source, name))
   );
+}
+
+/** A named test, or a row of a table-driven `test(\`prefix ${row}\`)` whose label is in the file. */
+function declaresTest(source: string, name: string) {
+  if (source.includes(`test(${JSON.stringify(name)}`)) return true;
+  for (const [, prefix, suffix] of source.matchAll(/test\(`([^`$]*)\$\{\w+\}([^`$]*)`/g)) {
+    if (!name.startsWith(prefix!) || !name.endsWith(suffix!)) continue;
+    const row = name.slice(prefix!.length, name.length - suffix!.length);
+    if (row && source.includes(JSON.stringify(row))) return true;
+  }
+  return false;
 }
 
 const proofPath = (root: string, proof: string) => join(root, proof.split("#")[0]!);

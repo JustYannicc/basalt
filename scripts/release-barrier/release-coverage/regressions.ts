@@ -126,4 +126,44 @@ export const regressionCoverage: readonly Coverage[] = [
     proof:
       "scripts/release-barrier/prop-diff.test.ts#a provider update with unchanged props explains why instead of rendering an empty delta",
   },
+  {
+    step: "refusal:release-preflight-mutation-refused",
+    proof:
+      "scripts/release-barrier/release-preflight.test.ts#the read-only bridge refuses every mutation before it reaches the controller",
+  },
+  {
+    step: "refusal:release-preflight-settlement-unsupported",
+    proof:
+      "scripts/release-barrier/release-preflight.test.ts#a required settlement reports in Check but blocks the release; an unsupported one blocks both",
+  },
+  {
+    step: "refusal:release-settlement-active-health-expired",
+    proof:
+      "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses an active health whose lease expired during its own request",
+  },
+  {
+    step: "refusal:release-settlement-active-health-identity",
+    proof:
+      "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses an active health for another boot",
+  },
+  {
+    step: "refusal:release-settlement-adopted-selection-unexpected",
+    proof:
+      "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses an active identity that is not its target and boot",
+  },
+  {
+    step: "refusal:release-settlement-adoption-witness-unexpected",
+    proof:
+      "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses a witness for another boot",
+  },
+  {
+    step: "refusal:release-settlement-controller-identity-refused",
+    proof:
+      "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses a source controller code the live controller does not hold",
+  },
+  {
+    step: "refusal:release-settlement-selection-changed",
+    proof:
+      "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses a selection that changed before the final inspect",
+  },
 ];
