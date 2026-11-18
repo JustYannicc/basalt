@@ -29,6 +29,7 @@ function world(outcomes: ReleaseOutcome[], overrides: Partial<RehearsalHooks> = 
     deployBaseline: async () => void events.push("baseline"),
     seedPools: async () => (events.push("seed"), { cleanPool: "clean" }),
     verifyAdopted: async (pool) => void events.push(`adopted:${pool}`),
+    settle: async () => void events.push("settle"),
     release: async (request) => {
       requests.push(request);
       events.push(`release:${request.candidate}`);
@@ -58,7 +59,7 @@ test("the straight rehearsal stops the previous candidate after adopt, then rele
   const steps = rehearsalSteps("straight", hooks);
   assert.deepEqual(await run(steps, events), { smoke, teardown: true });
   assert.deepEqual(events, [
-    "baseline", "seed", "release:previous", "adopted:clean", "traffic", "release:candidate", "traffic-stop", "serve", "destroy", "verify",
+    "baseline", "seed", "release:previous", "adopted:clean", "settle", "traffic", "release:candidate", "traffic-stop", "serve", "destroy", "verify",
   ]);
   assert.deepEqual(requests[0], { candidate: "previous", stop: "after-adopt", cleanPool: "clean" });
   assert.deepEqual(requests[1], { candidate: "candidate", cleanPool: "clean" });
@@ -72,7 +73,7 @@ test("the drain scenario times out with a held connection, then resumes the same
   const { hooks, events, requests } = world([stopped, drainDeadline, { ok: true }]);
   const steps = rehearsalSteps("drain-resume", hooks);
   await run(steps, events);
-  assert.deepEqual(events.slice(4, 10), ["traffic", "hold", "release:candidate", "close", "release:candidate", "traffic-stop"]);
+  assert.deepEqual(events.slice(5, 11), ["traffic", "hold", "release:candidate", "close", "release:candidate", "traffic-stop"]);
   assert.equal(requests[1]!.drainCapMs, 120_000);
   assert.equal(requests[2]!.drainCapMs, undefined);
 });

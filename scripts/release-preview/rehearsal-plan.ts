@@ -18,6 +18,8 @@ export interface RehearsalHooks {
   release(request: ReleaseRequest): Promise<ReleaseOutcome>;
   /** Refuses unless the stopped previous release left production's adopted selection and policies. */
   verifyAdopted(cleanPool: string): Promise<void>;
+  /** Settles the stopped previous candidate the way production does before its next release. */
+  settle(): Promise<void>;
   /** Opens one connection on the serving runtime that stays open until closed. */
   holdConnection(cleanPool: string): Promise<{ close(): Promise<void> }>;
   startTraffic(cleanPool: string): Traffic;
@@ -70,6 +72,7 @@ export function rehearsalSteps(scenario: RehearsalScenario, hooks: RehearsalHook
         "release-rehearsal-stopped-after-adopt",
       );
       await hooks.verifyAdopted(cleanPool);
+      await hooks.settle();
     },
     smoke: async () => {
       // Requests run through every phase, so the capacity and drain waits see real leases.

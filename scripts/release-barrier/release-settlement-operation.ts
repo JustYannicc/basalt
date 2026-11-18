@@ -21,6 +21,7 @@ import {
   sealReleaseSettlement,
 } from "./release-settlement-archive.ts";
 import { journalKey } from "./forward-journal.ts";
+import { releaseScope } from "./release-stage.ts";
 
 const hash = (value: unknown) => digest(canonical(value));
 type SettlementManifest = typeof ReleaseSettlementManifest.Type;
@@ -73,8 +74,8 @@ export const planReleaseSettlement = (
   Effect.gen(function* () {
     assertReleaseSettlementPlanGo(request, now());
     if (
-      stack.name !== "basalt" ||
-      stack.stage !== "production" ||
+      stack.name !== releaseScope().stack ||
+      stack.stage !== releaseScope().stage ||
       !writer.lease ||
       request.sourceCandidate === writer.candidate
     )

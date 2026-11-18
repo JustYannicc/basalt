@@ -17,6 +17,9 @@ import {
   type RehearsalPoolAccess,
 } from "./rehearsal-seed.ts";
 import { holdModelSocket, modelTraffic } from "./rehearsal-traffic.ts";
+import { rehearsalReleaseEnvironment } from "./rehearsal-environment.ts";
+import { requireSettlementApplied, settlementPacket, settlementPlanRequest } from "./rehearsal-settlement.ts";
+import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
 import { applyRehearsalFixture, withStageBuild } from "../preview/lifecycle.ts";
@@ -53,9 +56,9 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   let sequence = 0;
   const deployEnvironment = lifecycleEnvironment(source, "deploy");
   const cleanupEnvironment = lifecycleEnvironment(source, "cleanup");
-  const operation = (label: string, directory: string, script: string, args: string[], environment: NodeJS.ProcessEnv, minutes = 60) =>
+  const operation = (label: string, directory: string, script: string, args: string[], environment: NodeJS.ProcessEnv, minutes = 60, command = process.execPath) =>
     privateOperation({
-      label, command: process.execPath, args: [script, ...args], directory,
+      label, command, args: [script, ...args], directory,
       environment: { ...environment, GITHUB_OUTPUT: undefined, GITHUB_ENV: undefined },
       logPath: join(privateRoot, `${++sequence}-${label}.log`), timeoutMs: minutes * 60_000,
       signal: label === "destroy" || label === "verify-absence" ? undefined : controller.signal,
@@ -137,6 +140,28 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       verifyAdopted: async () => {
         const { policies } = await adoptedSnapshot(join(previousRoot, ".local", "release-barrier"));
         verifyRehearsalPolicies(policies as RehearsalPolicy[], { cleanPool, emptyPools });
+      },
+      settle: async () => {
+        const writer: NodeJS.ProcessEnv = { ...deployEnvironment, ALCHEMY_STAGE: stage, BASALT_RELEASE_CANDIDATE: candidate };
+        for (const name of writerInputs) if (source[name]) writer[name] = source[name];
+        const environment = rehearsalReleaseEnvironment(writer);
+        const step = async (mode: "plan" | "apply", packet: unknown) => {
+          const directory = join(privateRoot, `settlement-${mode}`);
+          await operation(`settlement-${mode}`, root, "scripts/release-barrier/provisioning-entry.ts", [], {
+            ...environment,
+            POOL_PROVISIONING_MODE: mode,
+            POOL_PROVISIONING_PACKET: JSON.stringify(packet),
+            POOL_PROVISIONING_OUTPUT_DIRECTORY: directory,
+          }, 15, "bun");
+          const receipt = await readFile(join(directory, "receipt.json"), "utf8");
+          // Kept with the barrier receipts the workflow uploads.
+          await mkdir(join(root, ".local", "release-barrier"), { recursive: true });
+          await writeFile(join(root, ".local", "release-barrier", `settlement-${mode}.json`), receipt, { mode: 0o600 });
+          return JSON.parse(receipt) as unknown;
+        };
+        const planned = await step("plan", settlementPlanRequest({ previous, workerInput: poolWorkerRevision, number: subject.number, now: Date.now() }));
+        const packet = settlementPacket(planned, Date.now());
+        requireSettlementApplied(await step("apply", packet), packet.go.manifest);
       },
       holdConnection: async () => holdModelSocket(access!),
       startTraffic: () => modelTraffic(access!, model, controller.signal),
