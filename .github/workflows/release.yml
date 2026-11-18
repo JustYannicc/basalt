@@ -45,29 +45,85 @@ on:
 
 permissions:
   contents: read
-  deployments: write
-
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
 
 jobs:
-  release:
+  # Check runs finish out of order. An automatic run releases the newest passing main commit that
+  # contains its own, and skips one production already contains, so older code never lands over newer.
+  candidate:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.path == '.github/workflows/ci.yml')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      release: ${{ steps.pick.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Pick the candidate
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            printf 'sha=%s\nrelease=true\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          GITHUB_OUTPUT="$RUNNER_TEMP/newer" MAIN_RELEASE_CANDIDATE="$CANDIDATE" node scripts/release-merge/main-candidate.ts newer
+          newer=$(sed -n 's/^newer=//p' "$RUNNER_TEMP/newer")
+          sha="${newer:-$CANDIDATE}"
+          live=""
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=30" --jq '.[].id'); do
+            if [ "$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')" = "success" ]; then
+              live=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id" --jq .sha)
+              break
+            fi
+          done
+          if [ -n "$live" ] && git cat-file -e "$live^{commit}" 2>/dev/null && git merge-base --is-ancestor "$sha" "$live"; then
+            echo "Production already contains $sha (live $live); nothing to release." >> "$GITHUB_STEP_SUMMARY"
+            printf 'sha=%s\nrelease=false\n' "$sha" >> "$GITHUB_OUTPUT"
+          else
+            printf 'sha=%s\nrelease=true\n' "$sha" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: candidate
+    if: needs.candidate.outputs.release == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
+      deployments: write
+      statuses: read
+    # On the job, not the workflow, so a run whose jobs are all skipped can't replace a pending release.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     environment:
       name: production-release
       deployment: false
     env:
       PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
-      BASALT_RELEASE_CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+      BASALT_RELEASE_CANDIDATE: ${{ needs.candidate.outputs.sha }}
+      PLAN_DIGEST_INPUT: ${{ inputs.plan_digest }}
+      ATTEMPT_INPUT: ${{ inputs.attempt }}
       MODE: ${{ inputs.mode || 'apply' }}
       # An automatic release is code-only; anything else needs a dispatch with its policy named.
       POLICY_NAME: ${{ inputs.policy || 'code' }}
@@ -145,14 +201,23 @@ jobs:
             fi
             echo "Release hold set; running under GO $GO" >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: A dispatched apply names its reviewed plan
+        if: github.event_name == 'workflow_dispatch' && env.MODE == 'apply'
+        run: |
+          if [ -z "$PLAN_DIGEST_INPUT" ] || [ -z "$ATTEMPT_INPUT" ]; then
+            echo "::error::An apply dispatch needs the plan_digest and attempt its reviewed plan run printed."
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
       - name: Stop the line and require a rehearsal
         if: hashFiles('scripts/guardrails/release-gate.ts') != ''
         env:
           OVERRIDE_REASON: ${{ inputs.override_reason }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/guardrails/release-gate.ts "$BASALT_RELEASE_CANDIDATE"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -166,11 +231,18 @@ jobs:
       # exported sealed, no unresolved Home schema migration in its journal, and the root pin.
       - name: Preflight against State
         run: bun scripts/release/deploy.ts preflight --stage production
+      # A dispatched apply re-plans with the reviewed attempt id, so the digest must come out the same:
+      # every record below names the plan that is applied.
       - name: Plan and check
         id: plan
         run: |
-          bun scripts/release/deploy.ts plan --stage production --policy "$POLICY"
-          echo "digest=$(jq -r .digest .local/release/plan.json)" >> "$GITHUB_OUTPUT"
+          bun scripts/release/deploy.ts plan --stage production --policy "$POLICY" ${ATTEMPT_INPUT:+--attempt "$ATTEMPT_INPUT"}
+          digest=$(jq -r .digest .local/release/plan.json)
+          if [ "$MODE" = "apply" ] && [ -n "$PLAN_DIGEST_INPUT" ] && [ "$digest" != "$PLAN_DIGEST_INPUT" ]; then
+            echo "::error::The plan changed since it was reviewed: $digest, reviewed $PLAN_DIGEST_INPUT."
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "attempt=$(jq -r .attempt .local/release/plan.json)" >> "$GITHUB_OUTPUT"
       # Nothing below runs against a pegged database (the history import pauses at the same 60%).
       - name: Refuse while the pool database is busy
@@ -226,8 +298,8 @@ jobs:
         # The outcome decides the rollback below; the job still ends red if anything failed.
         continue-on-error: true
         env:
-          PLAN_DIGEST: ${{ inputs.plan_digest || steps.plan.outputs.digest }}
-          ATTEMPT: ${{ inputs.attempt || steps.plan.outputs.attempt }}
+          PLAN_DIGEST: ${{ steps.plan.outputs.digest }}
+          ATTEMPT: ${{ steps.plan.outputs.attempt }}
         run: bun scripts/release/deploy.ts apply --stage production --policy "$POLICY" --plan-digest "$PLAN_DIGEST" --attempt "$ATTEMPT"
       - name: Accept the release through the live pool
         id: accept
