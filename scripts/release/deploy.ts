@@ -119,6 +119,37 @@ const Alchemist = await import("alchemy/Alchemist");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const database = await import("./database-safety.ts");
 
+// Alchemy's progress events, kept so every run's full sequence survives in the artifact. Only short
+// identifying fields are kept; props and outputs never are.
+const events: string[] = [];
+const keep = [
+  "_tag",
+  "id",
+  "fqn",
+  "logicalId",
+  "status",
+  "phase",
+  "action",
+  "resourceType",
+  "kind",
+  "message",
+];
+const reporter = (event: unknown) =>
+  Effect.sync(() => {
+    const line = JSON.stringify(
+      Object.fromEntries(
+        Object.entries(event as Record<string, unknown>)
+          .filter(
+            ([key, value]) =>
+              keep.includes(key) && ["string", "number", "boolean"].includes(typeof value),
+          )
+          .map(([key, value]) => [key, typeof value === "string" ? value.slice(0, 300) : value]),
+      ),
+    );
+    events.push(line);
+    console.log(line);
+  });
+
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   Effect.runPromise(
@@ -128,7 +159,10 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
       journal = guard.journal;
       yield* WireGuard.selfTest();
       yield* storeCannotBootstrap;
-      return yield* (effect.pipe(Effect.provide(guard.layer)) as Fx.Effect<A, unknown, never>);
+      return yield* effect.pipe(
+        Effect.provide(guard.layer),
+        Effect.provideService(Alchemist.Progress, reporter),
+      ) as Fx.Effect<A, unknown, never>;
     }).pipe(Effect.provide(Alchemist.layer()), Effect.scoped) as Fx.Effect<A, unknown, never>,
   );
 
@@ -250,6 +284,12 @@ try {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
 } finally {
+  if (events.length) await mkdir(resolve(root, ".local/release"), { recursive: true });
+  if (events.length)
+    await writeFile(
+      resolve(root, `.local/release/${command}-events.jsonl`),
+      `${events.join("\n")}\n`,
+    ).catch(() => {});
   if (journal.length)
     await summary(
       `Outgoing requests:\n${journal.map((entry) => `${entry.method} ${entry.host}${entry.path}`).join("\n")}`,
