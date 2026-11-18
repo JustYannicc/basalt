@@ -110,6 +110,8 @@ function safeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       "GITHUB_ACTIONS",
       "BUN_INSTALL",
       "NODE_OPTIONS",
+      // The stage runner's private output directory: the entry keeps its failure detail there.
+      "BASALT_STAGE_OUTPUT_DIR",
     ].flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
   ) as NodeJS.ProcessEnv;
 }
