@@ -1,17 +1,17 @@
-import { run } from "./process.ts";
+import { compile, recordEffectDiagnostics, type Program } from "./effect-diagnostics-record.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const compiler = ".upstream/node_modules/.bin/tsc-rs";
-run(compiler, ["--noEmit", "-p", "tsconfig.json"]);
+const programs: Program[] = [compile(compiler, "tsconfig.json")];
 // Resource declarations use the same module and optional-property semantics as the upstream stack.
-run(compiler, ["--noEmit", "-p", "tsconfig.stack.json"]);
-run(compiler, ["--noEmit", "-p", "tsconfig.worker.json"]);
+programs.push(compile(compiler, "tsconfig.stack.json"));
+programs.push(compile(compiler, "tsconfig.worker.json"));
 // The fast gate reads public source exports; the production gate checks the shipped declarations.
 // Each bundled app with a browser screen has its own config over the same React and apps types.
 for (const name of ["pool", "obsidian"]) {
   if (!process.argv.includes("--source")) {
-    run(compiler, ["--noEmit", "-p", `tsconfig.${name}.json`]);
+    programs.push(compile(compiler, `tsconfig.${name}.json`));
     continue;
   }
   const root = fileURLToPath(new URL("../", import.meta.url));
@@ -42,5 +42,6 @@ for (const name of ["pool", "obsidian"]) {
     config,
     JSON.stringify({ extends: join(root, `tsconfig.${name}.json`), compilerOptions: { paths } }),
   );
-  run(compiler, ["--noEmit", "-p", config]);
+  programs.push(compile(compiler, config));
 }
+recordEffectDiagnostics(programs);

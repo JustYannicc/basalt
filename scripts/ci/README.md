@@ -23,3 +23,11 @@ After changing `upstream.json`, fetch its exact commit into `.upstream` and run 
 `bun scripts/ci/check-e2e-coverage.ts` runs in the fast lane after preparation. It names test calls and standalone checks that no declared runner or workflow reaches. Wire each omission into a CI group or job, or add a reviewed entry to `scripts/ci/e2e-exceptions.json` with a reason and the exact fingerprint from `.generated/ci/e2e-coverage.json`. The fingerprint includes the prepared spec and its plan. Changed fingerprints require renewed review, and selected or deleted entries must be removed. Exceptions never expand automatically to new tests in the same file.
 
 `--no-exceptions` reports the full ungated inventory, including the frozen inherited baseline. A temporary exception for a broken check must name its owning fix. Wiring that check makes the exception fail, so the fix removes both together.
+
+## Effect diagnostics only go down
+
+`node scripts/typecheck.ts` runs Effect's language service inside the type checker: `tsconfig.effect.json` raises the gated rules in `scripts/effect-diagnostics.ts` to errors, and every type-check config extends it. The preflight then runs `node scripts/effect-diagnostics.ts`, which holds `scripts/**` (except `scripts/release-barrier/**`) and `src/**` to `scripts/effect-diagnostics.baseline.json`, a count per rule and file. Any rise fails and lists the new sites. A fall fails until the baseline is lowered, so fixes are recorded; a deleted file never fails. With `BASE_SHA` set, the committed baseline may not raise a file the base commit had or any rule's total, so counts can move with code but never grow.
+
+After fixing sites, or after a rebase changes the counts, run `node scripts/effect-diagnostics.ts --write`. It rewrites `tsconfig.effect.json` from the rule list, runs the type check and rewrites the baseline. Resolve baseline merge conflicts by taking either side and running it again.
+
+Two more counts share the baseline: `notTypeChecked` (a file no program in `scripts/typecheck.ts` reads) and `suppressionComment` (a `ts-nocheck` or Effect diagnostics directive comment, which hides diagnostics from the gate). Rules newer than the pinned compiler, such as `effectTryWithoutCatch`, are rejected as unknown names; they need a compiler update in the upstream toolchain first.
