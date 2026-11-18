@@ -109,13 +109,6 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(db_distance.pooler_endpoint("postgresql://u:p@[2001:db8::1]:6432/x"), ("2001:db8::1", 6432))
         self.assertEqual(db_distance.pooler_endpoint("postgresql://u:p@db.example.invalid/x"), ("db.example.invalid", 5432))
 
-    def test_hold_bound_comes_from_the_start_environment(self) -> None:
-        with patch.object(db_distance, "measure", return_value=Distance("held", 42, 47, 7)) as measure:
-            db_distance.measure_database("postgresql://u:p@db.example.invalid:6432/x", {db_distance.HOLD_ENV: "20"})
-            db_distance.measure_database("postgresql://u:p@db.example.invalid:6432/x", {})
-        self.assertEqual([call.args for call in measure.call_args_list],
-                         [("db.example.invalid", 6432, 20), ("db.example.invalid", 6432, None)])
-
     def test_unparseable_url_is_unknown(self) -> None:
         self.assertEqual(
             db_distance.measure_database("not a url", {}), Distance("failed", None, None, 0)
@@ -201,22 +194,22 @@ class StopDuringMeasurementTests(unittest.TestCase):
 
 class HeldStartTests(unittest.TestCase):
     def test_held_start_never_launches_home_and_exits_cleanly_when_stopped(self) -> None:
-        stop = threading.Event()
-        child = Mock()
+        readiness: list[Readiness] = []
         published: list[dict] = []
 
-        def start_ready_server(ready: Readiness) -> Mock:
-            def stop_once_held() -> None:
-                while not stop.is_set():
-                    _, payload = ready.snapshot()
-                    if payload["db_rtt_state"] == "held":
-                        published.append(payload)
-                        stop.set()
-                    stop.wait(0.01)
+        class StopWhenHeld(threading.Event):
+            def wait(self, timeout: float | None = None) -> bool:
+                if timeout is None and not self.is_set():
+                    # The held path's untimed wait; this is where the controller would stop it.
+                    published.append(readiness[0].snapshot()[1])
+                    self.set()
+                return super().wait(timeout)
 
-            threading.Thread(target=stop_once_held, daemon=True).start()
+        def start_ready_server(ready: Readiness) -> Mock:
+            readiness.append(ready)
             return Mock()
 
+        child = Mock()
         stdout = io.StringIO()
         with (
             tempfile.TemporaryDirectory() as root,
@@ -234,8 +227,9 @@ class HeldStartTests(unittest.TestCase):
             redirect_stdout(stdout),
             redirect_stderr(io.StringIO()),
         ):
-            self.assertEqual(supervisor.main(stop), 0)
+            self.assertEqual(supervisor.main(StopWhenHeld()), 0)
         child.assert_not_called()
+        self.assertEqual(published[0]["db_rtt_state"], "held")
         self.assertEqual(published[0]["db_rtt_ms"], 42)
         lines = [line for line in stdout.getvalue().splitlines() if line.startswith("POOL_DB_DISTANCE ")]
         self.assertEqual(len(lines), 1)

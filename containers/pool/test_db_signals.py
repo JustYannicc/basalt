@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from . import db_signals, supervisor
 from .child_signals import home_message
@@ -53,6 +53,16 @@ class SlowStatementTests(unittest.TestCase):
         self.assertNotEqual(
             db_signals.statement_fingerprint("SELECT * FROM users WHERE id = 1"),
             db_signals.statement_fingerprint("SELECT * FROM usage WHERE id = 1"),
+        )
+
+    def test_truncated_multi_row_write_keeps_the_fingerprint_of_the_whole_write(self) -> None:
+        rows = ",".join(["($%d,$%d)" % (2 * i + 1, 2 * i + 2) for i in range(400)])
+        whole = "INSERT INTO log (a,b) VALUES " + rows
+        message = "SLOW SQL >= 200ms [900ms] [rows:400] " + whole
+        cut = message[: len(message) // 2 + 3]
+        self.assertEqual(
+            db_signals.slow_statement(cut, truncated=True)[1],
+            db_signals.slow_statement(message)[1],
         )
 
     def test_multi_row_writes_share_a_fingerprint_whatever_the_batch_size(self) -> None:
@@ -125,30 +135,39 @@ class DatabasePoolTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIsNone(db_signals.database_pool(self.capabilities(**{field: bad})))
 
-    def test_read_uses_a_short_management_get(self) -> None:
-        request = Mock(return_value=(200, self.capabilities()))
-        self.assertEqual(db_signals.read_database_pool("key", request)["wait_count"], 41)
-        url, method, key = request.call_args.args
-        self.assertTrue(url.endswith("/v8/management/capabilities"))
-        self.assertEqual((method, key, request.call_args.kwargs), ("GET", "key", {"timeout": 1}))
-        request.return_value = (0, {})
-        self.assertIsNone(db_signals.read_database_pool("key", request))
+    def test_read_returns_counters_only_from_a_successful_answer(self) -> None:
+        with patch.object(db_signals, "request_json", return_value=(200, self.capabilities())):
+            self.assertEqual(db_signals.read_database_pool("key")["wait_count"], 41)
+        with patch.object(db_signals, "request_json", return_value=(0, {})):
+            self.assertIsNone(db_signals.read_database_pool("key"))
+        with patch.object(db_signals, "request_json", return_value=(503, self.capabilities())):
+            self.assertIsNone(db_signals.read_database_pool("key"))
 
-    def test_poll_cadence_and_logging(self) -> None:
+    def test_counters_above_the_closed_bound_are_refused(self) -> None:
+        self.assertIsNone(db_signals.database_pool(self.capabilities(wait_count=1 << 63)))
+
+    def test_logs_when_waits_change_and_every_five_minutes(self) -> None:
         counters = {"max_open": 6, "open": 6, "in_use": 2, "idle": 4, "wait_count": 0, "wait_ms": 0}
-        reads = [dict(counters), dict(counters), {**counters, "wait_count": 3, "wait_ms": 900}]
-        sink = Mock()
-        poll = db_signals.DatabasePoolPoll("key", sink, read=lambda _key: reads.pop(0))
+        reads = [dict(counters), dict(counters), {**counters, "wait_count": 3, "wait_ms": 900}, {**counters, "wait_count": 3, "wait_ms": 900}]
+        readiness = Mock()
+        poll = db_signals.DatabasePoolPoll(readiness, "key", read=lambda _key: reads.pop(0))
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            poll.maybe_poll(0)
-            poll.maybe_poll(10)  # inside the interval: no read
-            poll.maybe_poll(15)  # unchanged waits: quiet
-            poll.maybe_poll(30)  # waits rose: logged
-        self.assertEqual(sink.set_database_pool.call_count, 3)
-        lines = stdout.getvalue().splitlines()
-        self.assertEqual(len(lines), 2)
-        self.assertEqual(json.loads(lines[1].split(" ", 1)[1])["wait_count"], 3)
+            poll.check_once(0)    # first reading: logged
+            poll.check_once(15)   # unchanged: quiet
+            poll.check_once(30)   # waits rose: logged
+            poll.check_once(330)  # unchanged for five minutes: logged again
+        self.assertEqual(readiness.set_database_pool.call_count, 4)
+        logged = [json.loads(line.split(" ", 1)[1])["wait_count"] for line in stdout.getvalue().splitlines()]
+        self.assertEqual(logged, [0, 3, 3])
+
+    def test_unreadable_counters_leave_the_last_reading(self) -> None:
+        readiness = Mock()
+        poll = db_signals.DatabasePoolPoll(readiness, "key", read=lambda _key: None)
+        with redirect_stdout(io.StringIO()) as stdout:
+            poll.check_once(0)
+        readiness.set_database_pool.assert_not_called()
+        self.assertEqual(stdout.getvalue(), "")
 
 
 class ReadinessDiagnosticsTests(unittest.TestCase):
@@ -163,6 +182,10 @@ class ReadinessDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["db_slow_count"], 2)
         self.assertEqual(payload["db_slow_max_ms"], 1200)
         self.assertEqual(payload["db_pool"]["wait_ms"], 4100)
+        readiness.home_process_restarted()
+        _, payload = readiness.snapshot()
+        self.assertNotIn("db_pool", payload)
+        self.assertEqual(payload["db_slow_count"], 2)
 
 
 if __name__ == "__main__":

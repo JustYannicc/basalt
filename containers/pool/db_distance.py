@@ -1,4 +1,4 @@
-"""Network distance to the database pooler, measured once per boot before Home starts.
+"""Network distance to the database pooler, measured once per supervisor start before Home starts.
 
 Plain TCP handshakes only: no TLS, no startup packet, no login. The controller decides what a
 distance means; the supervisor only holds Home back when the controller asked it to for this start.
@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Literal
 from dataclasses import dataclass
 
 ATTEMPTS = 7
@@ -32,7 +32,7 @@ HOLD = re.compile(r"[1-9][0-9]{0,3}")
 
 @dataclass(frozen=True)
 class Distance:
-    state: str  # "measured", "failed" or "held"; "pending" exists only before measurement
+    state: Literal["measured", "failed", "held"]
     rtt_ms: int | None
     max_ms: int | None
     samples: int

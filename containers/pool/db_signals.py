@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .child_signals import MAX_HOME_SIGNAL_INTEGER
 from .pool_contract import HOME_URL, request_json
 
 SLOW_STATEMENT_MARKER = "POOL_HOME_SLOW_SQL "
@@ -46,14 +47,18 @@ def statement_fingerprint(sql: str) -> str:
     return hashlib.sha256(shape.encode("utf-8")).hexdigest()[:16]
 
 
-def slow_statement(message: str | None) -> tuple[int, str] | None:
+def slow_statement(message: str | None, truncated: bool = False) -> tuple[int, str] | None:
     if message is None:
         return None
     match = SLOW_STATEMENT.fullmatch(message.strip())
     if match is None:
         return None
     elapsed = min(MAX_ELAPSED_MS, max(1, math.ceil(float(match.group("ms")))))
-    return elapsed, statement_fingerprint(match.group("sql"))
+    sql = match.group("sql")
+    if truncated:
+        # A cut line ends inside a row or value; keep the complete rows so the shape stays stable.
+        sql = sql[: sql.rfind(")") + 1] or sql
+    return elapsed, statement_fingerprint(sql)
 
 
 def slow_statement_line(elapsed_ms: int, fingerprint: str) -> str:
@@ -73,21 +78,18 @@ def database_pool(capabilities: Any) -> dict[str, int] | None:
     projected: dict[str, int] = {}
     for source, target in POOL_FIELDS.items():
         value = stats.get(source)
-        if type(value) is not int or value < 0:
+        if type(value) is not int or not 0 <= value <= MAX_HOME_SIGNAL_INTEGER:
             return None
         projected[target] = value
     wait_ns = stats.get("wait_duration_ns")
-    if type(wait_ns) is not int or wait_ns < 0:
+    if type(wait_ns) is not int or not 0 <= wait_ns <= MAX_HOME_SIGNAL_INTEGER:
         return None
     projected["wait_ms"] = wait_ns // 1_000_000
     return projected
 
 
-def read_database_pool(
-    management_key: str,
-    request: Callable[..., tuple[int, dict[str, Any]]] = request_json,
-) -> dict[str, int] | None:
-    status, body = request(
+def read_database_pool(management_key: str) -> dict[str, int] | None:
+    status, body = request_json(
         f"{HOME_URL}/v8/management/capabilities", "GET", management_key, timeout=1
     )
     return database_pool(body) if status == 200 else None
@@ -109,33 +111,30 @@ class DatabasePoolPoll:
 
     def __init__(
         self,
+        readiness: Any,
         management_key: str,
-        sink: Any,
-        read: Callable[[str], dict[str, int] | None] = read_database_pool,
+        read: Callable[[str], dict[str, int] | None] | None = None,
     ) -> None:
+        self._readiness = readiness
         self._management_key = management_key
-        self._sink = sink
         self._read = read
-        self._next_poll = 0.0
         self._reported_wait_count: int | None = None
         self._reported_at = -math.inf
 
-    def start(self, stop: threading.Event) -> None:
-        threading.Thread(target=self._run, args=(stop,), daemon=True).start()
-
-    def _run(self, stop: threading.Event) -> None:
+    def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
-            self.maybe_poll(time.monotonic())
+            self.check_once(time.monotonic())
             stop.wait(self.INTERVAL_SECONDS)
 
-    def maybe_poll(self, now: float) -> None:
-        if now < self._next_poll:
-            return
-        self._next_poll = now + self.INTERVAL_SECONDS
-        counters = self._read(self._management_key)
+    def check_once(self, now: float) -> None:
+        counters = (
+            self._read(self._management_key)
+            if self._read is not None
+            else read_database_pool(self._management_key)
+        )
         if counters is None:
             return
-        self._sink.set_database_pool(counters)
+        self._readiness.set_database_pool(counters)
         if (
             counters["wait_count"] != self._reported_wait_count
             or now - self._reported_at >= self.QUIET_REPORT_SECONDS

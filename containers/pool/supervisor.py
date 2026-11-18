@@ -106,7 +106,7 @@ class Child:
             if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
                 if not oversized:
                     # Big multi-row writes are often the slowest; their first chunk names the shape.
-                    self._report_slow_statement(line)
+                    self._report_slow_statement(line, truncated=True)
                 oversized = not line.endswith("\n")
                 continue
             if self.diagnostics is not None:
@@ -131,8 +131,8 @@ class Child:
             if safe is not None:
                 print(safe, flush=True)
 
-    def _report_slow_statement(self, line: str) -> bool:
-        slow = db_signals.slow_statement(home_message(self.name, line))
+    def _report_slow_statement(self, line: str, truncated: bool = False) -> bool:
+        slow = db_signals.slow_statement(home_message(self.name, line), truncated)
         if slow is None:
             return False
         print(db_signals.slow_statement_line(*slow), flush=True)
@@ -259,6 +259,7 @@ def main(stop: threading.Event | None = None) -> int:
     recovery_cleanup_done = False
     try:
         management_key = env_required("POOL_MANAGEMENT_KEY")
+        location = db_distance.location(os.environ)
         database_url = env_required("POOL_DATABASE_URL")
         allow_remote = boolean_env("POOL_MANAGEMENT_ALLOW_REMOTE", False)
         home_identity = HomeIdentity.parse(os.environ.get("POOL_HOME_PEER_ORDINAL"))
@@ -269,7 +270,7 @@ def main(stop: threading.Event | None = None) -> int:
             management_key,
             launch_generation=os.environ.get("POOL_LAUNCH_GENERATION"),
             launch_token=os.environ.get("POOL_LAUNCH_TOKEN"),
-            location=db_distance.location(os.environ),
+            location=location,
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
@@ -289,7 +290,7 @@ def main(stop: threading.Event | None = None) -> int:
         with startup_phase(StartupPhase.DB_DISTANCE, supervisor_started_ns):
             distance = db_distance.measure_database(database_url, os.environ)
         readiness.set_database_distance(distance)
-        db_distance.report(distance, db_distance.location(os.environ))
+        db_distance.report(distance, location)
         if distance.state == "held":
             # The controller asked for a redraw if this start landed far; Home never runs here.
             stop.wait()
@@ -423,8 +424,9 @@ def main(stop: threading.Event | None = None) -> int:
         health = ServiceHealth(management_key, node_id)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
-        pool_poll = DatabasePoolPoll(management_key, readiness)
-        pool_poll.start(stop)
+        threading.Thread(
+            target=DatabasePoolPoll(readiness, management_key).run, args=(stop,), daemon=True
+        ).start()
         while not stop.wait(2):
             observed_at = time.monotonic()
             failed = [(child, child.process.poll()) for child in children]

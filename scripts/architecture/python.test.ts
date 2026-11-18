@@ -180,6 +180,8 @@ test("the actual build downloader and pool wrapper require a release service", (
       "home_peer_wire.py",
       "billing_policy.py",
       "readiness.py",
+      "db_distance.py",
+      "db_signals.py",
       "service_health.py",
       "policy_diagnostic.py",
       "healthcheck.py",

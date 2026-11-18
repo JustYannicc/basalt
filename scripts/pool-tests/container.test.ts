@@ -142,7 +142,7 @@ test("pinned Home/node stream, stick, spread, fail over at quota and retain keys
         if (!response.ok) return;
         const status = await response.json() as { boot_id: string; started_at: string; db_rtt_state: string };
         const required = ["boot_id", "db_rtt_max_ms", "db_rtt_ms", "db_rtt_samples", "db_rtt_state", "started_at"];
-        const optional = ["db_pool", "db_slow_count", "db_slow_max_ms"];
+        const optional = ["db_pool", "db_slow_count", "db_slow_max_ms", "location"];
         assert.ok(required.every((key) => Object.hasOwn(status, key)), "readiness lacks a required field");
         assert.ok(Object.keys(status).every((key) => required.includes(key) || optional.includes(key)),
           "readiness carries an undocumented field");
