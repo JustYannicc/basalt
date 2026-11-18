@@ -20,8 +20,7 @@ test("declared shards pay setup once, then run their planned files within the pl
     assert.equal(job["timeout-minutes"], "${{ matrix.timeout }}", id);
     assert.equal(job.name, "${{ matrix.shard }}", id);
     assert.equal(job.strategy["fail-fast"], false, id);
-    // The long single jobs, queued with the browser installer, take the first runners.
-    assert.deepEqual(job.needs, ["select", "browser-install"], id);
+    assert.equal(job.needs, "select", id);
     assert.deepEqual(
       job.steps.slice(3, 7),
       [
