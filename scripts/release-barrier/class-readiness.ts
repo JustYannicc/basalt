@@ -8,7 +8,7 @@ import { classEntries, type ClassProvider, type ClassProgress } from "./declared
 import type { DeclaredChanges } from "./declared-change-schema.ts";
 import { assertClassObservation } from "./class-observation.ts";
 import { classNative } from "./class-native.ts";
-import { recordClassProgress } from "./class-recovery.ts";
+import { recordClassProgress, restoreClassRecord } from "./class-recovery.ts";
 import { withOperation } from "./operation-failure.ts";
 
 /** Retained migration history is not current readiness. Observe the namespace again at each reliance boundary. */
@@ -37,19 +37,32 @@ export const observeClassReadiness = (
               "ready-native-record-and-evidence",
               saved?.status ?? null,
             );
+          let restored = saved;
           yield* Effect.gen(function* () {
             yield* classNative(node, scope, saved);
+            // Evidence retains the exact recovery bytes, which State does not; restore them first so a not-ready record keeps them too.
+            const baseline = yield* Effect.tryPromise({
+              try: () => provider.content(saved.baseline, saved.baseline.versionId),
+              catch: (error) => error,
+            }).pipe(withOperation(entry.fqn, "read-class-expansion"));
+            restored = restoreClassRecord(saved, baseline, entry, entry.fqn);
             const observed = yield* Effect.tryPromise({
               try: () => provider.read(saved.baseline),
               catch: (error) => error,
             }).pipe(withOperation(entry.fqn, "read-class-expansion"));
             assertClassObservation(entry, saved, observed);
-            yield* recordClassProgress(record, entry.fqn, { ...saved, observed }, "ready", phase);
+            yield* recordClassProgress(
+              record,
+              entry.fqn,
+              { ...restored, observed },
+              "ready",
+              phase,
+            );
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.gen(function* () {
                 yield* Effect.exit(
-                  recordClassProgress(record, entry.fqn, saved, "not-ready", phase),
+                  recordClassProgress(record, entry.fqn, restored, "not-ready", phase),
                 );
                 return yield* Effect.failCause(cause);
               }),

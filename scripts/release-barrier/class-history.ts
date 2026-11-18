@@ -1,5 +1,6 @@
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { State } from "alchemy/State/State";
+import { encodeState } from "alchemy/State/StateEncoding";
 import { Effect, Schema } from "effect";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { classConstraint, classSchemaRefusal } from "./class-refusal.ts";
@@ -67,6 +68,29 @@ export const classHistory = (value: unknown) => {
   }
 };
 
+// alchemy's State store keeps a stack output as ONE Durable Object value (2 MiB; workerd answers
+// SQLITE_TOOBIG above it) and stores it as base64 of a nonce plus the encrypted JSON. Refuse well
+// below the cap so a write never fails half way.
+export const classStateValueLimit = 1536 * 1024;
+export const storedClassStateBytes = (value: unknown) =>
+  Math.ceil((16 + Buffer.byteLength(JSON.stringify(encodeState(value)))) / 3) * 4;
+
+/** Module bytes never enter State; `restoreClassRecord` re-derives them and the digests verify them. */
+const withoutModuleBytes = (value: ClassRecord): ClassRecord => ({
+  ...value,
+  recovery: {
+    ...value.recovery,
+    files: value.recovery.files.map((file) => ({ ...file, base64: "" })),
+  },
+  clone: {
+    ...value.clone,
+    request: {
+      ...value.clone.request,
+      modules: value.clone.request.modules?.map((module) => ({ ...module, contentBase64: "" })),
+    },
+  },
+});
+
 export const saveClassHistory = (
   scope: { stack: string; stage: string },
   fqn: string,
@@ -84,7 +108,17 @@ export const saveClassHistory = (
         "Cloudflare.Worker",
       );
     const saved = classHistory(output);
-    yield* state.setOutput({ ...scope, value: { ...output, [key]: { ...saved, [fqn]: value } } });
+    const next = { ...output, [key]: { ...saved, [fqn]: withoutModuleBytes(value) } };
+    const bytes = storedClassStateBytes(next);
+    if (bytes > classStateValueLimit)
+      throw classConstraint(
+        "declared-class-history-too-large",
+        fqn,
+        "classHistory.storedBytes",
+        classStateValueLimit,
+        bytes,
+      );
+    yield* state.setOutput({ ...scope, value: next });
   });
 
 export const preserveClassHistory = <A, E, R>(

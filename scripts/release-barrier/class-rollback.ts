@@ -10,7 +10,6 @@ import {
   type ClassTarget,
 } from "./declared-class-contract.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { classRecoveryRequest } from "./class-recovery.ts";
 import type { RecoveryManifest } from "./recovery-manifest.ts";
 import { canonical, digest } from "./manifest.ts";
 
@@ -64,7 +63,6 @@ export const verifyClassRollback = (
           { native: saved.native, status: "ready", target: saved.baseline },
           { native, status: saved.status, target },
         );
-      classRecoveryRequest(saved, fqn);
       const profile = yield* Workers.getBetaWorker({
         accountId: target!.accountId,
         workerId: target!.scriptName,

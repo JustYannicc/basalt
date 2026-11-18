@@ -31,7 +31,7 @@ import { classCheckFailure, classConstraint } from "./class-refusal.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { withOperation } from "./operation-failure.ts";
 import { cloneRequest } from "./class-clone.ts";
-import { classRecoveryRequest as recoveryRequest, recordClassProgress } from "./class-recovery.ts";
+import { recordClassProgress, restoreClassRecord } from "./class-recovery.ts";
 
 /** Read every independent baseline and freeze its descriptor before any clone or migration write. */
 export const prepareDeclaredClasses = (
@@ -131,7 +131,14 @@ export const prepareDeclaredClasses = (
                   { entry: digest(canonical(entry)) },
                   entry.type,
                 );
-              recoveryRequest(saved, entry.fqn);
+              const restored = restoreClassRecord(
+                saved,
+                yield* call(entry.fqn, "read-class-expansion", () =>
+                  provider.content(saved.baseline, saved.baseline.versionId),
+                ),
+                entry,
+                entry.fqn,
+              );
               if (
                 !["clone-pending", "clone-ready"].includes(saved.status) &&
                 saved.status !== "ready" &&
@@ -145,7 +152,7 @@ export const prepareDeclaredClasses = (
                   saved.status,
                 );
               if (["clone-pending", "clone-ready"].includes(saved.status)) {
-                return Option.some({ entry, node, saved, fresh: true });
+                return Option.some({ entry, node, saved: restored, fresh: true });
               }
               assertClassObservation(entry, saved, observed, saved.status !== "ready");
               if (saved.status !== "ready") {
@@ -179,7 +186,7 @@ export const prepareDeclaredClasses = (
                   { bindings: upload.request.metadata.bindings },
                   entry.type,
                 );
-              const next = { ...saved, observed };
+              const next = { ...restored, observed };
               return Option.some({ entry, node, saved: next, fresh: false });
             }
             const verdict = classRequestVerdict(upload, entry, workerBaselines.get(entry.fqn));

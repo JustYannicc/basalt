@@ -3,9 +3,54 @@ import { withOperation } from "./operation-failure.ts";
 import { Effect } from "effect";
 import type { ClassRecord } from "./class-history.ts";
 import type { ClassContent, ClassProgress } from "./declared-class-contract.ts";
-import { contentDigest, payloadDigest } from "./class-payload.ts";
+import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
+import { contentDigest, expansionContent, payloadDigest } from "./class-payload.ts";
+import { cloneRequest } from "./class-clone.ts";
+import { canonical, digest } from "./manifest.ts";
 
-/** Recovery uses retained bytes, not a provider's expiring version history or a new build. */
+/**
+ * State keeps a class record's digests, not its module bytes. Re-derive them from the frozen
+ * baseline version's content (a version-qualified read) and accept them only when they reproduce
+ * every digest the record was saved with.
+ */
+export function restoreClassRecord(
+  saved: ClassRecord,
+  baseline: ClassContent,
+  entry: SqliteClassDeclaration,
+  fqn?: string,
+): ClassRecord {
+  const content = expansionContent(baseline, entry);
+  const request = {
+    ...saved.clone.request,
+    modules: cloneRequest(saved.baseline, baseline, saved.marker, fqn).modules,
+  };
+  const restored: ClassRecord = {
+    ...saved,
+    recovery: {
+      ...saved.recovery,
+      files: content.files.map((file) => ({
+        name: file.name,
+        type: file.type,
+        base64: Buffer.from(file.bytes).toString("base64"),
+      })),
+    },
+    clone: { ...saved.clone, request },
+  };
+  if (
+    content.mainModule !== saved.recovery.mainModule ||
+    contentDigest(content) !== saved.content ||
+    digest(canonical(request)) !== saved.clone.payload
+  )
+    throw classRefusal("declared-class-recovery-invalid", fqn, [
+      { path: "recovery.mainModule", old: saved.recovery.mainModule, new: content.mainModule },
+      { path: "recovery.contentHash", old: saved.content, new: contentDigest(content) },
+      { path: "clone.payloadHash", old: saved.clone.payload, new: digest(canonical(request)) },
+    ]);
+  classRecoveryRequest(restored, fqn);
+  return restored;
+}
+
+/** The exact PUT the record's digests describe; its bytes come from `restoreClassRecord`. */
 export function classRecoveryRequest(saved: ClassRecord, fqn?: string) {
   const content: ClassContent = {
     mainModule: saved.recovery.mainModule,
