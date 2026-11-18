@@ -1,6 +1,6 @@
 {
   "identity": "basalt-display-moment-24h",
-  "file": "NNNN-display-moment-24h.patch",
+  "file": "0682-display-moment-24h.patch",
   "content_sha256": "78b3929b46283f7cad9a71a9faa6885c1fb53a038939a2e31d99e3fc4852747e",
   "kind": "overlay",
   "upstream_pull_request": null,
