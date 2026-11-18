@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.deviceReportLabels {
     metadata {
-      constraint "The device-reported label rule lives in a contracts module without imports, and the device contracts re-export it unchanged. The Obsidian plugin imports that module, so its wrong-vault warning compares names exactly as the server keeps them without bundling Effect."
+      constraint "The device-reported label rule lives in a contracts module without imports, and the device contracts re-export it unchanged. The Obsidian plugin imports that module, so its wrong-vault warning compares names exactly as the server keeps them without bundling Effect. The plugin release checks out the carried upstream source without installing it, and runs again when this carry changes."
     }
   }
 }
