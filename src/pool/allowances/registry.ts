@@ -121,8 +121,9 @@ export class PlanAllowances {
             parse(bodies).map(async (entry) => ({
               ...entry,
               sourceId: id,
+              // A value the seed already carried keeps its revision, whichever source states it.
               revision:
-                old.find(
+                [...old, ...this.seed.entries].find(
                   (value) =>
                     allowanceKey(value) === allowanceKey(entry) &&
                     value.full === entry.full &&
