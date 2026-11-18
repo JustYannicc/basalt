@@ -124,6 +124,7 @@ jobs:
       BASALT_RELEASE_CANDIDATE: ${{ needs.candidate.outputs.sha }}
       PLAN_DIGEST_INPUT: ${{ inputs.plan_digest }}
       ATTEMPT_INPUT: ${{ inputs.attempt }}
+      GO_INPUT: ${{ inputs.go }}
       MODE: ${{ inputs.mode || 'apply' }}
       # An automatic release is code-only; anything else needs a dispatch with its policy named.
       POLICY_NAME: ${{ inputs.policy || 'code' }}
@@ -288,6 +289,17 @@ jobs:
         if: env.MODE == 'apply'
         # A code-only release changes no data by itself; skip the multi-million-row count then.
         run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code') && '--light' || '' }}
+      # No release may restart the root: its boot is read now and must still serve after the apply.
+      - name: Record the root's boot before the apply
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json
+      # The restore target if the class change fails. Reading it also arms a restore to it for ten
+      # minutes, the window the class change runs in.
+      - name: Take the controller storage bookmark
+        env: *release-secrets
+        if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
+        run: POOL_FLEET_MODE=bookmark POOL_FLEET_GO="$GO_INPUT" POOL_FLEET_OUTPUT_DIRECTORY=.local/release/bookmark node scripts/pool-fleet/dispatch.ts
       - name: What was verified before the irreversible step
         if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
         run: |
@@ -299,7 +311,7 @@ jobs:
             echo "- database load: under 60% (step above)"
             echo "- counts: \`$(jq -c . .local/release/before.json)\`"
             echo "- serving versions recorded: \`${{ steps.serving.outputs.workers }}\`; the live PoolWorker main module digest is pinned by the policy"
-            echo "- controller storage: recoverable for 30 days by point-in-time recovery from this run's start ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            echo "- controller storage bookmark: taken at $(jq -r .result.bookmark.at .local/release/bookmark/result.json); a restore to it is armed for ten minutes, and point-in-time recovery keeps it for 30 days"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Apply the reviewed plan
         id: apply
@@ -317,7 +329,7 @@ jobs:
         # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
         # release may change the hosted app's Workers too.
         run: |
-          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance.json
+          bun scripts/release/deploy.ts accept --stage production --expect ${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }} --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
           node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
