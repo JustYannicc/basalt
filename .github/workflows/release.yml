@@ -42,6 +42,10 @@ on:
         description: Lets a stopped line release (the first cutover); printed in the run name and summary
         required: false
         type: string
+      candidate:
+        description: An exact main commit to release instead of main's head (the class change runs on the commit the code-only release deployed)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -80,10 +84,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+          CANDIDATE_INPUT: ${{ inputs.candidate }}
           PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$CANDIDATE_INPUT" ]; then
+              # A named commit must already be on main: the class change re-uploads the serving code.
+              if ! printf '%s' "$CANDIDATE_INPUT" | grep -Eq '^[0-9a-f]{40}$' || ! git merge-base --is-ancestor "$CANDIDATE_INPUT" "$CANDIDATE"; then
+                echo "::error::candidate must be a full commit on main."
+                exit 1
+              fi
+              CANDIDATE="$CANDIDATE_INPUT"
+            fi
             printf 'sha=%s\nrelease=true\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
