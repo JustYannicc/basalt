@@ -68,7 +68,7 @@ export async function homeChangeFixture<T>(
       [`signalbox-pool-${pools[0]}`, `signalbox-pool-${pools[1]}`],
     );
     await owner!.query(
-      "INSERT INTO basalt_pool_change_heads VALUES($1,'pool-readings',0),($1,'pool-usage',0),($2,'pool-readings',0),($2,'pool-usage',0)",
+      "INSERT INTO basalt_pool_change_heads VALUES($1,'pool-readings',0),($1,'pool-usage',0),($2,'pool-readings',0),($2,'pool-usage',0) ON CONFLICT DO NOTHING",
       [...pools],
     );
     await owner!.query(`INSERT INTO channel_group_detail VALUES(1,1,'acct-a',NULL),(2,2,'acct-b',NULL);

@@ -212,8 +212,13 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
     });
   t.diagnostic(`trigger statements ${JSON.stringify(counts)}`);
   assert.deepEqual(counts.v12!.requestKeys, counts.v11!.requestKeys);
-  assert.ok(counts.v12!.request * 3 < counts.v11!.request);
-  assert.ok(counts.v12!.bulk * 1000 < counts.v11!.bulk);
+  // v11: 7 per resolved row plus the commit notification. v12: the charge resolves once (1 query,
+  // 2 journal inserts), its update looks up the user only, the credit update skips, capture
+  // resolves once, plus the two commit notifications. The 5000-row chunk resolves once.
+  assert.deepEqual(
+    { v11: [counts.v11!.request, counts.v11!.bulk], v12: [counts.v12!.request, counts.v12!.bulk] },
+    { v11: [34, 35001], v12: [9, 4] },
+  );
 });
 
 // Guarantee: the skip is per transaction. Concurrent transactions and a stale session value
