@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-member-allowance-read-retry",
+  "file": "0687-member-allowance-read-retry.patch",
+  "content_sha256": "39cd2aeaa346871acf0be42e642acc9cfbcdb329ffebac2b358e596a326e9900",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

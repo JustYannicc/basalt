@@ -1,0 +1,88 @@
+diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
+index 7b786c6..b0f04b8 100644
+--- a/apps/hosted/cloud/src/implementation/billing.ts
++++ b/apps/hosted/cloud/src/implementation/billing.ts
+@@ -11,6 +11,7 @@ import { Cause, Effect, Layer, Option, Schema } from "effect";
+ import { FetchHttpClient, HttpServerRequest } from "effect/http";
+ import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
+ import { autumnLive, autumnReads } from "./autumn-client.ts";
++import { active, memberAllowance } from "./member-allowance.ts";
+ import {
+   recordSeatPlan,
+   recordSeats,
+@@ -26,7 +27,6 @@ import {
+   BillingPlanUnavailable,
+   BillingUnavailable,
+ } from "../contracts/billing.ts";
+-import { freeMembers } from "../contracts/billing-catalog.ts";
+ import { ExecutorCloudApi } from "../contracts/api.ts";
+ import { billingSettings } from "../infrastructure/billing.ts";
+ 
+@@ -44,16 +44,6 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
+   }
+ }
+ 
+-type Subscriptions = {
+-  readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
+-};
+-/** Whether the customer currently holds one of these plans. */
+-const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
+-  customer.subscriptions.some(
+-    (subscription) =>
+-      plans.includes(subscription.planId) && ["active", "trialing"].includes(subscription.status),
+-  );
+-
+ /** Resolve the selected Autumn environment once; each invocation owns its client. */
+ export const billingLive = Effect.gen(function* () {
+   // Resolve during initialization so Alchemy binds every value into the Worker environment.
+@@ -262,10 +252,12 @@ export const billingLive = Effect.gen(function* () {
+   const meter = BillingMeter.of({
+     memberLimit: (organization) =>
+       Effect.gen(function* () {
+-        const { catalog, value } = yield* customer(organization);
+-        return active(value, [catalog.team, catalog.enterprise])
+-          ? Number.POSITIVE_INFINITY
+-          : freeMembers;
++        const { autumn, catalog } = yield* client;
++        return yield* memberAllowance(
++          autumn,
++          catalog,
++          `${catalog.namespace}:${organizationOwner(organization)}`,
++        );
+       }),
+     syncSeats: (organization) => syncSeats(organization, "changed"),
+     reconcileSeats: Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/implementation/member-allowance.ts b/apps/hosted/cloud/src/implementation/member-allowance.ts
+new file mode 100644
+index 0000000..24589bb
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/member-allowance.ts
+@@ -0,0 +1,28 @@
++/** The member allowance invitations and SSO sign-ins are admitted against. */
++import { Effect } from "effect";
++import type { AutumnClient } from "../contracts/autumn.ts";
++import { BillingUnavailable } from "../contracts/billing.ts";
++import { freeMembers, type BillingCatalog } from "../contracts/billing-catalog.ts";
++
++type Subscriptions = {
++  readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
++};
++/** Whether the customer currently holds one of these plans. */
++export const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
++  customer.subscriptions.some(
++    (subscription) =>
++      plans.includes(subscription.planId) && ["active", "trialing"].includes(subscription.status),
++  );
++
++/** Unlimited on a paid plan, the free allowance otherwise. */
++export const memberAllowance = (
++  autumn: AutumnClient["Service"],
++  catalog: BillingCatalog,
++  customerId: string,
++) =>
++  autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free }).pipe(
++    Effect.map((customer) =>
++      active(customer, [catalog.team, catalog.enterprise]) ? Number.POSITIVE_INFINITY : freeMembers,
++    ),
++    Effect.mapError(() => new BillingUnavailable()),
++  );
