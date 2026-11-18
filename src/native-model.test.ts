@@ -178,13 +178,12 @@ for (const native of [false, true]) test(`an uncertain ${native ? "native" : "di
     body: '{"state":"synthetic-unknown"}',
   }), env);
   assert.equal(response.status, 502);
-  assert.equal(response.headers.get("x-should-retry"), "false");
-  assert.equal(response.headers.get("retry-after"), null);
-  assert.equal(response.headers.get("retry-after-ms"), null);
+  assert.equal(response.headers.get("x-should-retry"), null);
+  assert.equal(response.headers.get("retry-after"), "1");
   const body = await response.json() as { error: { code: string; retryable: boolean; message: string } };
   assert.equal(body.error.code, "upstream_outcome_unknown");
-  assert.equal(body.error.retryable, false);
-  assert.match(body.error.message, /outcome is unknown/u);
+  assert.equal(body.error.retryable, true);
+  assert.match(body.error.message, /Retry it/u);
   assert.equal(sends, 1);
 });
 

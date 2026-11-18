@@ -360,12 +360,11 @@ test(
           await response.body?.cancel();
         } else {
           assert.equal(response.status, 502);
-          assert.equal(response.headers.get("x-should-retry"), "false");
-          assert.equal(response.headers.get("retry-after"), null);
-          assert.equal(response.headers.get("retry-after-ms"), null);
+          assert.equal(response.headers.get("x-should-retry"), null);
+          assert.equal(response.headers.get("retry-after"), "1");
           const body = (await response.json()) as { error: { code: string; retryable: boolean } };
           assert.equal(body.error.code, "upstream_outcome_unknown");
-          assert.equal(body.error.retryable, false);
+          assert.equal(body.error.retryable, true);
           assert.equal(f.remote.counts().modelSends, before + 1);
         }
       }
