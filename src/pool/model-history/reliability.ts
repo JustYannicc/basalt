@@ -80,53 +80,63 @@ export async function readPoolReliabilityWindows(
     AND r.timestamp_exact >= $4 AND r.timestamp_exact < $5`;
   const finishedTimeRange = `f.finished_at >= $4::text::timestamptz
     AND f.finished_at < $5::text::timestamptz`;
-  const candidateFinished = terminalReady
-    ? `OR EXISTS (
-        SELECT 1 FROM basalt_model_terminal_starts s
-        JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
-        WHERE s.pool=r.pool AND s.request_id::text=r.request_id
-          AND f.outcome <> 'unavailable' AND ${finishedTimeRange}
-      )`
-    : "";
   const homeTimeRange = terminalReady
     ? `((${finalAttempt} AND ${finishedTimeRange}) OR (NOT ${finalAttempt} AND ${rawTimeRange}))`
     : rawTimeRange;
+  // Each set is read through its own time index; an OR across them would scan the pool's history.
   const latestHomeCtes = terminalReady
     ? `ranged_home_ids AS (
-      SELECT DISTINCT r.request_id FROM basalt_model_requests r
-      WHERE r.pool=$1 AND r.source=$3 AND r.request_id IS NOT NULL
-        AND (${rawTimeRange} ${candidateFinished})
+      SELECT r.request_id FROM basalt_model_requests r
+      WHERE r.pool=$1 AND r.source=$3 AND r.request_id IS NOT NULL AND ${rawTimeRange}
+      UNION
+      SELECT s.request_id::text FROM basalt_model_terminal_finishes f
+      JOIN basalt_model_terminal_starts s ON s.request_id=f.request_id
+      WHERE s.pool=$1 AND f.outcome <> 'unavailable' AND ${finishedTimeRange}
     ), latest_home AS (
       SELECT DISTINCT ON (r.pool,r.request_id) r.pool,r.request_id,r.id
       FROM basalt_model_requests r
       JOIN ranged_home_ids ids ON ids.request_id=r.request_id
-      WHERE r.pool=$1 AND r.source=$3
+      WHERE r.pool=$1 AND r.source=$3 AND r.request_id IS NOT NULL
       ORDER BY r.pool,r.request_id,r.timestamp_exact DESC,r.id DESC
     ),`
     : "";
-  const result = await db.query(
-    `WITH ranges(ordinal,from_at,to_at) AS (VALUES ${ranges
-      .map((_, index) => `(${index},$${6 + index * 2}::text,$${7 + index * 2}::text)`)
-      .join(",")}),
-    ${latestHomeCtes} selected AS ${ranges.length > 1 ? "MATERIALIZED " : ""}(
-      SELECT r.pool,r.source,r.client_key,
+  // Only a canonical UUID can equal a start's id as text; the cast lets the start's key serve the join.
+  const startId = `CASE WHEN r.request_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    THEN r.request_id::uuid END`;
+  // Home rows inside the raw window, then final attempts outside it that finished inside the window.
+  const homeRows = (from: string, raw: string) => `SELECT r.pool,r.source,r.client_key,
         (r.failed OR ${terminalFailure}) AS failed,
         ${statusCode} AS status_code,
         ((r.failed OR ${terminalFailure})
           AND r.account IS NULL) AS unassigned,
         ${terminalReady ? `CASE WHEN ${finalAttempt} THEN NULL ELSE r.timestamp_exact END` : "r.timestamp_exact"} AS raw_at,
         ${terminalReady ? `CASE WHEN ${finalAttempt} THEN f.finished_at ELSE NULL END` : "NULL::timestamptz"} AS finished_at
-      FROM basalt_model_requests r
+      FROM ${from}
       ${terminalReady ? "LEFT JOIN latest_home last ON last.pool=r.pool AND last.request_id=r.request_id AND last.id=r.id" : ""}
       ${
         terminalReady
-          ? `LEFT JOIN basalt_model_terminal_starts s
-        ON s.pool=r.pool AND s.request_id::text=r.request_id
+          ? `LEFT JOIN basalt_model_terminal_starts s ON s.pool=r.pool AND s.request_id=${startId}
         LEFT JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id`
           : ""
       }
-      WHERE r.pool=$1 AND r.source=$3
-        AND ${homeTimeRange}
+      WHERE r.pool=$1 AND r.source=$3 AND ${raw}
+        AND ${homeTimeRange}`;
+  const result = await db.query(
+    `WITH ranges(ordinal,from_at,to_at) AS (VALUES ${ranges
+      .map((_, index) => `(${index},$${6 + index * 2}::text,$${7 + index * 2}::text)`)
+      .join(",")}),
+    ${latestHomeCtes} selected AS ${ranges.length > 1 ? "MATERIALIZED " : ""}(
+      ${homeRows("basalt_model_requests r", rawTimeRange)}
+      ${
+        terminalReady
+          ? `UNION ALL
+      ${homeRows(
+        `latest_home latest JOIN basalt_model_requests r ON r.pool=latest.pool AND r.source=$3
+        AND r.request_id IS NOT NULL AND r.request_id=latest.request_id AND r.id=latest.id`,
+        `NOT (${rawTimeRange})`,
+      )}`
+          : ""
+      }
       UNION ALL
       SELECT r.pool,r.source,r.client_key,r.failed,r.status_code,
         (r.failed AND r.account IS NULL) AS unassigned,r.timestamp_exact AS raw_at,NULL::timestamptz AS finished_at
