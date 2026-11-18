@@ -13,6 +13,14 @@ const step = (name: string) => {
   return workflow.slice(start, next < 0 ? undefined : next);
 };
 const order = (...names: string[]) => names.map((name) => workflow.indexOf(`- name: ${name}`));
+/** A step's exact `if:` condition, so a test fails when the condition is weakened, not only removed. */
+const condition = (name: string) => /^\s+if: (.*)$/mu.exec(step(name))?.[1];
+const job = (name: string) => {
+  const start = workflow.indexOf(`\n  ${name}:\n`);
+  assert.ok(start >= 0, `missing job ${name}`);
+  const next = workflow.slice(start + 1).search(/\n  [a-z-]+:\n/u);
+  return workflow.slice(start, next < 0 ? undefined : start + 1 + next);
+};
 
 test("an automatic release starts only after main's own Check passed on a push from this repository", () => {
   assert.match(
@@ -42,7 +50,7 @@ test("the release hold stops every run except a dispatch carrying a coordinator 
 test("nothing applies before the load gate, the serving version, the backup and the counts", () => {
   const [gate, serving, backup, before, apply] = order(
     "Refuse while the pool database is busy",
-    "Record the serving PoolWorker version",
+    "Record the serving version of every Worker the plan updates",
     "Back up the pool database",
     "Count accounts and history before",
     "Apply the reviewed plan",
@@ -56,12 +64,11 @@ test("nothing applies before the load gate, the serving version, the backup and 
 
 test("a failed apply or acceptance rolls PoolWorker back by itself and ends red", () => {
   const rollback = step("Roll back a failed release");
-  assert.match(rollback, /always\(\)/u);
-  assert.match(
-    rollback,
-    /steps\.apply\.outcome == 'failure' \|\| steps\.accept\.outcome == 'failure'/u,
+  assert.equal(
+    condition("Roll back a failed release"),
+    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
   );
-  assert.match(rollback, /rollback --stage production --fqn PoolWorker --to/u);
+  assert.match(rollback, /rollback --stage production --from .local\/release\/serving.json/u);
   assert.match(rollback, /exit 1/u);
   assert.match(rollback, /POLICY_NAME != 'cutover-classes'/u);
   assert.match(step("Apply the reviewed plan"), /continue-on-error: true/u);
@@ -85,4 +92,74 @@ test("the class change states what was verified first and never pretends it can 
   );
   assert.ok(summary! < apply!);
   assert.match(step("Stop on a failed class change"), /cannot be rolled back/u);
+});
+
+test("every production attempt from the backup on leaves a GitHub Deployment with its outcome", async () => {
+  const [record, backup] = order("Record the deployment", "Back up the pool database");
+  assert.ok(record! < backup!);
+  assert.match(step("Record the deployment"), /environment=production/u);
+  assert.match(step("Record the deployment"), /override: \$override/u);
+  const finish = step("Finish the deployment record");
+  assert.match(finish, /always\(\)/u);
+  assert.match(finish, /job\.status == 'success' && 'success' \|\| 'failure'/u);
+  assert.match(workflow, /run-name: ".*override_reason.*Release \(override: \{0\}\)/u);
+  assert.match(step("Stop the line and require a rehearsal"), /OVERRIDE_REASON/u);
+});
+
+test("every run, plan-only included, passes the read-only preflight before planning", () => {
+  const preflight = step("Preflight against State");
+  assert.match(preflight, /deploy\.ts preflight --stage production/u);
+  assert.doesNotMatch(preflight, /\bif:/u);
+  const [first, plan] = order("Preflight against State", "Plan and check");
+  assert.ok(first! < plan!);
+  assert.match(step("Keep the retired layer's records, sealed"), /always\(\)/u);
+});
+
+test("a dispatch releases main only, and only the release job holds the production lock", () => {
+  assert.match(
+    job("candidate"),
+    /github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main'/u,
+  );
+  // On the workflow, a run whose jobs are all skipped would replace a pending release.
+  assert.doesNotMatch(workflow, /^concurrency:/mu);
+  assert.match(
+    job("release"),
+    /\n    concurrency:\n      group: deploy-production\n      cancel-in-progress: false\n/u,
+  );
+  assert.match(job("release"), /\n    if: needs\.candidate\.outputs\.release == 'true'\n/u);
+});
+
+test("an automatic run releases the newest passing main commit and skips one already live", () => {
+  const pick = step("Pick the candidate");
+  assert.match(pick, /main-candidate\.ts newer/u);
+  assert.match(pick, /sha="\$\{newer:-\$CANDIDATE\}"/u);
+  assert.match(pick, /deployments\?environment=production/u);
+  assert.match(pick, /merge-base --is-ancestor "\$sha" "\$live"/u);
+  assert.match(pick, /release=false/u);
+  assert.match(
+    job("release"),
+    /BASALT_RELEASE_CANDIDATE: \$\{\{ needs\.candidate\.outputs\.sha \}\}/u,
+  );
+});
+
+test("a dispatched apply applies exactly the reviewed plan, and every record names it", () => {
+  assert.equal(
+    condition("A dispatched apply names its reviewed plan"),
+    "github.event_name == 'workflow_dispatch' && env.MODE == 'apply'",
+  );
+  assert.match(step("A dispatched apply names its reviewed plan"), /exit 1/u);
+  const plan = step("Plan and check");
+  assert.match(plan, /\$\{ATTEMPT_INPUT:\+--attempt "\$ATTEMPT_INPUT"\}/u);
+  assert.match(plan, /"\$digest" != "\$PLAN_DIGEST_INPUT"[\s\S]*exit 1/u);
+  const apply = step("Apply the reviewed plan");
+  assert.match(apply, /PLAN_DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
+  assert.doesNotMatch(apply, /inputs\.plan_digest/u);
+  assert.match(step("Record the deployment"), /DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
+});
+
+test("the stop-the-line gate names who triggered the run", () => {
+  const gate = step("Stop the line and require a rehearsal");
+  assert.match(gate, /TRIGGERING_ACTOR: \$\{\{ github\.triggering_actor \}\}/u);
+  assert.match(gate, /GH_TOKEN: \$\{\{ github\.token \}\}/u);
+  assert.match(job("release"), /statuses: read/u);
 });

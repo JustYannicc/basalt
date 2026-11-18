@@ -7,7 +7,6 @@ import { test } from "node:test";
 import { Effect, Exit } from "effect";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { State } from "alchemy/State/State";
-import type { HomeSchemaResult } from "../release-barrier/home-schema-operation.ts";
 import { writeSqlSchemaJournal } from "../release-barrier/sql-schema-journal.ts";
 import { readySqlSchemas } from "../release-barrier/sql-schema-fixture.ts";
 import { assertNoUnresolvedHome, exportLegacyRecords, stateRows } from "./legacy-records.ts";
@@ -120,16 +119,6 @@ const identity = {
   baselineImageDigest: `sha256:${"c".repeat(64)}`,
   sourceInputHash: "d".repeat(16),
   baselineInputHash: "e".repeat(16),
-};
-const before: HomeSchemaResult = {
-  format_version: 1,
-  target_version: 2,
-  previous_version: null,
-  applied_version: 1,
-  status: "pending",
-  indexes_checked: false,
-  pending_indexes: [],
-  reason: "schema_pending",
 };
 
 async function journal(state: Awaited<ReturnType<typeof memory>>) {

@@ -18,7 +18,10 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
+import type { Snapshot } from "./plan-summary.ts";
+import { safeJson } from "./safe-json.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
@@ -42,6 +45,7 @@ const { positionals, values } = parseArgs({
     before: { type: "string" },
     after: { type: "string" },
     fqn: { type: "string" },
+    from: { type: "string" },
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
@@ -85,7 +89,7 @@ const summary = async (text: string) => {
 };
 const output = async (path: string, value: unknown) => {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+  await writeFile(path, `${safeJson(value, 2)}\n`);
 };
 
 if (command === "compare") {
@@ -116,7 +120,7 @@ if (command === "accept") {
       : {}),
   });
   if (values.out) await output(resolve(values.out), result);
-  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${JSON.stringify(result)}`);
+  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(result)}`);
   process.exit(result.passed ? 0 : 1);
 }
 
@@ -153,19 +157,13 @@ if (stage === "production") {
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
 
+const { decodeReleasePolicy } = await import("./policy.ts");
 const policy = values.policy
-  ? JSON.parse(await readFile(resolve(values.policy), "utf8"))
+  ? decodeReleasePolicy(JSON.parse(await readFile(resolve(values.policy), "utf8")))
   : undefined;
-// A policy may only switch the cutover's declaration settings, never supply other configuration.
-for (const [name, value] of Object.entries((policy?.env ?? {}) as Record<string, unknown>)) {
-  if (
-    !["POOL_FLEET_BUILD", "POOL_FLEET_CLASSES", "POOL_WORKER_VERSION_TRAFFIC"].includes(name) ||
-    typeof value !== "string"
-  )
-    throw new Error(`Policy may not set ${name}`);
-  process.env[name] = value;
-}
-const include: string[] = values.include?.length ? values.include : (policy?.include ?? []);
+for (const [name, value] of Object.entries(policy?.env ?? {}))
+  if (value !== undefined) process.env[name] = value;
+const include: string[] = values.include?.length ? values.include : [...(policy?.include ?? [])];
 if (stage === "production" && !policy) throw new Error("Production needs a policy");
 
 process.chdir(cloud);
@@ -174,6 +172,7 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
+const { changedRows, remainingRows } = await import("./plan-summary.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -197,7 +196,7 @@ const keep = [
 ];
 const reporter = (event: unknown) =>
   Effect.sync(() => {
-    const line = JSON.stringify(
+    const line = safeJson(
       Object.fromEntries(
         Object.entries(event as Record<string, unknown>)
           .filter(
@@ -224,17 +223,16 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           mainModuleSha256: {} as Record<string, string>,
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
+          rootApplications: [] as string[],
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
         const guarded = Effect.gen(function* () {
           yield* WireGuard.selfTest();
           yield* storeCannotBootstrap;
-          for (const [fqn, classes] of Object.entries(
-            (policy?.wire?.sqliteClasses ?? {}) as Record<string, string[]>,
-          ))
+          for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
             wire.sqliteClasses[yield* scriptName(fqn)] = classes;
-          for (const fqn of (policy?.wire?.expectLiveModule ?? []) as string[]) {
+          for (const fqn of policy?.wire.expectLiveModule ?? []) {
             const script = yield* scriptName(fqn);
             const digest = yield* liveMainModuleSha256({
               accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
@@ -243,6 +241,13 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             });
             wire.mainModuleSha256[script] = digest;
             liveModules.push({ fqn, digest });
+          }
+          // Every reviewed release leaves the root application as recorded; previews roll it freely.
+          if (policy?.check) {
+            const root = yield* applicationId(policy.check.poolContainer.fqn);
+            if (root) wire.rootApplications.push(root);
+            else if (stage === "production")
+              return yield* Effect.die(new Error("No root application recorded on production"));
           }
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
@@ -269,12 +274,28 @@ const scriptName = (fqn: string) =>
     const state = yield* Alchemist.State.store({
       backend: "configured",
       ...target,
-    } as never) as unknown as Fx.Effect<any, unknown, never>;
-    const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<any, unknown, never>;
+    } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+    const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
+      | { attr?: { workerName?: unknown } }
+      | undefined;
     const script = row?.attr?.workerName;
     if (typeof script !== "string" || !script)
       return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
     return script as string;
+  });
+
+/** The container application a State row records, if the row exists yet. */
+const applicationId = (fqn: string) =>
+  Effect.gen(function* () {
+    const state = yield* Alchemist.State.store({
+      backend: "configured",
+      ...target,
+    } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+    const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
+      | { attr?: { applicationId?: unknown } }
+      | undefined;
+    const id = row?.attr?.applicationId;
+    return typeof id === "string" && id ? id : undefined;
   });
 
 const planOf = (operation: "deploy" | "destroy") =>
@@ -283,30 +304,7 @@ const planOf = (operation: "deploy" | "destroy") =>
     operation,
     updateStateStore: false,
     ...(operation === "deploy" && include.length ? { include } : {}),
-  } as never) as unknown as Fx.Effect<any, unknown, never>;
-
-/** Non-noop rows, with only the names of changed top-level props (values can be secrets). */
-const changes = (snapshot: any) =>
-  snapshot.resources
-    .filter(
-      (row: any) =>
-        row.action !== "noop" || row.bindings.some((binding: any) => binding.action !== "noop"),
-    )
-    .map((row: any) => {
-      const node = snapshot.native.resources[row.fqn] ?? snapshot.native.deletions[row.fqn];
-      const before = node?.state?.props ?? {};
-      const after = node?.props ?? {};
-      const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
-        (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
-      );
-      return {
-        fqn: row.fqn,
-        type: row.resourceType,
-        action: row.action,
-        changedProps: changed.sort(),
-        bindings: row.bindings.filter((binding: any) => binding.action !== "noop"),
-      };
-    });
+  } as never) as unknown as Fx.Effect<Snapshot, unknown, never>;
 
 const checkPolicy = () => {
   if (!policy?.check) return undefined;
@@ -322,24 +320,35 @@ try {
   if (command === "plan" || command === "apply" || command === "deploy") {
     const result = await run(
       Effect.gen(function* () {
+        // The store's contract version is pinned: a different one means a deliberate upgrade first.
+        const store = yield* Alchemist.State.store({
+          backend: "configured",
+          ...target,
+        } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+        const version = yield* store.getVersion() as Fx.Effect<number, unknown, never>;
+        if (version !== 8)
+          return yield* Effect.die(
+            new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
+          );
         const snapshot = yield* planOf("deploy");
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
-        if (command === "plan") return { snapshot, digest };
+        if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
             new Error(
               `The plan changed since review: reviewed ${values["plan-digest"]}, now ${digest}`,
             ),
           );
-        yield* Alchemist.Stack.apply(snapshot);
+        const planned = changedRows(snapshot);
+        yield* Alchemist.Stack.apply(snapshot as never);
         const after = yield* planOf("deploy");
-        if (Alchemist.Stack.hasChanges(after.summary))
+        if (Alchemist.Stack.hasChanges(after.summary as never))
           return yield* Effect.die(
-            new Error(`Changes remain after apply: ${JSON.stringify(changes(after))}`),
+            new Error(`Changes remain after apply: ${safeJson(remainingRows(after))}`),
           );
-        return { snapshot, digest };
+        return { snapshot, digest, planned };
       }),
     );
     const record = {
@@ -350,17 +359,17 @@ try {
       attempt,
       digest: result.digest,
       summary: result.snapshot.summary,
-      changes: changes(result.snapshot),
+      changes: result.planned,
     };
     await output(resolve(root, `.local/release/${command}.json`), record);
     await summary(
       `${command === "plan" ? "Planned" : "Applied; a fresh plan is all noop"}: digest \`${result.digest}\`, attempt \`${attempt}\``,
     );
-    await summary(`\`\`\`json\n${JSON.stringify(record.changes, null, 2)}\n\`\`\``);
+    await summary(`\`\`\`json\n${safeJson(record.changes, 2)}\n\`\`\``);
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {
-        yield* Alchemist.Stack.apply(yield* planOf("destroy"));
+        yield* Alchemist.Stack.apply((yield* planOf("destroy")) as never);
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
@@ -377,45 +386,123 @@ try {
       }),
     );
     await summary(`PlanetScale backup complete: \`${backup.name}\``);
-  } else if (command === "serving" || command === "rollback") {
-    // A code-only release records the serving version first; on a failed acceptance it goes back to it.
-    const fqn = values.fqn ?? "PoolWorker";
+  } else if (command === "preflight") {
+    // Read-only, once before the cutover: the State store version, every State row, the retired
+    // layer's records exported sealed, no unresolved Home migration, and the root pin against State.
+    const legacy = await import("./legacy-records.ts");
     const result = await run(
       Effect.gen(function* () {
-        const script = yield* scriptName(fqn);
-        const at = {
+        const state = yield* Alchemist.State.store({
+          backend: "configured",
+          ...target,
+        } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+        const version = yield* state.getVersion() as Fx.Effect<number, unknown, never>;
+        if (version !== 8)
+          return yield* Effect.die(
+            new Error(`State store version ${version}, expected 8: upgrade deliberately first`),
+          );
+        const rows = yield* legacy.stateRows(state, stage);
+        const key = process.env.EXECUTOR_ENCRYPTION_KEY ?? "";
+        const exported = yield* legacy.exportLegacyRecords(
+          state,
+          stage,
+          resolve(root, ".local/release/legacy"),
+          key,
+          (process.env.BASALT_LEGACY_ARCHIVE_STACKS ?? "").split(",").filter(Boolean),
+        );
+        yield* legacy
+          .assertNoUnresolvedHome(stage, key)
+          .pipe(Effect.provideService(legacy.State, Effect.succeed(state)));
+        const pin = process.env.POOL_ROOT_IMAGE
+          ? JSON.parse(process.env.POOL_ROOT_IMAGE)
+          : undefined;
+        const rootRow = (yield* state.get({
+          stack: "basalt",
+          stage,
+          fqn: "PoolContainer",
+        }) as Fx.Effect<unknown, unknown, never>) as
+          | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
+          | undefined;
+        const recorded = {
+          image: rootRow?.attr?.configuration?.image,
+          input: rootRow?.attr?.hash?.image,
+        };
+        if (!pin || pin.image !== recorded.image || pin.input !== recorded.input)
+          return yield* Effect.die(
+            new Error(
+              `POOL_ROOT_IMAGE does not match the root's State row (image ${recorded.image === pin?.image ? "equal" : "differs"}, input ${recorded.input === pin?.input ? "equal" : "differs"})`,
+            ),
+          );
+        return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
+      }),
+    );
+    await output(resolve(root, ".local/release/preflight.json"), result);
+    await summary(`Preflight: ${safeJson({ ...result, rows: result.rows.length })}`);
+  } else if (command === "serving" || command === "rollback") {
+    // A code release records the serving version of every Worker its plan updates; on a failed apply
+    // or acceptance it puts each of them back. `--fqn` names one Worker instead.
+    const plan = values.from
+      ? (JSON.parse(await readFile(resolve(values.from), "utf8")) as {
+          changes?: { fqn: string; type: string; action: string }[];
+          workers?: { fqn: string; version: string }[];
+        })
+      : undefined;
+    const fqns =
+      command === "serving"
+        ? values.fqn
+          ? [values.fqn]
+          : (plan?.changes ?? [])
+              .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
+              .map((change) => change.fqn)
+        : [];
+    const result = await run(
+      Effect.gen(function* () {
+        const at = (script: string) => ({
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
           token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
           script,
-        };
-        if (command === "serving") return { fqn, version: yield* servingVersion(at) };
-        if (!values.to) return yield* Effect.die(new Error("--to <version id> is required"));
-        yield* rollbackTo(
-          at,
-          values.to,
-          `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
-        );
-        return { fqn, version: values.to, rolledBack: true };
+        });
+        if (command === "serving") {
+          const workers: { fqn: string; version: string }[] = [];
+          for (const fqn of fqns)
+            workers.push({ fqn, version: yield* servingVersion(at(yield* scriptName(fqn))) });
+          return { workers };
+        }
+        const targets =
+          plan?.workers ??
+          (values.fqn && values.to ? [{ fqn: values.fqn, version: values.to }] : []);
+        if (!targets.length)
+          return yield* Effect.die(
+            new Error("rollback needs --from <serving.json> or --fqn and --to"),
+          );
+        const rolledBack: { fqn: string; version: string }[] = [];
+        for (const target of targets) {
+          yield* rollbackTo(
+            at(yield* scriptName(target.fqn)),
+            target.version,
+            `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+          );
+          rolledBack.push(target);
+        }
+        return { workers: rolledBack, rolledBack: true };
       }),
     );
     if (values.out) await output(resolve(values.out), result);
-    await summary(
-      `${command === "serving" ? "Serving" : "Rolled back to"}: ${JSON.stringify(result)}`,
-    );
+    await summary(`${command === "serving" ? "Serving" : "Rolled back to"}: ${safeJson(result)}`);
   } else if (command === "snapshot") {
     const snapshot = await run(
       Effect.gen(function* () {
         const state = yield* Alchemist.State.store({
           backend: "configured",
           ...target,
-        } as never) as unknown as Fx.Effect<any, unknown, never>;
+        } as never) as unknown as Fx.Effect<StateService, unknown, never>;
         const url = yield* database.poolDatabaseUrl(state, { name: "basalt", stage });
         const session = yield* database.connect(url);
         return yield* database.readSnapshot(session, { history: !values.light });
       }),
     );
     await output(resolve(values.out ?? ""), snapshot);
-    await summary(`Database counts: ${JSON.stringify(snapshot)}`);
+    await summary(`Database counts: ${safeJson(snapshot)}`);
   } else {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
@@ -448,7 +535,7 @@ try {
           .map((key) => `${key}=${String(record[key])}`)
           .join(
             " ",
-          )}${record.detail ? ` detail=${JSON.stringify(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${JSON.stringify(record.violations)}` : ""}`,
+          )}${record.detail ? ` detail=${safeJson(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${safeJson(record.violations)}` : ""}`,
       );
     for (const key of ["cause", "reason", "error", "defect", "failures", "reasons", "issue"])
       if (key in record) {

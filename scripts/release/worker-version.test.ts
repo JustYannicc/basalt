@@ -5,7 +5,7 @@ import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { rollbackTo, servingVersion } from "./worker-version.ts";
 
-// The deployments list as production returns it (prod-shapes 03): extra keys, newest first.
+// The deployments list as production returns it: extra keys, newest first.
 const deployment = (
   version: string,
   percentage = 100,

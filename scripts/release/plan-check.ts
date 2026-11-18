@@ -1,30 +1,23 @@
 /**
  * The deterministic check between `Stacks.plan` and `Stacks.apply(snapshot)`.
  *
- * It reads Alchemy's own plan and refuses, before anything is applied, a plan that would destroy a
- * data-holding resource or drop a Durable Object class. It cannot see Durable Object migrations
+ * It reads Alchemy's own plan and refuses, before anything is applied, a plan that would destroy
+ * or recreate a resource, or drop a Durable Object class. It cannot see Durable Object migrations
  * (`new_sqlite_classes`, `deleted_classes`): the plan does not carry them, so a dropped class shows
  * here only as a binding `delete` on the Worker node. The wire guard owns the upload itself.
  *
- * Protected resources, each verified against its declaration:
- * - `PoolContainer`           Cloudflare.Container      src/pool/deployment.ts (one row: the
- *                                                       Container is its Application)
- * - `PoolRuntimeBlue/Green`   Cloudflare.Container      src/pool/fleet-deployment.ts (once in State)
- * - `PoolRuntime`             Cloudflare.Container      src/pool/fleet-deployment.ts (legacy fleet)
- * - `VaultAttachments`        Cloudflare.R2.Bucket      scripts/release-barrier/vault-attachments.ts
- * - `PublicSiteWaitlist`      Cloudflare.D1Database     scripts/release-barrier/public-site-waitlist.ts
- * - `PoolObservationSecrets`  Cloudflare.SecretsStore   src/pool/fleet-observation.ts
- * - `PoolProviderObservationToken`  Cloudflare.ApiToken.AccountApiToken  written by provisioning
- *                                                       scripts only; never declared by the stack
- * - `ArtifactsCredentials`    Cloudflare.Worker         .upstream artifacts-credentials-worker.ts;
- *                                                       hosts ArtifactsTokenCoordinator, the store
- *                                                       behind PoolWorker's BulkUsageImport binding
- * - every `Cloudflare.Hyperdrive`  (`PoolModelDatabaseConnection` in src/pool/worker-database.ts,
- *                                   `DatabaseConnection` in .upstream database.ts)
- * - every `Planetscale.*`     (`Database`, `PoolDatabaseBranch`, `MigrationRole`, `RuntimeRole`,
- *                              `PoolDatabaseRole`, `PoolDatabaseMigrationRole`, `V1ReaderRole`)
+ * Every mode:
+ * - a `replace` creates a new resource and deletes the recorded one, so it is refused unless the
+ *   policy's `removals` names its fqn, type and action `replace`; a `delete` or `orphaned` row the
+ *   same way (a Command's delete only drops its row). A protected resource is refused whatever
+ *   `removals` says. The policy's `protected` list names them, so a reviewed file changes it.
+ * - no renames, no Worker binding removed, no class renamed or transferred, and the root container
+ *   stays on the pinned image with no build inputs and no other change.
  *
- * The lists live in the policy file, not here, so a reviewed file is what changes them.
+ * Modes: `release` adds nothing. `code-only` admits only code: an update of any Worker but the
+ * bulk-import store's, the pinned root's hash, Command runs, and whatever `allow` names; no new
+ * binding. `cutover-classes` admits exactly the `allow` list, both ways, and the bulk-import
+ * store's Worker must be a noop.
  */
 import { createHash } from "node:crypto";
 import { havePropsChanged, isResolved } from "alchemy/Diff";
@@ -42,12 +35,12 @@ export const PlanPolicy = Schema.Struct({
   mode: Schema.Literals(["release", "code-only", "cutover-classes"]),
   /** A type ending in `*` matches by prefix. */
   protected: Schema.Struct({ fqns: Schema.Array(exactFqn), types: Schema.Array(Schema.String) }),
-  /** Every delete or orphan a reviewer accepted. Protected resources cannot be listed away. */
+  /** Every delete, orphan or replace a reviewer accepted. Protected resources cannot be listed away. */
   removals: Schema.Array(
     Schema.Struct({
       fqn: exactFqn,
       type: Schema.String,
-      action: Schema.Literals(["delete", "orphaned"]),
+      action: Schema.Literals(["delete", "orphaned", "replace"]),
       reason: Schema.String,
     }),
   ),
@@ -334,16 +327,20 @@ const protectedBy = (node: Node, policy: PlanPolicy) =>
       : type === node.resource.Type,
   );
 
-const lifecycleChange = (node: Node): string[] =>
-  node.action === "replace"
-    ? [
-        "$resource: recorded -> replaced by a new one",
-        ...propChanges(recorded(node)?.props, node.resource.Props),
-      ]
-    : [
-        `$resource: recorded (${(recorded(node) as { removalPolicy?: string } | undefined)?.removalPolicy ?? "destroy"}) -> ${node.action}`,
-      ];
-
+const lifecycleChange = (node: Node): string[] => {
+  if (node.action !== "replace")
+    return [
+      `$resource: recorded (${(recorded(node) as { removalPolicy?: string } | undefined)?.removalPolicy ?? "destroy"}) -> ${node.action}`,
+    ];
+  // The provider names no field when it answers `replace`; every changed prop is a candidate.
+  const props = propChanges(recorded(node)?.props, node.resource.Props);
+  return [
+    `$resource: recorded -> replaced by a new one (${node.deleteFirst ? "the recorded one is deleted first" : "created, then the recorded one is deleted"})`,
+    ...(props.length
+      ? props
+      : ["props: unchanged (a provider mode switch or an unresolved value forced it)"]),
+  ];
+};
 /**
  * The non-noop changes of an admitted plan, for the step summary. A refused plan fails with one
  * error that lists every violation, so a single run shows everything a reviewer has to resolve.
@@ -400,6 +397,10 @@ export const checkPlan = (
       const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
       const destroys =
         node.action === "delete" || node.action === "orphaned" || node.action === "replace";
+      const reviewed = policy.removals.some(
+        (removal) =>
+          removal.fqn === at.fqn && removal.type === at.type && removal.action === at.action,
+      );
       if (destroys && protectedBy(node, policy))
         violations.push({
           ...at,
@@ -411,14 +412,19 @@ export const checkPlan = (
               : "The resource holds data that no release may delete or recreate.",
           fix: "Restore the resource's declaration exactly as recorded. A protected resource cannot be listed in `removals`.",
         });
-      if (
+      else if (node.action === "replace" && !reviewed)
+        violations.push({
+          ...at,
+          rule: "unreviewed-replace",
+          change: lifecycleChange(node),
+          why: "Alchemy would create a new resource and delete the recorded one: whatever it holds is gone, and every binding moves to the empty new one.",
+          fix: 'Make the declaration equal to the recorded props, or add this exact fqn, type and action "replace" to the policy\'s `removals` after review.',
+        });
+      else if (
         (node.action === "delete" || node.action === "orphaned") &&
         // A Command has no cloud resource: its delete only drops the row.
         !(node.action === "delete" && node.resource.Type.startsWith("Command.")) &&
-        !policy.removals.some(
-          (removal) =>
-            removal.fqn === at.fqn && removal.type === at.type && removal.action === at.action,
-        )
+        !reviewed
       )
         violations.push({
           ...at,
@@ -488,17 +494,23 @@ export const checkPlan = (
     if (policy.mode === "code-only")
       for (const change of changes)
         if (
-          // `allow` names what else a reviewer accepted, such as the per-attempt PoolDatabase command.
+          // `allow` names what else a reviewer accepted. Otherwise only code moves: an update of any
+          // Worker but the bulk-import store's (binding and class changes are refused above), the
+          // pinned root's hash, and Command runs such as a migration step (the backup covers those).
           !policy.allow.some(
             (entry) => entry.fqn === change.fqn && entry.action === change.action,
           ) &&
-          (change.action !== "update" ||
-            (change.fqn !== policy.poolWorker && change.fqn !== policy.poolContainer.fqn))
+          !(
+            change.action === "update" &&
+            ((change.type === "Cloudflare.Worker" && change.fqn !== policy.artifactsCredentials) ||
+              change.fqn === policy.poolContainer.fqn ||
+              change.type.startsWith("Command."))
+          )
         )
           outside(
             change,
             "noop",
-            "A code-only release moves the pool Worker's code and nothing else, so a Worker rollback undoes all of it.",
+            "A code-only release moves Worker code (and runs migration steps) and nothing else, so a Worker rollback undoes the code.",
             "Ship this change in its own release, or review a policy in release mode.",
           );
     if (policy.mode === "cutover-classes") {
