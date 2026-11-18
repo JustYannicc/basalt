@@ -129,6 +129,7 @@ import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
+import { fetchController } from "./controller-reset.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -1017,7 +1018,10 @@ export async function handlePoolWorkerRequest(
   request: Request,
   env: PoolEnvironment,
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
+  defer: (work: Promise<unknown>) => void = (work) => void work.catch(() => {}),
 ): Promise<Response> {
+  const controller = (forwarded: Request) =>
+    fetchController(forwarded, { controller: () => singleton(env), env, defer });
   request = stripModelLifetimeRequest(request);
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)
@@ -1037,7 +1041,7 @@ export async function handlePoolWorkerRequest(
     pathname === nativeControlPath ||
     pathname === nativeSessionPath
   )
-    return singleton(env).fetch(request);
+    return controller(request);
   if (
     pathname !== accountAcquisitionPath &&
     pathname !== accessPath &&
@@ -1049,7 +1053,7 @@ export async function handlePoolWorkerRequest(
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {
-    if (request.headers.has(nativeModelHeader)) return singleton(env).fetch(request);
+    if (request.headers.has(nativeModelHeader)) return controller(request);
     const { supplied, values } = homeApiKeyCandidates(request);
     if (!supplied) return modelAuthResponse(401, "Missing API key");
     if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
@@ -1062,7 +1066,7 @@ export async function handlePoolWorkerRequest(
       return modelAuthResponse(503, "Authentication service unavailable");
     }
   }
-  return singleton(env).fetch(request);
+  return controller(request);
 }
 
 function modelAuthResponse(status: 401 | 503, error: string): Response {
@@ -1154,8 +1158,8 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
 }
 
 export default {
-  fetch(request: Request, env: PoolEnvironment) {
-    return handlePoolWorkerRequest(request, env);
+  fetch(request: Request, env: PoolEnvironment, ctx: ExecutionContext) {
+    return handlePoolWorkerRequest(request, env, undefined, (work) => ctx.waitUntil(work));
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
     if (event.cron === availabilityCron) {

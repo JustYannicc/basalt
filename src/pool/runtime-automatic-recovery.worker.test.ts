@@ -154,7 +154,7 @@ test(
     });
     for (const [path, status, type] of [
       ["responses", 503, "server_error"],
-      ["messages", 529, "overloaded_error"],
+      ["messages", 503, "api_error"],
     ] as const) {
       const response = await f.model(
         new Request(`http://pool/v1/${path}`, {

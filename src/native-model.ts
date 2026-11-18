@@ -98,6 +98,6 @@ export async function forwardModelRequest(
   try {
     return await env.POOL_SERVICE.fetch(request);
   } catch {
-    return upstreamOutcomeUnknown();
+    return upstreamOutcomeUnknown(undefined, new URL(request.url).pathname);
   }
 }

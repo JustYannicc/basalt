@@ -75,6 +75,8 @@ test("endpoint failures retain both attempts and join the gateway without raw er
         disconnected: true,
         retryable: false,
         overloaded: null,
+        remote: null,
+        durableObjectReset: null,
       },
     },
     {
@@ -89,6 +91,8 @@ test("endpoint failures retain both attempts and join the gateway without raw er
         disconnected: null,
         retryable: null,
         overloaded: false,
+        remote: null,
+        durableObjectReset: null,
       },
     },
   ]);

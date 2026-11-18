@@ -2,6 +2,8 @@ import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
 import { retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
 const message = "The model runtime restarted. Please retry this request.";
+// Claude Code gives up after three overload answers; an api_error keeps its full retry budget.
+const claudeError = { type: "error", error: { type: "api_error", message } };
 function anthropic(request: Request) {
   return /\/(?:v1\/)?messages$/.test(new URL(request.url).pathname);
 }
@@ -9,11 +11,9 @@ function anthropic(request: Request) {
 export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
   const claude = anthropic(request);
   const response = Response.json(
-    claude
-      ? { type: "error", error: { type: "overloaded_error", message } }
-      : { error: { type: "server_error", code: "server_error", message } },
+    claude ? claudeError : { error: { type: "server_error", code: "server_error", message } },
     {
-      status: claude ? 529 : 503,
+      status: 503,
       headers: {
         "Retry-After": "1",
         "Cache-Control": "no-store",
@@ -26,7 +26,11 @@ export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
 }
 
 /** Once headers commit, only a native SSE terminal can describe the interruption. */
-export function nativeRuntimeStream(response: Response, request: Request) {
+export function nativeRuntimeStream(
+  response: Response,
+  request: Request,
+  interrupted?: (error: unknown) => void,
+) {
   if (
     !response.ok ||
     !response.body ||
@@ -42,6 +46,7 @@ export function nativeRuntimeStream(response: Response, request: Request) {
     encoder = new TextEncoder();
   let pending = "",
     ended = false,
+    cancelled = false,
     terminal = false;
   const observe = (frames: string) => {
     for (const frame of frames.split(/(?:\r?\n){2}/)) {
@@ -98,6 +103,8 @@ export function nativeRuntimeStream(response: Response, request: Request) {
         } catch (error) {
           ended = true;
           void reader.cancel().catch(() => {});
+          // A reader that left ends the pending read early; that is not an interruption.
+          if (cancelled) return;
           if (terminal) {
             controller.close();
             return;
@@ -106,8 +113,9 @@ export function nativeRuntimeStream(response: Response, request: Request) {
             controller.error(error);
             return;
           }
+          interrupted?.(error);
           const event = claude
-            ? { type: "error", error: { type: "overloaded_error", message } }
+            ? claudeError
             : {
                 type: "response.failed",
                 response: {
@@ -126,6 +134,7 @@ export function nativeRuntimeStream(response: Response, request: Request) {
       },
       async cancel(reason) {
         ended = true;
+        cancelled = true;
         await reader.cancel(reason);
       },
     }),

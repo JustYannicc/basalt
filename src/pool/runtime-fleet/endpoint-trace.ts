@@ -59,7 +59,8 @@ function flag(error: unknown, key: string) {
   const value = field(error, key);
   return value === undefined ? null : typeof value === "boolean" ? value : "invalid";
 }
-function shape(error: unknown) {
+/** Closed classes and the platform's own flags, never the exception text. */
+export function shape(error: unknown) {
   const name = field(error, "name"),
     code = field(error, "code"),
     message = field(error, "message");
@@ -75,21 +76,29 @@ function shape(error: unknown) {
     messageClass:
       typeof message !== "string"
         ? "absent"
-        : /disconnect|broken.*stub|broken.*capability/i.test(message)
-          ? "disconnected"
-          : /overload/i.test(message)
-            ? "overloaded"
-            : /abort|cancel/i.test(message)
-              ? "aborted"
-              : /timed?\s*out|deadline/i.test(message)
-                ? "timeout"
-                : /reset|refused|socket|network|transport/i.test(message)
-                  ? "transport"
-                  : "other",
+        : /no longer active/i.test(message)
+          ? "instance_inactive"
+          : /was reset/i.test(message)
+            ? "object_reset"
+            : /connection lost/i.test(message)
+              ? "connection_lost"
+              : /disconnect|broken.*stub|broken.*capability/i.test(message)
+                ? "disconnected"
+                : /overload/i.test(message)
+                  ? "overloaded"
+                  : /abort|cancel/i.test(message)
+                    ? "aborted"
+                    : /timed?\s*out|deadline/i.test(message)
+                      ? "timeout"
+                      : /reset|refused|socket|network|transport/i.test(message)
+                        ? "transport"
+                        : "other",
     isError: error instanceof Error,
     disconnected: flag(error, "disconnected"),
     retryable: flag(error, "retryable"),
     overloaded: flag(error, "overloaded"),
+    remote: flag(error, "remote"),
+    durableObjectReset: flag(error, "durableObjectReset"),
   };
 }
 interface Attempt {

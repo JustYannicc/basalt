@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { nativeRuntimeStream } from "./runtime-unavailable.ts";
 
 for (const [path, expected] of [
-  ["messages", "overloaded_error"],
+  ["messages", "api_error"],
   ["responses", "server_error"],
 ])
   test(`${path} interruption preserves completed frames, drops a partial event and ends in native retry advice`, async () => {

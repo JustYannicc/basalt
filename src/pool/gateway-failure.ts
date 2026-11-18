@@ -134,5 +134,5 @@ export function gatewayOutcomeUnknown(
   });
   defer(captureError(env, "pool_failure", new URL(request.url).pathname, undefined, requestId));
   // Home may have billed this attempt, so it cannot be recorded as an uncharged refusal.
-  return upstreamOutcomeUnknown(requestId);
+  return upstreamOutcomeUnknown(requestId, new URL(request.url).pathname);
 }

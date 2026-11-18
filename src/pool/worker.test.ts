@@ -1374,12 +1374,12 @@ test("uncertain model sends are not replayed and allow client retries while defi
         body: '{"state":"synthetic-unknown"}',
       }),
     );
-    assert.equal(response.status, path === "/v1/messages" ? 529 : 503, path);
+    assert.equal(response.status, 503, path);
     assert.equal(response.headers.get("x-should-retry"), null);
     assert.equal(response.headers.get("retry-after"), "1");
     assert.equal(response.headers.get("retry-after-ms"), null);
     const body = (await response.json()) as { error: { type: string } };
-    assert.equal(body.error.type, path === "/v1/messages" ? "overloaded_error" : "server_error");
+    assert.equal(body.error.type, path === "/v1/messages" ? "api_error" : "server_error");
     assert.equal(sends, before + 1);
   }
   refuse = true;
