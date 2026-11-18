@@ -79,6 +79,7 @@ test("GitHub REST results never carry the clone or download tokens GitHub adds",
     });
     // The router refuses a body over its 16 MiB limit; nothing reads all of it into memory first.
     assert.equal(oversized.ok, false, "an oversized body is refused");
+    assert.ok(oversized.sent > 0, "the oversized body was requested");
     assert.ok(
       oversized.sent < oversized.total,
       `read ${oversized.sent} of ${oversized.total} bytes: ${JSON.stringify(oversized.error)}`,

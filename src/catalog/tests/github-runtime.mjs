@@ -20,11 +20,13 @@ const recorded = JSON.parse(await readFile(join(fixtures, "github-responses.json
 const framework = join(root, ".upstream/packages/apps/src");
 const load = (path) => import(pathToFileURL(path).href);
 // The REST router keeps GitHub's compiled description in the host's app cache. This is the cache
-// a Durable Object gives apps, on an in-memory database, behind the same isolated boundary.
+// a Durable Object gives apps, on an in-memory database, behind the same isolated boundary: a
+// failure crosses it as an encoded reply that keeps the store's own reason.
 const appCache = join(root, ".upstream/packages/app-cache/src");
 const { sqliteCache } = await load(join(appCache, "sqlite.ts"));
-const { Effect } = await load(createRequire(join(appCache, "sqlite.ts")).resolve("effect"));
-const { isolatedCacheSession } = await load(join(framework, "implementation/cache-session.ts"));
+const { CacheReply } = await load(join(appCache, "contracts/cache.ts"));
+const { Effect, Schema } = await load(createRequire(join(appCache, "sqlite.ts")).resolve("effect"));
+const host = await load(join(framework, "host.ts"));
 const database = new Database(":memory:");
 const cached = sqliteCache({
   sql: {
@@ -35,10 +37,22 @@ const cached = sqliteCache({
   },
   transactionSync: (work) => database.transaction(work)(),
 });
-const session = isolatedCacheSession(async (command) => ({
-  ok: true,
-  value: await Effect.runPromise(cached("github", command)),
-}));
+// The SQLite cache resolves its reply bare on this framework pin and as { reply, replaced } on the
+// next; no reply has a `replaced` field of its own.
+const replyOf = (result) =>
+  typeof result === "object" && result !== null && "replaced" in result ? result.reply : result;
+const session = host.isolatedCacheSession((command) =>
+  Effect.runPromise(
+    cached("github", command).pipe(
+      Effect.map(replyOf),
+      Effect.match({
+        onSuccess: (value) => ({ ok: true, value }),
+        onFailure: (error) => ({ ok: false, error }),
+      }),
+      Effect.flatMap(Schema.encodeEffect(CacheReply)),
+    ),
+  ),
+);
 const directory = await mkdtemp(join(tmpdir(), "github-runtime-"));
 // Only import resolution changes. Destinations, declarations and handlers stay exactly as served.
 const publicExports = {
@@ -113,7 +127,6 @@ try {
       },
     });
   };
-  const host = await load(join(framework, "host.ts"));
   const handler = host.createAppHandler((await load(join(directory, "index.ts"))).default);
   const request = async (command, accounts) => {
     const response = await handler(
