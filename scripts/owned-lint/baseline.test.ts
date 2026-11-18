@@ -100,8 +100,11 @@ test("only a single `//` comment naming upstream rules may disable anything", ()
 const state = (lintChanged = false, changed = (file: string) => file === "src/touched.ts") => ({
   allowlist: {},
   basePath: (file: string) =>
-    file === "src/new-name.ts" ? "src/old-name.ts" : file.startsWith("src/new") ? undefined : file,
+    ({ "src/new-name.ts": "src/old-name.ts", "src/moved.ts": "scripts/release-barrier/moved.ts" })[
+      file
+    ] ?? (file.startsWith("src/new") ? undefined : file),
   changed,
+  enteredScope: (file: string) => file === "src/moved.ts",
   lintChanged,
 });
 const enforced = new Set([spread]);
@@ -140,6 +143,15 @@ test("while the rules change, only rises in untouched files are listed instead o
   assert.equal(result.notices.length, 1);
   assert.match(result.notices[0]!, /src\/untouched\.ts/u);
   assert.equal(result.problems.length, 2);
+});
+
+test("code moved into the gated scope keeps its findings, listed for review", () => {
+  const result = ratchet({ [spread]: { "src/moved.ts": 3 } }, {}, state(), enforced);
+  assert.deepEqual(result.problems, []);
+  assert.match(
+    result.notices[0]!,
+    /moved into the gated scope from scripts\/release-barrier\/moved\.ts/u,
+  );
 });
 
 test("a rule the base did not enforce brings its own baseline", () => {

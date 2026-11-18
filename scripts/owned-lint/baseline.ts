@@ -219,6 +219,8 @@ export type BaseState = {
   allowlist: Allowlist;
   /** The file's path at the base commit, following renames; undefined for a new file. */
   basePath: (file: string) => string | undefined;
+  /** Whether that path was outside the gated scope, as code moved out of the release layer is. */
+  enteredScope: (file: string) => boolean;
   /** Whether this change touches the file. */
   changed: (file: string) => boolean;
   /** Whether the rules or their pins differ from the base. */
@@ -243,6 +245,13 @@ export function ratchet(
     if (!enforced.has(rule)) continue;
     for (const [file, value] of Object.entries(files)) {
       const from = state.basePath(file);
+      // Code moved into the gated scope brings its existing findings; the next change shrinks them.
+      if (from && state.enteredScope(file)) {
+        notices.push(
+          `${file}: moved into the gated scope from ${from} with ${value} ${rule} finding(s), now baselined.`,
+        );
+        continue;
+      }
       const recorded = from ? (base[rule]?.[from] ?? 0) : 0;
       if (value <= recorded) continue;
       const line = from

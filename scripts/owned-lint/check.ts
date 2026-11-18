@@ -164,6 +164,7 @@ function baseState(base: string) {
   // The working tree against the base, with renames: a renamed file keeps its old count.
   const renamed = new Map<string, string>();
   const changed = new Set<string>();
+  // Renames from anywhere under scripts/ and src/, so code moved out of the release layer is found.
   const entries = git(["diff", "-z", "--name-status", "-M", base, "--", "scripts", "src"]);
   for (let index = 0; index < entries.length - 1;) {
     const status = entries[index++]!;
@@ -181,6 +182,7 @@ function baseState(base: string) {
     config: show(configPath) as Config | undefined,
     allowlist: (show(allowlistPath) ?? {}) as Allowlist,
     basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
+    enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
     changed: (file: string) => changed.has(file) || !tracked.has(file),
     lintChanged,
   } satisfies BaseState;
