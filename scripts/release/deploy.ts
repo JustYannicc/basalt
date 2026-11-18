@@ -22,6 +22,7 @@ import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
+import { failureReport } from "./public-report.ts";
 import { safeJson } from "./safe-json.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -83,6 +84,31 @@ if (command !== "compare") {
   }
 }
 
+/**
+ * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
+ * gitignored .local, in the stage runner's own sealed output when it gives one, and sealed with the
+ * deployment key next to the uploaded records on production.
+ */
+const keepPrivate = async (name: string, detail: string) => {
+  await mkdir(resolve(root, ".local/release"), { recursive: true });
+  await writeFile(resolve(root, `.local/release/${name}.txt`), `${detail}\n`);
+  if (process.env.BASALT_STAGE_OUTPUT_DIR)
+    await appendFile(
+      resolve(process.env.BASALT_STAGE_OUTPUT_DIR, `release-${name}.txt`),
+      `${detail}\n`,
+    );
+  const key = process.env.EXECUTOR_ENCRYPTION_KEY;
+  if (stage === "production" && key)
+    try {
+      const { sealRecord } = await import("./legacy-records.ts");
+      await writeFile(
+        resolve(root, `.local/release/${name}.sealed.json`),
+        safeJson(sealRecord(detail, key, `release-${name}`)),
+      );
+    } catch (error) {
+      console.error(`The ${name} detail could not be sealed (${failureReport(error).publicText})`);
+    }
+};
 const summary = async (text: string) => {
   if (process.env.GITHUB_STEP_SUMMARY)
     await appendFile(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
@@ -120,8 +146,17 @@ if (command === "accept") {
       ? { client: new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN }) }
       : {}),
   });
-  if (values.out) await output(resolve(values.out), result);
-  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(result)}`);
+  // Failure messages can name hosts; the public record keeps counts and timings only.
+  const view = {
+    passed: result.passed,
+    requests: result.requests,
+    failed: result.failures.length,
+    runtimes: result.boots.length,
+    firstByteMs: result.firstByteMs,
+  };
+  if (values.out) await output(resolve(values.out), view);
+  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);
+  if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
   process.exit(result.passed ? 0 : 1);
 }
 
@@ -211,7 +246,9 @@ const reporter = (event: unknown) =>
       ),
     );
     events.push(line);
-    console.log(line);
+    // The log is public; Alchemy's free-text messages (which can carry URLs) stay in the kept file.
+    const { message: _message, ...shown } = JSON.parse(line) as Record<string, unknown>;
+    console.log(safeJson(shown));
   });
 
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
@@ -517,49 +554,11 @@ try {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
 } catch (error) {
-  // Say exactly what stopped the run: every tagged refusal in the failure chain, with its fields.
-  const reasons: string[] = [];
-  const seen = new Set<unknown>();
-  const visit = (value: unknown, depth: number) => {
-    if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
-    seen.add(value);
-    const record = value as Record<string, unknown>;
-    if (
-      typeof record._tag === "string" &&
-      /Refus|Refused|Failed|Unavailable|Possible/u.test(record._tag)
-    )
-      reasons.push(
-        `${record._tag}: ${[
-          "resource",
-          "check",
-          "rule",
-          "script",
-          "method",
-          "path",
-          "field",
-          "value",
-          "why",
-          "fix",
-        ]
-          .filter((key) => typeof record[key] === "string" || typeof record[key] === "number")
-          .map((key) => `${key}=${String(record[key])}`)
-          .join(
-            " ",
-          )}${record.detail ? ` detail=${safeJson(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${safeJson(record.violations)}` : ""}`,
-      );
-    for (const key of ["cause", "reason", "error", "defect", "failures", "reasons", "issue"])
-      if (key in record) {
-        const next = record[key];
-        if (Array.isArray(next)) for (const item of next) visit(item, depth + 1);
-        else visit(next, depth + 1);
-      }
-  };
-  visit(error, 0);
-  const text = reasons.length
-    ? `Release stopped:\n${reasons.map((reason) => `- ${reason}`).join("\n")}`
-    : `Release stopped: ${error instanceof Error ? error.message : String(error)}`;
-  console.error(text);
-  await summary(text);
+  // Public: the tagged reason in our own vocabulary. Names, ids and raw messages stay private.
+  const report = failureReport(error);
+  console.error(report.publicText);
+  await summary(report.publicText);
+  await keepPrivate("failure", report.detail);
   process.exitCode = 1;
 } finally {
   if (events.length) await mkdir(resolve(root, ".local/release"), { recursive: true });
@@ -568,8 +567,15 @@ try {
       resolve(root, `.local/release/${command}-events.jsonl`),
       `${events.join("\n")}\n`,
     ).catch(() => {});
-  if (journal.length)
+  if (journal.length) {
+    // Vendor API hosts are public; any other host (an account subdomain, a custom domain) is not.
+    const vendor = ["api.cloudflare.com", "api.planetscale.com", "registry.cloudflare.com"];
     await summary(
-      `Outgoing requests:\n${journal.map((entry) => `${entry.method} ${entry.host}${entry.path}`).join("\n")}`,
+      `Outgoing requests:\n${journal.map((entry) => `${entry.method} ${vendor.includes(entry.host) ? entry.host : "{host}"}${entry.path}`).join("\n")}`,
     );
+    await keepPrivate(
+      "requests",
+      journal.map((entry) => `${entry.method} ${entry.host}${entry.path}`).join("\n"),
+    );
+  }
 }
