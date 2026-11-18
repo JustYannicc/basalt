@@ -115,7 +115,8 @@ export function compatibilityImagesKey(context: string, architecture: string, ro
   return `pool-compatibility-images-v1-${architecture}-${hash.digest("hex")}`;
 }
 
-const dockerArchitecture = () => ({ x64: "amd64", arm64: "arm64" })[arch()] ?? arch();
+const dockerArchitectures: Partial<Record<string, string>> = { x64: "amd64", arm64: "arm64" };
+const dockerArchitecture = () => dockerArchitectures[arch()] ?? arch();
 
 function main(mode: string | undefined) {
   const root = fileURLToPath(new URL("../../", import.meta.url));
