@@ -1,4 +1,4 @@
-// Runs the Gmail package exactly as Basalt's catalog serves it against the published Google
+// Runs Gmail's tools exactly as Basalt's catalog serves them against the published Google
 // emulator: attachments from an upload, a link and another message, a message past 5 MB through
 // Gmail's resumable upload, and scheduled sends a person can list, move and cancel. Tool input
 // goes through each operation's own decoder, as the host decodes it, so a field the package does
@@ -6,7 +6,8 @@
 // approvals (calls run approved), run controls, the durable timer and step retries, Human in the
 // loop answers, the app's SQL (bun:sqlite with the package's migrations) and its cache. A front
 // fills what the emulator lacks, as Google documents it (see front()).
-// Everything is synthetic. Run with `bun scripts/connectors-tests/gmail-tools.mjs`.
+// Everything is synthetic. Run with `bun scripts/connectors-tests/gmail-tools.mjs [gmail|google]`:
+// the Gmail app, or the all-in-one Google app, which mounts the same tools under `gmail`.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -19,7 +20,14 @@ import { Effect, Schema } from "effect";
 
 const root = resolve(import.meta.dirname, "../..");
 const { handleCatalog } = await import(join(root, "src/catalog/worker.ts"));
-const published = await readFile(join(root, "src/catalog/gmail.published.json"), "utf8");
+const packages = {
+  gmail: { label: "Gmail", prefix: "", slot: "gmail" },
+  google: { label: "Google", prefix: "gmail.", slot: "google" },
+};
+const packageId = process.argv[2] ?? "gmail";
+const served = packages[packageId];
+assert.ok(served, `Unknown package ${packageId}; use gmail or google`);
+const published = await readFile(join(root, `src/catalog/${packageId}.published.json`), "utf8");
 const me = "first@example.test";
 const other = "second@example.test";
 const token = "synthetic-gmail-token";
@@ -126,6 +134,7 @@ function front(emulatorOrigin) {
           { error: { code: 401, message: "Request had invalid authentication credentials." } },
           { status: 401 },
         );
+      if (url.pathname === "/oauth2/v3/userinfo") return Response.json({ sub: "1", email: me });
       if (url.pathname === "/gmail/v1/users/me/profile")
         return Response.json({
           emailAddress: me,
@@ -232,7 +241,7 @@ try {
   const fetchVia = (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const routed =
-      url.origin === "https://gmail.googleapis.com"
+      url.origin === "https://gmail.googleapis.com" || url.origin === "https://www.googleapis.com"
         ? `${gmail.origin}${url.pathname}${url.search}`
         : url.origin === "https://files.example.test"
           ? `${fileServer.url.origin}${url.pathname}`
@@ -255,12 +264,12 @@ try {
   };
 
   // The package as the catalog serves it; its publisher answers with the captured release.
-  const served = await handleCatalog(
-    new Request("https://catalog.example.test/catalog/apps/gmail.json"),
+  const response = await handleCatalog(
+    new Request(`https://catalog.example.test/catalog/apps/${packageId}.json`),
     async () => new Response(published, { headers: { "content-type": "application/json" } }),
   );
-  assert.equal(served.status, 200);
-  const source = await served.json();
+  assert.equal(response.status, 200);
+  const source = await response.json();
   const directory = await mkdtemp(join(root, ".upstream/packages/apps/.gmail-tools-"));
   cleanups.unshift(() => rm(directory, { recursive: true, force: true }));
   for (const file of source.files) {
@@ -345,7 +354,7 @@ try {
     fields: { access_token: accessToken },
   });
   const contextFor = (accounts) => ({
-    user: { id: "person-1", accounts: { gmail: accounts } },
+    user: { id: "person-1", accounts: { [served.slot]: accounts } },
     app: { accounts: {} },
     cache: memory(),
     files: [],
@@ -368,8 +377,8 @@ try {
   const operations = await operationsFor(context);
   /** An approved call, evaluated with the caller's accounts as the host does; input decoded by the operation's own schema. */
   const call = async (name, input, ctx = context) => {
-    const operation = (await operationsFor(ctx)).get(name);
-    assert.ok(operation, `Gmail has no ${name} tool`);
+    const operation = (await operationsFor(ctx)).get(served.prefix + name);
+    assert.ok(operation, `${served.label} has no ${served.prefix}${name} tool`);
     const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(operation.input)(input));
     return Effect.runPromise(operation.run(ctx, decoded));
   };
@@ -521,7 +530,7 @@ try {
   await check("attachment limits are stated and refused before anything is sent", async () => {
     for (const name of ["send", "draft"])
       assert.match(
-        operations.get(name)?.description ?? "",
+        operations.get(served.prefix + name)?.description ?? "",
         /attachments.*25 MB/s,
         `${name} does not say what it accepts`,
       );
@@ -775,10 +784,10 @@ try {
 }
 if (failures.length) {
   console.error(
-    `Gmail checks failed against the published Google emulator:\n- ${failures.join("\n- ")}`,
+    `${packageId} package: Gmail checks failed against the published Google emulator:\n- ${failures.join("\n- ")}`,
   );
   process.exit(1);
 }
 console.log(
-  "Gmail attachment and scheduled-send checks passed against the published Google emulator",
+  `${packageId} package: Gmail attachment and scheduled-send checks passed against the published Google emulator`,
 );
