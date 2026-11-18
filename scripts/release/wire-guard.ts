@@ -52,6 +52,12 @@ export interface WireGuardConfig {
    * SQLite class is refused unless its script has one: the class change must not move code with it.
    */
   readonly mainModuleSha256?: Readonly<Record<string, string>>;
+  /**
+   * Container applications no request may change: the legacy root. Alchemy patches and rolls out an
+   * application whenever its desired configuration differs from the recorded one, including env it
+   * derives from bindings, which the plan does not show. A rollout restarts the root's master Home.
+   */
+  readonly rootApplications?: ReadonlyArray<string>;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -77,6 +83,10 @@ const REASONS = {
     BY_HAND,
   ],
   delete: ["Deleting it loses data or breaks the live service.", BY_HAND],
+  root: [
+    "Alchemy found a configuration difference on the root application, and a PATCH or rollout restarts the root and its master Home.",
+    "Make the declaration match the recorded application, or restart the root in its own named step.",
+  ],
   store: [
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
     "Upgrade or bootstrap the store by hand under its own approval.",
@@ -358,6 +368,14 @@ const check = (
         "method",
         method,
       );
+    const application = name(APPLICATION);
+    if (
+      application !== undefined &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      config.rootApplications?.includes(application)
+    )
+      return yield* refuse(at("container application", application), "root", "method", method);
     const script = name(UPLOAD);
     if (script !== undefined && ["PUT", "POST", "PATCH"].includes(method))
       return yield* checkUpload(config, request, at("Worker", script), script);
@@ -367,7 +385,6 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
-    const application = name(APPLICATION);
     if (application !== undefined && !created.has(application))
       return yield* checkUnattached(inner, request, at("container application", application));
     for (const [pattern, kind] of PROTECTED) {

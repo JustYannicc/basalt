@@ -240,6 +240,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           mainModuleSha256: {} as Record<string, string>,
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
+          rootApplications: [] as string[],
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
@@ -259,6 +260,13 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             });
             wire.mainModuleSha256[script] = digest;
             liveModules.push({ fqn, digest });
+          }
+          // Every reviewed release leaves the root application as recorded; previews roll it freely.
+          if (policy?.check) {
+            const root = yield* applicationId(policy.check.poolContainer.fqn);
+            if (root) wire.rootApplications.push(root);
+            else if (stage === "production")
+              return yield* Effect.die(new Error("No root application recorded on production"));
           }
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
@@ -293,6 +301,20 @@ const scriptName = (fqn: string) =>
     if (typeof script !== "string" || !script)
       return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
     return script as string;
+  });
+
+/** The container application a State row records, if the row exists yet. */
+const applicationId = (fqn: string) =>
+  Effect.gen(function* () {
+    const state = yield* Alchemist.State.store({
+      backend: "configured",
+      ...target,
+    } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+    const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
+      | { attr?: { applicationId?: unknown } }
+      | undefined;
+    const id = row?.attr?.applicationId;
+    return typeof id === "string" && id ? id : undefined;
   });
 
 const planOf = (operation: "deploy" | "destroy") =>

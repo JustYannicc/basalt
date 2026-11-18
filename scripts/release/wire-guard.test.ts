@@ -762,3 +762,60 @@ test("every other write to the State store script is still refused", async (t) =
     assert.deepEqual(raw.received, [], `${method} ${path}`);
   }
 });
+
+test("the root application is never patched, rolled out or deleted; other applications are not held", async (t) => {
+  // The two calls Alchemy's ContainerProvider makes when it finds the root's configuration changed.
+  const root = "legacy-root-app";
+  const configuration = applicationBody("x").configuration;
+  const run = await guarded(t, { rootApplications: [root] }, () =>
+    Effect.gen(function* () {
+      const patch = yield* Effect.exit(
+        Containers.updateContainerApplication({
+          accountId: ACCOUNT,
+          applicationId: root,
+          maxInstances: 1,
+          configuration,
+        } as Containers.UpdateContainerApplicationRequest),
+      );
+      const rollout = yield* Effect.exit(
+        Containers.createContainerApplicationRollout({
+          accountId: ACCOUNT,
+          applicationId: root,
+          description: "Immediate update",
+          strategy: "rolling",
+          kind: "full_auto",
+          stepPercentage: 100,
+          targetConfiguration: configuration,
+        } as Containers.CreateContainerApplicationRolloutRequest),
+      );
+      const removal = yield* Effect.exit(deleteApplication(root));
+      yield* Effect.exit(
+        Containers.updateContainerApplication({
+          accountId: ACCOUNT,
+          applicationId: "cell-app",
+          maxInstances: 2,
+        } as Containers.UpdateContainerApplicationRequest),
+      );
+      return { patch, rollout, removal };
+    }),
+  );
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  const { patch, rollout, removal } = run.exit.value;
+  for (const [exit, method] of [
+    [patch, "PATCH"],
+    [rollout, "POST"],
+    [removal, "DELETE"],
+  ] as const) {
+    const refused = refusalOf(exit);
+    assert.equal(refused.resource, `container application ${root}`);
+    assert.deepEqual([refused.field, refused.value], ["method", method]);
+    assert.match(refused.why, /restarts the root/u);
+  }
+  // The refusal is signalled, so the entry's race ends the run at once.
+  assert.equal(refusalOf(run.refused).resource, `container application ${root}`);
+  // Nothing reached the root, not even the read a delete of an unknown application makes.
+  assert.deepEqual(reads(run.received), [`PATCH ${appPath("cell-app")}`]);
+});
