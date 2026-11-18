@@ -166,4 +166,10 @@ export const regressionCoverage: readonly Coverage[] = [
     proof:
       "scripts/release-barrier/release-settlement-controller-adopted.test.ts#controller-active-adopted settlement refuses a selection that changed before the final inspect",
   },
+  {
+    step: "refusal:release-preflight-schema-blocked",
+    proof:
+      "scripts/release-barrier/release-preflight-schemas.test.ts#the release preflight names the migrations the release will apply and refuses journals it could not reach ready",
+    landsWith: "fix/import-completion-resumable",
+  },
 ];

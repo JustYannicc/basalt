@@ -21,6 +21,11 @@ export type ReleaseStepId =
 export interface Coverage {
   readonly step: ReleaseStepId;
   readonly proof: string;
+  /**
+   * The change that adds this step and its proof, when neither has merged yet. Until the proof's
+   * file exists the entry is pending; from then on the file must declare the named test.
+   */
+  readonly landsWith?: string;
 }
 
 function runtimeCommandActions() {
