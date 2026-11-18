@@ -1,6 +1,6 @@
 import { Schema } from "effect";
-import { homeSchemaResultCodec, nativeHomeReasonCodes } from "./home-schema-operation.ts";
-import { sqlSchemaNamespaces } from "./sql-schema-contract.ts";
+import { homeSchemaResultCodec, nativeHomeReasonCodes } from "../home-schema-operation.ts";
+import { sqlSchemaNamespaces } from "../sql-schema-contract.ts";
 
 const candidate = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 const imageDigest = Schema.String.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/u));

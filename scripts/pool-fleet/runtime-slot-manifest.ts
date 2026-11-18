@@ -5,6 +5,7 @@ import {
   configurationDigest,
 } from "../../src/pool/runtime-slots/configuration.ts";
 import { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts";
+import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { canonical, digest } from "./manifest.ts";
 import { provisioningAuthority, type ProvisioningEnable } from "./provisioning-contract.ts";
 import {
@@ -114,4 +115,11 @@ export function assertRuntimeProofEnable(
       runtimeHandoffDigest(manifest),
       enable?.manifest ?? null,
     );
+}
+
+/** The digest a handoff manifest names for its provider application's configuration. */
+export function runtimeApplicationConfigDigest(
+  application: Parameters<typeof runtimeApplicationSettings>[0],
+) {
+  return digest(canonical(runtimeApplicationSettings(application)));
 }

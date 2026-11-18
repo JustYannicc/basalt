@@ -224,7 +224,7 @@ test(
       });
       const exit = await Effect.runPromiseExit(proof.effect);
       assert.ok(Exit.isFailure(exit));
-      const { operationFailure } = await import("../release-barrier/operation-failure.ts");
+      const { operationFailure } = await import("../pool-history/operation-failure.ts");
       const retained = operationFailure(
         Cause.squash(exit.cause),
         "Migrations",

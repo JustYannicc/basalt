@@ -17,13 +17,13 @@ import {
   historyJournalActivationMigration,
   historySchemaMigrations,
 } from "../../src/pool/model-history/schema.ts";
-import { canonical, digest } from "./manifest.ts";
+import { canonical, digest } from "../pool-fleet/manifest.ts";
 import {
   candidateSourceRoot,
   poolMigrationSources,
   sourceContract,
 } from "./migration-activation-source.ts";
-import { BarrierRefusal } from "./refusal.ts";
+import { BarrierRefusal } from "../pool-fleet/refusal.ts";
 
 const client = fileURLToPath(new URL("../../", import.meta.url));
 const hosted = ".upstream/apps/hosted/server/src/implementation/";

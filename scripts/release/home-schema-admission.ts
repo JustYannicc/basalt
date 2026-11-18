@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Schema } from "effect";
 import type { HomeMigrationAdmission } from "./home-schema-operation.ts";
-import { BarrierRefusal } from "./refusal.ts";
+import { BarrierRefusal } from "../pool-fleet/refusal.ts";
 
 const input = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u));
 const version = Schema.Number.check(
@@ -31,7 +31,7 @@ export async function homeSchemaAdmission(root: string): Promise<HomeMigrationAd
     declarations = Schema.decodeUnknownSync(codec, { onExcessProperty: "error" })(
       JSON.parse(
         await readFile(
-          resolve(root, "scripts/release-barrier/home-schema-admissions.json"),
+          resolve(root, "scripts/release/home-schema-admissions.json"),
           "utf8",
         ),
       ),

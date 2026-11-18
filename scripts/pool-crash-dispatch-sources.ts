@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { BarrierRefusal } from "./release-barrier/refusal.ts";
+import { BarrierRefusal } from "./pool-fleet/refusal.ts";
 
 // Live production sources for the crash dispatch: the run history and the native release target.
 

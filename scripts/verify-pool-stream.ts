@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Schema } from "effect";
 import { brand } from "../brand.ts";
-import { verifyOptionalModelStream } from "./release-barrier/model-stream.ts";
+import { verifyOptionalModelStream } from "./model-stream.ts";
 
 const receipt = process.env.POOL_ACCEPTANCE_KEY?.trim()
   ? await readFile(new URL("../.local/release-barrier/serving.json", import.meta.url), "utf8").then(

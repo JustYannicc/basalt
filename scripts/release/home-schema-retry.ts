@@ -1,4 +1,4 @@
-import { BarrierRefusal } from "./refusal.ts";
+import { BarrierRefusal } from "../pool-fleet/refusal.ts";
 import type {
   HomeMigrationIdentity,
   HomeMigrationReceipt,

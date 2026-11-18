@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "../architecture/typescript.ts";
-import { BarrierRefusal } from "./refusal.ts";
-import { validateSqlExpectations, type SqlSchemaExpectation } from "./sql-schema-contract.ts";
+import { BarrierRefusal } from "../pool-fleet/refusal.ts";
+import { validateSqlExpectations, type SqlSchemaExpectation } from "../release/sql-schema-contract.ts";
 
 function refuse(detail: string): never {
   throw new BarrierRefusal("sql-schema-expectations-invalid", detail);

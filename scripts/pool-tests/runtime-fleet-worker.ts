@@ -6,7 +6,7 @@ import { Schema } from "effect";
 import { handoffWorker, runtimeWorkerClasses } from "./runtime-handoff-worker.ts";
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import { runtimeFixtureCode } from "./runtime-handoff-proofs.ts";
-import { runtimeProofFixture } from "../release-barrier/test/runtime-proof-fixture.ts";
+import { runtimeProofFixture } from "../pool-fleet/test/runtime-proof-fixture.ts";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";

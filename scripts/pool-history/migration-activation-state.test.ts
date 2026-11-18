@@ -11,9 +11,9 @@ import {
 import {
   readMigrationJournalDatabase,
   type JournalFunction,
+  type SqlJournalSource,
 } from "./migration-activation-database.ts";
 import { releaseOperationFingerprint } from "./release-operation.ts";
-import type { SqlJournalSource } from "./sql-schema-read.ts";
 
 const candidate = "a".repeat(40);
 const key = "b".repeat(64);

@@ -11,8 +11,8 @@
  *                                                       Container is its Application)
  * - `PoolRuntimeBlue/Green`   Cloudflare.Container      src/pool/fleet-deployment.ts (once in State)
  * - `PoolRuntime`             Cloudflare.Container      src/pool/fleet-deployment.ts (legacy fleet)
- * - `VaultAttachments`        Cloudflare.R2.Bucket      scripts/release-barrier/vault-attachments.ts
- * - `PublicSiteWaitlist`      Cloudflare.D1Database     scripts/release-barrier/public-site-waitlist.ts
+ * - `VaultAttachments`        Cloudflare.R2.Bucket      infrastructure/vault-attachments.ts
+ * - `PublicSiteWaitlist`      Cloudflare.D1Database     infrastructure/public-site-waitlist.ts
  * - `PoolObservationSecrets`  Cloudflare.SecretsStore   src/pool/fleet-observation.ts
  * - `PoolProviderObservationToken`  Cloudflare.ApiToken.AccountApiToken  written by provisioning
  *                                                       scripts only; never declared by the stack

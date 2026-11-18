@@ -8,7 +8,7 @@ import {
   historySchemaMigrations,
 } from "../../src/pool/model-history/schema.ts";
 import { runHistoryOperator } from "../pool-history-operator.ts";
-import { canonical, digest, BarrierRefusal } from "./manifest.ts";
+import { canonical, digest, BarrierRefusal } from "../pool-fleet/manifest.ts";
 import type { JournalFunction } from "./migration-activation-database.ts";
 
 export interface HistoryOptions {

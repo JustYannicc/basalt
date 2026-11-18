@@ -1,4 +1,4 @@
-import { BarrierRefusal, canonical } from "./manifest.ts";
+import { BarrierRefusal, canonical } from "../pool-fleet/manifest.ts";
 import {
   checkpointReaderContract,
   migrationActivationTargets,

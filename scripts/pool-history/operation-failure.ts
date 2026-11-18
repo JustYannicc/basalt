@@ -1,9 +1,9 @@
 import { StateStoreError } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
-import { BarrierRefusal } from "./refusal.ts";
+import { BarrierRefusal } from "../pool-fleet/refusal.ts";
 import { migrationCommandFailure, type MigrationDiagnostic } from "./migration-failure.ts";
-import { redactFailureOutput } from "../deploy-safety/failure-output.ts";
-import type { PropChange } from "./prop-diff.ts";
+import { redactFailureOutput } from "./failure-output.ts";
+import type { PropChange } from "../pool-fleet/prop-diff.ts";
 
 export type ReleaseOperation =
   | "plan-read-state"

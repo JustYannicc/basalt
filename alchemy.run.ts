@@ -1,5 +1,5 @@
-import { provisionPublicSiteWaitlist } from "./scripts/release-barrier/public-site-waitlist.ts";
-import { provisionVaultAttachments } from "./scripts/release-barrier/vault-attachments.ts";
+import { provisionPublicSiteWaitlist } from "./infrastructure/public-site-waitlist.ts";
+import { provisionVaultAttachments } from "./infrastructure/vault-attachments.ts";
 import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -26,12 +26,11 @@ import {
 import AppPages from "./.upstream/apps/hosted/cloud/src/app-ui.ts";
 import { Api } from "./.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { stackState } from "./.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
-import { releaseStackState } from "./scripts/release-barrier/read-only-state.ts";
 import { previewDatabase } from "./.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
 
 export default Alchemy.Stack(
   "basalt",
-  { providers: cloudProviders, state: releaseStackState(stackState) },
+  { providers: cloudProviders, state: stackState },
   Effect.gen(function* () {
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
     const stage = yield* Stage;

@@ -1,5 +1,13 @@
-import { canonical, digest, BarrierRefusal } from "./manifest.ts";
-import type { SqlJournalSource } from "./sql-schema-read.ts";
+import { canonical, digest, BarrierRefusal } from "../pool-fleet/manifest.ts";
+
+export interface SqlJournalSession {
+  query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+  end(): Promise<void>;
+}
+export interface SqlJournalSource {
+  databaseName: string;
+  connect(): Promise<SqlJournalSession>;
+}
 
 export interface JournalFunction {
   name: string;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpointReaderContract } from "./migration-activation-contract.ts";
 import type { HistoryOperator } from "./migration-activation-source.ts";
-import { digest, BarrierRefusal } from "./manifest.ts";
+import { digest, BarrierRefusal } from "../pool-fleet/manifest.ts";
 import { HistoryOperatorFailure } from "../pool-history-operator-failure.ts";
 import { safeProviderFailureChain } from "./operation-failure.ts";
 

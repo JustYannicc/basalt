@@ -1,4 +1,4 @@
-import { canonical, digest } from "./manifest.ts";
+import { canonical, digest } from "../pool-fleet/manifest.ts";
 
 export interface ReleaseOperationReceipt<I, R> {
   candidate: string;

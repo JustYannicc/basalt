@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { releaseEvidence } from "./evidence.ts";
+import { BarrierRefusal } from "./refusal.ts";
 import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
@@ -20,9 +17,8 @@ const adopt = {
   expiresAt: at + 60_000,
 } as const;
 
-async function refusedEvidence(t: TestContext, reply: () => Response) {
-  const directory = await mkdtemp(join(tmpdir(), "runtime-command-refusal-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+/** The public refusal a fleet operator prints: its reason, worker and redacted delta. */
+async function refusedEvidence(_t: TestContext, reply: () => Response) {
   const target = {
     worker: "pool-worker",
     accountId: "account",
@@ -35,8 +31,8 @@ async function refusedEvidence(t: TestContext, reply: () => Response) {
     () => assert.fail("a refused command must throw"),
     (refusal: unknown) => refusal,
   );
-  await releaseEvidence(directory, candidate).failure(error);
-  const text = await readFile(join(directory, "failure.json"), "utf8");
+  assert.ok(error instanceof BarrierRefusal);
+  const text = JSON.stringify({ reason: error.reason, worker: error.worker, delta: error.delta });
   const failure = JSON.parse(text) as {
     reason: string;
     delta: { changed: Array<{ path: string; new?: unknown }> };

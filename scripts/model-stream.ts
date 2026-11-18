@@ -1,5 +1,5 @@
 import { appendFile } from "node:fs/promises";
-import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import { PoolAcceptanceClient } from "./pool-acceptance/client.ts";
 
 export async function verifyOptionalModelStream(options: {
   key?: string;

@@ -14,8 +14,7 @@ import {
   modelHistorySchemaPlan,
 } from "../../src/pool/model-history/operator.ts";
 import { activateHosted, historyPlan } from "./migration-activation-commands.ts";
-import { BarrierRefusal } from "./refusal.ts";
-import { refusalTable } from "./refusal-report.ts";
+import { BarrierRefusal } from "../pool-fleet/refusal.ts";
 
 test("activation accepts the real prepared operator plan and reports exact dry-run failures", async () => {
   const database = new PGlite();
@@ -115,7 +114,7 @@ test("activation accepts the real prepared operator plan and reports exact dry-r
             : [{ path: scenario.field, changed: true }],
           scenario.name,
         );
-        const publicFailure = JSON.stringify(error) + refusalTable(error);
+        const publicFailure = JSON.stringify(error) + String(error);
         if (scenario.name === "connect")
           assert.deepEqual(error.delta?.why, [
             "phase=proxy-open",
@@ -168,7 +167,7 @@ test("a plain connection Error retains its safe nested Wrangler cause without pr
         "cause.1.status=403",
         "cause.1.codes=10000",
       ]);
-      assert.ok(!(JSON.stringify(error) + refusalTable(error)).includes(sentinel));
+      assert.ok(!(JSON.stringify(error) + String(error)).includes(sentinel));
       return true;
     },
   );
@@ -204,7 +203,7 @@ test("module loading and remote proxy initialization have distinct closed failur
         assert.ok(
           error.delta?.why?.includes(loading ? "code=MODULE_NOT_FOUND" : "cause.1.code=ECONNRESET"),
         );
-        assert.ok(!(JSON.stringify(error) + refusalTable(error)).includes(sentinel));
+        assert.ok(!(JSON.stringify(error) + String(error)).includes(sentinel));
         return true;
       },
     );

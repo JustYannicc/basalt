@@ -1,4 +1,4 @@
-import { canonical } from "./manifest.ts";
+import { canonical } from "../pool-fleet/manifest.ts";
 
 export interface ActiveWorkerPlacement {
   id: string;

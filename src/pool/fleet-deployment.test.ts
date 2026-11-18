@@ -6,7 +6,7 @@ import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { Stack, evalStack } from "alchemy/Stack";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { decodeRuntimeCreate } from "../../scripts/release-barrier/runtime-create-schema.ts";
+import { decodeRuntimeCreate } from "../../scripts/pool-fleet/runtime-create-schema.ts";
 import { runtimeDeclaration } from "../../scripts/release-barrier/test/provisioning-fixtures.ts";
 import { withReleaseRuntime } from "../../scripts/release-barrier/runtime.ts";
 import { bindPoolObservation, poolObservationTokenProps } from "./fleet-observation.ts";

@@ -1,13 +1,13 @@
 import { Schema } from "effect";
 import { SlotTarget } from "../../../src/pool/runtime-slots/contract.ts";
 import { runtimeConfiguration } from "../../../src/pool/runtime-slots/configuration.ts";
-import { decodeApplication } from "../container-observation.ts";
+import { decodeProviderApplication } from "../../../src/pool/runtime-provider/application.ts";
 import {
   freezeRuntimeHandoff,
   runtimeBridgeKeyDigest,
+  runtimeApplicationConfigDigest,
   runtimeHandoffDigest,
 } from "../runtime-slot-manifest.ts";
-import { runtimeApplicationConfigDigest } from "../runtime-slot-provider-proof.ts";
 
 export async function runtimeProofFixture() {
   const now = 10_000;
@@ -69,7 +69,7 @@ export async function runtimeProofFixture() {
     provider: {
       accountId: raw.account_id,
       namespaceId: "candidate-namespace",
-      applicationConfigDigest: runtimeApplicationConfigDigest(decodeApplication(raw)),
+      applicationConfigDigest: runtimeApplicationConfigDigest(decodeProviderApplication(raw)),
     },
     configuration: runtimeConfiguration({
       POOL_DATABASE_URL: "postgres://synthetic.invalid/test",

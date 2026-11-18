@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import { Schema } from "effect";
-import { BarrierRefusal } from "./manifest.ts";
+import { BarrierRefusal } from "../pool-fleet/manifest.ts";
 
 const limits = { configuration: 1024 * 1024, "worker-modules": 64 * 1024 * 1024 } as const;
 type RecoveryKind = keyof typeof limits;

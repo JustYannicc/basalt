@@ -1,5 +1,5 @@
 import type { HomeMigrationReceipt } from "./home-schema-operation.ts";
-import { BarrierRefusal, type PlanRefusal } from "./refusal.ts";
+import { BarrierRefusal, type PlanRefusal } from "../pool-fleet/refusal.ts";
 
 export const sqlSchemaNamespaces = [
   "hosted",
