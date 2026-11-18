@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "Home opens a second, separately capped database pool of two connections for cluster coordination: its heartbeats, election, master lookup and node liveness, including the node connection lifecycle commands. Request, billing, usage, log, purge and management work keep the six-connection main pool, so a saturated main pool cannot delay heartbeats past their timeout. Each Home holds up to eight pooler client connections."
+      constraint "Home opens a second, separately capped database pool of two connections for cluster coordination: its heartbeats, election, master lookup, node liveness and membership, node lookups and the cluster TLS fingerprint check. Request, billing, usage, log, purge, rebalance, certificate signing and management work keep the six-connection main pool, so request work no longer queues coordination inside Home's own pool. Both pools still share the database pooler's server connections. Each Home holds up to eight pooler client connections."
     }
   }
 }

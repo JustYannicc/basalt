@@ -1,11 +1,23 @@
 diff --git a/cmd/home/main.go b/cmd/home/main.go
-index c2b36ee..1871ef9 100644
+index c2b36ee..306f693 100644
 --- a/cmd/home/main.go
 +++ b/cmd/home/main.go
-@@ -251,6 +251,27 @@ func run() int {
- 	}
+@@ -252,10 +252,6 @@ func run() int {
  	repo := cluster.NewRepository(clusterDB)
  	clusterRepo = repo
+ 	nodeCfg := resolveDatabaseNodeConfig(clusterCfg, clusterExists)
+-	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(runCtx, nodeCfg.HeartbeatTimeout); errEnsureLifecycle != nil {
+-		log.Errorf("failed to initialize lifecycle configuration: %v", errEnsureLifecycle)
+-		return 1
+-	}
+ 	if importState {
+ 		stats, errImport := cluster.ImportLocalState(runCtx, cluster.ImportOptions{
+ 			ConfigPath:           configPath,
+@@ -328,7 +324,32 @@ func run() int {
+ 		log.Errorf("failed to resolve database node ip: %v", errClusterClientAddr)
+ 		return 1
+ 	}
+-	tlsConfig, errCertificates := repo.EnsureClusterCertificates(runCtx, clusterClientAddr)
 +	coordinationRepo := repo
 +	if dbBackend == cluster.DatabaseBackendPostgres && clusterCfg != nil {
 +		coordinationDB, errCoordinationOpen := cluster.OpenCoordination(runCtx, clusterCfg.PGSQL)
@@ -27,10 +39,15 @@ index c2b36ee..1871ef9 100644
 +			coordinationRepo = cluster.NewRepository(coordinationDB)
 +		}
 +	}
- 	nodeCfg := resolveDatabaseNodeConfig(clusterCfg, clusterExists)
- 	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(runCtx, nodeCfg.HeartbeatTimeout); errEnsureLifecycle != nil {
- 		log.Errorf("failed to initialize lifecycle configuration: %v", errEnsureLifecycle)
-@@ -411,11 +432,12 @@ func run() int {
++	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(runCtx, nodeCfg.HeartbeatTimeout); errEnsureLifecycle != nil {
++		log.Errorf("failed to initialize lifecycle configuration: %v", errEnsureLifecycle)
++		return 1
++	}
++	tlsConfig, errCertificates := coordinationRepo.EnsureClusterCertificates(runCtx, clusterClientAddr)
+ 	if errCertificates != nil {
+ 		log.Errorf("failed to init runtime certificates: %v", errCertificates)
+ 		return 1
+@@ -411,6 +432,7 @@ func run() int {
  			StartupRecovery: func(recoveryCtx context.Context, incarnation cluster.HomeIncarnationID) error {
  				return recoverCPAFences(recoveryCtx, clusterRepo, incarnation, respSrv)
  			},
@@ -38,12 +55,6 @@ index c2b36ee..1871ef9 100644
  		})
  		refreshController := cluster.NewRefreshController(coordinator, rt, clusterRepo, clusterTLSConfig)
  		coordinator.SetOnMasterChanged(refreshController.OnMasterChanged)
- 		rt.SetClusterRefreshHandler(refreshController.RefreshNowObserved)
--		clusterRESPHandler = cluster.NewRESPHandler(coordinator, refreshController, clusterRepo)
-+		clusterRESPHandler = cluster.NewRESPHandler(coordinator, refreshController, coordinationRepo)
- 		if clusterAdapter == nil {
- 			log.Errorf("failed to init cluster runtime adapter")
- 			return 1
 diff --git a/internal/cluster/config.go b/internal/cluster/config.go
 index ee3494d..36c4405 100644
 --- a/internal/cluster/config.go
@@ -70,10 +81,10 @@ index ee3494d..36c4405 100644
  			c.Port != 0 ||
 diff --git a/internal/cluster/coordination_pool_postgres_test.go b/internal/cluster/coordination_pool_postgres_test.go
 new file mode 100644
-index 0000000..e518c27
+index 0000000..131b299
 --- /dev/null
 +++ b/internal/cluster/coordination_pool_postgres_test.go
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,187 @@
 +package cluster
 +
 +import (
@@ -209,6 +220,27 @@ index 0000000..e518c27
 +	}
 +}
 +
++func TestHomeDBPoolCoordinationServesNodeLookupsOffASaturatedMainPool(t *testing.T) {
++	for _, coordinationConns := range []int{1, 0} {
++		mainDB, coordinator := newCoordinationPoolFixture(t, 2, coordinationConns)
++		if errHeartbeat := heartbeatOnce(context.Background(), coordinator); errHeartbeat != nil {
++			t.Fatal(errHeartbeat)
++		}
++		handler := NewRESPHandler(coordinator, nil, NewRepository(mainDB))
++		release := holdMainPool(t, mainDB, 2)
++		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
++		_, errNodes := handler.nodesPayload(ctx)
++		cancel()
++		release()
++		if coordinationConns > 0 && errNodes != nil {
++			t.Fatalf("node lookup with a coordination pool: %v", errNodes)
++		}
++		if coordinationConns == 0 && !errors.Is(errNodes, context.DeadlineExceeded) {
++			t.Fatalf("node lookup on the shared saturated pool = %v, want the caller deadline", errNodes)
++		}
++	}
++}
++
 +func TestHomeDBPoolCoordinationSharedPoolWaitsBehindSaturation(t *testing.T) {
 +	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 0)
 +	release := holdMainPool(t, mainDB, 2)
@@ -241,7 +273,7 @@ index 0000000..e518c27
 +	}
 +}
 diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
-index a5e724d..d992786 100644
+index a5e724d..22a1c6c 100644
 --- a/internal/cluster/coordinator.go
 +++ b/internal/cluster/coordinator.go
 @@ -36,10 +36,13 @@ type CoordinatorOptions struct {
@@ -272,6 +304,24 @@ index a5e724d..d992786 100644
  		node:              node,
  		heartbeatInterval: interval,
  		heartbeatTimeout:  timeout,
+@@ -117,7 +125,7 @@ func (c *Coordinator) Initialize(ctx context.Context) error {
+ 	if errRegister != nil {
+ 		return errRegister
+ 	}
+-	if errHeartbeat := c.repo.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
++	if errHeartbeat := c.coordination.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
+ 		return c.retireFailedInitialization(ctx, incarnation, errHeartbeat)
+ 	}
+ 	if errRecovery := c.runStartupRecovery(ctx, incarnation); errRecovery != nil {
+@@ -195,7 +203,7 @@ func (c *Coordinator) RetireHomeIncarnation(ctx context.Context) error {
+ 	if !initialized {
+ 		return nil
+ 	}
+-	return c.repo.RetireHomeIncarnation(ctx, incarnation)
++	return c.coordination.RetireHomeIncarnation(ctx, incarnation)
+ }
+ 
+ // Start starts subsequent coordinator heartbeats after initialization.
 @@ -331,7 +339,7 @@ func (c *Coordinator) UpdateClientCount(ctx context.Context, clientCount int) er
  	if clientCount < 0 {
  		clientCount = 0
@@ -334,3 +384,75 @@ index 85a8252..b82ed6e 100644
  // OpenSQLite opens a SQLite database.
  func OpenSQLite(ctx context.Context, path string, configuredSlowQueryThreshold ...time.Duration) (*gorm.DB, error) {
  	if ctx == nil {
+diff --git a/internal/cluster/resp.go b/internal/cluster/resp.go
+index 3d97499..26f5e9e 100644
+--- a/internal/cluster/resp.go
++++ b/internal/cluster/resp.go
+@@ -74,7 +74,7 @@ func (h *RESPHandler) ClassifyConnection(ctx context.Context, fingerprint string
+ 	if !initialized {
+ 		return ConnectionLifetime{}, fmt.Errorf("cluster resp: Home incarnation is not initialized")
+ 	}
+-	return h.repo.ClassifyConnection(ctx, fingerprint, home)
++	return h.liveness().ClassifyConnection(ctx, fingerprint, home)
+ }
+ 
+ // SubscribeMembership creates a membership owned by this Home incarnation.
+@@ -90,7 +90,7 @@ func (h *RESPHandler) RefreshCPALiveness(ctx context.Context, lifetime Connectio
+ 	if lifetime.Home != home {
+ 		return ErrHomeIncarnationFenced
+ 	}
+-	return h.repo.RefreshCPALiveness(ctx, lifetime)
++	return h.liveness().RefreshCPALiveness(ctx, lifetime)
+ }
+ 
+ // SubscribeMembership creates a membership owned by this Home incarnation.
+@@ -102,7 +102,7 @@ func (h *RESPHandler) SubscribeMembership(ctx context.Context, fingerprint strin
+ 	if !initialized {
+ 		return ConnectionLifetime{}, fmt.Errorf("cluster resp: Home incarnation is not initialized")
+ 	}
+-	member, errSubscribe := h.repo.SubscribeMembership(ctx, SubscribeMembershipRequest{
++	member, errSubscribe := h.liveness().SubscribeMembership(ctx, SubscribeMembershipRequest{
+ 		Fingerprint:             fingerprint,
+ 		NodeID:                  nodeID,
+ 		Home:                    home,
+@@ -202,7 +202,7 @@ func (h *RESPHandler) nodesPayload(ctx context.Context) ([]byte, error) {
+ 		return nil, errNow
+ 	}
+ 	cutoff := now.Add(-timeout)
+-	nodes, errNodes := h.repo.ListLiveClusterNodes(ctx, cutoff)
++	nodes, errNodes := h.liveness().ListLiveClusterNodes(ctx, cutoff)
+ 	if errNodes != nil {
+ 		return nil, errNodes
+ 	}
+@@ -275,7 +275,7 @@ func (h *RESPHandler) authorizeNode(ctx context.Context, remoteIP string, secret
+ 		return nil, errNow
+ 	}
+ 	cutoff := now.Add(-timeout)
+-	node, errNode := h.repo.LiveClusterNodeByIPAndSecret(ctx, remoteIP, secret, cutoff)
++	node, errNode := h.liveness().LiveClusterNodeByIPAndSecret(ctx, remoteIP, secret, cutoff)
+ 	if errNode != nil {
+ 		return nil, errNode
+ 	}
+@@ -289,7 +289,7 @@ func (h *RESPHandler) databaseNow(ctx context.Context) (time.Time, error) {
+ 	if h == nil || h.repo == nil {
+ 		return time.Time{}, fmt.Errorf("cluster resp: repository is nil")
+ 	}
+-	db, errDB := h.repo.database()
++	db, errDB := h.liveness().database()
+ 	if errDB != nil {
+ 		return time.Time{}, errDB
+ 	}
+@@ -549,3 +549,13 @@ func parseClusterRESPError(line string) error {
+ 		HTTPStatus: statusCode,
+ 	}
+ }
++
++// liveness returns the repository for CPA liveness, membership and node lookups: the
++// coordinator's coordination pool when one is configured, otherwise the handler's own.
++// Rebalance commands, fingerprint cancellation and certificate signing stay on h.repo.
++func (h *RESPHandler) liveness() *Repository {
++	if h.coordinator != nil && h.coordinator.coordination != nil {
++		return h.coordinator.coordination
++	}
++	return h.repo
++}
