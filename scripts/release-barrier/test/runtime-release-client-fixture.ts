@@ -46,6 +46,8 @@ export async function runtimeReleaseClientFixture(
     closeMs: number;
     healthReplyMs: number;
     healthReply?: (result: { identity: SlotIdentity; leaseMs: number }) => unknown;
+    onConnect?: () => Promise<void>;
+    beforeForward?: (action: string) => Promise<void>;
   } = { setupMs: 0, closeMs: 0, healthReplyMs: 0 };
   let closes = 0;
   let promotion: ReleasePromotionAttempt | undefined;
@@ -126,16 +128,19 @@ export async function runtimeReleaseClientFixture(
       writer,
       promotion: {
         read: async () => promotion,
-        write: async (next) => {
-          promotion = structuredClone(next);
-          attempts.push(structuredClone(next));
-        },
+        // Like the release journal, every write takes the writer queue.
+        write: (next) =>
+          writer.exclusive(async () => {
+            promotion = structuredClone(next);
+            attempts.push(structuredClone(next));
+          }),
       },
       desiredConfiguration: runtimeConfiguration(f.candidate.env),
       target: {
         ...state.target,
         connect: async () => {
           await delay(bridge.setupMs);
+          await bridge.onConnect?.();
           return {
             env: {
               POOL_OPERATIONS: {
@@ -167,6 +172,7 @@ export async function runtimeReleaseClientFixture(
                       if (++health === 2) throw new SlotRefused("unhealthy");
                     };
                   }
+                  await bridge.beforeForward?.(command.action);
                   const response = await root.runtimeHandoff(request);
                   if (fail === command.action) {
                     fail = undefined;

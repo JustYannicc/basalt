@@ -341,3 +341,75 @@ for (const outcome of ["failed", "ready"] as const)
     );
     assert.equal([...f.instances.values()][0]!.fixture.calls.start, 1);
   });
+
+// Advances the frozen clock past the 30 s attestation window, then renews membership the way upkeep does.
+const attestationWindowMs = 30_000;
+const passAttestationWindow = async (
+  f: Awaited<ReturnType<typeof fixture>>,
+  clock: { now: number },
+) => {
+  clock.now += attestationWindowMs + 1_000;
+  assert.equal((await f.view()).response.status, 200);
+};
+
+test(
+  "promote bridge setup longer than the attestation window does not age a fresh attestation",
+  { timeout: 30_000 },
+  async (context) => {
+    const clock = { now: Date.now() };
+    context.mock.method(Date, "now", () => clock.now);
+    const f = await fixture();
+    context.after(() => f.cleanup());
+    let slowSetups = 0;
+    // The promote bridge is the one opened after the attestation's witness read.
+    f.bridge.onConnect = async () => {
+      if (f.commands.at(-1) !== "witness" || !f.commands.includes("candidate-probe")) return;
+      slowSetups++;
+      await passAttestationWindow(f, clock);
+    };
+    await f.client.promote("green-application", "slow-promote-bridge", f.claims.pool);
+    assert.equal(slowSetups, 1);
+    assert.equal(f.commands.filter((command) => command === "promote").length, 1);
+    assert.equal(
+      (await f.client.inspect()).selection!.active.target.applicationId,
+      "green-application",
+    );
+  },
+);
+
+test(
+  "an attestation that went stale in transit still refuses, and the refusal leaves a retryable attempt",
+  { timeout: 30_000 },
+  async (context) => {
+    const clock = { now: Date.now() };
+    context.mock.method(Date, "now", () => clock.now);
+    const f = await fixture();
+    context.after(() => f.cleanup());
+    let staled = 0;
+    // Time between the send and the controller ages the signed observation.
+    f.bridge.beforeForward = async (action) => {
+      if (action !== "promote" || staled++) return;
+      await passAttestationWindow(f, clock);
+    };
+    await assert.rejects(
+      f.client.promote("green-application", "stale-attestation", f.claims.pool),
+      /runtime-handoff-response-refused/,
+    );
+    assert.equal(staled, 1);
+    assert.equal(await f.send("receipt", { operationId: "stale-attestation" }), null);
+    // A 409 is a definite answer: the journal must not claim an unknown send.
+    assert.equal(f.attempts.at(-1)!.promotionSent, false);
+    assert.equal(
+      (await f.client.inspect()).selection!.active.identity!.bootId,
+      f.old.identity().bootId,
+    );
+    f.reconstructRoot();
+    await f.client.promote("green-application", "stale-attestation", f.claims.pool);
+    assert.equal(f.commands.filter((command) => command === "promote").length, 2);
+    assert.equal(f.commands.filter((command) => command === "stage").length, 1);
+    assert.equal(
+      (await f.client.inspect()).selection!.active.target.applicationId,
+      "green-application",
+    );
+  },
+);
