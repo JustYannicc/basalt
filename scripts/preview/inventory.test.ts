@@ -44,6 +44,7 @@ test("reads exact stage rows and resource values from the configured Alchemy sta
     if (args.includes("list")) {
       // Each stack lists its stage directories; only then is the one stage listed recursively.
       const at = args[args.indexOf("list") + 1];
+      if (at === "--config") return { status: 0, stdout: "basalt/\nbasalt-preview-database/\nbasalt-rehearsal/\n" };
       if (at === "basalt") return { status: 0, stdout: `basalt/test-pr-99/\nbasalt/${stage}/\n` };
       if (at === "basalt-preview-database") return { status: 0, stdout: `basalt-preview-database/${stage}/\n` };
       if (at === `basalt/${stage}`)
@@ -121,6 +122,9 @@ test("a rehearsal reads its own stack name and refuses records from a PR stack",
     command: (args) => {
       if (args.includes("list")) {
         const at = args[args.indexOf("list") + 1];
+        // The fixture stack was never written: it is absent from the stack names, never listed.
+        if (at === "--config") return { status: 0, stdout: "basalt/\nbasalt-rehearsal/\nbasalt-preview-database/\n" };
+        if (at === "basalt-rehearsal-fixture") return { status: 1, stdout: "error: basalt-rehearsal-fixture: path does not exist" };
         if (at === "basalt-rehearsal") return { status: 0, stdout: `basalt-rehearsal/${rehearsal}/\n` };
         if (at === `basalt-rehearsal/${rehearsal}`) return { status: 0, stdout: `${router.path}\n` };
         return { status: 0, stdout: "" };
@@ -179,6 +183,7 @@ test("a listing line outside the stage is refused and named, with secrets redact
     environment: { CLOUDFLARE_API_TOKEN: "fixture-secret-token" },
     command: (args) => {
       const at = args[args.indexOf("list") + 1];
+      if (at === "--config") return { status: 0, stdout: "basalt/\n" };
       if (at === "basalt") return { status: 0, stdout: `basalt/${stage}/\n` };
       if (at === `basalt/${stage}`) return { status: 0, stdout: "basalt/production/Router fixture-secret-token\n" };
       return { status: 0, stdout: "" };
@@ -187,4 +192,22 @@ test("a listing line outside the stage is refused and named, with secrets redact
   await assert.rejects(reader.read(stage), (error: Error) =>
     error.message.includes("malformed remote state path") && error.message.includes("[redacted]") &&
     !error.message.includes("fixture-secret-token"));
+});
+
+test("a brand-new stage whose stacks the store never held reads as empty without listing them", async () => {
+  const listed: string[] = [];
+  const reader = alchemyPreviewStateReader({
+    environment: {},
+    command: (args) => {
+      const at = args[args.indexOf("list") + 1]!;
+      listed.push(at);
+      if (at === "--config") return { status: 0, stdout: "basalt/\nbasalt-preview-database/\n" };
+      if (at === "basalt" || at === "basalt-preview-database") return { status: 0, stdout: `${at}/production/\n` };
+      return { status: 1, stdout: `error: ${at}: path does not exist` };
+    },
+  });
+  assert.deepEqual(await reader.read("test-rehearsal-9"), {
+    "basalt-rehearsal": [], "basalt-preview-database": [], "basalt-rehearsal-fixture": [],
+  });
+  assert.deepEqual(listed, ["--config", "basalt-preview-database"]);
 });
