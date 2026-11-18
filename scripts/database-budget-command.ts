@@ -183,8 +183,12 @@ export async function runDatabaseBudgetCommand(
           at instanceof Error && depth < 4;
           at = at.cause, depth += 1
         )
+          const fields = Object.fromEntries(Object.entries(at));
           chain.push(
-            `${at.name}${"code" in at ? `(${String((at as { code?: unknown }).code)})` : ""}: ${at.message}`
+            `${at.name}${["code", "status", "outcome", "stage"]
+              .filter((key) => fields[key] !== undefined)
+              .map((key) => ` ${key}=${String(fields[key])}`)
+              .join("")}: ${at.message}`
               .replace(/Bearer\s+\S+/gu, "Bearer [redacted]")
               .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/gu, "[redacted-jwt]")
               .replace(/[A-Za-z0-9+/_=-]{32,}/gu, "[redacted]")
