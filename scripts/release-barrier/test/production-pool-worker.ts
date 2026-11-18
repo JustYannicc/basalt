@@ -68,6 +68,12 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
         type: "application/javascript+module",
         bytes: new TextEncoder().encode("export class PoolContainer {}\nexport default {};\n"),
       },
+      // Production's content read returns the entry and its source map as two parts.
+      {
+        name: "worker.js.map",
+        type: "application/source-map",
+        bytes: new TextEncoder().encode('{"version":3,"sources":[],"mappings":""}'),
+      },
     ],
     mainModule: "worker.js",
   });
@@ -127,11 +133,14 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
           productionVersionBody({
             id: version.id,
             mainModule: version.mainModule,
-            modules: version.files.map((file) => ({
-              name: file.name,
-              content_type: file.type,
-              content_base64: Buffer.from(file.bytes).toString("base64"),
-            })),
+            // The module read-back lists code modules only, never the source map.
+            modules: version.files
+              .filter((file) => file.type !== "application/source-map")
+              .map((file) => ({
+                name: file.name,
+                content_type: file.type,
+                content_base64: Buffer.from(file.bytes).toString("base64"),
+              })),
             bindings: version.bindings,
             containers: version.containers,
             annotations: version.annotations,

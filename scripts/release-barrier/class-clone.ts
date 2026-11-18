@@ -10,6 +10,12 @@ import { changedProps } from "./prop-diff.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { baselineKey, classAnnotations, classPlacement } from "./class-settings.ts";
 
+// The content read returns source maps as parts; a version's module read-back never lists them.
+const sourceMap = "application/source-map";
+const codeModules = <T extends { contentType?: string | null }>(
+  modules: readonly T[] | null | undefined,
+) => modules?.filter((module) => module.contentType !== sourceMap);
+
 /** Legacy inherit selects the latest upload. Stage the exact active bytes with version-qualified binding inheritance first. */
 export function cloneRequest(
   baseline: ClassObservation,
@@ -33,11 +39,13 @@ export function cloneRequest(
     workerId: baseline.scriptName,
     deploy: false,
     mainModule: content.mainModule,
-    modules: content.files.map((file) => ({
-      name: file.name,
-      contentType: file.type,
-      contentBase64: Buffer.from(file.bytes).toString("base64"),
-    })),
+    modules: content.files
+      .filter((file) => file.type !== sourceMap)
+      .map((file) => ({
+        name: file.name,
+        contentType: file.type,
+        contentBase64: Buffer.from(file.bytes).toString("base64"),
+      })),
     bindings: (settings.bindings ?? []).map((binding) => ({
       type: "inherit",
       name: binding.name,
@@ -77,7 +85,7 @@ export function assertClone(
   const expected = {
     annotations: classAnnotations(request.annotations, fqn, "clone.request"),
     mainModule: request.mainModule,
-    modules: request.modules,
+    modules: codeModules(request.modules),
     compatibilityDate: request.compatibilityDate,
     compatibilityFlags: request.compatibilityFlags,
     limits: request.limits,
@@ -89,7 +97,7 @@ export function assertClone(
   const observed = actual && {
     annotations: classAnnotations(actual.annotations, fqn, "clone"),
     mainModule: actual.mainModule,
-    modules: actual.modules,
+    modules: codeModules(actual.modules),
     compatibilityDate: actual.compatibilityDate,
     compatibilityFlags: actual.compatibilityFlags,
     limits: actual.limits,
