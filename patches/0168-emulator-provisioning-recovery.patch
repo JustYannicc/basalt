@@ -225,7 +225,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
    origin: string,
    path: string,
    payload?: unknown,
-@@ -299,32 +310,121 @@
+@@ -299,32 +310,122 @@
        let request = HttpClientRequest.make(method)(`${origin}${path}`);
        if (token !== undefined)
          request = HttpClientRequest.setHeader(request, "authorization", `Bearer ${token}`);
@@ -317,7 +317,8 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +
 +/**
 + * Instances are lazy; keyed credentials and reset converge when repeated with the same input, so a
-+ * hung request is abandoned and sent again. Four 6 s attempts and their backoff fit the 30 s budget.
++ * hung request is abandoned and sent again. Four 6 s attempts and their backoff fit the 30 s budget,
++ * which still caps the total when Retry-After lengthens a wait.
 + */
 +export const provisionEmulatorRequest = <A>(
 +  origin: string,
@@ -361,7 +362,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
  
  /**
   * Provision actual hosted instances and credentials through emulators.dev's control plane, for a
-@@ -335,10 +435,13 @@
+@@ -335,10 +436,13 @@
    Effect.gen(function* () {
      const instance = `executor-onboarding-${randomUUID()}`;
      const create = (service: string) =>
@@ -379,7 +380,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
        );
      const oauth = (service: "google" | "github") =>
        Effect.gen(function* () {
-@@ -378,15 +481,15 @@
+@@ -378,15 +482,15 @@
      const keyed = (service: string, token?: string) =>
        Effect.gen(function* () {
          const instance = yield* create(service);
@@ -529,7 +530,7 @@ diff --git a/e2e/tests/emulator-provisioning.spec.ts b/e2e/tests/emulator-provis
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/emulator-provisioning.spec.ts
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,391 @@
 +import { expect, layer } from "@effect/vitest";
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import {
@@ -785,10 +786,10 @@ new file mode 100644
 +        Effect.gen(function* () {
 +          yield* Effect.sleep("4 seconds");
 +          sent++;
-+          const response = yield* http.execute(request);
-+          yield* response.text;
-+          yield* Queue.offer(answered, undefined);
-+          return response;
++          return yield* http.execute(request).pipe(
++            Effect.tap((response) => response.text),
++            Effect.ensuring(Queue.offer(answered, undefined)),
++          );
 +        }),
 +      );
 +      const fiber = yield* provisionEmulatorRequest(
@@ -799,7 +800,8 @@ new file mode 100644
 +      ).pipe(Effect.provideService(HttpClient.HttpClient, delayed), Effect.flip, Effect.forkChild);
 +      // The clock holds still while a request is on the network.
 +      for (const request of [1, 2, 3]) {
-+        yield* advanceUntil(() => sent === request);
++        yield* advanceUntil(() => sent === request || fiber.pollUnsafe() !== undefined);
++        if (sent < request) break;
 +        yield* Queue.take(answered);
 +      }
 +      yield* advanceUntil(() => fiber.pollUnsafe() !== undefined);
@@ -810,10 +812,14 @@ new file mode 100644
 +  );
 +});
 +
-+/** Moves the test clock in small steps, so each timer a retry starts between steps still fires. */
++/**
++ * Moves the test clock 100 ms at a time, so a timer started after a step returns fires at most
++ * 100 ms late. Fails instead of hanging when the condition never holds.
++ */
 +const advanceUntil = (done: () => boolean) =>
 +  Effect.gen(function* () {
 +    for (let step = 0; step < 400 && !done(); step++) yield* TestClock.adjust("100 millis");
++    if (!done()) return yield* Effect.die(new Error("Condition never held in 40 virtual seconds"));
 +  });
 +
 +/** Answers in memory, so no request is on the network while the test clock moves. */
@@ -862,7 +868,7 @@ new file mode 100644
 +        Effect.exit,
 +        Effect.forkChild,
 +      );
-+      yield* advanceUntil(() => emulator.calls() === 3);
++      yield* advanceUntil(() => emulator.calls() === 3 || fiber.pollUnsafe() !== undefined);
 +      const exit = yield* Fiber.join(fiber);
 +      expect(emulator.calls()).toBe(3);
 +      expect(Exit.isSuccess(exit) ? exit.value : Cause.pretty(exit.cause)).toEqual({ ready: true });
@@ -931,7 +937,7 @@ diff --git a/packages/utils/src/provisioning-request.ts b/packages/utils/src/pro
 new file mode 100644
 --- /dev/null
 +++ b/packages/utils/src/provisioning-request.ts
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,83 @@
 +import { Duration, Effect, Schedule } from "effect";
 +
 +export interface ProvisioningDiagnostic {
@@ -956,11 +962,12 @@ new file mode 100644
 +) =>
 +  Effect.suspend(() => {
 +    let attempts = 0;
++    let abandoned = 0;
 +    let last: E | undefined;
 +    const retryable = (error: E) =>
 +      error.category === "transport" ||
 +      (error.category === "http" && [500, 502, 503, 504].includes(error.status ?? 0)) ||
-+      (attemptTimeout !== undefined && error.category === "timeout");
++      abandoned === attempts;
 +    const schedule = Schedule.exponential("250 millis").pipe(
 +      Schedule.setInputType<E>(),
 +      Schedule.jittered,
@@ -981,7 +988,11 @@ new file mode 100644
 +        : attempt(current).pipe(
 +            Effect.timeoutOrElse({
 +              duration: attemptTimeout,
-+              orElse: () => Effect.fail(timedOut(current, undefined)),
++              orElse: () =>
++                Effect.suspend(() => {
++                  abandoned = current;
++                  return Effect.fail(timedOut(current, undefined));
++                }),
 +            }),
 +          );
 +    });
