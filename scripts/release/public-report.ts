@@ -128,16 +128,24 @@ export function failureReport(error: unknown, context?: FailureContext): Failure
     const record = value as Record<string, unknown>;
     if (
       typeof record._tag === "string" &&
-      /Refus|Refused|Failed|Unavailable|Possible/u.test(record._tag)
+      /Refus|Refused|Failed|Unavailable|Possible|AfterApply/u.test(record._tag)
     ) {
       const violations = Array.isArray(record.violations)
         ? (record.violations as Array<Record<string, unknown>>)
+        : [];
+      const remaining = Array.isArray(record.remaining)
+        ? (record.remaining as unknown[]).filter((item): item is string => typeof item === "string")
         : [];
       const rules = violations
         .map((violation) => `${String(violation.rule)}@${String(violation.fqn)}`)
         .join(",");
       publicLines.push(
-        [record._tag + ":", ...fields(record, PUBLIC_FIELDS), ...(rules ? [`rules=${rules}`] : [])]
+        [
+          record._tag + ":",
+          ...fields(record, PUBLIC_FIELDS),
+          ...(rules ? [`rules=${rules}`] : []),
+          ...(remaining.length ? [`remaining=${remaining.join("; ")}`] : []),
+        ]
           .join(" ")
           .trim(),
       );

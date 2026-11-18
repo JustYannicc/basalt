@@ -253,6 +253,7 @@ const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
 const {
+  ChangesRemainAfterApply,
   changedRows,
   destroyTargets,
   readinessCommand,
@@ -451,10 +452,8 @@ try {
         yield* Alchemist.Stack.apply(snapshot as never);
         tracker.setPhase("read-back");
         const after = yield* planOf("deploy");
-        if (remainingRows(after).length > 0)
-          return yield* Effect.die(
-            new Error(`Changes remain after apply: ${safeJson(remainingRows(after))}`),
-          );
+        const remaining = remainingRows(after);
+        if (remaining.length > 0) return yield* ChangesRemainAfterApply.of(remaining);
         return { snapshot, digest, planned };
       }),
     );

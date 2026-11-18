@@ -1,4 +1,5 @@
 import { havePropsChanged } from "alchemy/Diff";
+import { Data } from "effect";
 import type * as AlchemyPlan from "alchemy/Plan";
 import { safeJson } from "./safe-json.ts";
 
@@ -55,12 +56,38 @@ export const changedRows = (snapshot: Snapshot) =>
  * on every deploy (`memo: false`) always plans as an update, so a command update is not a leftover.
  */
 export const remainingRows = (snapshot: Snapshot) =>
-  snapshot.resources
-    .filter(
-      (row) => row.action !== "noop" || row.bindings.some((binding) => binding.action !== "noop"),
-    )
-    .filter((row) => !(row.resourceType.startsWith("Command.") && row.action === "update"))
-    .map((row) => ({ fqn: row.fqn, type: row.resourceType, action: row.action }));
+  changedRows(snapshot)
+    .filter((row) => !(row.type.startsWith("Command.") && row.action === "update"))
+    .map(({ fqn, type, action, changedProps, bindings }) => ({
+      fqn,
+      type,
+      action,
+      changedProps,
+      bindings: bindings.map((binding) => binding.sid ?? "?"),
+    }));
+
+/**
+ * A plan that still wants changes right after its apply: the rows and the names of the properties
+ * and bindings that differ. Names come from our own source, so they are printed in public.
+ */
+export class ChangesRemainAfterApply extends Data.TaggedError("ChangesRemainAfterApply")<{
+  readonly check: "read-back";
+  readonly why: string;
+  readonly fix: string;
+  readonly remaining: readonly string[];
+}> {
+  static of(rows: ReturnType<typeof remainingRows>) {
+    return new ChangesRemainAfterApply({
+      check: "read-back",
+      why: "A fresh plan right after the apply still changes these rows, so the apply did not settle.",
+      fix: "Find the input that differs on every plan (a per-run value, or a command that always re-runs) and settle it at its source.",
+      remaining: rows.map(
+        (row) =>
+          `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"})`,
+      ),
+    });
+  }
+}
 
 /**
  * The deploy-time readiness command polls until the pool's Durable Object has adopted the new
