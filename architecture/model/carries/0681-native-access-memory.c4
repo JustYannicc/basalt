@@ -1,0 +1,7 @@
+model {
+  extend basalt.setupHost {
+    metadata {
+      constraint "A native access check remembers an allowed answer in its isolate for at most 3 seconds and never past its token's expiry, keyed by a SHA-256 digest of the bearer, never the bearer. A remembered answer skips the token, grant, consent, team membership and account reads. The pool's device check and the device budget still run on every check, and any refusal forgets the answer. A revoked device, grant or pool access is refused on the next check; revoked tokens and team or account changes apply within 3 seconds."
+    }
+  }
+}
