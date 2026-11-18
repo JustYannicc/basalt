@@ -173,12 +173,31 @@ export async function runDatabaseBudgetCommand(
     }
   } catch (error) {
     if (error instanceof DatabaseBudgetFailure) receipt = error.receipt;
-    else
+    else {
+      // Rehearsal stages only: the receipt's closed vocabulary hides which call failed; say it,
+      // with credential-shaped text removed, so a stage failure is diagnosable from its log.
+      if (/^test-rehearsal-[1-9][0-9]*$/u.test(source.ALCHEMY_STAGE ?? "")) {
+        const chain: string[] = [];
+        for (
+          let at: unknown = error, depth = 0;
+          at instanceof Error && depth < 4;
+          at = at.cause, depth += 1
+        )
+          chain.push(
+            `${at.name}${"code" in at ? `(${String((at as { code?: unknown }).code)})` : ""}: ${at.message}`
+              .replace(/Bearer\s+\S+/gu, "Bearer [redacted]")
+              .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/gu, "[redacted-jwt]")
+              .replace(/[A-Za-z0-9+/_=-]{32,}/gu, "[redacted]")
+              .slice(0, 300),
+          );
+        console.error(`readiness failure (rehearsal stage): ${chain.join(" <- ")}`);
+      }
       receipt = {
         ...receipt,
         ...safeDatabaseError(error, "readiness"),
         elapsedMs: now() - startedAt,
       };
+    }
     receipt = contextual(receipt);
     // The CLI still emits the failure receipt if the destination cannot be written.
     await within(save(path, receipt), "receipt").catch(() => {});
