@@ -11,7 +11,14 @@ import {
 } from "../../src/pool/runtime-slots/handoff-command.ts";
 import { runtimeRecoveryPath } from "../../src/pool/runtime-recovery.ts";
 import { BarrierRefusal } from "./refusal.ts";
-import { NotApplicable, SettlementRequired, preflightRunner } from "./release-preflight.ts";
+import { openDeploymentReadiness } from "../database-budget-readiness.ts";
+import {
+  NotApplicable,
+  SettlementRequired,
+  preflightRefusal,
+  preflightRunner,
+} from "./release-preflight.ts";
+import { activeUnattested } from "./release-preflight-steps.ts";
 import {
   liveControllerCodes,
   releaseReceiptCodes,
@@ -379,4 +386,51 @@ test("a required settlement reports in Check but blocks the release; an unsuppor
   });
   assert.equal(report("check", unsupported.results), "refused");
   assert.equal(report("release", unsupported.results), "refused");
+});
+
+test("a refused readiness read keeps the server's fixed outcome and stage, never other body text", async () => {
+  const open = (body: string) =>
+    openDeploymentReadiness({
+      worker: "pool",
+      accountId: "account",
+      key,
+      target: { candidate: "c".repeat(40), workerInput: "d".repeat(64), imageHash: "e" },
+      connect: async () => ({
+        env: { POOL_OPERATIONS: { fetch: async () => new Response(body, { status: 503 }) } },
+        dispose: async () => {},
+      }),
+    });
+  const refused = async (body: string) => {
+    const connection = await open(body);
+    try {
+      await connection.ready(AbortSignal.timeout(5_000));
+    } catch (error) {
+      return preflightRefusal(error);
+    } finally {
+      await connection.close();
+    }
+    throw new Error("readiness unexpectedly passed");
+  };
+  assert.deepEqual(
+    await refused(JSON.stringify({ outcome: "readiness-error", stage: "readiness" })),
+    {
+      reason: "deployment-readiness-readiness-error",
+      field: "readiness.readiness",
+      status: 503,
+    },
+  );
+  assert.deepEqual(await refused(JSON.stringify({ outcome: "Secret 0123 value", stage: 7 })), {
+    reason: "deployment-readiness-refused",
+    field: null,
+    status: 503,
+  });
+});
+
+test("final readiness is post-promote-only while the active slot is the unattested adopted root", async () => {
+  const client = (kind: string) => ({
+    call: async () => ({ result: { kind, controllerCode: "ignored" } }),
+  });
+  const target = {} as never;
+  assert.equal(await activeUnattested(client("unattested-active"), target), true);
+  assert.equal(await activeUnattested(client("witness"), target), false);
 });

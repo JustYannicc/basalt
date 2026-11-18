@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { assertProbeCandidate } from "../ci/probe-candidate.ts";
+import { ReadinessResponseError } from "../database-budget-readiness.ts";
 import { SafetyGateError } from "../deploy-safety/contracts.ts";
 import { HeadroomRefusal } from "../release-phases/headroom.ts";
 import { assertReadOnlyRehearsalContext } from "./release-resume-rehearsal-receipt.ts";
@@ -81,6 +82,12 @@ export function preflightRefusal(error: unknown): PreflightRefusal {
         : {}),
     };
   // Both carry fixed text written by our own gates, never a provider body.
+  if (error instanceof ReadinessResponseError)
+    return {
+      reason: `deployment-readiness-${error.outcome ?? "refused"}`,
+      field: error.stage ? `readiness.${error.stage}` : null,
+      status: error.status,
+    };
   if (error instanceof SafetyGateError || error instanceof HeadroomRefusal)
     return { reason: error.message, field: null };
   const failure = safeProviderFailure(error);
