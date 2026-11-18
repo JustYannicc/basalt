@@ -1,41 +1,39 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Cause, Effect, Exit, Redacted } from "effect";
+import { Cause, Clock, Effect, Exit, Fiber, Logger, Redacted } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import { TestClock } from "effect/testing";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
-const { AutumnClient } = await load("apps/hosted/cloud/src/contracts/autumn.ts");
 const { billingCatalogDeclaration, freeMembers } = await load(
   "apps/hosted/cloud/src/contracts/billing-catalog.ts",
-);
-const { autumnLive, autumnReads } = await load(
-  "apps/hosted/cloud/src/implementation/autumn-client.ts",
 );
 const { memberAllowance } = await load("apps/hosted/cloud/src/implementation/member-allowance.ts");
 
 const { catalog } = billingCatalogDeclaration("ci", "sandbox");
-const customerId = `${catalog.namespace}:organization:org_01KA7Y0F4N3V5J8RX2C6M9QH1T`;
+const customerId = `${catalog.namespace}:organization:org_fixture`;
+const secret = "am_sk_test_fixture";
 
 /**
- * Autumn's customer object as API version 2.3.0 sends it (the autumn-js 1.2.28 wire schema for
- * `customers.get` and `customers.get_or_create`): every required field, snake_case, not an echo
- * of the request.
+ * Autumn's customer object in the wire shape API version 2.3.0 sends for `customers.get` and
+ * `customers.get_or_create` (autumn-js 1.2.28's response schema): every required field, in
+ * snake_case, with synthetic identifiers. It is a fixed answer, not an echo of the request.
  */
-const recordedCustomer = (plan: string, quantity: number) => ({
+const autumnCustomer = (plan: string, quantity: number) => ({
   id: customerId,
   name: null,
   email: null,
   created_at: 1763380225417,
   fingerprint: null,
-  stripe_id: "cus_TQh2mV8xK4pLrN",
+  stripe_id: "cus_fixture",
   env: "sandbox",
   metadata: {},
   send_email_receipts: false,
   billing_controls: {},
   subscriptions: [
     {
-      id: "sub_01KA7Y1B6WQ0S3D9EJ5T2R8N4M",
+      id: "sub_fixture",
       plan_id: plan,
       auto_enable: plan === catalog.free,
       add_on: false,
@@ -68,14 +66,25 @@ const recordedCustomer = (plan: string, quantity: number) => ({
 /** Autumn's error body; only a 404 with `customer_not_found` is an answer. */
 const autumnError = (code: string, message: string) => ({ message, code, env: "sandbox" });
 const unavailable = { status: 503, body: autumnError("internal_error", "Internal server error") };
+const missing = {
+  status: 404,
+  body: autumnError("customer_not_found", `Customer ${customerId} not found`),
+};
+/** An attempt Autumn never answers. */
+const hang = "hang" as const;
 
-type Reply = { readonly status: number; readonly body: unknown };
+type Reply = { readonly status: number; readonly body: unknown } | typeof hang;
+type Log = { readonly level: string; readonly annotations: Record<string, unknown> };
 
-/** Autumn reached through the real adapter: each route answers its replies in order. */
-const scripted = (replies: Record<string, ReadonlyArray<Reply>>) => {
+/**
+ * Check the allowance through the real Autumn adapter on virtual time: each route answers its
+ * replies in order, and the clock advances 100 milliseconds at a time until the check settles.
+ */
+const check = async (replies: Record<string, ReadonlyArray<Reply>>) => {
   const requests: { route: string; customer: unknown }[] = [];
+  const logs: Log[] = [];
   const http = HttpClient.make((request) =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
       const route = new URL(request.url).pathname.split("/v1/")[1] ?? request.url;
       const body =
         request.body._tag === "Uint8Array"
@@ -83,30 +92,47 @@ const scripted = (replies: Record<string, ReadonlyArray<Reply>>) => {
           : undefined;
       requests.push({ route, customer: body?.customer_id });
       const reply = replies[route]?.[requests.filter((seen) => seen.route === route).length - 1];
-      return HttpClientResponse.fromWeb(
-        request,
-        reply === undefined
-          ? Response.json(autumnError("unscripted", `No reply for ${route}`), { status: 500 })
-          : Response.json(reply.body, { status: reply.status }),
+      if (reply === hang) return Effect.never;
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          reply === undefined
+            ? Response.json(autumnError("unscripted", `No reply for ${route}`), { status: 500 })
+            : Response.json(reply.body, { status: reply.status }),
+        ),
       );
     }),
   );
-  const allowance = Effect.gen(function* () {
-    const autumn = yield* AutumnClient.pipe(
-      Effect.provide(
-        autumnLive(
-          {
-            secretKey: Redacted.make("am_sk_test_fixture"),
-            serverUrl: Redacted.make("https://autumn.invalid/instance"),
-          },
-          autumnReads.allowance,
-        ),
-      ),
-      Effect.provideService(HttpClient.HttpClient, http),
-    );
-    return yield* memberAllowance(autumn, catalog, customerId);
+  const capture = Logger.make((options) => {
+    const { level, annotations } = Logger.formatStructured.log(options);
+    logs.push({ level, annotations });
   });
-  return { requests, run: () => Effect.runPromiseExit(allowance) };
+  const options = {
+    secretKey: Redacted.make(secret),
+    serverUrl: Redacted.make("https://autumn.invalid/instance"),
+  };
+  const { exit, elapsed } = await Effect.runPromise(
+    Effect.gen(function* () {
+      const clock = yield* Clock.Clock;
+      const started = clock.currentTimeMillisUnsafe();
+      const fiber = yield* memberAllowance(options, catalog, customerId).pipe(
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      while (fiber.pollUnsafe() === undefined && clock.currentTimeMillisUnsafe() - started < 30_000)
+        yield* TestClock.adjust("100 millis");
+      return {
+        exit: (yield* Fiber.join(fiber)) as Exit.Exit<number, unknown>,
+        elapsed: clock.currentTimeMillisUnsafe() - started,
+      };
+    }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([capture]))),
+  );
+  assert.ok(
+    requests.every((request) => request.customer === customerId),
+    "every call names the customer",
+  );
+  return { exit, elapsed, logs, routes: requests.map(({ route }) => route) };
 };
 
 const allowed = (exit: Exit.Exit<number, unknown>) => {
@@ -116,78 +142,99 @@ const allowed = (exit: Exit.Exit<number, unknown>) => {
   );
   return exit.value;
 };
-const failure = (exit: Exit.Exit<number, unknown>) => {
+const refused = (exit: Exit.Exit<number, unknown>) => {
   assert.ok(Exit.isFailure(exit), "the allowance check must fail closed");
-  return Cause.squash(exit.cause) as Record<string, unknown>;
-};
-const routes = (requests: ReadonlyArray<{ route: string }>) => requests.map(({ route }) => route);
-
-test("a transient Autumn failure then the recorded customer admits the invitation, without a write", async () => {
-  for (const transient of [unavailable, { status: 429, body: autumnError("rate_limit", "") }]) {
-    const autumn = scripted({
-      "customers.get": [transient, { status: 200, body: recordedCustomer(catalog.team, 4) }],
-    });
-    assert.equal(
-      allowed(await autumn.run()),
-      Number.POSITIVE_INFINITY,
-      `after ${transient.status}`,
-    );
-    assert.deepEqual(routes(autumn.requests), ["customers.get", "customers.get"]);
-    assert.ok(autumn.requests.every((request) => request.customer === customerId));
-  }
-  const free = scripted({
-    "customers.get": [unavailable, { status: 200, body: recordedCustomer(catalog.free, 2) }],
-  });
-  assert.equal(allowed(await free.run()), freeMembers);
-});
-
-test("persistent Autumn failure fails closed with its safe reason and a reference", async () => {
-  const autumn = scripted({ "customers.get": [unavailable, unavailable, unavailable] });
-  const error = failure(await autumn.run());
+  const error = Cause.squash(exit.cause) as Record<string, unknown>;
   assert.equal(error._tag, "MemberAllowanceUnavailable");
-  assert.equal(error.operation, "getCustomer");
-  assert.equal(error.reason, "status");
-  assert.equal(error.status, 503);
-  assert.match(
-    String(error.reference),
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-  );
-  assert.equal(JSON.stringify(error).includes("am_sk_test_fixture"), false);
-  assert.deepEqual(routes(autumn.requests), ["customers.get", "customers.get", "customers.get"]);
+  return error;
+};
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+test("a transient Autumn failure then the existing customer admits the invitation, without a write", async () => {
+  for (const transient of [
+    unavailable,
+    { status: 429, body: autumnError("rate_limit_exceeded", "Too many requests") },
+    hang,
+  ]) {
+    const label = transient === hang ? "a hung read" : `${transient.status}`;
+    const result = await check({
+      "customers.get": [transient, { status: 200, body: autumnCustomer(catalog.team, 4) }],
+      // Before the fix, this one write was the whole check.
+      "customers.get_or_create": [
+        unavailable,
+        { status: 200, body: autumnCustomer(catalog.team, 4) },
+      ],
+    });
+    assert.equal(allowed(result.exit), Number.POSITIVE_INFINITY, `after ${label}`);
+    assert.deepEqual(result.routes, ["customers.get", "customers.get"], `after ${label}`);
+    assert.ok(result.elapsed < 10_000, `answered within the budget after ${label}`);
+  }
+  const free = await check({
+    "customers.get": [unavailable, { status: 200, body: autumnCustomer(catalog.free, 2) }],
+  });
+  assert.equal(allowed(free.exit), freeMembers);
 });
 
-test("an unreadable customer body is final and fails closed", async () => {
-  const autumn = scripted({
+test("persistent Autumn failure fails closed with its safe reason and the logged reference", async () => {
+  const result = await check({ "customers.get": [unavailable, unavailable, unavailable] });
+  const error = refused(result.exit);
+  assert.deepEqual(
+    { operation: error.operation, reason: error.reason, status: error.status },
+    { operation: "getCustomer", reason: "status", status: 503 },
+  );
+  assert.match(String(error.reference), uuid);
+  assert.deepEqual(result.routes, ["customers.get", "customers.get", "customers.get"]);
+  const warnings = result.logs.filter(({ level }) => /warn/i.test(level));
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0]!.annotations.reference, error.reference);
+  assert.equal(warnings[0]!.annotations.billingCustomer, customerId);
+  assert.equal(
+    JSON.stringify([error, result.logs]).includes(secret),
+    false,
+    "the key never leaves the adapter",
+  );
+});
+
+test("Autumn that never answers fails closed with a timeout at the ten-second budget", async () => {
+  const result = await check({ "customers.get": [hang, hang, hang] });
+  const error = refused(result.exit);
+  assert.equal(error.operation, "getCustomer");
+  assert.equal(error.reason, "timeout");
+  assert.ok(result.elapsed <= 10_000, `settled after ${result.elapsed} ms`);
+  assert.deepEqual(result.routes, ["customers.get", "customers.get"]);
+});
+
+test("a definitive Autumn refusal or an unreadable customer is final", async () => {
+  const denied = await check({
+    "customers.get": [{ status: 401, body: autumnError("unauthorized", "Invalid secret key") }],
+  });
+  const refusal = refused(denied.exit);
+  assert.deepEqual([refusal.reason, refusal.status], ["status", 401]);
+  assert.deepEqual(denied.routes, ["customers.get"]);
+
+  const unreadable = await check({
     "customers.get": [{ status: 200, body: { subscriptions: "active" } }],
   });
-  const error = failure(await autumn.run());
-  assert.equal(error._tag, "MemberAllowanceUnavailable");
-  assert.equal(error.reason, "response");
-  assert.deepEqual(routes(autumn.requests), ["customers.get"]);
+  assert.equal(refused(unreadable.exit).reason, "response");
+  assert.deepEqual(unreadable.routes, ["customers.get"]);
 });
 
 test("only a customer Autumn has never seen is created, and creation is sent once", async () => {
-  const missing = {
-    status: 404,
-    body: autumnError("customer_not_found", `Customer ${customerId} not found`),
-  };
-  const created = scripted({
+  const created = await check({
     "customers.get": [missing],
-    "customers.get_or_create": [{ status: 200, body: recordedCustomer(catalog.free, 1) }],
+    "customers.get_or_create": [{ status: 200, body: autumnCustomer(catalog.free, 1) }],
   });
-  assert.equal(allowed(await created.run()), freeMembers);
-  assert.deepEqual(routes(created.requests), ["customers.get", "customers.get_or_create"]);
+  assert.equal(allowed(created.exit), freeMembers);
+  assert.deepEqual(created.routes, ["customers.get", "customers.get_or_create"]);
 
-  const uncertain = scripted({
+  const uncertain = await check({
     "customers.get": [missing],
     "customers.get_or_create": [
       unavailable,
-      { status: 200, body: recordedCustomer(catalog.free, 1) },
+      { status: 200, body: autumnCustomer(catalog.free, 1) },
     ],
   });
-  const error = failure(await uncertain.run());
-  assert.equal(error._tag, "MemberAllowanceUnavailable");
-  assert.equal(error.operation, "getOrCreateCustomer");
-  assert.equal(error.status, 503);
-  assert.deepEqual(routes(uncertain.requests), ["customers.get", "customers.get_or_create"]);
+  const error = refused(uncertain.exit);
+  assert.deepEqual([error.operation, error.status], ["getOrCreateCustomer", 503]);
+  assert.deepEqual(uncertain.routes, ["customers.get", "customers.get_or_create"]);
 });

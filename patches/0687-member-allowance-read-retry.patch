@@ -36,24 +36,25 @@ index 3ee5c8b..545d059 100644
      readonly syncSeats: (organization: OrganizationId) => Effect.Effect<void, BillingUnavailable>;
      /** Daily repair: seat plans, unconfirmed organizations and changed counts, checked in Autumn. */
 diff --git a/apps/hosted/cloud/src/implementation/autumn-client.ts b/apps/hosted/cloud/src/implementation/autumn-client.ts
-index f042417..8b0f174 100644
+index f042417..4092078 100644
 --- a/apps/hosted/cloud/src/implementation/autumn-client.ts
 +++ b/apps/hosted/cloud/src/implementation/autumn-client.ts
-@@ -40,6 +40,12 @@ export const autumnReads = {
+@@ -40,6 +40,13 @@ export const autumnReads = {
     * milliseconds apart, with jitter, within twenty seconds in all.
     */
    patient: { attempt: "8 seconds", retry: { times: 2, budget: "20 seconds" } },
 +  /**
-+   * The member allowance invitations and SSO wait on: an attempt may take the write timeout, and
-+   * a lost answer, server error or rate limit gets up to two more about 200 and 400 milliseconds
-+   * apart, with jitter, all within that same timeout.
++   * The member allowance invitations and SSO wait on, within the ten seconds one write attempt
++   * had. Eight seconds an attempt still lets a degraded answer land; a hung attempt, lost answer,
++   * server error or rate limit gets up to two more, about 200 and 400 milliseconds apart with
++   * jitter, in what remains, which a healthy read needs well under a second of.
 +   */
-+  allowance: { attempt: autumnTimeout, retry: { times: 2, budget: autumnTimeout } },
++  allowance: { attempt: "8 seconds", retry: { times: 2, budget: autumnTimeout } },
  } as const satisfies Record<string, AutumnReadPolicy>;
  
  const readRetryDelay = Schedule.exponential("200 millis").pipe(Schedule.jittered);
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
-index 7b786c6..3c7ae14 100644
+index 7b786c6..4ef9c21 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
 @@ -11,6 +11,7 @@ import { Cause, Effect, Layer, Option, Schema } from "effect";
@@ -89,7 +90,7 @@ index 7b786c6..3c7ae14 100644
  /** Resolve the selected Autumn environment once; each invocation owns its client. */
  export const billingLive = Effect.gen(function* () {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
-@@ -94,10 +84,14 @@ export const billingLive = Effect.gen(function* () {
+@@ -94,10 +84,11 @@ export const billingLive = Effect.gen(function* () {
        const secret = yield* settings.secretKey;
        const server = yield* settings.serverUrl;
        const catalog = yield* settings.catalog;
@@ -99,14 +100,11 @@ index 7b786c6..3c7ae14 100644
 +        Effect.provide(autumnLive(options, autumnReads.once)),
        );
 -      return { autumn, catalog };
-+      const allowance = yield* AutumnClient.pipe(
-+        Effect.provide(autumnLive(options, autumnReads.allowance)),
-+      );
-+      return { autumn, allowance, catalog };
++      return { autumn, catalog, options };
      }).pipe(Effect.provide(FetchHttpClient.layer)),
    );
    const use = <A>(call: Effect.Effect<A, AutumnRequestFailed>) =>
-@@ -262,10 +256,12 @@ export const billingLive = Effect.gen(function* () {
+@@ -262,11 +253,13 @@ export const billingLive = Effect.gen(function* () {
    const meter = BillingMeter.of({
      memberLimit: (organization) =>
        Effect.gen(function* () {
@@ -114,16 +112,18 @@ index 7b786c6..3c7ae14 100644
 -        return active(value, [catalog.team, catalog.enterprise])
 -          ? Number.POSITIVE_INFINITY
 -          : freeMembers;
-+        const { allowance, catalog } = yield* client;
+-      }),
++        const { catalog, options } = yield* client;
 +        return yield* memberAllowance(
-+          allowance,
++          options,
 +          catalog,
 +          `${catalog.namespace}:${organizationOwner(organization)}`,
 +        );
-       }),
++      }).pipe(Effect.provide(FetchHttpClient.layer)),
      syncSeats: (organization) => syncSeats(organization, "changed"),
      reconcileSeats: Effect.gen(function* () {
-@@ -360,7 +356,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
+       const rows = yield* members.use(seatReconcileCandidates);
+@@ -360,7 +353,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
        )
        .handle("memberLimit", () =>
          Effect.gen(function* () {
@@ -136,19 +136,25 @@ index 7b786c6..3c7ae14 100644
        )
 diff --git a/apps/hosted/cloud/src/implementation/member-allowance.ts b/apps/hosted/cloud/src/implementation/member-allowance.ts
 new file mode 100644
-index 0000000..fb2dc1f
+index 0000000..95eeec7
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/member-allowance.ts
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,70 @@
 +/**
 + * The member allowance invitations and SSO sign-ins are admitted against. An existing customer
 + * is read, never written, so a lost answer can be asked again. Only a customer Autumn says it has
 + * never seen is created, and that write is sent once.
 + */
 +import { Effect, Redacted } from "effect";
-+import { AutumnRequestFailed, autumnTimeout, type AutumnClient } from "../contracts/autumn.ts";
++import {
++  AutumnClient,
++  AutumnRequestFailed,
++  autumnTimeout,
++  type AutumnOptions,
++} from "../contracts/autumn.ts";
 +import { freeMembers, type BillingCatalog } from "../contracts/billing-catalog.ts";
 +import { MemberAllowanceUnavailable } from "../contracts/billing-meter.ts";
++import { autumnLive, autumnReads } from "./autumn-client.ts";
 +
 +type Subscriptions = {
 +  readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
@@ -161,18 +167,20 @@ index 0000000..fb2dc1f
 +  );
 +
 +/**
-+ * Unlimited on a paid plan, the free allowance otherwise. `autumn` must retry its reads within
-+ * the write timeout (`autumnReads.allowance`). Fails closed: an unconfirmed allowance is never
-+ * unlimited, and the failure keeps its safe reason and a reference the log shares.
++ * Unlimited on a paid plan, the free allowance otherwise. Fails closed: an unconfirmed allowance
++ * is never unlimited, and the failure keeps its safe reason and a reference the log shares.
 + */
 +export const memberAllowance = (
-+  autumn: AutumnClient["Service"],
++  options: AutumnOptions,
 +  catalog: BillingCatalog,
 +  customerId: string,
 +) =>
 +  Effect.suspend(() => {
 +    let operation: AutumnRequestFailed["operation"] = "getCustomer";
 +    return Effect.gen(function* () {
++      const autumn = yield* AutumnClient.pipe(
++        Effect.provide(autumnLive(options, autumnReads.allowance)),
++      );
 +      const existing = yield* autumn.getCustomer({ customerId });
 +      if (existing !== null) return existing;
 +      operation = "getOrCreateCustomer";
@@ -195,7 +203,7 @@ index 0000000..fb2dc1f
 +        const reference = crypto.randomUUID();
 +        const failure = { operation, reason, ...(status === undefined ? {} : { status }) };
 +        yield* Effect.logWarning("The member allowance could not be confirmed").pipe(
-+          Effect.annotateLogs({ ...failure, reference }),
++          Effect.annotateLogs({ ...failure, reference, billingCustomer: customerId }),
 +        );
 +        return yield* new MemberAllowanceUnavailable({ ...failure, reference });
 +      }),
@@ -203,10 +211,10 @@ index 0000000..fb2dc1f
 +    Effect.withSpan("billing.memberAllowance"),
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index 060abd7..dfa2b58 100644
+index 060abd7..3726e21 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -110,9 +110,19 @@ export const cloudAuth = (
+@@ -110,9 +110,20 @@ export const cloudAuth = (
              Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
                Effect.flatMap(meter.memberLimit),
                Effect.mapError(
@@ -220,7 +228,8 @@ index 060abd7..dfa2b58 100644
 +                          code: "MEMBER_ALLOWANCE_UNAVAILABLE",
 +                          operation: error.operation,
 +                          reason: error.reason,
-+                          ...(error.status === undefined ? {} : { status: error.status }),
++                          // Better Auth's client overwrites a body `status` with the response's.
++                          ...(error.status === undefined ? {} : { providerStatus: error.status }),
 +                          reference: error.reference,
 +                        }
 +                      : {}),
