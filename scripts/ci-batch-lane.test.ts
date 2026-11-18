@@ -36,11 +36,11 @@ const push = (branch: string) => ({
   event: {},
 });
 
-// GitHub compares strings case-insensitively and reads missing properties as null; exact-case,
-// populated fixtures keep JavaScript's reading of this subset identical. Any other token, such as
-// a number, `<`, `===`, `?:` or a method call, fails here instead of being evaluated differently.
+// GitHub compares strings case-insensitively, reads missing properties as null and has no string
+// escapes; exact-case, populated fixtures keep JavaScript's reading of this subset identical. Other
+// syntax, such as a number, `<`, `===`, `?:`, a backslash, `typeof` or a method call, fails here.
 const supported =
-  /^(?:\s|'[^']*'|(?:startsWith|contains)\(|[A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\*))*(?![\w.(])|[!=]=|!|&&|\|\||[(),])*$/;
+  /^(?:\s|'[^'\\]*'|(?:startsWith|contains)\(|(?!(?:delete|in|instanceof|new|typeof|void)\b)[A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\*))*(?![\w.(])|[!=]=|!(?!=)|&&|\|\||[(),])*$/;
 const evaluate = (expression: string, context: Record<string, unknown>): unknown => {
   const source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "");
   assert.match(source, supported);
@@ -68,9 +68,8 @@ const checkName = (github: object) =>
   });
 
 test("a batch push with an open PR selects one full Check, named check", () => {
-  // A paths or ignore filter would let some batch pushes start no Check at all.
-  assert.deepEqual(Object.keys(workflow.on.push), ["branches"]);
-  assert.ok(workflow.on.push.branches.includes("batch/**"));
+  // A paths, ignore or negated branch filter would let some batch pushes start no Check at all.
+  assert.deepEqual(workflow.on.push, { branches: ["main", "batch/**"] });
   const batchPush = push("batch/proof");
   assert.equal(checkName(batchPush), "check");
   for (const action of workflow.on.pull_request.types)
