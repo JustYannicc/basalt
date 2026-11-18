@@ -471,7 +471,6 @@ export const knownUncovered: readonly ReleaseStepId[] = [
   "refusal:runtime-fleet-not-enabled",
   "refusal:runtime-handoff-enable-expired",
   "refusal:runtime-handoff-not-enabled",
-  "refusal:runtime-handoff-response-refused",
   "refusal:runtime-image-target-mismatch",
   "refusal:runtime-joined-admission-unverified",
   "refusal:runtime-private-input-invalid",

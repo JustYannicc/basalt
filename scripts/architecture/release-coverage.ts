@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { knownUncovered } from "../release-barrier/release-coverage/debt.ts";
+import { releaseFailures } from "../release-barrier/release-coverage/failures.ts";
 import { preflightCoverage } from "../release-barrier/release-coverage/preflight.ts";
 import { regressionCoverage } from "../release-barrier/release-coverage/regressions.ts";
 import { rehearsalCoverage } from "../release-barrier/release-coverage/rehearsal.ts";
@@ -26,7 +27,10 @@ export function releaseCoverageGaps(root: string) {
     ...preflightCoverage,
     ...rehearsalCoverage,
   ];
-  const covered = new Set(all.map((entry) => entry.step));
+  const covered = new Set([
+    ...all.map((entry) => entry.step),
+    ...releaseFailures.flatMap((failure) => failure.steps ?? []),
+  ]);
   const debt = new Set<ReleaseStepId>(knownUncovered);
   const files = new Map<string, string | undefined>();
   const read = (path: string) => {
@@ -43,6 +47,10 @@ export function releaseCoverageGaps(root: string) {
     // A debt entry that is now covered, or no longer a step, must leave the list.
     settledDebt: knownUncovered.filter((step) => covered.has(step) || !known.has(step)),
     unknownSteps: all.filter((entry) => !known.has(entry.step)).map((entry) => entry.step),
+    // Every past production failure keeps a proof; a pending one is checked once its file lands.
+    missingFailureProofs: releaseFailures
+      .filter((failure) => !failureProofHolds(read, root, failure))
+      .map((failure) => `${failure.slug} -> ${failure.proof}`),
     // A regression entry names the test that proves it; the test must exist and say what it guards.
     missingProofs: regressionCoverage
       .filter((entry) => !proofExists(read, root, entry.proof))
@@ -117,6 +125,13 @@ function throughReleaseClient(read: Read, root: string, entry: Coverage) {
     return !actions.some((action) => entry.step === `command:${action}`);
   }
   return false;
+}
+
+function failureProofHolds(read: Read, root: string, failure: (typeof releaseFailures)[number]) {
+  const [, name] = failure.proof.split("#");
+  const source = read(proofPath(root, failure.proof));
+  if (source === undefined) return failure.landsWith !== undefined;
+  return name === undefined || declaresTest(source, name);
 }
 
 /** The proof's file carries a `// Regression:` marker and still declares the named test. */

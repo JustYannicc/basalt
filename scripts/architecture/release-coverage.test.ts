@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { releaseCoverageGaps } from "./release-coverage.ts";
 
 // Uncovered release steps when the gate landed.
-const DEBT_CEILING = 560;
+const DEBT_CEILING = 559;
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 
 test("every release step is proven by a regression scenario, the preflight or the rehearsal", () => {
@@ -17,6 +17,9 @@ test("every release step is proven by a regression scenario, the preflight or th
     .soft(gaps.uncovered, "release steps with no regression, preflight or rehearsal proof")
     .toEqual([]);
   expect.soft(gaps.unknownSteps, "coverage entries naming steps that no longer exist").toEqual([]);
+  expect
+    .soft(gaps.missingFailureProofs, "past production failures without their reproducing test")
+    .toEqual([]);
   expect.soft(gaps.missingProofs, "regression entries without their test file").toEqual([]);
   expect
     .soft(gaps.bypassedClient, "phase or command proofs that stand in for the release client")
