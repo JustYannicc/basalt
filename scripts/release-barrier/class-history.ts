@@ -10,9 +10,10 @@ export const classObservation = Schema.Struct({
   accountId: Schema.NonEmptyString,
   scriptName: Schema.NonEmptyString,
   versionId: Schema.NonEmptyString,
-  migrationTag: Schema.NonEmptyString,
+  migrationTag: Schema.optional(Schema.NonEmptyString),
   settings: Schema.toType(Workers.GetScriptScriptAndVersionSettingResponse),
   previewUrlsEnabled: Schema.Boolean,
+  containers: Schema.optional(Schema.Array(Schema.Struct({ className: Schema.NonEmptyString }))),
 });
 const record = Schema.Struct({
   entry: hash,
@@ -25,7 +26,7 @@ const record = Schema.Struct({
     mode: Schema.optional(Schema.String),
   }),
   baseline: classObservation,
-  newTag: Schema.NonEmptyString,
+  newTag: Schema.optional(Schema.NonEmptyString),
   marker: Schema.NonEmptyString,
   content: hash,
   payload: hash,

@@ -24,6 +24,7 @@ import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { bootstrapReleaseApplication } from "./runtime-release-bootstrap.ts";
 import { bootstrapImagePlan, releaseImagePlan } from "./runtime-release-plan.ts";
 import { configureReleaseFleet } from "./runtime-release-fleet.ts";
+import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
 import { assertReleaseImageCapacity, runtimeReleaseImage } from "./runtime-release-image.ts";
 import {
   releaseCodeReady,
@@ -297,7 +298,7 @@ export const releaseRuntimeImage = <A, StackError>(
         )?.color === "green"
           ? "blue"
           : "green");
-      const resource = inactive === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
+      const resource = fleetClassName(inactive);
       if (selected.selection?.candidate) {
         if (
           selected.selection.candidate.target.applicationId !==

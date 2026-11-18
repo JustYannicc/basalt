@@ -287,7 +287,7 @@ model {
     metadata { resources "resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2" }
   }
   extend basalt.poolRuntime {
-    metadata { resources "resource-9da12b05962b959677245d27a3cc6790722e323c264570de2bee2647a1414bed" }
+    metadata { resources "resource-9da12b05962b959677245d27a3cc6790722e323c264570de2bee2647a1414bed|resource-fa7235e17973da715bc94c7c4eca80038ddf36f3ab914eda710f6cd435871814|resource-2d818455e94cf72ab0eaf8d9c05a82053c1a1c9c13915e520b1ed255aa1a6763" }
   }
   extend basalt.poolDatabase {
     metadata { resources "resource-705f006b9cd1e8eae2e4a8a7a40c30f19aa5bfc5efdfc5da06e1b33b91779029|resource-f629d04a7705fb979431998422c538087cb454323f88176937abce5605ff7fed" }

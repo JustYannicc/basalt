@@ -2,7 +2,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
 import { Stage } from "alchemy/Stage";
 import { Effect } from "effect";
-import { fleetInfrastructure } from "../../src/pool/fleet-deployment.ts";
+import { fleetBindings, fleetInfrastructure } from "../../src/pool/fleet-deployment.ts";
 import { stackState } from "../../.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
 import { stackNameForStage } from "./release-stage.ts";
 
@@ -12,7 +12,9 @@ export const provisioningDeclarations = Effect.gen(function* () {
   if (!env) return undefined;
   return yield* Cloudflare.Worker("PoolWorker", {
     main: new URL("../../src/pool/worker.ts", import.meta.url).pathname,
-    env: { ...env },
+    // This Worker is only evaluated for the bootstrap's source plan, never applied. It mirrors
+    // src/pool/deployment.ts so that plan never shows a fleet class being deleted.
+    env: fleetBindings(env),
   });
 });
 
