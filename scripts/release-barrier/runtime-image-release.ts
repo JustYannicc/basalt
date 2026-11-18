@@ -75,11 +75,12 @@ export const releaseRuntimeImage = <A, StackError>(
           options.writer,
           options.encryptionKey,
         );
-        let record = yield* Effect.promise(journal.read);
+        const head = yield* Effect.promise(journal.head);
+        let record = head.record;
         if (record?.abort)
           throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
-          const baselineController = yield* readBaselineController(compiled);
+          const baselineController = yield* readBaselineController(compiled, head.sourceController);
           const key = yield* readBaselineControllerKey(compiled);
           yield* resumeForwardRelease(compiled, {
             directory: options.directory,
