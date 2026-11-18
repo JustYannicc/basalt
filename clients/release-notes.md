@@ -63,6 +63,16 @@ The [client guide](https://github.com/{repository}/blob/main/clients/README.md) 
 
 Signalbox Sync for Obsidian has its own release. Install it from **Connect Obsidian** in Signalbox.
 
+## If the connection drops
+
+The Mac, Windows and Linux apps keep a private log of connection warnings. Attach it when you report a problem:
+
+- Mac: `~/Library/Application Support/Signalbox Client/connection/connection.log`
+- Windows: `%APPDATA%\Signalbox Client\connection\connection.log`
+- Linux: `~/.config/Signalbox Client/connection/connection.log`
+
+It holds no sign-in tokens, keys or request contents, and it stays under about 1 MB.
+
 ## Known issue in this release
 
 One acceptance search exceeded 45 seconds because the server MCP session waited 54.2 seconds. The Android connection recovered and remained usable. A separate MCP latency fix owns this server issue.
