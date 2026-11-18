@@ -29,8 +29,9 @@ async function reconciled(db: HistoryDatabase, scope: { pool: string; source: st
   const buckets: Record<string, unknown>[] = [];
   for (let index = 0; index + 1 < bounds.length; index++)
     buckets.push(
-      ...(await db.query(rangeBuckets, [scope.pool, scope.source, bounds[index], bounds[index + 1]]))
-        .rows,
+      ...(
+        await db.query(rangeBuckets, [scope.pool, scope.source, bounds[index], bounds[index + 1]])
+      ).rows,
     );
   // Combining in SQL keeps the database's own ordering and min/max semantics.
   const result = await db.query(

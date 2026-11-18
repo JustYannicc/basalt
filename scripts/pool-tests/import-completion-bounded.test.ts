@@ -29,14 +29,22 @@ test("import completion reconciles a large source inside the statement bound and
       [template!.id, rows],
     );
     await client.query("RESET session_replication_role");
-    const ids = (await db.query("SELECT id FROM basalt_model_requests WHERE source=$1", [scope.source])).rows.map(
-      (row) => String(row.id),
-    );
+    const ids = (
+      await db.query("SELECT id FROM basalt_model_requests WHERE source=$1", [scope.source])
+    ).rows.map((row) => String(row.id));
     assert.equal(ids.length, rows);
     const prefixes = [...new Set(ids.map((id) => id.slice(0, 2)))].sort();
     const idsDigest = sha(
       prefixes
-        .map((prefix) => `${prefix}:${sha(ids.filter((id) => id.startsWith(prefix)).sort().join("\n"))}`)
+        .map(
+          (prefix) =>
+            `${prefix}:${sha(
+              ids
+                .filter((id) => id.startsWith(prefix))
+                .sort()
+                .join("\n"),
+            )}`,
+        )
         .join("\n"),
     );
     const selection = {
