@@ -122,11 +122,17 @@ test("a signed restore schedules the bookmark, replies with the undo point, then
   context.mock.timers.reset();
   assert.deepEqual(calls, [`restore:${mark(10)}`, "abort:storage restore"]);
   assert.ok(await f.old.storage.get(storageRestoreNonceKey(nonce)));
-  assert.equal((await send("storage-bookmark")).status, 200);
-  assert.equal((await send("storage-restore-bookmark", { ...restore, nonce })).status, 409);
+  // This double keeps the object after abort; until the platform ends the session nothing more
+  // is read or restored, so a retry cannot replace the scheduled target.
+  const read = await send("storage-bookmark");
+  assert.equal(read.status, 409);
+  assert.equal((await read.json()).cause, "restore-pending");
+  const again = await send("storage-restore-bookmark", { ...restore, nonce });
+  assert.equal(again.status, 409);
+  assert.equal((await again.json()).cause, "restore-pending");
   assert.deepEqual(
     refusedBy().map((line) => line.reason),
-    ["unknown-bookmark", "replayed"],
+    ["unknown-bookmark", "restore-pending"],
   );
   assert.deepEqual(calls, [`restore:${mark(10)}`, "abort:storage restore"]);
 });
