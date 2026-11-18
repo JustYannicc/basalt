@@ -23,7 +23,6 @@ import type {
 } from "../runtime-fleet/configuration.ts";
 import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/image-update.ts";
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
-import type { StorageBookmarks } from "../storage-bookmark.ts";
 
 export interface HandoffFleet {
   crash?(command: RuntimeCrashCommand): Promise<unknown>;
@@ -57,7 +56,6 @@ export async function handleRuntimeHandoff(
   secret: string,
   fleet?: HandoffFleet,
   probe?: RuntimeCandidateProbe,
-  bookmarks?: Pick<StorageBookmarks, "read" | "restore">,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
@@ -106,14 +104,6 @@ export async function handleRuntimeHandoff(
       case "runtime-crash-inspect":
         if (!fleet?.inspectCrash) throw new SlotRefused("selection");
         result = await fleet.inspectCrash(value.identity, value.nonce);
-        break;
-      case "storage-bookmark":
-        if (!bookmarks) throw new SlotRefused("selection");
-        result = await bookmarks.read(value.time);
-        break;
-      case "storage-restore-bookmark":
-        if (!bookmarks) throw new SlotRefused("selection");
-        result = await bookmarks.restore(value);
         break;
       case "provider-observe":
         if (!fleet?.observeProvider) throw new Error("Provider observation unavailable");

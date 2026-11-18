@@ -1,5 +1,4 @@
 import { RuntimeCrashCommand, RuntimeCrashInspectCommand } from "../runtime-crash-contract.ts";
-import { StorageBookmarkCommand, StorageRestoreCommand } from "../storage-bookmark.ts";
 import { runtimeInput } from "./input.ts";
 import { Schema, Tuple } from "effect";
 import {
@@ -57,8 +56,6 @@ export type RuntimeFleetCommand = typeof RuntimeFleetCommand.Type;
 export const RuntimeHandoffCommand = Schema.Union([
   RuntimeCrashCommand,
   RuntimeCrashInspectCommand,
-  StorageBookmarkCommand,
-  StorageRestoreCommand,
   Schema.Struct({
     ...fields,
     action: Schema.Literal("provider-observe"),

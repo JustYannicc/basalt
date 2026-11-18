@@ -12,12 +12,8 @@ export const RuntimeCrashCommand = Schema.Struct({
   operator: Name,
   at: Time,
   expiresAt: Time,
-  // Absent means the selected primary, so packets signed before cells existed keep their meaning.
-  kind: Schema.optional(Schema.Literal("cell")),
 });
 export type RuntimeCrashCommand = typeof RuntimeCrashCommand.Type;
-/** A cell packet says so. Every other packet names the selected primary. */
-export const targetsCell = (command: RuntimeCrashCommand) => command.kind === "cell";
 export const RuntimeCrashInspectCommand = Schema.Struct({
   controllerCode: ControllerCode,
   action: Schema.Literal("runtime-crash-inspect"),
