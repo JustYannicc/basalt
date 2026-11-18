@@ -41,17 +41,26 @@ const { positionals, values } = parseArgs({
     out: { type: "string" },
     before: { type: "string" },
     after: { type: "string" },
+    fqn: { type: "string" },
+    expect: { type: "string" },
+    light: { type: "boolean" },
+    to: { type: "string" },
   },
 });
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 // Accept a config relative to the working directory (the cloud dir, as previews call it) or the repo root.
+// The scale test deploys a frozen candidate with this checkout's scale stack, matched by its path suffix.
 const config = values.config
   ? ([relative(root, resolve(values.config)), relative(root, resolve(root, values.config))].find(
       (path) => configs.includes(path),
-    ) ?? values.config)
+    ) ??
+    (resolve(values.config).endsWith("/scripts/scale-test/stack.ts")
+      ? resolve(values.config)
+      : values.config))
   : "alchemy.run.ts";
-if (!configs.includes(config)) throw new Error(`Unknown stack config ${config}`);
+const scaleStack = config.endsWith("/scripts/scale-test/stack.ts");
+if (!configs.includes(config) && !scaleStack) throw new Error(`Unknown stack config ${config}`);
 
 if (command !== "compare") {
   if (stage === "production") {
@@ -62,8 +71,10 @@ if (command !== "compare") {
       throw new Error("Production releases run only in GitHub Actions on an immutable candidate");
     if (command === "destroy") throw new Error("Production is never destroyed");
     if (command === "deploy") throw new Error("Production applies only a reviewed plan digest");
-  } else if (!/^test-[a-z0-9-]+$/u.test(stage)) {
-    throw new Error("Use --stage production or a disposable test-* stage");
+  } else if (scaleStack ? !/^scale-[0-9]+$/u.test(stage) : !/^test-[a-z0-9-]+$/u.test(stage)) {
+    throw new Error(
+      "Use --stage production, a disposable test-* stage, or scale-<n> for the scale stack",
+    );
   }
 }
 
@@ -86,6 +97,47 @@ if (command === "compare") {
     );
   await Effect.runPromise(compareSnapshots(await read(values.before), await read(values.after)));
   await summary("Database counts: unchanged or grown; Home's schema version unchanged.");
+  process.exit(0);
+}
+
+if (command === "accept") {
+  // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
+  const { runAcceptance } = await import("./acceptance.ts");
+  const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
+  const expect = values.expect ?? "same-boot";
+  if (!["same-boot", "two-runtimes", "any"].includes(expect))
+    throw new Error(`Unknown --expect ${expect}`);
+  const result = await runAcceptance({
+    apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+    ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
+    expect: expect as "same-boot",
+    ...(process.env.POOL_ACCEPTANCE_ORIGIN
+      ? { client: new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN }) }
+      : {}),
+  });
+  if (values.out) await output(resolve(values.out), result);
+  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${JSON.stringify(result)}`);
+  process.exit(result.passed ? 0 : 1);
+}
+
+if (command === "db-load") {
+  const { Effect, Redacted } = await import("effect");
+  const { FetchHttpClient } = await import("effect/http");
+  const { assertPrimaryCpuBelow } = await import("./database-safety.ts");
+  const reading = await Effect.runPromise(
+    assertPrimaryCpuBelow({
+      organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
+      tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
+      token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
+      database: "basalt",
+      branch: "main",
+      ceiling: 60,
+      now: Date.now(),
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+  await summary(
+    `Pool database primary CPU ${reading.cpuPercent.toFixed(1)}% at ${reading.at}: under 60%.`,
+  );
   process.exit(0);
 }
 
@@ -124,6 +176,7 @@ const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.t
 const Alchemist = await import("alchemy/Alchemist");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
+const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
 
@@ -177,28 +230,12 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
         const guarded = Effect.gen(function* () {
           yield* WireGuard.selfTest();
           yield* storeCannotBootstrap;
-          const scriptOf = (fqn: string) =>
-            Effect.gen(function* () {
-              const state = yield* Alchemist.State.store({
-                backend: "configured",
-                ...target,
-              } as never) as unknown as Fx.Effect<any, unknown, never>;
-              const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<
-                any,
-                unknown,
-                never
-              >;
-              const script = row?.attr?.workerName;
-              if (typeof script !== "string" || !script)
-                return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
-              return script as string;
-            });
           for (const [fqn, classes] of Object.entries(
             (policy?.wire?.sqliteClasses ?? {}) as Record<string, string[]>,
           ))
-            wire.sqliteClasses[yield* scriptOf(fqn)] = classes;
+            wire.sqliteClasses[yield* scriptName(fqn)] = classes;
           for (const fqn of (policy?.wire?.expectLiveModule ?? []) as string[]) {
-            const script = yield* scriptOf(fqn);
+            const script = yield* scriptName(fqn);
             const digest = yield* liveMainModuleSha256({
               accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
               token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
@@ -225,7 +262,21 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
     ) as Fx.Effect<A, unknown, never>,
   );
 
-const target = { entrypoint: resolve(root, config), stage };
+const target = { entrypoint: scaleStack ? config : resolve(root, config), stage };
+/** A Worker's live script name, from its State row (names carry the stage, policies name FQNs). */
+const scriptName = (fqn: string) =>
+  Effect.gen(function* () {
+    const state = yield* Alchemist.State.store({
+      backend: "configured",
+      ...target,
+    } as never) as unknown as Fx.Effect<any, unknown, never>;
+    const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<any, unknown, never>;
+    const script = row?.attr?.workerName;
+    if (typeof script !== "string" || !script)
+      return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
+    return script as string;
+  });
+
 const planOf = (operation: "deploy" | "destroy") =>
   Alchemist.Stack.plan({
     target,
@@ -326,6 +377,31 @@ try {
       }),
     );
     await summary(`PlanetScale backup complete: \`${backup.name}\``);
+  } else if (command === "serving" || command === "rollback") {
+    // A code-only release records the serving version first; on a failed acceptance it goes back to it.
+    const fqn = values.fqn ?? "PoolWorker";
+    const result = await run(
+      Effect.gen(function* () {
+        const script = yield* scriptName(fqn);
+        const at = {
+          accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+          token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
+          script,
+        };
+        if (command === "serving") return { fqn, version: yield* servingVersion(at) };
+        if (!values.to) return yield* Effect.die(new Error("--to <version id> is required"));
+        yield* rollbackTo(
+          at,
+          values.to,
+          `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+        );
+        return { fqn, version: values.to, rolledBack: true };
+      }),
+    );
+    if (values.out) await output(resolve(values.out), result);
+    await summary(
+      `${command === "serving" ? "Serving" : "Rolled back to"}: ${JSON.stringify(result)}`,
+    );
   } else if (command === "snapshot") {
     const snapshot = await run(
       Effect.gen(function* () {
@@ -335,7 +411,7 @@ try {
         } as never) as unknown as Fx.Effect<any, unknown, never>;
         const url = yield* database.poolDatabaseUrl(state, { name: "basalt", stage });
         const session = yield* database.connect(url);
-        return yield* database.readSnapshot(session);
+        return yield* database.readSnapshot(session, { history: !values.light });
       }),
     );
     await output(resolve(values.out ?? ""), snapshot);
@@ -343,6 +419,51 @@ try {
   } else {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
+} catch (error) {
+  // Say exactly what stopped the run: every tagged refusal in the failure chain, with its fields.
+  const reasons: string[] = [];
+  const seen = new Set<unknown>();
+  const visit = (value: unknown, depth: number) => {
+    if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
+    seen.add(value);
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record._tag === "string" &&
+      /Refus|Refused|Failed|Unavailable|Possible/u.test(record._tag)
+    )
+      reasons.push(
+        `${record._tag}: ${[
+          "resource",
+          "check",
+          "rule",
+          "script",
+          "method",
+          "path",
+          "field",
+          "value",
+          "why",
+          "fix",
+        ]
+          .filter((key) => typeof record[key] === "string" || typeof record[key] === "number")
+          .map((key) => `${key}=${String(record[key])}`)
+          .join(
+            " ",
+          )}${record.detail ? ` detail=${JSON.stringify(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${JSON.stringify(record.violations)}` : ""}`,
+      );
+    for (const key of ["cause", "reason", "error", "defect", "failures", "reasons", "issue"])
+      if (key in record) {
+        const next = record[key];
+        if (Array.isArray(next)) for (const item of next) visit(item, depth + 1);
+        else visit(next, depth + 1);
+      }
+  };
+  visit(error, 0);
+  const text = reasons.length
+    ? `Release stopped:\n${reasons.map((reason) => `- ${reason}`).join("\n")}`
+    : `Release stopped: ${error instanceof Error ? error.message : String(error)}`;
+  console.error(text);
+  await summary(text);
+  process.exitCode = 1;
 } finally {
   if (events.length) await mkdir(resolve(root, ".local/release"), { recursive: true });
   if (events.length)
