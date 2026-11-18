@@ -225,7 +225,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
    origin: string,
    path: string,
    payload?: unknown,
-@@ -299,32 +310,115 @@
+@@ -299,32 +310,121 @@
        let request = HttpClientRequest.make(method)(`${origin}${path}`);
        if (token !== undefined)
          request = HttpClientRequest.setHeader(request, "authorization", `Bearer ${token}`);
@@ -315,7 +315,10 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +    }),
 +  );
 +
-+/** Instances are lazy; keyed credentials and reset converge when repeated with the same input. */
++/**
++ * Instances are lazy; keyed credentials and reset converge when repeated with the same input, so a
++ * hung request is abandoned and sent again. Four 6 s attempts and their backoff fit the 30 s budget.
++ */
 +export const provisionEmulatorRequest = <A>(
 +  origin: string,
 +  path: "/_emulate/instances" | "/_emulate/credentials" | "/_emulate/reset",
@@ -351,11 +354,14 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +        category: "timeout",
 +        attempts,
 +      }),
++    { attemptTimeout: "6 seconds" },
++  ).pipe(
++    Effect.annotateLogs({ operation: `POST ${path}`, emulator: emulatorTarget(origin)?.label }),
 +  );
  
  /**
   * Provision actual hosted instances and credentials through emulators.dev's control plane, for a
-@@ -335,10 +429,13 @@
+@@ -335,10 +435,13 @@
    Effect.gen(function* () {
      const instance = `executor-onboarding-${randomUUID()}`;
      const create = (service: string) =>
@@ -373,7 +379,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
        );
      const oauth = (service: "google" | "github") =>
        Effect.gen(function* () {
-@@ -378,15 +475,15 @@
+@@ -378,15 +481,15 @@
      const keyed = (service: string, token?: string) =>
        Effect.gen(function* () {
          const instance = yield* create(service);
@@ -523,16 +529,16 @@ diff --git a/e2e/tests/emulator-provisioning.spec.ts b/e2e/tests/emulator-provis
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/emulator-provisioning.spec.ts
-@@ -0,0 +1,380 @@
+@@ -0,0 +1,386 @@
 +import { expect, layer } from "@effect/vitest";
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import {
 +  Cause,
 +  Clock,
-+  Deferred,
 +  Effect,
 +  Fiber,
 +  Logger,
++  Queue,
 +  References,
 +  Schema,
 +  Tracer,
@@ -771,14 +777,17 @@ new file mode 100644
 +  it.effect("the thirty second budget includes earlier requests and backoff", () =>
 +    Effect.gen(function* () {
 +      const stub = yield* server(() => 500, "3600");
-+      const received = yield* Deferred.make<void>();
++      let sent = 0;
++      const answered = yield* Queue.unbounded<void>();
 +      const http = yield* HttpClient.HttpClient;
++      // Each answer is slow but inside the 6 s attempt deadline, and asks for the 5 s backoff cap.
 +      const delayed = HttpClient.make((request) =>
 +        Effect.gen(function* () {
-+          yield* Effect.sleep("20 seconds");
++          yield* Effect.sleep("4 seconds");
++          sent++;
 +          const response = yield* http.execute(request);
 +          yield* response.text;
-+          yield* Deferred.succeed(received, undefined);
++          yield* Queue.offer(answered, undefined);
 +          return response;
 +        }),
 +      );
@@ -788,12 +797,15 @@ new file mode 100644
 +        {},
 +        reply,
 +      ).pipe(Effect.provideService(HttpClient.HttpClient, delayed), Effect.flip, Effect.forkChild);
-+      yield* TestClock.adjust("20 seconds");
-+      yield* Deferred.await(received);
-+      yield* TestClock.adjust("10 seconds");
++      // The clock holds still while a request is on the network.
++      for (const request of [1, 2, 3]) {
++        yield* advanceUntil(() => sent === request);
++        yield* Queue.take(answered);
++      }
++      yield* advanceUntil(() => fiber.pollUnsafe() !== undefined);
 +      const error = yield* Fiber.join(fiber);
-+      expect(error).toMatchObject({ category: "timeout", attempts: 2, status: 500 });
-+      expect(stub.calls()).toBe(1);
++      expect(error).toMatchObject({ category: "timeout", attempts: 4, status: 500 });
++      expect(stub.calls()).toBe(3);
 +    }).pipe(Effect.provide(FetchHttpClient.layer)),
 +  );
 +});
@@ -919,7 +931,7 @@ diff --git a/packages/utils/src/provisioning-request.ts b/packages/utils/src/pro
 new file mode 100644
 --- /dev/null
 +++ b/packages/utils/src/provisioning-request.ts
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,78 @@
 +import { Duration, Effect, Schedule } from "effect";
 +
 +export interface ProvisioningDiagnostic {
@@ -928,34 +940,59 @@ new file mode 100644
 +  readonly retryAfterMs?: number | undefined;
 +}
 +
++export interface ProvisioningPolicy {
++  /**
++   * Abandons a hung request so the rest of the budget goes to a fresh one, and retries the timeout.
++   * Only requests that converge when repeated may set it: an abandoned request may still land.
++   */
++  readonly attemptTimeout?: Duration.Input;
++}
++
 +/** Only repeatable provisioning and cleanup may opt in. Scenario requests must see outages. */
 +export const provisioningRequest = <A, E extends ProvisioningDiagnostic, R>(
 +  attempt: (attempts: number) => Effect.Effect<A, E, R>,
 +  timedOut: (attempts: number, last: E | undefined) => E,
++  { attemptTimeout }: ProvisioningPolicy = {},
 +) =>
 +  Effect.suspend(() => {
 +    let attempts = 0;
 +    let last: E | undefined;
++    const retryable = (error: E) =>
++      error.category === "transport" ||
++      (error.category === "http" && [500, 502, 503, 504].includes(error.status ?? 0)) ||
++      (attemptTimeout !== undefined && error.category === "timeout");
 +    const schedule = Schedule.exponential("250 millis").pipe(
++      Schedule.setInputType<E>(),
 +      Schedule.jittered,
-+      Schedule.modifyDelay(({ duration }) =>
-+        Effect.succeed(Math.max(Duration.toMillis(duration), last?.retryAfterMs ?? 0)),
++      Schedule.modifyDelay(({ duration, input }) =>
++        Effect.succeed(Math.max(Duration.toMillis(duration), input.retryAfterMs ?? 0)),
++      ),
++      Schedule.while(({ input, attempt }) => attempt <= 3 && retryable(input)),
++      Schedule.tap(({ input, attempt, duration }) =>
++        Effect.logWarning(
++          `Provisioning attempt ${attempt} failed (${input.category ?? "unknown"}${input.status === undefined ? "" : `, HTTP ${input.status}`}); retrying in ${Math.round(Duration.toMillis(duration))} ms`,
++        ),
 +      ),
 +    );
-+    return Effect.suspend(() => attempt(++attempts)).pipe(
++    const once = Effect.suspend(() => {
++      const current = ++attempts;
++      return attemptTimeout === undefined
++        ? attempt(current)
++        : attempt(current).pipe(
++            Effect.timeoutOrElse({
++              duration: attemptTimeout,
++              orElse: () => Effect.fail(timedOut(current, undefined)),
++            }),
++          );
++    });
++    return once.pipe(
 +      Effect.tapError((error) =>
 +        Effect.sync(() => {
 +          last = error;
 +        }),
 +      ),
-+      Effect.retry({
-+        times: 3,
-+        schedule,
-+        while: (error) =>
-+          error.category === "transport" ||
-+          (error.category === "http" && [500, 502, 503, 504].includes(error.status ?? 0)),
-+      }),
-+      // One deadline covers requests, body reads and every backoff, not one per attempt.
++      Effect.retry(schedule),
++      // One deadline covers requests, body reads and every backoff, whatever each attempt allows.
 +      Effect.timeoutOrElse({
 +        duration: "30 seconds",
 +        orElse: () => Effect.fail(timedOut(attempts, last)),
