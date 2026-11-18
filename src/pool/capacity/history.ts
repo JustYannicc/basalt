@@ -724,11 +724,13 @@ export class CapacityHistory {
           revision: reading.revision,
         }));
       const current = members(latestByKey.values());
+      // Memory lasts as long as the week-aligned demand shares it guards.
+      const policyFrom = Math.min(demandFrom, weekOf(snapshot.at) - 13 * 7 * dayMs);
       const policies =
         index.lastAt === null
           ? {
               changed: new Set<string>(),
-              memory: policyChanges({ memory: {}, current, at: snapshot.at, keepFrom: demandFrom })
+              memory: policyChanges({ memory: {}, current, at: snapshot.at, keepFrom: policyFrom })
                 .memory,
             }
           : index.demandPolicies
@@ -736,7 +738,7 @@ export class CapacityHistory {
                 memory: index.demandPolicies,
                 current,
                 at: snapshot.at,
-                keepFrom: demandFrom,
+                keepFrom: policyFrom,
               })
             : migratePolicies({
                 recorded: index.demandRevisions,

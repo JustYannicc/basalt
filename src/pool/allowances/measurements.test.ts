@@ -149,9 +149,9 @@ test("an estimate that lapses at a window reset re-forms at the same size with i
       const from = Date.parse(url.searchParams.get("from")!),
         to = Date.parse(url.searchParams.get("to")!);
       return {
-        items: Array.from({ length: 180 }, (_, index) => ({
-          id: String(index + 1),
-          timestamp: new Date(start + index * 60_000).toISOString(),
+        items: Array.from({ length: Math.ceil((to - from) / 60_000) }, (_, index) => ({
+          id: String(from + index * 60_000),
+          timestamp: new Date(from + index * 60_000).toISOString(),
           credential: { credential_id: "synthetic-grok" },
           provider: "xai",
           service_tier: "standard",
@@ -162,7 +162,7 @@ test("an estimate that lapses at a window reset re-forms at the same size with i
             output: { total_tokens: 20 },
             total_tokens: 100,
           },
-        })).filter((row) => Date.parse(row.timestamp) >= from && Date.parse(row.timestamp) < to),
+        })),
         next: null,
       };
     },
@@ -185,4 +185,26 @@ test("an estimate that lapses at a window reset re-forms at the same size with i
   assert.equal(again?.full, first.full);
   assert.equal(again?.revision, first.revision);
   assert.equal(again?.unit.id, first.unit.id);
+
+  // A poll without this window's reset time keeps the lapsed estimate for its return.
+  const unread = account(start + 10 * step, 0.7, reset);
+  const quota = {
+    ...unread.quota,
+    windows: unread.quota.windows.map((window) => ({ ...window, resetAt: null })),
+  };
+  await measurements.observe([{ ...unread, quota }], start + 10 * step);
+  const next = start + 604_800_000 * 2 + step;
+  let returned;
+  for (let index = 0; index <= 4; index++)
+    returned = await estimate(start + (11 + index) * step, 1 - index * 0.052, next);
+  assert.equal(returned?.revision, first.revision);
+
+  // After a week without an estimate the next one re-baselines instead of inheriting the size.
+  const later = start + 8 * 86_400_000;
+  const far = later + 604_800_000;
+  let rebased;
+  for (let index = 0; index <= 4; index++)
+    rebased = await estimate(later + index * step, 1 - index * 0.055, far);
+  assert.notEqual(rebased?.revision, first.revision);
+  assert.equal(rebased?.full, Math.round(500 / 0.055));
 });
