@@ -3,7 +3,7 @@ import {
   type TerminalOutcome,
   type TerminalCompletion,
 } from "./terminal-protocol.ts";
-import { reportStreamBroken } from "./stream-broken.ts";
+import { connectionEnded, reportStreamBroken } from "./stream-broken.ts";
 
 export type TerminalFinish = (outcome: TerminalOutcome, status: number, bytes: number) => void;
 
@@ -63,7 +63,7 @@ export function terminalResponse(
           if (ended) return;
           end("client_closed");
           void reader.cancel().catch(() => {});
-          controller.error(new Error("Connection ended"));
+          controller.error(connectionEnded());
         };
         signal?.addEventListener("abort", abort, { once: true });
         detach = () => signal?.removeEventListener("abort", abort);

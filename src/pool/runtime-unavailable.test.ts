@@ -100,39 +100,77 @@ test("transport failure after a delivered native completion cannot introduce ano
   assert.equal((await reader.read()).done, true);
 });
 
-test("an event that never ends is passed through byte for byte once it passes the parse bound", async () => {
-  const encoder = new TextEncoder();
-  // 3 MiB with no blank line, and a two-byte character split across the last two reads.
-  const parts = [
-    ...Array.from({ length: 48 }, () => encoder.encode("x".repeat(64 * 1024))),
+const sse = { headers: { "content-type": "text/event-stream" } };
+const filler = (size: number) => new TextEncoder().encode("x".repeat(size));
+
+/** Over 4 MiB with no blank line, and a two-byte character split exactly where parsing stops. */
+function endless() {
+  const chunk = 64 * 1024;
+  return [
+    ...Array.from({ length: 64 }, () => filler(chunk)),
+    new Uint8Array([...filler(chunk - 1), 0xc3]),
+    new Uint8Array([0xa9, ...filler(chunk - 1)]),
+    ...Array.from({ length: 14 }, () => filler(chunk)),
     new Uint8Array([0x61, 0xc3]),
     new Uint8Array([0xa9, 0x62]),
   ];
-  const expected = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0));
-  let offset = 0;
-  for (const part of parts) {
-    expected.set(part, offset);
-    offset += part.byteLength;
-  }
+}
+
+function source(
+  parts: Uint8Array[],
+  end: (controller: ReadableStreamDefaultController<Uint8Array>) => void,
+) {
   let sent = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const part = parts[sent++];
+      if (part) controller.enqueue(part);
+      else end(controller);
+    },
+  });
+}
+
+test("an event that never ends is passed through byte for byte once it passes the parse bound", async () => {
+  const parts = endless();
+  const expected = Buffer.concat(parts);
   const interrupted: unknown[] = [];
   const response = nativeRuntimeStream(
     new Response(
-      new ReadableStream<Uint8Array>({
-        pull(controller) {
-          const part = parts[sent++];
-          if (part) controller.enqueue(part);
-          else controller.close();
-        },
-      }),
-      { headers: { "content-type": "text/event-stream" } },
+      source(parts, (controller) => controller.close()),
+      sse,
     ),
     new Request("http://pool/v1/messages"),
     (error) => interrupted.push(error),
   );
-  const received = new Uint8Array(await response.arrayBuffer());
-  assert.equal(received.byteLength, expected.byteLength);
-  assert.deepEqual(received.subarray(-4), expected.subarray(-4));
+  const received = Buffer.from(await response.arrayBuffer());
   assert.equal(Buffer.compare(received, expected), 0);
   assert.deepEqual(interrupted, []);
+});
+
+test("past the parse bound an upstream failure cuts the stream, and a client leaving is quiet", async () => {
+  const interrupted: unknown[] = [];
+  const cut = nativeRuntimeStream(
+    new Response(
+      source(endless(), (controller) => controller.error(new Error("synthetic upstream cut"))),
+      sse,
+    ),
+    new Request("http://pool/v1/messages"),
+    (error) => interrupted.push(error),
+  );
+  await assert.rejects(cut.arrayBuffer(), /synthetic upstream cut/);
+  assert.equal(interrupted.length, 1);
+  const quiet: unknown[] = [];
+  const left = nativeRuntimeStream(
+    new Response(
+      source(endless(), () => {}),
+      sse,
+    ),
+    new Request("http://pool/v1/messages"),
+    (error) => quiet.push(error),
+  );
+  const reader = left.body!.getReader();
+  // One read returns the parsed part, the next ones come through the pass-through.
+  for (let index = 0; index < 3; index++) await reader.read();
+  await reader.cancel("client left");
+  assert.deepEqual(quiet, []);
 });

@@ -4,8 +4,9 @@ import { retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 const message = "The model runtime restarted. Please retry this request.";
 // Claude Code gives up after three overload answers; an api_error keeps its full retry budget.
 const claudeError = { type: "error", error: { type: "api_error", message } };
-// No normal event is near this size; past it the stream is passed through instead of parsed.
-const parsedCharacters = 1024 * 1024;
+// Past this much of one unfinished event the stream is passed through instead of parsed. A large
+// final event fits; an event that never ends cannot hold the isolate's memory.
+const parsedCharacters = 4 * 1024 * 1024;
 function anthropic(request: Request) {
   return /\/(?:v1\/)?messages$/.test(new URL(request.url).pathname);
 }
@@ -105,8 +106,11 @@ export function nativeRuntimeStream(
               controller.close();
               return;
             }
+            const scanned = pending.length;
             pending += decoder.decode(next.value, { stream: true });
             const boundary = /(?:\r?\n){2}/g;
+            // Earlier text holds no boundary, so only a separator reaching back into it is new.
+            boundary.lastIndex = Math.max(0, scanned - 3);
             let end = 0;
             for (const match of pending.matchAll(boundary)) end = match.index + match[0].length;
             if (end) {
@@ -130,7 +134,7 @@ export function nativeRuntimeStream(
           if (cancelled) return;
           if (passthrough) {
             // Mid-event, a terminal would corrupt the frame; the clients retry a cut stream.
-            interrupted?.(error);
+            if (!request.signal.aborted) interrupted?.(error);
             controller.error(error);
             return;
           }
