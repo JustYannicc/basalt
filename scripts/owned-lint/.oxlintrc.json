@@ -39,6 +39,7 @@
     "basalt/no-discarded-child-output": "error",
     "basalt/no-node-test-doubles": "error",
     "basalt/no-node-test-flake-masking": "error",
+    "basalt/no-alchemy-auto-approve": "error",
     "landmines-testing/no-test-doubles": "error",
     "landmines-testing/no-fixed-sleep": [
       "error",

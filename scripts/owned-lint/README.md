@@ -45,6 +45,7 @@ After rebasing onto changes to the same files, run `--write-baseline` and commit
 | `no-discarded-child-output` | A child process whose stderr is ignored, other than git exit-status probes. |
 | `no-node-test-doubles` | `mock.method` and `mock.fn(impl)` from `node:test` replacing dependency behaviour. Clock control and output capture are allowed. |
 | `no-node-test-flake-masking` | `node:test` subtest and hook timeouts, and conditional or permanent skips. |
+| `no-alchemy-auto-approve` | An `alchemy` command line with `--yes` or `-y`. In beta.80 it also sets `updateStateStore`, which can redeploy the shared State store; apply and destroy run in-process through the release entry. A test covers workflow steps and package scripts. |
 
 ## Third-party rules
 
