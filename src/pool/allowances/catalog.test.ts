@@ -230,3 +230,55 @@ test("a vendor row taking over from an aged-out dataset row keeps the plan's rev
     before.revision,
   );
 });
+
+test("the Ultra statement refreshes Max 20x policy rows with the seed's revisions and revokes them when it goes", async () => {
+  const bodies: Record<string, string> = JSON.parse(
+    readFileSync(new URL("./fixtures/vendor-sources.json", import.meta.url), "utf8"),
+  );
+  const statement = bodies["claude-ultra"]!;
+  const without = statement.replace(
+    /The Max 20x plan is now called the Ultra plan/u,
+    "Ultra replaced an older plan",
+  );
+  let ultra = without;
+  let clock = Date.parse("2026-11-19T12:00:00Z");
+  const values = new Map<string, unknown>();
+  const registry = new PlanAllowances(
+    {
+      async get<T>(key: string) {
+        return structuredClone(values.get(key)) as T | undefined;
+      },
+      async put(key, value) {
+        values.set(key, structuredClone(value));
+      },
+    },
+    {
+      now: () => clock,
+      fetch: async (input) =>
+        String(input).includes("ultra-plan")
+          ? new Response(ultra)
+          : new Response(null, { status: 503 }),
+    },
+  );
+  // Production already holds a claude-ultra state with only the Ultra row.
+  await registry.refresh();
+  ultra = statement;
+  clock += 86_400_000;
+  await registry.refresh();
+  const pastSeed = Date.parse("2026-11-28T12:00:00Z");
+  const weekly = planAllowance(await registry.read(), "claude", "Max 20x", 604_800, pastSeed);
+  const session = planAllowance(await registry.read(), "claude", "Max 20x", 18_000, pastSeed);
+  assert.equal(weekly.full, 20);
+  assert.equal(weekly.revision, "2026-11-09-max20x-20");
+  assert.equal(weekly.checkedAt, clock);
+  assert.equal(session.full, 20);
+  assert.equal(session.revision, "2026-10-30");
+  ultra = without;
+  clock += 86_400_000;
+  await registry.refresh();
+  // Revoked while the seed's own policy rows are still current.
+  assert.equal(
+    planAllowance(await registry.read(), "claude", "Max 20x", 604_800, clock).known,
+    false,
+  );
+});
