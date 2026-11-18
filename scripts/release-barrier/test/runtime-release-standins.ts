@@ -6,6 +6,7 @@
  * function on a virtual clock.
  */
 import { Effect, Layer, Schema } from "effect";
+import { referenceImageInput } from "../runtime-release-bootstrap.ts";
 import { Stack } from "alchemy/Stack";
 import { State, type StateService } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
@@ -176,8 +177,11 @@ const clientOver = (desired?: RuntimeConfiguration) => {
       if (pool !== monitorPool) throw new BarrierRefusal("runtime-release-public-pool", pool);
       await w.promote(applicationId, operationId, desired ?? baselineConfiguration);
     },
-    selectedCurrent: (imageInput: string, configuration: RuntimeConfiguration) =>
-      w.selectedCurrent(imageInput, configuration),
+    selectedCurrent: (imageInput: string, configuration: RuntimeConfiguration) => {
+      if (stop?.at === "configured" && Object.keys(journal?.configurations ?? {}).length)
+        throw new BarrierRefusal("synthetic-source-stopped", "PoolWorker");
+      return w.selectedCurrent(imageInput, configuration);
+    },
     observeProvider: async () => {
       throw new BarrierRefusal("runtime-release-provider-observation-unmodeled");
     },
@@ -191,7 +195,11 @@ const clientOver = (desired?: RuntimeConfiguration) => {
 };
 /** The controller client, answered by the world's PoolWorker controller. */
 export const runtimeReleaseClient = (input: { desiredConfiguration?: RuntimeConfiguration }) =>
-  Effect.sync(() => clientOver(input.desiredConfiguration));
+  Effect.sync(() => {
+    if (stop?.at === "bind" && journal?.baseline.applications[stop.color])
+      throw stopped(stop.color);
+    return clientOver(input.desiredConfiguration);
+  });
 
 let production: ReturnType<typeof productionPoolWorker> | undefined;
 /** The production-shaped PoolWorker the release's class path and bootstraps both talk to. */
@@ -204,6 +212,21 @@ export const bootstrapCalls = { writes: 0 };
 export const resetBootstrap = () => {
   bootstrapAttachments.length = 0;
   bootstrapCalls.writes = 0;
+};
+let stop:
+  | { color: RuntimeColor; at: "bootstrap" | "bind" }
+  | { color?: undefined; at: "configured" }
+  | undefined;
+const stopped = (color: RuntimeColor) =>
+  new BarrierRefusal("synthetic-source-stopped", fleetClassName(color));
+/**
+ * Stops the release before this colour's bootstrap, or, with `bind`, at the first controller client
+ * its bind phase asks for: after the bootstrap created the application and the release saved its
+ * native baseline (runtime-image-release.ts, right after bootstrapReleaseApplication). With
+ * `configured`, it stops at the first read after its fleet configuration was sent and retained.
+ */
+export const stopRelease = (value: typeof stop) => {
+  stop = value;
 };
 
 /**
@@ -229,8 +252,9 @@ export const bootstrapReleaseApplication = (
       namespace: { className: name, binding: name },
     });
     bootstrapCalls.writes += worker.log.writes - writes;
+    if (stop?.color === options.color && stop.at === "bootstrap") throw stopped(options.color);
     bootstrapAttachments.push(attachment);
-    w.createApplication(options.color, w.root.image, w.root.input);
+    w.createApplication(options.color, w.root.image, yield* referenceImageInput(w.root.image.ref));
   });
 
 /** The real wait on a virtual clock, so a pending observation costs no wall time. */

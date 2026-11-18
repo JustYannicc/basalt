@@ -36,7 +36,11 @@ export type ControllerAttempt = {
   route: string;
   outcome: "accepted" | PreflightRefusal;
 };
-import { liveControllerCodes, settlementVerdict } from "./release-preflight-live.ts";
+import {
+  liveControllerCodes,
+  settlementVerdict,
+  unsettledPrior,
+} from "./release-preflight-live.ts";
 import { releaseImageJournalKey } from "./release-settlement-contract.ts";
 import {
   nodeBridgeFromConfig,
@@ -151,7 +155,7 @@ export const preflightSteps = (
                 "runtime-release-candidate-aborted-or-pending",
                 "PoolWorker",
               );
-            return { head, prior: undefined };
+            return { head, prior: undefined, priorFleetAttached: false };
           } catch (error) {
             if (
               !(error instanceof BarrierRefusal) ||
@@ -160,15 +164,18 @@ export const preflightSteps = (
               throw error;
             // Which settlement it needs depends on the live controller; release-settlement decides.
             const head = await read(state.getOutput(releaseImageJournalKey(compiled)));
+            const { record } = decodeRuntimeReleaseHead(head, encryptionKey);
+            const unsettled = unsettledPrior(record);
             return {
               head: { record: undefined, sourceController: undefined },
-              prior: decodeRuntimeReleaseHead(head, encryptionKey).record.candidate,
+              prior: unsettled.candidate,
+              priorFleetAttached: unsettled.fleetAttached,
             };
           }
         },
-        ({ head: { record, sourceController }, prior }) =>
+        ({ head: { record, sourceController }, prior, priorFleetAttached }) =>
           prior
-            ? { record: "prior-candidate-unsettled", prior }
+            ? { record: "prior-candidate-unsettled", prior, fleetAttached: priorFleetAttached }
             : record
               ? { record: "this-candidate", complete: record.complete }
               : sourceController
@@ -251,7 +258,8 @@ export const preflightSteps = (
           migrationTag,
         }),
       );
-      if (native && baseline) await controllerReads(native, baseline, journal?.prior);
+      if (native && baseline)
+        await controllerReads(native, baseline, journal?.prior, journal?.priorFleetAttached);
       else
         for (const name of [...controllerSteps, ...(journal?.prior ? ["release-settlement"] : [])])
           await step(name, ["baseline-controller", "runtime-state"], async () => {});
@@ -284,6 +292,7 @@ export const preflightSteps = (
         key: string;
       },
       prior: string | undefined,
+      priorFleetAttached = false,
     ) {
       const target = {
         ...native.target,
@@ -379,6 +388,8 @@ export const preflightSteps = (
             prior,
             liveCandidate: code.candidate,
             selected: !!selection,
+            fleetAttached: priorFleetAttached,
+            ...(selection ? { rootSelected: isLegacyAdoptionTarget(selection.active.target) } : {}),
           });
           if (!verdict.supported)
             throw new BarrierRefusal(
