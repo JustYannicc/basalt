@@ -4,6 +4,7 @@ import type pg from "pg";
 import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { insertBulkRequests } from "../../src/pool/model-history/bulk-store.ts";
 import { projectPoolHistoryChanges } from "../../src/pool/model-history/change-projection.ts";
+import { readPoolHistoryChanges } from "../../src/pool/model-history/change-revisions.ts";
 import type { ModelRequest } from "../../src/pool/model-history/record.ts";
 import {
   countTriggerStatements,
@@ -186,7 +187,7 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   const chunk = await historyRows(Array.from({ length: 5000 }, () => pools[0]));
   const counts: Record<
     string,
-    { request: number; projection: number; bulk: number; requestKeys: unknown }
+    { request: number; projection: number; registration: number; bulk: number; requestKeys: unknown }
   > = {};
   for (const version of ["v11", "v12"] as const)
     await homeChangeFixture(version, true, async ({ a }) => {
@@ -206,12 +207,15 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
       const requestStatements = counter.take();
       while ((await projectPoolHistoryChanges(db)) > 0);
       const projection = counter.take();
+      await readPoolHistoryChanges(db, "app_fixture_once_first_read");
+      const registration = counter.take();
       await db.query("BEGIN");
       await insertBulkRequests(db, chunk);
       await db.query("COMMIT");
       counts[version] = {
         request: requestStatements,
         projection,
+        registration,
         bulk: counter.take(),
         requestKeys: [billing, capture],
       };
@@ -221,14 +225,18 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   // v11: 7 per resolved row plus the commit notification. v12: the charge resolves once (1 query,
   // 2 journal inserts), its update looks up the user only, the credit update skips, capture
   // resolves once, plus the two commit notifications. The 5000-row chunk resolves once.
-  // Projection upserts one head per key; each head write evaluated the SQL hash as a statement.
+  // Every heads index write (a first registration here, non-HOT projection updates in production)
+  // evaluated the SQL hash as its own statement; projection itself is unchanged.
   const measured = (version: Version) => {
-    const { request, projection, bulk } = counts[version]!;
-    return { request, projection, bulk };
+    const { request, projection, registration, bulk } = counts[version]!;
+    return { request, projection, registration, bulk };
   };
   assert.deepEqual(
     { v11: measured("v11"), v12: measured("v12") },
-    { v11: { request: 34, projection: 0, bulk: 35001 }, v12: { request: 9, projection: 0, bulk: 4 } },
+    {
+      v11: { request: 34, projection: 11, registration: 2, bulk: 35001 },
+      v12: { request: 9, projection: 11, registration: 0, bulk: 4 },
+    },
   );
 });
 
