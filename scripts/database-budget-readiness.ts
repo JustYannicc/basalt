@@ -10,12 +10,35 @@ import {
 import { openPoolOperations, type PoolOperationsPlatform } from "./pool-operations.ts";
 import { signEnvelope } from "../src/pool/token.ts";
 
-class ReadinessResponseError extends Error {
+export class ReadinessResponseError extends Error {
   override readonly name = "ResponseError";
   readonly status: number;
-  constructor(status: number) {
+  /** The server's fixed refusal vocabulary, so a 503 says which readiness stage failed. */
+  readonly outcome: string | undefined;
+  readonly stage: string | undefined;
+  constructor(status: number, detail: { outcome?: string; stage?: string } = {}) {
     super("Deployment runtime readiness failed");
     this.status = status;
+    this.outcome = detail.outcome;
+    this.stage = detail.stage;
+  }
+}
+
+const closedWord = (value: unknown) =>
+  typeof value === "string" && /^[a-z-]{1,40}$/u.test(value) ? value : undefined;
+
+/** Keeps only the fixed outcome and stage of a small refusal body; anything else is dropped. */
+async function readinessRefusal(response: Response, signal: AbortSignal) {
+  try {
+    const text = await bounded(response.text(), signal);
+    if (text.length > 512) return {};
+    const body: unknown = JSON.parse(text);
+    if (typeof body !== "object" || body === null) return {};
+    const outcome = closedWord(Reflect.get(body, "outcome"));
+    const stage = closedWord(Reflect.get(body, "stage"));
+    return { ...(outcome ? { outcome } : {}), ...(stage ? { stage } : {}) };
+  } catch {
+    return {};
   }
 }
 
@@ -74,10 +97,8 @@ export async function openDeploymentReadiness(options: {
     },
     ready: async (signal: AbortSignal) => {
       const response = await request(signal, "runtime");
-      if (!response.ok) {
-        await bounded(response.body?.cancel() ?? Promise.resolve(), signal);
-        throw new ReadinessResponseError(response.status);
-      }
+      if (!response.ok)
+        throw new ReadinessResponseError(response.status, await readinessRefusal(response, signal));
       return decodeRuntimeReady(await bounded(response.json(), signal), options.target);
     },
   };

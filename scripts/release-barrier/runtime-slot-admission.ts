@@ -15,8 +15,7 @@ const refused = (reason: string, path: string) => (error: unknown) =>
     ? error
     : provisioningRefusal(reason, path, "verified", "unverified");
 
-/** A stopped or missing runtime cannot become attested through provider image metadata alone. */
-export const attestRuntimeRelease = (input: {
+interface AttestationInput {
   manifest: RuntimeHandoffManifest;
   enable: ProvisioningEnable | undefined;
   signingKey: string;
@@ -24,11 +23,14 @@ export const attestRuntimeRelease = (input: {
   fetcher?: Fetcher;
   now?: () => number;
   selection?: SelectionProof;
-}) =>
+}
+
+/** The startup witness carries no clock, so it can be read before the send that carries the proof. */
+export const witnessRuntimeRelease = (input: AttestationInput) =>
   Effect.gen(function* () {
     const now = input.now ?? Date.now;
     assertRuntimeProofEnable(input.manifest, input.enable, now());
-    const witness = yield* Effect.tryPromise({
+    return yield* Effect.tryPromise({
       try: () =>
         readRuntimeStartupWitness(
           input.manifest,
@@ -39,6 +41,15 @@ export const attestRuntimeRelease = (input: {
         ),
       catch: refused("runtime-startup-witness-unverified", "handoff.witness"),
     });
+  });
+
+/** The provider observation starts the attestation's freshness window, so sign just before sending. */
+export const signRuntimeRelease = (
+  input: AttestationInput,
+  witness: Effect.Success<ReturnType<typeof witnessRuntimeRelease>>,
+) =>
+  Effect.gen(function* () {
+    const now = input.now ?? Date.now;
     assertRuntimeProofEnable(input.manifest, input.enable, now());
     const provider = yield* readRuntimeProviderProof(input.manifest, "runtime", input.fetcher, now);
     return yield* Effect.tryPromise({
@@ -55,7 +66,11 @@ export const attestRuntimeRelease = (input: {
     });
   });
 
-export const authorizeRuntimeStart = (input: Parameters<typeof attestRuntimeRelease>[0]) =>
+/** A stopped or missing runtime cannot become attested through provider image metadata alone. */
+export const attestRuntimeRelease = (input: AttestationInput) =>
+  Effect.flatMap(witnessRuntimeRelease(input), (witness) => signRuntimeRelease(input, witness));
+
+export const authorizeRuntimeStart = (input: AttestationInput) =>
   Effect.gen(function* () {
     const now = input.now ?? Date.now;
     assertRuntimeProofEnable(input.manifest, input.enable, now());
