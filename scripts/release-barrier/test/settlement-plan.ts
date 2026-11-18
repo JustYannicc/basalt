@@ -14,6 +14,10 @@ export const controllerActiveFixture = (context: TestContext) =>
 export const controllerAdoptedFixture = (context: TestContext) =>
   releaseSettlementFixture(context, { controllerActive: true, adopted: true });
 
+/** That adopted root after selected-runtime recovery restarted it twice, as production later found it. */
+export const controllerRecoveredFixture = (context: TestContext) =>
+  releaseSettlementFixture(context, { controllerActive: true, adopted: true, recovered: true });
+
 /** The never-adopted legacy slot the fixture's source controller would retain. */
 export const fixtureAdoptionTarget = {
   format: "pool-runtime-slot-v1",

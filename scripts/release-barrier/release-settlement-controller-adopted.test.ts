@@ -276,8 +276,9 @@ const refusals: [string, RegExp, (f: SettlementFixture) => unknown][] = [
     (f) => f.controller.storage.values.delete(slotSelectionKey),
   ],
   [
-    "a selection past its first epoch",
-    /release-settlement-adopted-selection-unexpected \(selection\.epoch\)/,
+    // Only recovery commits past epoch 1, and its restart replaces adopt's unattested witness.
+    "a selection past its first epoch that recovery never restarted",
+    /release-settlement-witness-unproven \(PoolWorker\.witness\.409\.slot_identity\)/,
     (f) => select(f, { ...selected, epoch: 2 }),
   ],
   [
