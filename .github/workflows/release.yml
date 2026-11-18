@@ -162,6 +162,10 @@ jobs:
         run: |
           npm run build
           npm run check:startup
+      # Read-only, every run: the State store version, every State row, the retired layer's records
+      # exported sealed, no unresolved Home schema migration in its journal, and the root pin.
+      - name: Preflight against State
+        run: bun scripts/release/deploy.ts preflight --stage production
       - name: Plan and check
         id: plan
         run: |
@@ -261,4 +265,13 @@ jobs:
           name: release
           include-hidden-files: true
           path: .local/release/*.json
+          if-no-files-found: ignore
+      # Sealed with the encryption key; kept because the first full apply rewrites the stack output.
+      - name: Keep the retired layer's records, sealed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-records
+          include-hidden-files: true
+          path: .local/release/legacy/*.json
           if-no-files-found: ignore
