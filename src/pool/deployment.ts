@@ -1,8 +1,6 @@
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
-import * as Output from "alchemy/Output";
-import * as Command from "alchemy/Command";
 import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
@@ -13,7 +11,7 @@ import {
   fleetInfrastructure,
   PoolDeclarationRefused,
 } from "./fleet-deployment.ts";
-import { desiredPoolImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
+import { desiredPoolImageInput } from "./image-release-plan.ts";
 import { bindPoolObservation } from "./fleet-observation.ts";
 import { rootContainer } from "./root-image-pin.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
@@ -63,7 +61,6 @@ export const poolWorker = Effect.gen(function* () {
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
   const { image, application, imageHash, imageInput } = yield* rootContainer;
   const fleet = yield* fleetInfrastructure;
-  const imageRelease = yield* RuntimeImageReleasePlan;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
   const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
   const worker = yield* Cloudflare.Worker("PoolWorker", {
@@ -77,16 +74,7 @@ export const poolWorker = Effect.gen(function* () {
       PoolContainer: image,
       ...fleetBindings(fleet, yield* fleetClasses),
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
-      POOL_PRESERVE_LEGACY_IMAGE: "true",
       POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
-      ...(imageRelease?.candidateConfiguration
-        ? {
-            POOL_CANDIDATE_APPLICATION_ID: imageRelease.candidateConfiguration.applicationId,
-            POOL_CANDIDATE_RUNTIME_CONFIGURATION: Redacted.make(
-              JSON.stringify(imageRelease.candidateConfiguration.configuration),
-            ),
-          }
-        : {}),
       BulkUsageImport: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
         className: "ArtifactsTokenCoordinator",
         scriptName: (yield* ArtifactsCredentials).workerName,
@@ -113,7 +101,7 @@ export const poolWorker = Effect.gen(function* () {
       ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
-  yield* bindPoolObservation(worker, Boolean(fleet || imageRelease));
+  yield* bindPoolObservation(worker, Boolean(fleet));
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,
@@ -128,29 +116,5 @@ export const poolWorker = Effect.gen(function* () {
       imageHash: imageInput,
     },
   });
-  const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
-    Config.withDefault(""),
-  );
-  if (receiptPath) {
-    yield* Command.Exec("PoolImagePublicationReceipt", {
-      command: "node capture-pool-image.ts",
-      cwd: fileURLToPath(new URL("../../scripts/deploy-safety/", import.meta.url)),
-      env: {
-        BASALT_POOL_IMAGE_RECEIPT: receiptPath,
-        GITHUB_SHA: yield* Config.NonEmptyString("GITHUB_SHA"),
-        CLOUDFLARE_ACCOUNT_ID: application.accountId,
-        CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
-        POOL_APPLICATION_ID: application.applicationId,
-        POOL_IMAGE_INPUT_HASH: imageInput,
-        POOL_IMAGE_DIGEST: application.hash.pipe(Output.map((hash) => hash?.digest ?? "")),
-        POOL_IMAGE_REF: application.configuration.pipe(
-          Output.map((configuration) => configuration.image),
-        ),
-        POOL_WORKER_READY: worker.workerName,
-      },
-      memo: false,
-      timeout: "1 minute",
-    });
-  }
   return worker;
 });

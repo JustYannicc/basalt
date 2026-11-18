@@ -2,25 +2,35 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
+import { AlchemyContextLive } from "alchemy/AlchemyContext";
+import { provideFreshArtifactStore } from "alchemy/Artifacts";
+import { layerNonInteractive } from "alchemy/Interaction";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { Stack, evalStack } from "alchemy/Stack";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { decodeRuntimeCreate } from "../../scripts/pool-fleet/runtime-create-schema.ts";
-import { runtimeDeclaration } from "../../scripts/release-barrier/test/provisioning-fixtures.ts";
-import { withReleaseRuntime } from "../../scripts/release-barrier/runtime.ts";
+import { runtimeDeclaration } from "../../scripts/pool-fleet/test/runtime-declaration.ts";
 import { bindPoolObservation, poolObservationTokenProps } from "./fleet-observation.ts";
 import {
   decodeFleetDeploymentImages,
   fleetBindings,
   fleetClasses,
   fleetInfrastructure,
-  plannedContainerClasses,
   poolImageContext,
 } from "./fleet-deployment.ts";
-import { RuntimeImageReleasePlan, type ImageReleasePlan } from "./image-release-plan.ts";
 
 const accountId = "1".repeat(32);
+const withStackRuntime = <A, E>(
+  effect: Effect.Effect<A, E, Effect.Services<ReturnType<typeof evalStack>>>,
+) =>
+  effect.pipe(
+    provideFreshArtifactStore,
+    Effect.provide(layerNonInteractive()),
+    Effect.provide(AlchemyContextLive.pipe(Layer.provideMerge(NodeServices.layer))),
+    Effect.provideService(State, Effect.die(new Error("missing compiled state"))),
+  );
 const images = {
   blue: `registry.cloudflare.com/${accountId}/pool@sha256:${"a".repeat(64)}`,
   green: `registry.cloudflare.com/${accountId}/pool@sha256:${"b".repeat(64)}`,
@@ -41,7 +51,7 @@ async function declarations(
         main: import.meta.filename,
         env: { ...fleet },
       });
-      // As src/pool/deployment.ts binds it, with no release plan here.
+      // As src/pool/deployment.ts binds it.
       yield* bindPoolObservation(worker, Boolean(fleet));
       return worker;
     }),
@@ -52,7 +62,7 @@ async function declarations(
       Effect.provide(
         ConfigProvider.layer(ConfigProvider.fromEnv({ env: { POOL_FLEET_IMAGES: input, ...env } })),
       ),
-      withReleaseRuntime,
+      withStackRuntime,
     ),
   );
 }
@@ -204,11 +214,7 @@ test("fleet pins refuse mutable references, other accounts, missing colors and e
     );
 });
 
-async function poolWorkerClasses(
-  input = "",
-  plan?: ImageReleasePlan,
-  env: Record<string, string> = {},
-) {
+async function poolWorkerClasses(input = "", env: Record<string, string> = {}) {
   const stack = Stack(
     "basalt",
     {
@@ -229,8 +235,7 @@ async function poolWorkerClasses(
       Effect.provide(
         ConfigProvider.layer(ConfigProvider.fromEnv({ env: { POOL_FLEET_IMAGES: input, ...env } })),
       ),
-      Effect.provideService(RuntimeImageReleasePlan, plan),
-      withReleaseRuntime,
+      withStackRuntime,
     ),
   );
   return {
@@ -258,40 +263,6 @@ test("PoolWorker always hosts both fleet classes, so alchemy is their one migrat
   assert.deepEqual(bound.resources, ["PoolRuntimeBlue", "PoolRuntimeGreen", "PoolWorker"]);
   for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"])
     assert.notEqual(bound.env[name], plain.env[name], `${name} is now its Container`);
-});
-
-test("the release preflight's planned container links are the ones the fleet stack declares", async () => {
-  // A retained legacy runtime, declared with exactly the props LegacyProps admits.
-  const legacyImage = `registry.cloudflare.com/${accountId}/pool@sha256:${"c".repeat(64)}`;
-  const legacy = {
-    image: legacyImage,
-    props: {
-      name: "basalt-synthetic-pool-runtime",
-      className: "PoolRuntime",
-      image: legacyImage,
-      instanceType: "basic",
-      instances: 0,
-      maxInstances: 1,
-      schedulingPolicy: "default",
-      constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
-      observability: { logs: { enabled: true } },
-    },
-  };
-  for (const plan of [
-    { images: {} },
-    { images: { blue: images.blue } },
-    { images: { green: images.green } },
-    { images: { blue: images.blue, green: images.green } },
-    { legacy, images: {} },
-  ] satisfies ImageReleasePlan[]) {
-    const evaluated = await poolWorkerClasses("", plan);
-    // PoolWorker's own PoolContainer is declared beside the fleet, in src/pool/deployment.ts.
-    assert.deepEqual(
-      ["PoolContainer", ...evaluated.containers].sort(),
-      plannedContainerClasses(plan),
-      JSON.stringify(plan),
-    );
-  }
 });
 
 test("POOL_FLEET_BUILD has Alchemy build both colours from the pool image, retained and idle", async () => {
@@ -345,29 +316,28 @@ test("a fleet is either built or pinned to images, never both", async () => {
     /fleet-build-with-images/,
   );
   await assert.rejects(
-    poolWorkerClasses("", { images: { blue: images.blue } }, { POOL_FLEET_BUILD: "true" }),
+    poolWorkerClasses(JSON.stringify(images), { POOL_FLEET_BUILD: "true" }),
     /fleet-build-with-images/,
   );
 });
 
 test("POOL_FLEET_CLASSES=absent leaves both fleet classes out of PoolWorker and refuses any fleet", async () => {
-  const absent = await poolWorkerClasses("", undefined, { POOL_FLEET_CLASSES: "absent" });
+  const absent = await poolWorkerClasses("", { POOL_FLEET_CLASSES: "absent" });
   assert.deepEqual(absent.resources, ["PoolWorker"]);
   assert.equal("PoolRuntimeBlue" in absent.env, false);
   assert.equal("PoolRuntimeGreen" in absent.env, false);
-  const declared = await poolWorkerClasses("", undefined, { POOL_FLEET_CLASSES: "declared" });
+  const declared = await poolWorkerClasses("", { POOL_FLEET_CLASSES: "declared" });
   assert.ok("PoolRuntimeBlue" in declared.env && "PoolRuntimeGreen" in declared.env);
-  for (const [input, plan, env] of [
-    [JSON.stringify(images), undefined, {}],
-    ["", undefined, { POOL_FLEET_BUILD: "true" }],
-    ["", { images: {} }, {}],
+  for (const [input, env] of [
+    [JSON.stringify(images), {}],
+    ["", { POOL_FLEET_BUILD: "true" }],
   ] as const)
     await assert.rejects(
-      poolWorkerClasses(input, plan, { POOL_FLEET_CLASSES: "absent", ...env }),
+      poolWorkerClasses(input, { POOL_FLEET_CLASSES: "absent", ...env }),
       /fleet-classes-absent-with-fleet/,
     );
   await assert.rejects(
-    poolWorkerClasses("", undefined, { POOL_FLEET_CLASSES: "none" }),
+    poolWorkerClasses("", { POOL_FLEET_CLASSES: "none" }),
     /POOL_FLEET_CLASSES/,
   );
 });

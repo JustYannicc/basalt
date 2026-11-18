@@ -4,11 +4,7 @@ import { retain } from "alchemy/RemovalPolicy";
 import { euPlacement } from "./placement.ts";
 import { Stage } from "alchemy/Stage";
 import { Config, Data, Effect, Schema } from "effect";
-import {
-  RuntimeImageReleasePlan,
-  type ImageReleasePlan,
-  type RuntimeColor,
-} from "./image-release-plan.ts";
+import type { RuntimeColor } from "./image-release-plan.ts";
 import { fileURLToPath } from "node:url";
 
 /** A pool declaration that would change the live pool in a way no deploy may: why, and what to set. */
@@ -43,21 +39,6 @@ export const fleetClasses = Config.Literals(["declared", "absent"], "POOL_FLEET_
   Config.withDefault("declared"),
 );
 export type FleetClasses = "declared" | "absent";
-const LegacyProps = Schema.Struct({
-  isExternal: Schema.optionalKey(Schema.Literal(true)),
-  name: Schema.String,
-  className: Schema.Literal("PoolRuntime"),
-  image: Image,
-  instanceType: Schema.Literal("basic"),
-  instances: Schema.Literal(0),
-  maxInstances: Schema.Literal(1),
-  schedulingPolicy: Schema.Literal("default"),
-  constraints: Schema.Struct({
-    jurisdiction: Schema.Literal("eu"),
-    regions: Schema.Tuple([Schema.Literal("EEUR"), Schema.Literal("WEUR")]),
-  }),
-  observability: Schema.Struct({ logs: Schema.Struct({ enabled: Schema.Literal(true) }) }),
-});
 
 export function decodeFleetDeploymentImages(value: string, accountId: string) {
   try {
@@ -99,71 +80,42 @@ export const fleetBindings = <Fleet extends object>(
 export const fleetClassName = (color: RuntimeColor) =>
   color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
 
-/** The classes PoolWorker links to containers when evaluated with this plan, in sorted order. */
-export const plannedContainerClasses = (plan: ImageReleasePlan | undefined) =>
-  [
-    "PoolContainer",
-    ...(plan?.legacy ? ["PoolRuntime"] : []),
-    ...(["blue", "green"] as const).filter((color) => plan?.images[color]).map(fleetClassName),
-  ].sort();
-
 /** Image pins declare infrastructure; only a separate signed fleet command grants launch permission. */
 export const fleetInfrastructure = Effect.gen(function* () {
   const input = yield* Config.String("POOL_FLEET_IMAGES").pipe(Config.withDefault(""));
   // Alchemy builds both colours from the pool image context, so a plain deploy creates them.
   const build = yield* Config.Boolean("POOL_FLEET_BUILD").pipe(Config.withDefault(false));
   const classes = yield* fleetClasses;
-  const plan = yield* RuntimeImageReleasePlan;
   if (classes === "absent") {
-    if (plan || input || build)
+    if (input || build)
       return yield* Effect.die(
         new PoolDeclarationRefused({
           reason: "fleet-classes-absent-with-fleet",
           why: "POOL_FLEET_CLASSES=absent declares no PoolRuntimeBlue or PoolRuntimeGreen class, so no fleet application has a class to run in.",
-          fix: "Unset POOL_FLEET_BUILD, POOL_FLEET_IMAGES and the release plan, or set POOL_FLEET_CLASSES=declared.",
+          fix: "Unset POOL_FLEET_BUILD and POOL_FLEET_IMAGES, or set POOL_FLEET_CLASSES=declared.",
         }),
       );
     return undefined;
   }
-  if (build && (input || plan))
+  if (build && input)
     return yield* Effect.die(
       new PoolDeclarationRefused({
         reason: "fleet-build-with-images",
-        why: "POOL_FLEET_BUILD builds both colours from containers/pool, while POOL_FLEET_IMAGES or a release plan pins them to published images. One deploy cannot do both.",
+        why: "POOL_FLEET_BUILD builds both colours from containers/pool, while POOL_FLEET_IMAGES pins them to published images. One deploy cannot do both.",
         fix: "Set either POOL_FLEET_BUILD=true or POOL_FLEET_IMAGES, not both.",
       }),
     );
-  if (!plan && !input && !build) return undefined;
+  if (!input && !build) return undefined;
   const stage = yield* Stage;
   const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
-  const legacyImage = plan?.legacy;
-  const legacyProps = legacyImage
-    ? Schema.decodeUnknownSync(LegacyProps, { onExcessProperty: "error" })(legacyImage.props)
-    : undefined;
-  if (
-    legacyProps &&
-    (legacyProps.image !== legacyImage!.image ||
-      !legacyProps.image.startsWith(`registry.cloudflare.com/${accountId}/`))
-  )
-    throw new Error(
-      "Retained PoolRuntime image does not match its deployment account and native provenance",
-    );
-  const images = plan?.images ?? (build ? {} : decodeFleetDeploymentImages(input, accountId));
-  if (!build && !Object.keys(images).length && !legacyProps) return undefined;
-  if (plan?.build && !images[plan.build])
-    throw new Error("Candidate image application is missing from the release plan");
-  for (const image of Object.values(images)) {
-    Schema.decodeUnknownSync(Image)(image);
-    if (!inDeploymentAccount(image, accountId))
-      throw new Error("Fleet image belongs to another deployment account");
-  }
+  const images: Partial<Record<RuntimeColor, string>> = build
+    ? {}
+    : decodeFleetDeploymentImages(input, accountId);
   const declare = (color: "blue" | "green") =>
     Cloudflare.Container(fleetClassName(color), {
       name: `basalt-${stage}-pool-runtime-${color}`,
       className: fleetClassName(color),
-      ...(build || plan?.build === color
-        ? { context: poolImageContext }
-        : { image: images[color]! }),
+      ...(build ? { context: poolImageContext } : { image: images[color]! }),
       instanceType: "basic",
       instances: 0,
       maxInstances: 4,
@@ -173,10 +125,6 @@ export const fleetInfrastructure = Effect.gen(function* () {
     });
   const blue = build || images.blue ? declare("blue") : undefined,
     green = build || images.green ? declare("green") : undefined;
-  const legacy = legacyProps
-    ? Cloudflare.Container("PoolRuntime", { ...legacyProps, constraints: euPlacement })
-    : undefined;
-  const legacyApplication = legacy ? yield* legacy.Application.pipe(retain()) : undefined;
   const blueApplication = blue ? yield* blue.Application.pipe(retain()) : undefined;
   const greenApplication = green ? yield* green.Application.pipe(retain()) : undefined;
   const imageInput = (application: NonNullable<typeof blueApplication>) =>
@@ -187,7 +135,6 @@ export const fleetInfrastructure = Effect.gen(function* () {
       }),
     );
   return {
-    ...(legacy ? { PoolRuntime: legacy } : {}),
     ...(blue && blueApplication
       ? {
           PoolRuntimeBlue: blue,
@@ -202,7 +149,6 @@ export const fleetInfrastructure = Effect.gen(function* () {
           POOL_GREEN_IMAGE_HASH: imageInput(greenApplication),
         }
       : {}),
-    POOL_RUNTIME_APPLICATION_ID: (legacyApplication ?? blueApplication ?? greenApplication)!
-      .applicationId,
+    POOL_RUNTIME_APPLICATION_ID: (blueApplication ?? greenApplication)!.applicationId,
   };
 });

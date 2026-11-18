@@ -42,18 +42,12 @@ export function decodeRootImagePin(value: string, accountId: string) {
 
 /**
  * Production must pin: a context build there rolls the live root and boots a new Home on its
- * database. Transitional: the old release layer pins the root itself
- * (scripts/release-barrier/legacy-image-plan.ts) and its fixtures evaluate production without a
- * pin, so the native release entry switches the requirement on with POOL_ROOT_IMAGE_REQUIRED.
- * Delete that switch with the barrier; production then always requires the pin.
+ * database. Other stages have no live root to roll, so they build from the context.
  */
 export const rootImagePin = Effect.gen(function* () {
   const value = yield* Config.String("POOL_ROOT_IMAGE").pipe(Config.withDefault(""));
-  const required = yield* Config.Boolean("POOL_ROOT_IMAGE_REQUIRED").pipe(
-    Config.withDefault(false),
-  );
   if (!value) {
-    if (required && (yield* Stage) === "production")
+    if ((yield* Stage) === "production")
       return yield* Effect.die(
         new PoolDeclarationRefused({
           reason: "root-image-pin-missing",

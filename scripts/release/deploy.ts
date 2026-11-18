@@ -147,8 +147,7 @@ if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
   throw new Error("--attempt <id printed by the plan run> is required");
 if (stage === "production") {
   const { deployEnvironment } = await import("../environment.ts");
-  // Production always declares the legacy root by its pinned digest (src/pool/root-image-pin.ts).
-  Object.assign(process.env, deployEnvironment(), { POOL_ROOT_IMAGE_REQUIRED: "true" });
+  Object.assign(process.env, deployEnvironment());
 }
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });

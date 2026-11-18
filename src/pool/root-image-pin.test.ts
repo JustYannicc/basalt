@@ -53,15 +53,9 @@ const resolve = (value: unknown, hash: { image: string; digest?: string }) =>
   );
 
 test("production refuses to deploy the legacy root without a digest pin", async () => {
-  await assert.rejects(
-    declare("production", { POOL_ROOT_IMAGE_REQUIRED: "true" }),
-    /root-image-pin-missing/,
-  );
-  // Until the barrier is deleted, its own pin path (and fixtures) evaluate production unpinned.
-  const legacyLayer = await declare("production");
-  assert.equal(legacyLayer.props.context, poolImageContext);
-  // The switch only guards production; a first stage deploy has no root to roll.
-  const stage = await declare("test-cutover", { POOL_ROOT_IMAGE_REQUIRED: "true" });
+  await assert.rejects(declare("production"), /root-image-pin-missing/);
+  // The pin only guards production; a first stage deploy has no root to roll.
+  const stage = await declare("test-cutover");
   assert.equal(stage.props.context, poolImageContext);
 });
 
