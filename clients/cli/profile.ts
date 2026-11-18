@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, posix, win32 } from "node:path";
 import { rm } from "node:fs/promises";
 import { lock } from "proper-lockfile";
 import {
@@ -13,6 +15,31 @@ import { tokenHash } from "./local-access.ts";
 import { privateDirectory, readPrivate, writePrivate } from "./private-files.ts";
 
 export const profilePath = (home: string) => join(home, "profile.json");
+
+/**
+ * The desktop app's connection directory: the Mac app's HostLocation.defaultHome, or Electron's
+ * userData ("Signalbox Client") on Windows and Linux. The keychain account and the IPC socket are
+ * keyed by this exact string, so it must match the app's.
+ */
+export function desktopHome(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string) {
+  const path = platform === "win32" ? win32 : posix;
+  const data =
+    platform === "darwin"
+      ? path.join(home, "Library", "Application Support")
+      : platform === "win32"
+        ? (env.APPDATA ?? path.join(home, "AppData", "Roaming"))
+        : env.XDG_CONFIG_HOME || path.join(home, ".config");
+  return path.join(data, "Signalbox Client", "connection");
+}
+
+/** Without --home, the CLI acts on the desktop app's connection, so its keys reach that gateway. */
+export function defaultHome() {
+  const desktop = desktopHome(process.platform, process.env, homedir());
+  return existsSync(profilePath(desktop))
+    ? desktop
+    : join(homedir(), ".local", "state", "signalbox", "client");
+}
+
 export const agentPath = (home: string, id: string) => {
   if (!/^[a-zA-Z0-9_-]{1,80}$/u.test(id))
     throw new Error("Use an agent ID with letters, numbers, hyphens or underscores.");
@@ -86,7 +113,8 @@ async function addAgentLocked(home: string, id: string, capabilities: readonly C
   const updated = readProfile({ ...profile, agents: [...profile.agents, agent] });
   await writePrivate(path, JSON.stringify({ version: 1, id, token }));
   await writePrivate(profilePath(home), JSON.stringify(updated));
-  return path;
+  // The connection keeps its first port across restarts, so this address outlives this run.
+  return { token, origin: profile.port ? `http://127.0.0.1:${profile.port}` : undefined };
 }
 
 export async function removeAgent(home: string, id: string) {

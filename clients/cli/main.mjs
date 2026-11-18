@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   addAgent,
   agentPath,
+  defaultHome,
   importDirect,
   ipcPath,
   operatorToken,
@@ -21,10 +21,7 @@ import { signOut } from "./sign-out.ts";
 
 const args = process.argv.slice(2);
 const homeFlag = args.indexOf("--home");
-const home =
-  homeFlag >= 0
-    ? args.splice(homeFlag, 2)[1]
-    : join(homedir(), ".local", "state", "signalbox", "client");
+const home = homeFlag >= 0 ? args.splice(homeFlag, 2)[1] : defaultHome();
 const directory = home && resolve(home);
 try {
   if (!directory) throw new Error("Use --home with a private connection directory.");
@@ -55,8 +52,18 @@ try {
     const permissions = rest.slice(2);
     if (!id || permissions.some((value) => !["models", "tools"].includes(value)))
       throw new Error("Use agent add <id> models|tools [models|tools].");
-    const path = await addAgent(directory, id, permissions);
-    process.stderr.write(`Local agent credential saved in ${path}.\n`);
+    const { token, origin } = await addAgent(directory, id, permissions);
+    // Stdout holds only what a person pastes into the other app; the key is never printed again.
+    const lines = [];
+    if (origin && permissions.includes("models"))
+      lines.push(`OpenAI base URL: ${origin}/v1`, `Anthropic base URL: ${origin}`);
+    if (origin && permissions.includes("tools")) lines.push(`MCP URL: ${origin}/mcp`);
+    process.stdout.write(`${[...lines, `API key: ${token}`].join("\n")}\n`);
+    process.stderr.write(
+      origin
+        ? `Key for ${id} added. It is not shown again; agent remove ${id} revokes it.\n`
+        : `Key for ${id} added. Start the connection once; it prints its local address.\n`,
+    );
   } else if (command === "agent" && rest[0] === "remove" && rest.length === 2) {
     await removeAgent(directory, rest[1]);
     process.stderr.write("Local agent access removed.\n");
