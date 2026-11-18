@@ -125,7 +125,18 @@ test("a Cloudflare account connected under the first catalog definition links to
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const ids = yield* setup;
-      assert.notEqual(ids.retained, ids.family, "the first definition derived another provider ref");
+      assert.notEqual(
+        ids.retained,
+        ids.family,
+        "the first definition derived another provider ref",
+      );
+      // Existing app lineages keep their ref when this declaration changes, so a change needs an
+      // explicit adoption of the refs it leaves behind before new apps can share those accounts.
+      assert.equal(
+        ids.family,
+        "prv_pending",
+        "the Cloudflare family's provider ref changed; ship an adoption for the previous ref",
+      );
       assert.deepEqual(yield* linkable("app_tool", "acc_cloudflare"), { link: true, listed: true });
       assert.deepEqual(yield* linkable("app_pipeline", "acc_cloudflare"), {
         link: false,
@@ -136,9 +147,7 @@ test("a Cloudflare account connected under the first catalog definition links to
       assert.ok(migration, "the Cloudflare family adoption is a registered production migration");
       const reasons = yield* Effect.promise(
         () =>
-          import(
-            "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts"
-          ),
+          import("../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts"),
       );
       const operator = yield* Effect.promise(
         () => import("../production-ops/cloudflare-family-adoption-reasons.ts"),
@@ -151,6 +160,7 @@ test("a Cloudflare account connected under the first catalog definition links to
       const request = {
         organization,
         from: ids.retained,
+        to: ids.family,
         accounts: [{ account: "acc_cloudflare", generation: 3 }],
         apps: [{ app: "app_tool", version: "dpl_tool_2" }],
       };
@@ -164,6 +174,11 @@ test("a Cloudflare account connected under the first catalog definition links to
           ["executor_account_connections", { id: "con_cloudflare" }, "update"],
         ],
         "only the retained ref's rows move; links, other providers and the second app stay",
+      );
+      assert.deepEqual(
+        (plan.data as { joining: unknown }).joining,
+        [{ app: "app_pipeline", version: "dpl_pipeline" }],
+        "the dry run names the apps that start offering the moved accounts",
       );
       yield* sql.withTransaction(
         Effect.gen(function* () {
@@ -185,7 +200,14 @@ test("a Cloudflare account connected under the first catalog definition links to
       );
       assert.deepEqual(
         yield* sql`select app, requirement, subject, account from hosted_app_account_links`,
-        [{ app: "app_tool", requirement: "cloudflare", subject: "user-a", account: "acc_cloudflare" }],
+        [
+          {
+            app: "app_tool",
+            requirement: "cloudflare",
+            subject: "user-a",
+            account: "acc_cloudflare",
+          },
+        ],
       );
       assert.deepEqual(
         yield* sql`select id, provider, credential_generation from executor_accounts order by id`,
@@ -219,14 +241,20 @@ test("family adoption refuses a ref that is not the Cloudflare family or a chang
       const base = {
         organization,
         from: ids.retained,
+        to: ids.family,
         accounts: [{ account: "acc_cloudflare", generation: 3 }],
         apps: [{ app: "app_tool", version: "dpl_tool_2" }],
       };
       assert.equal(
-        yield* refusal({ ...base, from: ids.other, accounts: [{ account: "acc_jira", generation: 1 }] }),
+        yield* refusal({
+          ...base,
+          from: ids.other,
+          accounts: [{ account: "acc_jira", generation: 1 }],
+        }),
         "retained-provider-not-family",
       );
       assert.equal(yield* refusal({ ...base, from: ids.family }), "already-family");
+      assert.equal(yield* refusal({ ...base, to: ids.retained }), "family-ref-changed");
       assert.equal(
         yield* refusal({ ...base, accounts: [{ account: "acc_cloudflare", generation: 2 }] }),
         "account-set-changed",

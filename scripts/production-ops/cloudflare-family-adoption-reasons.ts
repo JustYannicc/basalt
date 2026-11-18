@@ -1,4 +1,5 @@
 export const cloudflareFamilyAdoptionReasons = [
+  "family-ref-changed",
   "already-family",
   "family-provider-missing",
   "retained-provider-not-family",

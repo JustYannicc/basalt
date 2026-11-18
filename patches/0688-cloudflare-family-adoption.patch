@@ -41,7 +41,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/clou
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,344 @@
 +import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 +import { familyProviderIdentity } from "@executor-js/hosted-server/provider-account-definitions";
 +import { identifyProvider } from "@executor-js/sdk/core";
@@ -54,7 +54,7 @@ new file mode 100644
 +  cloudflareFamilyLinks,
 +  cloudflareFamilyRows,
 +  connectionWith,
-+  retainedCloudflareVersions,
++  versionsNamingProvider,
 +  slotsUsing,
 +  sorted,
 +  text,
@@ -64,6 +64,7 @@ new file mode 100644
 +} from "./cloudflare-family-rows.ts";
 +
 +export const cloudflareFamilyAdoptionReasons = [
++  "family-ref-changed",
 +  "already-family",
 +  "family-provider-missing",
 +  "retained-provider-not-family",
@@ -86,10 +87,13 @@ new file mode 100644
 +  Effect.fail(new CloudflareFamilyAdoptionRefused({ reasonCode }));
 +
 +const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,256}$/u));
-+const ProviderRef = Schema.String.check(Schema.isPattern(/^prv_[a-f0-9]{64}$/u));
++// Content-derived refs are hex digests; an incompatible transition once minted a random UUID ref.
++const ProviderRef = Schema.String.check(Schema.isPattern(/^prv_[A-Za-z0-9-]{1,128}$/u));
 +const Request = Schema.Struct({
 +  organization: Id,
 +  from: ProviderRef,
++  /** The ref the consuming apps already name; it must equal the host's family identity. */
++  to: ProviderRef,
 +  accounts: Schema.Array(Schema.Struct({ account: Id, generation: Schema.Int })),
 +  apps: Schema.Array(Schema.Struct({ app: Id, version: Id })),
 +});
@@ -108,6 +112,7 @@ new file mode 100644
 +    Schema.Struct({ account: Id, method: Schema.String, generation: Schema.Int }),
 +  ),
 +  apps: Schema.Array(Schema.Struct({ app: Id, version: Id })),
++  joining: Schema.Array(Schema.Struct({ app: Id, version: Id })),
 +  deployments: Schema.Array(Schema.Struct({ version: Id, slots: Schema.Array(Schema.String) })),
 +  connections: Schema.Array(Id),
 +  acquisitions: Schema.Array(Id),
@@ -129,6 +134,7 @@ new file mode 100644
 +    const owner = `organization:${input.organization}`;
 +    const target = yield* familyTarget;
 +    const to = target.identity;
++    if (input.to !== to) return yield* refuse("family-ref-changed");
 +    if (input.from === to) return yield* refuse("already-family");
 +    const stored = yield* cloudflareFamilyRows(
 +      sql`select to_jsonb(p) as row from executor_providers p where id in (${input.from}, ${to})`,
@@ -158,7 +164,7 @@ new file mode 100644
 +    if (accounts.some((row) => !methods.includes(text(row.method))))
 +      return yield* refuse("account-method-outside-family");
 +
-+    const deployments = sorted(yield* retainedCloudflareVersions(owner, input.from));
++    const deployments = sorted(yield* versionsNamingProvider(owner, input.from));
 +    const versions = deployments.map((row) => text(row.id));
 +    const apps = sorted(
 +      versions.length === 0
@@ -196,7 +202,8 @@ new file mode 100644
 +    if (acquisitions.some((row) => !ids.includes(text(row.account))))
 +      return yield* refuse("acquisition-outside-selection");
 +    // Clients saved before issuer keys derive their credential IDs from the provider ref.
-+    const clients = yield* sql`select id from executor_stored_oauth_clients where owner = ${owner} and provider = ${input.from}
++    const clients =
++      yield* sql`select id from executor_stored_oauth_clients where owner = ${owner} and provider = ${input.from}
 +      union all select id from executor_stored_oauth_client_credentials where owner = ${owner} and provider = ${input.from}`;
 +    if (clients.length !== 0) return yield* refuse("provider-keyed-oauth-client");
 +
@@ -225,6 +232,15 @@ new file mode 100644
 +        }),
 +      ),
 +    ];
++    // Apps already on the family ref start offering these accounts once they move.
++    const familyVersions = (yield* versionsNamingProvider(owner, to)).map((row) => text(row.id));
++    const joining = sorted(
++      familyVersions.length === 0
++        ? []
++        : yield* cloudflareFamilyRows(
++            sql`select to_jsonb(a) as row from executor_apps a where a.owner = ${owner} and ${sql.in("a.active_deployment", familyVersions)}`,
++          ),
++    );
 +    const data = {
 +      organization: input.organization,
 +      from: input.from,
@@ -235,6 +251,7 @@ new file mode 100644
 +        generation: Number(row.credential_generation),
 +      })),
 +      apps: apps.map((row) => ({ app: text(row.id), version: text(row.active_deployment) })),
++      joining: joining.map((row) => ({ app: text(row.id), version: text(row.active_deployment) })),
 +      deployments: deployments.map((row) => ({
 +        version: text(row.id),
 +        slots: slotsUsing(row, input.from),
@@ -247,7 +264,8 @@ new file mode 100644
 +    return { changes, data };
 +  });
 +
-+const inspect = (raw: Json) => Schema.decodeUnknownEffect(Request)(raw).pipe(Effect.flatMap(snapshot));
++const inspect = (raw: Json) =>
++  Schema.decodeUnknownEffect(Request)(raw).pipe(Effect.flatMap(snapshot));
 +
 +const verify = (raw: Json, plan: MigrationPlan) =>
 +  Effect.gen(function* () {
@@ -270,11 +288,15 @@ new file mode 100644
 +      ...(yield* writtenCloudflareRows("executor_account_connections", data.connections)),
 +      ...(yield* writtenCloudflareRows("executor_account_acquisitions", data.acquisitions)),
 +    ];
-+    const accountsLeft = yield* sql`select id from executor_accounts where owner = ${owner} and provider = ${data.from}`;
-+    const versionsLeft = yield* retainedCloudflareVersions(owner, data.from);
++    const accountsLeft =
++      yield* sql`select id from executor_accounts where owner = ${owner} and provider = ${data.from}`;
++    const versionsLeft = yield* versionsNamingProvider(owner, data.from);
 +    const links = yield* cloudflareFamilyLinks(data.accounts.map((entry) => entry.account));
 +    const checks = {
-+      requestBound: input.organization === data.organization && input.from === data.from,
++      requestBound:
++        input.organization === data.organization &&
++        input.from === data.from &&
++        input.to === data.to,
 +      exactRows:
 +        written.length === plan.changes.length &&
 +        written.every(({ key, row }) => after.get(canonical(key)) === sha256(canonical(row))),
@@ -383,8 +405,8 @@ new file mode 100644
 +    Effect.map((list) => list.map((entry) => entry.row as FamilyRow)),
 +  );
 +
-+/** Versions of the organization whose account requirements still name the provider ref. */
-+export const retainedCloudflareVersions = (owner: string, provider: string) =>
++/** Versions of the organization whose account requirements name the provider ref. */
++export const versionsNamingProvider = (owner: string, provider: string) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    return yield* cloudflareFamilyRows(sql`select to_jsonb(d) as row from executor_deployments d

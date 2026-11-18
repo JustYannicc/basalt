@@ -203,9 +203,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
     ...retainedReasonCodes,
     ...poolAssociationRepairReasons,
     ...cloudflareFamilyAdoptionReasons,
-  ].find(
-    (code) => code === row.reasonCode,
-  );
+  ].find((code) => code === row.reasonCode);
   const reason =
     row.reason === "operation_busy" && row.retryable === true
       ? { reason: "operation_busy" as const, retryable: true }
