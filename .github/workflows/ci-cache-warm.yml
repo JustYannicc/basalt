@@ -1,0 +1,39 @@
+name: Warm CI caches
+
+# Check caches saved on a branch or pull request are invisible to every other ref, and main pushes
+# usually reuse their batch's Check without running its jobs. This run keeps the slow-to-build
+# entries on main, where every branch and pull request can restore them.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/pool-compatibility-images/**
+      - .github/actions/pool-release-assets/**
+      - .github/workflows/ci-cache-warm.yml
+      - containers/pool/fetch_releases.py
+      - scripts/ci/pool-image-build.sh
+      - scripts/ci/pool-release-assets.ts
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  pool-compatibility-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/pool-compatibility-images

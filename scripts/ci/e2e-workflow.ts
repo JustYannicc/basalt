@@ -16,10 +16,29 @@ export type Workflow = {
   >;
 };
 
-const conditionCanRun = (condition: string | boolean | undefined, job = false) => {
+// A step gated on a matrix value runs in every shard whose row carries that value.
+const matrixCanRun = (expression: string, matrix: unknown) => {
+  const match =
+    /^contains\(matrix\.(\w+), '([\w-]+)'\)$/.exec(expression) ??
+    /^matrix\.(\w+) == '?([\w-]+)'?$/.exec(expression);
+  if (!match || !matrix || typeof matrix !== "object") return false;
+  const [, key, value] = match;
+  const axes = matrix as Record<string, unknown>;
+  const rows = Array.isArray(axes.include) ? (axes.include as Record<string, unknown>[]) : [];
+  return [axes[key!], ...rows.map((row) => row[key!])]
+    .flat()
+    .some((candidate) => String(candidate) === value);
+};
+
+const conditionCanRun = (
+  condition: string | boolean | undefined,
+  job = false,
+  matrix: unknown = undefined,
+) => {
   if (condition === undefined || condition === true) return true;
   if (typeof condition !== "string") return false;
   const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");
+  if (matrixCanRun(expression, matrix)) return true;
   return (
     [
       "true",
@@ -40,7 +59,9 @@ export const activeSteps = (job: Workflow["jobs"][string] | undefined) =>
     ? []
     : (job?.steps ?? []).filter(
         (step): step is Step & { run: string } =>
-          typeof step.run === "string" && !step["continue-on-error"] && conditionCanRun(step.if),
+          typeof step.run === "string" &&
+          !step["continue-on-error"] &&
+          conditionCanRun(step.if, false, job?.strategy?.matrix),
       );
 
 // Only executable command positions count. Mentioning a path in echo, comments or artifacts is not coverage.
