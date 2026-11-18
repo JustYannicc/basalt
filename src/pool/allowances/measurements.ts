@@ -20,6 +20,8 @@ interface WindowState {
   pending?: readonly [AllowanceObservation, AllowanceObservation];
   samples: CalibrationSample[];
   allowance?: PlanAllowance;
+  /** The last estimate, kept after it lapses so a re-formed estimate of the same size keeps its revision. */
+  lastAllowance?: PlanAllowance;
 }
 interface Consumption {
   events: readonly MeasuredConsumption[];
@@ -95,9 +97,13 @@ export class AccountAllowanceMeasurements {
           previous.last.resetAt === right.resetAt &&
           previous.last.remaining >= right.remaining &&
           right.at >= previous.last.at;
+        const carried =
+          previous?.last.vendor === right.vendor && previous.last.plan === right.plan
+            ? (previous.allowance ?? previous.lastAllowance)
+            : undefined;
         const state: WindowState = compatible
           ? { ...previous, samples: [...previous.samples] }
-          : { last: right, samples: [] };
+          : { last: right, samples: [], ...(carried ? { lastAllowance: carried } : {}) };
         if (state.pending && state.pending[1].at <= now - 60_000) {
           const [left, right] = state.pending;
           const rejected = events?.rejected.some(
@@ -116,6 +122,7 @@ export class AccountAllowanceMeasurements {
           } else {
             // Missing or contradictory consumption invalidates the estimate, not just this interval.
             state.samples = [];
+            if (state.allowance) state.lastAllowance = state.allowance;
             delete state.allowance;
           }
           delete state.pending;
@@ -135,14 +142,18 @@ export class AccountAllowanceMeasurements {
           windowSeconds: reading.windowSeconds,
           samples: state.samples,
           now,
-          previous: state.allowance,
+          previous: state.allowance ?? state.lastAllowance,
         });
-        if (allowance)
+        if (allowance) {
           state.allowance = {
             ...allowance,
             expiresAt: Math.min(allowance.expiresAt!, right.resetAt),
           };
-        else delete state.allowance;
+          delete state.lastAllowance;
+        } else {
+          if (state.allowance) state.lastAllowance = state.allowance;
+          delete state.allowance;
+        }
         next.push(state);
       }
       await this.storage.put(key(account.id), next);

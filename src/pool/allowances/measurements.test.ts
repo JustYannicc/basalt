@@ -139,3 +139,50 @@ test("unknown tiers on unrelated accounts do not block this account's matched in
   }
   assert.equal(entries[0]?.full, 10_000);
 });
+
+test("an estimate that lapses at a window reset re-forms at the same size with its revision", async () => {
+  const steady = {
+    async data(path: string) {
+      if (path === "/capabilities")
+        return { capabilities: { usage_summary_cursor_v1: true, usage_token_breakdown_v2: true } };
+      const url = new URL(path, "https://fixture.invalid");
+      const from = Date.parse(url.searchParams.get("from")!),
+        to = Date.parse(url.searchParams.get("to")!);
+      return {
+        items: Array.from({ length: 180 }, (_, index) => ({
+          id: String(index + 1),
+          timestamp: new Date(start + index * 60_000).toISOString(),
+          credential: { credential_id: "synthetic-grok" },
+          provider: "xai",
+          service_tier: "standard",
+          model: "synthetic-model",
+          token_breakdown: {
+            quality: "complete",
+            input: { uncached_tokens: 80, cache_read_tokens: 0, cache_write_tokens: 0 },
+            output: { total_tokens: 20 },
+            total_tokens: 100,
+          },
+        })).filter((row) => Date.parse(row.timestamp) >= from && Date.parse(row.timestamp) < to),
+        next: null,
+      };
+    },
+  };
+  const measurements = new AccountAllowanceMeasurements(new Memory(), steady);
+  const estimate = async (at: number, remaining: number, resetAt?: number) => {
+    const current = account(at, remaining, resetAt);
+    return (await measurements.observe([current], at)).get(current.id)![0];
+  };
+  let first;
+  for (let index = 0; index <= 4; index++)
+    first = await estimate(start + index * step, 1 - index * 0.05);
+  assert.equal(first?.full, 10_000);
+  const reset = start + 604_800_000 + step;
+  assert.equal(await estimate(start + 5 * step, 1, reset), undefined);
+  // The next window burns slightly faster, an estimate within the same size band.
+  let again;
+  for (let index = 1; index <= 4; index++)
+    again = await estimate(start + (5 + index) * step, 1 - index * 0.055, reset);
+  assert.equal(again?.full, first.full);
+  assert.equal(again?.revision, first.revision);
+  assert.equal(again?.unit.id, first.unit.id);
+});

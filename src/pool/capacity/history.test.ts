@@ -787,3 +787,50 @@ test("aggregate provenance preserves each account's evidence dates", async () =>
     [start + hour, start + 2 * hour].sort(),
   );
 });
+
+test("an account moving between unit cohorts as its calibration forms and lapses keeps both trained", async () => {
+  const history = new CapacityHistory(new Memory());
+  const expected = [{ provider: "claude", windowSeconds: 604_800, accounts: 2 }];
+  const proEq = { id: "claude-pro-equivalent", label: "Pro-eq" };
+  const tokens = { id: '["observed-tokens","anthropic","profile"]', label: "observed tokens" };
+  const weekly = (account: string, at: number, ratio: number, options: Partial<CapacityReading>) =>
+    reading(account, ratio * (options.full ?? 1), {
+      windowSeconds: 604_800,
+      mode: "fixed",
+      observedAt: at,
+      resetAt: start + 7 * 24 * hour,
+      ...options,
+    });
+  const policy = (at: number, ratio: number, revision = "policy-20") =>
+    weekly("max-seat", at, ratio, { plan: "Max 20x", full: 20, unit: proEq, revision });
+  const calibrated = (at: number, ratio: number) =>
+    weekly("max-seat", at, ratio, {
+      plan: "Max 20x",
+      full: 900_000,
+      unit: tokens,
+      source: "account-calibration",
+      revision: "calibration-v1:900000",
+    });
+  const pro = (at: number, ratio: number) =>
+    weekly("pro-seat", at, ratio, { plan: "Pro", full: 1, unit: proEq, revision: "pro" });
+  const observe = (at: number, max: CapacityReading, ratio: number) =>
+    history.observe("calibration", { at, expected, readings: [max, pro(at, ratio)] });
+  let at = start;
+  await observe(at, policy(at, 1), 1);
+  for (const [index, max] of [calibrated, policy, calibrated, policy].entries()) {
+    at += hour;
+    await observe(at, max(at, 0.9 - index * 0.05), 0.95 - index * 0.05);
+  }
+  const after = await history.demandData("calibration");
+  assert.deepEqual(after.cohortTrackingSince, {});
+  assert.equal(after.trackingSince, start);
+
+  // A returning account that brings a new revision is still a policy change for its cohort.
+  at += hour;
+  await observe(at, policy(at, 0.6, "policy-25"), 0.7);
+  const changed = await history.demandData("calibration");
+  assert.equal(
+    changed.cohortTrackingSince?.[JSON.stringify(["claude", 604_800, "fixed", proEq.id])],
+    Math.ceil(at / hour) * hour,
+  );
+});
