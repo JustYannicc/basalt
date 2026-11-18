@@ -3,12 +3,18 @@ name: Guardrails
 # Deterministic checks on how release work enters main. Each job names what it refused and why.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Re-judges open pull requests while time passes, so a stale green cannot merge into a freeze.
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   ship-alone:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,3 +28,21 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/guardrails/ship-alone.ts "$BASE_SHA" "$HEAD_SHA"
+
+  release-freshness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Hold feature merges while production is not releasing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/guardrails/freeze.ts ${PR_NUMBER:+"$PR_NUMBER"}
