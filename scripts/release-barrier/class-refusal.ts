@@ -2,7 +2,11 @@ import { Schema, SchemaIssue } from "effect";
 import { publicPropPath } from "./prop-diff.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import type { PropChange } from "./prop-diff.ts";
-import { ReleaseOperationFailure, safeProviderFailure } from "./operation-failure.ts";
+import {
+  ReleaseOperationFailure,
+  providerChanges,
+  safeProviderFailure,
+} from "./operation-failure.ts";
 
 /** Callers supply closed scalar diagnostics or digests. Provider messages and binding values never enter a refusal. */
 export const classRefusal = (reason: string, fqn: string | undefined, changed: PropChange[]) =>
@@ -33,15 +37,7 @@ export function classCheckFailure(error: unknown, fqn: string) {
       new: error instanceof ReleaseOperationFailure ? error.operation : "validate-class-expansion",
     },
   ];
-  if (provider) {
-    changed.push({ path: "$provider.type", old: null, new: provider.type });
-    if (provider.reason !== undefined)
-      changed.push({ path: "$provider.reason", old: null, new: provider.reason });
-    if (provider.status !== undefined)
-      changed.push({ path: "$provider.status", old: null, new: provider.status });
-    for (const [index, code] of (provider.codes ?? []).entries())
-      changed.push({ path: `$provider.codes.${index}`, old: null, new: code });
-  }
+  if (provider) changed.push(...providerChanges(provider));
   return classRefusal(
     error instanceof BarrierRefusal ? error.reason : "declared-class-provider-failed",
     fqn,
