@@ -154,6 +154,16 @@ Deletion and its journal receipt commit together. The command reads the account 
 
 With separate production recovery GO, use the original report, inventory and checkpoint directory and replace `--apply` with `--recover`. Its request may list a subset of the original report IDs so a partial batch can be recovered. Recovery authenticates the checkpoint and restores the same ID, original ciphertext, policy and cached rows in one transaction. It refuses to overwrite an existing account. A repeated successful recovery verifies the restored rows without rewriting them. An account restored from a report cannot be deleted again with that report. Recovery does not require the original report to remain fresh, and never restores or revokes a Home credential or backend key.
 
+## Release guardrails
+
+`scripts/guardrails/release-path.json` lists the files that decide how a production release is made. The Guardrails workflow and the release itself judge every change against it:
+
+- **Ship alone.** A pull request that touches the release path may otherwise touch only `architecture/**`, `docs/releases.md` and `package.json`.
+- **Budget.** `scripts/guardrails/budget.json` holds the release path's source and test lines. Lower it when they fall. Raising it, dropping a path from the list or reopening a tombstone needs a `## Reuse decision` section in the pull request, with links to what Cloudflare, Alchemy and libraries already provide, and the `release-budget-approved` label. Tombstoned paths take no new lines.
+- **Freeze.** Once merged work has waited 12 hours for a release, the `release-freshness` status fails on every pull request except release-path changes and those labelled `release-unblock`.
+- **Release gate.** `node scripts/guardrails/release-gate.ts <commit>` runs first in a production release. A changed release path needs a `release-rehearsal` status from the rehearsal workflow that upgraded from the live commit. After two failed production deployments in a row, the rehearsal must also fail on the latest failed candidate. A dispatch with `override_reason` passes and records who gave it.
+- `node scripts/guardrails/release-health.ts` prints the numbers behind the freeze and the gate.
+
 ## Rebuild historical framework hashes
 
 Run the **Historical framework hashes** workflow manually from `main`, once per historical build. Supply its full source commit and logged toolchain. The toolchain selects Ubuntu, Bun and the original candidate or workspace checkout layout; Node stays at 24.18.0. Supply the logged generation UUID and dependency key together. Leave both empty only for sources that installed dependencies directly.
