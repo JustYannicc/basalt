@@ -88,10 +88,9 @@ export class PlanAllowances {
           ] as [string, readonly string[], (bodies: readonly string[]) => PlanAllowance[]],
       ),
     ];
-    // Mirrors the shared resolver's source order (account evidence first, then dataset, vendor,
-    // policy, reference). A refreshed value another source already decides with keeps that
-    // source's revision, so the plan's revision survives when one source ages out and another
-    // takes over with the same value.
+    // Mirrors the shared resolver's order: source kind, then the newest check. A refreshed value
+    // the same size as the row deciding its plan keeps that row's revision, so the plan's revision
+    // survives whichever source ages out, takes over, or comes back.
     const rank = {
       "account-absolute": 0,
       "account-calibration": 1,
@@ -101,29 +100,35 @@ export class PlanAllowances {
       reference: 5,
       unknown: 6,
     };
-    const deciding = Object.entries(state.sources).flatMap(([source, value]) =>
-      value.entries
-        .filter(
-          (entry) =>
-            entry.verification !== "unknown" &&
-            entry.checkedAt !== null &&
-            entry.checkedAt <= now &&
-            entry.expiresAt !== null &&
-            entry.expiresAt > now,
-        )
-        .map((entry) => ({ ...entry, sourceId: source })),
-    );
-    const sameValue = (a: PlanAllowance, b: PlanAllowance) =>
+    const deciding = new Map<string, PlanAllowance>();
+    for (const entry of Object.values(state.sources).flatMap((source) => source.entries)) {
+      if (
+        entry.verification === "unknown" ||
+        entry.checkedAt === null ||
+        entry.checkedAt > now ||
+        entry.expiresAt === null ||
+        entry.expiresAt <= now
+      )
+        continue;
+      const known = deciding.get(allowanceKey(entry));
+      if (
+        !known ||
+        rank[entry.kind] < rank[known.kind] ||
+        (rank[entry.kind] === rank[known.kind] && entry.checkedAt > known.checkedAt!)
+      )
+        deciding.set(allowanceKey(entry), entry);
+    }
+    const sameSize = (a: PlanAllowance, b: PlanAllowance) =>
       allowanceKey(a) === allowanceKey(b) &&
       a.full === b.full &&
       a.unit.id === b.unit.id &&
-      a.verification === b.verification &&
       Boolean(a.unlimited) === Boolean(b.unlimited);
-    const decidedBy = (id: string, entry: PlanAllowance) =>
-      deciding
-        .filter((value) => value.sourceId !== id && sameValue(value, entry))
-        .filter((value) => rank[value.kind] < rank[entry.kind])
-        .sort((a, b) => rank[a.kind] - rank[b.kind])[0]?.revision;
+    const sameValue = (a: PlanAllowance, b: PlanAllowance) =>
+      sameSize(a, b) && a.verification === b.verification;
+    const decidedBy = (entry: PlanAllowance) => {
+      const decider = deciding.get(allowanceKey(entry));
+      return decider && sameSize(decider, entry) ? decider.revision : undefined;
+    };
     await Promise.all(
       jobs.map(async ([id, urls, parse]) => {
         const previous = state.sources[id];
@@ -158,7 +163,7 @@ export class PlanAllowances {
               ...entry,
               sourceId: id,
               revision:
-                decidedBy(id, entry) ??
+                decidedBy(entry) ??
                 old.find((value) => sameValue(value, entry))?.revision ??
                 `allowance-v1:${await digest(
                   JSON.stringify([

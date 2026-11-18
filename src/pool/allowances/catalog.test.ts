@@ -197,6 +197,13 @@ test("a vendor row taking over from an aged-out dataset row keeps the plan's rev
   await registry.refresh();
   const before = planAllowance(await registry.read(), "claude", "Max 5x", 604_800, clock);
   assert.equal(before.kind, "dataset");
+  const revisionAt5h = planAllowance(
+    await registry.read(),
+    "claude",
+    "Max 5x",
+    18_000,
+    clock,
+  ).revision;
   // The dataset's check date passes its maximum age; the vendor page is re-checked daily.
   clock = Date.parse("2026-11-27T12:00:00Z");
   await registry.refresh();
@@ -204,4 +211,22 @@ test("a vendor row taking over from an aged-out dataset row keeps the plan's rev
   assert.equal(after.kind, "vendor");
   assert.equal(after.full, before.full);
   assert.equal(after.revision, before.revision);
+  const session = (at: number) =>
+    registry.read().then((catalog) => planAllowance(catalog, "claude", "Max 5x", 18_000, at));
+  assert.equal((await session(clock)).revision, revisionAt5h);
+  // The dataset comes back with the same size and must not flip the plan either.
+  for (const row of dataset.options) if (row.id === "claude-max-5x") row.checked = "2026-11-27";
+  clock += 86_400_000;
+  await registry.refresh();
+  const back = planAllowance(await registry.read(), "claude", "Max 5x", 604_800, clock);
+  assert.equal(back.kind, "dataset");
+  assert.equal(back.revision, before.revision);
+  // A real size change still gets its own revision.
+  for (const row of dataset.options) if (row.id === "claude-max-5x") row.multiple.x = 6;
+  clock += 86_400_000;
+  await registry.refresh();
+  assert.notEqual(
+    planAllowance(await registry.read(), "claude", "Max 5x", 604_800, clock).revision,
+    before.revision,
+  );
 });
