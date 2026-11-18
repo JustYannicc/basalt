@@ -193,3 +193,21 @@ test("a PR manifest never reads back as a rehearsal of the same number", async (
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the stage brand replaces only the brand object's host and zone in the real brand file", async () => {
+  const { previewBrandSource } = await import("./lifecycle.ts");
+  const { appHosting, brand } = await import("../../brand.ts");
+  const real = await readFile(new URL("../../brand.ts", import.meta.url), "utf8");
+  const changed = previewBrandSource(real, "app.rehearsal-1.preview.example.invalid", "preview.example.invalid");
+  const before = real.split("\n");
+  const after = changed.split("\n");
+  assert.equal(after.length, before.length);
+  const edits = before.flatMap((line, index) => (line === after[index] ? [] : [[line, after[index]]]));
+  assert.deepEqual(edits, [
+    [`  host: ${JSON.stringify(brand.host)},`, '  host: "app.rehearsal-1.preview.example.invalid",'],
+    [`  zone: ${JSON.stringify(brand.zone)},`, '  zone: "preview.example.invalid",'],
+  ]);
+  // appHosting keeps production's own zone line.
+  assert.ok(after.slice(after.indexOf("export const appHosting = {")).includes(`  zone: ${JSON.stringify(appHosting.zone)},`));
+  assert.throws(() => previewBrandSource(real.replace("export const brand = {", "export const label = {"), "a", "b"), /seam changed/);
+});

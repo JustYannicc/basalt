@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { Schema } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
 
@@ -99,4 +100,22 @@ export function releaseEntryTarget(env: NodeJS.ProcessEnv = process.env): Releas
   rehearsalStop(env);
   rehearsalDrainCap(env);
   return target;
+}
+
+/**
+ * A rehearsal reads or writes its stage only from the rehearsal job, for the candidate checked out
+ * at `root`. Returns that candidate, or undefined when the context is not trusted.
+ */
+export function rehearsalJobCandidate(env: NodeJS.ProcessEnv, root: string): string | undefined {
+  const candidate = env.BASALT_RELEASE_CANDIDATE ?? "";
+  if (
+    !releaseTarget(env).rehearsal ||
+    env.GITHUB_ACTIONS !== "true" ||
+    env.GITHUB_REPOSITORY !== "JustYannicc/basalt" ||
+    env.GITHUB_JOB !== "rehearsal" ||
+    !/^[a-f0-9]{40}$/u.test(candidate)
+  )
+    return undefined;
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  return head === candidate ? candidate : undefined;
 }

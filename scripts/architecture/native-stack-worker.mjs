@@ -27,7 +27,13 @@ try {
   const { brand } = await load("brand.ts");
   if (setupRequestDenied) throw new Error();
   const previewConnection = process.env.NATIVE_STACK_PREVIEW_CONNECTION_PROOF === "true";
-  const http = declarationFetch(previewConnection ? "preview.fixture.invalid" : brand.zone);
+  // A rehearsal stage evaluated the way its baseline probe projects it: its own stage and zone.
+  const rehearsalStage = process.env.NATIVE_STACK_CANDIDATE_PROOF?.startsWith("rehearsal-")
+    ? "test-rehearsal-1"
+    : undefined;
+  const http = declarationFetch(
+    previewConnection || rehearsalStage ? "preview.fixture.invalid" : brand.zone,
+  );
   globalThis.fetch = http.fetch;
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
     await load("scripts/environment.ts");
@@ -59,7 +65,21 @@ try {
     delete synthetic.BASALT_POOL_IMAGE_RECEIPT;
     delete synthetic.GITHUB_SHA;
   }
-  const settings = previewConnection
+  if (rehearsalStage) process.env.ALCHEMY_STAGE = rehearsalStage;
+  const settings = rehearsalStage
+    ? {
+        ...(await load("scripts/release-preview/rehearsal-environment.ts")).rehearsalReleaseEnvironment({
+          ...synthetic,
+          ALCHEMY_STAGE: rehearsalStage,
+          TEST_STAGE_DOMAIN: "preview.fixture.invalid",
+          PREVIEW_STATE_KEY: "a".repeat(64),
+          PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
+          PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
+        }),
+        PREVIEW_AUTH_SEED_OUTPUT: "fixture-auth-seed.json",
+        TEST_STAGE_EXPIRES_AT: "4070908800000",
+      }
+    : previewConnection
     ? {
         ...previewEnvironment(1, {
           ...synthetic,
@@ -83,7 +103,8 @@ try {
       candidateProof.startsWith("retirement-") ||
       candidateProof.startsWith("release-state-") ||
       candidateProof.startsWith("forward-state-") ||
-      candidateProof.startsWith("entry-")
+      candidateProof.startsWith("entry-") ||
+      rehearsalStage
     ) {
       const { randomUUID } = await import("node:crypto");
       process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
@@ -117,10 +138,15 @@ try {
       "scripts/release-barrier/candidate-failure.ts",
     );
     try {
+      // A rehearsal stage declares no apex site and no app pages; offering them must refuse.
+      const roles =
+        candidateProof === "rehearsal-ready"
+          ? baselineRoles.filter((role) => role !== "PublicSite" && role !== "AppPages")
+          : baselineRoles;
       const rows = await candidateScriptSettings(
-        baselineRoles.map((role) => ({
+        roles.map((role) => ({
           role,
-          scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
+          scriptName: `basalt-${role.toLowerCase()}-${rehearsalStage ?? "production"}-fixture`,
         })),
         settings,
         retirement?.fetch,

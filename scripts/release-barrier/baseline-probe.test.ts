@@ -102,3 +102,31 @@ test("live probe runs only on internal PRs and precedes automatic and manual rel
   const deploy = workflow("deploy");
   assert.ok(deploy.indexOf("baseline-probe-entry.ts") < deploy.indexOf("release.ts deploy "));
 });
+
+test("a stage's inventory is exactly its own Workers, and production never takes a rehearsal's", () => {
+  const stage = (stack: string, name: string) =>
+    baselineRoles.map((role) => ({
+      id: `basalt-${role.toLowerCase()}-${name}`,
+      tags: [`alchemy:stack:${stack}`, `alchemy:stage:${name}`, `alchemy:id:${role}`],
+    }));
+  const rehearsal = stage("basalt-rehearsal", "test-rehearsal-1");
+  const other = stage("basalt-rehearsal", "test-rehearsal-2");
+  const target = { stack: "basalt-rehearsal", stage: "test-rehearsal-1" };
+  const names = (workers: { scriptName: string }[]) => workers.map((worker) => worker.scriptName);
+  assert.deepEqual(names(baselineInventory([...scripts, ...rehearsal, ...other])), scripts.map((script) => script.id));
+  assert.deepEqual(names(baselineInventory([...scripts, ...rehearsal, ...other], target)), rehearsal.map((script) => script.id));
+  // A rehearsal stage may lack roles its declaration leaves out, never taking another stage's.
+  const partial = rehearsal.filter((script) => !script.tags.includes("alchemy:id:PublicSite"));
+  assert.deepEqual(names(baselineInventory([...scripts, ...partial, ...other], target)), partial.map((script) => script.id));
+  for (const inventory of [scripts, other, stage("basalt", "test-rehearsal-1")])
+    assert.deepEqual(baselineInventory(inventory, target), []);
+  // Production refuses every missing role; it never takes a rehearsal's Workers.
+  for (const inventory of [rehearsal, stage("basalt-rehearsal", "production")])
+    assert.throws(
+      () => baselineInventory(inventory),
+      (error: { refusals?: { reason: string }[]; workers?: unknown[] }) =>
+        error.workers?.length === 0 &&
+        error.refusals?.length === baselineRoles.length &&
+        error.refusals.every(({ reason }) => reason.startsWith("missing-worker")),
+    );
+});

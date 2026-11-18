@@ -1,7 +1,9 @@
 import { baselineRoles, BaselineInventoryError, type BaselineProbeRow } from "./baseline-probe.ts";
-import { reportBaselineProbe } from "./baseline-probe-report.ts";
+import { baselineProbeOutput, reportBaselineProbe } from "./baseline-probe-report.ts";
 import { probeWorkerSettings } from "./settings-probe.ts";
-import { deployEnvironment } from "../environment.ts";
+import { fileURLToPath } from "node:url";
+import { releaseEnvironment } from "../release-environment.ts";
+import { rehearsalJobCandidate, releaseTarget } from "./release-stage.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 import {
   CandidateSettingsReadFailure,
@@ -13,7 +15,7 @@ if (process.env.GITHUB_ACTIONS !== "true")
   throw new Error("The live baseline probe runs only in GitHub Actions");
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-const output = ".local/baseline-probe.json";
+const output = baselineProbeOutput;
 const start = performance.now();
 let rows: BaselineProbeRow[];
 try {
@@ -24,9 +26,16 @@ try {
         reason: `missing-release-credentials; ${[!accountId ? "CLOUDFLARE_ACCOUNT_ID" : "", !apiToken ? "CLOUDFLARE_API_TOKEN" : ""].filter(Boolean).join(", ")}`,
       },
     ]);
+  // A rehearsal probes only its own stage, from its rehearsal job, as its release will read it.
+  // An unknown stage refuses here, before the inventory is listed.
+  if (
+    releaseTarget().rehearsal &&
+    !rehearsalJobCandidate(process.env, fileURLToPath(new URL("../../", import.meta.url)))
+  )
+    throw new BaselineInventoryError([{ role: "(context)", reason: "untrusted-rehearsal-context" }]);
   let environment;
   try {
-    environment = deployEnvironment();
+    environment = releaseEnvironment();
   } catch (error) {
     throw candidateReadFailure(error, "environment");
   }

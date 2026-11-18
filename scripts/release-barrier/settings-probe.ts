@@ -16,6 +16,7 @@ import {
   baselineInventory,
   type BaselineProbeRow,
 } from "./baseline-probe.ts";
+import { releaseTarget } from "./release-stage.ts";
 import {
   candidateScriptSettings,
   candidateSettingsWithRetirements,
@@ -138,11 +139,13 @@ export async function probeWorkerSettings(
     }
   };
   const program = Effect.gen(function* () {
+    // Resolved first, so an unknown stage refuses with nothing read.
+    const stage = releaseTarget(environment);
     const inventory = yield* Workers.listScripts({ accountId });
     let workers;
     let inventoryRefusals: BaselineInventoryError["refusals"] = [];
     try {
-      workers = baselineInventory(inventory.result);
+      workers = baselineInventory(inventory.result, stage);
     } catch (error) {
       if (!(error instanceof BaselineInventoryError)) throw error;
       workers = error.workers;

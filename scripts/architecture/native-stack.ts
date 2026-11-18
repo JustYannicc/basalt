@@ -29,7 +29,9 @@ type CandidateProof =
   | "entry-retirement-v7"
   | "entry-retirement-v8"
   | "entry-retirement-unauthorized"
-  | "entry-retirement-malformed";
+  | "entry-retirement-malformed"
+  | "rehearsal-ready"
+  | "rehearsal-all-roles";
 
 export interface StackResource {
   id: string;

@@ -8,7 +8,7 @@ import { safeProviderFailure } from "./operation-failure.ts";
 import { digest } from "./manifest.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { ServingFailure } from "./serving-failure.ts";
-import { releaseTarget } from "./release-stage.ts";
+import { rehearsalJobCandidate, releaseTarget } from "./release-stage.ts";
 
 export type PreflightRefusal = {
   reason: string;
@@ -157,15 +157,8 @@ export type PreflightMode = "check" | "release";
 export function assertPreflightContext(env: NodeJS.ProcessEnv, event: unknown, root: string) {
   // A rehearsal reads its own disposable stage from the rehearsal job, for the checked-out candidate.
   if (releaseTarget(env).rehearsal) {
-    const candidate = env.BASALT_RELEASE_CANDIDATE ?? "";
-    if (
-      env.GITHUB_ACTIONS !== "true" ||
-      env.GITHUB_REPOSITORY !== "JustYannicc/basalt" ||
-      env.GITHUB_JOB !== "rehearsal" ||
-      !/^[a-f0-9]{40}$/u.test(candidate) ||
-      execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim() !== candidate
-    )
-      throw new BarrierRefusal("release-preflight-untrusted-context", "PoolWorker");
+    const candidate = rehearsalJobCandidate(env, root);
+    if (!candidate) throw new BarrierRefusal("release-preflight-untrusted-context", "PoolWorker");
     return { candidate, mode: "check" as const };
   }
   if (env.GITHUB_EVENT_NAME === "pull_request") {

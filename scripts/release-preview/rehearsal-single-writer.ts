@@ -1,5 +1,15 @@
 import type { ReleaseOutcome, ReleaseRequest } from "./rehearsal-plan.ts";
 import type { ShapePhase } from "./rehearsal-worker-shape.ts";
+import { baselineRoles } from "../release-barrier/baseline-probe.ts";
+
+export type SourceEdit = { path: string; from: string; to: string };
+
+/** One local class PoolWorker's declared class contract does not name, beside its own. */
+export const undeclaredPoolClass: SourceEdit = {
+  path: "src/pool/deployment.ts",
+  from: "      PoolContainer: image,\n",
+  to: '      PoolContainer: image,\n      RehearsalUndeclared: Cloudflare.DurableObject("RehearsalUndeclared", { className: "RehearsalUndeclared" }),\n',
+};
 
 /**
  * One class path change rehearsed from production's PoolWorker shape. The baseline deploys the way
@@ -10,6 +20,11 @@ export interface SingleWriterHooks {
   deployBaseline(): Promise<void>;
   /** Reads PoolWorker back and refuses unless it has the shape this phase expects. */
   shape(phase: ShapePhase, label: string): Promise<void>;
+  /**
+   * The backup job's read-only baseline probe, from the candidate, of the stage's own Workers;
+   * returns its rows. A source edit applies to the candidate for this probe only, never deployed.
+   */
+  baselineProbe(edit?: SourceEdit): Promise<unknown>;
   /** The candidate's read-only release preflight against the seeded stage; returns its report. */
   preflight(): Promise<unknown>;
   seedPools(): Promise<{ cleanPool: string }>;
@@ -40,6 +55,9 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
     deploy: async () => {
       await step("0-seed-plain-baseline", hooks.deployBaseline);
       await step("0-shape-untagged", () => hooks.shape("baseline", "baseline"));
+      await step("0-baseline-probe", async () => requireBaselineProbe(await hooks.baselineProbe()));
+      await step("0-baseline-probe-undeclared-class", async () =>
+        requireUndeclaredClassRefused(await hooks.baselineProbe(undeclaredPoolClass)));
       await step("0-preflight-runtime-bootstrap", async () => requireRuntimeBootstrap(await hooks.preflight()));
     },
     seed: async () => {
@@ -63,6 +81,36 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
       return hooks.serve();
     },
   };
+}
+
+/**
+ * Release-main reads every Worker baseline before its backup, with the candidate's own settings
+ * projection; one refused row stops the release there. The probe itself matches the stage's
+ * declared roles to its inventory; here every row must pass, once per role, PoolWorker included.
+ */
+export function requireBaselineProbe(rows: unknown) {
+  const list = Array.isArray(rows) ? (rows as { role?: unknown; ok?: unknown; reason?: unknown }[]) : [];
+  const failed = list.filter((row) => row.ok !== true);
+  if (failed.length)
+    throw new Error(`The baseline probe refused: ${failed.map((row) => `${String(row.role)}: ${String(row.reason)}`).join("; ").slice(0, 600)}`);
+  const roles = list.map((row) => row.role);
+  const known: readonly unknown[] = baselineRoles;
+  if (!roles.includes("PoolWorker") || new Set(roles).size !== roles.length || roles.some((role) => !known.includes(role)))
+    throw new Error("The baseline probe did not read PoolWorker and each Worker role once");
+}
+
+/**
+ * The negative control: the same probe, with PoolWorker declaring a class its contract does not
+ * name, must refuse PoolWorker for its classes and pass every other Worker.
+ */
+export function requireUndeclaredClassRefused(rows: unknown) {
+  const list = Array.isArray(rows) ? (rows as { role?: unknown; ok?: unknown; reason?: unknown }[]) : [];
+  const pool = list.filter((row) => row.role === "PoolWorker");
+  if (pool.length !== 1 || pool[0]!.ok !== false)
+    throw new Error("The baseline probe did not refuse an undeclared PoolWorker class");
+  if (pool[0]!.reason !== "durable-object-class-drift" && pool[0]!.reason !== "declared-class-binding-mismatch")
+    throw new Error(`The baseline probe refused the undeclared class for another reason: ${String(pool[0]!.reason)}`);
+  requireBaselineProbe([...list.filter((row) => row.role !== "PoolWorker"), { role: "PoolWorker", ok: true }]);
 }
 
 /**

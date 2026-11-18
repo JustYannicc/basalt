@@ -28,6 +28,19 @@ test("a probe-scoped attempt reads all 20 real candidate declarations without de
   assert.deepEqual([...result.roles].sort(), [...baselineRoles].sort());
 });
 
+test("a rehearsal stage's real declarations are exactly the baseline roles minus the apex site and app pages", () => {
+  const ready = discoverCandidateSettings(process.cwd(), "rehearsal-ready") as { ok?: boolean; roles?: string[] };
+  assert.equal(ready.ok, true, JSON.stringify(ready));
+  assert.deepEqual(
+    [...ready.roles!].sort(),
+    baselineRoles.filter((role) => role !== "PublicSite" && role !== "AppPages").sort(),
+  );
+  // Inventory and declarations must match exactly: a role the stage does not declare refuses.
+  const all = discoverCandidateSettings(process.cwd(), "rehearsal-all-roles") as { ok?: boolean; failure?: { stage?: string } };
+  assert.equal(all.ok, false, JSON.stringify(all));
+  assert.equal(all.failure?.stage, "projection");
+});
+
 test("candidate errors retain only closed tags, stages and known input names", () => {
   for (const error of [new Error("private-fixture bearer token"), { _tag: "private-fixture" }]) {
     const safe = candidateReadFailure(error, "evaluate");

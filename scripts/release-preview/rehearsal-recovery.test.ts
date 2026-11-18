@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ReleaseOutcome } from "./rehearsal-plan.ts";
 import { requireAbortedPrior, resumeSteps, rollbackSteps, type RecoveryHooks } from "./rehearsal-recovery.ts";
+import { baselineRoles } from "../release-barrier/baseline-probe.ts";
 
 function world(outcomes: Record<string, ReleaseOutcome>, overrides: Partial<RecoveryHooks> = {}) {
   const events: string[] = [];
   const hooks: RecoveryHooks = {
     deployBaseline: async () => void events.push("baseline"),
     shape: async (phase, label, selection) => void events.push(`shape:${phase}:${label}:${selection}`),
+    baselineProbe: async (edit) => (
+      events.push(edit ? "baseline-probe-undeclared" : "baseline-probe"),
+      baselineRoles.map((role) => ({ role, ...(edit && role === "PoolWorker" ? { ok: false, reason: "durable-object-class-drift" } : { ok: true }) }))
+    ),
     preflight: async () => (events.push("preflight"), { mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} }, steps: [{ step: "release-journal", summary: { prior: "prior-settled-or-aborted", baseline: "journal-source" } }] }),
     seedPools: async () => (events.push("seed"), { cleanPool: "clean" }),
     release: async ({ stop, commit }) => {
@@ -34,7 +39,7 @@ test("resume re-dispatches the same candidate from each bind point, aborts the p
   const { events, hooks } = world({ complete: { ok: false, reason: "runtime-release-candidate-aborted-or-pending" } });
   const steps = resumeSteps(hooks);
   assert.equal(await run(steps), "served");
-  assert.deepEqual(events.slice(3), [
+  assert.deepEqual(events.slice(5), [
     "release:after-bootstrap-blue",
     "shape:classes:after-bootstrap-blue:true",
     "release:after-bind-green",
@@ -68,7 +73,7 @@ test("rollback refuses recovery to the pre-expansion version, completes the expa
     },
   });
   assert.equal(await run(rollbackSteps(hooks)), "served");
-  assert.deepEqual(events.slice(3), [
+  assert.deepEqual(events.slice(5), [
     "release:after-controller",
     "shape:classes:after-classes:false",
     "recover:false",

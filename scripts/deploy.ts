@@ -1,17 +1,14 @@
 import { fileURLToPath } from "node:url";
-import { connectorWarnings, deployEnvironment } from "./environment.ts";
+import { connectorWarnings } from "./environment.ts";
 import { appHosting } from "../brand.ts";
 import { deployInPhases } from "./release-phases/deploy.ts";
-import { releaseTarget } from "./release-barrier/release-stage.ts";
-import { rehearsalReleaseEnvironment } from "./release-preview/rehearsal-environment.ts";
+import { releaseEnvironment } from "./release-environment.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true") {
   throw new Error("Production deployment runs only in GitHub Actions");
 }
 // A rehearsal releases its disposable stage with the same phases; an unknown stage refuses here.
-const environment = releaseTarget().rehearsal
-  ? rehearsalReleaseEnvironment(process.env)
-  : deployEnvironment();
+const environment = releaseEnvironment();
 if (!environment.SENTRY_DSN)
   console.warn("SENTRY_DSN is unset; feedback, error reporting and trace export are disabled.");
 if (!environment.POSTHOG_PROJECT_KEY)

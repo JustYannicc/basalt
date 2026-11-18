@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StageSubject } from "../preview/subject.ts";
 import { planStageVariant, redeployStage, withStageBuild } from "../preview/lifecycle.ts";
 import type { RehearsalHooks } from "./rehearsal-plan.ts";
 import type { RecoveryHooks } from "./rehearsal-recovery.ts";
-import type { SingleWriterHooks } from "./rehearsal-single-writer.ts";
+import type { SingleWriterHooks, SourceEdit } from "./rehearsal-single-writer.ts";
 import type { ShapePhase } from "./rehearsal-worker-shape.ts";
+import { rehearsalReleaseEnvironment } from "./rehearsal-environment.ts";
+import { baselineProbeOutput } from "../release-barrier/baseline-probe-report.ts";
 
 type Operation = (
   label: string,
@@ -25,8 +28,8 @@ export type SingleWriterContext = {
   privateRoot: string;
   operation: Operation;
   deployEnvironment: NodeJS.ProcessEnv;
-  /** The stage's keys and the rehearsal writer's identity for the candidate now being released. */
-  candidateEnvironment(): NodeJS.ProcessEnv;
+  /** The rehearsal writer's identity for the candidate now being released, as `deploy.ts` receives it. */
+  writerEnvironment(): NodeJS.ProcessEnv;
   /** The candidate commit now in the candidate checkout, and a way to move to the next one. */
   current(): string;
   advance(commit: string): void;
@@ -41,7 +44,9 @@ async function keep(root: string, name: string, text: string) {
 }
 
 export function singleWriterHooks(context: SingleWriterContext) {
-  const { root, subject, privateRoot, operation, deployEnvironment, candidateEnvironment, hooks } = context;
+  const { root, subject, privateRoot, operation, deployEnvironment, hooks } = context;
+  /** The stage's own keys with that identity, for operations on the candidate. */
+  const candidateEnvironment = () => rehearsalReleaseEnvironment(context.writerEnvironment());
   const shapeRecord = join(privateRoot, "worker-shape.json");
   const shape = async (phase: ShapePhase, label: string, selection = false) => {
     await operation(`shape-${label}`, root, "scripts/release-preview/rehearsal-worker-shape.ts", [phase, shapeRecord], {
@@ -64,6 +69,33 @@ export function singleWriterHooks(context: SingleWriterContext) {
     await keep(root, `preflight-report-${context.current().slice(0, 12)}.json`, report);
     return JSON.parse(report) as unknown;
   };
+  const baselineProbe = async (edit?: SourceEdit) => {
+    // Release-main's read before its backup: the candidate's entry, with the stage's brand in place
+    // so its zone read is the stage's. It derives the stage's environment itself, as deploy.ts does.
+    const output = join(root, baselineProbeOutput);
+    await rm(output, { force: true });
+    let exit: unknown;
+    const path = edit && join(root, edit.path);
+    const original = path && (await readFile(path, "utf8"));
+    if (edit && original!.split(edit.from).length !== 2) throw new Error("The baseline probe's source seam changed");
+    await withStageBuild(root, subject, deployEnvironment, async () => {
+      if (edit) await writeFile(path!, original!.replace(edit.from, edit.to));
+      try {
+        // A refused row also exits non-zero; the rows say why, so only a missing report is fatal here.
+        await operation(edit ? "baseline-probe-variant" : "baseline-probe", root, "scripts/release-barrier/baseline-probe-entry.ts", [], {
+          ...context.writerEnvironment(),
+          BASALT_RELEASE_ATTEMPT: randomUUID(),
+        }, 5, "bun").catch((error: unknown) => { exit = error; });
+      } finally {
+        if (edit) await writeFile(path!, original!);
+      }
+    }, undefined, { build: false });
+    const rows = await readFile(output, "utf8").catch(() => {
+      throw new Error(`The baseline probe wrote no report: ${String(exit ?? "it exited cleanly")}`);
+    });
+    await keep(root, `baseline-probe-${edit ? "undeclared-class-" : ""}${context.current().slice(0, 12)}.json`, rows);
+    return JSON.parse(rows) as unknown;
+  };
   /** Runs the release barrier's entry for the current candidate with the stage's brand in place. */
   const entry = async (label: string, args: string[]) => {
     await rm(join(receipts(root), "failure.json"), { force: true });
@@ -83,6 +115,7 @@ export function singleWriterHooks(context: SingleWriterContext) {
     release: hooks.release,
     serve: hooks.serve,
     shape: (phase, label) => shape(phase, label),
+    baselineProbe,
     preflight,
     // The single-writer change binds both fleet classes always; dropping that must show the hazard.
     planWithoutFleetBindings: () =>
@@ -100,6 +133,7 @@ export function singleWriterHooks(context: SingleWriterContext) {
     seedPools: hooks.seedPools,
     serve: hooks.serve,
     shape,
+    baselineProbe,
     preflight,
     release: ({ cleanPool, stop, commit }) => hooks.release({ candidate: "candidate", cleanPool, stop, commit }),
     abort: async () => {

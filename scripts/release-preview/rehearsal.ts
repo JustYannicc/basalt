@@ -80,12 +80,14 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       signal: label === "destroy" || label === "verify-absence" ? undefined : controller.signal,
     });
   let access: RehearsalPoolAccess | undefined;
-  /** The stage's own keys and the rehearsal writer's identity, for operations on the candidate. */
-  const candidateEnvironment = () => {
+  /** The rehearsal writer's identity for the candidate, before the stage's own keys are derived. */
+  const writerEnvironment = () => {
     const writer: NodeJS.ProcessEnv = { ...deployEnvironment, ALCHEMY_STAGE: stage, BASALT_RELEASE_CANDIDATE: current };
     for (const name of writerInputs) if (source[name]) writer[name] = source[name];
-    return rehearsalReleaseEnvironment(writer);
+    return writer;
   };
+  /** The stage's own keys and the rehearsal writer's identity, for operations on the candidate. */
+  const candidateEnvironment = () => rehearsalReleaseEnvironment(writerEnvironment());
   let cleanPool = "";
   let model = "";
   let emptyPools: readonly string[] = [];
@@ -238,7 +240,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       },
     };
     const singleWriter = singleWriterHooks({
-      root, subject, privateRoot, operation, deployEnvironment, candidateEnvironment, hooks,
+      root, subject, privateRoot, operation, deployEnvironment, writerEnvironment, hooks,
       current: () => current,
       advance: (commit) => {
         current = commit;

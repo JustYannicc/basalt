@@ -1,7 +1,7 @@
 import type { RehearsalStop } from "../release-barrier/release-stage.ts";
 import type { ReleaseOutcome } from "./rehearsal-plan.ts";
 import type { ShapePhase } from "./rehearsal-worker-shape.ts";
-import { requireReadOnlyPreflight } from "./rehearsal-single-writer.ts";
+import { requireBaselineProbe, requireReadOnlyPreflight, requireUndeclaredClassRefused, undeclaredPoolClass, type SourceEdit } from "./rehearsal-single-writer.ts";
 
 /**
  * Recovery from every point a single-writer release can stop at. A stop after bootstrap or bind
@@ -11,6 +11,7 @@ import { requireReadOnlyPreflight } from "./rehearsal-single-writer.ts";
 export interface RecoveryHooks {
   deployBaseline(): Promise<void>;
   shape(phase: ShapePhase, label: string, selection: boolean): Promise<void>;
+  baselineProbe(edit?: SourceEdit): Promise<unknown>;
   preflight(): Promise<unknown>;
   seedPools(): Promise<{ cleanPool: string }>;
   release(input: { cleanPool: string; stop?: RehearsalStop; commit?: string }): Promise<ReleaseOutcome>;
@@ -42,6 +43,9 @@ function recoverySteps(scenario: RecoveryRecord["scenario"], hooks: RecoveryHook
     deploy: async () => {
       await step("0-seed-plain-baseline", hooks.deployBaseline);
       await step("0-shape-untagged", () => hooks.shape("baseline", "baseline", false));
+      await step("0-baseline-probe", async () => requireBaselineProbe(await hooks.baselineProbe()));
+      await step("0-baseline-probe-undeclared-class", async () =>
+        requireUndeclaredClassRefused(await hooks.baselineProbe(undeclaredPoolClass)));
     },
     seed: async () => {
       ({ cleanPool } = await hooks.seedPools());

@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { singleWriterSteps, type SingleWriterHooks } from "./rehearsal-single-writer.ts";
+import { requireBaselineProbe, requireUndeclaredClassRefused, singleWriterSteps, type SingleWriterHooks } from "./rehearsal-single-writer.ts";
+import { baselineRoles } from "../release-barrier/baseline-probe.ts";
+
+const passed = baselineRoles.map((role) => ({ role, ok: true }));
 
 function hooks(overrides: Partial<SingleWriterHooks> = {}) {
   const events: string[] = [];
   const value: SingleWriterHooks = {
     deployBaseline: async () => void events.push("baseline"),
     shape: async (phase, label) => void events.push(`shape:${phase}:${label}`),
+    baselineProbe: async (edit) =>
+      edit
+        ? (events.push("baseline-probe-undeclared"), passed.map((row) => (row.role === "PoolWorker" ? { ...row, ok: false, reason: "durable-object-class-drift" } : row)))
+        : (events.push("baseline-probe"), passed),
     preflight: async () => (events.push("preflight"), {
       mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} },
       steps: [{ step: "runtime-bootstrap", status: "pass", summary: { colors: [{ color: "blue", source: "declared" }, { color: "green", source: "declared" }], migrationTag: "untagged" } }],
@@ -30,6 +37,8 @@ test("the plan's steps run in order: untagged seed, release, then two plain depl
   assert.deepEqual(events, [
     "baseline",
     "shape:baseline:baseline",
+    "baseline-probe",
+    "baseline-probe-undeclared",
     "preflight",
     "seed",
     "release:candidate:clean",
@@ -41,7 +50,7 @@ test("the plan's steps run in order: untagged seed, release, then two plain depl
     "negative",
     "serve",
   ]);
-  assert.equal(steps.record.steps.length, 11);
+  assert.equal(steps.record.steps.length, 13);
   assert.equal(steps.record.negativeControl?.length, 2);
 });
 
@@ -93,4 +102,30 @@ test("the negative control refuses a plan that does not delete both fleet classe
   );
   for (const plan of ["~ PoolWorker update", "- PoolRuntimeBlue delete", "PoolRuntimeBlue PoolRuntimeGreen unchanged"])
     assert.throws(() => requireDeletedFleetClasses(plan), /does not delete/);
+});
+
+test("a refused or partial baseline probe stops the rehearsal before any release", async () => {
+  requireBaselineProbe(passed);
+  const refused = passed.map((row) => (row.role === "PoolWorker" ? { ...row, ok: false, reason: "declared-class-drift" } : row));
+  assert.throws(() => requireBaselineProbe(refused), /PoolWorker: declared-class-drift/);
+  requireBaselineProbe(passed.filter((row) => row.role !== "PublicSite" && row.role !== "AppPages"));
+  assert.throws(() => requireBaselineProbe(passed.filter((row) => row.role !== "PoolWorker")), /PoolWorker/);
+  assert.throws(() => requireBaselineProbe([...passed, passed[0]]), /once/);
+  assert.throws(() => requireBaselineProbe([...passed, { role: "(inventory)", ok: false, reason: "unexpected-worker" }]), /unexpected-worker/);
+  assert.throws(() => requireBaselineProbe({}), /PoolWorker/);
+  const { events, value } = hooks({ baselineProbe: async () => refused });
+  await assert.rejects(singleWriterSteps(value).deploy(), /baseline probe refused/);
+  assert.deepEqual(events, ["baseline", "shape:baseline:baseline"]);
+});
+
+test("the undeclared-class probe must refuse PoolWorker for its classes and pass every other Worker", () => {
+  const refused = (reason: string) => passed.map((row) => (row.role === "PoolWorker" ? { ...row, ok: false, reason } : row));
+  requireUndeclaredClassRefused(refused("durable-object-class-drift"));
+  requireUndeclaredClassRefused(refused("declared-class-binding-mismatch"));
+  assert.throws(() => requireUndeclaredClassRefused(passed), /did not refuse/);
+  assert.throws(() => requireUndeclaredClassRefused(refused("script-settings-drift")), /another reason/);
+  assert.throws(
+    () => requireUndeclaredClassRefused(refused("durable-object-class-drift").map((row) => (row.role === "Api" ? { ...row, ok: false, reason: "x" } : row))),
+    /Api: x/,
+  );
 });

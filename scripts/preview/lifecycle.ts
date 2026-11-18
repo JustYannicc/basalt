@@ -225,6 +225,34 @@ function seedIds(
   return { organizationId, poolAppId };
 }
 
+/**
+ * The stage's host and zone in place of production's, inside the `brand` object only: `appHosting`
+ * has its own `zone`, which stays production's.
+ */
+export function previewBrandSource(original: string, host: string, domain: string): string {
+  const start = original.indexOf("export const brand = {\n");
+  const end = start < 0 ? -1 : original.indexOf("\n} as const;", start);
+  if (end < 0) throw new Error("The preview brand build seam changed");
+  const block = original.slice(start, end);
+  const hostPattern = /(^  host: )"[^"]+"(,?$)/m;
+  const zonePattern = /(^  zone: )"[^"]+"(,?$)/m;
+  const hostMatches = block.match(new RegExp(hostPattern.source, "gm")) ?? [];
+  const zoneMatches = block.match(new RegExp(zonePattern.source, "gm")) ?? [];
+  if (hostMatches.length !== 1 || zoneMatches.length !== 1)
+    throw new Error("The preview brand build seam changed");
+  const changed = block
+    .replace(
+      hostPattern,
+      (_match, prefix: string, suffix: string) => prefix + JSON.stringify(host) + suffix,
+    )
+    .replace(
+      zonePattern,
+      (_match, prefix: string, suffix: string) => prefix + JSON.stringify(domain) + suffix,
+    );
+  if (changed === block) throw new Error("The preview brand build seam did not change");
+  return original.slice(0, start) + changed + original.slice(end);
+}
+
 async function materializePreviewBrand(
   root: string,
   identity: PreviewIdentity,
@@ -236,22 +264,7 @@ async function materializePreviewBrand(
   const host = new URL(identity.origin).hostname;
   const hostPrefix = `app.${stageNames(identitySubject(identity)).slug}.`;
   const domain = host.startsWith(hostPrefix) ? host.slice(hostPrefix.length) : host;
-  const hostPattern = /(^  host: )"[^"]+"(,?$)/m;
-  const zonePattern = /(^  zone: )"[^"]+"(,?$)/m;
-  const hostMatches = original.match(new RegExp(hostPattern.source, "gm")) ?? [];
-  const zoneMatches = original.match(new RegExp(zonePattern.source, "gm")) ?? [];
-  if (hostMatches.length !== 1 || zoneMatches.length !== 1)
-    throw new Error("The preview brand build seam changed");
-  const changed = original
-    .replace(
-      hostPattern,
-      (_match, prefix: string, suffix: string) => prefix + JSON.stringify(host) + suffix,
-    )
-    .replace(
-      zonePattern,
-      (_match, prefix: string, suffix: string) => prefix + JSON.stringify(domain) + suffix,
-    );
-  if (changed === original) throw new Error("The preview brand build seam did not change");
+  const changed = previewBrandSource(original, host, domain);
   await writeFile(path, changed, { mode: metadata.mode & 0o777 });
   let failed = false;
   let failure: unknown;

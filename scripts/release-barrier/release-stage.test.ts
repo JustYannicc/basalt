@@ -4,12 +4,14 @@ import {
   explicitReleaseTarget,
   productionRelease,
   rehearsalDrainCap,
+  rehearsalJobCandidate,
   rehearsalStop,
   releaseEntryTarget,
   releaseTarget,
   stackNameForStage,
 } from "./release-stage.ts";
 import { decodeRuntimeHandoffManifest } from "./runtime-slot-manifest.ts";
+import { baselineRoles } from "./baseline-probe.ts";
 import { runtimeProofFixture } from "./test/runtime-proof-fixture.ts";
 import { provisioningFixture } from "./test/provisioning-fixtures.ts";
 import { decodeProvisioningManifest } from "./provisioning-contract.ts";
@@ -256,4 +258,40 @@ test("the preflight trusts a rehearsal only from the rehearsal job, for the chec
     assert.throws(() => assertPreflightContext({ ...env, ...change }, undefined, process.cwd()), refusal("release-preflight-untrusted-context"));
   // Production's own contexts are untouched: without a stage it still demands the trusted main dispatch.
   assert.throws(() => assertPreflightContext({ ...env, ALCHEMY_STAGE: undefined }, undefined, process.cwd()), refusal("release-preflight-untrusted-context"));
+});
+
+test("only the rehearsal job reads a rehearsal stage, and a production context never does", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const env = {
+    ALCHEMY_STAGE: rehearsal,
+    GITHUB_ACTIONS: "true",
+    GITHUB_REPOSITORY: "JustYannicc/basalt",
+    GITHUB_JOB: "rehearsal",
+    BASALT_RELEASE_CANDIDATE: head,
+  };
+  assert.equal(rehearsalJobCandidate(env, process.cwd()), head);
+  for (const change of [{ ALCHEMY_STAGE: undefined }, { ALCHEMY_STAGE: "production" }, { GITHUB_JOB: "backup" }, { BASALT_RELEASE_CANDIDATE: "a".repeat(40) }])
+    assert.equal(rehearsalJobCandidate({ ...env, ...change }, process.cwd()), undefined);
+});
+
+test("the baseline probe refuses a rehearsal stage outside the rehearsal job before it lists anything", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = mkdtempSync(join(tmpdir(), "baseline-probe-stage-"));
+  try {
+    const entry = new URL("./baseline-probe-entry.ts", import.meta.url).pathname;
+    const env = {
+      PATH: process.env.PATH, GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "JustYannicc/basalt", GITHUB_JOB: "release",
+      ALCHEMY_STAGE: rehearsal, CLOUDFLARE_ACCOUNT_ID: "fixture", CLOUDFLARE_API_TOKEN: "fixture",
+    };
+    assert.throws(() => execFileSync(process.execPath, [entry], { cwd: directory, env, stdio: "pipe", timeout: 30_000 }));
+    const rows = JSON.parse(readFileSync(join(directory, ".local", "baseline-probe.json"), "utf8")) as { ok: boolean; reason: string; attempts: number }[];
+    assert.equal(rows.length, baselineRoles.length);
+    assert.ok(rows.every((row) => !row.ok && row.attempts === 0 && row.reason === "(context): untrusted-rehearsal-context"), JSON.stringify(rows[0]));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
