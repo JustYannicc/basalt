@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Cause, ConfigProvider, Effect, Exit, Logger } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { State } from "alchemy/State/State";
@@ -21,6 +22,7 @@ import {
   createRehearsalCounters,
 } from "./release-resume-rehearsal.ts";
 import { releaseStateStack } from "./release-state-stack.ts";
+import { loadDeclaredChanges } from "./declared-file.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { releaseTarget } from "./release-stage.ts";
 
@@ -47,6 +49,7 @@ try {
   if (!accountId || !apiToken || !encryptionKey)
     throw new BarrierRefusal("release-preflight-credentials-unavailable", "PoolWorker");
   const receipts = await releaseReceiptCodes(env.BASALT_PREFLIGHT_RECEIPTS);
+  const declarations = await loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url)));
   receiptCandidates = [...new Set(receipts.map((code) => code.candidate))];
   const guarded = countReadOnlyProbeFetch(accountId, counters, nativeFetch);
   globalThis.fetch = guarded;
@@ -65,6 +68,7 @@ try {
             directory,
             receipts,
             attempts: controllerAttempts,
+            declarations,
           });
         }).pipe(Effect.provideContext(compiled.services)),
       { stage: releaseTarget(env).stage },

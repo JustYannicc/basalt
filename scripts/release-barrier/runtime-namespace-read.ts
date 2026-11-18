@@ -42,45 +42,56 @@ export const runtimeNamespaceReader = (accountId: string, scriptName: string) =>
           include: "modules",
         }).pipe(Retry.none),
       );
+    // Classes are read from the version's own local bindings. A migrations-based Worker (the
+    // alchemy-owned shape) has no `exports` key at all; when one is present it must agree.
     const namespaces = (source: Workers.GetBetaWorkerVersionResponse) =>
       run(
         Effect.gen(function* () {
           const rows = yield* DurableObjects.listNamespaces
             .items({ accountId })
             .pipe(Stream.runCollect);
-          return Object.entries(readRuntimeExports(source.exports))
-            .flatMap(([className, exported]) => {
-              if (exported.type !== "durable-object") return [];
+          const exported =
+            source.exports === undefined ? undefined : readRuntimeExports(source.exports);
+          return (source.bindings ?? [])
+            .flatMap((binding) => {
+              if (
+                binding.type !== "durable_object_namespace" ||
+                !binding.className ||
+                (binding.scriptName && binding.scriptName !== scriptName)
+              )
+                return [];
+              const className = binding.className;
               const actual = rows.filter(
                 (row) => row.script === scriptName && row.class === className,
               );
-              const bindings = (source.bindings ?? []).filter(
-                (binding) =>
-                  binding.type === "durable_object_namespace" &&
-                  binding.className === className &&
-                  !binding.scriptName,
-              );
+              const declared = exported?.[className];
               if (
                 actual.length !== 1 ||
                 !actual[0]!.id ||
-                actual[0]!.useSqlite !== (exported.storage === "sqlite") ||
-                bindings.length !== 1
+                typeof actual[0]!.useSqlite !== "boolean" ||
+                (exported &&
+                  (!declared ||
+                    declared.type !== "durable-object" ||
+                    actual[0]!.useSqlite !== (declared.storage === "sqlite")))
               )
                 throw provisioningRefusal(
                   "provisioning-namespace-readback-incomplete",
                   `namespace.${className}`,
-                  "one-owned-namespace-and-local-binding",
-                  { namespaces: actual.length, bindings: bindings.length },
+                  "one-owned-namespace-per-local-binding",
+                  { namespaces: actual.length, exported: exported ? !!declared : null },
                 );
-              const binding = bindings[0]!;
-              if (binding.type !== "durable_object_namespace") return [];
               sameProvisioningValue(
                 `namespace.${className}.id`,
                 actual[0]!.id,
                 binding.namespaceId,
               );
               return [
-                { id: actual[0]!.id, className, binding: binding.name, storage: exported.storage },
+                {
+                  id: actual[0]!.id,
+                  className,
+                  binding: binding.name,
+                  storage: actual[0]!.useSqlite ? ("sqlite" as const) : ("legacy-kv" as const),
+                },
               ];
             })
             .sort((left, right) => left.className.localeCompare(right.className));
@@ -107,7 +118,6 @@ export const runtimeNamespaceReader = (accountId: string, scriptName: string) =>
           scriptName,
           ...current,
           namespaces: await namespaces(source),
-          exports: readRuntimeExports(source.exports),
           containers: source.containers ?? [],
         };
       },

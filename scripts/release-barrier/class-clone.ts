@@ -48,6 +48,7 @@ export function cloneRequest(
     limits: settings.limits ?? undefined,
     placement: settings.placement ?? undefined,
     usageModel: settings.usageModel ?? undefined,
+    containers: baseline.containers?.length ? [...baseline.containers] : undefined,
   });
 }
 
@@ -78,6 +79,7 @@ export function assertClone(
     placement: request.placement,
     usageModel: request.usageModel,
     bindings: saved.baseline.settings.bindings ?? [],
+    containers: saved.baseline.containers ?? [],
   };
   const observed = actual && {
     annotations: actual.annotations,
@@ -89,13 +91,15 @@ export function assertClone(
     placement: actual.placement,
     usageModel: actual.usageModel,
     bindings: actual.bindings ?? [],
+    containers: (actual.containers ?? []).map((container) => ({
+      className: container.className,
+    })),
   };
   if (
     !actual ||
     actual.urls.length ||
     actual.assets ||
     actual.cacheOptions ||
-    actual.containers?.length ||
     actual.exports ||
     actual.migrations ||
     (saved.clone.versionId && actual.id !== saved.clone.versionId) ||
@@ -125,7 +129,6 @@ export function assertClone(
           clone: {
             assets: null,
             cacheOptions: null,
-            containers: [],
             exports: null,
             migrations: null,
           },
@@ -134,7 +137,6 @@ export function assertClone(
           clone: {
             assets: actual?.assets ?? null,
             cacheOptions: actual?.cacheOptions ?? null,
-            containers: actual?.containers ?? [],
             exports: actual?.exports ?? null,
             migrations: actual?.migrations ?? null,
           },

@@ -19,9 +19,22 @@ export interface ClassApiOptions {
   deleteApplied?: boolean;
   numericClassPlacement?: boolean;
   classPlacementDrift?: boolean;
+  /** The active version's container linkage, which script settings never report. */
+  containers?: readonly string[];
+  /**
+   * PoolWorker's production shape: alchemy created it untagged, so its settings carry no
+   * `alchemy:migration-tag:` tag, its runtime has no migration tag, and migrations go untagged.
+   */
+  untagged?: boolean;
 }
+const untaggedTags = (expanded: boolean) => [
+  "alchemy:stack:fixture",
+  "alchemy:stage:production",
+  "alchemy:id:AppData",
+  ...(expanded ? ["alchemy:dos:DriveObject"] : []),
+];
 
-export function classRecoveryClient(events: string[]) {
+export function classRecoveryClient(events: string[], untagged = false) {
   let active = "accepted";
   return HttpClient.make((request, url) =>
     Effect.sync(() => {
@@ -53,7 +66,7 @@ export function classRecoveryClient(events: string[]) {
           };
         else if (url.pathname.endsWith("/settings"))
           result = {
-            tags: ["alchemy:migration-tag:2"],
+            tags: untagged ? untaggedTags(true) : ["alchemy:migration-tag:2"],
             bindings: [
               {
                 type: "durable_object_namespace",
@@ -79,18 +92,26 @@ export function classRecoveryClient(events: string[]) {
         else {
           assert.ok(url.pathname.includes("/versions/"));
           const version = url.pathname.split("/").at(-1);
+          // Untagged, a pre-migration version is told apart only by its missing class binding.
+          const before = untagged && version === "pre-expansion";
           result = {
             id: version,
             resources: {
-              bindings: [
-                {
-                  type: "durable_object_namespace",
-                  name: "DRIVE",
-                  namespace_id: "namespace-drive",
-                },
-              ],
-              script_runtime: { migration_tag: version === "pre-expansion" ? "1" : "2" },
-              script: { named_handlers: [{ name: "DriveObject", handlers: [] }] },
+              bindings: before
+                ? []
+                : [
+                    {
+                      type: "durable_object_namespace",
+                      name: "DRIVE",
+                      namespace_id: "namespace-drive",
+                    },
+                  ],
+              script_runtime: untagged
+                ? {}
+                : { migration_tag: version === "pre-expansion" ? "1" : "2" },
+              script: {
+                named_handlers: before ? [] : [{ name: "DriveObject", handlers: [] }],
+              },
             },
           };
         }
@@ -114,6 +135,8 @@ export function classApi(events: string[], options: ClassApiOptions) {
   let missingNamespace = false;
   let failedObservation = false;
   let expandedFiles: { name: string; type: string; bytes: Uint8Array }[] = [];
+  let expansionContainers: unknown;
+  let stagedContainers: unknown;
   const settings = (): ClassObservation["settings"] =>
     Schema.decodeUnknownSync(Schema.toType(Workers.GetScriptScriptAndVersionSettingResponse))({
       ...(options.numericClassPlacement ? { placement: { mode: "targeted", target: [39] } } : {}),
@@ -130,7 +153,9 @@ export function classApi(events: string[], options: ClassApiOptions) {
               },
             ]
           : [],
-      tags: [`alchemy:migration-tag:${expanded ? 2 : 1}`],
+      tags: options.untagged
+        ? untaggedTags(expanded)
+        : [`alchemy:migration-tag:${expanded ? 2 : 1}`],
       annotations: expanded ? { workersMessage: options.foreignMarker ? "foreign" : marker } : {},
     });
   const provider: ClassProvider = {
@@ -144,9 +169,12 @@ export function classApi(events: string[], options: ClassApiOptions) {
         accountId: target.accountId,
         scriptName: target.scriptName,
         versionId: expanded ? "expanded" : "previous",
-        migrationTag: expanded ? "2" : "1",
+        ...(options.untagged ? {} : { migrationTag: expanded ? "2" : "1" }),
         settings: settings(),
         previewUrlsEnabled: options.previewsEnabled ?? false,
+        ...(options.containers
+          ? { containers: options.containers.map((className) => ({ className })) }
+          : {}),
       };
     },
     content: async (_target, version) => ({
@@ -176,6 +204,7 @@ export function classApi(events: string[], options: ClassApiOptions) {
           (binding) => binding.type === "inherit" && binding.versionId === "previous",
         ),
       );
+      stagedContainers = request.containers;
       clone = Schema.decodeUnknownSync(Schema.toType(Workers.GetBetaWorkerVersionResponse))({
         ...request,
         id: "baseline-clone",
@@ -208,11 +237,13 @@ export function classApi(events: string[], options: ClassApiOptions) {
       assert.equal(expanded, false);
       assert.deepEqual(clone.urls, []);
       events.push("expand");
-      assert.deepEqual(request.metadata.migrations, {
-        oldTag: "1",
-        newTag: "2",
-        newSqliteClasses: ["DriveObject"],
-      });
+      // Exactly what alchemy sends: untagged on an untagged Worker, else its one-step tag bump.
+      assert.deepEqual(
+        request.metadata.migrations,
+        options.untagged
+          ? { newSqliteClasses: ["DriveObject"] }
+          : { oldTag: "1", newTag: "2", newSqliteClasses: ["DriveObject"] },
+      );
       assert.ok(Array.isArray(request.files));
       assert.ok(
         (await request.files[0]!.text()).startsWith(
@@ -232,9 +263,13 @@ export function classApi(events: string[], options: ClassApiOptions) {
         }),
       );
       marker = request.metadata.annotations?.workersMessage ?? "";
+      expansionContainers = request.metadata.containers;
       expanded = true;
       if (options.loseReply) throw new Error("Synthetic lost response");
-      return { startupTimeMs: options.startupTimeMs ?? 100, migrationTag: "2" };
+      return {
+        startupTimeMs: options.startupTimeMs ?? 100,
+        migrationTag: options.untagged ? null : "2",
+      };
     },
   };
   return {
@@ -249,6 +284,8 @@ export function classApi(events: string[], options: ClassApiOptions) {
       active: expanded ? "expanded" : "previous",
     }),
     expanded: () => expanded,
+    expansionContainers: () => expansionContainers,
+    cloneContainers: () => stagedContainers,
     emptyClassSource: () => emptySource,
     removeNamespace() {
       missingNamespace = true;
