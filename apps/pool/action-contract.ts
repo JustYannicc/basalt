@@ -19,8 +19,19 @@ export interface ResetCredits {
   readonly credits: readonly ResetCredit[];
 }
 
-export type ResetOutcome = "reset" | "already_redeemed" | "already_used" | "nothing_to_reset" | "no_credit"
-  | "not_limited" | "cooldown" | "ineligible" | "unavailable" | "rate_limited" | "auth_error" | "unknown";
+export type ResetOutcome =
+  | "reset"
+  | "already_redeemed"
+  | "already_used"
+  | "nothing_to_reset"
+  | "no_credit"
+  | "not_limited"
+  | "cooldown"
+  | "ineligible"
+  | "unavailable"
+  | "rate_limited"
+  | "auth_error"
+  | "unknown";
 
 export interface ResetResult {
   readonly requestId: string;
