@@ -64,7 +64,10 @@ async function runEntry(
   source: NodeJS.ProcessEnv,
   extra: NodeJS.ProcessEnv,
   outputs: string,
-  { policy = "cutover-classes", args = [] }: { policy?: string; args?: readonly string[] } = {},
+  {
+    policy = "cutover-classes",
+    args = [],
+  }: { policy?: string | null; args?: readonly string[] } = {},
 ) {
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
@@ -83,8 +86,12 @@ async function runEntry(
         "--config",
         "alchemy.run.ts",
         // The step's own allow-list, include and wire rules, exactly as production will run it.
-        ...(command === "plan" || command === "deploy"
+        ...((command === "plan" || command === "deploy") && policy
           ? ["--policy", join(root, `scripts/release/policies/${policy}.json`)]
+          : []),
+        // Without a policy, the cutover's include still scopes the plan to PoolWorker and its inputs.
+        ...((command === "plan" || command === "deploy") && !policy
+          ? ["--include", "PoolWorker"]
           : []),
         ...args,
       ],
@@ -97,6 +104,8 @@ async function runEntry(
           ...config.seed,
           ...extra,
           PREVIEW_AUTH_SEED_OUTPUT: seed,
+          // The entry keeps its private failure detail here (release-failure.txt).
+          BASALT_STAGE_OUTPUT_DIR: outputs,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -236,13 +245,31 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     requireBaselineShape(read);
     result.readBack = read;
   } else if (mode === "plan") {
-    result.plan = await runEntry(
-      "plan",
-      subject,
-      source,
-      { ...declaration.cutover, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) },
-      outputs,
-    );
+    const pin = await rootPin(hooks, subject, source);
+    const env = { ...declaration.cutover, POOL_ROOT_IMAGE: pin };
+    // R0: the cutover's own policy decides. A refusal is the result too; its detail stays private.
+    try {
+      result.plan = await runEntry("plan", subject, source, env, outputs);
+    } catch (error) {
+      result.planRefused = redactor(source)(error instanceof Error ? error.message : String(error));
+    }
+    // Then two plans in a row with nothing applied between them: rows that differ or stay
+    // non-noop across both are the never-settling ones. Each keeps its changedProps privately.
+    for (const label of ["noise-1", "noise-2"]) {
+      const planned = await runEntry("plan", subject, source, env, outputs, { policy: null });
+      await writeFile(
+        join(outputs, `plan-${label}.json`),
+        `${JSON.stringify(planned.record, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+      result[label] = (planned.record as { planned?: unknown }).planned;
+    }
+    if (result.planRefused) {
+      await writeFile(join(outputs, "stage-plan.json"), `${JSON.stringify(result, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      throw new Error(`R0 refused by the cutover policy:\n${String(result.planRefused)}`);
+    }
   } else if (mode === "apply") {
     result.before = await hooks.readBack("before-apply");
     const pin = await rootPin(hooks, subject, source);
