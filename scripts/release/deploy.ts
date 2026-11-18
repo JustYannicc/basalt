@@ -18,9 +18,10 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import type * as AlchemyPlan from "alchemy/Plan";
 import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
+import type { Snapshot } from "./plan-summary.ts";
+import { safeJson } from "./safe-json.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
@@ -88,7 +89,7 @@ const summary = async (text: string) => {
 };
 const output = async (path: string, value: unknown) => {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+  await writeFile(path, `${safeJson(value, 2)}\n`);
 };
 
 if (command === "compare") {
@@ -119,7 +120,7 @@ if (command === "accept") {
       : {}),
   });
   if (values.out) await output(resolve(values.out), result);
-  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${JSON.stringify(result)}`);
+  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(result)}`);
   process.exit(result.passed ? 0 : 1);
 }
 
@@ -170,7 +171,7 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
-const { havePropsChanged } = await import("alchemy/Diff");
+const { changedRows, remainingRows } = await import("./plan-summary.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -194,7 +195,7 @@ const keep = [
 ];
 const reporter = (event: unknown) =>
   Effect.sync(() => {
-    const line = JSON.stringify(
+    const line = safeJson(
       Object.fromEntries(
         Object.entries(event as Record<string, unknown>)
           .filter(
@@ -207,19 +208,6 @@ const reporter = (event: unknown) =>
     events.push(line);
     console.log(line);
   });
-
-/** The slices of Alchemy's State service and plan snapshot this entry reads. */
-interface PlannedRow {
-  readonly fqn: string;
-  readonly resourceType: string;
-  readonly action: string;
-  readonly bindings: readonly { readonly action: string }[];
-}
-interface Snapshot {
-  readonly resources: readonly PlannedRow[];
-  readonly summary: Record<string, number>;
-  readonly native: AlchemyPlan.Plan;
-}
 
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
@@ -317,29 +305,6 @@ const planOf = (operation: "deploy" | "destroy") =>
     ...(operation === "deploy" && include.length ? { include } : {}),
   } as never) as unknown as Fx.Effect<Snapshot, unknown, never>;
 
-/** Non-noop rows, with only the names of changed top-level props (values can be secrets). */
-const changes = (snapshot: Snapshot) =>
-  snapshot.resources
-    .filter(
-      (row) => row.action !== "noop" || row.bindings.some((binding) => binding.action !== "noop"),
-    )
-    .map((row) => {
-      const node = snapshot.native.resources[row.fqn] ?? snapshot.native.deletions[row.fqn];
-      const before = node?.state?.props ?? {};
-      const after: Record<string, unknown> = (node && "props" in node ? node.props : {}) ?? {};
-      const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
-        // Alchemy's own diff: a stored, provider-normalised value is not a change.
-        (key) => havePropsChanged({ value: before[key] }, { value: after[key] }),
-      );
-      return {
-        fqn: row.fqn,
-        type: row.resourceType,
-        action: row.action,
-        changedProps: changed.sort(),
-        bindings: row.bindings.filter((binding) => binding.action !== "noop"),
-      };
-    });
-
 const checkPolicy = () => {
   if (!policy?.check) return undefined;
   const pin = process.env.POOL_ROOT_IMAGE ? JSON.parse(process.env.POOL_ROOT_IMAGE) : undefined;
@@ -368,20 +333,21 @@ try {
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
-        if (command === "plan") return { snapshot, digest };
+        if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
             new Error(
               `The plan changed since review: reviewed ${values["plan-digest"]}, now ${digest}`,
             ),
           );
+        const planned = changedRows(snapshot);
         yield* Alchemist.Stack.apply(snapshot as never);
         const after = yield* planOf("deploy");
         if (Alchemist.Stack.hasChanges(after.summary as never))
           return yield* Effect.die(
-            new Error(`Changes remain after apply: ${JSON.stringify(changes(after))}`),
+            new Error(`Changes remain after apply: ${safeJson(remainingRows(after))}`),
           );
-        return { snapshot, digest };
+        return { snapshot, digest, planned };
       }),
     );
     const record = {
@@ -392,13 +358,13 @@ try {
       attempt,
       digest: result.digest,
       summary: result.snapshot.summary,
-      changes: changes(result.snapshot),
+      changes: result.planned,
     };
     await output(resolve(root, `.local/release/${command}.json`), record);
     await summary(
       `${command === "plan" ? "Planned" : "Applied; a fresh plan is all noop"}: digest \`${result.digest}\`, attempt \`${attempt}\``,
     );
-    await summary(`\`\`\`json\n${JSON.stringify(record.changes, null, 2)}\n\`\`\``);
+    await summary(`\`\`\`json\n${safeJson(record.changes, 2)}\n\`\`\``);
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {
@@ -470,7 +436,7 @@ try {
       }),
     );
     await output(resolve(root, ".local/release/preflight.json"), result);
-    await summary(`Preflight: ${JSON.stringify({ ...result, rows: result.rows.length })}`);
+    await summary(`Preflight: ${safeJson({ ...result, rows: result.rows.length })}`);
   } else if (command === "serving" || command === "rollback") {
     // A code release records the serving version of every Worker its plan updates; on a failed apply
     // or acceptance it puts each of them back. `--fqn` names one Worker instead.
@@ -521,9 +487,7 @@ try {
       }),
     );
     if (values.out) await output(resolve(values.out), result);
-    await summary(
-      `${command === "serving" ? "Serving" : "Rolled back to"}: ${JSON.stringify(result)}`,
-    );
+    await summary(`${command === "serving" ? "Serving" : "Rolled back to"}: ${safeJson(result)}`);
   } else if (command === "snapshot") {
     const snapshot = await run(
       Effect.gen(function* () {
@@ -537,7 +501,7 @@ try {
       }),
     );
     await output(resolve(values.out ?? ""), snapshot);
-    await summary(`Database counts: ${JSON.stringify(snapshot)}`);
+    await summary(`Database counts: ${safeJson(snapshot)}`);
   } else {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
@@ -570,7 +534,7 @@ try {
           .map((key) => `${key}=${String(record[key])}`)
           .join(
             " ",
-          )}${record.detail ? ` detail=${JSON.stringify(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${JSON.stringify(record.violations)}` : ""}`,
+          )}${record.detail ? ` detail=${safeJson(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${safeJson(record.violations)}` : ""}`,
       );
     for (const key of ["cause", "reason", "error", "defect", "failures", "reasons", "issue"])
       if (key in record) {

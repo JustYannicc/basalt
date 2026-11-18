@@ -4,7 +4,6 @@ import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worke
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { runtimeRecoveryBudgetMs } from "./runtime-slots/recovery.ts";
 import { crashAuditKey, crashNonceKey } from "./runtime-crash-contract.ts";
-import { answerTopology, followerTopology } from "./test/home-topology.ts";
 
 async function ready(context: { after(fn: () => Promise<void>): void }) {
   const f = await fleetWorkerFixture();
@@ -20,8 +19,6 @@ async function ready(context: { after(fn: () => Promise<void>): void }) {
   await f.settle();
   const [sibling] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
   assert.ok(sibling?.identity);
-  // Production shape: the primary is killed only once its own Home proves it is a follower.
-  answerTopology(f.old.home, () => Response.json(followerTopology()));
   const at = Date.now();
   const command = {
     identity: f.old.identity(),

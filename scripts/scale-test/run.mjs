@@ -63,7 +63,8 @@ function deploy(size) {
   const result = spawnSync(
     "bun",
     [
-      "../../../../scripts/release/deploy.ts",
+      // The cwd is the frozen candidate's hosted app; the entry is this checkout's, six levels up.
+      "../../../../../../scripts/release/deploy.ts",
       "deploy",
       "--stage",
       stage,

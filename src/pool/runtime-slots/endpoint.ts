@@ -1,5 +1,4 @@
 import { crashOwnedRuntime } from "../runtime-crash-owner.ts";
-import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runtime-crash-cell.ts";
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
@@ -51,13 +50,7 @@ import type { StartupStopIntent } from "./startup-abort-contract.ts";
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
   POOL_CONTAINER_APPLICATION_ID?: string;
-  /** Bound "true" on disposable stages only, where the accounts are test accounts. */
-  POOL_ALLOW_MASTER_CRASH?: string;
 }
-/** How long the target may take to prove it still serves, right before it is signalled. */
-const crashHealthTimeoutMs = 1_000;
-/** Home's management port. The channel maps it to the peer port inside a cell. */
-const homeManagementPort = 8327;
 export interface EndpointOptions {
   controlPair?: RuntimeControlPair;
   beforeStart?(witness: StartupWitness): Promise<void>;
@@ -117,12 +110,8 @@ export class RuntimeEndpoint {
     return pending;
   }
   crash(envelope: string) {
-    return this.serialize(async () => {
-      const cell = await crashTargetsCell(this.env.POOL_DEPLOYMENT_KEY ?? "", envelope);
-      // Killing the master can lose a provider token rotation, so only a disposable stage may do
-      // it, and only by naming the primary. A cell target must be a proven follower everywhere.
-      const masterAllowed = !cell && this.env.POOL_ALLOW_MASTER_CRASH === "true";
-      return crashOwnedRuntime(
+    return this.serialize(() =>
+      crashOwnedRuntime(
         this.ctx,
         this.env.POOL_DEPLOYMENT_KEY ?? "",
         this.code,
@@ -130,20 +119,10 @@ export class RuntimeEndpoint {
         async (identity) => {
           if ((await this.activity.inspect(identity))?.phase !== "open")
             throw new SlotRefused("draining");
-          await this.health(identity, AbortSignal.timeout(crashHealthTimeoutMs));
-          if (masterAllowed) return;
-          // Stays last: the owner signals right after this check returns.
-          const { configuration } = await this.store.read(identity);
-          await assertFollowerHome(cell ? "cell" : "primary", (signal) =>
-            this.channel.fetch(
-              configuration,
-              new Request(`http://pool${homeTopologyPath}`, { signal }),
-              homeManagementPort,
-            ),
-          );
+          await this.health(identity, AbortSignal.timeout(1_000));
         },
-      );
-    });
+      ),
+    );
   }
   async inspectCrash(identity: SlotIdentity, nonce: string) {
     this.bound(identity);
