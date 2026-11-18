@@ -1,6 +1,7 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { runtimeResponseDiagnostic } from "../../src/pool/runtime-route-diagnostic.ts";
 import { UnattestedAdoptionReadback } from "../../src/pool/runtime-slots/adoption-readback.ts";
+import { StartupWitness } from "../../src/pool/runtime-slots/admission-proof.ts";
 import {
   ControllerCode,
   SlotIdentity,
@@ -119,13 +120,88 @@ const Inspection = Schema.Struct({
 const ActiveHealth = Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number });
 const selectionRefusal = (guard: string) =>
   new BarrierRefusal("release-settlement-adopted-selection-unexpected", `selection.${guard}`);
-const witnessRefusal = (guard: string) =>
-  new BarrierRefusal("release-settlement-adoption-witness-unexpected", `witness.${guard}`);
+const witnessRefusal = (guard: string, values?: Record<string, unknown>) =>
+  observed(
+    new BarrierRefusal("release-settlement-adoption-witness-unexpected", `witness.${guard}`),
+    values,
+  );
+const identifier = /^[a-zA-Z0-9-]{1,128}$/u;
+/** Names non-secret drift in the message; the location stays a path and other values stay out. */
+function observed(refusal: BarrierRefusal, values: Record<string, unknown> = {}) {
+  const shown = Object.entries(values).flatMap(([name, value]) =>
+    (typeof value === "string" || typeof value === "number") && identifier.test(String(value))
+      ? [`${name}=${value}`]
+      : [],
+  );
+  if (shown.length) refusal.message += ` ${shown.join(" ")}`;
+  return refusal;
+}
+const RecoveredWitness = Schema.Struct({
+  kind: Schema.Literal("witness"),
+  controllerCode: ControllerCode,
+  witness: StartupWitness,
+});
+// Selected-runtime recovery names its restart after the first 48 hex of the digest of the boot it replaced.
+const restartOperation = /^restart-[a-f0-9]{48}$/u;
+
+/** Adopt's own grant still stands at epoch 1. */
+function unattestedAdoption(
+  raw: unknown,
+  input: { sourceCandidate: string; code: typeof ControllerCode.Type; identity: SlotIdentity },
+) {
+  if (!Schema.is(Schema.Struct({ kind: Schema.Literal("unattested-active") }))(raw))
+    throw witnessRefusal("kind");
+  const witness = Schema.decodeUnknownSync(UnattestedAdoptionReadback)(raw);
+  if (witness.operationId !== `adopt-${input.sourceCandidate}`) throw witnessRefusal("operationId");
+  if (!sameIdentity(witness.identity, input.identity)) throw witnessRefusal("identity");
+  if (!sameControllerCode(input.code, witness.controllerCode))
+    throw witnessRefusal("controllerCode");
+}
+
+/**
+ * Past epoch 1 only selected-runtime recovery commits, so the witness is the startup witness of the
+ * active boot, launched by a `restart-<48 hex>` operation, which recovery commits only after attesting.
+ */
+function recoveredRestart(
+  raw: unknown,
+  input: { code: typeof ControllerCode.Type; identity: SlotIdentity },
+) {
+  if (!Schema.is(Schema.Struct({ kind: Schema.Literal("witness") }))(raw))
+    throw witnessRefusal("kind");
+  const decoded = Schema.decodeUnknownOption(RecoveredWitness, { onExcessProperty: "error" })(raw);
+  if (Option.isNone(decoded)) throw witnessRefusal("shape");
+  const { controllerCode, witness } = decoded.value;
+  if (!sameControllerCode(controllerCode, input.code)) throw witnessRefusal("controllerCode");
+  if (!sameTarget(witness.target, input.identity)) throw witnessRefusal("target");
+  if (witness.bootId !== input.identity.bootId)
+    throw witnessRefusal("bootId", { expected: input.identity.bootId, observed: witness.bootId });
+  if (!restartOperation.test(witness.operationId)) throw witnessRefusal("operationId");
+}
+
+/** Names what the final inspect moved to, so a restart during the plan explains itself. */
+function selectionChanged(
+  first: typeof SlotSelection.Type,
+  final: typeof SlotSelection.Type | undefined,
+) {
+  const refusal = (location: string) =>
+    new BarrierRefusal("release-settlement-selection-changed", location);
+  if (!final) return refusal("selection.absent");
+  const boot = final.active.identity?.bootId;
+  return final.epoch !== first.epoch || boot !== first.active.identity?.bootId
+    ? observed(refusal("selection.epoch"), {
+        expected: first.epoch,
+        observed: final.epoch,
+        observedBoot: boot,
+      })
+    : refusal("PoolWorker");
+}
 
 /**
  * Once adopt commits a selection the recovery read refuses, so every read here is a signed handoff
  * read over one bridge. Together they prove the source's adopt left exactly the legacy root
- * selected at epoch 1, serving, with its unattested witness, and that the fleet was never set up.
+ * selected, serving, with its witness, and that the fleet was never set up. Epoch 1 is adopt's own
+ * commit with its unattested witness; a later epoch is the controller's own recovery of that root,
+ * witnessed by the restart that launched its active boot.
  */
 export function readAdoptedController(input: {
   controller: BaselineController;
@@ -170,7 +246,7 @@ export function readAdoptedController(input: {
     };
     const selection = await inspect();
     if (!selection) throw selectionRefusal("absent");
-    if (selection.epoch !== 1) throw selectionRefusal("epoch");
+    if (selection.epoch < 1) throw selectionRefusal("epoch");
     const { active } = selection;
     if (
       !input.instances.some((instanceId) =>
@@ -205,24 +281,27 @@ export function readAdoptedController(input: {
     const raw = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }))(
       await bounded(witnessed.json(), signal),
     ).result;
-    if (!Schema.is(Schema.Struct({ kind: Schema.Literal("unattested-active") }))(raw))
-      throw witnessRefusal("kind");
-    const witness = Schema.decodeUnknownSync(UnattestedAdoptionReadback)(raw);
-    if (witness.operationId !== `adopt-${input.sourceCandidate}`)
-      throw witnessRefusal("operationId");
-    if (!sameIdentity(witness.identity, identity)) throw witnessRefusal("identity");
-    if (!sameControllerCode(code, witness.controllerCode)) throw witnessRefusal("controllerCode");
+    const adopted = selection.epoch === 1;
+    if (adopted)
+      unattestedAdoption(raw, { sourceCandidate: input.sourceCandidate, code, identity });
+    else recoveredRestart(raw, { code, identity });
     const final = await inspect();
-    if (canonical(final) !== canonical(selection))
-      throw refuse("release-settlement-selection-changed");
+    if (!final || canonical(final) !== canonical(selection))
+      throw selectionChanged(selection, final);
     return {
       instanceId: identity.instanceId,
       bootId: identity.bootId,
-      reads: {
-        fleetDigest,
-        witness: "unattested-adoption" as const,
-        selection: { epoch: 1 as const, identity },
-      },
+      reads: adopted
+        ? {
+            fleetDigest,
+            witness: "unattested-adoption" as const,
+            selection: { epoch: 1 as const, identity },
+          }
+        : {
+            fleetDigest,
+            witness: "recovered-restart" as const,
+            selection: { epoch: selection.epoch, identity },
+          },
     };
   });
 }
