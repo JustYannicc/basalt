@@ -65,11 +65,11 @@ function modelCall(request: Request): boolean {
   );
 }
 
-type Held = { body: Blob } | { refused: "body_too_large" | "body_unreadable" };
+type Held = { body: Uint8Array } | { refused: "body_too_large" | "body_unreadable" };
 
 /** Reads a tee of the body beside the real send, and gives up past the bound. */
 function hold(body: ReadableStream<Uint8Array> | null) {
-  if (!body) return { held: Promise.resolve<Held>({ body: new Blob() }), release() {} };
+  if (!body) return { held: Promise.resolve<Held>({ body: new Uint8Array() }), release() {} };
   const reader = body.getReader();
   const release = () => void reader.cancel().catch(() => {});
   const held = (async (): Promise<Held> => {
@@ -89,7 +89,14 @@ function hold(body: ReadableStream<Uint8Array> | null) {
     } catch {
       return { refused: "body_unreadable" };
     }
-    return { body: new Blob(chunks) };
+    // The chunks are dropped once joined, so the copy is brief and bounded by the hold.
+    const joined = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { body: joined };
   })();
   return { held, release };
 }
