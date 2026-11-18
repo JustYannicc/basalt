@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import http.server
+import io
 import json
 import threading
 import unittest
@@ -70,6 +72,84 @@ class NativePolicyReadinessTests(unittest.TestCase):
             self.assertFalse(ready.snapshot()[0])
             ready.set_ready(True, audit_revision=ready.service_audit_revision())
             self.assertTrue(ready.snapshot()[0])
+
+    def test_a_run_of_slow_home_probes_emits_where_it_stalled_and_how_it_ended(self) -> None:
+        clock = [100.0]
+        ready = readiness.Readiness(MANAGEMENT_KEY)
+        monitor = PolicyHealthMonitor(ready, MANAGEMENT_KEY)
+        # 20:47Z shape: Home's management listing outlives the probe deadline, then answers again.
+        outcomes: list[tuple[ProbeState, str | None, policy_monitor.ProbeStage, float]] = [
+            ("missed", None, "plugins", 0.25),
+            ("missed", None, "observe", 0.25),
+            ("missed", None, "plugins", 0.25),
+            ("healthy", INSTANCE_A, "observe", 0.04),
+            ("healthy", INSTANCE_A, "observe", 0.03),
+        ]
+        steps = iter(outcomes)
+
+        def probe(
+            _key: str,
+            _ready: readiness.Readiness,
+            observation: policy_monitor.ProbeObservation,
+        ) -> tuple[ProbeState, str | None]:
+            state, instance, stage, seconds = next(steps)
+            observation.stage = stage
+            clock[0] += seconds
+            return state, instance
+
+        stderr = io.StringIO()
+        with (
+            patch.object(policy_monitor, "probe_home_policy", side_effect=probe),
+            patch.object(policy_monitor.time, "monotonic", side_effect=lambda: clock[0]),
+            contextlib.redirect_stderr(stderr),
+        ):
+            states = [monitor.check_once() for _ in outcomes]
+        self.assertEqual(states, ["missed", "missed", "missed", "healthy", "healthy"])
+        records = [line.split(" ", 1) for line in stderr.getvalue().splitlines()]
+        self.assertEqual(
+            [(marker, json.loads(fields)) for marker, fields in records],
+            [
+                ("POOL_POLICY_PROBE_MISSED", {"stage": "plugins", "elapsed_ms": 250}),
+                (
+                    "POOL_POLICY_PROBE_MISSES",
+                    {
+                        "missed": 3,
+                        "max_elapsed_ms": 250,
+                        "last_stage": "plugins",
+                        "ended": "healthy",
+                        "elapsed_ms": 40,
+                    },
+                ),
+            ],
+        )
+
+    def test_probe_reports_the_stage_it_reached(self) -> None:
+        plugin_payload = {
+            "plugins_enabled": True,
+            "plugins": [
+                {
+                    "id": policy_monitor.POLICY_PLUGIN_ID,
+                    "registered": True,
+                    "enabled": True,
+                    "effective_enabled": True,
+                }
+            ],
+        }
+        ready = readiness.Readiness(MANAGEMENT_KEY)
+        for listing, control, stage in (
+            ((0, {}), None, "plugins"),
+            ((200, plugin_payload), (0, {}), "probe"),
+        ):
+            observation = policy_monitor.ProbeObservation()
+            with (
+                patch.object(policy_monitor, "request_json", return_value=listing),
+                patch.object(policy_monitor, "native_policy_request", return_value=control),
+            ):
+                self.assertEqual(
+                    policy_monitor.probe_home_policy(MANAGEMENT_KEY, ready, observation),
+                    ("missed", None),
+                )
+            self.assertEqual(observation.stage, stage)
 
     def test_fuse_signal_latches_one_plugin_instance_until_reload(self) -> None:
         clock = FakeClock()
