@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Cause, Clock, Effect, Exit, Fiber, Logger, Redacted } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
@@ -72,8 +72,10 @@ const missing = {
 };
 /** An attempt Autumn never answers. */
 const hang = "hang" as const;
+/** An attempt whose request never reaches Autumn; its cause still carries the bearer key. */
+const transport = "transport" as const;
 
-type Reply = { readonly status: number; readonly body: unknown } | typeof hang;
+type Reply = { readonly status: number; readonly body: unknown } | typeof hang | typeof transport;
 type Log = { readonly level: string; readonly annotations: Record<string, unknown> };
 
 /**
@@ -93,6 +95,15 @@ const check = async (replies: Record<string, ReadonlyArray<Reply>>) => {
       requests.push({ route, customer: body?.customer_id });
       const reply = replies[route]?.[requests.filter((seen) => seen.route === route).length - 1];
       if (reply === hang) return Effect.never;
+      if (reply === transport)
+        return Effect.fail(
+          new HttpClientError.HttpClientError({
+            reason: new HttpClientError.TransportError({
+              request,
+              cause: new TypeError("fetch failed"),
+            }),
+          }),
+        );
       return Effect.succeed(
         HttpClientResponse.fromWeb(
           request,
@@ -155,8 +166,9 @@ test("a transient Autumn failure then the existing customer admits the invitatio
     unavailable,
     { status: 429, body: autumnError("rate_limit_exceeded", "Too many requests") },
     hang,
+    transport,
   ]) {
-    const label = transient === hang ? "a hung read" : `${transient.status}`;
+    const label = typeof transient === "string" ? transient : `${transient.status}`;
     const result = await check({
       "customers.get": [transient, { status: 200, body: autumnCustomer(catalog.team, 4) }],
       // Before the fix, this one write was the whole check.
@@ -176,23 +188,28 @@ test("a transient Autumn failure then the existing customer admits the invitatio
 });
 
 test("persistent Autumn failure fails closed with its safe reason and the logged reference", async () => {
-  const result = await check({ "customers.get": [unavailable, unavailable, unavailable] });
-  const error = refused(result.exit);
-  assert.deepEqual(
-    { operation: error.operation, reason: error.reason, status: error.status },
-    { operation: "getCustomer", reason: "status", status: 503 },
-  );
-  assert.match(String(error.reference), uuid);
-  assert.deepEqual(result.routes, ["customers.get", "customers.get", "customers.get"]);
-  const warnings = result.logs.filter(({ level }) => /warn/i.test(level));
-  assert.equal(warnings.length, 1);
-  assert.equal(warnings[0]!.annotations.reference, error.reference);
-  assert.equal(warnings[0]!.annotations.billingCustomer, customerId);
-  assert.equal(
-    JSON.stringify([error, result.logs]).includes(secret),
-    false,
-    "the key never leaves the adapter",
-  );
+  for (const [failure, category] of [
+    [unavailable, { operation: "getCustomer", reason: "status", status: 503 }],
+    [transport, { operation: "getCustomer", reason: "transport", status: undefined }],
+  ] as const) {
+    const result = await check({ "customers.get": [failure, failure, failure] });
+    const error = refused(result.exit);
+    assert.deepEqual(
+      { operation: error.operation, reason: error.reason, status: error.status },
+      category,
+    );
+    assert.match(String(error.reference), uuid);
+    assert.deepEqual(result.routes, ["customers.get", "customers.get", "customers.get"]);
+    const warnings = result.logs.filter(({ level }) => /warn/i.test(level));
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0]!.annotations.reference, error.reference);
+    assert.equal(warnings[0]!.annotations.billingCustomer, customerId);
+    assert.equal(
+      JSON.stringify([error, result.logs]).includes(secret),
+      false,
+      "the bearer key in the failed request never reaches the error or the log",
+    );
+  }
 });
 
 test("Autumn that never answers fails closed with a timeout at the ten-second budget", async () => {
@@ -237,4 +254,14 @@ test("only a customer Autumn has never seen is created, and creation is sent onc
   const error = refused(uncertain.exit);
   assert.deepEqual([error.operation, error.status], ["getOrCreateCustomer", 503]);
   assert.deepEqual(uncertain.routes, ["customers.get", "customers.get_or_create"]);
+
+  // A late not-found leaves creation only what remains of the one ten-second budget.
+  const late = await check({
+    "customers.get": [hang, missing],
+    "customers.get_or_create": [hang],
+  });
+  const timedOut = refused(late.exit);
+  assert.deepEqual([timedOut.operation, timedOut.reason], ["getOrCreateCustomer", "timeout"]);
+  assert.ok(late.elapsed <= 10_000, `settled after ${late.elapsed} ms`);
+  assert.deepEqual(late.routes, ["customers.get", "customers.get", "customers.get_or_create"]);
 });
