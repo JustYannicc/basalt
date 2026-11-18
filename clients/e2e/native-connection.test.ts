@@ -336,7 +336,7 @@ test(
 );
 
 test(
-  "device model failures retain non-retryable ambiguity and explicit not-started refusal",
+  "device model failures ask the client to retry and never replay, and refuse explicitly before start",
   { timeout: 30000 },
   async () => {
     const f = await fixture();

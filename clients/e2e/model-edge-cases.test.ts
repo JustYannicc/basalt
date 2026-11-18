@@ -112,7 +112,7 @@ test(
 );
 
 for (const mode of ["unknown", "disconnect"])
-  test(`direct model ${mode} forbids retry without replaying the request`, async () => {
+  test(`direct model ${mode} asks the client to retry without replaying the request`, async () => {
     // The upgrade-burst case owns a different process and cannot consume this case's request slots.
     const upstream = await remoteFixture();
     const isolated = await fixtureHome(upstream.origin);
