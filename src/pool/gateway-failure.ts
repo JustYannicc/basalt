@@ -40,9 +40,10 @@ export interface GatewayFailureDiagnostic extends Partial<RuntimeRouteDiagnostic
 }
 
 /**
- * Fixed metadata joins the caller's retryable response to its error trace. The failed history row
- * keeps the attempt's identity, which the request's terminal evidence and Home usage share, so
- * reliability counts the request once; an endpoint correlation id would never join them.
+ * Fixed metadata joins the caller's retryable response, its error trace and its failed history row.
+ * The row keeps the attempt's identity, which the request's terminal evidence and Home usage share,
+ * so reliability counts the request once; an endpoint correlation id would never join them. The
+ * log line carries both ids, so the client's request id still leads to the row.
  */
 export function gatewayUnavailable(
   env: Dependencies,
@@ -54,15 +55,16 @@ export function gatewayUnavailable(
   attemptRequestId = crypto.randomUUID(),
   requestedModel?: Promise<string | null>,
 ): Response {
-  const requestId = diagnostic.runtimeEndpointRequestId ?? attemptRequestId;
+  const traceRequestId = diagnostic.runtimeEndpointRequestId ?? attemptRequestId;
   const pathname = new URL(request.url).pathname;
   console.error("POOL_GATEWAY_FAILURE", {
     code: "pool_protection_unavailable",
     status: 503,
-    requestId,
+    requestId: traceRequestId,
+    attemptRequestId,
     ...diagnostic,
   });
-  defer(captureError(env, "pool_failure", pathname, undefined, requestId));
+  defer(captureError(env, "pool_failure", pathname, undefined, traceRequestId));
   if (env.POOL_MODEL_HISTORY_ENABLED === "true")
     defer(
       (async () => {
@@ -108,7 +110,7 @@ export function gatewayUnavailable(
       headers: {
         "Retry-After": "2",
         "Cache-Control": "no-store",
-        "X-Request-Id": requestId,
+        "X-Request-Id": traceRequestId,
       },
     },
   );

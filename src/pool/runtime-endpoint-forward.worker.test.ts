@@ -21,9 +21,6 @@ for (const failure of ["throw", "refusal"] as const)
     }: {
       forwardPoolRequest(request: Request, port: 8317, dependencies: object): Promise<Response>;
     } = await import(workerModule);
-    const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");
-    const { slotIdentity } = await import("../../scripts/pool-tests/runtime-slots-fixture.ts");
-    const { refuseRuntime } = await import("./runtime-route-diagnostic.ts");
     const driver = new BoundSlotDriver(() => ({
       fetch: async () => {
         if (failure === "throw") throw new Error("private-endpoint-error");
@@ -146,8 +143,8 @@ test("a retried request refused at the runtime endpoint counts once in reliabili
   for (let index = 0; index < background.length; index++) await background[index];
   assert.equal(response.status, 503);
   assert.ok(attemptId);
-  // The attempt that waited earlier started history under the request's identity, and its finish
-  // records the failure the retry's refusal ended.
+  // An earlier attempt of this request waited on a busy pool and shares its identity. Its terminal
+  // start and failed finish are what the retry's refusal must be deduplicated against.
   const at = new Date().toISOString();
   await recordTerminalStart(db, {
     requestId: attemptId,
@@ -181,5 +178,6 @@ test("a retried request refused at the runtime endpoint counts once in reliabili
   assert.notEqual(endpoint.requestId, attemptId);
   assert.equal(response.headers.get("X-Request-Id"), endpoint.requestId);
   assert.equal(gateway.requestId, endpoint.requestId);
+  assert.equal(gateway.attemptRequestId, attemptId);
   await response.body?.cancel();
 });
