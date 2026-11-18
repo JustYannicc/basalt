@@ -2,7 +2,7 @@ model {
   extend basalt {
     releaseGuardrails = module "Release guardrails" {
       #basalt
-      description "Computes production release health from the repository service's deployment and pull request records: time since the last good deployment, consecutive failed deployments, and how long merged work has waited. Two consecutive failures stop the line and twelve hours of waiting work freezes feature merges."
+      description "Deterministic checks on how release work reaches production, computed from the update source's deployment and pull request records and the repository history: release health (time since the last good deployment, consecutive failed deployments, how long merged work has waited), one list of the files that make up the release path, and the gates built on them."
       metadata {
         code "scripts/guardrails"
       }
