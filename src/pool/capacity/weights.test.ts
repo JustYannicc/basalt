@@ -78,11 +78,54 @@ test("known reference units and unknown tiers never acquire a shared guessed uni
   );
 });
 
-test("expired seed facts become unknown independently of background refresh", () => {
-  const weight = capacityWeight("codex", "Pro (Max)", 604_800, { now: clock + 30 * 86_400_000 });
-  assert.equal(weight.known, false);
-  assert.equal(weight.multiplier, 1);
-  assert.match(weight.unit.id, /promax/);
+test("expired facts keep their last known value until a source decides", () => {
+  const current = capacityWeight("codex", "Pro (Max)", 604_800);
+  const aged = clock + 30 * 86_400_000;
+  const weight = capacityWeight("codex", "Pro (Max)", 604_800, { now: aged });
+  assert.equal(weight.known, true);
+  assert.equal(weight.multiplier, current.multiplier);
+  assert.deepEqual(weight.unit, current.unit);
+  assert.equal(weight.revision, current.revision);
+  assert.ok(weight.allowance!.expiresAt! <= aged);
+  assert.match(weight.allowance!.detail!, /source expired/);
+});
+
+test("a newer revocation or a live row still decides over an expired value", () => {
+  const now = clock + 30 * 86_400_000;
+  const entry = {
+    vendor: "openai",
+    plan: "promax",
+    windowSeconds: 604_800,
+    full: 50,
+    unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+    kind: "vendor" as const,
+    verification: "verified" as const,
+    sources: ["https://example.test/allowances.json"],
+    checkedAt: clock - 86_400_000,
+    fetchedAt: clock,
+    expiresAt: clock + 86_400_000,
+    revision: "synthetic-50",
+  };
+  const revoked = { ...entry, full: null, verification: "unknown" as const, fetchedAt: clock + 1 };
+  const unknown = capacityWeight("codex", "Pro (Max)", 604_800, {
+    now,
+    catalog: { entries: [entry, revoked] },
+  });
+  assert.equal(unknown.known, false);
+  const unlimited = {
+    ...entry,
+    full: null,
+    unlimited: true,
+    checkedAt: now - 1,
+    expiresAt: now + 1,
+  };
+  assert.equal(
+    capacityWeight("codex", "Pro (Max)", 604_800, {
+      now,
+      catalog: { entries: [entry, unlimited] },
+    }).known,
+    false,
+  );
 });
 
 test("Max 20x counts as twenty weekly units under the pool's plan policy", () => {

@@ -4,6 +4,8 @@ import { capacityWeight } from "./weights.ts";
 import { CapacityHistory, type CapacityExpectedCohort } from "./history.ts";
 import type { CapacityReading } from "./normalize.ts";
 import { ChunkStorage, type UsageStorage } from "../usage-storage.ts";
+import * as weights from "./weights.ts";
+import { seedCatalog } from "../allowances/data.ts";
 
 class Memory implements UsageStorage {
   values = new Map<string, unknown>();
@@ -782,4 +784,47 @@ test("aggregate provenance preserves each account's evidence dates", async () =>
     point!.last.weights.map((weight) => weight.allowance?.expiresAt).sort(),
     [start + hour, start + 2 * hour].sort(),
   );
+});
+
+test("an expired allowance keeps its cohort's training until a source decides", async () => {
+  const history = new CapacityHistory(new Memory());
+  const expected = [{ provider: "claude", windowSeconds: 604_800, accounts: 1 }];
+  const expiry = seedCatalog.entries.find(
+    (entry) =>
+      entry.vendor === "anthropic" && entry.plan === "max_20x" && entry.windowSeconds === 604_800,
+  )!.expiresAt!;
+  const sample = (at: number, ratio: number) => {
+    const weight = weights.capacityWeight("claude", "Max 20x", 604_800, { now: at });
+    return reading("max-seat", ratio * weight.multiplier, {
+      plan: "Max 20x",
+      windowSeconds: 604_800,
+      mode: "fixed",
+      observedAt: at,
+      resetAt: expiry + 7 * 24 * hour,
+      full: weight.multiplier,
+      source: weight.source,
+      knownWeight: weight.known,
+      revision: weight.revision,
+      unit: weight.unit,
+      allowance: weight.allowance,
+    });
+  };
+  const first = expiry - 2 * hour;
+  await history.observe("max", { at: first, expected, readings: [sample(first, 1)] });
+  await history.observe("max", {
+    at: first + hour,
+    expected,
+    readings: [sample(first + hour, 0.9)],
+  });
+  const before = await history.demandData("max");
+  const aged = expiry + hour;
+  const stale = sample(aged, 0.8);
+  await history.observe("max", { at: aged, expected, readings: [stale] });
+  const after = await history.demandData("max");
+  assert.deepEqual(after.cohortTrackingSince, {});
+  assert.equal(after.trackingSince, before.trackingSince);
+  assert.equal(stale.full, 20);
+  assert.equal(stale.revision, "2026-11-09-max20x-20");
+  assert.ok(stale.allowance!.expiresAt! <= aged);
+  assert.match(stale.allowance!.detail!, /source expired/);
 });
