@@ -18,6 +18,8 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import type * as AlchemyPlan from "alchemy/Plan";
+import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -212,6 +214,19 @@ const reporter = (event: unknown) =>
     console.log(line);
   });
 
+/** The slices of Alchemy's State service and plan snapshot this entry reads. */
+interface PlannedRow {
+  readonly fqn: string;
+  readonly resourceType: string;
+  readonly action: string;
+  readonly bindings: readonly { readonly action: string }[];
+}
+interface Snapshot {
+  readonly resources: readonly PlannedRow[];
+  readonly summary: Record<string, number>;
+  readonly native: AlchemyPlan.Plan;
+}
+
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   Effect.runPromise(
@@ -270,8 +285,10 @@ const scriptName = (fqn: string) =>
     const state = yield* Alchemist.State.store({
       backend: "configured",
       ...target,
-    } as never) as unknown as Fx.Effect<any, unknown, never>;
-    const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<any, unknown, never>;
+    } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+    const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
+      | { attr?: { workerName?: unknown } }
+      | undefined;
     const script = row?.attr?.workerName;
     if (typeof script !== "string" || !script)
       return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
@@ -284,19 +301,18 @@ const planOf = (operation: "deploy" | "destroy") =>
     operation,
     updateStateStore: false,
     ...(operation === "deploy" && include.length ? { include } : {}),
-  } as never) as unknown as Fx.Effect<any, unknown, never>;
+  } as never) as unknown as Fx.Effect<Snapshot, unknown, never>;
 
 /** Non-noop rows, with only the names of changed top-level props (values can be secrets). */
-const changes = (snapshot: any) =>
+const changes = (snapshot: Snapshot) =>
   snapshot.resources
     .filter(
-      (row: any) =>
-        row.action !== "noop" || row.bindings.some((binding: any) => binding.action !== "noop"),
+      (row) => row.action !== "noop" || row.bindings.some((binding) => binding.action !== "noop"),
     )
-    .map((row: any) => {
+    .map((row) => {
       const node = snapshot.native.resources[row.fqn] ?? snapshot.native.deletions[row.fqn];
       const before = node?.state?.props ?? {};
-      const after = node?.props ?? {};
+      const after: Record<string, unknown> = (node && "props" in node ? node.props : {}) ?? {};
       const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
         (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
       );
@@ -305,7 +321,7 @@ const changes = (snapshot: any) =>
         type: row.resourceType,
         action: row.action,
         changedProps: changed.sort(),
-        bindings: row.bindings.filter((binding: any) => binding.action !== "noop"),
+        bindings: row.bindings.filter((binding) => binding.action !== "noop"),
       };
     });
 
@@ -323,6 +339,16 @@ try {
   if (command === "plan" || command === "apply" || command === "deploy") {
     const result = await run(
       Effect.gen(function* () {
+        // The store's contract version is pinned: a different one means a deliberate upgrade first.
+        const store = yield* Alchemist.State.store({
+          backend: "configured",
+          ...target,
+        } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+        const version = yield* store.getVersion() as Fx.Effect<number, unknown, never>;
+        if (version !== 8)
+          return yield* Effect.die(
+            new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
+          );
         const snapshot = yield* planOf("deploy");
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
@@ -334,9 +360,9 @@ try {
               `The plan changed since review: reviewed ${values["plan-digest"]}, now ${digest}`,
             ),
           );
-        yield* Alchemist.Stack.apply(snapshot);
+        yield* Alchemist.Stack.apply(snapshot as never);
         const after = yield* planOf("deploy");
-        if (Alchemist.Stack.hasChanges(after.summary))
+        if (Alchemist.Stack.hasChanges(after.summary as never))
           return yield* Effect.die(
             new Error(`Changes remain after apply: ${JSON.stringify(changes(after))}`),
           );
@@ -361,7 +387,7 @@ try {
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {
-        yield* Alchemist.Stack.apply(yield* planOf("destroy"));
+        yield* Alchemist.Stack.apply((yield* planOf("destroy")) as never);
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
@@ -387,7 +413,7 @@ try {
         const state = yield* Alchemist.State.store({
           backend: "configured",
           ...target,
-        } as never) as unknown as Fx.Effect<any, unknown, never>;
+        } as never) as unknown as Fx.Effect<StateService, unknown, never>;
         const version = yield* state.getVersion() as Fx.Effect<number, unknown, never>;
         if (version !== 8)
           return yield* Effect.die(
@@ -412,7 +438,7 @@ try {
           stack: "basalt",
           stage,
           fqn: "PoolContainer",
-        }) as Fx.Effect<any, unknown, never>) as
+        }) as Fx.Effect<unknown, unknown, never>) as
           | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
           | undefined;
         const recorded = {
@@ -489,7 +515,7 @@ try {
         const state = yield* Alchemist.State.store({
           backend: "configured",
           ...target,
-        } as never) as unknown as Fx.Effect<any, unknown, never>;
+        } as never) as unknown as Fx.Effect<StateService, unknown, never>;
         const url = yield* database.poolDatabaseUrl(state, { name: "basalt", stage });
         const session = yield* database.connect(url);
         return yield* database.readSnapshot(session, { history: !values.light });

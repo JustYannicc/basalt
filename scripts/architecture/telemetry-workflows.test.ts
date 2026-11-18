@@ -22,6 +22,7 @@ test("every release job with a capture key also receives its configured region",
     "release-main.yml:migration-activation",
     "release-manual.yml:deploy",
     "release-rollback.yml:rollback",
+    "release.yml:release",
   ]);
 });
 
