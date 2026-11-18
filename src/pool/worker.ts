@@ -696,20 +696,23 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
       try {
         await trace.run("model_history", () =>
-          reportWhenDue(this.ctx.storage, "model-history", (progress) =>
-            withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
+          reportWhenDue(this.ctx.storage, "model-history", async (progress) => {
+            await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
               const result = await captureHomeRequests(db);
               progress.rows = result.state === "active" ? result.scanned : 0;
               await deliverPoolHistoryChanges(db, result.pending, (changes) =>
                 publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
               );
-              const target = this.env.POOL_AVAILABILITY_TARGET;
-              if (validProbeTarget(target))
-                await recordReliability(this.ctx.storage, target, (now) =>
+            });
+            // Its own session, so a slow figure cannot fail a capture that already committed.
+            const target = this.env.POOL_AVAILABILITY_TARGET;
+            if (validProbeTarget(target))
+              await recordReliability(this.ctx.storage, target, (now) =>
+                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, (db) =>
                   readPoolReliabilitySlo(db, target, now),
-                ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
-            }),
-          ),
+                ),
+              ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
+          }),
         );
       } catch {
         console.error("POOL_MODEL_HISTORY_FAILURE count=1");

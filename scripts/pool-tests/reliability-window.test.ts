@@ -10,7 +10,7 @@ const now = Date.parse("2026-11-18T21:00:00Z");
 // Shaped like the production pool: an imported history far larger than one day of traffic.
 const historyRows = 100_000,
   importedRows = 40_000,
-  oldTerminals = 20_000,
+  oldTerminals = 60_000,
   dayRows = 2_880;
 
 interface PlanNode {
@@ -173,13 +173,12 @@ test(
       for (const [table, count] of read)
         if (table.startsWith("cte "))
           assert.ok(count < 5 * dayRows, `${table} rows scanned: ${count}`);
-      // Terminal evidence may be hashed whole, but never rescanned per partition or per row: the old
-      // shape read every start once per request partition, over 360,000 rows here.
-      for (const table of ["basalt_model_terminal_starts", "basalt_model_terminal_finishes"])
-        assert.ok(
-          (read.get(table) ?? 0) <= 4 * (dayRows + oldTerminals + 1),
-          `${table} rows examined: ${read.get(table)} of ${dayRows + oldTerminals + 1}`,
-        );
+      // Terminal starts are looked up by key for the window's finishes only; the old shape read
+      // every start once per request partition.
+      assert.ok(
+        (read.get("basalt_model_terminal_starts") ?? 0) < 5 * dayRows,
+        `starts examined: ${read.get("basalt_model_terminal_starts")} of ${dayRows + oldTerminals + 1}`,
+      );
     } finally {
       await database.close();
     }

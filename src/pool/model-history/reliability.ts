@@ -97,8 +97,9 @@ export async function readPoolReliabilityWindows(
       UNION ALL
       SELECT earlier_attempt.* FROM (
         SELECT s.request_id::text AS request_id FROM basalt_model_terminal_finishes f
-        JOIN basalt_model_terminal_starts s ON s.request_id=f.request_id
-        WHERE s.pool=$1 AND f.outcome <> 'unavailable' AND ${finishedTimeRange}
+        CROSS JOIN LATERAL (SELECT s.request_id FROM basalt_model_terminal_starts s
+          WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+        WHERE f.outcome <> 'unavailable' AND ${finishedTimeRange}
           AND NOT EXISTS (SELECT 1 FROM basalt_model_requests h
             WHERE h.pool=$1 AND h.source=$3 AND h.request_id IS NOT NULL
               AND h.request_id=s.request_id::text AND h.timestamp >= ${windowStart})
@@ -128,9 +129,9 @@ export async function readPoolReliabilityWindows(
       ${
         terminalReady
           ? `FROM home_attempts r
-      LEFT JOIN basalt_model_terminal_starts s
-        ON r.latest AND s.pool=r.pool AND s.request_id=${startId}
-      LEFT JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
+      LEFT JOIN LATERAL (SELECT f.outcome,f.status,f.finished_at FROM basalt_model_terminal_starts s
+        JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
+        WHERE r.latest AND s.pool=r.pool AND s.request_id=${startId} LIMIT 1) f ON true
       WHERE ${homeTimeRange}`
           : `FROM basalt_model_requests r
       WHERE r.pool=$1 AND r.source=$3 AND ${homeTimeRange}`
@@ -153,12 +154,12 @@ export async function readPoolReliabilityWindows(
       SELECT s.pool,$3::character(64) AS source,s.client_key,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS failed,f.status AS status_code,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS unassigned,NULL::text AS raw_at,f.finished_at
-      FROM basalt_model_terminal_starts s
-      JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
-      WHERE s.pool=$1
-        AND ${finishedTimeRange}
+      FROM basalt_model_terminal_finishes f
+      CROSS JOIN LATERAL (SELECT s.pool,s.request_id,s.client_key FROM basalt_model_terminal_starts s
+        WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+      WHERE ${finishedTimeRange}
         AND f.outcome <> 'unavailable'
-        -- recent_home holds every Home attempt of a request that finished in the window.
+        -- recent_home holds at least one Home attempt of every request that finished in the window and has one.
         AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)`
           : ""
       }
