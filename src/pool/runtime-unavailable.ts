@@ -2,6 +2,8 @@ import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
 import { retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
 const message = "The model runtime restarted. Please retry this request.";
+// Claude Code gives up after three overload answers; an api_error keeps its full retry budget.
+const claudeError = { type: "error", error: { type: "api_error", message } };
 function anthropic(request: Request) {
   return /\/(?:v1\/)?messages$/.test(new URL(request.url).pathname);
 }
@@ -9,11 +11,9 @@ function anthropic(request: Request) {
 export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
   const claude = anthropic(request);
   const response = Response.json(
-    claude
-      ? { type: "error", error: { type: "overloaded_error", message } }
-      : { error: { type: "server_error", code: "server_error", message } },
+    claude ? claudeError : { error: { type: "server_error", code: "server_error", message } },
     {
-      status: claude ? 529 : 503,
+      status: 503,
       headers: {
         "Retry-After": "1",
         "Cache-Control": "no-store",
@@ -115,7 +115,7 @@ export function nativeRuntimeStream(
           }
           interrupted?.(error);
           const event = claude
-            ? { type: "error", error: { type: "overloaded_error", message } }
+            ? claudeError
             : {
                 type: "response.failed",
                 response: {

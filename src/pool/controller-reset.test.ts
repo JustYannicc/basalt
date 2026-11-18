@@ -149,7 +149,7 @@ test("a safe read cut before its response is sent once more to a new instance", 
 });
 
 for (const [path, status, type] of [
-  ["/v1/messages", 529, "overloaded_error"],
+  ["/v1/messages", 503, "api_error"],
   ["/v1/responses", 503, "server_error"],
 ] as const)
   test(`a ${path} call that meets a second reset gets native retry advice, not a third send`, async (context) => {
@@ -185,7 +185,7 @@ test("a model body too large to hold is sent once and gets native retry advice",
     h.hop,
   );
   assert.equal(h.resolved, 1);
-  assert.equal(response.status, 529);
+  assert.equal(response.status, 503);
   const { lines } = await h.events();
   assert.deepEqual(
     lines.map((line) => [line.outcome, line.saved, line.reason]),
@@ -250,7 +250,7 @@ test("a started stream is not replayed and ends with the native retry terminal",
   const body = await response.text();
   assert.equal(h.resolved, 1);
   assert.ok(body.startsWith(started));
-  assert.match(body.slice(started.length), /^event: error\ndata: .*"overloaded_error"/);
+  assert.match(body.slice(started.length), /^event: error\ndata: .*"api_error"/);
   assert.doesNotMatch(body, /Durable Object/);
   const { lines, sentry } = await h.events();
   assert.deepEqual(
