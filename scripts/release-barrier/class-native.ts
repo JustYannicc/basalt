@@ -3,9 +3,12 @@ import { State, isResourceState } from "alchemy/State/State";
 import { Effect } from "effect";
 import { havePropsChanged } from "alchemy/Diff";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { classNamespaces, type ClassObservation } from "./declared-class-contract.ts";
+import {
+  classNamespaces,
+  nativeNamespacesMatch,
+  type ClassObservation,
+} from "./declared-class-contract.ts";
 import type { ClassRecord } from "./class-history.ts";
-import { canonical } from "./manifest.ts";
 
 export const classNative = (
   node: Plan.Apply,
@@ -34,8 +37,7 @@ export const classNative = (
           saved.native.mode !== current.providerMode ||
           (saved.status === "ready" &&
             saved.observed &&
-            canonical(current.attr.durableObjectNamespaces) !==
-              canonical(classNamespaces(saved.observed)))))
+            !nativeNamespacesMatch(current.attr.durableObjectNamespaces, saved.observed))))
     )
       throw declaredMismatch(
         "declared-class-native-state-drift",

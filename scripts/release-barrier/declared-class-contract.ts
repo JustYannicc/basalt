@@ -116,6 +116,29 @@ export const classNamespaces = (value: Pick<ClassObservation, "settings" | "scri
     ]),
   );
 
+/** Alchemy's native map: every class binding with a namespace id, another script's included. */
+const alchemyNamespaces = (value: Pick<ClassObservation, "settings">) =>
+  Object.fromEntries(
+    (value.settings.bindings ?? []).flatMap((binding: BindingIdentity) =>
+      binding.type === "durable_object_namespace" && binding.className && binding.namespaceId
+        ? [[binding.className, binding.namespaceId]]
+        : [],
+    ),
+  );
+
+/**
+ * The native row holds the class step's local map until the Worker activates, then alchemy's own
+ * map, which also carries classes bound from other scripts. Anything else is drift.
+ */
+export const nativeNamespacesMatch = (
+  native: unknown,
+  observed: Pick<ClassObservation, "settings" | "scriptName">,
+) =>
+  native != null &&
+  [classNamespaces(observed), alchemyNamespaces(observed)].some(
+    (expected) => canonical(native) === canonical(expected),
+  );
+
 export function classPlanChanges(node: Plan.Apply, entry: SqliteClassDeclaration): PropChange[] {
   const changes: PropChange[] = [];
   if (node.resource.Type !== entry.type)

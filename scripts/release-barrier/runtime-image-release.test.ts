@@ -245,7 +245,14 @@ function releaseGraph(
     accountId,
     workerName: id,
     tags: [...production.settings().tags],
-    durableObjectNamespaces: production.classes(),
+    // Alchemy's activation output maps every class binding with a namespace id, another script's included.
+    durableObjectNamespaces: Object.fromEntries(
+      (production.settings().bindings as Record<string, string>[]).flatMap((binding) =>
+        binding.type === "durable_object_namespace" && binding.class_name && binding.namespace_id
+          ? [[binding.class_name, binding.namespace_id]]
+          : [],
+      ),
+    ),
   });
   const memory = Effect.runSync(InMemoryService());
   const state = Layer.succeed(State, Effect.succeed(memory));

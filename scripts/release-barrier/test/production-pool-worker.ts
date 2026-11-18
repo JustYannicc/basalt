@@ -55,6 +55,14 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
     id: active,
     bindings: [
       doBinding("PoolContainer"),
+      // Production's PoolWorker also binds a class that another Worker owns.
+      {
+        type: "durable_object_namespace",
+        name: "BulkUsageImport",
+        class_name: "ArtifactsTokenCoordinator",
+        script_name: "synthetic-other-worker",
+        namespace_id: "foreign-namespace",
+      },
       { type: "plain_text", name: "POOL_PRESERVE_LEGACY_IMAGE", text: "true" },
     ],
     containers: ["PoolContainer"],

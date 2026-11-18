@@ -5,6 +5,7 @@ import { Effect, Schema } from "effect";
 import { classHistory } from "./class-history.ts";
 import {
   classNamespaces,
+  nativeNamespacesMatch,
   classTag,
   classUntagged,
   type ClassTarget,
@@ -54,8 +55,7 @@ export const verifyClassRollback = (
         native.attr.workerId !== saved.native.workerId ||
         native.attr.accountId !== saved.baseline.accountId ||
         native.attr.workerName !== saved.baseline.scriptName ||
-        canonical(native.attr.durableObjectNamespaces) !==
-          canonical(classNamespaces(saved.observed)) ||
+        !nativeNamespacesMatch(native.attr.durableObjectNamespaces, saved.observed) ||
         target.accountId !== saved.baseline.accountId ||
         target.scriptName !== saved.baseline.scriptName
       )
