@@ -14,7 +14,7 @@ export const historyImportCompletionStatements = [
   )`,
 ];
 
-export const historyImportReconcileVersion = "model_request_history_v13_import_reconcile";
+export const historyImportReconcileVersion = "model_request_history_v12_import_reconcile";
 /** Per-range progress of an import-completion reconciliation; safe to drop, never authoritative. */
 export const historyImportReconcileStatements = [
   `CREATE TABLE IF NOT EXISTS basalt_model_import_reconcile (
