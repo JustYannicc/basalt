@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,8 +30,9 @@ export async function command(args: readonly string[], home: string) {
   return result;
 }
 
-export async function fixtureHome(origin: string) {
-  const home = await mkdtemp(join(tmpdir(), "signalbox-client-test-"));
+export async function fixtureHome(origin: string, at?: string) {
+  const home = at ?? (await mkdtemp(join(tmpdir(), "signalbox-client-test-")));
+  await mkdir(home, { recursive: true, mode: 0o700 });
   const input = join(home, "input.json");
   await writeFile(
     input,
