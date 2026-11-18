@@ -169,3 +169,16 @@ export async function crashCell(
 
 export const inspectCrash = (access: ControllerAccess, identity: SlotIdentity, nonce: string) =>
   read(access, { action: "runtime-crash-inspect", identity, nonce });
+
+// Lenient: a newer controller may add fields to the reply.
+const TakenBookmark = Schema.Struct({
+  result: Schema.Struct({ bookmark: Schema.String, at: Schema.String }),
+});
+
+/**
+ * The controller storage's current point-in-time bookmark: the restore target if the class change
+ * fails. Reading it also arms a restore to it for ten minutes, the window the class change runs in.
+ */
+export const takeBookmark = async (access: ControllerAccess) =>
+  Schema.decodeUnknownSync(TakenBookmark)(await read(access, { action: "storage-bookmark" }))
+    .result;

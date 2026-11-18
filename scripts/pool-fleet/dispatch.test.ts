@@ -66,10 +66,10 @@ test("configure pins each colour with the digest the controller's own observatio
   }
 });
 
-test("configure, disable and crash refuse without a coordinator GO and send nothing", async () => {
+test("configure, disable, crash and bookmark refuse without a coordinator GO and send nothing", async () => {
   const lane = await harness();
   try {
-    for (const mode of ["configure-and-accept", "disable", "crash-cell"]) {
+    for (const mode of ["configure-and-accept", "disable", "crash-cell", "bookmark"]) {
       for (const bad of ["", "go", "coordinator-<pending>", "yes coordinator-2026-x"]) {
         const result = await runPoolFleet(dispatch(mode, { go: bad }), lane.deps());
         assert.equal(result.ok, false);
@@ -198,6 +198,25 @@ test("crash-cell kills one ready non-primary cell, sees it restart, and keeps re
     const again = await runPoolFleet(crash, lane.deps());
     assert.match(JSON.stringify("result" in again && again.result), /"already-submitted"/u);
     assert.equal(lane.crashes.length, 1);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("bookmark reads the controller storage's current bookmark under a GO and records when", async () => {
+  const lane = await harness();
+  try {
+    const result = await runPoolFleet(
+      dispatch("bookmark", { go: "coordinator-2026-11-19T00-00Z-bookmark" }),
+      lane.deps(),
+    );
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const taken = (result as { result: { bookmark: { bookmark: string; at: string } } }).result
+      .bookmark;
+    assert.equal(taken.bookmark, `0000002a-00000000-00000000-${"c".repeat(32)}`);
+    assert.match(taken.at, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.ok(lane.actions.includes("storage-bookmark"));
+    assert.match(stepSummary(result), /Controller storage bookmark taken at /u);
   } finally {
     await lane.close();
   }

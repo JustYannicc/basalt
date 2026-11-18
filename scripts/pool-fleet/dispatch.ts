@@ -6,7 +6,13 @@ import type { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
 import { rootServes, runFleetAcceptance } from "./accept.ts";
 import { poolWorkerName, type CloudflareAccess } from "./cloudflare.ts";
-import { inspectController, inspectFleet, shortHash, type ControllerAccess } from "./controller.ts";
+import {
+  inspectController,
+  inspectFleet,
+  shortHash,
+  takeBookmark,
+  type ControllerAccess,
+} from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
@@ -17,6 +23,7 @@ export const modes = [
   "disable",
   "accept",
   "crash-cell",
+  "bookmark",
 ] as const;
 type Mode = (typeof modes)[number];
 const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
@@ -87,7 +94,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         ),
       );
     if (
-      ["configure-and-accept", "disable", "crash-cell"].includes(mode) &&
+      ["configure-and-accept", "disable", "crash-cell", "bookmark"].includes(mode) &&
       !goPattern.test(input.go)
     )
       return yield* Effect.fail(
@@ -137,6 +144,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       });
     if (mode === "inspect") return { ...evidence, ...(yield* read()) };
     if (mode === "disable") return { ...evidence, disable: yield* disableFleet(access, input.go) };
+    if (mode === "bookmark")
+      return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };
     const acceptance = yield* needAcceptance(deps);
     const accept = () =>
       call(() =>
@@ -249,6 +258,11 @@ export function stepSummary(result: Awaited<ReturnType<typeof runPoolFleet>>) {
     `- GO: \`${goPattern.test(result.go) ? result.go : "none"}\``,
     `- Outcome: ${result.ok ? "passed" : "**failed**"}`,
   ];
+  const bookmark =
+    "result" in result
+      ? (result.result as { bookmark?: { at?: unknown } } | undefined)?.bookmark
+      : undefined;
+  if (bookmark) lines.push(`- Controller storage bookmark taken at ${String(bookmark.at)}`);
   if (!result.ok && "cause" in result) lines.push(`- Cause: ${String(result.cause)}`);
   if (!result.ok && "rollback" in result)
     lines.push(`- Rollback: \`${JSON.stringify(result.rollback)}\``);

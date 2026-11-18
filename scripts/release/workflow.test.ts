@@ -84,6 +84,7 @@ test("the class change states what was verified first and never pretends it can 
     "database load",
     "counts",
     "serving version",
+    "controller storage bookmark",
   ])
     assert.ok(verified.includes(item), item);
   const [summary, apply] = order(
@@ -197,14 +198,19 @@ test("production secrets reach only the steps that run the entry", () => {
     .split("\n      - ")
     .filter((block) => /secrets\.|\*release-secrets/u.test(block))
     .map((block) => /^name: (.*)$/mu.exec(block)?.[1] ?? block.split("\n")[0]);
-  for (const name of secretSteps) assert.match(step(name), /deploy\.ts /u, name);
+  for (const name of secretSteps)
+    assert.match(
+      step(name),
+      /scripts\/release\/deploy\.ts |scripts\/pool-fleet\/dispatch\.ts/u,
+      name,
+    );
   for (const name of [
     "Prepare",
     "Build and measure Worker startup",
     "Keep the plan and the counts",
   ])
     assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
-  assert.equal(secretSteps.length, 11);
+  assert.equal(secretSteps.length, 12);
 });
 
 test("acceptance covers the public app as well as the pool", () => {
@@ -232,4 +238,19 @@ test("the root's boot is read before the apply and must still serve after it", (
     step("Accept the release through the live pool"),
     /env\.POLICY_NAME == 'code' \|\| env\.POLICY_NAME == 'cutover-code'\) && 'same-boot'/u,
   );
+});
+
+test("the class change takes the controller storage bookmark first, under the same GO", () => {
+  const bookmark = step("Take the controller storage bookmark");
+  assert.equal(
+    condition("Take the controller storage bookmark"),
+    "env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'",
+  );
+  assert.match(bookmark, /POOL_FLEET_MODE=bookmark POOL_FLEET_GO="\$GO_INPUT"/u);
+  const [taken, verified, apply] = order(
+    "Take the controller storage bookmark",
+    "What was verified before the irreversible step",
+    "Apply the reviewed plan",
+  );
+  assert.ok(taken! < verified! && verified! < apply!);
 });
