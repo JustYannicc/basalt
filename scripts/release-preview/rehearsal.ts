@@ -195,7 +195,12 @@ export async function executeRehearsal(
       };
       for (const name of writerInputs) if (source[name]) environment[name] = source[name];
       // As production's release runner does: the deploy publishes a receipt for the image it serves.
-      Object.assign(environment, { GITHUB_SHA: commit, BASALT_POOL_IMAGE_RECEIPT: imageReceipt });
+      Object.assign(environment, {
+        GITHUB_SHA: commit,
+        BASALT_POOL_IMAGE_RECEIPT: imageReceipt,
+        // Response shapes the release saw, uploaded with the barrier receipts.
+        BASALT_REHEARSAL_CAPTURE_DIR: join(which, ".local", "release-barrier"),
+      });
       let outcome: Awaited<ReturnType<typeof releaseOutcome>> | undefined;
       const run = async () => {
         let exited = true;
@@ -210,6 +215,11 @@ export async function executeRehearsal(
           exited = false;
         });
         outcome = await releaseOutcome(join(which, ".local", "release-barrier"), exited);
+        await captureRuntimeRows(
+          subject,
+          cleanupEnvironment,
+          join(which, ".local", "release-barrier"),
+        ).catch(() => {});
         if (!outcome.ok) return;
         // Production's post-deploy checks, against the stage's own host while its brand is in place.
         // The public-site smoke isn't rehearsed: a disposable stage has no public site.
@@ -521,6 +531,42 @@ export async function executeRehearsal(
     process.removeListener("SIGTERM", abort);
     await rm(privateRoot, { recursive: true, force: true });
   }
+}
+
+/**
+ * What the stage's State holds for each fleet runtime after a release: the key names and types of
+ * its attributes, and whether its configuration kept the desired `instanceType` or the resolved form.
+ */
+async function captureRuntimeRows(
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  directory: string,
+) {
+  const { stageCleanupEnvironment } = await import("../environment.ts");
+  const { alchemyPreviewStateReader } = await import("../preview/inventory.ts");
+  const { shapeOf } = await import("../release-barrier/rehearsal-shape-capture.ts");
+  const config = stageCleanupEnvironment(subject, source);
+  const stacks = await alchemyPreviewStateReader({ environment: config.providers }).read(
+    config.stage,
+  );
+  const rows = Object.values(stacks)
+    .flat()
+    .filter((entry) => /PoolRuntime(?:Blue|Green)/u.test(entry.path))
+    .map((entry) => {
+      const attr = (entry.value as { attr?: { configuration?: Record<string, unknown> } } | null)
+        ?.attr;
+      return {
+        row: entry.path.split("/").slice(2).join("/"),
+        attr: shapeOf(attr),
+        configurationHasInstanceType: attr?.configuration
+          ? "instanceType" in attr.configuration
+          : null,
+      };
+    });
+  await writeFile(
+    join(directory, `state-runtime-rows-${Date.now()}.json`),
+    `${JSON.stringify({ at: new Date().toISOString(), rows }, null, 2)}\n`,
+  );
 }
 
 /** A stage that never reached a provider step: cleanup and verify accept it as torn down. */

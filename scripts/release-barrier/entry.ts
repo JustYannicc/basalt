@@ -1,3 +1,5 @@
+// Rehearsal-only, first so it sees every request; it installs nothing on production.
+import "./rehearsal-shape-capture.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { releaseEntryTarget } from "./release-stage.ts";
 import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
