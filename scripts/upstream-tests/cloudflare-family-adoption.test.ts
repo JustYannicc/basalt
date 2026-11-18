@@ -211,9 +211,10 @@ test("a Cloudflare account connected under the first catalog definition links to
       const dry = yield* runProductionOperation(settings, input as never);
       assert.ok(dry.action === "dry-run");
       assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "RequirementMismatch:provider");
-      const plan = (yield* Effect.promise(() =>
+      const reviewed = (yield* Effect.promise(() =>
         openArtifact(dry.artifact, settings.encryptionKey, settings.target),
-      )) as { changes: { table: string; key: unknown; action: string }[]; data: unknown };
+      )) as { plan: { changes: { table: string; key: unknown; action: string }[]; data: unknown } };
+      const plan = reviewed.plan;
       assert.deepEqual(
         plan.changes.map((change) => [change.table, change.key, change.action]),
         [
