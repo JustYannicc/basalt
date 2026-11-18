@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { freezeUpload } from "./version-request.ts";
+import { classEntries, declaredClassSettings } from "./declared-class-contract.ts";
+import { loadDeclaredChanges } from "./declared-file.ts";
 import type { FrozenContainer } from "./container.ts";
 import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-worker-input.ts";
 import { safeInputHash, servingWorkerSettings, workerInputHash } from "./serving-worker-input.ts";
@@ -87,6 +90,10 @@ export async function probeWorkerSettings(
     forwardInput?: ForwardInputProof;
   },
 ) {
+  // The class step runs after this probe, so a declared class it will add is not live yet.
+  const declaredClasses = classEntries(
+    await loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+  );
   const base = new URL(apiBaseUrl);
   const prefix = base.pathname.replace(/\/$/, "");
   const listPath = `${prefix}/accounts/${encodeURIComponent(accountId)}/workers/scripts`;
@@ -261,7 +268,13 @@ export async function probeWorkerSettings(
               {
                 fqn: worker.role,
                 request: { ...input, metadata: declaration.metadata },
-                previousSettings: settings,
+                previousSettings: declaredClassSettings(
+                  settings,
+                  declaration.metadata,
+                  declaredClasses,
+                  worker.role,
+                  worker.scriptName,
+                ),
                 previousProps: {},
                 props: {},
               },
