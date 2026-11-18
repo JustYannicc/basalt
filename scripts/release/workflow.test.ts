@@ -254,3 +254,12 @@ test("the class change takes the controller storage bookmark first, under the sa
   );
   assert.ok(taken! < verified! && verified! < apply!);
 });
+
+test("while the hold is set an automatic run is skipped, and a failed rollback is said out loud", () => {
+  const pick = step("Pick the candidate");
+  assert.match(pick, /PRODUCTION_RELEASE_HOLD: \$\{\{ vars\.PRODUCTION_RELEASE_HOLD \}\}/u);
+  assert.match(pick, /if \[ -n "\$PRODUCTION_RELEASE_HOLD" \]; then[\s\S]*?release=false/u);
+  const rollback = step("Roll back a failed release");
+  assert.doesNotMatch(rollback, /\|\| true/u);
+  assert.match(rollback, /::error::The rolled-back version also fails acceptance/u);
+});

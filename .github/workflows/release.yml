@@ -80,10 +80,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             printf 'sha=%s\nrelease=true\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # While the hold is set an automatic run releases nothing: skipped, not a red run per push.
+          if [ -n "$PRODUCTION_RELEASE_HOLD" ]; then
+            echo "The release hold is set; $CANDIDATE waits for a dispatch under a coordinator GO." >> "$GITHUB_STEP_SUMMARY"
+            printf 'sha=%s\nrelease=false\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           GITHUB_OUTPUT="$RUNNER_TEMP/newer" MAIN_RELEASE_CANDIDATE="$CANDIDATE" node scripts/release-merge/main-candidate.ts newer
@@ -337,8 +344,11 @@ jobs:
         if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
         run: |
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
-          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json || true
-          echo "::error::Release rolled back (every Worker the plan updated): $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          # The release is red either way; this says whether the version rolled back to still serves.
+          if ! bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json; then
+            echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
+          fi
+          echo "::error::Release rolled back (every Worker the plan updated); the cause is in the step above and in the sealed detail."
           exit 1
       - name: Stop on a failed class change
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')

@@ -111,7 +111,7 @@ export const exportLegacyRecords = (
 
 /**
  * Home's schema step: the retired layer kept an `unresolvedHome` receipt when a Home migration's
- * outcome was unknown. The cutover must not start while one is open (NATIVE-CUTOVER-REVIEW trap d).
+ * outcome was unknown. The cutover must not start while one is open.
  */
 export const assertNoUnresolvedHome = (
   stage: string,
