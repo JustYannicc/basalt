@@ -28,7 +28,7 @@ export function decodeRootImagePin(value: string, accountId: string) {
     throw new PoolDeclarationRefused({
       reason: "root-image-pin-malformed",
       why: "POOL_ROOT_IMAGE must name one immutable registry digest and its 16-hex build input.",
-      fix: 'Set POOL_ROOT_IMAGE to {"image":"registry.cloudflare.com/<account>/<repo>@sha256:<digest>","input":"<16 hex>"} from PoolContainer\'s State row.',
+      fix: 'Set POOL_ROOT_IMAGE to {"image":"<registry>/<account>/<repo>@sha256:<digest>","input":"<16 hex>"}: the image from PoolContainer\'s configuration.image, the input from PoolWorker\'s POOL_IMAGE_HASH.',
     });
   }
   if (!inDeploymentAccount(pin.image, accountId))
@@ -58,7 +58,7 @@ export const rootImagePin = Effect.gen(function* () {
         new PoolDeclarationRefused({
           reason: "root-image-pin-missing",
           why: "Without POOL_ROOT_IMAGE, PoolContainer builds from containers/pool and Alchemy rolls the live root to the new image.",
-          fix: "Set POOL_ROOT_IMAGE to the image and hash.image of PoolContainer's State row, as the preflight reads them.",
+          fix: "Set POOL_ROOT_IMAGE to PoolContainer's configuration.image and PoolWorker's POOL_IMAGE_HASH, as the preflight reads them.",
         }),
       );
     return undefined;

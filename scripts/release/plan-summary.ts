@@ -128,6 +128,7 @@ const KINDS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^Cloudflare\.Vectorize/u, "Vectorize index"],
   [/^Cloudflare\.Workflow/u, "Workflow"],
   [/^Cloudflare\.SecretsStore/u, "Secrets Store store"],
+  [/^Cloudflare\.ApiToken\./u, "API token"],
   [/^Planetscale\.(?:Postgres)?Database$/u, "PlanetScale database"],
 ];
 

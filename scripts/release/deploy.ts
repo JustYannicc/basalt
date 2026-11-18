@@ -531,14 +531,23 @@ try {
         }) as Fx.Effect<unknown, unknown, never>) as
           | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
           | undefined;
+        // The input is the identity the controller knows the root by: PoolWorker's POOL_IMAGE_HASH.
+        // Once the root is pinned, PoolContainer's own hash.image names the reference, not the build.
+        const workerRow = (yield* state.get({
+          stack: "basalt",
+          stage,
+          fqn: "PoolWorker",
+        }) as Fx.Effect<unknown, unknown, never>) as
+          | { props?: { env?: { POOL_IMAGE_HASH?: unknown } } }
+          | undefined;
         const recorded = {
           image: rootRow?.attr?.configuration?.image,
-          input: rootRow?.attr?.hash?.image,
+          input: workerRow?.props?.env?.POOL_IMAGE_HASH,
         };
         if (!pin || pin.image !== recorded.image || pin.input !== recorded.input)
           return yield* Effect.die(
             new Error(
-              `POOL_ROOT_IMAGE does not match the root's State row (image ${recorded.image === pin?.image ? "equal" : "differs"}, input ${recorded.input === pin?.input ? "equal" : "differs"})`,
+              `POOL_ROOT_IMAGE does not match State (image ${recorded.image === pin?.image ? "equal" : "differs"} from PoolContainer's configuration.image, input ${recorded.input === pin?.input ? "equal" : "differs"} from PoolWorker's POOL_IMAGE_HASH)`,
             ),
           );
         return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
