@@ -83,3 +83,30 @@ test("capacity refusal closes both retained upload branches", async () => {
   assert.equal(response.status, 503);
   await cancelled.promise;
 });
+
+for (const [path, status, retry] of [
+  ["/v1/messages", 503, true],
+  ["/v1/responses", 503, true],
+  ["/v1/images/generations", 502, false],
+  ["/v1/videos", 502, false],
+] as const)
+  test(`a runtime crash after ${path} was accepted ${retry ? "asks for a retry" : "keeps the cautious answer"}`, async () => {
+    let sends = 0;
+    const response = await forwardRecoverably(
+      new Request(`http://pool${path}`, { method: "POST", body: "{}" }),
+      async (_request, dispatch) => {
+        sends++;
+        dispatch();
+        throw new Error("synthetic accepted runtime crash");
+      },
+      () => {},
+    );
+    assert.equal(sends, 1);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("x-should-retry"), retry ? null : "false");
+    const body = await response.json();
+    if (!retry) {
+      assert.equal(body.error.retryable, false);
+      assert.match(body.error.message, /outcome is unknown/);
+    }
+  });

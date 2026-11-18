@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "When a runtime cell crashes after accepting a call, the controller tells the client to retry only on the shared allow-list of model routes whose repeat costs at most one response's tokens. A call that may have started a paid job, such as images or video, gets the cautious unknown-outcome answer that asks the client not to retry automatically, so it is never started twice without the client deciding."
+    }
+  }
+}

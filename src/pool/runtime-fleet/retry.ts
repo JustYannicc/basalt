@@ -5,6 +5,11 @@ import { awaitProbe } from "../availability.ts";
 import { FleetRefused } from "./state.ts";
 import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
 import { nativeRuntimeUnavailable, nativeRuntimeStream } from "../runtime-unavailable.ts";
+import {
+  modelCallReplayable,
+  upstreamOutcomeUnknown,
+} from "../../../clients/contracts/model-error.ts";
+import { retainEndpointRequestId } from "./endpoint-trace.ts";
 
 const safeReads = new Set(["/v1/models", "/typesafe/v1/models"]);
 function recoverable(error: unknown) {
@@ -20,6 +25,19 @@ function recoverable(error: unknown) {
     runtimeReason !== "slot_policy" &&
     runtimeReason !== "slot_selection"
   );
+}
+
+/**
+ * A runtime that crashed after accepting a call leaves its outcome unknown. Only an allow-listed
+ * model call, which costs at most one response's tokens to repeat, is told to retry; a call that
+ * may have started a paid job keeps the cautious answer so its client decides.
+ */
+function acceptedCrash(request: Request, error: unknown) {
+  const pathname = new URL(request.url).pathname;
+  if (modelCallReplayable(pathname)) return nativeRuntimeUnavailable(request, error);
+  const response = upstreamOutcomeUnknown(undefined, pathname);
+  if (error instanceof Error) retainEndpointRequestId(error, response);
+  return response;
 }
 
 /** Only undispatched requests and explicit model-list reads may cross the crash boundary. */
@@ -74,7 +92,7 @@ export async function forwardRecoverably(
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
         }
-        if (dispatched && !safe) return nativeRuntimeUnavailable(request, error);
+        if (dispatched && !safe) return acceptedCrash(request, error);
         retained = backup ?? new Request(request, { signal });
         retainedOwned = true;
         if (error instanceof FleetRefused && error.reason === "capacity") {
