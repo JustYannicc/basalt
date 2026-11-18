@@ -40,6 +40,10 @@ export function parseConnectLink(params: Readonly<Record<string, string>>): Conn
   };
 }
 
+/** Whether a link was made for a vault other than this one. */
+export const linkedToOtherVault = (linked: string | null, vault: string) =>
+  linked !== null && linked !== vault;
+
 /**
  * Builds the link Basalt opens after it creates the app-scoped MCP connection.
  * Every parameter is non-secret; the grant itself happens through device authorization.
