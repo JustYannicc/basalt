@@ -5,6 +5,7 @@ import {
   membershipPrefix,
   membershipReadMs,
   membershipRefreshMs,
+  membershipTtlMs,
   type NativeMembershipPolicy,
   type NativeMembershipSnapshot,
 } from "./membership-contract.ts";
@@ -22,6 +23,11 @@ function fixture(accounts: Record<string, string[] | "not-native">) {
   const runtime = new Map<string, NativeMembershipPolicy>();
   const calls = { reads: [] as string[], home: 0, installs: 0 };
   let failRead = false;
+  // Lets a test hold a host read or a runtime install open, or act just before an install lands.
+  const hooks: {
+    read?: () => Promise<void>;
+    install?: (policy: NativeMembershipPolicy) => Promise<void>;
+  } = {};
   const deps: ConstructorParameters<typeof NativeMemberships>[0] = {
     storage: {
       get: async <T>(name: string) => structuredClone(values.get(name)) as T | undefined,
@@ -33,6 +39,7 @@ function fixture(accounts: Record<string, string[] | "not-native">) {
     now: () => now,
     read: async (pool, organization): Promise<NativeMembershipSnapshot> => {
       calls.reads.push(pool);
+      await hooks.read?.();
       if (failRead) throw new Error("tools unavailable");
       const selected = host.get(pool) ?? "not-native";
       if (selected === "not-native") return { pool, organization, native: false, accounts: [] };
@@ -63,7 +70,7 @@ function fixture(accounts: Record<string, string[] | "not-native">) {
     },
     install: async (policy) => {
       calls.installs++;
-      // The native scheduler refuses an older revision and a same-revision lease that ends earlier.
+      await hooks.install?.(policy);
       const current = runtime.get(policy.pool);
       if (
         current &&
@@ -103,6 +110,7 @@ function fixture(accounts: Record<string, string[] | "not-native">) {
     get memberships() {
       return memberships;
     },
+    hooks,
     restart: () => {
       memberships = new NativeMemberships(deps);
     },
@@ -141,10 +149,8 @@ test("an idle hour reads each pool once a minute instead of on every five-second
     f.advance(membershipRefreshMs);
     await f.memberships.tick();
   }
-  // Before this change every pass read every pool and called Home twice per native pool:
-  // 720 passes x 7 pools = 5,040 host reads and 720 x 6 x 2 = 8,640 Home calls an hour.
-  assert.equal(f.calls.reads.length, 7 * (hourMs / membershipReadMs), "420 host reads");
-  assert.equal(f.calls.home, 6 * 2 * (hourMs / membershipReadMs), "720 Home calls");
+  assert.equal(f.calls.reads.length, 420, "one read per pool per minute");
+  assert.equal(f.calls.home, 720, "two Home calls per native pool per minute");
   // Native policy leases still renew on every pass.
   assert.equal(f.calls.installs, 7 * passes);
   for (const index of [1, 2, 3, 4, 5, 6])
@@ -180,7 +186,7 @@ test("a removal through the host is refused before it commits, and any other cha
   }
   assert.deepEqual(await f.usable("pool"), ["kept"]);
   assert.ok(
-    lostAt - removedAt <= membershipReadMs + membershipRefreshMs,
+    lostAt - removedAt <= 65_000,
     `bound is one read interval plus one pass, got ${lostAt - removedAt} ms`,
   );
 });
@@ -242,4 +248,76 @@ test("a native pool still dirty after its read keeps reading on every pass", asy
     await f.memberships.tick();
     assert.equal(f.calls.reads.length, pass);
   }
+});
+
+test("a person's deletion or a runtime recovery reads every pool on the next pass", async () => {
+  const f = await setUp({ a: ["auth-a"], b: ["auth-b"] });
+  f.memberships.due();
+  f.advance(membershipRefreshMs);
+  await f.memberships.tick();
+  assert.deepEqual(f.calls.reads.sort(), ["a", "b"]);
+  f.reset();
+  await f.memberships.readAll();
+  assert.deepEqual(f.calls.reads.sort(), ["a", "b"]);
+});
+
+test("a read that started before due() does not count as the fresh read", async () => {
+  const f = await setUp({ pool: ["auth"] });
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  f.hooks.read = () => {
+    entered.resolve();
+    return release.promise;
+  };
+  f.advance(membershipReadMs);
+  const reading = f.memberships.tick();
+  await entered.promise;
+  f.memberships.due();
+  release.resolve();
+  await reading;
+  f.hooks.read = undefined;
+  f.advance(membershipRefreshMs);
+  await f.memberships.tick();
+  assert.deepEqual(f.calls.reads, ["pool", "pool"]);
+});
+
+test("a renewal that loses to a reservation reads the new selection in the same pass", async () => {
+  const f = await setUp({ pool: ["kept", "removed"] });
+  f.host.set("pool", ["kept"]);
+  let reserved = false;
+  f.hooks.install = async (policy) => {
+    // The host reserves just before the renewal reaches the runtime.
+    if (!reserved && !policy.dirty) {
+      reserved = true;
+      await f.reserve("pool");
+    }
+  };
+  f.advance(membershipRefreshMs);
+  await f.memberships.tick();
+  assert.deepEqual(f.calls.reads, ["pool"]);
+  assert.deepEqual(await f.usable("pool"), ["kept"]);
+});
+
+test("a host read waits for an in-flight renewal so its later lease is the one installed", async () => {
+  const f = await setUp({ pool: ["auth"] });
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  f.hooks.install = async (policy) => {
+    if (!policy.dirty) {
+      f.hooks.install = undefined;
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  f.advance(membershipRefreshMs);
+  const renewing = f.memberships.tick();
+  await entered.promise;
+  f.advance(1_000);
+  const reading = f.memberships.refresh("pool");
+  await new Promise<void>((done) => setImmediate(done));
+  assert.deepEqual(f.calls.reads, [], "the read waits for the renewal");
+  release.resolve();
+  await Promise.all([renewing, reading]);
+  assert.deepEqual(f.calls.reads, ["pool"]);
+  assert.equal(f.runtime.get("pool")?.expiresAt, f.now() + membershipTtlMs);
 });

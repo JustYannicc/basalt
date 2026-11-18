@@ -32,9 +32,8 @@ export const membershipPolicy = ({
 });
 
 /**
- * A pass reads the host after a reservation, an unacknowledged revision or a failure, on a
- * controller's first pass, and otherwise once per read interval. A host-confirmed non-native pool
- * stays dirty but waits for the interval: only a reservation can make it native.
+ * A native pool stays due while dirty, so a pending Home binding retries every pass. A host-confirmed
+ * non-native pool also stays dirty but waits for the interval: only a reservation can make it native.
  */
 export const membershipReadDue = (
   policy: MembershipState,

@@ -392,6 +392,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
     this.computers = new Computers({
       retirePool: (pool, at) => this.memberships.retire(pool, at),
+      personDeleted: () => this.memberships.due(),
       storage: ctx.storage,
       home: new ComputerHome(
         new HomeClient(home, Date.now, () => this.control.invalidateViews()),

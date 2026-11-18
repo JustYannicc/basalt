@@ -48,6 +48,8 @@ export class NativeMemberships {
   private renewing = new Map<string, Promise<boolean>>();
   // In memory on purpose: a restarted controller reads every pool on its first pass.
   private readAt = new Map<string, number>();
+  // A read that started before due() must not record itself as current.
+  private readEpoch = 0;
   private initializing = new Map<string, Promise<void>>();
   private ticking?: Promise<void>;
   private failures = new Map<string, PoolFailureDiagnostic>();
@@ -296,9 +298,16 @@ export class NativeMemberships {
     if (!(await this.run(async (state) => state[pool]?.native))) return;
     await this.authority(pool);
   }
-  /** A recovered runtime may also have lost Home state, so the next pass reads and repairs every pool. */
-  readAll(): Promise<void> {
+  /**
+   * Host changes that send no reservation, such as a person's deletion, and recovered runtimes, which may
+   * have lost Home state, need every pool read and repaired on the next pass.
+   */
+  due(): void {
+    this.readEpoch++;
     this.readAt.clear();
+  }
+  readAll(): Promise<void> {
+    this.due();
     return this.tick();
   }
   tick(): Promise<void> {
@@ -340,12 +349,13 @@ export class NativeMemberships {
       );
     const active = this.running.get(pool);
     if (active) return active;
-    const started = this.now();
+    const started = this.now(),
+      epoch = this.readEpoch;
     const task = this.repair(pool)
       .then(
         () => {
           this.failures.delete(pool);
-          this.readAt.set(pool, started);
+          if (epoch === this.readEpoch) this.readAt.set(pool, started);
         },
         (error: unknown) => {
           this.failures.set(
@@ -359,7 +369,7 @@ export class NativeMemberships {
     this.running.set(pool, task);
     return task;
   }
-  /** A pass reads the host only when this pool's read is due; otherwise it renews the lease locally. */
+  // A running or initializing read installs a fresh lease itself.
   private async upkeep(pool: string): Promise<void> {
     if (!this.running.has(pool) && !this.initializing.has(pool) && (await this.renew(pool))) return;
     await this.refresh(pool);
@@ -399,13 +409,20 @@ export class NativeMemberships {
       );
       throw error;
     }
+    return this.acknowledge(policy, false);
+  }
+  /** Only a host read's clean acknowledgement moves grace; a renewal keeps the read's deadline. */
+  private acknowledge(policy: State, read: boolean) {
     return this.run(async (state) => {
-      const current = state[pool];
+      const current = state[policy.pool];
       if (!current || current.retired || current.revision !== policy.revision) return false;
-      state[pool] = {
+      state[policy.pool] = {
         ...current,
         installedRevision: policy.revision,
         installedUntil: Math.max(current.installedUntil ?? 0, policy.expiresAt),
+        ...(read
+          ? { installedGraceUntil: policy.dirty ? 0 : policy.expiresAt + membershipGraceMs }
+          : {}),
       };
       await this.save(state);
       return true;
@@ -486,18 +503,7 @@ export class NativeMemberships {
       });
       if (!policy) continue;
       await this.install(policy);
-      const installed = await this.run(async (state) => {
-        const current = state[pool];
-        if (!current || current.retired || current.revision !== policy.revision) return false;
-        state[pool] = {
-          ...current,
-          installedRevision: policy.revision,
-          installedUntil: Math.max(current.installedUntil ?? 0, policy.expiresAt),
-          installedGraceUntil: policy.dirty ? 0 : policy.expiresAt + membershipGraceMs,
-        };
-        await this.save(state);
-        return true;
-      });
+      const installed = await this.acknowledge(policy, true);
       if (installed) return;
     }
   }
