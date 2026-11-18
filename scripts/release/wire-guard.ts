@@ -63,6 +63,10 @@ const REASONS = {
   hash: ["The code differs from the reviewed build.", "Rebuild from the reviewed commit."],
   application: ["Only an application this process created may be deleted.", BY_HAND],
   delete: ["Deleting it loses data or breaks the live service.", BY_HAND],
+  store: [
+    "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
+    "Upgrade or bootstrap the store by hand under its own approval.",
+  ],
 } as const;
 interface At {
   readonly resource: string;
@@ -100,6 +104,10 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/accounts\/[^/]+\/secrets_store\/stores\/([^/]+)/, "Secrets Store store"],
   [/^\/organizations\/[^/]+\/databases\/([^/]+)/, "PlanetScale database"],
 ];
+// Alchemy's shared State store Worker (StateStore/State.ts STATE_STORE_SCRIPT_NAME) and every secret write.
+const STATE_STORE =
+  /^\/accounts\/[^/]+\/workers\/(?:scripts|workers|services)\/alchemy-state-store(?:\/|$)/;
+const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(?:\/|$)/;
 const APPLICATION = /^\/accounts\/[^/]+\/containers\/applications(?:\/([^/]+))?/;
 
 const nullable = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
@@ -206,6 +214,17 @@ const check = (
       method,
       path: template(path),
     });
+    if (
+      method !== "GET" &&
+      method !== "HEAD" &&
+      (STATE_STORE.test(path) || SECRET_WRITE.test(path))
+    )
+      return yield* refuse(
+        at(STATE_STORE.test(path) ? "State store" : "Secrets Store secret", "{id}"),
+        "store",
+        "method",
+        method,
+      );
     const script = name(UPLOAD);
     if (script !== undefined && ["PUT", "POST", "PATCH"].includes(method))
       return yield* checkUpload(config, request, at("Worker", script), script);
@@ -239,7 +258,9 @@ export const install = (config: WireGuardConfig = {}) =>
       const exit = await Effect.runPromiseExit(check(config, created, request, path));
       if (Exit.isFailure(exit)) {
         const error = Cause.squash(exit.cause);
-        if (error instanceof WireRefused) Deferred.doneUnsafe(refused, Effect.fail(error));
+        // The self-test's own probe is refused on purpose and must not end the run.
+        if (error instanceof WireRefused && !path.endsWith(`/workers/scripts/${PROBE_SCRIPT}`))
+          Deferred.doneUnsafe(refused, Effect.fail(error));
         throw error;
       }
       const response = await inner(request);
@@ -267,12 +288,14 @@ export const install = (config: WireGuardConfig = {}) =>
     };
   });
 
+const PROBE_SCRIPT = "__wire_guard_probe";
+
 const probe = (base: string) => {
   const form = new FormData();
   const metadata = { main_module: "probe.js", migrations: { deleted_classes: ["PoolContainer"] } };
   form.append("metadata", JSON.stringify(metadata));
   form.append("probe.js", new Blob(["export default {};"]), "probe.js");
-  const url = `${base}/accounts/${"0".repeat(32)}/workers/scripts/__wire_guard_probe`;
+  const url = `${base}/accounts/${"0".repeat(32)}/workers/scripts/${PROBE_SCRIPT}`;
   return HttpClient.execute(
     HttpClientRequest.put(url).pipe(HttpClientRequest.bodyFormData(form)),
   ).pipe(Effect.provide(FetchHttpClient.layer));

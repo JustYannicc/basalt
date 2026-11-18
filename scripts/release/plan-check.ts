@@ -340,7 +340,9 @@ const lifecycleChange = (node: Node): string[] =>
         "$resource: recorded -> replaced by a new one",
         ...propChanges(recorded(node)?.props, node.resource.Props),
       ]
-    : [`$resource: recorded (${recorded(node)?.removalPolicy ?? "destroy"}) -> ${node.action}`];
+    : [
+        `$resource: recorded (${(recorded(node) as { removalPolicy?: string } | undefined)?.removalPolicy ?? "destroy"}) -> ${node.action}`,
+      ];
 
 /**
  * The non-noop changes of an admitted plan, for the step summary. A refused plan fails with one
@@ -410,7 +412,6 @@ export const checkPlan = (
           fix: "Restore the resource's declaration exactly as recorded. A protected resource cannot be listed in `removals`.",
         });
       if (
-        false &&
         (node.action === "delete" || node.action === "orphaned") &&
         // A Command has no cloud resource: its delete only drops the row.
         !(node.action === "delete" && node.resource.Type.startsWith("Command.")) &&

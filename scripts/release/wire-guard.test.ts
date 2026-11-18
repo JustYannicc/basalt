@@ -202,6 +202,26 @@ test("DELETE of Hyperdrive and every other protected resource is refused", async
   }
 });
 
+test("a deploy can never redeploy the State store or write a Secrets Store secret", async (t) => {
+  // A bootstrap redeploys `alchemy-state-store` and writes its token secret (StateStore/State.ts:376-386).
+  const upload = await guarded(t, {}, () =>
+    Workers.putScript({ ...poolWorkerUpload(undefined), scriptName: "alchemy-state-store" }),
+  );
+  assert.equal(refusalOf(upload.exit).resource, "State store {id}");
+  assert.deepEqual(upload.received, []);
+  for (const [method, path] of [
+    ["PUT", `/accounts/${ACCOUNT}/workers/scripts/alchemy-state-store/settings`],
+    ["POST", `/accounts/${ACCOUNT}/secrets_store/stores/synthetic-store/secrets`],
+    ["PATCH", `/accounts/${ACCOUNT}/secrets_store/stores/synthetic-store/secrets/synthetic-secret`],
+  ] as const) {
+    const raw = await guarded(t, {}, (base) =>
+      HttpClient.execute(HttpClientRequest.make(method)(`${base}${path}`)),
+    );
+    assert.equal(refusalOf(raw.exit).field, "method", path);
+    assert.deepEqual(raw.received, [], path);
+  }
+});
+
 test("only a container application created in this process may be deleted", async (t) => {
   const run = await guarded(t, {}, () =>
     Effect.gen(function* () {
@@ -296,4 +316,18 @@ test("selfTest passes in this process and the local server receives nothing", as
   );
   assert.ok(Exit.isSuccess(exit), String(Exit.isFailure(exit) && Cause.squash(exit.cause)));
   assert.deepEqual(server.received, []);
+});
+
+test("the self-test's own refused probe does not end the deploy it guards", async () => {
+  const pending = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const guard = yield* install({});
+        yield* selfTest().pipe(Effect.provide(guard.layer));
+        return yield* Effect.exit(Effect.timeout(guard.refused, "20 millis"));
+      }),
+    ),
+  );
+  assert.ok(Exit.isFailure(pending));
+  assert.equal(Cause.squash(pending.cause) instanceof WireRefused, false);
 });

@@ -117,6 +117,8 @@ const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
+const { liveMainModuleSha256 } = await import("./live-module.ts");
+const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
 
 // Alchemy's progress events, kept so every run's full sequence survives in the artifact. Only short
@@ -153,17 +155,56 @@ const reporter = (event: unknown) =>
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   Effect.runPromise(
-    Effect.gen(function* () {
-      // Installed before Alchemy's HTTP layer exists; proven to refuse a class deletion every run.
-      const guard = yield* WireGuard.install(policy?.wire ?? {});
-      journal = guard.journal;
-      yield* WireGuard.selfTest();
-      yield* storeCannotBootstrap;
-      return yield* effect.pipe(
-        Effect.provide(guard.layer),
-        Effect.provideService(Alchemist.Progress, reporter),
-      ) as Fx.Effect<A, unknown, never>;
-    }).pipe(Effect.provide(Alchemist.layer()), Effect.scoped) as Fx.Effect<A, unknown, never>,
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Installed before any Alchemy layer is built: Effect caches the default fetch on first read.
+        // The class change must re-upload the live code byte for byte (R2); the guard compares it.
+        const wire = {
+          sqliteClasses: policy?.wire?.sqliteClasses ?? {},
+          mainModuleSha256: {} as Record<string, string>,
+        };
+        const guard = yield* WireGuard.install(wire);
+        journal = guard.journal;
+        const guarded = Effect.gen(function* () {
+          yield* WireGuard.selfTest();
+          yield* storeCannotBootstrap;
+          for (const fqn of (policy?.wire?.expectLiveModule ?? []) as string[]) {
+            const state = yield* Alchemist.State.store({
+              backend: "configured",
+              ...target,
+            } as never) as unknown as Fx.Effect<any, unknown, never>;
+            const row = yield* state.get({ stack: "basalt", stage, fqn }) as Fx.Effect<
+              any,
+              unknown,
+              never
+            >;
+            const script = row?.attr?.workerName;
+            if (typeof script !== "string" || !script)
+              return yield* Effect.die(new Error(`No live script name recorded for ${fqn}`));
+            const digest = yield* liveMainModuleSha256({
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+              token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
+              script,
+            });
+            wire.mainModuleSha256[script] = digest;
+            liveModules.push({ fqn, digest });
+          }
+          // A refused request fails the run at once instead of after the SDK's retries.
+          return yield* Effect.raceFirst(
+            effect.pipe(Effect.provideService(Alchemist.Progress, reporter)) as Fx.Effect<
+              A,
+              unknown,
+              never
+            >,
+            guard.refused as Fx.Effect<never, unknown, never>,
+          );
+        });
+        return yield* guarded.pipe(
+          Effect.provide(Alchemist.layer()),
+          Effect.provide(guard.layer),
+        ) as Fx.Effect<A, unknown, never>;
+      }),
+    ) as Fx.Effect<A, unknown, never>,
   );
 
 const target = { entrypoint: resolve(root, config), stage };
@@ -233,6 +274,7 @@ try {
       }),
     );
     const record = {
+      liveModules,
       stage,
       config,
       include,
