@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { RemoteRuntimeDefect } from "../runtime-slots/request-error.ts";
-import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { runtimeFailureDiagnostic, runtimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { awaitProbe } from "../availability.ts";
 import { FleetRefused } from "./state.ts";
 import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
@@ -10,7 +10,8 @@ const safeReads = new Set(["/v1/models", "/typesafe/v1/models"]);
 // Readiness or the policy lease is not current yet: the container's readiness said unhealthy or
 // answered too late, a lease ran out, or the container is stopped and recovery will restart it.
 // These wait. Fenced, deselected and policy refusals throw at once; a replaced boot or an endpoint
-// that does not answer keeps the unpaced six-attempt budget.
+// that does not answer keeps the unpaced six-attempt budget. Only a selected runtime's admission
+// remembers its step and reason; the legacy lifecycle path keeps its bounded retries unchanged.
 const notAdmittingYet = new Set([
   "unhealthy",
   "slot_unhealthy",
@@ -18,10 +19,11 @@ const notAdmittingYet = new Set([
   "protection_lease_too_short",
 ]);
 function waitsForAdmission(error: unknown) {
-  const { runtimeStep, runtimeReason } = runtimeFailureDiagnostic(error, "fleet_forward");
+  const diagnostic = runtimeRouteDiagnostic(error);
   return (
-    notAdmittingYet.has(runtimeReason) ||
-    (runtimeReason === "timeout" && runtimeStep === "endpoint_health")
+    !!diagnostic &&
+    (notAdmittingYet.has(diagnostic.runtimeReason) ||
+      (diagnostic.runtimeReason === "timeout" && diagnostic.runtimeStep === "endpoint_health"))
   );
 }
 /** How long an undispatched request waits for admission before the retryable 503. */
@@ -149,6 +151,8 @@ export async function forwardRecoverably(
         if (waiting) {
           waitingSince ??= timing.now();
           if (timing.now() - waitingSince >= runtimeAdmissionWaitMs) break;
+          // Six hard refusals in a row end the request; a soft one in between restarts the count.
+          refusals = 0;
         } else if (++refusals >= 6) break;
         if (++failures === 5 && !recovered && recover) {
           // A restart that finished is used at once; a declined one is followed by the next read.

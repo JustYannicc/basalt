@@ -1,3 +1,4 @@
+import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
 import { RuntimeCrash } from "../runtime-crash.ts";
 import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
@@ -402,6 +403,10 @@ export class PoolRuntimeFleet {
       signal,
     ).catch((error: unknown) => {
       if (signal.aborted) throw error;
+      console.warn(
+        "POOL_RUNTIME_RECOVERY_DECLINED",
+        runtimeFailureDiagnostic(error, "fleet_forward"),
+      );
     });
     return true;
   }
