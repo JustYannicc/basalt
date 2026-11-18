@@ -149,3 +149,20 @@ test("no script launches a package bin with a bare bun exec, which drops its arg
   const offenders = files.filter((file) => /"bun",\s*\[?\s*"exec",\s*"[a-z]/u.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, []);
 });
+
+test("the state reader runs the CLI with this process's PATH, and a failure shows both output streams", async () => {
+  const { alchemyPreviewStateReader } = await import("./inventory.ts");
+  const seen: NodeJS.ProcessEnv[] = [];
+  const reader = alchemyPreviewStateReader({
+    environment: { CLOUDFLARE_API_TOKEN: "fixture-secret-token" },
+    command: (_args, _cwd, env) => {
+      seen.push(env);
+      return { status: 1, stdout: "Error: Cloudflare State store not found", stderr: "used fixture-secret-token" };
+    },
+  });
+  await assert.rejects(reader.read("test-rehearsal-7"), (error: Error) =>
+    /exit 1/.test(error.message) && /State store not found/.test(error.message) &&
+    /used \[redacted\]/.test(error.message) && !error.message.includes("fixture-secret-token"));
+  assert.equal(seen[0]!.PATH, process.env.PATH);
+  assert.equal(seen[0]!.ALCHEMY_STAGE, "test-rehearsal-7");
+});

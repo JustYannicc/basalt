@@ -19,8 +19,13 @@ import { requireCleanupStage } from "../subject.ts";
 
 const configuredStage = process.env.ALCHEMY_STAGE;
 
+// Alchemy's `state` commands take no --stage and open the stack under this placeholder stage.
+const stateCommandStage = "placeholder";
+
 const cleanupState = Layer.unwrap(Effect.gen(function* () {
-  const stage = yield* Stage;
+  const opened = yield* Stage;
+  // A state command reads the store for the configured stage; every other command must name it.
+  const stage = opened === stateCommandStage ? (configuredStage ?? "") : opened;
   yield* Effect.try(() => requireCleanupStage(stage, configuredStage)).pipe(Effect.orDie);
   yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(Effect.orDie);
   return Cloudflare.state();

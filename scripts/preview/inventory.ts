@@ -144,7 +144,8 @@ function runStateCommand(
 ): string {
   const result = command(args, cloudDirectory, env);
   if (result.error || result.status !== 0) {
-    const detail = [result.error?.message, ...(result.stderr ?? "").split(/\r?\n/u).filter(Boolean).slice(-20)]
+    // Alchemy reports some failures on stdout, so a failed read shows the tail of both streams.
+    const detail = [result.error?.message, ...`${result.stdout}\n${result.stderr ?? ""}`.split(/\r?\n/u).filter(Boolean).slice(-20)]
       .filter(Boolean).join("\n");
     throw new Error(`Authenticated Alchemy remote state read failed (exit ${result.status ?? "none"})${detail ? `:\n${redactor(env)(detail)}` : ""}`);
   }
@@ -190,7 +191,8 @@ export function alchemyPreviewStateReader(options: {
     async read(stage) {
       if (subjectFromStage(stage) === undefined)
         throw new Error("Remote state reads are restricted to PR and rehearsal stages");
-      const env = { ...source, ALCHEMY_STAGE: stage, CI: "true" };
+      // Callers pass provider credentials only; the CLI still needs this process's PATH and HOME.
+      const env = { PATH: process.env.PATH, HOME: process.env.HOME, ...source, ALCHEMY_STAGE: stage, CI: "true" };
       const listed = runStateCommand(command, [
         "--log-level", "none", "state", "list", "--recursive", "--config", stateConfig,
         "--backend", "configured", "--no-input",
