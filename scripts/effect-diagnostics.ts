@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./process.ts";
 import {
+  canaryPath,
   configPath,
   effectInJavaScript,
   notTypeChecked,
@@ -69,18 +70,27 @@ export function baselineProblems(
   return problems;
 }
 
-// The committed baseline never grows against the base commit. A new path may only carry what its
-// git rename or copy sources lost, shared out once, so moved code keeps its counts and new code has
-// none. Rules the base did not gate start fresh; entries for files neither side has are ignored.
-export function baseProblems(
-  head: Counts,
-  base: Counts,
-  baseFiles: ReadonlySet<string>,
-  headFiles: ReadonlySet<string>,
-  sources: ReadonlyMap<string, readonly string[]> = new Map(),
-  adopted: ReadonlySet<string> = new Set(),
-  diagnostics: readonly Diagnostic[] = [],
-) {
+export interface BaseInputs {
+  baseFiles: ReadonlySet<string>;
+  headFiles: ReadonlySet<string>;
+  // Line text the change removed, per file: a site whose line matches one moved with its code.
+  removed?: ReadonlyMap<string, readonly string[]>;
+  // Whole-file counts have no site line, so they follow git renames instead.
+  renamed?: ReadonlyMap<string, string>;
+  adopted?: ReadonlySet<string>;
+  diagnostics?: readonly Diagnostic[];
+  lineText?: (file: string, line: number) => string;
+}
+
+const wholeFile = new Set([notTypeChecked, effectInJavaScript]);
+
+// The committed baseline never grows against the base commit. A site may only move: a rise in a
+// file is paid for by a site whose line text the change removed from a file that lost a count of
+// the same rule, each removed line once. Rules the base did not gate start fresh; entries for
+// files neither side has are ignored.
+export function baseProblems(head: Counts, base: Counts, inputs: BaseInputs) {
+  const { baseFiles, headFiles, removed = new Map(), renamed = new Map() } = inputs;
+  const { adopted = new Set(), diagnostics = [], lineText = () => "" } = inputs;
   const problems: string[] = [];
   const present = (counts: Record<string, number>, files: ReadonlySet<string>) =>
     Object.fromEntries(Object.entries(counts).filter(([file]) => files.has(file)));
@@ -88,24 +98,41 @@ export function baseProblems(
     if (adopted.has(rule)) continue;
     const now = present(head[rule] ?? {}, headFiles);
     const before = present(base[rule] ?? {}, baseFiles);
-    const credit = Object.fromEntries(
+    const lost: Record<string, number> = Object.fromEntries(
       Object.entries(before).map(([file, count]) => [file, Math.max(0, count - (now[file] ?? 0))]),
     );
+    const pool = new Map(
+      Object.keys(lost)
+        .filter((file) => lost[file]! > 0)
+        .map((file) => [file, [...(removed.get(file) ?? [])]]),
+    );
     for (const [file, count] of Object.entries(now).sort()) {
-      let allowed = before[file] ?? 0;
-      if (!baseFiles.has(file))
-        for (const source of sources.get(file) ?? []) {
-          const take = Math.min(credit[source] ?? 0, count - allowed);
-          allowed += take;
-          credit[source] = (credit[source] ?? 0) - take;
+      let allowed = baseFiles.has(file) ? (before[file] ?? 0) : 0;
+      const sites = diagnostics.filter((d) => d.file === file && d.rule === rule);
+      if (count > allowed && wholeFile.has(rule)) {
+        const old = renamed.get(file);
+        const take = old ? Math.min(lost[old] ?? 0, count - allowed) : 0;
+        allowed += take;
+        if (old) lost[old] = (lost[old] ?? 0) - take;
+      } else
+        for (const site of sites) {
+          if (allowed >= count) break;
+          const text = lineText(file, site.line).trim();
+          if (text.length < 8) continue;
+          for (const [source, lines] of pool) {
+            const at = source === file || lost[source]! <= 0 ? -1 : lines.indexOf(text);
+            if (at < 0) continue;
+            lines.splice(at, 1);
+            lost[source]! -= 1;
+            allowed += 1;
+            break;
+          }
         }
-      if (count > allowed) {
-        const sites = diagnostics.filter((d) => d.file === file && d.rule === rule);
+      if (count > allowed)
         problems.push(
           `${baselinePath} raises ${file} ${rule} from ${allowed} to ${count} over the base commit.` +
             sites.map((d) => "\n  " + render(d)).join(""),
         );
-      }
     }
     if (total(now) > total(before)) {
       const grown = Object.keys(now).filter((file) => now[file]! > (before[file] ?? 0));
@@ -117,41 +144,64 @@ export function baseProblems(
   return problems;
 }
 
+function removedLines(diff: string) {
+  const removed = new Map<string, string[]>();
+  let file: string | undefined;
+  let inHunk = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) [file, inHunk] = [undefined, false];
+    else if (!inHunk) {
+      if (line.startsWith("--- a/")) file = line.slice(6);
+      else if (line.startsWith("@@")) inHunk = true;
+    } else if (line.startsWith("-") && file)
+      removed.set(file, [...(removed.get(file) ?? []), line.slice(1).trim()]);
+  }
+  return removed;
+}
+
 function baseCommitProblems(head: Counts, diagnostics: readonly Diagnostic[]) {
   const base = process.env.BASE_SHA;
   if (!base) return [];
   const git = (...args: string[]) =>
-    spawnSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 });
+    spawnSync("git", ["-c", "core.quotePath=false", ...args], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1 << 28,
+    });
   if (git("rev-parse", "--verify", "--quiet", `${base}^{commit}`).status !== 0)
     return [`BASE_SHA ${base} is not a commit in this checkout.`];
-  const tree = (...args: string[]) => {
-    const listed = git("ls-tree", "-r", "-z", "--name-only", ...args);
-    if (listed.status !== 0) throw new Error(`git ls-tree failed: ${listed.stderr.trim()}`);
-    return new Set(listed.stdout.split("\0"));
+  const output = (...args: string[]) => {
+    const result = git(...args);
+    if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
+    return result.stdout;
   };
-  const baseFiles = tree(base, "--", "scripts", "src", configPath);
+  const baseFiles = new Set(
+    output("ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src", configPath).split(
+      "\0",
+    ),
+  );
   if (!baseFiles.has(baselinePath)) {
     console.log(`The base commit ${base} has no ${baselinePath}; nothing to compare it with.`);
     return [];
   }
-  const show = (path: string) => {
-    const shown = git("show", `${base}:${path}`);
-    if (shown.status !== 0)
-      throw new Error(`git show ${base}:${path} failed: ${shown.stderr.trim()}`);
-    return shown.stdout;
-  };
-  const freeze = freezeProblems(show(configPath), `${base}:${configPath}`);
-  // 20% lets a file split four ways keep its counts; copies only match files the change touched.
-  const diff = git("diff", "-z", "--name-status", "-M20%", "-C20%", base, "--", "scripts", "src");
-  if (diff.status !== 0) return [`git diff ${base} failed: ${diff.stderr.trim()}`];
-  const sources = new Map<string, string[]>();
-  const fields = diff.stdout.split("\0");
+  const freeze = freezeProblems(output("show", `${base}:${configPath}`), `${base}:${configPath}`);
+  const renamed = new Map<string, string>();
+  const fields = output("diff", "-z", "--name-status", "-M", base, "--", "scripts", "src").split(
+    "\0",
+  );
   for (let index = 0; index < fields.length; index++)
-    if (/^[RC]\d*$/.test(fields[index]!)) {
-      const [source, target] = [fields[index + 1]!, fields[index + 2]!];
-      sources.set(target, [...(sources.get(target) ?? []), source]);
+    if (/^R\d*$/.test(fields[index]!)) {
+      renamed.set(fields[index + 2]!, fields[index + 1]!);
       index += 2;
     } else index += 1;
+  const removed = removedLines(
+    output("diff", "-U0", "--no-renames", "--no-color", base, "--", "scripts", "src"),
+  );
+  const lines = new Map<string, string[]>();
+  const lineText = (file: string, line: number) => {
+    if (!lines.has(file)) lines.set(file, readFileSync(join(root, file), "utf8").split("\n"));
+    return lines.get(file)![line - 1] ?? "";
+  };
   const headFiles = new Set(
     Object.values(head)
       .flatMap((files) => Object.keys(files))
@@ -161,15 +211,37 @@ function baseCommitProblems(head: Counts, diagnostics: readonly Diagnostic[]) {
     ...freeze.problems,
     ...baseProblems(
       head,
-      readCounts(show(baselinePath), `${base}:${baselinePath}`),
-      baseFiles,
-      headFiles,
-      sources,
-      freeze.adopted,
-      diagnostics,
+      readCounts(output("show", `${base}:${baselinePath}`), `${base}:${baselinePath}`),
+      {
+        baseFiles,
+        headFiles,
+        removed,
+        renamed,
+        adopted: freeze.adopted,
+        diagnostics,
+        lineText,
+      },
     ),
   ];
 }
+
+// The canary's sites are fixed; a different report means something silenced or changed the rules.
+const canaryReport = {
+  anyUnknownInErrorContext: 2,
+  floatingEffect: 1,
+  globalErrorInEffectFailure: 1,
+  schemaSync: 1,
+  unknownInEffectCatch: 1,
+};
+const canaryProblems = (canary: Record<string, number>) => {
+  const expected = JSON.stringify(canaryReport);
+  const found = JSON.stringify(Object.fromEntries(Object.entries(canary).sort()));
+  return found === expected
+    ? []
+    : [
+        `${canaryPath} reports ${found} instead of ${expected}; something silences Effect's diagnostics.`,
+      ];
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -200,6 +272,7 @@ function check() {
   const baseline = readCounts(readFileSync(join(root, baselinePath), "utf8"), baselinePath);
   const problems = [
     ...configProblems(),
+    ...canaryProblems(record.canary),
     ...record.misconfigured.map(
       (d) => `The Effect plugin rejected its configuration: ${render(d)}`,
     ),
@@ -225,7 +298,15 @@ function check() {
 function write() {
   writeFileSync(join(root, configPath), pluginConfig());
   run(process.execPath, ["scripts/typecheck.ts"], root);
-  const counts = sorted(readRecord().counts);
+  const record = readRecord();
+  const broken = [
+    ...canaryProblems(record.canary),
+    ...record.misconfigured.map(
+      (d) => `The Effect plugin rejected its configuration: ${render(d)}`,
+    ),
+  ];
+  if (broken.length) throw new Error(`no baseline written: ${broken.join(" ")}`);
+  const counts = sorted(record.counts);
   writeFileSync(join(root, baselinePath), JSON.stringify(counts, null, 2) + "\n");
   console.log(
     `Wrote ${baselinePath}: ${rulesOf(counts)

@@ -32,12 +32,14 @@ export interface Program {
 interface EffectRecord {
   fingerprint: string;
   counts: Counts;
+  canary: Record<string, number>;
   diagnostics: Diagnostic[];
   misconfigured: Diagnostic[];
 }
 
 export const root = fileURLToPath(new URL("../", import.meta.url));
 export const configPath = "tsconfig.effect.json";
+export const canaryPath = "scripts/effect-diagnostics-canary.ts";
 const recordPath = ".generated/ci/effect-diagnostics.json";
 // Programs that carry the plugin, and their descendants that must not replace it.
 export const pluginConfigs = ["tsconfig.json", "tsconfig.worker.json", "tsconfig.pool.json"];
@@ -54,7 +56,7 @@ const header = /^(?:(.+?)\((\d+),(\d+)\): )?(error|warning|suggestion|message) T
 const hidingDirective =
   /@(?:effect-diagnostics|effect-leakable-service|effect-expect-leaking|ts-nocheck)\b/g;
 // Any module specifier naming effect, or a call on an Effect namespace however it was imported.
-const usesEffect = /["'`]effect(?:\/[^"'`]*)?["'`]|\bEffect\.[A-Za-z]+\(/;
+const usesEffect = /["'`]effect(?:\/[^"'`]*)?["'`]|\bEffect\s*(?:\.\s*[A-Za-z]+\s*\(|:)/;
 
 const owned = (file: string) =>
   /^(?:scripts|src)\//.test(file) && !file.startsWith("scripts/release-barrier/");
@@ -111,11 +113,20 @@ function runCompiler(compiler: string, config: string) {
   });
 }
 
-// The programs are independent, so they check concurrently, which keeps the type check faster
-// than it was before the Effect plugin. Everything except Effect diagnostics, which the gate
+// The programs are independent, so the lanes run concurrently, each lane in order: the root
+// program alone beside the rest takes about as long as it does by itself and peaks near 7 GiB,
+// where all five at once peak near 9 GiB. Everything except Effect diagnostics, which the gate
 // reports, is printed in program order.
-export async function compilePrograms(compiler: string, configs: readonly string[]) {
-  const results = await Promise.all(configs.map((config) => runCompiler(compiler, config)));
+export async function compilePrograms(compiler: string, lanes: readonly (readonly string[])[]) {
+  const configs = lanes.flat();
+  const finished = await Promise.all(
+    lanes.map(async (lane) => {
+      const results = [];
+      for (const config of lane) results.push(await runCompiler(compiler, config));
+      return results;
+    }),
+  );
+  const results = finished.flat();
   const programs: Program[] = [];
   const failed: string[] = [];
   results.forEach(({ stdout, status }, index) => {
@@ -138,15 +149,15 @@ function carriesPlugin(config: string) {
   const seen = new Set<string>();
   for (let file = resolve(root, config); !seen.has(file);) {
     seen.add(file);
-    if (file === effect) return true;
     let parsed: { extends?: unknown; compilerOptions?: { plugins?: unknown; noCheck?: unknown } };
     try {
       parsed = JSON.parse(readFileSync(file, "utf8"));
     } catch {
       return false;
     }
-    if (parsed.compilerOptions?.plugins !== undefined || parsed.compilerOptions?.noCheck)
-      return false;
+    if (parsed.compilerOptions?.noCheck) return false;
+    if (file === effect) return true;
+    if (parsed.compilerOptions?.plugins !== undefined) return false;
     if (typeof parsed.extends !== "string" || !/^[./]/.test(parsed.extends)) return false;
     file = resolve(dirname(file), parsed.extends);
   }
@@ -175,6 +186,21 @@ function fingerprint(files: readonly string[]) {
   for (const file of [...configs, ...files])
     hash.update(`${file}\0`).update(readFileSync(join(root, file)));
   return hash.digest("hex");
+}
+
+// UTF-16 only with a byte-order mark, as the compiler reads it; a NUL byte anywhere else would let
+// a file read differently here than in the compiler, so it counts as hiding diagnostics.
+export function decode(bytes: Buffer) {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe)
+    return { text: bytes.subarray(2).toString("utf16le"), hidden: false };
+  if (bytes[0] === 0xfe && bytes[1] === 0xff)
+    return {
+      text: Buffer.from(bytes.subarray(2, bytes.length - (bytes.length % 2)))
+        .swap16()
+        .toString("utf16le"),
+      hidden: false,
+    };
+  return { text: bytes.toString("utf8"), hidden: bytes.includes(0) };
 }
 
 export function suppressionLines(text: string) {
@@ -210,16 +236,16 @@ export function recordEffectDiagnostics(programs: readonly Program[]) {
   }
   for (const file of sources) {
     if (!owned(file)) continue;
-    const bytes = readFileSync(join(root, file));
-    // UTF-16 sources still compile, so their tags are read the way the compiler reads them.
-    const text = bytes.includes(0) ? bytes.toString("utf16le") : bytes.toString("utf8");
+    const { text, hidden } = decode(readFileSync(join(root, file)));
     if (isJavaScript(file)) {
       if (usesEffect.test(text)) add(counts, effectInJavaScript, file);
       continue;
     }
     if (!inScope(file)) continue;
     if (!read.has(file)) add(counts, notTypeChecked, file);
-    for (const line of suppressionLines(text)) {
+    const hiding = suppressionLines(text).map((line) => ({ line, why: "A tag here hides" }));
+    if (hidden) hiding.push({ line: 1, why: "A NUL byte makes this file unreadable and hides" });
+    for (const { line, why } of hiding) {
       add(counts, suppressionComment, file);
       diagnostics.push({
         file,
@@ -228,9 +254,18 @@ export function recordEffectDiagnostics(programs: readonly Program[]) {
         severity: "error",
         code: 0,
         rule: suppressionComment,
-        message: "A tag here hides Effect diagnostics from the gate.",
+        message: `${why} Effect diagnostics from the gate.`,
       });
     }
+  }
+  // The canary's sites never enter the baseline; the gate expects exactly these on every run.
+  const canary: Record<string, number> = {};
+  for (const diagnostic of diagnostics)
+    if (diagnostic.file === canaryPath)
+      canary[diagnostic.rule] = (canary[diagnostic.rule] ?? 0) + 1;
+  for (const rule of Object.keys(counts)) {
+    delete counts[rule]![canaryPath];
+    if (!Object.keys(counts[rule]!).length) delete counts[rule];
   }
   // A misspelt rule name would otherwise leave that rule at its default severity.
   const misconfigured = [
@@ -244,7 +279,8 @@ export function recordEffectDiagnostics(programs: readonly Program[]) {
   const record: EffectRecord = {
     fingerprint: fingerprint(sources),
     counts,
-    diagnostics,
+    canary,
+    diagnostics: diagnostics.filter((diagnostic) => diagnostic.file !== canaryPath),
     misconfigured,
   };
   mkdirSync(dirname(join(root, recordPath)), { recursive: true });

@@ -42,4 +42,4 @@ for (const name of ["pool", "obsidian"]) {
   );
   configs.push(config);
 }
-recordEffectDiagnostics(await compilePrograms(compiler, configs));
+recordEffectDiagnostics(await compilePrograms(compiler, [configs.slice(0, 1), configs.slice(1)]));

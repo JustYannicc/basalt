@@ -3,11 +3,13 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { baseProblems, baselineProblems } from "./effect-diagnostics.ts";
+import { baseProblems, baselineProblems, type BaseInputs } from "./effect-diagnostics.ts";
 import { effectPolicy, gatedRules, pluginConfig } from "./effect-diagnostics-config.ts";
 import {
+  decode,
   inScope,
   parseCompilerOutput,
+  type Diagnostic,
   root,
   suppressionLines,
 } from "./effect-diagnostics-record.ts";
@@ -35,30 +37,49 @@ test("a rise fails, a fall fails until the baseline is lowered, and deleted file
   );
 });
 
-test("the committed baseline may only shrink against the base commit; counts move only with code", () => {
+test("the committed baseline may only shrink against the base commit; sites move only with code", () => {
   const base = { schemaSync: { "src/a.ts": 2, "src/b.ts": 1 } };
-  const baseFiles = new Set(["src/a.ts", "src/b.ts"]);
-  const check = (
-    head: Record<string, Record<string, number>>,
-    sources = new Map<string, string[]>(),
-  ) =>
-    baseProblems(head, base, baseFiles, new Set(Object.keys(head.schemaSync ?? {})), sources).join(
-      "\n",
-    );
+  const baseFiles = new Set(["src/a.ts", "src/b.ts", "src/old.ts"]);
+  const moved = "const value = Schema.decodeUnknownSync(Shape)(input);";
+  const site = (file: string, line: number): Diagnostic => ({
+    file,
+    line,
+    column: 1,
+    severity: "error",
+    code: 377130,
+    rule: "schemaSync",
+    message: "",
+  });
+  const check = (head: Record<string, Record<string, number>>, inputs: Partial<BaseInputs> = {}) =>
+    baseProblems(head, base, {
+      baseFiles,
+      headFiles: new Set(Object.values(head).flatMap((files) => Object.keys(files))),
+      lineText: () => moved,
+      ...inputs,
+    }).join("\n");
   assert.equal(check({ schemaSync: { "src/a.ts": 1 } }), "");
-  // A split takes the counts its git copy source lost, and that credit is spent only once.
-  const split = new Map([
-    ["src/a-part.ts", ["src/a.ts"]],
-    ["src/a-copy.ts", ["src/a.ts"]],
-  ]);
-  assert.equal(check({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 1 } }, split), "");
-  assert.match(
-    check({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 1, "src/a-copy.ts": 1 } }, split),
-    /raises src\/a-part\.ts schemaSync from 0 to 1/,
+  // A site whose line left a file that lost a count may land anywhere, once.
+  const removed = new Map([["src/a.ts", [moved]]]);
+  assert.equal(
+    check(
+      { schemaSync: { "src/a.ts": 1, "src/b.ts": 2 } },
+      { removed, diagnostics: [site("src/b.ts", 3)] },
+    ),
+    "",
   );
-  // Fixing a site does not pay for a new one elsewhere.
   assert.match(
-    check({ schemaSync: { "src/a.ts": 1, "src/b.ts": 1, "src/new.ts": 1 } }),
+    check(
+      { schemaSync: { "src/a.ts": 1, "src/b.ts": 2, "src/c.ts": 1 } },
+      { removed, diagnostics: [site("src/b.ts", 3), site("src/c.ts", 1)] },
+    ),
+    /raises src\/c\.ts schemaSync from 0 to 1/,
+  );
+  // Fixing a site does not pay for new code elsewhere, even code copied from the same file.
+  assert.match(
+    check(
+      { schemaSync: { "src/a.ts": 1, "src/b.ts": 1, "src/new.ts": 1 } },
+      { diagnostics: [site("src/new.ts", 1)] },
+    ),
     /raises src\/new\.ts schemaSync from 0 to 1/,
   );
   assert.match(
@@ -69,21 +90,36 @@ test("the committed baseline may only shrink against the base commit; counts mov
     check({ schemaSync: { "src/a.ts": 3, "src/b.ts": 1 } }),
     /raises the schemaSync total from 3 to 4/,
   );
-  // A file deleted earlier without regenerating leaves an entry neither side has; it is ignored.
-  const stale = { schemaSync: { ...base.schemaSync, "src/gone.ts": 1 } };
-  assert.deepEqual(baseProblems(stale, stale, baseFiles, baseFiles), []);
-  // A rule the base did not gate starts from the counts its change records.
+  // Whole-file counts follow a rename.
+  const unchecked = { notTypeChecked: { "src/old.ts": 1 } };
   assert.deepEqual(
-    baseProblems(
-      { processEnv: { "src/a.ts": 5 } },
-      base,
+    baseProblems({ notTypeChecked: { "src/new.ts": 1 } }, unchecked, {
       baseFiles,
-      baseFiles,
-      new Map(),
-      new Set(["processEnv"]),
-    ),
+      headFiles: new Set(["src/new.ts"]),
+      renamed: new Map([["src/new.ts", "src/old.ts"]]),
+    }),
     [],
   );
+  // A file deleted earlier without regenerating leaves an entry neither side has; it is ignored.
+  const stale = { schemaSync: { ...base.schemaSync, "src/gone.ts": 1 } };
+  assert.deepEqual(baseProblems(stale, stale, { baseFiles, headFiles: baseFiles }), []);
+  // A rule the base did not gate starts from the counts its change records.
+  assert.deepEqual(
+    baseProblems({ processEnv: { "src/a.ts": 5 } }, base, {
+      baseFiles,
+      headFiles: baseFiles,
+      adopted: new Set(["processEnv"]),
+    }),
+    [],
+  );
+});
+
+test("sources are read as the compiler reads them, and a stray NUL byte counts as hiding", () => {
+  const text = "// @" + "ts-nocheck";
+  assert.deepEqual(decode(Buffer.from(text)), { text, hidden: false });
+  assert.deepEqual(decode(Buffer.from("\ufeff" + text, "utf16le")).text, text);
+  assert.deepEqual(decode(Buffer.from("\ufeff" + text, "utf16le").swap16()).text, text);
+  assert.equal(decode(Buffer.from("const a = 1; //\0 hidden")).hidden, true);
 });
 
 test("the policy is read from the config file itself, so loosening it in code is visible", () => {
@@ -99,6 +135,11 @@ test("the policy is read from the config file itself, so loosening it in code is
   assert.ok(!policy.gated.has("schemaSync"));
   assert.ok(policy.quiet.has("src/**/*"));
   assert.match(policy.problems.join("\n"), /sets diagnostics/);
+  plugin.overrides.push({ exclude: [".generated/**/*"], options: { diagnosticSeverity: {} } });
+  assert.match(
+    effectPolicy(JSON.stringify(loosened), "everywhere").problems.join("\n"),
+    /an override other than/,
+  );
   loosened.compilerOptions.plugins.unshift({ name: "other" });
   assert.match(
     effectPolicy(JSON.stringify(loosened), "two").problems.join("\n"),

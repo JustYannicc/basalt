@@ -173,14 +173,45 @@ export function effectPolicy(text: string, source: string) {
       level === "error" ? [rule] : [],
     ),
   );
-  const overrides: { include?: unknown }[] = Array.isArray(plugin?.overrides)
-    ? plugin.overrides
-    : [];
-  const quiet = new Set(
-    overrides.flatMap((entry) => (Array.isArray(entry.include) ? entry.include.map(String) : [])),
-  );
+  // The compiler applies an override without include, or with exclude or files, to every file,
+  // so only the one shape this module generates is accepted.
+  const overrides: unknown[] = Array.isArray(plugin?.overrides) ? plugin.overrides : [];
+  const quiet = new Set<string>();
+  for (const entry of overrides) {
+    const include = isObject(entry) ? entry.include : undefined;
+    const options = isObject(entry) ? entry.options : undefined;
+    const severities = isObject(options) ? options.diagnosticSeverity : undefined;
+    const valid =
+      isObject(entry) &&
+      Object.keys(entry).sort().join() === "include,options" &&
+      Array.isArray(include) &&
+      include.length > 0 &&
+      include.every((glob) => typeof glob === "string" && glob.length > 0) &&
+      isObject(options) &&
+      Object.keys(options).join() === "diagnosticSeverity" &&
+      isObject(severities) &&
+      Object.values(severities).every((level) => level === "off");
+    if (!valid)
+      problems.push(
+        `${source} has an override other than {include, options: {diagnosticSeverity: off}}.`,
+      );
+    if (Array.isArray(include)) for (const glob of include) quiet.add(String(glob));
+  }
   return { gated, quiet, problems };
 }
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// Everything in the file except the rule severities, which may only tighten.
+const shape = (text: string) => {
+  const config = JSON.parse(text);
+  for (const plugin of config?.compilerOptions?.plugins ?? []) {
+    delete plugin.diagnosticSeverity;
+    for (const entry of plugin.overrides ?? []) delete entry?.options?.diagnosticSeverity;
+  }
+  return JSON.stringify(config);
+};
 
 const readConfig = (file: string) => {
   try {
@@ -220,18 +251,26 @@ export function configProblems() {
   return problems;
 }
 
-// The gate only tightens: no rule the base commit gated may go and no quiet path may be added.
+// The gate only tightens: against the base commit the file may only raise more rules to error.
+// Any other change, to options, plugins or overrides, fails, whatever this module allows.
 // Rules the base did not gate are returned as adopted, so their counts start fresh.
 export function freezeProblems(baseText: string, source: string) {
+  const headText = readFileSync(join(root, configPath), "utf8");
   const base = effectPolicy(baseText, source);
-  const head = effectPolicy(readFileSync(join(root, configPath), "utf8"), configPath);
+  const head = effectPolicy(headText, configPath);
+  let reshaped = true;
+  try {
+    reshaped = shape(baseText) !== shape(headText);
+  } catch {
+    reshaped = true;
+  }
   const problems = [
+    ...(reshaped
+      ? [`${configPath} changes more than its rule severities over the base commit.`]
+      : []),
     ...[...base.gated]
       .filter((rule) => !head.gated.has(rule))
       .map((rule) => `${configPath} stops gating ${rule}, which the base commit gates.`),
-    ...[...head.quiet]
-      .filter((glob) => !base.quiet.has(glob))
-      .map((glob) => `${configPath} adds quiet path ${glob}, which the base commit does not have.`),
   ];
   const adopted = new Set([...head.gated].filter((rule) => !base.gated.has(rule)));
   return { problems: base.problems.length ? [...base.problems, ...problems] : problems, adopted };
