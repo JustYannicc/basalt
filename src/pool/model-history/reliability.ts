@@ -159,8 +159,14 @@ export async function readPoolReliabilityWindows(
         WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
       WHERE ${finishedTimeRange}
         AND f.outcome <> 'unavailable'
-        -- recent_home holds at least one Home attempt of every request that finished in the window and has one.
-        AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)`
+        -- A Home attempt or a gateway refusal with this id already counts the request. recent_home
+        -- holds at least one Home attempt of every request that finished in the window and has one.
+        AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)
+        AND NOT EXISTS (
+          SELECT 1 FROM basalt_model_requests h
+          WHERE h.pool=s.pool AND h.source=ANY($2::character(64)[]) AND h.source<>$3
+            AND h.request_id IS NOT NULL AND h.request_id=s.request_id::text
+        )`
           : ""
       }
     )
