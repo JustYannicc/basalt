@@ -19,9 +19,23 @@ export interface ExpiringRow {
 const label = (entry: Pick<PlanAllowance, "vendor" | "plan" | "windowSeconds">) =>
   `${entry.vendor}/${entry.plan}/${entry.windowSeconds}s`;
 
+const order = (a: PlanAllowance, b: PlanAllowance) =>
+  (a.sourceId ?? "").localeCompare(b.sourceId ?? "") ||
+  a.vendor.localeCompare(b.vendor) ||
+  a.plan.localeCompare(b.plan) ||
+  a.windowSeconds - b.windowSeconds ||
+  a.kind.localeCompare(b.kind);
+const sameValue = (a: PlanAllowance, b: PlanAllowance) =>
+  allowanceKey(a) === allowanceKey(b) &&
+  a.full === b.full &&
+  a.unit.id === b.unit.id &&
+  Boolean(a.unlimited) === Boolean(b.unlimited);
+
 /**
- * Re-runs the production refresh against current sources. A committed row that expires within
- * the lead is overdue when a source now carries a later expiry for it, and stale when none does.
+ * Re-runs the production refresh against current sources. A source that answered and parsed
+ * replaces its seed rows; one that was unavailable or could not be parsed keeps them, so a broken
+ * source never empties the fallback. A committed row inside the lead is overdue when its own
+ * source now runs later, and stale when nothing with the same value outlives the lead.
  */
 export async function renewSeed(
   seed: Seed,
@@ -40,35 +54,48 @@ export async function renewSeed(
     { now: () => options.now, seed, ...(options.fetch ? { fetch: options.fetch } : {}) },
   );
   await registry.refresh();
-  const entries = (await registry.read()).entries
-    .filter((entry) => entry.verification !== "unknown")
-    .map((entry) => {
-      const { contradicted, ...rest } = entry;
-      return contradicted === undefined ? entry : rest;
-    });
-  const latest = (rows: readonly PlanAllowance[]) => {
-    const found = new Map<string, PlanAllowance>();
-    for (const entry of rows) {
-      const known = found.get(allowanceKey(entry));
-      if (!known || (entry.expiresAt ?? 0) > (known.expiresAt ?? 0))
-        found.set(allowanceKey(entry), entry);
-    }
-    return found;
-  };
-  const renewed = latest(entries);
+  const sources = Object.entries((await registry.status())?.sources ?? {}).filter(
+    ([, source]) =>
+      source.state !== "unavailable" &&
+      source.entries.some((entry) => entry.verification !== "unknown"),
+  );
+  const renewedIds = new Set(sources.map(([id]) => id));
+  const refreshed = sources.flatMap(([, source]) =>
+    source.entries.filter((entry) => entry.verification !== "unknown"),
+  );
+  const entries = [
+    ...seed.entries.filter((entry) => !entry.sourceId || !renewedIds.has(entry.sourceId)),
+    ...refreshed,
+  ].toSorted(order);
   const overdue: ExpiringRow[] = [];
   const stale: ExpiringRow[] = [];
-  // A plan is at risk when its last-expiring seed row is inside the lead; older rows it
-  // supersedes are not.
-  for (const [key, entry] of latest(seed.entries)) {
+  for (const entry of seed.entries) {
     if (entry.expiresAt === null || entry.expiresAt - options.now > renewalLead) continue;
-    const next = renewed.get(key)?.expiresAt ?? null;
-    const row = { key: label(entry), expiresAt: entry.expiresAt, renewedExpiresAt: next };
-    (next !== null && next > entry.expiresAt ? overdue : stale).push(row);
+    const own = refreshed.find(
+      (value) => value.sourceId === entry.sourceId && allowanceKey(value) === allowanceKey(entry),
+    );
+    const row = {
+      key: `${label(entry)} (${entry.sourceId ?? "seed"})`,
+      expiresAt: entry.expiresAt,
+      renewedExpiresAt: own?.expiresAt ?? null,
+    };
+    if (own?.expiresAt != null && own.expiresAt > entry.expiresAt) overdue.push(row);
+    else if (
+      !entries.some(
+        (value) =>
+          sameValue(value, entry) &&
+          value.expiresAt !== null &&
+          value.expiresAt - options.now > renewalLead,
+      )
+    )
+      stale.push(row);
   }
+  if (JSON.stringify(entries) === JSON.stringify(seed.entries.toSorted(order)))
+    return { seed, overdue, stale };
+  const checked = Math.max(...refreshed.map((entry) => entry.checkedAt ?? 0));
   const attribution =
-    typeof seed.attribution === "string"
-      ? seed.attribution.replace(/checked \d{4}-\d{2}-\d{2}/u, `checked ${day(options.now)}`)
+    typeof seed.attribution === "string" && checked > 0
+      ? seed.attribution.replace(/checked \d{4}-\d{2}-\d{2}/u, `checked ${day(checked)}`)
       : seed.attribution;
   return { seed: { ...seed, attribution, entries }, overdue, stale };
 }
@@ -107,6 +134,12 @@ if (import.meta.main) {
             ]
           : ["Every row expiring within 7 days was renewed."]),
       ].join("\n"),
+    );
+  const verdict = option("--overdue-file");
+  if (verdict)
+    writeFileSync(
+      verdict,
+      result.overdue.map((row) => `${row.key} expires ${day(row.expiresAt)}\n`).join(""),
     );
   if (args.includes("--check") && result.overdue.length) process.exitCode = 1;
 }

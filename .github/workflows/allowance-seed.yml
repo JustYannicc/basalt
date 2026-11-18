@@ -2,7 +2,7 @@ name: Allowance seed renewal
 
 on:
   schedule:
-    - cron: "41 6 * * 1"
+    - cron: "41 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -29,11 +29,9 @@ jobs:
           bun-version: 1.4.2
       - run: npm run prepare:upstream
       - name: Renew the seed from current sources
-        id: renew
         run: |
           node scripts/allowance-seed.ts --write --body-file "$RUNNER_TEMP/allowance-seed.md" \
-            > "$RUNNER_TEMP/allowance-seed.log"
-          cat "$RUNNER_TEMP/allowance-seed.log"
+            --overdue-file "$RUNNER_TEMP/allowance-seed-overdue.txt"
       - name: Open the renewal
         uses: peter-evans/create-pull-request@v7
         with:
@@ -45,8 +43,12 @@ jobs:
           draft: false
           add-paths: |
             src/pool/allowances/seed.json
-      # Overdue means a committed row expires within 7 days while a source already runs later.
+      # Overdue means a committed row expires within 7 days while its own source already runs
+      # later; the run stays red until the renewal merges.
       - name: Fail while main ships an overdue seed
+        if: ${{ !cancelled() }}
         run: |
-          git checkout -- src/pool/allowances/seed.json
-          node scripts/allowance-seed.ts --check
+          if [ -s "$RUNNER_TEMP/allowance-seed-overdue.txt" ]; then
+            cat "$RUNNER_TEMP/allowance-seed-overdue.txt"
+            exit 1
+          fi
