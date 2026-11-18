@@ -323,6 +323,16 @@ try {
   if (command === "plan" || command === "apply" || command === "deploy") {
     const result = await run(
       Effect.gen(function* () {
+        // The store's contract version is pinned: a different one means a deliberate upgrade first.
+        const store = yield* Alchemist.State.store({
+          backend: "configured",
+          ...target,
+        } as never) as unknown as Fx.Effect<any, unknown, never>;
+        const version = yield* store.getVersion() as Fx.Effect<number, unknown, never>;
+        if (version !== 8)
+          return yield* Effect.die(
+            new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
+          );
         const snapshot = yield* planOf("deploy");
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
