@@ -45,3 +45,16 @@ test("delete removes each rehearsal tag by digest and never touches production",
   );
   assert.ok(calls.every((call) => !call.includes("production")));
 });
+
+test("only rehearsal image references come out of wrangler's image list", async () => {
+  const { rehearsalImageRefs } = await import("./rehearsal-registry-cleanup.ts");
+  assert.deepEqual(
+    rehearsalImageRefs([
+      { name: "basalt-rehearsal-poolcontainer-x", tags: ["a1", "b2"] },
+      { name: "basalt-poolcontainer-production-y", tags: ["c3"] },
+      { name: "basalt-rehearsal-bad", tags: ["x;rm"] },
+    ]),
+    ["basalt-rehearsal-poolcontainer-x:a1", "basalt-rehearsal-poolcontainer-x:b2"],
+  );
+  assert.throws(() => rehearsalImageRefs({}), /Unexpected/);
+});

@@ -88,7 +88,26 @@ export async function rehearsalRegistry(
   };
 }
 
-if (process.argv[1]?.endsWith("/rehearsal-registry-cleanup.ts")) {
+/** `image:tag` references of rehearsal images from `wrangler containers images list --json`. */
+export function rehearsalImageRefs(images: unknown): string[] {
+  if (!Array.isArray(images)) throw new Error("Unexpected registry image list");
+  return images
+    .flatMap((image: { name?: unknown; tags?: unknown }) =>
+      typeof image?.name === "string" && Array.isArray(image.tags)
+        ? image.tags
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => `${image.name as string}:${tag}`)
+        : [],
+    )
+    .filter((ref) => /^basalt-rehearsal-[a-z0-9-]+:[A-Za-z0-9_.-]+$/u.test(ref));
+}
+
+if (process.argv[1]?.endsWith("/rehearsal-registry-cleanup.ts") && process.argv[2] === "refs") {
+  const { readFileSync } = await import("node:fs");
+  const refs = rehearsalImageRefs(JSON.parse(readFileSync(process.argv[3] ?? "", "utf8")));
+  console.error(JSON.stringify({ refs: refs.length }));
+  if (refs.length) console.log(refs.join("\n"));
+} else if (process.argv[1]?.endsWith("/rehearsal-registry-cleanup.ts")) {
   const mode = process.argv[2];
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const token = process.env.CLOUDFLARE_API_TOKEN ?? "";

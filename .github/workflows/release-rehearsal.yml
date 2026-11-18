@@ -201,7 +201,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
+      # Deleting a manifest by digest leaves the managed registry's tags in place; Wrangler's image
+      # delete is the supported removal. Only `basalt-rehearsal-*` images are listed and deleted.
       - name: List, delete and verify rehearsal registry images
         run: |
           node scripts/release-preview/rehearsal-registry-cleanup.ts list
-          node scripts/release-preview/rehearsal-registry-cleanup.ts delete
+          npx --yes wrangler@4.155.0 containers images list --filter '^basalt-rehearsal-' --json > "$RUNNER_TEMP/images.json"
+          node scripts/release-preview/rehearsal-registry-cleanup.ts refs "$RUNNER_TEMP/images.json" > "$RUNNER_TEMP/refs.txt"
+          while IFS= read -r ref; do
+            [ -n "$ref" ] && npx --yes wrangler@4.155.0 containers images delete "$ref" > /dev/null && echo "deleted ${ref%%:*}"
+          done < "$RUNNER_TEMP/refs.txt"
+          node scripts/release-preview/rehearsal-registry-cleanup.ts verify
