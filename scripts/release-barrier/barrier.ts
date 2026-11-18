@@ -20,6 +20,9 @@ import {
 import { equalContainerConfiguration } from "./container-configuration.ts";
 import { containerDrift } from "./container-diagnostics.ts";
 import type { ContainerRollout } from "./container-cloudflare.ts";
+import { barrierPhases, type BarrierPhase } from "./barrier-phases.ts";
+
+export { barrierPhases, type BarrierPhase };
 
 export interface ContainerVersionProvider {
   prepare?(container: FrozenContainer): Promise<void>;
@@ -38,18 +41,6 @@ export interface VersionProvider {
   baseline(worker: FrozenWorker): Promise<FrozenWorker["baseline"]>;
   activate(worker: FrozenWorker, versionId: string): Promise<void>;
 }
-
-/** Each phase a barrier receipt records; the release coverage gate enumerates them from here. */
-export const barrierPhases = [
-  "upload",
-  "admitted",
-  "schema",
-  "baseline",
-  "activation",
-  "container-activation",
-  "complete",
-] as const;
-export type BarrierPhase = (typeof barrierPhases)[number];
 
 export interface BarrierReceipt {
   schemaVersion: 1 | 2;

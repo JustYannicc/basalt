@@ -1,16 +1,17 @@
 import { SchemaAST } from "effect";
-import { barrierPhases, type BarrierPhase } from "../barrier.ts";
+import { barrierPhases, type BarrierPhase } from "../barrier-phases.ts";
 import { RuntimeHandoffCommand } from "../../../src/pool/runtime-slots/handoff-command.ts";
-import { releaseOperations, type ReleaseOperation } from "../operation-failure.ts";
-import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
+import { releaseOperations, type ReleaseOperation } from "../release-operations.ts";
 import { runtimeReleasePhases, type RuntimeReleasePhase } from "../runtime-image-release-phases.ts";
+
+type CommandAction = RuntimeHandoffCommand["action"];
 
 /**
  * One id per thing a production release can do or refuse with. The coverage gate reads these
  * from the code itself, so a new command, operation, phase or refusal is a step the moment it exists.
  */
 export type ReleaseStepId =
-  | `command:${RuntimeCommandAction["action"]}`
+  | `command:${CommandAction}`
   | `operation:${ReleaseOperation}`
   | `phase:${RuntimeReleasePhase}`
   | `phase:barrier-${BarrierPhase}`
@@ -23,9 +24,9 @@ export interface Coverage {
 }
 
 function runtimeCommandActions() {
-  const literals = (ast: SchemaAST.AST): RuntimeCommandAction["action"][] => {
+  const literals = (ast: SchemaAST.AST): CommandAction[] => {
     if (SchemaAST.isLiteral(ast) && typeof ast.literal === "string")
-      return [ast.literal as RuntimeCommandAction["action"]];
+      return [ast.literal as CommandAction];
     if (SchemaAST.isUnion(ast)) return ast.types.flatMap(literals);
     throw new Error(`Runtime command action is not a closed literal (${ast._tag})`);
   };
