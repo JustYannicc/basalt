@@ -13,20 +13,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { evidenceDirectory, runDeclaredShard } from "./ci/run-declared.ts";
+import { attemptDirectory, evidenceDirectory, runDeclaredShard } from "./ci/run-declared.ts";
 
 const script = fileURLToPath(new URL("./ci/run-declared.ts", import.meta.url));
-const titles = { passes: "Passes", fails: "Fails", hangs: "Hangs", lingers: "Lingers" } as const;
+const titles = {
+  passes: "Passes",
+  fails: "Fails",
+  flaky: "Flaky",
+  hangs: "Hangs",
+  lingers: "Lingers",
+} as const;
+// What a failing attempt reports; the shard record must keep only its scrubbed form.
+const failingTitle = "Signs in as owner@example.com at app.example.test for account 123456789";
+const scrubbedTitle = "Signs in as [redacted] at [redacted] for account [redacted]";
 
 // Stands in for `bun run e2e:<target>`: it records which file ran, then exports or abandons its run.
+// "Flaky" fails only its first attempt in a checkout.
 const fakeSuite = `
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 const pattern = process.argv[process.argv.indexOf("--test-name") + 1];
 const name = Date.now() + "-self-host-" + Math.random().toString(16).slice(2, 8);
+const failing = pattern.includes("Fails") || (pattern.includes("Flaky") && !existsSync("../flaky.failed"));
+if (pattern.includes("Flaky") && failing) writeFileSync("../flaky.failed", "");
 const report = (root) => {
   mkdirSync(root + "/self-host/report/diagnostics", { recursive: true });
-  writeFileSync(root + "/self-host/report/diagnostics/results.json", JSON.stringify({ pattern }));
+  const assertionResults = [
+    { title: ${JSON.stringify(failingTitle)}, status: failing ? "failed" : "passed" },
+    { title: "Unrelated", status: "passed" },
+  ];
+  const testResults = [{ name: "fixture.spec.ts", assertionResults }];
+  writeFileSync(root + "/self-host/report/diagnostics/results.json", JSON.stringify({ pattern, testResults }));
 };
 const run = ".local/e2e/" + name;
 report(run);
@@ -47,7 +64,7 @@ if (pattern.includes("Hangs")) {
   report("../.generated/e2e-evidence/" + name);
   rmSync(run, { recursive: true });
   if (pattern.includes("Lingers")) child("lingering", false).unref();
-  process.exitCode = pattern.includes("Fails") ? 1 : 0;
+  process.exitCode = failing ? 1 : 0;
 }
 `;
 
@@ -99,23 +116,23 @@ const pair = (key: keyof typeof titles) => ({
   group: "declared:self-host",
   file: `${key}.spec.ts`,
 });
-const reported = (directory: string) =>
+const reports = (directory: string) =>
   readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map(
-      (entry) =>
-        JSON.parse(
-          readFileSync(
-            join(directory, entry.name, "self-host/report/diagnostics/results.json"),
-            "utf8",
-          ),
-        ).pattern,
+    .map((entry) =>
+      JSON.parse(
+        readFileSync(
+          join(directory, entry.name, "self-host/report/diagnostics/results.json"),
+          "utf8",
+        ),
+      ),
     );
+const json = (path: string) => JSON.parse(readFileSync(path, "utf8"));
 
-test("a shard runs every file after a failure or a hang and keeps each file's evidence apart", () =>
+test("a shard runs every file after a failure or a hang, retries only plain failures once and keeps each attempt's evidence apart", () =>
   fixture(async (root) => {
     const evidence = join(root, "evidence");
-    const runs = [pair("fails"), pair("hangs"), pair("lingers"), pair("passes")];
+    const runs = [pair("fails"), pair("flaky"), pair("hangs"), pair("lingers"), pair("passes")];
     const lines: string[] = [];
     const results = await runDeclaredShard(runs, {
       root,
@@ -124,27 +141,39 @@ test("a shard runs every file after a failure or a hang and keeps each file's ev
       graceMs: 1_000,
       log: (line) => lines.push(line),
       summary: join(root, "summary.md"),
+      job: "declared-self-host",
+      shard: "declared-self-host-1",
     });
     const annotations = lines.filter((line) => /^::(?:error|warning)/.test(line));
-    assert.equal(annotations.length, 4, annotations.join("\n"));
+    assert.equal(annotations.length, 5, annotations.join("\n"));
     assert.match(
       annotations[0]!,
-      /^::error title=Declared E2E failed::.*fails\.spec\.ts failed \(exit 1\)/,
+      /^::error title=e2e retry::declared:self-host fails\.spec\.ts failed twice \(exit 1\)/,
+    );
+    assert.equal(
+      annotations[1],
+      "::warning title=e2e retry::declared:self-host flaky.spec.ts passed on retry",
     );
     assert.match(
-      annotations[1]!,
-      /^::error title=Declared E2E timed-out::.*hangs\.spec\.ts .*deadline/,
+      annotations[2]!,
+      /^::error title=Declared E2E timed-out::.*hangs\.spec\.ts timed-out at its per-file deadline/,
     );
     // The lingering process ignores SIGTERM, so it is asked first and killed after the grace.
-    assert.match(annotations[2]!, /^::warning::Stopping processes a declared file left running/);
-    assert.match(annotations[3]!, /^::warning::Killing processes a declared file left running/);
+    assert.match(annotations[3]!, /^::warning::Stopping processes a declared file left running/);
+    assert.match(annotations[4]!, /^::warning::Killing processes a declared file left running/);
     assert.deepEqual(
-      results.map(({ file, outcome }) => [file, outcome]),
+      results.map(({ file, outcome, attempts }) => [
+        file,
+        outcome,
+        attempts.map((attempt) => attempt.outcome),
+      ]),
       [
-        ["fails.spec.ts", "failed"],
-        ["hangs.spec.ts", "timed-out"],
-        ["lingers.spec.ts", "passed"],
-        ["passes.spec.ts", "passed"],
+        ["fails.spec.ts", "failed", ["failed", "failed"]],
+        ["flaky.spec.ts", "passed", ["failed", "passed"]],
+        // A hang is never retried, and neither is a file that passed.
+        ["hangs.spec.ts", "timed-out", ["timed-out"]],
+        ["lingers.spec.ts", "passed", ["passed"]],
+        ["passes.spec.ts", "passed", ["passed"]],
       ],
     );
     for (const marker of ["hung", "lingering"])
@@ -152,17 +181,58 @@ test("a shard runs every file after a failure or a hang and keeps each file's ev
     for (const [index, run] of runs.entries()) {
       const directory = join(evidence, evidenceDirectory(run));
       const title = titles[run.file.replace(".spec.ts", "") as keyof typeof titles];
-      assert.deepEqual(reported(directory), [`^(?:${title})$`], run.file);
-      const record = JSON.parse(readFileSync(join(directory, "declared-run.json"), "utf8"));
+      const attempts = results[index]!.attempts;
+      // One run per attempt, each in its own directory; a pass on retry leaves the failure intact.
+      for (const attempt of attempts) {
+        const [report, ...others] = reports(join(directory, attemptDirectory(attempt.attempt)));
+        assert.deepEqual(others, [], run.file);
+        assert.equal(report.pattern, `^(?:${title})$`, run.file);
+        if (run.file !== "hangs.spec.ts")
+          assert.equal(
+            report.testResults[0].assertionResults[0].status,
+            attempt.outcome,
+            `${run.file} attempt ${attempt.attempt}`,
+          );
+      }
+      assert.equal(existsSync(join(directory, attemptDirectory(attempts.length + 1))), false);
+      const record = json(join(directory, "declared-run.json"));
       assert.equal(record.file, run.file);
       assert.equal(record.outcome, results[index]!.outcome);
+      assert.deepEqual(
+        record.attempts.map((attempt: { outcome: string }) => attempt.outcome),
+        attempts.map((attempt) => attempt.outcome),
+      );
+      assert.deepEqual(record.first_failure, attempts.length > 1 ? [scrubbedTitle] : [], run.file);
     }
+    assert.deepEqual(json(join(evidence, "retries.json")), {
+      format: "basalt-e2e-retries-v1",
+      job: "declared-self-host",
+      shard: "declared-self-host-1",
+      files: [
+        {
+          group: "declared:self-host",
+          file: "fails.spec.ts",
+          attempts: 2,
+          conclusion: "failed",
+          first_failure: [scrubbedTitle],
+        },
+        {
+          group: "declared:self-host",
+          file: "flaky.spec.ts",
+          attempts: 2,
+          conclusion: "passed",
+          first_failure: [scrubbedTitle],
+        },
+      ],
+    });
     assert.deepEqual(readdirSync(join(root, ".generated/e2e-evidence")), []);
     assert.deepEqual(readdirSync(join(root, ".upstream/.local/e2e")), ["earlier"]);
     const table = readFileSync(join(root, "summary.md"), "utf8");
-    assert.equal(table.split("\n").filter((line) => line.endsWith("s |")).length, 4);
-    assert.match(table, /\| fails\.spec\.ts \| declared:self-host \| failed \| 0m 0\ds \|/);
+    assert.equal(table.split("\n").filter((line) => line.endsWith("s |")).length, 5);
+    assert.match(table, /\| fails\.spec\.ts \| declared:self-host \| failed twice \| 0m 0\ds \|/);
+    assert.match(table, /\| flaky\.spec\.ts \| declared:self-host \| passed on retry \|/);
     assert.match(table, /\| hangs\.spec\.ts \| declared:self-host \| timed-out \|/);
+    assert.match(table, /\nRetries: 1 passed on retry, 1 failed twice\.\n$/);
   }));
 
 test("the shard command fails, annotates and summarizes when any file fails", () =>
@@ -180,7 +250,7 @@ test("the shard command fails, annotates and summarizes when any file fails", ()
     assert.equal(result.status, 1, result.stderr);
     assert.match(
       result.stdout,
-      /::error title=Declared E2E failed::declared:self-host fails\.spec\.ts failed \(exit 1\)/,
+      /::error title=e2e retry::declared:self-host fails\.spec\.ts failed twice \(exit 1\)/,
     );
     assert.doesNotMatch(result.stdout, /::error[^\n]*passes\.spec\.ts/);
     assert.match(
@@ -201,6 +271,34 @@ test("the shard command fails, annotates and summarizes when any file fails", ()
       env: { ...process.env, GITHUB_STEP_SUMMARY: "", RUNNER_TEMP: join(root, "again") },
     });
     assert.equal(passing.status, 0, passing.stderr);
+    // A pass on retry passes the job, but never silently.
+    const retried = spawnSync("bun", [script, "declared:self-host flaky.spec.ts"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_STEP_SUMMARY: "",
+        GITHUB_JOB: "declared-self-host",
+        BASALT_E2E_SHARD: "declared-self-host-2",
+        RUNNER_TEMP: join(root, "retried"),
+      },
+    });
+    assert.equal(retried.status, 0, retried.stderr);
+    assert.match(
+      retried.stdout,
+      /^::warning title=e2e retry::declared:self-host flaky\.spec\.ts passed on retry$/m,
+    );
+    assert.doesNotMatch(retried.stdout, /::error/);
+    const record = json(join(root, "retried/basalt-e2e-evidence/retries.json"));
+    assert.equal(record.job, "declared-self-host");
+    assert.equal(record.shard, "declared-self-host-2");
+    assert.deepEqual(
+      record.files.map((file: { file: string; conclusion: string }) => [
+        file.file,
+        file.conclusion,
+      ]),
+      [["flaky.spec.ts", "passed"]],
+    );
     for (const runs of [
       "declared:self-host missing.spec.ts",
       "declared:self-host",

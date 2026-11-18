@@ -34,15 +34,37 @@ test("declared shards pay setup once, then run their planned files within the pl
         { name: "Install the scenarios' browser engine", uses: "./.github/actions/setup-browser" },
         {
           name: "Run this shard's declared files, each in its own process",
+          // Names the shard's retry record; the job id comes from GITHUB_JOB.
+          env: { BASALT_E2E_SHARD: "${{ matrix.shard }}" },
           run: 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"',
         },
       ],
       id,
     );
-    const upload = job.steps.find((step: { uses?: string }) =>
+    const [upload, retries, ...others] = job.steps.filter((step: { uses?: string }) =>
       step.uses?.startsWith("actions/upload-artifact@"),
     );
+    assert.deepEqual(others, [], id);
     assert.equal(upload.with.name, "${{ matrix.shard }}", id);
+    assert.ok(
+      upload.with.path.split("\n").includes("${{ runner.temp }}/basalt-e2e-evidence/retries.json"),
+      id,
+    );
+    // The check job downloads only these, by the pattern its download step uses.
+    assert.equal(retries.if, "always()", id);
+    assert.deepEqual(
+      retries.with,
+      {
+        name: "e2e-retries-${{ matrix.shard }}",
+        path: "${{ runner.temp }}/basalt-e2e-evidence/retries.json",
+        "if-no-files-found": "ignore",
+      },
+      id,
+    );
+    const download = workflow.jobs.check.steps.find((step: { uses?: string }) =>
+      step.uses?.startsWith("actions/download-artifact@"),
+    );
+    assert.equal(download.with.pattern, "e2e-retries-*", id);
     const shards = matrices[id]!.include;
     assert.ok(shards.length > 0, id);
     // A shard's budget covers setup, its planned files and one file running to its own deadline.

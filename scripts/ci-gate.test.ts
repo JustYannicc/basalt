@@ -206,3 +206,38 @@ test("only the read-only preparation job consumes its frozen input with the disp
     /CLOUDFLARE_API_TOKEN|EXECUTOR_ENCRYPTION_KEY|POOL_DEPLOYMENT_KEY/,
   );
 });
+
+test("the retry count runs after every gate verdict but can never change it", () => {
+  const job = workflow.jobs.check;
+  const gateIndex = job.steps.findIndex(
+    (step: { run?: string }) => step.run === "node scripts/ci/gate.ts",
+  );
+  const names = [
+    "Download each declared shard's retry record",
+    "Count declared E2E files that passed only on retry",
+  ];
+  const [download, count] = names.map((name) =>
+    job.steps.findIndex((step: { name?: string }) => step.name === name),
+  );
+  const upload = job.steps.findIndex(
+    (step: { with?: { name?: string } }) => step.with?.name === "check-e2e-retries",
+  );
+  assert.ok(gateIndex >= 0 && gateIndex < download! && download! < count! && count! < upload);
+  // Downloads within the run need no token scope beyond the workflow's read-only default.
+  assert.equal(job.permissions, undefined);
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  for (const index of [download!, count!, upload]) {
+    const step = job.steps[index];
+    assert.equal(step.if, "always() && needs.reuse.outputs.reused != 'true'", step.name);
+    assert.equal(step["continue-on-error"], true, step.name);
+  }
+  assert.equal(job.steps[gateIndex].if, undefined);
+  assert.equal(job.steps[gateIndex]["continue-on-error"], undefined);
+  assert.equal(
+    job.steps[count!].run,
+    'node scripts/ci/aggregate-retries.ts "$RUNNER_TEMP/e2e-retries" "$RUNNER_TEMP/check-e2e-retries/retries.json"',
+  );
+  assert.equal(job.steps[download!].with.path, "${{ runner.temp }}/e2e-retries");
+  assert.equal(job.steps[upload].with.path, "${{ runner.temp }}/check-e2e-retries/retries.json");
+  assert.equal(job.steps[upload].with["retention-days"], 90);
+});
