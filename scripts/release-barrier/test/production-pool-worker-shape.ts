@@ -6,6 +6,7 @@
  * here; ../production-pool-worker-shape.test.ts fails if one drifts.
  */
 import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import { transform } from "esbuild";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as HttpClient from "effect/http/HttpClient";
 
@@ -90,18 +91,76 @@ export function productionVersionBody(input: {
   return version;
 }
 
-export const productionSettingsBody = (
+/** The exact top-level keys of production's PoolWorker settings read (read-only capture, 2026-11-18). */
+export const productionSettingsKeys = [
+  "placement",
+  "compatibility_date",
+  "compatibility_flags",
+  "usage_model",
+  "tags",
+  "tail_consumers",
+  "logpush",
+  "observability",
+  "annotations",
+  "bindings",
+] as const;
+/** Cloudflare stamps this on every version and returns it from reads; uploads that carry it are refused. */
+export const providerTriggeredBy = "workers/triggered_by";
+/** Values follow PoolWorker's declaration (no placement, telemetry's workerObservability); keys are production's. */
+export const productionObservability = {
+  enabled: true,
+  head_sampling_rate: 1,
+  logs: { enabled: true, head_sampling_rate: 1, invocation_logs: true, persist: true },
+  redact_query_string: true,
+  traces: { enabled: false, persist: true, head_sampling_rate: 1 },
+};
+
+export function productionSettingsBody(
   bindings: readonly unknown[],
   tags: readonly string[],
-  annotations?: Readonly<Record<string, string>>,
-) => ({
-  bindings,
-  tags,
-  compatibility_date: compatibilityDate,
-  compatibility_flags: compatibilityFlags,
-  usage_model: "standard",
-  ...(annotations && Object.keys(annotations).length ? { annotations } : {}),
-});
+  annotations: Readonly<Record<string, string>> = {},
+) {
+  const settings = {
+    placement: {},
+    compatibility_date: compatibilityDate,
+    compatibility_flags: compatibilityFlags,
+    usage_model: "standard",
+    tags,
+    tail_consumers: [],
+    logpush: false,
+    observability: productionObservability,
+    // Production's settings read returned "version_upload"; a stamp is never matched by value.
+    annotations: { [providerTriggeredBy]: "version_upload", ...annotations },
+    bindings,
+  };
+  if (Object.keys(settings).join() !== productionSettingsKeys.join())
+    throw new Error("production settings stand-in drifted from the observed key set");
+  return settings;
+}
+
+/** Cloudflare compiles every uploaded module and refuses the upload when one does not parse. */
+export async function productionModuleRefusal(
+  modules: readonly { name: string; type: string; bytes: Uint8Array }[],
+) {
+  for (const module of modules) {
+    if (module.type !== "application/javascript+module") continue;
+    try {
+      await transform(new TextDecoder().decode(module.bytes), {
+        format: "esm",
+        loader: "js",
+        logLevel: "silent",
+      });
+    } catch (error) {
+      const [first] = (error as { errors?: { text: string }[] }).errors ?? [];
+      return cloudflareFailure(
+        `Uncaught SyntaxError in ${module.name}: ${first?.text ?? "unparseable"}`,
+        400,
+        10021,
+      );
+    }
+  }
+  return undefined;
+}
 
 export const productionScriptVersionBody = (input: {
   id: string;

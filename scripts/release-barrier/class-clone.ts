@@ -8,6 +8,7 @@ import { withOperation } from "./operation-failure.ts";
 import { classConstraint, classRefusal } from "./class-refusal.ts";
 import { changedProps } from "./prop-diff.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
+import { baselineKey, classAnnotations, classPlacement } from "./class-settings.ts";
 
 /** Legacy inherit selects the latest upload. Stage the exact active bytes with version-qualified binding inheritance first. */
 export function cloneRequest(
@@ -42,11 +43,14 @@ export function cloneRequest(
       name: binding.name,
       versionId: baseline.versionId,
     })),
-    annotations: { ...settings.annotations, workersMessage: `${marker}:clone` },
+    annotations: {
+      ...classAnnotations(settings.annotations, fqn, "settings"),
+      workersMessage: `${marker}:clone`,
+    },
     compatibilityDate: settings.compatibilityDate ?? undefined,
     compatibilityFlags: settings.compatibilityFlags ?? undefined,
     limits: settings.limits ?? undefined,
-    placement: settings.placement ?? undefined,
+    placement: classPlacement(settings.placement),
     usageModel: settings.usageModel ?? undefined,
     containers: baseline.containers?.length ? [...baseline.containers] : undefined,
   });
@@ -69,26 +73,27 @@ export function assertClone(
   actual: Workers.GetBetaWorkerVersionResponse | undefined,
 ) {
   const request = saved.clone.request;
+  // Cloudflare stamps its own provider-managed annotations on the read-back; only caller-owned ones are ours to compare.
   const expected = {
-    annotations: request.annotations,
+    annotations: classAnnotations(request.annotations, fqn, "clone.request"),
     mainModule: request.mainModule,
     modules: request.modules,
     compatibilityDate: request.compatibilityDate,
     compatibilityFlags: request.compatibilityFlags,
     limits: request.limits,
-    placement: request.placement,
+    placement: classPlacement(request.placement),
     usageModel: request.usageModel,
     bindings: saved.baseline.settings.bindings ?? [],
     containers: saved.baseline.containers ?? [],
   };
   const observed = actual && {
-    annotations: actual.annotations,
+    annotations: classAnnotations(actual.annotations, fqn, "clone"),
     mainModule: actual.mainModule,
     modules: actual.modules,
     compatibilityDate: actual.compatibilityDate,
     compatibilityFlags: actual.compatibilityFlags,
     limits: actual.limits,
-    placement: actual.placement,
+    placement: classPlacement(actual.placement),
     usageModel: actual.usageModel,
     bindings: actual.bindings ?? [],
     containers: (actual.containers ?? []).map((container) => ({
@@ -166,7 +171,7 @@ export const prepareClassClone = (
         withOperation(fqn, "stage-class-baseline-clone"),
       );
     const active = yield* call(() => provider.read(saved.baseline));
-    if (canonical(active) !== canonical(saved.baseline))
+    if (baselineKey(active) !== baselineKey(saved.baseline))
       throw declaredMismatch(
         "declared-class-live-baseline-drift",
         fqn,
@@ -209,7 +214,7 @@ export const prepareClassClone = (
     const latest = yield* call(() => provider.clone(saved.baseline, "latest"));
     assertClone(fqn, next, latest);
     const confirmed = yield* call(() => provider.read(saved.baseline));
-    if (canonical(confirmed) !== canonical(saved.baseline))
+    if (baselineKey(confirmed) !== baselineKey(saved.baseline))
       throw classConstraint(
         "declared-class-live-baseline-drift",
         fqn,

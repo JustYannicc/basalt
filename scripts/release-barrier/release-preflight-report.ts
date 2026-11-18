@@ -1,5 +1,9 @@
 import type { PreflightBridgeCounters, HealthTiming } from "./release-preflight-guard.ts";
-import type { PreflightMode, PreflightStepResult } from "./release-preflight.ts";
+import type {
+  PreflightMode,
+  PreflightStepResult,
+  SettlementProofOutcome,
+} from "./release-preflight.ts";
 import type { RehearsalCounters } from "./release-resume-rehearsal.ts";
 import type { ControllerAttempt } from "./release-preflight-steps.ts";
 
@@ -28,7 +32,9 @@ export function preflightReport(input: {
       (step) =>
         step.status === "refused" ||
         step.status === "skipped" ||
-        (step.status === "settlement-required" && input.mode !== "check"),
+        (step.status === "settlement-required" &&
+          // A refused proof means this candidate cannot settle the prior, in either mode.
+          (input.mode !== "check" || step.proof?.status === "refused")),
     ) ||
     mutations.deniedStateWrites > 0 ||
     mutations.blockedHttpMutations > 0 ||
@@ -49,6 +55,31 @@ export function preflightReport(input: {
   };
 }
 
+const proofReads = ({ state, http, bridge }: SettlementProofOutcome["reads"]) => {
+  const parts = [
+    state && `State ${state.get} get, ${state.getOutput} getOutput`,
+    http && `${http.providerGets} provider GET`,
+    `bridge ${
+      Object.entries(bridge)
+        .map(([action, count]) => `${action} ${count}`)
+        .join(", ") || "none"
+    }`,
+  ];
+  return ` [reads: ${parts.filter(Boolean).join("; ")}]`;
+};
+
+const proofLine = (proof: SettlementProofOutcome | undefined) => {
+  if (!proof) return "";
+  switch (proof.status) {
+    case "accepted":
+      return `; proof accepted for ${proof.disposition}, source ${proof.source}${proofReads(proof.reads)}`;
+    default: {
+      const field = proof.refusal.field ? ` (${proof.refusal.field})` : "";
+      return `; proof REFUSED for ${proof.disposition}, source ${proof.source}: ${proof.refusal.reason}${field}${proofReads(proof.reads)}`;
+    }
+  }
+};
+
 const stepLine = (result: PreflightStepResult) => {
   switch (result.status) {
     case "refused": {
@@ -60,7 +91,7 @@ const stepLine = (result: PreflightStepResult) => {
     case "not-applicable":
       return `- ${result.step}: not applicable (${result.why})`;
     case "settlement-required":
-      return `- ${result.step}: SETTLEMENT REQUIRED (${result.disposition}); blocks the release until applied`;
+      return `- ${result.step}: SETTLEMENT REQUIRED (${result.disposition}); blocks the release until applied${proofLine(result.proof)}`;
     default:
       return `- ${result.step}: pass`;
   }

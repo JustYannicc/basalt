@@ -23,7 +23,36 @@ export type PreflightStepResult =
   | { step: string; status: "not-applicable"; why: string }
   | { step: string; status: "refused"; refusal: PreflightRefusal }
   | { step: string; status: "skipped"; needs: string[] }
-  | { step: string; status: "settlement-required"; disposition: string };
+  | {
+      step: string;
+      status: "settlement-required";
+      disposition: string;
+      proof?: SettlementProofOutcome;
+    };
+
+/** Read-only counts a settlement proof added: State reads, provider GETs and bridge actions. */
+export type SettlementProofReads = {
+  state: { get: number; getOutput: number; writeAttempts: number } | null;
+  http: { providerGets: number; stateGets: number; blockedMutations: number } | null;
+  bridge: Record<string, number>;
+};
+
+/** The read-only settlement proof this candidate's preflight ran against the unsettled prior. */
+export type SettlementProofOutcome =
+  | {
+      status: "accepted";
+      disposition: string;
+      source: string;
+      controller: string;
+      reads: SettlementProofReads;
+    }
+  | {
+      status: "refused";
+      disposition: string;
+      source: string;
+      refusal: PreflightRefusal;
+      reads: SettlementProofReads;
+    };
 
 /**
  * The release would refuse until a settlement this candidate can perform has been applied. A
@@ -31,8 +60,10 @@ export type PreflightStepResult =
  */
 export class SettlementRequired {
   readonly disposition: string;
-  constructor(disposition: string) {
+  readonly proof?: SettlementProofOutcome;
+  constructor(disposition: string, proof?: SettlementProofOutcome) {
     this.disposition = disposition;
+    if (proof) this.proof = proof;
   }
 }
 
@@ -134,6 +165,7 @@ export function preflightRunner() {
             step: name,
             status: "settlement-required",
             disposition: error.disposition,
+            ...(error.proof ? { proof: error.proof } : {}),
           });
           return undefined;
         }

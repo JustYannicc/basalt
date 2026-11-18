@@ -11,15 +11,18 @@ import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/imple
 import {
   RuntimeImageReleasePlan,
   type ImageReleasePlan,
+  type RuntimeColor,
 } from "../../src/pool/image-release-plan.ts";
 import { provisioningStack } from "./provisioning-stack.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { deployStack, type DeployStackOptions } from "./deploy-stack.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
+import { unsettledRuntimeProvisioning } from "./forward-journal.ts";
+import { provisioningManifestDigest } from "./provisioning-contract.ts";
 import { runtimeReleaseState } from "./runtime-release-state.ts";
 import { runtimeReleaseDesired } from "./runtime-release-desired.ts";
 import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-release-journal.ts";
-import { runtimeReleaseClient } from "./runtime-release-client.ts";
+import { runtimeReleaseClient, type RuntimeReleaseClient } from "./runtime-release-client.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { bootstrapReleaseApplication } from "./runtime-release-bootstrap.ts";
 import { bootstrapImagePlan, releaseImagePlan } from "./runtime-release-plan.ts";
@@ -133,7 +136,8 @@ export const releaseRuntimeImage = <A, StackError>(
           };
           yield* Effect.promise(() => journal.write(record!));
         }
-        return { journal, record };
+        const provisioning = yield* unsettledRuntimeProvisioning(compiled, options.encryptionKey);
+        return { journal, record, provisioning };
       }),
     );
     let record: RuntimeReleaseRecord = initial.record;
@@ -231,6 +235,43 @@ export const releaseRuntimeImage = <A, StackError>(
           return yield* clientFor();
         }),
       );
+    const bootstrap = (color: RuntimeColor, client: RuntimeReleaseClient) =>
+      Effect.gen(function* () {
+        const createPlan = bootstrapImagePlan(record, color);
+        yield* evalStack(
+          provisioningStack,
+          (compiled) =>
+            provideCompiled(
+              compiled,
+              bootstrapReleaseApplication(compiled, {
+                color,
+                record,
+                writer: options.writer,
+                client,
+                encryptionKey: options.encryptionKey,
+                save,
+              }),
+            ),
+          { stage },
+        ).pipe(Effect.provideService(RuntimeImageReleasePlan, createPlan));
+        const native = yield* evaluate(createPlan, (compiled) => runtimeReleaseState(compiled));
+        yield* Effect.promise(() => save({ ...record, baseline: native }));
+      });
+    // A rerun after a refused bootstrap readback: that bootstrap's journal heads the forward journal
+    // and every code phase refuses it unsettled, so its own create is finished from the journal first.
+    const pending = (["blue", "green"] as const).find((color) => {
+      const manifest = record.bootstrap[color];
+      const head = initial.provisioning;
+      return (
+        manifest !== undefined &&
+        !record.baseline.applications[color] &&
+        head?.resource === fleetClassName(color) &&
+        head.candidate === record.candidate &&
+        head.candidate === manifest.candidate &&
+        head.manifest === provisioningManifestDigest(manifest)
+      );
+    });
+    if (pending) yield* bootstrap(pending, yield* evaluate(plan(), () => clientFor()));
     let client = yield* codePhase("controller");
     stopAt("after-controller");
     yield* Effect.promise(() =>
@@ -247,25 +288,7 @@ export const releaseRuntimeImage = <A, StackError>(
 
     for (const color of ["blue", "green"] as const) {
       if (record.baseline.applications[color]) continue;
-      const createPlan = bootstrapImagePlan(record, color);
-      yield* evalStack(
-        provisioningStack,
-        (compiled) =>
-          provideCompiled(
-            compiled,
-            bootstrapReleaseApplication(compiled, {
-              color,
-              record,
-              writer: options.writer,
-              client,
-              encryptionKey: options.encryptionKey,
-              save,
-            }),
-          ),
-        { stage },
-      ).pipe(Effect.provideService(RuntimeImageReleasePlan, createPlan));
-      const native = yield* evaluate(createPlan, (compiled) => runtimeReleaseState(compiled));
-      yield* Effect.promise(() => save({ ...record, baseline: native }));
+      yield* bootstrap(color, client);
       stopAt(`after-bootstrap-${color}`);
       client = yield* codePhase(`bind-${color}`);
       stopAt(`after-bind-${color}`);
