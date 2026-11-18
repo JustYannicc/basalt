@@ -819,3 +819,26 @@ test("the root application is never patched, rolled out or deleted; other applic
   // Nothing reached the root, not even the read a delete of an unknown application makes.
   assert.deepEqual(reads(run.received), [`PATCH ${appPath("cell-app")}`]);
 });
+
+test("a destroy deletes exactly the resources its own plan names, and nothing else", async (t) => {
+  const run = await guarded(t, { deletable: ["basalt-test-pr-7-poolworker"] }, () =>
+    Effect.gen(function* () {
+      const own = yield* Effect.exit(
+        Workers.deleteScript({ accountId: ACCOUNT, scriptName: "basalt-test-pr-7-poolworker" }),
+      );
+      const other = yield* Effect.exit(
+        Workers.deleteScript({ accountId: ACCOUNT, scriptName: "basalt-production-poolworker" }),
+      );
+      return { own, other };
+    }),
+  );
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  const refused = refusalOf(run.exit.value.other);
+  assert.equal(refused.resource, "Worker basalt-production-poolworker");
+  assert.deepEqual(reads(run.received), [
+    `DELETE /accounts/${ACCOUNT}/workers/scripts/basalt-test-pr-7-poolworker`,
+  ]);
+});
