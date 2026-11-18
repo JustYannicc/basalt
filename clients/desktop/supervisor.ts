@@ -79,7 +79,7 @@ export class ConnectionSupervisor {
     const finished = new Promise<void>((resolve) => {
       child.once("close", (code, signal) => {
         if (this.child === child) this.child = undefined;
-        this.log.note(`Connection process exited (code ${code}, signal ${signal}).`);
+        this.log.end(`Connection process exited (code ${code}, signal ${signal}).`);
         resolve();
       });
     });
@@ -151,7 +151,7 @@ export class ConnectionSupervisor {
     this.attaching?.abort();
     const child = this.child,
       finished = this.finished;
-    if (!child || !finished) return;
+    if (!child || !finished) return this.log.flushed();
     child.kill("SIGTERM");
     const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
     try {

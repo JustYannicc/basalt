@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -66,17 +66,45 @@ test("the connection log rotates to one previous file and stays bounded", async 
   assert.match(await readFile(path, "utf8"), /warning 59 x+\n$/);
 });
 
-test("a line split across reads is kept whole and an endless line is cut", async (context) => {
+test("a line split across reads is kept whole and an endless line is cut once", async (context) => {
   const home = await profile(context);
   const path = join(home, "connection.log");
   const log = new ConnectionLog(path);
   log.output("NATIVE_TUNNEL_");
   log.output("CLIENT_FAILURE { phase: 'headers' }\npartial");
   log.output(` ${"y".repeat(5_000)}`);
+  log.output("z".repeat(3_000));
+  log.output(" rest of the endless line\nnext warning\n");
   await log.flushed();
   const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 3);
   assert.match(lines[0]!, / NATIVE_TUNNEL_CLIENT_FAILURE \{ phase: 'headers' \}$/);
   assert.match(lines[1]!, / partial y+$/);
   assert.equal(lines[1]!.length, 25 + 1024);
+  assert.match(lines[2]!, / next warning$/);
+});
+
+test("an unfinished last line is kept before the exit note", async (context) => {
+  const home = await profile(context);
+  const path = join(home, "connection.log");
+  const log = new ConnectionLog(path);
+  log.output("Connection lost before its newline");
+  log.end("Connection process exited (code 1, signal null).");
+  await log.flushed();
+  const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
+  assert.deepEqual(
+    lines.map((line) => line.slice(25)),
+    ["Connection lost before its newline", "Connection process exited (code 1, signal null)."],
+  );
+});
+
+test("the log is never written through a symlink", { skip }, async (context) => {
+  const home = await profile(context);
+  const target = join(home, "elsewhere.txt");
+  await writeFile(target, "");
+  await symlink(target, join(home, "connection.log"));
+  const log = new ConnectionLog(join(home, "connection.log"));
+  log.note("NATIVE_TUNNEL_CLIENT_FAILURE {}");
+  await log.flushed();
+  assert.equal(await readFile(target, "utf8"), "");
 });

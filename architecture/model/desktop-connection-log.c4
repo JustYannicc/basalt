@@ -1,7 +1,7 @@
 model {
   extend basalt.clientDesktop {
     metadata {
-      constraint "The desktop supervisor reads the connection process's error output for the whole life of the process it started, not only until it is ready, and keeps every line in connection.log inside the connection profile folder. Each line is timestamped, passes the shared credential redaction and is cut to 1 KiB; the file is private to the user. It rotates at 512 KiB to one previous copy, connection.log.1, so the folder keeps about 1 MiB at most. The process's exit code and signal are kept too, and stopping the connection waits until its last lines are written. A failed write is dropped and never stops the connection. An attached connection started by another process keeps its own output."
+      constraint "The desktop supervisor reads the connection process's error output for the whole life of the process it started, not only until it is ready, and keeps every line in connection.log inside the connection profile folder. Each line is timestamped, passes the shared credential redaction and is cut to 1,024 characters; the rest of a longer line is dropped. The file is created readable only by its owner and is never written through a symlink. It rotates before a write would pass 512 KiB, to one previous copy, connection.log.1, so the folder keeps at most 1 MiB. The process's unfinished last line, exit code and signal are kept, and stopping the connection waits until they are written. A failed write is dropped and never stops the connection. An attached connection started by another process keeps its own output."
     }
   }
   basalt.clientDesktop -[sync]-> basalt.telemetry "redact connection warnings before keeping them"
