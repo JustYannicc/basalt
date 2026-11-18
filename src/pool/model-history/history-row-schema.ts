@@ -70,7 +70,7 @@ const record = (targets: string) => `WITH t AS MATERIALIZED (${targets}),
 const byHash = (hashes: string, groups: boolean) =>
   record(`WITH h AS (SELECT DISTINCT v FROM (${hashes}) s(v) WHERE v IS NOT NULL
         AND position(';'||change_topic||':'||v||';' IN memo)=0)
-      ${groups ? `SELECT h.v AS hash,${pools}::text AS pool FROM h JOIN channel_group g ON g.channel_name ~ ${mappedGroup} AND basalt_pool_history_hash(${pools})=h.v UNION ALL ` : ""}SELECT h.v,p.pool::text FROM h JOIN basalt_pool_change_heads p ON basalt_pool_history_hash(p.pool)=h.v`);
+      ${groups ? `SELECT h.v AS hash,${pools}::text AS pool FROM h JOIN channel_group g ON g.channel_name ~ ${mappedGroup} AND basalt_pool_history_hash(${pools})=h.v UNION ALL ` : ""}SELECT h.v AS hash,p.pool::text AS pool FROM h JOIN basalt_pool_change_heads p ON basalt_pool_history_hash(p.pool)=h.v`);
 const byGroup = (condition: string) =>
   record(`SELECT NULL::text AS hash,${pools}::text AS pool FROM channel_group g
       WHERE g.channel_name ~ ${mappedGroup} AND (${condition})`);

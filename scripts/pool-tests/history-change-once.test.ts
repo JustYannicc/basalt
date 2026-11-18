@@ -141,8 +141,11 @@ async function run(client: pg.Client, statement: Statement) {
   return insertHistory(client, statement as ModelRequest[]);
 }
 
-async function replay(version: Version, journal: boolean, script: readonly Step[]) {
-  return homeChangeFixture(version, journal, async ({ a }) => {
+async function replay(version: Version, journal: boolean, script: readonly Step[], home = true) {
+  return homeChangeFixture(
+    version,
+    journal,
+    async ({ a }) => {
     const observed = [];
     for (const step of script) {
       await a.query("BEGIN");
@@ -152,7 +155,9 @@ async function replay(version: Version, journal: boolean, script: readonly Step[
       observed.push({ step: step.name, inside, after: (await produced(a)).heads });
     }
     return observed;
-  });
+    },
+    home,
+  );
 }
 
 // Guarantee: every committed change still produces exactly the legacy entries, and a rollback
@@ -179,6 +184,31 @@ for (const journal of [true, false])
         { pool: pools[1], topic: "pool-usage" },
       ]);
     }
+  });
+
+// Guarantee: history databases without Home tables resolve through registered heads alone.
+for (const journal of [true, false])
+  test(`Home-less history produces v11's entries with journal ${journal ? "active" : "prepared"}`, async () => {
+    const [first, second, saved] = await Promise.all([
+      historyRows([pools[0], pools[1], null, "app_fixture_once_unmapped", pools[0]]),
+      historyRows([pools[0], pools[1]]),
+      historyRows([pools[1]]),
+    ]);
+    const script: Step[] = [
+      { name: "two statements", statements: [first, second] },
+      {
+        name: "savepoint",
+        statements: ["SAVEPOINT s", saved, "ROLLBACK TO SAVEPOINT s", await historyRows([pools[1]])],
+      },
+      { name: "rolled back", statements: [await historyRows([pools[0]])], end: "ROLLBACK" },
+    ];
+    const legacy = await replay("v11", journal, script, false);
+    assert.deepEqual(await replay("v12", journal, script, false), legacy);
+    if (journal)
+      assert.deepEqual(legacy[0]!.inside.dirty, [
+        { pool: pools[0], topic: "pool-usage" },
+        { pool: pools[1], topic: "pool-usage" },
+      ]);
   });
 
 // Measurement: executor statements run inside the triggers (top-level statements excluded).
