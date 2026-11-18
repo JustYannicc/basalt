@@ -2227,9 +2227,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   declared-self-host:
-    # Queued after the browser installer, so the long single jobs queued with it take the first
-    # runners instead of waiting behind these short ones; the installer also warms their browser cache.
-    needs: [select, browser-install]
+    needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -2271,9 +2269,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   declared-local:
-    # Queued after the browser installer, so the long single jobs queued with it take the first
-    # runners instead of waiting behind these short ones; the installer also warms their browser cache.
-    needs: [select, browser-install]
+    needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -2315,9 +2311,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   declared-cloud:
-    # Queued after the browser installer, so the long single jobs queued with it take the first
-    # runners instead of waiting behind these short ones; the installer also warms their browser cache.
-    needs: [select, browser-install]
+    needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
