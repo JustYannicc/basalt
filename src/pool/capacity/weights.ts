@@ -100,7 +100,9 @@ function lastKnown(
     !decided.known ||
     candidates.some(
       (entry) =>
-        entry.verification === "unknown" && (entry.fetchedAt ?? 0) > (decided.fetchedAt ?? 0),
+        entry.verification === "unknown" &&
+        entry.sourceId === decided.sourceId &&
+        (entry.fetchedAt ?? 0) > (decided.fetchedAt ?? 0),
     )
   )
     return;

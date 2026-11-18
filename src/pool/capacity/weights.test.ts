@@ -179,6 +179,22 @@ test("an expired plan keeps the row that last decided, not the latest fetched", 
   });
   assert.equal(weight.revision, "policy-20");
   assert.equal(weight.multiplier, 20);
+  const otherRevocation = {
+    ...policy,
+    full: null,
+    kind: "dataset" as const,
+    verification: "unknown" as const,
+    sourceId: "dataset",
+    fetchedAt: expiry + 3_600_000,
+    revision: "dataset-revoked",
+  };
+  assert.equal(
+    capacityWeight("claude", "Max 20x", 18_000, {
+      now: expiry + 2 * 3_600_000,
+      catalog: { entries: [{ ...policy, sourceId: "pool-policy" }, otherRevocation] },
+    }).revision,
+    "policy-20",
+  );
 
   const disagreeing = {
     ...row,
