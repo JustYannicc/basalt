@@ -183,8 +183,8 @@ async function runAlchemy(
     "bun",
     alchemyArgs(
       "--log-level",
-      // Errors only: at "none" a failed apply can exit 1 with nothing to say why.
-      "error",
+      // Alchemy reports a failed apply only through its progress lines, which "error" and "none" hide.
+      "info",
       action,
       config,
       "--stage",
