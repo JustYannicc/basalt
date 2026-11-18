@@ -378,32 +378,37 @@ test("raw ingress strips private lifetime headers and offer while preserving pub
   assert.equal(calls.forwarded[0]!.headers.get("Sec-WebSocket-Protocol"), "raw.one, raw.two");
 });
 
-test("a controller reset at the Worker entry becomes native retry advice without a second send", async (context) => {
+test("a controller reset at the Worker entry is survived by one send to a new instance", async (context) => {
   const log = context.mock.method(console, "error", () => {});
-  const { env, calls } = poolStub(undefined, async () => {
-    throw new Error(
-      "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
-    );
+  let sends = 0;
+  const { env, calls } = poolStub(undefined, async (request) => {
+    if (++sends === 1)
+      throw new Error(
+        "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
+      );
+    return new Response(await request.text(), { status: 200 });
   });
   const deferred: Promise<unknown>[] = [];
   const response = await handlePoolWorkerRequest(
     new Request("https://pool.example/v1/messages", {
       method: "POST",
       headers: { "X-Api-Key": "valid-home-key" },
-      body: "{}",
+      body: '{"model":"claude-opus-5-5"}',
     }),
     env,
     async () => true,
     (work) => deferred.push(work),
   );
-  assert.equal(response.status, 529);
-  assert.equal(response.headers.get("Retry-After"), "1");
-  assert.equal((await response.json()).error.type, "overloaded_error");
-  assert.equal(calls.forwarded.length, 1);
-  assert.equal(deferred.length, 1);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '{"model":"claude-opus-5-5"}');
+  assert.equal(calls.lookups, 2);
+  assert.equal(calls.forwarded.length, 2);
   await Promise.all(deferred);
-  assert.equal(
-    log.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_INTERRUPTED").length,
-    1,
+  const saved = log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_CONTROLLER_INTERRUPTED")
+    .map((call) => JSON.parse(String(call.arguments[1])));
+  assert.deepEqual(
+    saved.map((line) => [line.outcome, line.saved]),
+    [["replayed", true]],
   );
 });

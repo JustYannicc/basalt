@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import {
+  controllerHoldBytes,
   controllerInstanceEnded,
   controllerReplayDelayMs,
   fetchController,
@@ -31,20 +32,31 @@ function observe(context: TestContext) {
     deferred,
     async events() {
       await Promise.all(deferred);
-      const lines = log.mock.calls
-        .filter((call) => call.arguments[0] === "POOL_CONTROLLER_INTERRUPTED")
-        .map((call) => JSON.parse(String(call.arguments[1])));
-      return { lines, sentry };
+      const marked = (marker: string) =>
+        log.mock.calls
+          .filter((call) => call.arguments[0] === marker)
+          .map((call) => JSON.parse(String(call.arguments[1])));
+      return {
+        lines: marked("POOL_CONTROLLER_INTERRUPTED"),
+        calls: marked("POOL_CONTROLLER_CALL_FAILED"),
+        logged: JSON.stringify(log.mock.calls),
+        sentry,
+      };
     },
   };
 }
 
-function harness(context: TestContext, attempts: (() => Promise<Response>)[]) {
+type Attempt = (request: Request) => Promise<Response>;
+const fails = (error: () => unknown) => async () => {
+  throw error();
+};
+
+function harness(context: TestContext, attempts: Attempt[]) {
   const observed = observe(context);
   return Object.assign(controllerHop(attempts, observed.deferred), { events: observed.events });
 }
 
-function controllerHop(attempts: (() => Promise<Response>)[], deferred: Promise<unknown>[]) {
+function controllerHop(attempts: Attempt[], deferred: Promise<unknown>[]) {
   const waits: number[] = [];
   let resolved = 0;
   const hop: ControllerHop = {
@@ -68,121 +80,150 @@ function controllerHop(attempts: (() => Promise<Response>)[], deferred: Promise<
   };
 }
 
-test("the platform's reset error is the replayable class; an overloaded or unrelated error is not", () => {
+test("the platform's reset error or retryable flag is the replay class; an overloaded one is not", () => {
   assert.equal(controllerInstanceEnded(reset()), true);
   assert.equal(controllerInstanceEnded(new Error(resetMessage)), true);
+  assert.equal(
+    controllerInstanceEnded(
+      Object.assign(new Error("Network connection lost."), { retryable: true }),
+    ),
+    true,
+  );
   assert.equal(controllerInstanceEnded(Object.assign(reset(), { overloaded: true })), false);
   assert.equal(controllerInstanceEnded(new Error("Network connection lost.")), false);
   assert.equal(controllerInstanceEnded(resetMessage), false);
 });
 
-test("a safe read cut before its response is replayed once on a re-resolved controller", async (context) => {
+test("a model call cut before its response is sent once more, with its body, to a new instance", async (context) => {
+  const body = JSON.stringify({
+    model: "claude-opus-5-5",
+    messages: [{ role: "user", content: "hi" }],
+  });
+  const received: { body: string; version: string | null; same: boolean }[] = [];
+  const original = new Request("https://pool.example/v1/messages", {
+    method: "POST",
+    headers: { "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body,
+  });
   const h = harness(context, [
-    async () => {
-      throw reset();
+    fails(reset),
+    async (request) => {
+      received.push({
+        body: await request.text(),
+        version: request.headers.get("anthropic-version"),
+        same: request === original,
+      });
+      return new Response("{}", { headers: { "content-type": "application/json" } });
     },
-    async () => Response.json({ data: [] }),
   ]);
-  const response = await fetchController(new Request("https://pool.example/v1/models"), h.hop);
+  const response = await fetchController(original, h.hop);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { data: [] });
   assert.equal(h.resolved, 2);
   assert.deepEqual(h.waits, [controllerReplayDelayMs]);
-  const { lines, sentry } = await h.events();
-  assert.equal(lines.length, 1);
+  assert.deepEqual(received, [{ body, version: "2023-06-01", same: false }]);
+  const { lines, calls, logged, sentry } = await h.events();
   assert.deepEqual(
-    { ...lines[0], requestId: undefined },
-    {
-      count: 1,
-      requestId: undefined,
-      outcome: "replayed",
-      cause: "instance_ended",
-      method: "GET",
-      endpoint: "/v1/:operation",
-    },
+    lines.map((line) => [line.outcome, line.saved, line.cause, line.endpoint]),
+    [["replayed", true, "instance_ended", "/v1/messages"]],
   );
+  assert.deepEqual(
+    calls.map((call) => [call.attempt, call.messageClass, call.retryable, call.overloaded]),
+    [[1, "instance_inactive", true, null]],
+  );
+  assert.doesNotMatch(logged, /no longer active|claude-opus|hi"/);
   assert.deepEqual(sentry, [
     { code: "pool_controller_interrupted", requestId: lines[0].requestId },
   ]);
 });
 
-test("a second reset surfaces as retry advice instead of a third attempt", async (context) => {
-  const h = harness(context, [
-    async () => {
-      throw reset();
-    },
-    async () => {
-      throw reset();
-    },
-  ]);
-  const response = await fetchController(
-    new Request("https://pool.example/pool/v1/computers"),
-    h.hop,
-  );
-  assert.equal(response.status, 503);
-  assert.equal(response.headers.get("Retry-After"), "1");
+test("a safe read cut before its response is sent once more to a new instance", async (context) => {
+  const h = harness(context, [fails(reset), async () => Response.json({ data: [] })]);
+  const response = await fetchController(new Request("https://pool.example/v1/models"), h.hop);
+  assert.deepEqual(await response.json(), { data: [] });
   assert.equal(h.resolved, 2);
   const { lines } = await h.events();
   assert.deepEqual(
-    lines.map((line) => line.outcome),
-    ["replay_failed"],
+    lines.map((line) => [line.outcome, line.saved, line.method, line.endpoint]),
+    [["replayed", true, "GET", "/v1/:operation"]],
   );
-  assert.equal(response.headers.get("X-Request-Id"), lines[0].requestId);
 });
 
 for (const [path, status, type] of [
   ["/v1/messages", 529, "overloaded_error"],
   ["/v1/responses", 503, "server_error"],
 ] as const)
-  test(`a ${path} call cut before its response is never replayed and gets native retry advice`, async (context) => {
-    const h = harness(context, [
-      async () => {
-        throw reset();
-      },
-    ]);
+  test(`a ${path} call that meets a second reset gets native retry advice, not a third send`, async (context) => {
+    const h = harness(context, [fails(reset), fails(reset)]);
     const response = await fetchController(
       new Request(`https://pool.example${path}`, { method: "POST", body: "{}" }),
       h.hop,
     );
-    assert.equal(h.resolved, 1);
-    assert.deepEqual(h.waits, []);
+    assert.equal(h.resolved, 2);
     assert.equal(response.status, status);
     assert.equal(response.headers.get("Retry-After"), "1");
     assert.equal(response.headers.has("x-should-retry"), false);
     assert.equal((await response.json()).error.type, type);
-    const { lines, sentry } = await h.events();
+    const { lines, calls } = await h.events();
     assert.deepEqual(
-      lines.map((line) => [line.outcome, line.method, line.endpoint]),
-      [["retry_advised", "POST", path]],
+      lines.map((line) => [line.outcome, line.saved]),
+      [["replay_failed", false]],
+    );
+    assert.deepEqual(
+      calls.map((call) => call.attempt),
+      [1, 2],
     );
     assert.equal(response.headers.get("X-Request-Id"), lines[0].requestId);
-    assert.equal(sentry.length, 1);
   });
 
-test("requests the controller records, assigns an account to or meters are never sent twice", async (context) => {
-  const recorded = [
-    new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
-    new Request("https://pool.example/v1/chat/completions", { method: "POST", body: "{}" }),
-    new Request("https://pool.example/v1/videos", { method: "POST", body: "{}" }),
-    new Request("https://pool.example/v1/videos/video_1"),
+test("a model body too large to hold is sent once and gets native retry advice", async (context) => {
+  const h = harness(context, [fails(reset)]);
+  const response = await fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      body: new Uint8Array(controllerHoldBytes + 1),
+    }),
+    h.hop,
+  );
+  assert.equal(h.resolved, 1);
+  assert.equal(response.status, 529);
+  const { lines } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved, line.reason]),
+    [["retry_advised", false, "body_too_large"]],
+  );
+});
+
+test("a control write cut before its response keeps today's failure and is never sent twice", async (context) => {
+  const h = harness(context, [fails(reset)]);
+  await assert.rejects(
+    fetchController(
+      new Request("https://pool.example/pool/v1/sign-ins", { method: "POST", body: "{}" }),
+      h.hop,
+    ),
+    /no longer active/,
+  );
+  assert.equal(h.resolved, 1);
+  const { lines, sentry } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved, line.reason]),
+    [["surfaced", false, "not_replayable"]],
+  );
+  assert.equal(sentry.length, 1);
+});
+
+test("a model socket cut before its upgrade gets retry advice and is never sent twice", async (context) => {
+  const h = harness(context, [fails(reset)]);
+  const response = await fetchController(
     new Request("https://pool.example/v1/responses", { headers: { Upgrade: "websocket" } }),
-  ];
-  const observed = observe(context);
-  for (const request of recorded) {
-    const h = controllerHop(
-      [
-        async () => {
-          throw reset();
-        },
-      ],
-      observed.deferred,
-    );
-    const response = await fetchController(request, h.hop);
-    assert.equal(h.resolved, 1, `${request.method} ${request.url}`);
-    assert.equal(response.headers.get("Retry-After"), "1");
-  }
-  const { lines } = await observed.events();
-  assert.deepEqual(new Set(lines.map((line) => line.outcome)), new Set(["retry_advised"]));
+    h.hop,
+  );
+  assert.equal(h.resolved, 1);
+  assert.equal(response.status, 503);
+  const { lines } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.reason]),
+    [["retry_advised", "not_replayable"]],
+  );
 });
 
 test("a started stream is not replayed and ends with the native retry terminal", async (context) => {
@@ -213,8 +254,8 @@ test("a started stream is not replayed and ends with the native retry terminal",
   assert.doesNotMatch(body, /Durable Object/);
   const { lines, sentry } = await h.events();
   assert.deepEqual(
-    lines.map((line) => [line.outcome, line.cause, line.requestId]),
-    [["stream_ended", "instance_ended", controllerRequestId]],
+    lines.map((line) => [line.outcome, line.saved, line.cause, line.requestId]),
+    [["stream_ended", false, "instance_ended", controllerRequestId]],
   );
   assert.deepEqual(sentry, [
     { code: "pool_controller_interrupted", requestId: controllerRequestId },
@@ -223,29 +264,18 @@ test("a started stream is not replayed and ends with the native retry terminal",
 
 test("unrelated failures and closed clients keep today's behaviour", async (context) => {
   const observed = observe(context);
-  const unrelated = controllerHop(
-    [
-      async () => {
-        throw new Error("private failure");
-      },
-    ],
-    observed.deferred,
-  );
+  const unrelated = controllerHop([fails(() => new Error("private failure"))], observed.deferred);
   await assert.rejects(
-    fetchController(new Request("https://pool.example/v1/models"), unrelated.hop),
+    fetchController(
+      new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
+      unrelated.hop,
+    ),
     /private failure/,
   );
   assert.equal(unrelated.resolved, 1);
   const closed = new AbortController();
   closed.abort();
-  const client = controllerHop(
-    [
-      async () => {
-        throw reset();
-      },
-    ],
-    observed.deferred,
-  );
+  const client = controllerHop([fails(reset)], observed.deferred);
   await assert.rejects(
     fetchController(
       new Request("https://pool.example/v1/models", { signal: closed.signal }),
@@ -254,29 +284,13 @@ test("unrelated failures and closed clients keep today's behaviour", async (cont
     /no longer active/,
   );
   assert.equal(client.resolved, 1);
-  assert.deepEqual((await observed.events()).lines, []);
-});
-
-test("a control write cut before its response keeps today's failure and is never sent twice", async (context) => {
-  const h = harness(context, [
-    async () => {
-      throw reset();
-    },
-  ]);
-  await assert.rejects(
-    fetchController(
-      new Request("https://pool.example/pool/v1/sign-ins", { method: "POST", body: "{}" }),
-      h.hop,
-    ),
-    /no longer active/,
-  );
-  assert.equal(h.resolved, 1);
-  const { lines, sentry } = await h.events();
+  const { lines, calls, logged } = await observed.events();
+  assert.deepEqual(lines, []);
   assert.deepEqual(
-    lines.map((line) => [line.outcome, line.method]),
-    [["surfaced", "POST"]],
+    calls.map((call) => call.messageClass),
+    ["other", "instance_inactive"],
   );
-  assert.equal(sentry.length, 1);
+  assert.doesNotMatch(logged, /private failure/);
 });
 
 test("a client leaving a stream is not a controller interruption", async (context) => {
@@ -317,7 +331,8 @@ test("a complete stream passes through unchanged and records nothing", async (co
     h.hop,
   );
   assert.equal(await response.text(), body);
-  const { lines, sentry } = await h.events();
+  const { lines, calls, sentry } = await h.events();
   assert.deepEqual(lines, []);
+  assert.deepEqual(calls, []);
   assert.deepEqual(sentry, []);
 });
