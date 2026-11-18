@@ -37,7 +37,7 @@ const cached = sqliteCache({
 });
 const session = isolatedCacheSession(async (command) => ({
   ok: true,
-  value: (await Effect.runPromise(cached("github", command))).reply,
+  value: await Effect.runPromise(cached("github", command)),
 }));
 const directory = await mkdtemp(join(tmpdir(), "github-runtime-"));
 // Only import resolution changes. Destinations, declarations and handlers stay exactly as served.
