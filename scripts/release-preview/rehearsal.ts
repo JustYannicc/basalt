@@ -78,6 +78,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
     const release = async (request: ReleaseRequest) => {
       const which = request.candidate === "previous" ? previousRoot : root;
       const commit = request.candidate === "previous" ? previous : candidate;
+      const imageReceipt = join(privateRoot, `pool-image-${sequence + 1}.json`);
       const environment: NodeJS.ProcessEnv = {
         ...deployEnvironment,
         ALCHEMY_STAGE: stage,
@@ -85,15 +86,31 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         ...(await releaseInput(which, request, commit)),
       };
       for (const name of writerInputs) if (source[name]) environment[name] = source[name];
-      let exited = true;
-      const run = () => operation(`release-${request.candidate}`, which, "scripts/deploy.ts", [], environment, 180)
-        .catch(() => { exited = false; });
+      // As production's release runner does: the deploy publishes a receipt for the image it serves.
+      Object.assign(environment, { GITHUB_SHA: commit, BASALT_POOL_IMAGE_RECEIPT: imageReceipt });
+      let outcome: Awaited<ReturnType<typeof releaseOutcome>> | undefined;
+      const run = async () => {
+        let exited = true;
+        await operation(`release-${request.candidate}`, which, "scripts/deploy.ts", [], environment, 180)
+          .catch(() => { exited = false; });
+        outcome = await releaseOutcome(join(which, ".local", "release-barrier"), exited);
+        if (!outcome.ok) return;
+        // Production's post-deploy checks, against the stage's own host while its brand is in place.
+        // The public-site smoke isn't rehearsed: a disposable stage has no public site.
+        await operation("assert-pool-image", which, "scripts/deploy-safety/assert-pool-image.ts", [], environment, 10);
+        await operation("pool-stream", which, "scripts/verify-pool-stream.ts", [], {
+          ...environment,
+          POOL_ACCEPTANCE_KEY: access?.modelKey,
+          POOL_ACCEPTANCE_MODEL: model,
+        }, 10);
+      };
       // Each checkout bundles Workers as the stage's own brand; the candidate builds once here.
       if (which === root && !built) {
         await withStageBuild(root, subject, deployEnvironment, run);
         built = true;
       } else await withStageBuild(which, subject, deployEnvironment, run, undefined, { build: false });
-      return releaseOutcome(join(which, ".local", "release-barrier"), exited);
+      if (!outcome) throw new Error("The rehearsed release recorded no outcome");
+      return outcome;
     };
     const hooks: RehearsalHooks = {
       deployBaseline: async () => {

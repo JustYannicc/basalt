@@ -6,6 +6,9 @@ import { isRehearsalStage } from "../release-barrier/release-stage.ts";
 const releaseInputs = [
   "BASALT_RELEASE_CANDIDATE",
   "BASALT_RELEASE_ATTEMPT",
+  // Production's release runner passes these so the deploy publishes its pool image receipt.
+  "BASALT_POOL_IMAGE_RECEIPT",
+  "GITHUB_SHA",
   "BASALT_REHEARSAL_STOP",
   "BASALT_REHEARSAL_DRAIN_CAP_MS",
   "POOL_AVAILABILITY_TARGET",
