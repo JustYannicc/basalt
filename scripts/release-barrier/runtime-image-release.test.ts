@@ -364,6 +364,8 @@ async function firstScaleOutRelease(
     sourceController?: { candidate: string; workerInput: string };
     /** Omit the reviewed PoolWorker class intent: the code phase then creates no fleet class. */
     withoutClassIntent?: boolean;
+    /** The class step's read fails in transport, as production's controller phase once did. */
+    failClassRead?: { reads: number };
   } = {},
 ) {
   const w = createWorld();
@@ -458,7 +460,15 @@ async function firstScaleOutRelease(
                   },
                 }),
             io: {
-              classes: classProvider(production),
+              classes: options.failClassRead
+                ? {
+                    ...classProvider(production),
+                    read: async () => {
+                      options.failClassRead!.reads++;
+                      throw new TypeError("fetch failed");
+                    },
+                  }
+                : classProvider(production),
               sqlSchemas: async () => readySqlSchemas(candidate),
               placements: (_worker, baseline) =>
                 Effect.succeed(
@@ -629,6 +639,31 @@ test("a release after a settled or aborted prior candidate freezes that candidat
   const result = await firstScaleOutRelease({ sourceController });
   assert.equal(result.journal?.complete, true, explain(result));
   assert.deepEqual(result.journal?.baselineController?.code, sourceController);
+});
+
+test("a release stopped at its class read leaves only its frozen record, and a next release given its frozen code runs past the class step", async () => {
+  const live = { candidate: "4".repeat(40), workerInput: "3".repeat(64) };
+  const failClassRead = { reads: 0 };
+  const stopped = await firstScaleOutRelease({ sourceController: live, failClassRead });
+  assert.notEqual(stopped.outcome.ok, true, explain(stopped));
+  assert.equal(failClassRead.reads, 1, explain(stopped));
+  assert.match(explain(stopped), /release-operation-failed \(PoolWorker\)/u);
+  // Init froze the live controller before the code phase; preparation then wrote nothing else.
+  const record = stopped.journal;
+  assert.ok(record, explain(stopped));
+  assert.equal(record.complete, false);
+  assert.deepEqual(record.baselineController?.code, live);
+  assert.deepEqual(record.bootstrap, {});
+  assert.deepEqual(record.configurations, {});
+  assert.equal(record.update ?? record.promotion ?? record.abort, undefined);
+  assert.deepEqual(stopped.production.log.puts, []);
+  assert.deepEqual(standin.bootstrapAttachments, []);
+  // An abandoned-before-forward archive gives the next candidate's head that frozen code
+  // (release-settlement-before-forward.test.ts), so its release starts from it.
+  const next = await firstScaleOutRelease({ sourceController: record.baselineController!.code });
+  assert.equal(next.journal?.complete, true, explain(next));
+  assert.deepEqual(next.journal?.baselineController?.code, live);
+  assert.ok(next.production.log.puts.length, explain(next));
 });
 
 test("the post-deploy image check accepts the fleet a completed release leaves behind", async () => {

@@ -68,6 +68,7 @@ try {
             receipts,
             attempts: controllerAttempts,
             declarations,
+            counters,
           });
         }).pipe(Effect.provideContext(compiled.services)),
       { stage: "production" },
