@@ -12,6 +12,8 @@ import {
   readinessRetryMs,
   readyAfterAdoption,
   withinDeadline,
+  type DeploymentReadiness,
+  type ReadinessCalls,
 } from "./database-budget-readiness.ts";
 import { decodeRuntimeReady } from "../src/pool/deployment-readiness.ts";
 import {
@@ -28,8 +30,7 @@ export const databaseVerificationCommandMs = 115_000;
  * to start.
  */
 export const databaseReadinessCommandMs = 330_000 + 180_000;
-type Readiness = Awaited<ReturnType<typeof openDeploymentReadiness>>;
-type RuntimeConnection = Pick<Readiness, "ready" | "close"> & Partial<Pick<Readiness, "adoption">>;
+type RuntimeConnection = ReadinessCalls & Pick<DeploymentReadiness, "close">;
 
 function list(value: string | undefined) {
   const parsed: unknown = JSON.parse(value ?? "null");
@@ -90,8 +91,8 @@ export async function runDatabaseBudgetCommand(
   const awaitReady = (connection: RuntimeConnection, signal: AbortSignal) =>
     readyAfterAdoption(connection, target, {
       signal,
-      pause: (within) =>
-        pause(readinessRetryMs, within, (milliseconds) => schedule(milliseconds, "retry")),
+      pause: (until) =>
+        pause(readinessRetryMs, until, (milliseconds) => schedule(milliseconds, "retry")),
       refused: (refusal) => {
         refusals = { count: (refusals?.count ?? 0) + 1, ...refusal };
       },
