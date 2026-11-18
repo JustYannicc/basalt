@@ -19,9 +19,23 @@ export const PLUGINS = [
   { name: "basalt", specifier: "./plugin/basalt.mjs" },
   { name: "landmines-testing", specifier: "@interfere/landmines/testing" },
   { name: "landmines-structure", specifier: "@interfere/landmines/structure" },
+  { name: "anti-slop", specifier: "./vendor/anti-slop/index.ts" },
+  { name: "anti-slop-effect", specifier: "./vendor/anti-slop/effect/index.ts" },
 ];
 const CONFIG_KEYS = new Set(["$schema", "plugins", "categories", "jsPlugins", "rules"]);
-const OWNED_RULE = /^(?:basalt|landmines-[\w-]+)\//u;
+const OWNED_RULE = /^(?:basalt|landmines-[\w-]+|anti-slop(?:-effect)?)\//u;
+const JS_PLUGIN = new Set(PLUGINS.map(({ name }) => name));
+
+/**
+ * The built-in rules the owned configuration enables, by every name a disable comment can use
+ * for them: oxlint also accepts a built-in rule without its plugin prefix.
+ */
+export const nativeRules = (config: Config) =>
+  new Set(
+    Object.keys(config.rules)
+      .filter((rule) => !JS_PLUGIN.has(rule.split("/")[0]!))
+      .flatMap((rule) => [rule, rule.split("/").at(-1)!]),
+  );
 
 export type Counts = Record<string, Record<string, number>>;
 export type Allowlist = Record<string, Record<string, { count: number; reason: string }>>;
@@ -60,9 +74,14 @@ const counted = (rule: string) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlin
 
 /**
  * A disable comment would hide a finding from the baseline. The only form allowed is a `//`
- * comment that names upstream rules and nothing else; any other mention is refused.
+ * comment that names upstream rules and nothing else; any other mention is refused. `native`
+ * holds the built-in rules the owned configuration enables, which are owned rules too.
  */
-export function directiveProblems(file: string, text: string) {
+export function directiveProblems(
+  file: string,
+  text: string,
+  native: ReadonlySet<string> = new Set(),
+) {
   const problems: string[] = [];
   for (const match of text.matchAll(/(?:oxlint|eslint)-disable/gu)) {
     const lineStart = text.lastIndexOf("\n", match.index) + 1;
@@ -77,7 +96,7 @@ export function directiveProblems(file: string, text: string) {
     const upstreamOnly =
       /^\s*\/\/\s*$/u.test(before) &&
       names.length > 0 &&
-      !names.some((name) => OWNED_RULE.test(name) || /[*<>]/u.test(name));
+      !names.some((name) => OWNED_RULE.test(name) || native.has(name) || /[*<>]/u.test(name));
     if (upstreamOnly) continue;
     problems.push(
       `${file}:${text.slice(0, match.index).split("\n").length} has a disable comment that is not a single \`//\` comment naming only upstream rules. Owned rules take no disable comments: fix the finding, or for a reasoned exception use scripts/owned-lint/allowlist.json.`,
@@ -178,7 +197,7 @@ export function configProblems(current: Config, base: Config | undefined) {
     );
   if (JSON.stringify(current.jsPlugins) !== JSON.stringify(PLUGINS))
     problems.push(
-      ".oxlintrc.json: jsPlugins must load exactly the pinned basalt and landmines plugins.",
+      `.oxlintrc.json: jsPlugins must load exactly the pinned plugins: ${PLUGINS.map(({ name }) => name).join(", ")}.`,
     );
   for (const [rule, setting] of Object.entries(base?.rules ?? {}))
     if (severity(setting) === "error" && severity(current.rules[rule]) !== "error")
@@ -186,6 +205,25 @@ export function configProblems(current: Config, base: Config | undefined) {
         `.oxlintrc.json: ${rule} was enforced at the base commit and is not now. Owned rules are not switched off.`,
       );
   return problems;
+}
+
+/**
+ * Options decide what an enforced rule finds, so a change to them is listed for review. Native
+ * allowlist counts are left out: the ratchet below holds them.
+ */
+export function optionChanges(current: Config, base: Config) {
+  const options = (rule: string, config: Config) => {
+    const setting = config.rules[rule];
+    return JSON.stringify(Array.isArray(setting) ? setting.slice(1) : [], (key, value) =>
+      key === "allow" && NATIVE_ALLOWLIST.has(rule) ? undefined : value,
+    );
+  };
+  return Object.keys(base.rules)
+    .filter((rule) => severity(base.rules[rule]) === "error")
+    .flatMap((rule) => {
+      const [before, after] = [options(rule, base), options(rule, current)];
+      return before === after ? [] : [`${rule} options ${before} -> ${after}`];
+    });
 }
 
 /** New or raised allowlist entries are allowed with a reason; the summary lists them for review. */
@@ -273,6 +311,12 @@ export function basePolicy(
   const notices = allowlistAdditions(current.allowlist, base.allowlist).map(
     (line) => `Allowlist addition, review its reason: ${line}`,
   );
+  if (base.config)
+    notices.push(
+      ...optionChanges(current.config, base.config).map(
+        (line) => `Rule options changed, review what they now find: ${line}`,
+      ),
+    );
   if (base.baseline && base.config) {
     const enforced = new Set(
       Object.keys(base.config.rules).filter(

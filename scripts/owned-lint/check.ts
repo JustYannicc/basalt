@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -9,6 +9,7 @@ import {
   compare,
   configProblems,
   directiveProblems,
+  nativeRules,
   recordable,
   severity,
   total,
@@ -30,13 +31,18 @@ const oxlint = join(here, "node_modules/oxlint/bin/oxlint");
 // Alchemy and is not gated; everything else in scripts/ and src/ is, including new files.
 const SCOPE = /^(?:scripts|src)\/.+\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const OUTSIDE = /^scripts\/release-barrier\/|(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
+// Vendored rules keep their upstream form so an update stays a diff against upstream; no
+// formatter or linter rewrites them.
+export const vendored = (file: string) => file.startsWith("scripts/owned-lint/vendor/");
 // Changing these may change what the rules find, so a rise against the base is listed for
 // review instead of failing; the rule cases in rules.test.ts guard the change.
 const LINT_INPUTS = [
   "scripts/owned-lint/plugin",
+  "scripts/owned-lint/vendor",
   "scripts/owned-lint/package.json",
   "scripts/owned-lint/bun.lock",
 ];
+export const inScope = (file: string) => SCOPE.test(file) && !OUTSIDE.test(file) && !vendored(file);
 const readJson = <T>(path: string, fallback: T) => {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -54,7 +60,7 @@ export function scopedFiles(cwd = root) {
     maxBuffer: 32 * 1024 * 1024,
   })
     .split("\0")
-    .filter((file) => SCOPE.test(file) && !OUTSIDE.test(file) && existsSync(join(cwd, file)))
+    .filter((file) => inScope(file) && existsSync(join(cwd, file)))
     .sort();
 }
 
@@ -188,26 +194,60 @@ function baseState(base: string) {
   } satisfies BaseState;
 }
 
+// Only the named files' entries, for a check of the files an agent just edited.
+const only = <T>(byRule: Record<string, Record<string, T>>, files: ReadonlySet<string>) =>
+  Object.fromEntries(
+    Object.entries(byRule).map(([rule, byFile]) => [
+      rule,
+      Object.fromEntries(Object.entries(byFile).filter(([file]) => files.has(file))),
+    ]),
+  );
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const unknown = process.argv.slice(2).filter((argument) => argument !== "--write-baseline");
+  const named = process.argv.slice(2).filter((argument) => argument !== "--write-baseline");
+  const unknown = named.filter((argument) => argument.startsWith("-"));
   if (unknown.length)
-    throw new Error(`Unknown argument ${unknown.join(" ")}; the only option is --write-baseline.`);
-  const files = scopedFiles();
+    throw new Error(
+      `Unknown option ${unknown.join(" ")}; the only option is --write-baseline, or name files to check.`,
+    );
   if (process.argv.includes("--write-baseline")) {
-    writeBaseline(files);
+    if (named.length) throw new Error("--write-baseline records every file; name none.");
+    writeBaseline(scopedFiles());
+    process.exit(0);
+  }
+  const files = named.length
+    ? [
+        ...new Set(
+          named
+            .map((file) => relative(root, resolve(file)))
+            .filter((file) => inScope(file) && existsSync(join(root, file))),
+        ),
+      ].sort()
+    : scopedFiles();
+  if (named.length && !files.length) {
+    console.log("Owned lint: none of the named files is in scope.");
     process.exit(0);
   }
   const started = Date.now();
   const diagnostics = lint(files);
   const config = readJson<Config>(configPath, { rules: {} });
-  const baseline = readJson<Counts>(baselinePath, {});
-  const allowlist = readJson<Allowlist>(allowlistPath, {});
+  const selected = new Set(files);
+  const baseline = named.length
+    ? only(readJson<Counts>(baselinePath, {}), selected)
+    : readJson<Counts>(baselinePath, {});
+  const allowlist = named.length
+    ? only(readJson<Allowlist>(allowlistPath, {}), selected)
+    : readJson<Allowlist>(allowlistPath, {});
+  const native = nativeRules(config);
   const problems = [
-    ...files.flatMap((file) => directiveProblems(file, readFileSync(join(root, file), "utf8"))),
+    ...files.flatMap((file) =>
+      directiveProblems(file, readFileSync(join(root, file), "utf8"), native),
+    ),
     ...compare(diagnostics, baseline, allowlist),
   ];
   const notices: string[] = [];
-  if (process.env.BASE_SHA) {
+  // The base ratchet reads the whole baseline, so a check of named files leaves it to the full run.
+  if (process.env.BASE_SHA && !named.length) {
     const policy = basePolicy({ config, baseline, allowlist }, baseState(process.env.BASE_SHA));
     problems.push(...policy.problems);
     notices.push(...policy.notices);

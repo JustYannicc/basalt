@@ -2,10 +2,13 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { changedInputs } from "./affected.ts";
 import { run } from "../process.ts";
+import { vendored } from "../owned-lint/check.ts";
 
 const root = process.cwd();
 const { inputs } = changedInputs(root, process.env.BASE_SHA ?? "", process.env.HEAD_SHA ?? "");
-const source = inputs.filter((file) => /\.(?:[cm]?[jt]sx?)$/.test(file) && existsSync(file));
+const source = inputs.filter(
+  (file) => /\.(?:[cm]?[jt]sx?)$/.test(file) && existsSync(file) && !vendored(file),
+);
 for (const upstream of [false, true]) {
   const files = source
     .filter((file) => file.startsWith(".upstream/") === upstream)

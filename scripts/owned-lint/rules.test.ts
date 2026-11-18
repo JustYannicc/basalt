@@ -6,7 +6,8 @@ import { after, test } from "node:test";
 import { lint } from "./check.ts";
 
 // Each case is linted by the real oxlint with the real configuration. A line ending in
-// `// expect: <rule>` must report exactly that basalt rule; every other line must report none.
+// `// expect: <rules>` must report exactly those rules of its suite; every other line must report
+// none of them.
 // Cases marked "production" quote the shipped line verbatim.
 const cases: Record<string, string> = {
   // production: scripts/release-barrier/class-cloudflare.ts:99 at b96514294^ (failed releases 14 and 15,
@@ -323,38 +324,77 @@ test("runs", { skip: false }, () => {});
 `,
 };
 
+// The vendored anti-slop rules and the built-in rule they pair with, as configured. Every Effect
+// rule has a case: they are the ones that steer toward Effect's own tools.
+const antiSlopCases: Record<string, string> = {
+  "src/pool/effect-style.ts": `
+import { Data, Effect } from "effect";
+import { makeLedger } from "./ledger.ts"; // expect: anti-slop-effect/no-service-constructor-imports
+class Missing extends Data.TaggedError("Missing")<{ readonly id: string }> {}
+export const ledger = makeLedger;
+export const failed = { _tag: "Missing", id: "a" }; // expect: anti-slop-effect/no-manual-tagged-construction
+export const isMissing = (error: Missing) => error._tag === "Missing"; // expect: anti-slop-effect/no-manual-tag-comparison
+export const recover = (program: Effect.Effect<number, Missing>) =>
+  program.pipe(Effect.catch((error) => (error._tag === "Missing" ? Effect.succeed(0) : Effect.fail(error)))); // expect: anti-slop-effect/no-manual-effect-error-tag
+export const rank = (state: "a" | "b" | "c") => (state === "a" ? 1 : state === "b" ? 2 : 3); // expect: anti-slop-effect/prefer-effect-match
+export const tagged = (program: Effect.Effect<number, Missing>) =>
+  program.pipe(Effect.catchTag("Missing", () => Effect.succeed(0)));
+`,
+  "src/pool/generic-style.ts": `
+export const passThrough = (value: unknown) => value; // expect: anti-slop/no-unknown-parameters
+export const isCount = (value: { a: string | number }) => typeof value.a === "number"; // expect: anti-slop/no-runtime-typeof
+export const isText = (value: string | number): value is string => typeof value === "string";
+// SAFETY: a justified assertion passes; a chain fabricating a type still fails.
+export const cast = (value: string) => value as unknown as number; // expect: anti-slop/no-chained-type-assertions
+export const narrowed = (value: string | number) => value as string; // expect: anti-slop/require-safety-comment-for-type-assertion
+export const body = (id?: string) => ({ ...(id ? { id } : {}) }); // expect: anti-slop/no-conditional-empty-object-spread
+export const flat = (items: string[][]) => items.reduce<string[]>((all, item) => [...all, ...item], []); // expect: oxc/no-accumulating-spread
+export const loose: Record<string, unknown> = {}; // expect: anti-slop/no-unsafe-dictionary-type
+`,
+};
+const suites = [
+  { name: "basalt", cases, rules: /^basalt\//u },
+  { name: "anti-slop", cases: antiSlopCases, rules: /^(?:anti-slop(?:-effect)?|oxc)\//u },
+];
+
 // A checkout directory named like a test path must not change which rules apply.
 const scratch = mkdtempSync(join(tmpdir(), "owned-lint-"));
 const root = join(scratch, "fix-pool-tests");
 after(() => rmSync(scratch, { recursive: true, force: true }));
-for (const [file, source] of Object.entries(cases)) {
+const sources = { ...cases, ...antiSlopCases };
+for (const [file, source] of Object.entries(sources)) {
   mkdirSync(dirname(join(root, file)), { recursive: true });
   writeFileSync(join(root, file), source.trimStart());
 }
-const all = lint(Object.keys(cases), undefined, root);
+const all = lint(Object.keys(sources), undefined, root);
 const findings = all.filter(({ rule }) => rule.startsWith("basalt/"));
 
-for (const [file, source] of Object.entries(cases))
-  test(`basalt rules on ${file}`, () => {
-    const expected = source
-      .trimStart()
-      .split("\n")
-      .flatMap((text, index) =>
-        [...(text.match(/\/\/ expect: (.+)$/u)?.[1].split(", ") ?? [])].map(
-          (rule) => `${index + 1} ${rule}`,
-        ),
-      )
-      .sort();
-    const actual = findings
-      .filter((finding) => finding.file === file)
-      .map(({ line, rule }) => `${line} ${rule}`)
-      .sort();
-    assert.deepEqual(actual, expected);
-  });
+for (const suite of suites)
+  for (const [file, source] of Object.entries(suite.cases))
+    test(`${suite.name} rules on ${file}`, () => {
+      const expected = source
+        .trimStart()
+        .split("\n")
+        .flatMap((text, index) =>
+          [...(text.match(/\/\/ expect: (.+)$/u)?.[1].split(", ") ?? [])].map(
+            (rule) => `${index + 1} ${rule}`,
+          ),
+        )
+        .sort();
+      const actual = all
+        .filter((finding) => finding.file === file && suite.rules.test(finding.rule))
+        .map(({ line, rule }) => `${line} ${rule}`)
+        .sort();
+      assert.deepEqual(actual, expected);
+    });
 
 test("every basalt rule says what to do instead", () => {
   for (const finding of findings)
     assert.match(finding.message, /\. [A-Z][^.]*(?:\.|$)/u, finding.rule);
+});
+
+test("formatting is left to oxfmt", () => {
+  assert.ok(!all.some(({ rule }) => rule === "anti-slop/require-readable-spacing"));
 });
 
 test("landmines rules load from the pinned configuration", () => {

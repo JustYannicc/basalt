@@ -7,12 +7,13 @@ replaces. Upstream code keeps upstream's configuration in `.upstream/.oxlintrc.j
 ```sh
 npm run lint:owned                      # the check batch-preflight and CI run
 npm run lint:owned -- --write-baseline  # record the counts after fixing findings or rebasing
+node scripts/owned-lint/check.ts <files> # only these files, against their own entries
 ```
 
 The check lints the exact `git ls-files` list, new untracked files included, and fails when
 oxlint checks fewer files than it was given: an ignored path reports nothing and would look
 clean. It refuses `oxlint-disable` and `eslint-disable` comments that are bare or name an
-owned rule.
+owned rule, including the built-in rules the configuration enables.
 
 ## Baseline and allowlist
 
@@ -36,7 +37,8 @@ To add or tighten a rule, change `plugin/` with a case in `rules.test.ts` and ru
 `--write-baseline`. While the rules or their pins differ from the base, a count that rises in
 a file this change does not touch is listed for review instead of failing, and
 `rules.test.ts` guards the change. The configuration loads exactly the pinned plugins and
-takes no `extends`, `overrides` or other keys.
+takes no `extends`, `overrides` or other keys. With `BASE_SHA`, changed options of a rule the
+base enforced are listed for review, since options decide what a rule finds.
 
 ## Basalt rules
 
@@ -73,3 +75,35 @@ plugins:
   - `no-explicit-return-types` would drop the declared return types that Effect's
     diagnostics check error channels against.
   - `no-comments` would remove comments that say why.
+
+[anti-slop](https://github.com/dmmulroy/anti-slop), vendored in `vendor/anti-slop/` as its
+README asks (commit and license in `vendor/anti-slop/UPSTREAM.md`): the generic plugin, the
+Effect plugin, and `oxc/no-accumulating-spread`, the built-in rule it pairs with. The copy is
+kept byte-identical to upstream, so neither the owned rules nor the fast lane's oxfmt and oxlint
+check it.
+
+- **Enabled:** every rule but one. `no-runtime-typeof` allows `typeof` inside a type predicate,
+  Ultracite's setting: a named predicate is the boundary the rule asks for.
+- **Off, because formatting is oxfmt's:** `require-readable-spacing` inserts blank lines, a
+  second layout rule that fails code oxfmt accepts (33,000 findings here).
+- **Never fire here:** `no-module-mocking` needs `vi.mock` or `jest.mock`; `node:test`'s
+  `mock.module` is `basalt/no-node-test-doubles`'.
+
+## Ultracite
+
+[Ultracite](https://www.ultracite.ai/) 8.3 is the umbrella for both plugins; this is what is
+taken from it.
+
+- **Presets, not used:** `ultracite/oxlint/anti-slop` is a bundled build of the same anti-slop
+  commit without the Effect plugin or `oxc/no-accumulating-spread`, and
+  `ultracite/oxlint/landmines` turns on the landmines rules listed as off above. Both are
+  JavaScript configs that need `oxlint.config.ts` and `extends`, while this configuration stays
+  JSON that the check pins.
+- **Agent rules:** the ones that fit this repository are in `AGENTS.md`.
+- **Post-edit hook:** `.claude/settings.json` and `.codex/hooks.json` use Ultracite's events and
+  matchers to run `hook.ts` after each edit. It formats the edited file with oxfmt, then runs
+  upstream oxlint and this check on it, as the fast lane will, and hands any failure back to the
+  agent. Ultracite's own hook runs its pinned tools instead of the repository's. Codex runs it
+  once the hook is trusted (`/hooks`).
+- **Versions:** Ultracite needs oxlint 1.90 and oxfmt 0.71 or later. This package pins oxlint
+  1.91; upstream's oxlint and oxfmt are upstream's to move.
