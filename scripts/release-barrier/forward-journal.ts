@@ -66,6 +66,17 @@ export const readForwardJournal = (stack: Pick<CompiledStack, "name" | "stage">,
     };
   });
 
+/** The runtime-provisioning record heading the forward journal while it is unsettled. */
+export const unsettledRuntimeProvisioning = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  key: string,
+) =>
+  Effect.gen(function* () {
+    const state = yield* yield* State;
+    const runtime = readRuntimeProvisioningHeader(yield* state.getOutput(journalKey(stack)), key);
+    return runtime && !runtime.record.complete ? runtime.record : undefined;
+  });
+
 export const writeForwardJournal = (
   state: StateService,
   stack: Pick<CompiledStack, "name" | "stage">,

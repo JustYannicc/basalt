@@ -92,6 +92,39 @@ export function provisioningJournal(
         if (record.complete) sameProvisioningValue("journal.receipt", record.receipt, receipt);
         else await store.write(decodeProvisioningRecord({ ...record, complete: true, receipt }));
       }),
+    /** A provider read leaves nothing to reconcile: it is journaled only once answered, and a read
+     * an earlier run left pending is repeated. */
+    observe: <A>(
+      name: string,
+      request: string,
+      perform: () => Promise<A>,
+      parse: (value: unknown) => A,
+    ) =>
+      store.exclusive(async () => {
+        const record = await read();
+        const prior = record.operations[name];
+        if (prior) {
+          sameProvisioningValue(`journal.${name}.request`, request, prior.request);
+          if (prior.outcome === "acknowledged") return parse(prior.result);
+        } else if (record.complete)
+          throw provisioningRefusal(
+            "provisioning-journal-already-complete",
+            `journal.${name}`,
+            "existing-acknowledged-operation",
+            "new-operation",
+          );
+        const result = parse(await perform());
+        await store.write(
+          decodeProvisioningRecord({
+            ...record,
+            operations: {
+              ...record.operations,
+              [name]: { request, outcome: "acknowledged", result },
+            },
+          }),
+        );
+        return result;
+      }),
     once: <A>(
       name: string,
       request: string,

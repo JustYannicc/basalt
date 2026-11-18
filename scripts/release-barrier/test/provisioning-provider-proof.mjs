@@ -15,6 +15,7 @@ import { applicationTemplateDigest, expectedApplicationRequest } from "../provis
 import { provisioningJournal } from "../provisioning-journal.ts";
 import { provisioningManifestDigest } from "../provisioning-contract.ts";
 import { assertSupportedPlan } from "../plan-admission.ts";
+import { resolvedApplication } from "./provisioning-fixtures.ts";
 const tree = process.argv[2];
 const resource = process.argv[3] ?? "PoolRuntime";
 assert.ok(["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(resource));
@@ -181,13 +182,7 @@ function makeWire(options = {}) {
           call.disposition = "captured-no-dispatch";
           return yield* Effect.die("CAPTURED_WITHOUT_DISPATCH");
         }
-        result = {
-          id: "synthetic-created-app",
-          account_id: account,
-          created_at: "2026-11-09T00:00:00Z",
-          version: 1,
-          ...body,
-        };
+        result = resolvedApplication("synthetic-created-app", account, body);
         apps.push(result);
         call.disposition = "sent-to-fake";
         if (options.loseReply)

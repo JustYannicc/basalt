@@ -18,6 +18,7 @@ import {
 } from "./provisioning-namespace.ts";
 import { provisioningJournal, type ProvisioningStore } from "./provisioning-journal.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
+import { setConfigurationDrift } from "./container-configuration.ts";
 
 export interface RuntimeProvisioningProvider {
   namespaceBaseline(): Promise<NamespaceBaseline>;
@@ -43,7 +44,7 @@ export async function provisionRuntime(
   try {
     return await provisionEnabled(manifest, input, store, provider, enable, now);
   } catch (error) {
-    if (error instanceof BarrierRefusal)
+    if (error instanceof BarrierRefusal && error.worker !== manifest.declaration.fqn)
       throw new BarrierRefusal(
         error.reason,
         manifest.declaration.fqn,
@@ -77,7 +78,7 @@ async function provisionEnabled(
     sameProvisioningValue("active.runtime", manifest.active, await provider.active());
   };
   await active();
-  const baseline = await journal.once(
+  const baseline = await journal.observe(
     "namespace-baseline",
     manifest.namespaceBaselineDigest,
     () => provider.namespaceBaseline(),
@@ -126,11 +127,18 @@ async function provisionEnabled(
       native.digest,
     );
   const application = await provider.readApplication(created.applicationId);
-  sameProvisioningValue(
-    "application.readback",
-    { ...created, hash: undefined, dev: undefined },
-    { ...application, hash: undefined, dev: undefined },
-  );
+  // Create and read responses may stamp or resolve fields differently; identity and settings may not.
+  sameProvisioningValue("application.readback", settingsOf(created), settingsOf(application));
+  const configuration = {
+    image: manifest.declaration.props.image,
+    instanceType: manifest.declaration.props.instanceType,
+    environmentVariables: [
+      { name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: manifest.declaration.accountId },
+    ],
+    observability: manifest.declaration.props.observability,
+  };
+  assertSetConfiguration(manifest, "application.created.configuration", configuration, created);
+  assertSetConfiguration(manifest, "application.configuration", configuration, application);
   sameProvisioningValue(
     "application.account",
     manifest.declaration.accountId,
@@ -150,18 +158,6 @@ async function provisionEnabled(
     "application.image",
     manifest.declaration.props.image,
     application.configuration.image,
-  );
-  sameProvisioningValue(
-    "application.configuration",
-    {
-      image: manifest.declaration.props.image,
-      instanceType: manifest.declaration.props.instanceType,
-      environmentVariables: [
-        { name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: manifest.declaration.accountId },
-      ],
-      observability: manifest.declaration.props.observability,
-    },
-    application.configuration,
   );
   sameProvisioningValue(
     "application.maxInstances",
@@ -189,4 +185,41 @@ async function provisionEnabled(
   };
   await journal.finish(digest(canonical(receipt)));
   return receipt;
+}
+
+const settingsOf = (value: CreatedRuntimeApplication) => ({
+  applicationId: value.applicationId,
+  applicationName: value.applicationName,
+  accountId: value.accountId,
+  schedulingPolicy: value.schedulingPolicy,
+  instances: value.instances,
+  maxInstances: value.maxInstances,
+  constraints: value.constraints,
+  durableObjects: value.durableObjects,
+});
+
+function assertSetConfiguration(
+  manifest: RuntimeProvisioningManifest,
+  path: string,
+  set: CreatedRuntimeApplication["configuration"],
+  application: CreatedRuntimeApplication,
+) {
+  const changed = setConfigurationDrift(set, application.configuration).map((change) => ({
+    ...change,
+    path: `${path}.${change.path}`,
+  }));
+  if (!changed.length) return;
+  const { fqn } = manifest.declaration;
+  const refusal = new BarrierRefusal("provisioning-configuration-drift", fqn, {
+    fqn,
+    type: "Cloudflare.Container",
+    changed,
+    why: ["A created application must read back what its create request set."],
+  });
+  refusal.message += `: ${changed
+    .map((change) =>
+      "old" in change ? `${change.path} ${change.old} -> ${change.new}` : change.path,
+    )
+    .join(", ")}`;
+  throw refusal;
 }

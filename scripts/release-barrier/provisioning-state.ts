@@ -1,5 +1,7 @@
 import type { StateService } from "alchemy/State/State";
 import { Effect, Schema } from "effect";
+import { encodeState } from "alchemy/State/StateEncoding";
+import { BarrierRefusal } from "./manifest.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 import { journalKey } from "./forward-journal.ts";
 import { provisioningRefusal } from "./provisioning-refusal.ts";
@@ -60,20 +62,36 @@ export function stateProvisioningStore(
           true,
           false,
         );
-      await Effect.runPromise(
-        state.setOutput({
-          ...target,
-          value: {
-            schemaVersion: 2,
-            kind: "runtime-provisioning",
-            candidate: record.candidate,
-            manifest: record.manifest,
-            complete: record.complete,
-            sealed: sealRecovery(record, key, record.candidate, record.manifest, "worker-modules"),
-            ...(previous === undefined ? {} : { previous }),
-          },
-        }),
-      );
+      const value = {
+        schemaVersion: 2,
+        kind: "runtime-provisioning",
+        candidate: record.candidate,
+        manifest: record.manifest,
+        complete: record.complete,
+        sealed: sealRecovery(record, key, record.candidate, record.manifest, "worker-modules"),
+        ...(previous === undefined ? {} : { previous }),
+      };
+      assertStateValueFits(value);
+      await Effect.runPromise(state.setOutput({ ...target, value }));
     },
   };
+}
+
+// The State store keeps each output as one Durable Object value (2 MiB), stored as base64 of a nonce
+// and the encrypted JSON. Refusing well below that keeps a write from failing half way through.
+export const stateValueLimit = 1536 * 1024;
+export const storedStateBytes = (value: unknown) =>
+  Math.ceil((16 + Buffer.byteLength(JSON.stringify(encodeState(value)))) / 3) * 4;
+
+function assertStateValueFits(value: unknown) {
+  const bytes = storedStateBytes(value);
+  if (bytes <= stateValueLimit) return;
+  const refusal = new BarrierRefusal("provisioning-journal-value-too-large", "PoolRuntime", {
+    fqn: "PoolRuntime",
+    type: "Cloudflare.Container",
+    changed: [{ path: "journal.storedBytes", old: stateValueLimit, new: bytes }],
+    why: ["One provisioning journal value must fit one State value; nothing was written."],
+  });
+  refusal.message += `: journal.storedBytes ${bytes} > ${stateValueLimit}`;
+  throw refusal;
 }
