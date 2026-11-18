@@ -189,7 +189,8 @@ async function runAlchemy(
       config,
       "--stage",
       identity.stage,
-      "--yes",
+      // Never `--yes`: it lets Alchemy bootstrap or upgrade the account's shared State store Worker,
+      // which production reads too. Without it, CI refuses those paths instead of taking them.
       "--no-input",
     ),
     cloudDirectory,
