@@ -160,6 +160,7 @@ const failedApply = (vault: Awaited<ReturnType<typeof device>>, operation: strin
   Effect.runPromise(
     Effect.flip(
       createDriveDispatcher(vault.drive)({
+        operation: "drive",
         method: "apply",
         input: { base: vault.root, operation, edits: [{ path: "note.md", content: "kept" }] },
       }),
