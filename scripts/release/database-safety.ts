@@ -29,7 +29,8 @@ const HomeSchema = Schema.Struct({
 });
 export const DatabaseSnapshot = Schema.Struct({
   homes: Schema.Array(HomeSchema),
-  historyRows: Schema.Number,
+  /** Null when skipped: a count over millions of rows is not taken against a busy database. */
+  historyRows: Schema.NullOr(Schema.Number),
 });
 export type DatabaseSnapshot = typeof DatabaseSnapshot.Type;
 
@@ -38,7 +39,7 @@ const refuse = (check: string, why: string, fix: string, detail?: Record<string,
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
 
 /** Accounts and history counts plus Home's own schema version, read in one read-only snapshot. */
-export const readSnapshot = (session: Session) =>
+export const readSnapshot = (session: Session, options: { history?: boolean } = {}) =>
   Effect.tryPromise({
     try: async () => {
       await session.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -68,6 +69,10 @@ export const readSnapshot = (session: Session) =>
             accounts: Schema.decodeUnknownSync(count)(accounts.rows[0]?.n),
             schemaVersion: raw === undefined || raw === null ? null : Number(raw),
           });
+        }
+        if (options.history === false) {
+          await session.query("COMMIT");
+          return Schema.decodeUnknownSync(DatabaseSnapshot)({ homes, historyRows: null });
         }
         const history = await tables("basalt_model_requests");
         if (history.length !== 1)
@@ -131,7 +136,11 @@ export function compareSnapshots(
         after: next.schemaVersion,
       });
   }
-  if (after.historyRows < before.historyRows)
+  if (
+    before.historyRows !== null &&
+    after.historyRows !== null &&
+    after.historyRows < before.historyRows
+  )
     problems.push({ check: "history", before: before.historyRows, after: after.historyRows });
   if (problems.length)
     return Effect.fail(
@@ -292,3 +301,80 @@ export const takeBackup = (input: {
           }),
     ),
   );
+
+// PlanetScale branch metrics (the same series the history import guards on); points are [unix s, %].
+const Metrics = Schema.Struct({
+  series: Schema.Array(
+    Schema.Struct({
+      metric: Schema.String,
+      points: Schema.Array(Schema.Tuple([Schema.Number, Schema.Number])),
+    }),
+  ),
+});
+export const cpuMetric = "planetscale_primary_pods_cpu_util_percentages";
+
+/**
+ * Refuses unless the primary's latest CPU reading is fresh and under `ceiling` percent, so a release
+ * never starts against a pegged database. An unreadable or stale series refuses too.
+ */
+export const assertPrimaryCpuBelow = (input: {
+  organization: string;
+  tokenId: Redacted.Redacted<string>;
+  token: Redacted.Redacted<string>;
+  database: string;
+  branch: string;
+  ceiling: number;
+  now: number;
+  apiOrigin?: string;
+}) =>
+  Effect.gen(function* () {
+    const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+    const query = new URLSearchParams({ period: "15m", steps: "15" });
+    query.append("metrics", cpuMetric);
+    const url = `${input.apiOrigin ?? "https://api.planetscale.com/v1"}/organizations/${encodeURIComponent(input.organization)}/databases/${encodeURIComponent(input.database)}/branches/${encodeURIComponent(input.branch)}/metrics?${query}`;
+    const body = yield* client
+      .execute(
+        HttpClientRequest.get(url).pipe(
+          HttpClientRequest.setHeader(
+            "authorization",
+            `${Redacted.value(input.tokenId)}:${Redacted.value(input.token)}`,
+          ),
+        ),
+      )
+      .pipe(
+        Effect.flatMap((response) => response.json),
+        Effect.flatMap(Schema.decodeUnknownEffect(Metrics)),
+        Effect.mapError(
+          (cause) =>
+            new DatabaseSafetyRefusal({
+              check: "database-cpu-unreadable",
+              why: "The primary's CPU could not be read",
+              fix: "Do not release until the database's load can be read",
+              cause,
+            }),
+        ),
+      );
+    const points = body.series.find((series) => series.metric === cpuMetric)?.points ?? [];
+    const latest = [...points].sort((a, b) => a[0] - b[0]).at(-1);
+    if (!latest || input.now / 1_000 - latest[0] > 300)
+      return yield* refuse(
+        "database-cpu-stale",
+        "No CPU reading from the last five minutes",
+        "Rerun once metrics report",
+        {
+          latestAt: latest ? new Date(latest[0] * 1_000).toISOString() : null,
+        },
+      );
+    if (latest[1] >= input.ceiling)
+      return yield* refuse(
+        "database-cpu-high",
+        "The pool database's primary is too busy to release against",
+        "Wait until it is under the ceiling",
+        {
+          cpuPercent: Math.round(latest[1] * 10) / 10,
+          ceiling: input.ceiling,
+          at: new Date(latest[0] * 1_000).toISOString(),
+        },
+      );
+    return { cpuPercent: latest[1], at: new Date(latest[0] * 1_000).toISOString() };
+  });
