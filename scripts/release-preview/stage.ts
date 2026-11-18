@@ -32,7 +32,7 @@ import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { planHighlights, requireBaselineShape, requireCutoverShape } from "./rehearsal-native.ts";
 
-export const stageModes = ["check", "baseline", "plan", "apply", "destroy"] as const;
+export const stageModes = ["check", "baseline", "plan", "apply", "code", "destroy"] as const;
 export type StageMode = (typeof stageModes)[number];
 
 /** The pull-request label that dispatches a mode: `stage-<mode>` on lane 1, `stage-<mode>-<lane>` on 2 or 3. */
@@ -59,11 +59,12 @@ const entry = join(root, "scripts/release/deploy.ts");
 const cloud = join(root, ".upstream/apps/hosted/cloud");
 
 async function runEntry(
-  command: "plan" | "deploy",
+  command: "plan" | "deploy" | "serving" | "rollback",
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   extra: NodeJS.ProcessEnv,
   outputs: string,
+  { policy = "cutover-classes", args = [] }: { policy?: string; args?: readonly string[] } = {},
 ) {
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
@@ -81,9 +82,11 @@ async function runEntry(
         config.stage,
         "--config",
         "alchemy.run.ts",
-        // The cutover's own allow-list, include and wire rules, exactly as production will run it.
-        "--policy",
-        join(root, "scripts/release/policies/cutover-classes.json"),
+        // The step's own allow-list, include and wire rules, exactly as production will run it.
+        ...(command === "plan" || command === "deploy"
+          ? ["--policy", join(root, `scripts/release/policies/${policy}.json`)]
+          : []),
+        ...args,
       ],
       {
         cwd: cloud,
@@ -114,8 +117,10 @@ async function runEntry(
       `The release entry's ${command} failed with exit ${code}:\n${redact(lines.join("\n"))}`,
     );
   }
-  const record = JSON.parse(
-    await readFile(join(root, ".local/release", `${command}.json`), "utf8"),
+  const record = (
+    command === "plan" || command === "deploy"
+      ? JSON.parse(await readFile(join(root, ".local/release", `${command}.json`), "utf8"))
+      : undefined
   ) as unknown;
   return { record, highlights: planHighlights(redact(text)) };
 }
@@ -264,6 +269,49 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
       outputs,
     );
+  } else if (mode === "code") {
+    // P2-pre: a code-only PoolWorker release as a version upload that can be rolled back. The diff is
+    // one exported marker in PoolWorker's entry module: a real bundle change with no behaviour.
+    const pin = await rootPin(hooks, subject, source);
+    const env = { ...declaration.baseline, POOL_ROOT_IMAGE: pin };
+    const serving = join(outputs, "serving.json");
+    await runEntry("serving", subject, source, env, outputs, {
+      args: ["--fqn", "PoolWorker", "--out", serving],
+    });
+    result.serving = JSON.parse(await readFile(serving, "utf8")) as unknown;
+    const workerPath = join(root, "src/pool/worker.ts");
+    const original = await readFile(workerPath, "utf8");
+    await writeFile(
+      workerPath,
+      `${original}\nexport const rehearsalCodeMarker = ${JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`)};\n`,
+    );
+    const probe = startProbe(lane, join(outputs, "probe-code.jsonl"), source);
+    try {
+      result.release = await runEntry("deploy", subject, source, env, outputs, {
+        policy: "cutover-code",
+      });
+    } finally {
+      await writeFile(workerPath, original);
+      result.releaseInterruption = await probe.stop();
+    }
+    const after = join(outputs, "serving-after.json");
+    await runEntry("serving", subject, source, env, outputs, {
+      args: ["--fqn", "PoolWorker", "--out", after],
+    });
+    result.servingAfter = JSON.parse(await readFile(after, "utf8")) as unknown;
+    const back = startProbe(lane, join(outputs, "probe-rollback.jsonl"), source);
+    try {
+      await runEntry("rollback", subject, source, env, outputs, { args: ["--from", serving] });
+    } finally {
+      result.rollbackInterruption = await back.stop();
+    }
+    const final = join(outputs, "serving-final.json");
+    await runEntry("serving", subject, source, env, outputs, {
+      args: ["--fqn", "PoolWorker", "--out", final],
+    });
+    result.servingFinal = JSON.parse(await readFile(final, "utf8")) as unknown;
+    if (JSON.stringify(result.servingFinal) !== JSON.stringify(result.serving))
+      throw new Error("The rollback did not restore the version that served before the release");
   } else if (mode === "destroy") {
     await destroyStage(root, subject, source);
     await verifyStageAbsent(root, subject, source);
