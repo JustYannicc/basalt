@@ -112,6 +112,43 @@ async function runEntry(
   return { record, highlights: planHighlights(redact(text)) };
 }
 
+/** The probe runs as its own process; it is stopped by the PID captured at spawn, never by pattern. */
+function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
+  const child = spawn(
+    "node",
+    [join(root, "scripts/release-preview/stage-probe.ts"), String(lane), out],
+    {
+      cwd: root,
+      env: source,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf8")));
+  child.stderr.on(
+    "data",
+    (chunk: Buffer) => (stderr = (stderr + chunk.toString("utf8")).slice(-8192)),
+  );
+  const exited = new Promise<number | null>((done) => child.once("close", done));
+  return {
+    stop: async () => {
+      child.kill("SIGTERM");
+      const code = await Promise.race([
+        exited,
+        new Promise<"timeout">((done) => setTimeout(() => done("timeout"), 30_000).unref()),
+      ]);
+      if (code === "timeout") child.kill("SIGKILL");
+      const line = stdout.trim().split("\n").pop() ?? "";
+      try {
+        return JSON.parse(line) as unknown;
+      } catch {
+        return { unavailable: redactor(source)(stderr.split("\n").slice(-20).join("\n")) };
+      }
+    },
+  };
+}
+
 /**
  * The stage's legacy-root pin, read the way production's preflight reads it: the root application's
  * image by digest, and the build input PoolWorker already knows it by (`POOL_IMAGE_HASH`).
@@ -161,13 +198,19 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   } else if (mode === "apply") {
     result.before = await hooks.readBack("before-apply");
     const pin = await rootPin(hooks);
-    result.apply = await runEntry(
-      "deploy",
-      subject,
-      source,
-      { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
-      outputs,
-    );
+    // Controller availability and the root's identity, sampled every 2 s across the apply.
+    const probe = startProbe(lane, join(outputs, "probe.jsonl"), source);
+    try {
+      result.apply = await runEntry(
+        "deploy",
+        subject,
+        source,
+        { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
+        outputs,
+      );
+    } finally {
+      result.interruption = await probe.stop();
+    }
     const after = await hooks.readBack("cutover");
     requireCutoverShape(after);
     result.after = after;
