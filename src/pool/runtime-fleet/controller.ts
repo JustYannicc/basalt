@@ -177,9 +177,9 @@ export class RuntimeFleet {
     } catch (error) {
       if (!(error instanceof FleetRefused) || error.reason !== "capacity")
         refuseRuntime("fleet_acquire", error);
+      // With no sibling capacity the primary is the only route. A recent primary failure or a failed
+      // recovery warm-up is only a hint: the request's own fresh admission on the primary decides.
       // Start legacy admission before reading pressure so the triggering request is counted too.
-      if (this.primaryFailed || this.deps.primaryAvailable?.() === false)
-        throw new FleetRefused("capacity");
       const response = legacy(request, beforeDispatch);
       this.grow();
       return response;
