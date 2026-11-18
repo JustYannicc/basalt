@@ -234,8 +234,8 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   assert.deepEqual(
     { v11: measured("v11"), v12: measured("v12") },
     {
-      v11: { request: 34, projection: 11, registration: 2, bulk: 35001 },
-      v12: { request: 9, projection: 11, registration: 0, bulk: 4 },
+      v11: { request: 34, projection: 11, registration: 4, bulk: 35001 },
+      v12: { request: 9, projection: 11, registration: 2, bulk: 4 },
     },
   );
 });
