@@ -110,22 +110,28 @@ const scripted = (replies: Record<string, ReadonlyArray<Reply>>) => {
 };
 
 const allowed = (exit: Exit.Exit<number, unknown>) => {
-  assert.ok(Exit.isSuccess(exit), `the allowance check failed: ${Exit.isFailure(exit) ? Cause.pretty(exit.cause) : ""}`);
+  assert.ok(
+    Exit.isSuccess(exit),
+    `the allowance check failed: ${Exit.isFailure(exit) ? Cause.pretty(exit.cause) : ""}`,
+  );
   return exit.value;
 };
 const failure = (exit: Exit.Exit<number, unknown>) => {
   assert.ok(Exit.isFailure(exit), "the allowance check must fail closed");
   return Cause.squash(exit.cause) as Record<string, unknown>;
 };
-const routes = (requests: ReadonlyArray<{ route: string }>) =>
-  requests.map(({ route }) => route);
+const routes = (requests: ReadonlyArray<{ route: string }>) => requests.map(({ route }) => route);
 
 test("a transient Autumn failure then the recorded customer admits the invitation, without a write", async () => {
   for (const transient of [unavailable, { status: 429, body: autumnError("rate_limit", "") }]) {
     const autumn = scripted({
       "customers.get": [transient, { status: 200, body: recordedCustomer(catalog.team, 4) }],
     });
-    assert.equal(allowed(await autumn.run()), Number.POSITIVE_INFINITY, `after ${transient.status}`);
+    assert.equal(
+      allowed(await autumn.run()),
+      Number.POSITIVE_INFINITY,
+      `after ${transient.status}`,
+    );
     assert.deepEqual(routes(autumn.requests), ["customers.get", "customers.get"]);
     assert.ok(autumn.requests.every((request) => request.customer === customerId));
   }
@@ -142,13 +148,18 @@ test("persistent Autumn failure fails closed with its safe reason and a referenc
   assert.equal(error.operation, "getCustomer");
   assert.equal(error.reason, "status");
   assert.equal(error.status, 503);
-  assert.match(String(error.reference), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.match(
+    String(error.reference),
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
   assert.equal(JSON.stringify(error).includes("am_sk_test_fixture"), false);
   assert.deepEqual(routes(autumn.requests), ["customers.get", "customers.get", "customers.get"]);
 });
 
 test("an unreadable customer body is final and fails closed", async () => {
-  const autumn = scripted({ "customers.get": [{ status: 200, body: { subscriptions: "active" } }] });
+  const autumn = scripted({
+    "customers.get": [{ status: 200, body: { subscriptions: "active" } }],
+  });
   const error = failure(await autumn.run());
   assert.equal(error._tag, "MemberAllowanceUnavailable");
   assert.equal(error.reason, "response");
@@ -169,7 +180,10 @@ test("only a customer Autumn has never seen is created, and creation is sent onc
 
   const uncertain = scripted({
     "customers.get": [missing],
-    "customers.get_or_create": [unavailable, { status: 200, body: recordedCustomer(catalog.free, 1) }],
+    "customers.get_or_create": [
+      unavailable,
+      { status: 200, body: recordedCustomer(catalog.free, 1) },
+    ],
   });
   const error = failure(await uncertain.run());
   assert.equal(error._tag, "MemberAllowanceUnavailable");

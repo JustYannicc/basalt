@@ -1,5 +1,59 @@
+diff --git a/apps/hosted/cloud/src/contracts/billing-meter.ts b/apps/hosted/cloud/src/contracts/billing-meter.ts
+index 3ee5c8b..545d059 100644
+--- a/apps/hosted/cloud/src/contracts/billing-meter.ts
++++ b/apps/hosted/cloud/src/contracts/billing-meter.ts
+@@ -1,14 +1,30 @@
+-import { Context, Effect } from "effect";
++import { Context, Effect, Schema } from "effect";
+ import type { OrganizationId } from "@executor-js/hosted-server";
++import { AutumnRequestFailed } from "./autumn.ts";
+ import { BillingUnavailable } from "./billing.ts";
+ 
++/**
++ * The member allowance could not be confirmed, so admission fails closed. Only the Autumn
++ * operation, its failure reason and status leave the provider boundary; `reference` matches the
++ * person's error to the server log.
++ */
++export class MemberAllowanceUnavailable extends Schema.TaggedError<MemberAllowanceUnavailable>()(
++  "MemberAllowanceUnavailable",
++  {
++    operation: AutumnRequestFailed.fields.operation,
++    reason: AutumnRequestFailed.fields.reason,
++    status: AutumnRequestFailed.fields.status,
++    reference: Schema.String,
++  },
++) {}
++
+ /** Cloud billing policy, for subscriptions and member counts. */
+ export class BillingMeter extends Context.Service<
+   BillingMeter,
+   {
+     readonly memberLimit: (
+       organization: OrganizationId,
+-    ) => Effect.Effect<number, BillingUnavailable>;
++    ) => Effect.Effect<number, MemberAllowanceUnavailable>;
+     /** Run by the durable membership job; calls Autumn only when the count changed. */
+     readonly syncSeats: (organization: OrganizationId) => Effect.Effect<void, BillingUnavailable>;
+     /** Daily repair: seat plans, unconfirmed organizations and changed counts, checked in Autumn. */
+diff --git a/apps/hosted/cloud/src/implementation/autumn-client.ts b/apps/hosted/cloud/src/implementation/autumn-client.ts
+index f042417..8b0f174 100644
+--- a/apps/hosted/cloud/src/implementation/autumn-client.ts
++++ b/apps/hosted/cloud/src/implementation/autumn-client.ts
+@@ -40,6 +40,12 @@ export const autumnReads = {
+    * milliseconds apart, with jitter, within twenty seconds in all.
+    */
+   patient: { attempt: "8 seconds", retry: { times: 2, budget: "20 seconds" } },
++  /**
++   * The member allowance invitations and SSO wait on: an attempt may take the write timeout, and
++   * a lost answer, server error or rate limit gets up to two more about 200 and 400 milliseconds
++   * apart, with jitter, all within that same timeout.
++   */
++  allowance: { attempt: autumnTimeout, retry: { times: 2, budget: autumnTimeout } },
+ } as const satisfies Record<string, AutumnReadPolicy>;
+ 
+ const readRetryDelay = Schedule.exponential("200 millis").pipe(Schedule.jittered);
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
-index 7b786c6..b0f04b8 100644
+index 7b786c6..3c7ae14 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
 @@ -11,6 +11,7 @@ import { Cause, Effect, Layer, Option, Schema } from "effect";
@@ -35,7 +89,24 @@ index 7b786c6..b0f04b8 100644
  /** Resolve the selected Autumn environment once; each invocation owns its client. */
  export const billingLive = Effect.gen(function* () {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
-@@ -262,10 +252,12 @@ export const billingLive = Effect.gen(function* () {
+@@ -94,10 +84,14 @@ export const billingLive = Effect.gen(function* () {
+       const secret = yield* settings.secretKey;
+       const server = yield* settings.serverUrl;
+       const catalog = yield* settings.catalog;
++      const options = { secretKey: secret, serverUrl: server };
+       const autumn = yield* AutumnClient.pipe(
+-        Effect.provide(autumnLive({ secretKey: secret, serverUrl: server }, autumnReads.once)),
++        Effect.provide(autumnLive(options, autumnReads.once)),
+       );
+-      return { autumn, catalog };
++      const allowance = yield* AutumnClient.pipe(
++        Effect.provide(autumnLive(options, autumnReads.allowance)),
++      );
++      return { autumn, allowance, catalog };
+     }).pipe(Effect.provide(FetchHttpClient.layer)),
+   );
+   const use = <A>(call: Effect.Effect<A, AutumnRequestFailed>) =>
+@@ -262,10 +256,12 @@ export const billingLive = Effect.gen(function* () {
    const meter = BillingMeter.of({
      memberLimit: (organization) =>
        Effect.gen(function* () {
@@ -43,26 +114,41 @@ index 7b786c6..b0f04b8 100644
 -        return active(value, [catalog.team, catalog.enterprise])
 -          ? Number.POSITIVE_INFINITY
 -          : freeMembers;
-+        const { autumn, catalog } = yield* client;
++        const { allowance, catalog } = yield* client;
 +        return yield* memberAllowance(
-+          autumn,
++          allowance,
 +          catalog,
 +          `${catalog.namespace}:${organizationOwner(organization)}`,
 +        );
        }),
      syncSeats: (organization) => syncSeats(organization, "changed"),
      reconcileSeats: Effect.gen(function* () {
+@@ -360,7 +356,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
+       )
+       .handle("memberLimit", () =>
+         Effect.gen(function* () {
+-          const limit = yield* meter.memberLimit((yield* requireOrganizationAdmin).organization);
++          const limit = yield* meter
++            .memberLimit((yield* requireOrganizationAdmin).organization)
++            .pipe(Effect.mapError(() => new BillingUnavailable()));
+           return { limit: Number.isFinite(limit) ? limit : null };
+         }),
+       )
 diff --git a/apps/hosted/cloud/src/implementation/member-allowance.ts b/apps/hosted/cloud/src/implementation/member-allowance.ts
 new file mode 100644
-index 0000000..24589bb
+index 0000000..fb2dc1f
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/member-allowance.ts
-@@ -0,0 +1,28 @@
-+/** The member allowance invitations and SSO sign-ins are admitted against. */
-+import { Effect } from "effect";
-+import type { AutumnClient } from "../contracts/autumn.ts";
-+import { BillingUnavailable } from "../contracts/billing.ts";
+@@ -0,0 +1,62 @@
++/**
++ * The member allowance invitations and SSO sign-ins are admitted against. An existing customer
++ * is read, never written, so a lost answer can be asked again. Only a customer Autumn says it has
++ * never seen is created, and that write is sent once.
++ */
++import { Effect, Redacted } from "effect";
++import { AutumnRequestFailed, autumnTimeout, type AutumnClient } from "../contracts/autumn.ts";
 +import { freeMembers, type BillingCatalog } from "../contracts/billing-catalog.ts";
++import { MemberAllowanceUnavailable } from "../contracts/billing-meter.ts";
 +
 +type Subscriptions = {
 +  readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
@@ -74,15 +160,70 @@ index 0000000..24589bb
 +      plans.includes(subscription.planId) && ["active", "trialing"].includes(subscription.status),
 +  );
 +
-+/** Unlimited on a paid plan, the free allowance otherwise. */
++/**
++ * Unlimited on a paid plan, the free allowance otherwise. `autumn` must retry its reads within
++ * the write timeout (`autumnReads.allowance`). Fails closed: an unconfirmed allowance is never
++ * unlimited, and the failure keeps its safe reason and a reference the log shares.
++ */
 +export const memberAllowance = (
 +  autumn: AutumnClient["Service"],
 +  catalog: BillingCatalog,
 +  customerId: string,
 +) =>
-+  autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free }).pipe(
++  Effect.suspend(() => {
++    let operation: AutumnRequestFailed["operation"] = "getCustomer";
++    return Effect.gen(function* () {
++      const existing = yield* autumn.getCustomer({ customerId });
++      if (existing !== null) return existing;
++      operation = "getOrCreateCustomer";
++      return yield* autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free });
++    }).pipe(
++      // The read, its retries and any creation share the one budget a write attempt has.
++      Effect.timeout(autumnTimeout),
++      Effect.catchTag("TimeoutError", (cause) =>
++        Effect.fail(
++          new AutumnRequestFailed({ operation, reason: "timeout", cause: Redacted.make(cause) }),
++        ),
++      ),
++    );
++  }).pipe(
 +    Effect.map((customer) =>
 +      active(customer, [catalog.team, catalog.enterprise]) ? Number.POSITIVE_INFINITY : freeMembers,
 +    ),
-+    Effect.mapError(() => new BillingUnavailable()),
++    Effect.catchTag("AutumnRequestFailed", ({ operation, reason, status }) =>
++      Effect.gen(function* () {
++        const reference = crypto.randomUUID();
++        const failure = { operation, reason, ...(status === undefined ? {} : { status }) };
++        yield* Effect.logWarning("The member allowance could not be confirmed").pipe(
++          Effect.annotateLogs({ ...failure, reference }),
++        );
++        return yield* new MemberAllowanceUnavailable({ ...failure, reference });
++      }),
++    ),
++    Effect.withSpan("billing.memberAllowance"),
 +  );
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index 060abd7..dfa2b58 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -110,9 +110,19 @@ export const cloudAuth = (
+             Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
+               Effect.flatMap(meter.memberLimit),
+               Effect.mapError(
+-                () =>
++                (error) =>
+                   new APIError("SERVICE_UNAVAILABLE", {
+                     message: "We could not check your member allowance. Try again.",
++                    // The safe failure reason and the reference its server log carries.
++                    ...(error._tag === "MemberAllowanceUnavailable"
++                      ? {
++                          code: "MEMBER_ALLOWANCE_UNAVAILABLE",
++                          operation: error.operation,
++                          reason: error.reason,
++                          ...(error.status === undefined ? {} : { status: error.status }),
++                          reference: error.reference,
++                        }
++                      : {}),
+                   }),
+               ),
+               Effect.scoped,

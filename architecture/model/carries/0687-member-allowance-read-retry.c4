@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The member allowance for invitation acceptance and SSO membership reads an existing billing customer read-only and retries a lost answer, server error or rate limit at most twice with jittered backoff; the reads and any creation share the single ten-second budget one billing write has. Only a definitive customer-not-found answer creates the customer, and that write is sent once and never retried. An unconfirmed allowance fails closed and is never unlimited. The refusal keeps the person-facing message and adds only the billing operation, failure reason, HTTP status and a reference that the server warning log shares; provider bodies, credentials and endpoints never leave the billing adapter."
+    }
+  }
+}
