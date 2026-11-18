@@ -2007,8 +2007,10 @@ jobs:
             .generated/pool-overview-ui/**/report.json
             .generated/pool-overview-ui/**/failure.json
             .generated/pool-overview-ui/**/*.png
+            .upstream/.local/testing/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
