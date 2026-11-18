@@ -1,0 +1,244 @@
+name: Release
+
+# The release path: Alchemy's own plan and apply, wrapped by the checks no tool provides
+# (scripts/release/deploy.ts). A main push that passes Check plans and applies automatically;
+# a dispatch can plan only, or apply exactly a plan digest someone reviewed.
+on:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: plan prints the checked plan and its digest; apply applies exactly that digest
+        required: true
+        type: choice
+        options: [plan, apply]
+        default: plan
+      policy:
+        description: Plan policy in scripts/release/policies (release, or a cutover step)
+        required: true
+        type: choice
+        # cutover-code is also the mode for any code-only PoolWorker release: a rollbackable Worker version.
+        options: [release, cutover-code, cutover-classes]
+        default: release
+      plan_digest:
+        description: For apply, the digest printed by the reviewed plan run
+        required: false
+        type: string
+      attempt:
+        description: For apply, the attempt id printed by the reviewed plan run
+        required: false
+        type: string
+      go:
+        description: Required while the release hold is set; recorded in the run summary
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.path == '.github/workflows/ci.yml')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: production-release
+      deployment: false
+    env:
+      PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
+      BASALT_RELEASE_CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+      MODE: ${{ inputs.mode || 'apply' }}
+      POLICY_NAME: ${{ inputs.policy || 'release' }}
+      POLICY: scripts/release/policies/${{ inputs.policy || 'release' }}.json
+      POOL_ROOT_IMAGE: ${{ vars.POOL_ROOT_IMAGE }}
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID }}
+      EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
+      EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+      ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
+      ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID }}
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GITLAB_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_ID }}
+      EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID }}
+      EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_MIRO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_ID }}
+      EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_NOTION_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_ID }}
+      EXECUTOR_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_TODOIST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_ID }}
+      EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_TRELLO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_ID }}
+      EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_ZOHO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_ID }}
+      EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID }}
+      EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID }}
+      EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET }}
+      AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+      AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+      BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+      EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+      MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
+      MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
+      APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+      POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+      POOL_AVAILABILITY_TARGET: ${{ vars.POOL_AVAILABILITY_TARGET }}
+      POOL_AUTOMATIC_RECOVERY_TARGET: ${{ vars.POOL_AUTOMATIC_RECOVERY_TARGET }}
+      GOOGLE_MAPS_ROUTES_API_KEY: ${{ secrets.GOOGLE_MAPS_ROUTES_API_KEY }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+      POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+      POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+      POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+      APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
+      POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+      POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+      POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+      POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASALT_RELEASE_CANDIDATE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Respect the release hold
+        env:
+          GO: ${{ inputs.go }}
+        run: |
+          if [ -n "$PRODUCTION_RELEASE_HOLD" ]; then
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || ! printf '%s' "$GO" | grep -Eq '^coordinator-20[0-9]{2}-[0-9]{2}-[0-9]{2}T'; then
+              echo "::error::The release hold is set. Only a dispatch carrying a coordinator GO may run."
+              exit 1
+            fi
+            echo "Release hold set; running under GO $GO" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Stop the line and require a rehearsal
+        if: hashFiles('scripts/release-guardrails/gate.ts') != ''
+        run: node scripts/release-guardrails/gate.ts --candidate "$BASALT_RELEASE_CANDIDATE"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare
+        run: npm run prepare:upstream
+      - name: Build and measure Worker startup
+        run: |
+          npm run build
+          npm run check:startup
+      - name: Plan and check
+        id: plan
+        run: |
+          bun scripts/release/deploy.ts plan --stage production --policy "$POLICY"
+          echo "digest=$(jq -r .digest .local/release/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "attempt=$(jq -r .attempt .local/release/plan.json)" >> "$GITHUB_OUTPUT"
+      # Nothing below runs against a pegged database (the history import pauses at the same 60%).
+      - name: Refuse while the pool database is busy
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts db-load --stage production
+      - name: Record the deployment
+        id: deployment
+        if: env.MODE == 'apply'
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/deployments" -f ref="$BASALT_RELEASE_CANDIDATE" -f environment=production \
+            -F auto_merge=false -f 'required_contexts[]' -f description="Alchemy release ($POLICY_NAME)" --jq .id)
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress >/dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Record the serving PoolWorker version
+        id: serving
+        if: env.MODE == 'apply'
+        run: |
+          bun scripts/release/deploy.ts serving --stage production --fqn PoolWorker --out .local/release/serving.json
+          echo "version=$(jq -r .version .local/release/serving.json)" >> "$GITHUB_OUTPUT"
+      - name: Back up the pool database
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts backup --stage production --name "basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID"
+      - name: Count accounts and history before
+        if: env.MODE == 'apply'
+        # A code-only release changes no data by itself; skip the multi-million-row count then.
+        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ env.POLICY_NAME == 'cutover-code' && '--light' || '' }}
+      - name: What was verified before the irreversible step
+        if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
+        run: |
+          {
+            echo "### Verified immediately before the class change (cannot be rolled back)"
+            echo "- plan digest: \`${{ steps.plan.outputs.digest }}\` (checked by the cutover-classes policy; the apply refuses if it changed)"
+            echo "- wire-guard self-test: passed in the plan run, and runs again first thing in the apply process"
+            echo "- PlanetScale backup: \`basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID\`, completed in this run"
+            echo "- database load: under 60% (step above)"
+            echo "- counts: \`$(jq -c . .local/release/before.json)\`"
+            echo "- PoolWorker serving version: \`${{ steps.serving.outputs.version }}\`; live main module digest pinned by the policy"
+            echo "- controller storage: recoverable for 30 days by point-in-time recovery from this run's start ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Apply the reviewed plan
+        id: apply
+        if: env.MODE == 'apply'
+        # The outcome decides the rollback below; the job still ends red if anything failed.
+        continue-on-error: true
+        env:
+          PLAN_DIGEST: ${{ inputs.plan_digest || steps.plan.outputs.digest }}
+          ATTEMPT: ${{ inputs.attempt || steps.plan.outputs.attempt }}
+        run: bun scripts/release/deploy.ts apply --stage production --policy "$POLICY" --plan-digest "$PLAN_DIGEST" --attempt "$ATTEMPT"
+      - name: Accept the release through the live pool
+        id: accept
+        if: env.MODE == 'apply' && steps.apply.outcome == 'success'
+        continue-on-error: true
+        # Every request must succeed; the runtimes that served are recorded (a code update may restart the root).
+        run: bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance.json
+      # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
+      - name: Roll back a failed release
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && steps.serving.outputs.version != '' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        run: |
+          bun scripts/release/deploy.ts rollback --stage production --fqn PoolWorker --to "${{ steps.serving.outputs.version }}"
+          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json || true
+          echo "::error::Release rolled back: $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          exit 1
+      - name: Stop on a failed class change
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        run: |
+          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          exit 1
+      - name: Count accounts and history after
+        if: env.MODE == 'apply' && steps.apply.outcome == 'success'
+        run: |
+          bun scripts/release/deploy.ts snapshot --stage production --out .local/release/after.json ${{ env.POLICY_NAME == 'cutover-code' && '--light' || '' }}
+          bun scripts/release/deploy.ts compare --before .local/release/before.json --after .local/release/after.json
+      - name: Finish the deployment record
+        if: always() && steps.deployment.outputs.id != ''
+        env:
+          OUTCOME: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: gh api "repos/$GITHUB_REPOSITORY/deployments/${{ steps.deployment.outputs.id }}/statuses" -f state="$OUTCOME" >/dev/null
+      - name: Keep the plan and the counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          include-hidden-files: true
+          path: .local/release/*.json
+          if-no-files-found: ignore

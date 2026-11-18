@@ -9,6 +9,7 @@ import {
   DatabaseSafetyRefusal,
   readSnapshot,
   takeBackup,
+  assertPrimaryCpuBelow,
   type DatabaseSnapshot,
   type Session,
 } from "./database-safety.ts";
@@ -180,4 +181,85 @@ test("refusals are tagged", () => {
     new DatabaseSafetyRefusal({ check: "x", why: "y", fix: "z" })._tag,
     "DatabaseSafetyRefusal",
   );
+});
+
+async function metricsServer(points: [number, number][]) {
+  const seen: string[] = [];
+  const server = createServer((request, response) => {
+    seen.push(request.url ?? "");
+    response.writeHead(200, { "content-type": "application/json" });
+    // The shape the history import's guard records (series of [unix seconds, percent]).
+    response.end(
+      JSON.stringify({
+        series: [
+          { metric: "planetscale_primary_pods_cpu_util_percentages", points },
+          { metric: "query_errors", points: points.map(([at]) => [at, 0]) },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  return { origin: `http://127.0.0.1:${port}/v1`, seen, close: () => server.close() };
+}
+const cpu = (origin: string, now: number) =>
+  assertPrimaryCpuBelow({
+    organization: "org",
+    tokenId: Redacted.make("id"),
+    token: Redacted.make("secret"),
+    database: "basalt",
+    branch: "main",
+    ceiling: 60,
+    now,
+    apiOrigin: origin,
+  }).pipe(Effect.provide(FetchHttpClient.layer));
+
+test("a fresh primary reading under 60% admits the release", async () => {
+  const now = Date.UTC(2026, 10, 18, 21, 0, 0);
+  const api = await metricsServer([
+    [now / 1000 - 120, 95],
+    [now / 1000 - 60, 41.2],
+  ]);
+  try {
+    const result = await Effect.runPromise(cpu(api.origin, now));
+    assert.equal(result.cpuPercent, 41.2);
+    assert.match(api.seen[0] ?? "", /metrics=planetscale_primary_pods_cpu_util_percentages/u);
+  } finally {
+    api.close();
+  }
+});
+
+test("a primary at or above 60% refuses with its reading", async () => {
+  const now = Date.UTC(2026, 10, 18, 21, 0, 0);
+  const api = await metricsServer([[now / 1000 - 60, 100]]);
+  try {
+    assert.match(
+      failure(await Effect.runPromiseExit(cpu(api.origin, now))),
+      /database-cpu-high.*"cpuPercent":100/u,
+    );
+  } finally {
+    api.close();
+  }
+});
+
+test("a stale or missing CPU series refuses", async () => {
+  const now = Date.UTC(2026, 10, 18, 21, 0, 0);
+  const stale = await metricsServer([[now / 1000 - 900, 10]]);
+  try {
+    assert.match(
+      failure(await Effect.runPromiseExit(cpu(stale.origin, now))),
+      /database-cpu-stale/u,
+    );
+  } finally {
+    stale.close();
+  }
+  const empty = await metricsServer([]);
+  try {
+    assert.match(
+      failure(await Effect.runPromiseExit(cpu(empty.origin, now))),
+      /database-cpu-stale/u,
+    );
+  } finally {
+    empty.close();
+  }
 });
