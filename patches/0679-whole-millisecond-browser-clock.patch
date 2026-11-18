@@ -1,0 +1,52 @@
+diff --git a/e2e/support/query-transition.ts b/e2e/support/query-transition.ts
+--- a/e2e/support/query-transition.ts
++++ b/e2e/support/query-transition.ts
+@@ -87,9 +87,33 @@
+ 
+ /** Hosted pages re-read idle queries every 30 seconds while visible. */
+ export const idleReconciliationMillis = 30_000;
++/**
++ * Playwright's controlled clock keeps fractional timer delays, such as a jittered reconnect, so its
++ * `Date.now()` can land between milliseconds; a browser truncates delays and reports whole ones.
++ * Effect converts `Date.now()` to a `BigInt` for every span, so a fractional value fails a request
++ * before it is sent. Runs after the clock replaces `Date`, so it wraps the controlled one.
++ */
++const wholeMilliseconds = () => {
++  const now = Date.now;
++  Date.now = () => Math.floor(now.call(Date));
++};
+ /** Install before navigation so scenarios can reach periodic reconciliation without waiting. */
+ export const installBrowserClock = Effect.flatMap(Browser, (browser) =>
+-  browser.use("Control the browser clock", (page) => page.context().clock.install()),
++  browser.use("Control the browser clock", (page) => {
++    const context = page.context();
++    return context.clock
++      .install()
++      .then(() => context.addInitScript(wholeMilliseconds))
++      .then(() =>
++        Promise.all(
++          context
++            .pages()
++            .flatMap((open) => open.frames())
++            .map((frame) => frame.evaluate(wholeMilliseconds)),
++        ),
++      )
++      .then(() => undefined);
++  }),
+ );
+ /** Deliver the next idle reconciliation to every page in the browser context. */
+ export const advanceToReconciliation = Effect.flatMap(Browser, (browser) =>
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -136,6 +136,10 @@
+                 ? /Observation service account|Observed identity/
+                 : label;
+             yield* installBrowserClock;
++            // A fractional timer delay can leave the controlled clock between two milliseconds.
++            yield* browser.use("Start the outage between two milliseconds", (page) =>
++              page.context().clock.setSystemTime(Date.now() + 0.5),
++            );
+             const polling = yield* pollingSettlement(f.account, menuName, mode);
+             yield* browser.login(f.actors.owner);
+             const loaded = yield* Effect.forkChild(polling.join(1));
