@@ -9,7 +9,7 @@ export class WorkerVersionRefusal extends Data.TaggedError("WorkerVersionRefusal
   readonly cause?: unknown;
 }> {}
 
-// Lenient: the deployments list carries more keys than these (recorded production shape 03).
+// Lenient: the deployments list carries more keys than these (shape recorded from production).
 const Deployments = Schema.Struct({
   result: Schema.Struct({
     deployments: Schema.Array(
