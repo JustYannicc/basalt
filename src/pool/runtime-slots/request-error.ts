@@ -11,6 +11,7 @@ import {
   runtimeFailureDiagnostic,
   runtimeFailureHeaders,
 } from "../runtime-route-diagnostic.ts";
+import { StorageRestoreRefused } from "../storage-bookmark.ts";
 import { SlotRefused } from "./contract.ts";
 import { AdoptionReadbackMismatch } from "./adoption-readback.ts";
 
@@ -66,6 +67,7 @@ export function runtimeErrorResponse(error: unknown, boundary: "handoff" | "endp
           ? error.code
           : runtimeFailureCode(runtimeFailureDiagnostic(refusal, "endpoint_route")),
         ...(provider ? { cause: error.code } : {}),
+        ...(error instanceof StorageRestoreRefused ? { cause: error.restore } : {}),
       },
       {
         status: 409,

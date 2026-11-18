@@ -7,7 +7,12 @@ import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { homeTopologyPath } from "./runtime-crash-cell.ts";
 import { crashAuditKey, crashNonceKey } from "./runtime-crash-contract.ts";
 import type { SlotIdentity } from "./runtime-slots/contract.ts";
-import { documentedTopology, followerTopology, masterlessTopology } from "./test/home-topology.ts";
+import {
+  answerTopology,
+  documentedTopology,
+  followerTopology,
+  masterlessTopology,
+} from "./test/home-topology.ts";
 import { signEnvelope } from "./token.ts";
 
 type Fleet = Awaited<ReturnType<typeof fleetWorkerFixture>>;
@@ -99,8 +104,8 @@ function refusals(context: TestContext) {
   return () =>
     warnings.mock.calls
       .map((call) => String(call.arguments[0]))
-      .filter((line) => line.startsWith("POOL_CELL_CRASH_REFUSED "))
-      .map((line) => JSON.parse(line.slice("POOL_CELL_CRASH_REFUSED ".length)).reason);
+      .filter((line) => line.startsWith("POOL_CRASH_REFUSED "))
+      .map((line) => JSON.parse(line.slice("POOL_CRASH_REFUSED ".length)).reason);
 }
 
 test(
@@ -271,27 +276,108 @@ test(
   },
 );
 
+/** The same packet without `kind`, naming the selected primary: the shape every primary kill has. */
+function primaryOf(f: Fleet, command: Awaited<ReturnType<typeof ready>>["command"]) {
+  const { kind: _kind, ...primary } = { ...command, identity: f.old.identity() };
+  return primary;
+}
+
+// Production shape: the Worker carries no POOL_ALLOW_MASTER_CRASH binding.
+for (const [name, reply, reason] of [
+  ["is the master", () => Response.json(documentedTopology), "master"],
+  ["has no master", () => Response.json(masterlessTopology()), "missing_master"],
+  ["answers with an error", () => new Response(null, { status: 503 }), "topology_unreadable"],
+  [
+    "cannot be reached",
+    () => {
+      throw new Error("synthetic Home port closed");
+    },
+    "topology_unreadable",
+  ],
+] as const)
+  test(
+    `without the stage binding, the primary whose Home ${name} is not killed`,
+    { timeout: 15_000 },
+    async (context) => {
+      const { f, cell, command } = await ready(context, () => Response.json(followerTopology()));
+      answerTopology(f.old.home, reply);
+      const reasons = refusals(context);
+      context.mock.method(console, "error", () => {});
+      const response = await crash(f, primaryOf(f, command));
+      assert.equal(response.status, 409, await response.clone().text());
+      assert.deepEqual(reasons(), [reason]);
+      assert.deepEqual(f.old.calls.signals, []);
+      assert.deepEqual(cell.calls.signals, []);
+      assert.equal(f.old.ctx.container.running, true);
+      assert.equal(await f.old.storage.get(crashAuditKey(command.nonce)), undefined);
+    },
+  );
+
 test(
-  "a primary kill never asks a Home about its master and still signals",
+  "without the stage binding, the primary on a proven follower Home is killed, and the Home read is last",
   { timeout: 15_000 },
   async (context) => {
-    const { f, cell, command, events } = await ready(context, () =>
-      Response.json(documentedTopology),
-    );
-    let primaryTopologyReads = 0;
-    const override = f.old.home.override;
-    f.old.home.override = (path, init) => {
-      if (path.includes("/topology")) primaryTopologyReads++;
-      return override?.(path, init);
+    const { f, cell, command } = await ready(context, () => Response.json(followerTopology()));
+    const order: string[] = [];
+    answerTopology(f.old.home, () => {
+      order.push("topology");
+      return Response.json(followerTopology());
+    });
+    const signal = f.old.ctx.container.signal;
+    f.old.ctx.container.signal = (number) => {
+      order.push("signal");
+      signal(number);
     };
-    const { kind: _kind, ...primary } = { ...command, identity: f.old.identity() };
-    const response = await crash(f, primary);
+    const response = await crash(f, primaryOf(f, command));
     assert.equal(response.status, 200, await response.clone().text());
     assert.deepEqual(f.old.calls.signals, [9]);
     assert.deepEqual(cell.calls.signals, []);
-    assert.equal(primaryTopologyReads, 0);
-    assert.ok(!events.includes("topology"));
+    assert.deepEqual(order.slice(-2), ["topology", "signal"]);
     const submission = await f.old.storage.get<{ command: object }>(crashNonceKey(command.nonce));
     assert.ok(submission && !("kind" in submission.command));
+  },
+);
+
+test(
+  "only the exact stage binding lets the primary on a master Home be killed",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f, cell, command } = await ready(context, () => Response.json(followerTopology()));
+    answerTopology(f.old.home, () => Response.json(documentedTopology));
+    const reasons = refusals(context);
+    for (const value of ["false", "1", "TRUE", ""]) {
+      // A redeploy with that binding value: the controller is rebuilt over the same storage.
+      f.advanceCurrentBindings({ POOL_ALLOW_MASTER_CRASH: value });
+      const refused = await f.command("runtime-crash", {
+        ...primaryOf(f, command),
+        nonce: crypto.randomUUID(),
+      });
+      assert.equal(refused.status, 409, `binding ${JSON.stringify(value)} must not allow it`);
+    }
+    assert.deepEqual(reasons(), ["master", "master", "master", "master"]);
+    assert.deepEqual(f.old.calls.signals, []);
+    // A disposable stage: src/pool/deployment.ts binds exactly this value there.
+    f.advanceCurrentBindings({ POOL_ALLOW_MASTER_CRASH: "true" });
+    const response = await f.command("runtime-crash", primaryOf(f, command));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(f.old.calls.signals, [9]);
+    assert.deepEqual(cell.calls.signals, []);
+    const audit = await f.old.storage.get<{ status: string }>(crashAuditKey(command.nonce));
+    assert.equal(audit?.status, "signalled");
+  },
+);
+
+test(
+  "the stage binding does not let a cell on a master Home be killed",
+  { timeout: 15_000 },
+  async (context) => {
+    const { f, cell, command } = await ready(context, () => Response.json(documentedTopology));
+    // The cell's own runtime decides, and it shares the Worker's bindings.
+    cell.env.POOL_ALLOW_MASTER_CRASH = "true";
+    const reasons = refusals(context);
+    assert.equal((await crash(f, command)).status, 409);
+    assert.deepEqual(reasons(), ["master"]);
+    assert.deepEqual(cell.calls.signals, []);
+    assert.deepEqual(f.old.calls.signals, []);
   },
 );

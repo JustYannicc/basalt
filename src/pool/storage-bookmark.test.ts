@@ -4,8 +4,11 @@ import { SlotRefused } from "./runtime-slots/contract.ts";
 import type { SlotStorage, TransactionStorage } from "./runtime-slots/storage.ts";
 import {
   bookmarkRetentionMs,
+  restoreArmWindowMs,
   StorageBookmarks,
+  StorageRestoreRefused,
   storageRestoreNonceKey,
+  type RestoreRefusal,
   type StorageRestoreCommand,
 } from "./storage-bookmark.ts";
 
@@ -27,6 +30,12 @@ function fixture(context: TestContext, shared?: Map<string, unknown>) {
   const calls: string[] = [];
   const deferred: (() => void)[] = [];
   const logs = context.mock.method(console, "info", () => {});
+  const warnings = context.mock.method(console, "warn", () => {});
+  /** Every refusal the operator was told about, in order. */
+  const refusals = () =>
+    warnings.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_STORAGE_RESTORE_REFUSED")
+      .map((call) => JSON.parse(String(call.arguments[1])) as Record<string, string>);
   const bookmarks = new StorageBookmarks({
     storage,
     now: () => state.now,
@@ -60,11 +69,16 @@ function fixture(context: TestContext, shared?: Map<string, unknown>) {
     expiresAt: state.now + 30_000,
     ...fields,
   });
-  return { bookmarks, values, state, calls, deferred, logs, command };
+  return { bookmarks, values, state, calls, deferred, logs, refusals, command };
 }
 
 const refused = (reason: SlotRefused["reason"]) => (error: unknown) =>
   error instanceof SlotRefused && error.reason === reason;
+/** The restore rule that refused, and the wire reason every handoff refusal keeps. */
+const restoreRefused = (restore: RestoreRefusal) => (error: unknown) =>
+  error instanceof StorageRestoreRefused &&
+  error.restore === restore &&
+  error.reason === (restore === "replayed" ? "selection" : "identity");
 
 test("the bookmark read returns the current point and the server time", async (context) => {
   const { bookmarks, state } = fixture(context);
@@ -110,12 +124,15 @@ test("a restore schedules the target, replies with the undo bookmark, then ends 
 });
 
 test("a replayed nonce cannot restore twice in the same session", async (context) => {
-  const { bookmarks, calls, command } = fixture(context);
+  const { bookmarks, calls, refusals, command } = fixture(context);
   await bookmarks.read();
   await bookmarks.restore(command());
   await bookmarks.read();
-  await assert.rejects(bookmarks.restore(command()), refused("selection"));
+  await assert.rejects(bookmarks.restore(command()), restoreRefused("replayed"));
   assert.deepEqual(calls, [`restore:${mark(10)}`]);
+  assert.deepEqual(refusals(), [
+    { reason: "replayed", nonce: "restore-nonce-1", operator: "fixture-operator" },
+  ]);
 });
 
 test("the same envelope cannot restore again after the restore rolled its nonce back", async (context) => {
@@ -126,9 +143,9 @@ test("the same envelope cannot restore again after the restore rolled its nonce 
   // The restored storage is older than the nonce, and the next session starts past the undo point.
   const next = fixture(context, new Map());
   next.state.live = 901;
-  await assert.rejects(next.bookmarks.restore(envelope), refused("identity"));
+  await assert.rejects(next.bookmarks.restore(envelope), restoreRefused("unknown-bookmark"));
   await next.bookmarks.read();
-  await assert.rejects(next.bookmarks.restore(envelope), refused("identity"));
+  await assert.rejects(next.bookmarks.restore(envelope), restoreRefused("unknown-bookmark"));
   assert.deepEqual(next.calls, []);
   assert.equal(next.deferred.length, 0);
 });
@@ -139,30 +156,59 @@ test("a second envelope signed against the same read dies with the first restore
   await bookmarks.restore(command());
   await assert.rejects(
     bookmarks.restore(command({ nonce: "restore-nonce-2", target: mark(11) })),
-    refused("identity"),
+    restoreRefused("unknown-bookmark"),
   );
   assert.deepEqual(calls, [`restore:${mark(10)}`]);
 });
 
 test("a restore is refused unless this session handed out the expected current bookmark", async (context) => {
-  const { bookmarks, state, calls, deferred, command } = fixture(context);
-  await assert.rejects(bookmarks.restore(command()), refused("identity"));
+  const { bookmarks, calls, deferred, refusals, command } = fixture(context);
+  await assert.rejects(bookmarks.restore(command()), restoreRefused("unknown-bookmark"));
   await bookmarks.read();
-  for (const fields of [
-    { expectedCurrent: mark(19) },
-    { expectedCurrent: mark(21) },
-    { target: mark(20) },
-    { target: mark(21) },
-  ])
-    await assert.rejects(bookmarks.restore(command(fields)), refused("identity"));
-  state.live = 19; // The live point is behind what the caller saw: not this object's timeline.
-  await assert.rejects(bookmarks.restore(command()), refused("identity"));
+  for (const expectedCurrent of [mark(19), mark(21)])
+    await assert.rejects(
+      bookmarks.restore(command({ expectedCurrent })),
+      restoreRefused("unknown-bookmark"),
+    );
+  assert.deepEqual(
+    refusals().map((line) => line.reason),
+    ["unknown-bookmark", "unknown-bookmark", "unknown-bookmark"],
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(deferred.length, 0);
+});
+
+test("a restore target must lie before the expected current bookmark", async (context) => {
+  const { bookmarks, calls, deferred, refusals, command } = fixture(context);
+  await bookmarks.read();
+  for (const target of [mark(20), mark(21)])
+    await assert.rejects(
+      bookmarks.restore(command({ target })),
+      restoreRefused("not-before-current"),
+    );
+  assert.deepEqual(
+    refusals().map((line) => line.reason),
+    ["not-before-current", "not-before-current"],
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(deferred.length, 0);
+});
+
+test("a restore is refused when the live point is behind what the caller saw", async (context) => {
+  const { bookmarks, state, calls, deferred, refusals, command } = fixture(context);
+  await bookmarks.read();
+  state.live = 19; // Not this object's timeline any more.
+  await assert.rejects(bookmarks.restore(command()), restoreRefused("expected-current-mismatch"));
+  assert.deepEqual(
+    refusals().map((line) => line.reason),
+    ["expected-current-mismatch"],
+  );
   assert.deepEqual(calls, []);
   assert.equal(deferred.length, 0);
 });
 
 test("a stale or overlong restore envelope is refused", async (context) => {
-  const { bookmarks, state, calls, values, command } = fixture(context);
+  const { bookmarks, state, calls, values, refusals, command } = fixture(context);
   await bookmarks.read();
   for (const times of [
     { at: state.now - 30_001, expiresAt: state.now - 1 },
@@ -170,9 +216,30 @@ test("a stale or overlong restore envelope is refused", async (context) => {
     { at: state.now + 5_001, expiresAt: state.now + 20_000 },
     { at: state.now, expiresAt: state.now },
   ])
-    await assert.rejects(bookmarks.restore(command(times)), refused("identity"));
+    await assert.rejects(bookmarks.restore(command(times)), restoreRefused("stale-envelope"));
+  assert.deepEqual(
+    refusals().map((line) => line.reason),
+    ["stale-envelope", "stale-envelope", "stale-envelope", "stale-envelope"],
+  );
   assert.deepEqual(calls, []);
   assert.equal(values.size, 0);
+});
+
+test("the bookmark read arms a restore for ten minutes only", async (context) => {
+  const { bookmarks, state, calls, values, refusals, command } = fixture(context);
+  await bookmarks.read();
+  state.now += restoreArmWindowMs + 1;
+  await assert.rejects(bookmarks.restore(command()), restoreRefused("arm-expired"));
+  assert.deepEqual(refusals(), [
+    { reason: "arm-expired", nonce: "restore-nonce-1", operator: "fixture-operator" },
+  ]);
+  assert.deepEqual(calls, []);
+  assert.equal(values.size, 0, "an expired arming must not consume the nonce");
+  // A fresh read arms it again, and the last moment of the window still counts.
+  await bookmarks.read();
+  state.now += restoreArmWindowMs;
+  await bookmarks.restore(command());
+  assert.deepEqual(calls, [`restore:${mark(10)}`]);
 });
 
 test("a platform refusal consumes the nonce and leaves the session running", async (context) => {
@@ -183,7 +250,7 @@ test("a platform refusal consumes the nonce and leaves the session running", asy
   assert.deepEqual(calls, [`restore:${mark(10)}`]);
   assert.equal(deferred.length, 0);
   state.fail = false;
-  await assert.rejects(bookmarks.restore(command()), refused("selection"));
+  await assert.rejects(bookmarks.restore(command()), restoreRefused("replayed"));
   await bookmarks.restore(command({ nonce: "restore-nonce-2" }));
   assert.deepEqual(calls, [`restore:${mark(10)}`, `restore:${mark(10)}`]);
 });

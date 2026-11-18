@@ -97,11 +97,18 @@ test("bookmark operations need the deployment key, this controller's code and a 
 test("a signed restore schedules the bookmark, replies with the undo point, then aborts", async (context) => {
   const { f, calls, send, restore } = await controller(context);
   const nonce = crypto.randomUUID();
-  assert.equal(
-    (await send("storage-restore-bookmark", { ...restore, nonce })).status,
-    409,
-    "a restore without a read from this session is refused",
-  );
+  const warnings = context.mock.method(console, "warn", () => {});
+  /** The rule each refusal named, as the real controller logged it. */
+  const refusedBy = () =>
+    warnings.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_STORAGE_RESTORE_REFUSED")
+      .map((call) => JSON.parse(String(call.arguments[1])) as Record<string, string>);
+  const unarmed = await send("storage-restore-bookmark", { ...restore, nonce });
+  assert.equal(unarmed.status, 409, "a restore without a read from this session is refused");
+  assert.equal((await unarmed.json()).cause, "unknown-bookmark");
+  assert.deepEqual(refusedBy(), [
+    { reason: "unknown-bookmark", nonce, operator: "fixture-operator" },
+  ]);
   assert.equal((await send("storage-bookmark")).status, 200);
   context.mock.method(console, "info", () => {});
   context.mock.timers.enable({ apis: ["setTimeout"] });
@@ -117,5 +124,9 @@ test("a signed restore schedules the bookmark, replies with the undo point, then
   assert.ok(await f.old.storage.get(storageRestoreNonceKey(nonce)));
   assert.equal((await send("storage-bookmark")).status, 200);
   assert.equal((await send("storage-restore-bookmark", { ...restore, nonce })).status, 409);
+  assert.deepEqual(
+    refusedBy().map((line) => line.reason),
+    ["unknown-bookmark", "replayed"],
+  );
   assert.deepEqual(calls, [`restore:${mark(10)}`, "abort:storage restore"]);
 });
