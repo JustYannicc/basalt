@@ -29,6 +29,7 @@ test("import completion reconciles a large source inside the statement bound and
       [template!.id, rows],
     );
     await client.query("RESET session_replication_role");
+    await client.query("ANALYZE basalt_model_requests");
     const ids = (
       await db.query("SELECT id FROM basalt_model_requests WHERE source=$1", [scope.source])
     ).rows.map((row) => String(row.id));
