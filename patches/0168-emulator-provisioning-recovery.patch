@@ -523,11 +523,22 @@ diff --git a/e2e/tests/emulator-provisioning.spec.ts b/e2e/tests/emulator-provis
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/emulator-provisioning.spec.ts
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,380 @@
 +import { expect, layer } from "@effect/vitest";
 +import * as NodeServices from "@effect/platform-node/NodeServices";
-+import { Cause, Clock, Deferred, Effect, Fiber, Schema, Tracer, Exit } from "effect";
-+import { FetchHttpClient, HttpClient } from "effect/http";
++import {
++  Cause,
++  Clock,
++  Deferred,
++  Effect,
++  Fiber,
++  Logger,
++  References,
++  Schema,
++  Tracer,
++  Exit,
++} from "effect";
++import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 +import { TestClock } from "effect/testing";
 +import { createServer } from "node:http";
 +import type { AddressInfo } from "node:net";
@@ -784,6 +795,113 @@ new file mode 100644
 +      expect(error).toMatchObject({ category: "timeout", attempts: 2, status: 500 });
 +      expect(stub.calls()).toBe(1);
 +    }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++});
++
++/** Moves the test clock in small steps, so each timer a retry starts between steps still fires. */
++const advanceUntil = (done: () => boolean) =>
++  Effect.gen(function* () {
++    for (let step = 0; step < 400 && !done(); step++) yield* TestClock.adjust("100 millis");
++  });
++
++/** Answers in memory, so no request is on the network while the test clock moves. */
++const hangingEmulator = (hangs: number) => {
++  let calls = 0;
++  const client = HttpClient.make((request) =>
++    Effect.suspend(() =>
++      ++calls <= hangs
++        ? Effect.never
++        : Effect.succeed(
++            HttpClientResponse.fromWeb(
++              request,
++              new Response(JSON.stringify({ ready: true, secret }), {
++                headers: { "content-type": "application/json" },
++              }),
++            ),
++          ),
++    ),
++  );
++  return { client, calls: () => calls };
++};
++
++const retryLogs = () => {
++  const lines: string[] = [];
++  const logger = Logger.make(({ message, fiber }) => {
++    lines.push(
++      `${[message].flat().join(" ")} ${JSON.stringify(fiber.getRef(References.CurrentLogAnnotations))}`,
++    );
++  });
++  return { lines, layer: Logger.layer([logger]) };
++};
++
++layer(NodeServices.layer)("Emulator provisioning hung attempts", (it) => {
++  it.effect("a hung setup request is abandoned and sent again within the budget", () =>
++    Effect.gen(function* () {
++      const emulator = hangingEmulator(2);
++      const logs = retryLogs();
++      const fiber = yield* provisionEmulatorRequest(
++        "https://autumn.emulators.dev",
++        "/_emulate/instances",
++        { instance: "synthetic" },
++        reply,
++      ).pipe(
++        Effect.provideService(HttpClient.HttpClient, emulator.client),
++        Effect.provide(logs.layer),
++        Effect.exit,
++        Effect.forkChild,
++      );
++      yield* advanceUntil(() => emulator.calls() === 3);
++      const exit = yield* Fiber.join(fiber);
++      expect(emulator.calls()).toBe(3);
++      expect(Exit.isSuccess(exit) ? exit.value : Cause.pretty(exit.cause)).toEqual({ ready: true });
++      expect(logs.lines).toEqual([
++        expect.stringMatching(/^Provisioning attempt 1 failed \(timeout\); retrying in \d+ ms /),
++        expect.stringMatching(/^Provisioning attempt 2 failed \(timeout\); retrying in \d+ ms /),
++      ]);
++      for (const line of logs.lines) {
++        expect(line).toContain('"operation":"POST /_emulate/instances"');
++        expect(line).toContain('"emulator":"autumn"');
++      }
++    }),
++  );
++
++  it.effect("a setup request that always hangs fails with its timeouts and attempt count", () =>
++    Effect.gen(function* () {
++      const emulator = hangingEmulator(Number.POSITIVE_INFINITY);
++      const logs = retryLogs();
++      const started = yield* Clock.currentTimeMillis;
++      const fiber = yield* provisionEmulatorRequest(
++        "https://autumn.emulators.dev",
++        "/_emulate/credentials",
++        { type: "api-key", token: secret },
++        reply,
++      ).pipe(
++        Effect.provideService(HttpClient.HttpClient, emulator.client),
++        Effect.provide(logs.layer),
++        Effect.flip,
++        Effect.forkChild,
++      );
++      yield* advanceUntil(() => fiber.pollUnsafe() !== undefined);
++      const error = yield* Fiber.join(fiber);
++      const elapsed = (yield* Clock.currentTimeMillis) - started;
++      expect(emulator.calls()).toBe(4);
++      expect(error).toMatchObject({
++        category: "timeout",
++        attempts: 4,
++        operation: "POST /_emulate/credentials",
++        emulator: "autumn",
++      });
++      expect(error.status).toBeUndefined();
++      expect(error.message).toBe(
++        "External emulator failed: POST /_emulate/credentials on autumn (timeout, timeout, 4 attempt(s))",
++      );
++      // Each attempt's own deadline ends the request, before the 30 s budget does.
++      expect(elapsed).toBeGreaterThanOrEqual(24_000);
++      expect(elapsed).toBeLessThan(30_000);
++      expect(logs.lines).toHaveLength(3);
++      for (const text of [JSON.stringify(error), error.message, ...logs.lines])
++        expect(text).not.toContain(secret);
++    }),
 +  );
 +});
 diff --git a/packages/utils/package.json b/packages/utils/package.json
