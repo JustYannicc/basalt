@@ -74,11 +74,34 @@ test("policy accounts, selection epoch and candidate boot drift each refuse prom
       });
     if (drift === "boot")
       f.runtimes.set(f.candidate.instanceId, { ...f.candidate, bootId: "other-boot" });
-    await assert.rejects(f.slots.promote(intent));
+    // Drift found before the receipt rejects; drift found by the candidate proof settles the receipt.
+    if (drift === "boot") assert.equal((await f.slots.promote(intent)).status, "refused");
+    else await assert.rejects(f.slots.promote(intent));
     assert.equal((await f.slots.inspect()).selection?.active.identity?.bootId, f.old.bootId);
     assert.equal(f.calls.retire.length, 0);
   }
 });
+
+for (const step of ["health", "install"] as const)
+  test(`a candidate ${step} timeout settles the promotion as refused so a new attempt can follow`, async (context) => {
+    const f = await slotFixture();
+    context.after(f.cleanup);
+    await f.slots.stage(f.candidate);
+    const intent = await f.intent();
+    // AbortSignal.timeout rejects with this, not with SlotRefused.
+    f.hooks[step] = async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+    const refused = await f.slots.promote(intent);
+    assert.equal(refused.status, "refused");
+    assert.equal(refused.reason, "timeout");
+    f.hooks[step] = async () => {};
+    const restarted = f.reconstruct();
+    assert.equal((await restarted.receipt(intent.operationId))?.status, "refused");
+    assert.equal((await restarted.inspect()).selection?.active.identity?.bootId, f.old.bootId);
+    const next = await restarted.promote({ ...intent, operationId: `${intent.operationId}-next` });
+    assert.equal(next.status, "promoted");
+  });
 
 test("TTL renewal cannot disguise expiry of the candidate's actual policy acknowledgement", async (context) => {
   const f = await slotFixture();

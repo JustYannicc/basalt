@@ -361,7 +361,7 @@
           "kind": "automatic",
           "protocol": "dcr",
           "metadata": "https://us-east-1.oauth.signin.aws/.well-known/oauth-authorization-server",
-          "metadataSha256": "608120a97f05525e4ee05dbfcb3da4b8e20f5685c1a546b45c3a7baa73bfa11e"
+          "metadataSha256": "5fa2ab227363a9b7c436aa89f49cc53ce9601a786f4e4fbb59373f4259db1679"
         }
       }
     },
@@ -1502,7 +1502,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://api.us.elevenlabs.io/.well-known/oauth-authorization-server",
-          "metadataSha256": "3a294ab3214ca03b5e93883492b3a6f24568258e2cef6295fb5bbc4f890714ea"
+          "metadataSha256": "3fd293b754ff6af2006043e8f4f053769fb8223c57cc18e69ab4c057cbf32599"
         }
       }
     },

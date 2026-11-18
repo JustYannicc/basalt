@@ -12,3 +12,13 @@ const probePaths =
 
 export const probeNeeded = (changed: readonly string[]) =>
   changed.some((path) => probePaths.test(path));
+
+/**
+ * Changed paths that make a PR run the read-only release preflight: anything the release path
+ * executes, the workflows that start it, and the pool runtime protocol its reads speak.
+ */
+const preflightPaths =
+  /^(?:scripts\/release-[a-z-]+\/|scripts\/deploy(?:-[a-z-]+)?(?:\/|\.ts$)|scripts\/pool-operations[^/]*$|scripts\/database-budget-readiness\.ts$|src\/pool\/(?:runtime[^/]*(?:\/|$)|deployment-readiness\.ts$|token\.ts$|worker\.ts$|recovery-approval\.ts$|image-release-plan\.ts$)|\.github\/workflows\/(?:ci|deploy|release-[a-z-]+)\.yml$)/;
+
+export const releasePreflightNeeded = (changed: readonly string[]) =>
+  changed.some((path) => preflightPaths.test(path));

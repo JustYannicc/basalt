@@ -95,7 +95,10 @@ function sameReconciledForward(
   );
 }
 
-/** A target-bound archive releases the old image record without relabeling either old record as a completed release. */
+/**
+ * A target-bound archive releases the old image record without relabeling either old record as a
+ * completed release. Returns the authorizing manifest, or undefined when no archive exists.
+ */
 export const authorizedReleaseSettlement = (
   state: StateService,
   scope: { name: string; stage: string },
@@ -106,7 +109,7 @@ export const authorizedReleaseSettlement = (
 ) =>
   Effect.gen(function* () {
     const raw = yield* state.getOutput(releaseSettlementKey(scope, source, target));
-    if (raw === undefined) return false;
+    if (raw === undefined) return undefined;
     const saved = openReleaseSettlement(raw, key, source, target);
     if (
       saved.manifest.stack !== scope.name ||
@@ -124,5 +127,12 @@ export const authorizedReleaseSettlement = (
       const row = yield* state.get({ stack: scope.name, stage: scope.stage, fqn: resource.fqn });
       if (encodedRecordHash(row) !== resource.digest) throw refused();
     }
-    return true;
+    const { proof } = saved.manifest;
+    if (
+      proof.disposition === "abandoned-before-forward" &&
+      hash((yield* state.getOutput({ stack: scope.name, stage: scope.stage })) ?? null) !==
+        proof.stackOutputDigest
+    )
+      throw refused();
+    return saved.manifest;
   });

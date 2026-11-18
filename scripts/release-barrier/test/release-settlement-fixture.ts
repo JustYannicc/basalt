@@ -22,16 +22,30 @@ import { ordinaryReleaseWriter } from "../runtime-release-writer.ts";
 import { withReleaseRuntime } from "../runtime.ts";
 import type { SettlementOperationIo } from "../release-settlement-operation.ts";
 import type { BaselineRead } from "../baseline-controller.ts";
+import { legacyAdoptionTarget } from "../legacy-adoption-target.ts";
+import { slotSelectionKey } from "../../../src/pool/runtime-slots/storage.ts";
 import {
   activatedReceipt,
   previousController,
   settlementController,
 } from "./settlement-controller.ts";
 
-/** `controllerActive` is the source after its controller phase: every Worker activated, nothing adopted. */
+/**
+ * `controllerActive` is the source after its controller phase: every Worker activated, nothing
+ * adopted. `adopted` is that source after its adopt committed, as the production observe found it.
+ * `recovered` is that adopted root after the controller's selected-runtime recovery restarted it
+ * twice, leaving the selection at epoch 3.
+ * `staleReadiness` is an abandoned source whose release froze the controller an earlier settlement
+ * proved live, while the deferred readiness row still names the one before it.
+ */
 export async function releaseSettlementFixture(
   context: TestContext,
-  options: { controllerActive?: boolean } = {},
+  options: {
+    controllerActive?: boolean;
+    adopted?: boolean;
+    recovered?: boolean;
+    staleReadiness?: boolean;
+  } = {},
 ) {
   context.mock.method(globalThis, "fetch", async () => {
     throw new Error("No network in the offline settlement proof");
@@ -131,9 +145,10 @@ export async function releaseSettlementFixture(
   await put("PoolContainer", "Cloudflare.Container", {}, previous);
   // Scale-out code phases defer the readiness command, so after the source's controller phase it
   // still records the controller that ran before the source.
-  const readinessCode = options.controllerActive
-    ? previousController(accountId, previous.hash!.image).code
-    : code;
+  const readinessCode =
+    options.controllerActive || options.staleReadiness
+      ? previousController(accountId, previous.hash!.image).code
+      : code;
   await put(
     "PoolBackendBudgetRuntimeReady",
     "Command.Exec",
@@ -256,7 +271,9 @@ export async function releaseSettlementFixture(
     baseline,
     ...(options.controllerActive
       ? { baselineController: previousController(accountId, previous.hash!.image) }
-      : {}),
+      : options.staleReadiness
+        ? { baselineController: { ...previousController(accountId, previous.hash!.image), code } }
+        : {}),
     desiredInput: "d".repeat(16),
     desiredConfiguration: baseline.configuration,
     bootstrap: {},
@@ -315,6 +332,15 @@ export async function releaseSettlementFixture(
     key,
     calls,
   });
+  if (options.adopted)
+    await controller.adopt(
+      legacyAdoptionTarget(baseline.applications.root, instanceId),
+      `adopt-${sourceCandidate}`,
+    );
+  if (options.recovered) {
+    await controller.restart("recovered-boot-1");
+    await controller.restart("recovered-boot-2");
+  }
   const io: SettlementOperationIo = {
     directory,
     intent: async (value) => {
@@ -349,6 +375,9 @@ export async function releaseSettlementFixture(
             const path = new URL(request.url).pathname;
             if (request.method === "GET" && path === "/runtime-recovery") {
               calls.push("GET health");
+              // Production answers the recovery read only before any selection exists.
+              if (controller.storage.values.has(slotSelectionKey))
+                return new Response(null, { status: 409 });
               return Response.json({
                 instanceId,
                 imageHash: previous.hash!.image,

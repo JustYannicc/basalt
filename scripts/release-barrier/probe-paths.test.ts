@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { probeNeeded } from "./probe-paths.ts";
+import { probeNeeded, releasePreflightNeeded } from "./probe-paths.ts";
 
 test("a change to a stack resource, its settings or a storage declaration runs the full-plan probe", () => {
   for (const path of [
@@ -49,4 +49,30 @@ test("site copy, docs, the architecture mapping and nested look-alikes don't", (
     ]),
     false,
   );
+});
+
+test("release and pool runtime changes select the preflight", () => {
+  for (const path of [
+    "scripts/release-barrier/runtime-release-client.ts",
+    "scripts/release-phases/deploy.ts",
+    "scripts/release-merge/main-candidate.ts",
+    "scripts/deploy.ts",
+    "scripts/deploy-safety/release.ts",
+    ".github/workflows/release-main.yml",
+    ".github/workflows/release-manual.yml",
+    ".github/workflows/deploy.yml",
+    "src/pool/runtime-slots/contract.ts",
+    "src/pool/runtime-fleet/configuration.ts",
+    "src/pool/runtime-recovery.ts",
+    "src/pool/deployment-readiness.ts",
+    "src/pool/runtime.worker.ts",
+    "src/pool/runtime-do.worker.ts",
+    "src/pool/worker.ts",
+    "scripts/pool-operations-node-worker.mjs",
+    ".github/workflows/release-rollback.yml",
+  ])
+    assert.equal(releasePreflightNeeded([path]), true, path);
+  for (const path of ["src/pool/inventory.ts", "README.md", "apps/pool/ui/index.ts"])
+    assert.equal(releasePreflightNeeded([path]), false, path);
+  assert.equal(probeNeeded(["scripts/release-barrier/release-preflight.ts"]), true);
 });

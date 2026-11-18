@@ -95,7 +95,7 @@ export function expansionRequest(
   baseline: ClassObservation,
   content: ClassContent,
   entry: SqliteClassDeclaration,
-  newTag: string,
+  newTag: string | undefined,
   tags: readonly string[],
   marker: string,
 ): Workers.PutScriptRequest {
@@ -141,6 +141,8 @@ export function expansionRequest(
         })),
         ...entry.addedBindings.map(({ location: _location, ...binding }) => binding),
       ],
+      // Script settings carry no container linkage; omitting it would unlink the active classes.
+      containers: baseline.containers?.length ? [...baseline.containers] : undefined,
       migrations: {
         oldTag: baseline.migrationTag,
         newTag,

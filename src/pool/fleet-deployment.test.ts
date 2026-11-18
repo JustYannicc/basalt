@@ -10,7 +10,13 @@ import { decodeRuntimeCreate } from "../../scripts/release-barrier/runtime-creat
 import { runtimeDeclaration } from "../../scripts/release-barrier/test/provisioning-fixtures.ts";
 import { withReleaseRuntime } from "../../scripts/release-barrier/runtime.ts";
 import { bindPoolObservationSecret } from "./fleet-observation.ts";
-import { decodeFleetDeploymentImages, fleetInfrastructure } from "./fleet-deployment.ts";
+import {
+  decodeFleetDeploymentImages,
+  fleetBindings,
+  fleetInfrastructure,
+  plannedContainerClasses,
+} from "./fleet-deployment.ts";
+import { RuntimeImageReleasePlan, type ImageReleasePlan } from "./image-release-plan.ts";
 
 const accountId = "1".repeat(32);
 const images = {
@@ -144,4 +150,89 @@ test("fleet pins refuse mutable references, other accounts, missing colors and e
       () => decodeFleetDeploymentImages(JSON.stringify(invalid), accountId),
       /immutable references/,
     );
+});
+
+async function poolWorkerClasses(input = "", plan?: ImageReleasePlan) {
+  const stack = Stack(
+    "basalt",
+    {
+      providers: Layer.empty,
+      state: Layer.effect(State, Effect.map(InMemoryService(), Effect.succeed)),
+    },
+    Effect.gen(function* () {
+      return yield* Cloudflare.Worker("PoolWorker", {
+        main: import.meta.filename,
+        env: fleetBindings(yield* fleetInfrastructure),
+      });
+    }),
+  );
+  const compiled = await Effect.runPromise(
+    evalStack(stack, Effect.succeed, { stage: "synthetic" }).pipe(
+      Effect.provideService(Cloudflare.CloudflareEnvironment, Effect.succeed({ accountId })),
+      Effect.provide(
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { POOL_FLEET_IMAGES: input } })),
+      ),
+      Effect.provideService(RuntimeImageReleasePlan, plan),
+      withReleaseRuntime,
+    ),
+  );
+  return {
+    containers: Object.values(compiled.resources)
+      .filter((resource) => resource.Type === "Cloudflare.Container")
+      .map((resource) => (resource.Props as { className: string }).className)
+      .sort(),
+    resources: Object.keys(compiled.resources).sort(),
+    env: compiled.resources.PoolWorker!.Props.env as Record<string, unknown>,
+  };
+}
+
+test("PoolWorker always hosts both fleet classes, so alchemy is their one migration writer", async () => {
+  const plain = await poolWorkerClasses();
+  // No image yet: plain local SQLite classes, no container application.
+  assert.deepEqual(plain.resources, ["PoolWorker"]);
+  for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"]) {
+    const binding = plain.env[name] as { className?: string; scriptName?: string };
+    assert.equal(binding.className, name);
+    assert.equal(binding.scriptName, undefined);
+  }
+  // A pinned color's Container takes the same env key (the alchemy logical id), so binding it
+  // later neither creates nor deletes a class.
+  const bound = await poolWorkerClasses(JSON.stringify(images));
+  assert.deepEqual(bound.resources, ["PoolRuntimeBlue", "PoolRuntimeGreen", "PoolWorker"]);
+  for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"])
+    assert.notEqual(bound.env[name], plain.env[name], `${name} is now its Container`);
+});
+
+test("the release preflight's planned container links are the ones the fleet stack declares", async () => {
+  // A retained legacy runtime, declared with exactly the props LegacyProps admits.
+  const legacyImage = `registry.cloudflare.com/${accountId}/pool@sha256:${"c".repeat(64)}`;
+  const legacy = {
+    image: legacyImage,
+    props: {
+      name: "basalt-synthetic-pool-runtime",
+      className: "PoolRuntime",
+      image: legacyImage,
+      instanceType: "basic",
+      instances: 0,
+      maxInstances: 1,
+      schedulingPolicy: "default",
+      constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
+      observability: { logs: { enabled: true } },
+    },
+  };
+  for (const plan of [
+    { images: {} },
+    { images: { blue: images.blue } },
+    { images: { green: images.green } },
+    { images: { blue: images.blue, green: images.green } },
+    { legacy, images: {} },
+  ] satisfies ImageReleasePlan[]) {
+    const evaluated = await poolWorkerClasses("", plan);
+    // PoolWorker's own PoolContainer is declared beside the fleet, in src/pool/deployment.ts.
+    assert.deepEqual(
+      ["PoolContainer", ...evaluated.containers].sort(),
+      plannedContainerClasses(plan),
+      JSON.stringify(plan),
+    );
+  }
 });

@@ -3,7 +3,12 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { State, isResourceState } from "alchemy/State/State";
 import { Effect, Schema } from "effect";
 import { classHistory } from "./class-history.ts";
-import { classNamespaces, classTag, type ClassTarget } from "./declared-class-contract.ts";
+import {
+  classNamespaces,
+  classTag,
+  classUntagged,
+  type ClassTarget,
+} from "./declared-class-contract.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { classRecoveryRequest } from "./class-recovery.ts";
 import type { RecoveryManifest } from "./recovery-manifest.ts";
@@ -74,6 +79,7 @@ export const verifyClassRollback = (
       const namespaces = classNamespaces({ scriptName: target!.scriptName, settings: live });
       if (
         classTag(live.tags ?? []) !== saved.newTag ||
+        (!saved.newTag && !classUntagged(live.tags ?? [])) ||
         canonical(namespaces) !== canonical(classNamespaces(saved.observed!))
       )
         fail(
@@ -88,7 +94,8 @@ export const verifyClassRollback = (
         }).pipe(Retry.none);
         if (
           version.id !== baseline.versionId ||
-          version.resources.scriptRuntime?.migrationTag !== saved.newTag
+          // Untagged versions cannot be told apart by tag; the class bindings below then decide.
+          (version.resources.scriptRuntime?.migrationTag ?? undefined) !== saved.newTag
         )
           fail(
             "declared-class-pre-migration-rollback-refused",

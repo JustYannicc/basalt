@@ -10,11 +10,12 @@ import {
 } from "./baseline-controller.ts";
 import { observeContainer } from "./container-cloudflare.ts";
 import { containerSnapshot, imageDigest, sameContainerState } from "./container.ts";
-import { controllerForwardHealth } from "./controller-forward-health.ts";
+import { assertBaselinePlacement, controllerForwardHealth } from "./controller-forward-health.ts";
 import { encodedRecordHash, readForwardPacket } from "./forward-model.ts";
-import { journalKey } from "./forward-journal.ts";
+import { ForwardJournalHeader, journalKey } from "./forward-journal.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
+import { classHistory } from "./class-history.ts";
 import { openRecovery } from "./recovery-envelope.ts";
 import { decodeRuntimeReleaseHead } from "./runtime-release-journal.ts";
 import { runtimeReleaseState } from "./runtime-release-state.ts";
@@ -24,7 +25,10 @@ import {
   releaseImageJournalKey,
   type ReleaseSettlementDisposition,
 } from "./release-settlement-contract.ts";
-import { readUnadoptedController } from "./release-settlement-controller-reads.ts";
+import {
+  readAdoptedController,
+  readUnadoptedController,
+} from "./release-settlement-controller-reads.ts";
 import { readActivatedLive } from "./release-settlement-live.ts";
 import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 import { settlementSourceFailure } from "./release-settlement-source.ts";
@@ -32,18 +36,16 @@ import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { readServingObservation } from "./serving-observation.ts";
 
 const hash = (value: unknown) => digest(canonical(value));
-const forwardHeader = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  candidate: Schema.String,
-  manifest: Schema.String,
-  complete: Schema.Boolean,
-  sealed: Schema.Unknown,
-});
 // The earlier disposition keeps its message; the later one names the guard that failed.
 const notSettleable = (disposition: ReleaseSettlementDisposition, guard?: string) =>
   disposition === "abandoned-before-controller"
     ? new BarrierRefusal("release-settlement-not-pre-controller", "PoolWorker")
-    : new BarrierRefusal("release-settlement-not-controller-active", guard ?? "PoolWorker");
+    : disposition === "abandoned-before-forward"
+      ? new BarrierRefusal("release-settlement-not-before-forward", guard ?? "PoolWorker")
+      : new BarrierRefusal("release-settlement-not-controller-active", guard ?? "PoolWorker");
+/** Only a source whose own controller ran names it; every other disposition keeps the frozen one. */
+export const settlementSourceActivated = (disposition: ReleaseSettlementDisposition) =>
+  disposition === "controller-active-unadopted" || disposition === "controller-active-adopted";
 export type ReleaseSettlementIo = {
   forward?: NonNullable<Parameters<typeof resumeForwardRelease>[1]["io"]>;
   container?: typeof observeContainer;
@@ -63,17 +65,36 @@ export const collectReleaseSettlementProof = (
 ) =>
   Effect.gen(function* () {
     const refuse = () => notSettleable(disposition);
-    const activated = disposition === "controller-active-unadopted";
+    // Every Worker runs the forward head's accepted versions: the source's own, or, for a source
+    // that stopped before its forward packet, those of the controller it froze.
+    const activated = disposition !== "abandoned-before-controller";
+    const adoptedRoot =
+      disposition === "controller-active-adopted" || disposition === "abandoned-before-forward";
     const state = yield* yield* State;
     const image = yield* state.getOutput(releaseImageJournalKey(stack));
     const forward = yield* state.getOutput(journalKey(stack));
     const { record } = decodeRuntimeReleaseHead(image, key);
-    const head = Schema.decodeUnknownSync(forwardHeader)(forward);
+    const head = Schema.decodeUnknownSync(ForwardJournalHeader)(forward);
     // A finished controller phase completes its forward head; an abandoned upload never does.
     if (head.complete !== activated) throw notSettleable(disposition, "forward.complete");
     const packet = readForwardPacket(openRecovery(head.sealed, key, head.candidate, head.manifest));
     const unsettled = settlementSourceFailure(disposition, sourceCandidate, record, head, packet);
     if (unsettled) throw notSettleable(disposition, unsettled);
+    // Class preparation runs before the forward journal begins, so a source that stopped before its
+    // forward packet may still have saved class history and staged an inactive clone. Only settled
+    // history of earlier releases may stay; the archive pins the output it was read from.
+    const stackOutput = { stack: stack.name, stage: stack.stage };
+    const classOutput =
+      disposition === "abandoned-before-forward"
+        ? ((yield* state.getOutput(stackOutput)) ?? null)
+        : undefined;
+    if (
+      classOutput !== undefined &&
+      Object.values(classHistory(classOutput)).some(
+        (entry) => entry.candidate === sourceCandidate || entry.status !== "ready",
+      )
+    )
+      throw notSettleable(disposition, "record.classHistory");
     const resources = [
       ...new Set([
         ...packet.manifest.workers.map((worker) => worker.id),
@@ -90,14 +111,27 @@ export const collectReleaseSettlementProof = (
       nativeResources.push({ fqn, digest: encodedRecordHash(row) });
     }
     if (
-      activated !== (sourceController !== undefined) ||
+      settlementSourceActivated(disposition) !== (sourceController !== undefined) ||
       (sourceController && sourceController.candidate !== sourceCandidate)
     )
       throw new BarrierRefusal("release-settlement-source-controller-unproven", "PoolWorker");
     const recorded = yield* readBaselineController(stack);
     // Scale-out code phases defer the readiness command, so its record still names the controller
     // that ran before the source. The signed reads below prove the source code live instead.
-    const baseline = sourceController ? { ...recorded, code: sourceController } : recorded;
+    // An abandoned source never activated its own controller, so the live one is the controller its
+    // image record froze. Today that is frozen from the same readiness row, so the codes agree; a
+    // release that instead freezes the code a settlement archive proved live can leave the deferred
+    // readiness row older, and then only the frozen code matches the live controller.
+    const baseline = {
+      ...recorded,
+      code: sourceController ?? record.baselineController?.code ?? recorded.code,
+    };
+    // The next release signs with the frozen controller, so the proof must prove exactly that one.
+    if (
+      disposition === "abandoned-before-forward" &&
+      canonical(baseline) !== canonical(record.baselineController)
+    )
+      throw notSettleable(disposition, "record.baselineController");
     const signingKey = yield* readBaselineControllerKey(stack);
     const native = yield* runtimeReleaseState(stack);
     if (
@@ -107,6 +141,7 @@ export const collectReleaseSettlementProof = (
       signingKey !== record.baseline.deploymentKey
     )
       throw new BarrierRefusal("release-settlement-image-baseline-drift", "PoolWorker");
+    const target = { ...baseline.target, connect: io.connect };
     const deny = () => Effect.die(new BarrierRefusal("release-settlement-state-write-refused"));
     const readOnly: StateService = {
       ...state,
@@ -127,7 +162,7 @@ export const collectReleaseSettlementProof = (
           baselineControllerHealth({
             baseline,
             key: signingKey,
-            target: { ...baseline.target, connect: io.connect },
+            target,
             record: io.runtimeRead,
           }),
         candidateReady: async () => {
@@ -155,11 +190,34 @@ export const collectReleaseSettlementProof = (
         const { instanceId, bootId, workers } = report;
         return { evidence: report, native: report.before, instanceId, bootId, workers };
       });
+    // Adopt committed a selection, so the recovery read refuses; the signed reads prove the root.
+    const adoptedHealth = (
+      container: Parameters<typeof controllerForwardHealth>[0]["container"],
+      observation: Parameters<typeof controllerForwardHealth>[0]["observation"],
+    ) => {
+      assertBaselinePlacement(baseline, container, observation);
+      return readAdoptedController({
+        controller: baseline,
+        key: signingKey,
+        // Epoch 1 is the adopt of whichever release installed the live controller.
+        sourceCandidate:
+          disposition === "abandoned-before-forward" ? baseline.code.candidate : sourceCandidate,
+        root: record.baseline.applications.root,
+        instances: observation.instances.map((instance) => instance.id),
+        target,
+        record: io.runtimeRead,
+      });
+    };
     // A finished controller phase completed its forward head, so there is nothing to reconcile.
     const readOnlyState = Effect.provideService(State, Effect.succeed(readOnly));
-    const live = activated
-      ? yield* readActivatedLive(stack, packet, io, baselineHealth).pipe(readOnlyState)
-      : yield* reconcileAbandoned().pipe(readOnlyState);
+    const adopted = adoptedRoot
+      ? yield* readActivatedLive(stack, packet, io, adoptedHealth).pipe(readOnlyState)
+      : undefined;
+    const live =
+      adopted ??
+      (activated
+        ? yield* readActivatedLive(stack, packet, io, baselineHealth).pipe(readOnlyState)
+        : yield* reconcileAbandoned().pipe(readOnlyState));
     const workers: (typeof ReleaseSettlementProof.Type)["workers"][number][] = [];
     for (const worker of packet.manifest.workers) {
       const active = live.workers.find((row) => row.worker === worker.id)?.versions;
@@ -253,18 +311,19 @@ export const collectReleaseSettlementProof = (
         }),
       });
     }
-    const controllerReads = activated
-      ? yield* Effect.promise(() =>
-          readUnadoptedController({
-            controller: baseline,
-            key: signingKey,
-            root: record.baseline.applications.root,
-            instanceId: live.instanceId,
-            target: { ...baseline.target, connect: io.connect },
-            record: io.runtimeRead,
-          }),
-        )
-      : undefined;
+    const controllerReads =
+      disposition === "controller-active-unadopted"
+        ? yield* Effect.promise(() =>
+            readUnadoptedController({
+              controller: baseline,
+              key: signingKey,
+              root: record.baseline.applications.root,
+              instanceId: live.instanceId,
+              target,
+              record: io.runtimeRead,
+            }),
+          )
+        : adopted?.health.reads;
     for (const resource of nativeResources) {
       const row = yield* state.get({ stack: stack.name, stage: stack.stage, fqn: resource.fqn });
       if (encodedRecordHash(row) !== resource.digest)
@@ -272,7 +331,9 @@ export const collectReleaseSettlementProof = (
     }
     if (
       hash(yield* state.getOutput(releaseImageJournalKey(stack))) !== hash(image) ||
-      hash(yield* state.getOutput(journalKey(stack))) !== hash(forward)
+      hash(yield* state.getOutput(journalKey(stack))) !== hash(forward) ||
+      (classOutput !== undefined &&
+        hash((yield* state.getOutput(stackOutput)) ?? null) !== hash(classOutput))
     )
       throw new BarrierRefusal("release-settlement-head-drift", "PoolWorker");
     const proof = Schema.decodeUnknownSync(ReleaseSettlementProof)({
@@ -288,6 +349,7 @@ export const collectReleaseSettlementProof = (
       applications,
       forwardManifest: packet.receipt.manifest,
       forwardProofDigest: hash(live.evidence),
+      ...(classOutput !== undefined ? { stackOutputDigest: hash(classOutput) } : {}),
       stateWrites: 0,
       runtimeMutations: 0,
     });

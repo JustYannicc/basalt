@@ -496,7 +496,7 @@ test("one unfinished record in a mixed-SHA chain still refuses before ancestry c
   }
 });
 
-test("a completed run cannot replace a pending status inside a mixed-SHA chain", async () => {
+test("a pending record inside a mixed-SHA chain reads as failed only after its run's grace period", async () => {
   const rows = productionFailures();
   const pending = rows[2]!;
   pending.history = ["pending"];
@@ -506,27 +506,40 @@ test("a completed run cannot replace a pending status inside a mixed-SHA chain",
   };
   const fetcher = fetcherFor(rows);
   let runLookups = 0;
-  const ledger = await readDeploymentLedger(
-    environment,
-    async (input, init) => {
-      if (String(input).includes("/actions/runs/")) {
-        runLookups++;
-        return Response.json({
-          id: 123,
-          run_attempt: 1,
-          repository: { full_name: environment.repository },
-          status: "completed",
-          updated_at: "2026-10-28T20:00:00Z",
-        });
-      }
-      return fetcher(input, init);
-    },
-    rollForwardTo(productionCandidate),
-    () => Date.parse("2026-11-04T12:00:00Z"),
+  const read = (now: string) =>
+    readDeploymentLedger(
+      environment,
+      async (input, init) => {
+        if (String(input).includes("/actions/runs/")) {
+          runLookups++;
+          return Response.json({
+            id: 123,
+            run_attempt: 1,
+            repository: { full_name: environment.repository },
+            status: "completed",
+            updated_at: "2026-10-28T20:00:00Z",
+          });
+        }
+        return fetcher(input, init);
+      },
+      rollForwardTo(productionCandidate),
+      () => Date.parse(now),
+    );
+  const early = await read("2026-10-28T20:14:00Z");
+  assert.equal(early.state, "unresolved");
+  assert.match(
+    early.state === "unresolved" ? (early.supersedeRefusal ?? "") : "",
+    /is pending, .*within the 15-minute grace period/,
   );
-  assert.equal(ledger.state, "unresolved");
-  assert.match(ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "", /is pending/);
-  assert.equal(runLookups, 0);
+  assert.equal(runLookups, 1);
+  const ledger = await read("2026-11-04T12:00:00Z");
+  assert.equal(ledger.state, "ready");
+  assert.deepEqual(
+    ledger.state === "ready"
+      ? ledger.supersededAttempts?.map(({ deploymentId }) => deploymentId)
+      : [],
+    rows.slice(0, 4).map(({ id }) => id),
+  );
 });
 
 test("mixed-SHA chains still validate every attempt's payload, kind, base and same-SHA gates", async () => {

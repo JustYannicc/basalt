@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
+import { ControllerCode, SlotIdentity } from "../../src/pool/runtime-slots/contract.ts";
 import { BaselineController } from "./baseline-controller.ts";
 import { canonical, digest } from "./manifest.ts";
 
@@ -11,6 +11,8 @@ const versions = Schema.Array(
 export const ReleaseSettlementDisposition = Schema.Literals([
   "abandoned-before-controller",
   "controller-active-unadopted",
+  "controller-active-adopted",
+  "abandoned-before-forward",
 ]);
 export type ReleaseSettlementDisposition = typeof ReleaseSettlementDisposition.Type;
 export const ReleaseSettlementPlanRequest = Schema.Struct({
@@ -21,8 +23,9 @@ export const ReleaseSettlementPlanRequest = Schema.Struct({
   expiresAt: Schema.Int,
   // Absent keeps earlier reviewed requests, and their digests, as abandoned-before-controller.
   disposition: Schema.optional(ReleaseSettlementDisposition),
-  // Required for controller-active-unadopted. Scale-out code phases defer the readiness command, so
-  // native state still names the previous controller; the live controller confirms this code.
+  // Required for both controller-active dispositions, and refused for the abandoned ones.
+  // Scale-out code phases defer the readiness command, so native state still names the previous
+  // controller; the live controller confirms this code.
   sourceController: Schema.optional(ControllerCode),
 });
 const proofFields = {
@@ -59,12 +62,43 @@ export const ReleaseSettlementControllerReads = Schema.Struct({
   witness: Schema.Literal("absent"),
   finalInspect: Schema.Literal("no-selection"),
 });
+// The lease is checked live but never recorded: apply re-collects this proof and must match it exactly.
+// Adopt commits epoch 1; every selected-runtime recovery since commits the next epoch under a restart.
+export const ReleaseSettlementAdoptedReads = Schema.Union([
+  Schema.Struct({
+    fleetDigest: SettlementHash,
+    witness: Schema.Literal("unattested-adoption"),
+    selection: Schema.Struct({ epoch: Schema.Literal(1), identity: SlotIdentity }),
+  }),
+  Schema.Struct({
+    fleetDigest: SettlementHash,
+    witness: Schema.Literal("recovered-restart"),
+    selection: Schema.Struct({
+      epoch: Schema.Int.check(Schema.isGreaterThan(1)),
+      identity: SlotIdentity,
+    }),
+  }),
+]);
 // Only an activated controller has adoption reads to prove; the earlier disposition never carries them.
 export const ReleaseSettlementProof = Schema.Union([
   Schema.Struct({ disposition: Schema.Literal("abandoned-before-controller"), ...proofFields }),
   Schema.Struct({
     disposition: Schema.Literal("controller-active-unadopted"),
     controllerReads: ReleaseSettlementControllerReads,
+    ...proofFields,
+  }),
+  Schema.Struct({
+    disposition: Schema.Literal("controller-active-adopted"),
+    controllerReads: ReleaseSettlementAdoptedReads,
+    ...proofFields,
+  }),
+  // The source stopped before freezing a forward packet, so the live controller and its adopted
+  // root are still the ones its image record froze as its baseline.
+  Schema.Struct({
+    disposition: Schema.Literal("abandoned-before-forward"),
+    controllerReads: ReleaseSettlementAdoptedReads,
+    // The stack output holding class history, which preparation writes before the forward journal.
+    stackOutputDigest: SettlementHash,
     ...proofFields,
   }),
 ]);
