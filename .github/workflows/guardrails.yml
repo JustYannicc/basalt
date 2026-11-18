@@ -3,13 +3,15 @@ name: Guardrails
 # Deterministic checks on how release work enters main. Each job names what it refused and why.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
 
 jobs:
-  ship-alone:
+  release-path:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
