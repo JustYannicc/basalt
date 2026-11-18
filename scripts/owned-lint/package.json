@@ -1,0 +1,14 @@
+{
+  "name": "basalt-owned-lint",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node check.ts",
+    "baseline": "node check.ts --write-baseline",
+    "test": "node --test plugin/*.test.ts check.test.ts"
+  },
+  "devDependencies": {
+    "@interfere/landmines": "0.1.0",
+    "oxlint": "1.91.0"
+  }
+}
