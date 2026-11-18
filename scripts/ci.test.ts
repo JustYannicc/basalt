@@ -215,11 +215,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
   for (const job of heavyJobs) {
     assert.deepEqual(
       jobs[job].needs,
-      job === "upstream-image"
-        ? ["select", "workerd-assets"]
-        : job.startsWith("declared-")
-          ? ["select", "browser-install"]
-          : "select",
+      job === "upstream-image" ? ["select", "workerd-assets"] : "select",
       job,
     );
     assert.equal(jobs[job].if, `contains(fromJSON(needs.select.outputs.jobs), '${job}')`, job);

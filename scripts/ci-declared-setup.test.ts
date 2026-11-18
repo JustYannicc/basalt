@@ -16,8 +16,7 @@ test("declared matrices use the bounded browser setup within their existing dead
   for (const id of ["declared-self-host", "declared-local", "declared-cloud"]) {
     const job = workflow.jobs[id];
     assert.equal(job["timeout-minutes"], 10, id);
-    // The long single jobs, queued with the browser installer, take the first runners.
-    assert.deepEqual(job.needs, ["select", "browser-install"], id);
+    assert.equal(job.needs, "select", id);
     assert.deepEqual(
       job.steps.slice(3, 7),
       [
