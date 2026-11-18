@@ -182,6 +182,26 @@ export class RuntimeFleetState {
       rows[rows.indexOf(row)] = { ...row, phase: "uncertain" };
     });
   }
+  /** A started cell that landed far goes straight to draining, so no request is ever routed to it. */
+  redraw(value: SlotIdentity, database: RuntimeDistance | undefined) {
+    const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
+    return this.change((rows) => {
+      const row = this.row(rows, identity);
+      if (
+        !["warming", "uncertain"].includes(row.phase) ||
+        row.active !== 0 ||
+        (row.identity && !sameIdentity(row.identity, identity))
+      )
+        throw new FleetRefused("uncertain");
+      rows[rows.indexOf(row)] = {
+        ...row,
+        phase: "draining",
+        identity,
+        lastUsedAt: this.now(),
+        ...(database ? { database } : {}),
+      };
+    });
+  }
   /** Records a ready runtime's reported distance; an unchanged value writes nothing. */
   async observeDistance(value: SlotIdentity, database: RuntimeDistance | undefined) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);

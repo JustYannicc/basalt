@@ -156,3 +156,148 @@ test("fleet upkeep records each cell's reported distance where the operator read
   const [row] = await f.state.inspect();
   assert.deepEqual(row?.database, { state: "measured", rttMs: 44, location: "ath01" });
 });
+
+function redrawFleet(draws: object[], rootServing: boolean) {
+  const state = new RuntimeFleetState(new SlotMemory(), 4, () => 100);
+  const placements: Record<string, unknown>[] = [];
+  const retired: string[] = [];
+  let index = 0;
+  const distances = new Map<string, object>();
+  const reserveNext = async () => {
+    index++;
+    const target = {
+      format: "pool-runtime-slot-v1" as const,
+      controllerId: "controller",
+      slotId: `slot-${index}`,
+      applicationId: "blue",
+      applicationVersion: "1",
+      instanceId: `instance-${index}`,
+      imageDigest: `sha256:${"a".repeat(64)}`,
+      imageInput: "image",
+      homePeerOrdinal: index,
+    };
+    distances.set(target.slotId, draws[index - 1]!);
+    await state.reserve(target);
+    return target;
+  };
+  const never = async (): Promise<never> => {
+    throw new Error("unexpected");
+  };
+  return {
+    state,
+    placements,
+    retired,
+    reserveNext,
+    build: async () => {
+      const { RuntimeFleet } = await import("./runtime-fleet/controller.ts");
+      return new RuntimeFleet({
+        state,
+        target: never,
+        cell: () => ({
+          start: async (target) => ({ ...target, bootId: `boot-${target.slotId}` }),
+          observe: async () => undefined,
+          selected: async () => undefined,
+          healthy: async (identity) => readinessDistance(distances.get(identity.slotId)),
+          forward: never,
+          install: async () => {},
+          abortPool: () => {},
+          drain: async () => ({ active: 0, known: true }),
+          retire: async (identity, begin) => {
+            await begin();
+            retired.push(identity.slotId);
+          },
+          retired: async () => true,
+          failed: async () => false,
+        }),
+        legacyActive: async () => 0,
+        currentRequests: () => 0,
+        targetActive: 2,
+        idleMilliseconds: 3_600_000,
+        maximum: 4,
+        defer: () => {},
+        wrap: (response) => response,
+        now: () => 100,
+        balancePrimary: true,
+        primaryAvailable: () => rootServing,
+      });
+    },
+  };
+}
+
+test("a far cell is redrawn while the root serves, never takes a request and stops gracefully", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens], true);
+  const runtime = await f.build();
+  const target = await f.reserveNext();
+  await runtime.upkeep();
+  const [row] = await f.state.inspect();
+  assert.equal(row?.phase, "draining");
+  assert.equal(row?.active, 0);
+  assert.deepEqual(row?.database, { state: "measured", rttMs: 44, location: "ath01" });
+  const reservation = await f.state.acquire(Number.MAX_SAFE_INTEGER, true, placement("unknown"));
+  assert.equal(reservation.kind, "primary", "the redrawn cell is never routable");
+  await reservation.release();
+  await runtime.upkeep();
+  assert.deepEqual(f.retired, [target.slotId], "retired through the zero-activity drain");
+  const placements = log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_RUNTIME_PLACEMENT")
+    .map((call) => call.arguments[1]);
+  assert.deepEqual(placements, [
+    {
+      slot: target.slotId,
+      decision: "redraw",
+      draw: 1,
+      class: "far",
+      state: "measured",
+      location: "ath01",
+      dbRttMs: 44,
+    },
+  ]);
+});
+
+test("a lone far cell serves, a near draw is admitted, and the fourth far draw serves", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const decisions = () =>
+    log.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_RUNTIME_PLACEMENT")
+      .map((call) => [call.arguments[1].decision, call.arguments[1].draw]);
+
+  const alone = redrawFleet([lisbon], false);
+  const lone = await alone.build();
+  await alone.reserveNext();
+  await lone.upkeep();
+  assert.equal(
+    (await alone.state.inspect())[0]?.phase,
+    "ready",
+    "a down pool is worse than a slow one",
+  );
+
+  const near = redrawFleet([athens, frankfurt], true);
+  const nearFleet = await near.build();
+  await near.reserveNext();
+  await nearFleet.upkeep();
+  await near.reserveNext();
+  await nearFleet.upkeep();
+  assert.equal(
+    (await near.state.inspect()).find((row) => row.target.slotId === "slot-2")?.phase,
+    "ready",
+  );
+
+  const limit = redrawFleet([athens, athens, lisbon, athens], true);
+  const limited = await limit.build();
+  for (let draw = 0; draw < 4; draw++) {
+    await limit.reserveNext();
+    await limited.upkeep();
+  }
+  const last = (await limit.state.inspect()).find((row) => row.target.slotId === "slot-4");
+  assert.equal(last?.phase, "ready", "after the limit the last draw serves");
+  assert.deepEqual(decisions(), [
+    ["admit_alone", 1],
+    ["redraw", 1],
+    ["admit", 2],
+    ["redraw", 1],
+    ["redraw", 2],
+    ["redraw", 3],
+    ["admit_after_limit", 4],
+  ]);
+});

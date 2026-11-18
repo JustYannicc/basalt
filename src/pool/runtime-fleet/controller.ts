@@ -13,13 +13,22 @@ import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
+/** A far cell is started again at most this many times before it serves from its last draw. */
+export const placementDraws = 4;
+type PlacementDecision = "admit" | "admit_unknown" | "admit_alone" | "admit_after_limit" | "redraw";
+
 /** One closed line per admission decision, so where each runtime landed is visible. */
-function logPlacement(identity: SlotIdentity, database: RuntimeDistance | undefined) {
-  const place = distanceClass(database);
+function logPlacement(
+  identity: SlotIdentity,
+  database: RuntimeDistance | undefined,
+  decision: PlacementDecision,
+  draw: number,
+) {
   console.info("POOL_RUNTIME_PLACEMENT", {
     slot: identity.slotId,
-    decision: place === "near" ? "admit" : place === "far" ? "admit_far" : "admit_unknown",
-    class: place,
+    decision,
+    draw,
+    class: distanceClass(database),
     state: database?.state ?? null,
     location: database?.location ?? null,
     dbRttMs: database?.rttMs ?? null,
@@ -74,6 +83,8 @@ export class RuntimeFleet {
   private atCapacity = false;
   private primaryFailed = false;
   private primaryPlace: DistanceClass = "unknown";
+  // Draws since the last admitted cell; in memory, so an isolate restart allows at most one more round.
+  private draws = 0;
   private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
@@ -166,19 +177,52 @@ export class RuntimeFleet {
     await this.deps.state.dispatch(target);
     try {
       const cell = this.cell(target);
-      const identity = await cell.start(target);
-      // Read the new runtime's distance before it takes its first request.
-      const database = await cell
-        .healthy?.(identity)
-        .then((value) => value ?? undefined)
-        .catch(() => undefined);
-      await this.deps.state.ready(identity);
-      await this.deps.state.observeDistance(identity, database);
-      logPlacement(identity, database);
+      await this.admit(cell, await cell.start(target));
     } catch (error) {
       await this.deps.state.uncertain(target);
       throw error;
     }
+  }
+  /**
+   * Reads a started cell's distance before it can take a request. A far cell is redrawn only while
+   * another runtime serves and draws remain: it goes straight to draining, so nothing is routed to it,
+   * and the ordinary drain and retirement stop it gracefully once it has no activity.
+   */
+  private async admit(cell: FleetCell, identity: SlotIdentity) {
+    const database = await cell
+      .healthy?.(identity)
+      .then((value) => value ?? undefined)
+      .catch(() => undefined);
+    const draw = this.draws + 1;
+    const place = distanceClass(database);
+    const decision: PlacementDecision =
+      place === "near"
+        ? "admit"
+        : place === "unknown"
+          ? "admit_unknown"
+          : draw >= placementDraws
+            ? "admit_after_limit"
+            : !(await this.othersServing(identity))
+              ? "admit_alone"
+              : "redraw";
+    if (decision === "redraw") {
+      this.draws = draw;
+      await this.deps.state.redraw(identity, database);
+      logPlacement(identity, database, decision, draw);
+      this.nextGrowthCheck = 0;
+      return;
+    }
+    this.draws = 0;
+    await this.deps.state.ready(identity);
+    await this.deps.state.observeDistance(identity, database);
+    logPlacement(identity, database, decision, draw);
+  }
+  private async othersServing(identity: SlotIdentity) {
+    if (this.deps.primaryAvailable?.() !== false && !this.primaryFailed) return true;
+    const rows = await this.deps.state.inspect();
+    return rows.some(
+      (row) => row.phase === "ready" && row.identity && !sameIdentity(row.identity, identity),
+    );
   }
   private placement() {
     return { comfortable: this.deps.targetActive, primary: this.primaryPlace };
@@ -340,7 +384,7 @@ export class RuntimeFleet {
               await this.start(row.target);
             } else if (row.phase === "warming" || row.phase === "uncertain") {
               const observed = await cell.observe(row.target, this.deps.enabled?.() !== false);
-              if (observed) await this.deps.state.ready(observed);
+              if (observed) await this.admit(cell, observed);
             } else if (
               row.phase === "ready" &&
               row.identity &&
