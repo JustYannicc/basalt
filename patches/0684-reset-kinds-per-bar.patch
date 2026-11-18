@@ -1,0 +1,686 @@
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index 68fc32c50..87fe6a4a3 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -362,6 +362,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+                       })(),
+                       countTitle:
+                         element.querySelector("[data-reset-count]")?.getAttribute("title") ?? null,
++                      resetLines: [...element.querySelectorAll("[data-reset-kind]")].map(
++                        (line) => line.textContent ?? "",
++                      ),
+                       buttons: element.querySelectorAll("button").length,
+                     })),
+                   );
+@@ -420,8 +423,11 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         );
+         // Banked resets are a count on the window they refill, never a control.
+         expect(spareCells[0]?.count).toContain("↻ 2");
+-        // The count's tooltip is the count only; each credit's expiry is in Details.
+-        expect(spareCells[0]?.countTitle).toBe("2 banked resets");
++        // Each kind is a line under its bar with its nearest expiry as visible text, no tooltip.
++        expect(spareCells[0]?.countTitle).toBeNull();
++        expect(spareCells[0]?.resetLines).toEqual([
++          expect.stringMatching(/^↻ 2 banked\s*· next expires \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/),
++        ]);
+         expect(spareCells[0]?.buttons).toBe(0);
+         yield* browser.use("Open Spare Details", (page) =>
+           openRowDetails(page, accountRow(page, "Spare"), "Spare").then(() =>
+@@ -623,36 +629,36 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+               group
+                 .locator("[data-reading]")
+                 .evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-reading"))),
+-              cell(page, "Model limits", "claude-seven-day")
+-                .locator("[data-reset-count]")
+-                .evaluateAll((items) =>
+-                  items.map((item) => [
+-                    item.getAttribute("data-reset-count"),
+-                    item.getAttribute("title"),
+-                  ]),
++              Promise.all(
++                ["claude-five-hour", "claude-seven-day", "claude-seven-day-fable"].map((id) =>
++                  cell(page, "Model limits", id)
++                    .locator("[data-reset-kind]")
++                    .evaluateAll((items) => items.map((item) => item.textContent ?? "")),
+                 ),
+-              cell(page, "Model limits", "claude-seven-day-fable")
+-                .locator("[data-reset-count]")
+-                .count(),
++              ),
+               group
+                 .locator("[data-observation-details] tbody tr")
+                 .evaluateAll((rows) => rows.map((row) => (row as HTMLElement).innerText)),
+               page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+             ]);
+           });
+-          const [order, resetCount, modelReset, rows, fits] = shown;
++          const [order, resetLines, rows, fits] = shown;
+           expect(order, "the model window follows the account window it counts toward").toEqual([
+             "claude-five-hour",
+             "claude-seven-day",
+             "claude-seven-day-fable",
+           ]);
+-          // Expired grants are not counted; kinds stay apart instead of one whole-week total.
+-          expect(resetCount).toHaveLength(1);
+-          expect(resetCount[0]?.[0]).toBe("5");
+-          expect(resetCount[0]?.[1]).toBe(
+-            "1 weekly reset · 3 Fable resets · 1 reset with unknown scope",
+-          );
+-          expect(modelReset, "a model window never carries the account's reset count").toBe(0);
++          // Expired grants are not counted, and kinds never add together: each kind is a line on
++          // the window it refills, a model's resets on that model's own window.
++          const moment = String.raw`\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}`;
++          expect(resetLines).toEqual([
++            [],
++            [
++              expect.stringMatching(new RegExp(`^↻ 1 weekly\\s*· expires ${moment}$`)),
++              expect.stringMatching(/^↻ 1 banked\s*· expiry not reported$/),
++            ],
++            [expect.stringMatching(new RegExp(`^↻ 3 Fable\\s*· next expires ${moment}$`))],
++          ]);
+           // A row's first cell is its name; notes and values follow on later lines or cells.
+           const name = (text: string) => text.split(/[\t\n]/u)[0]?.trim();
+           const row = (label: string) => rows.find((text) => name(text) === label) ?? "";
+@@ -928,7 +934,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+               ),
+           );
+           expect(shown, "the reading's banked resets are the one-click control").toEqual([
+-            "↻ 2",
++            "↻ 2 banked",
+             "2",
+           ]);
+           // Opening only reads the pool; Cancel spends nothing.
+@@ -953,7 +959,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+             "image/png",
+             yield* browser.use("Capture the confirm step", (page) => page.screenshot()),
+           );
+-          expect(offer[0]).toContain("Spends 1 of 2 on Pool account");
++          expect(offer[0]).toContain("Spends 1 of 2 banked resets on Pool account");
+           expect(offer[0]).toContain("Codex says it applies now.");
+           expect(offer.slice(1), "the confirm fits the viewport and Cancel holds focus").toEqual([
+             true,
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index 7a538c32d..de893bde6 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -17,6 +17,7 @@ export {
+   age,
+   amount,
+   balanceView,
++  bankedResetKinds,
+   bankedResets,
+   countedUnit,
+   modelWindowNote,
+@@ -28,6 +29,7 @@ export {
+   resetPlacement,
+   resetWindow,
+   span,
++  spendsKind,
+   windowView,
+   type ObservationMeterState,
+ } from "./account-observation-text.ts";
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 0e85fc4c1..c357c3752 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -2,10 +2,10 @@ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import {
+-  bankedResets,
++  bankedResetKinds,
+   orderedWindows,
+-  resetPlacement,
+-  resetWindow,
++  resetEffect,
++  spendsKind,
+ } from "./account-observation-format.ts";
+ import { useResetControl, type AccountResetActions } from "./account-reset-control.tsx";
+ import { UsageCell } from "./account-usage-cell.tsx";
+@@ -16,7 +16,8 @@ type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["wi
+ /**
+  * One usage cell per limited window the source reported, and nothing else. Unlimited windows are
+  * not limits, so they get no cell; balances and their expiry live in the account's details. With
+- * `resetActions`, the banked reset count becomes the control and its state shows under the cells.
++ * `resetActions`, each kind's banked reset count under its bar becomes that kind's control, and the
++ * account's one reset state shows under the cells.
+  * `tokens` gives a window's footer count, where a gateway counted one. `credit` is the account's
+  * credit line, which sits after the cells and stays even when no window is limited.
+  */
+@@ -64,9 +65,9 @@ export function ObservationReadings({
+           ? "grid-cols-[repeat(2,_minmax(250px,_320px))_minmax(160px,_1fr)]"
+           : undefined;
+   const stale = record.freshness !== "fresh";
+-  const resets = bankedResets(observation, now);
+-  const target = resets === undefined ? undefined : resetWindow(windows);
+-  const cells = (control?: ReactNode) => (
++  // Each kind of banked reset sits on the window it refills; kinds never add into one count.
++  const kinds = bankedResetKinds(observation, windows, now, format);
++  const cells = (controls?: ReadonlyMap<string, ReactNode>) => (
+     <div
+       {...(source === undefined ? {} : { "aria-label": `Usage from ${source}`, role: "group" })}
+       data-observation-source={record.source.id}
+@@ -85,13 +86,9 @@ export function ObservationReadings({
+           key={entry.id}
+           entry={entry}
+           stale={stale}
+-          resets={
+-            entry.id === target && resets !== undefined
+-              ? control === undefined
+-                ? resets
+-                : { ...resets, control }
+-              : undefined
+-          }
++          resets={kinds
++            .filter((kind) => kind.window === entry.id)
++            .map((kind) => ({ ...kind, control: controls?.get(kind.key) }))}
+           now={now}
+           format={format}
+           tokens={tokens?.(entry)}
+@@ -101,15 +98,19 @@ export function ObservationReadings({
+       {credit}
+     </div>
+   );
+-  return resets === undefined || resetActions === undefined ? (
++  return kinds.length === 0 || resetActions === undefined ? (
+     cells()
+   ) : (
+     <ResetCells
+       actions={resetActions}
+-      // The count sits on the longest window; its control spends only resets that refill it.
+-      accepts={(credit) => target !== undefined && resetPlacement(credit, windows) === target}
+-      count={resets.count}
+-      title={resets.title}
++      kinds={kinds.map((kind) => ({
++        key: kind.key,
++        count: kind.count,
++        text: kind.text,
++        noun: kind.noun,
++        effect: resetEffect(kind.balance, windows),
++        accepts: (credit) => spendsKind(kind, credit, windows),
++      }))}
+       stale={stale}
+       label={label}
+       reading={result.observedAt}
+@@ -125,13 +126,13 @@ function ResetCells({
+   children,
+   ...props
+ }: Parameters<typeof useResetControl>[0] & {
+-  readonly children: (control: ReactNode) => ReactNode;
++  readonly children: (controls: ReadonlyMap<string, ReactNode>) => ReactNode;
+ }) {
+-  const { control, note } = useResetControl(props);
++  const { controls, note } = useResetControl(props);
+   return (
+     // One band-wide column: an auto column would let the cell grid grow to its own maximum width.
+     <div className="grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2" data-reset-cells>
+-      {children(control)}
++      {children(controls)}
+       {note}
+     </div>
+   );
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+index 14ab77a7b..65a095196 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+@@ -318,6 +318,122 @@ export function bankedResets(observation: Observation, now: number) {
+   return { count, title };
+ }
+ 
++/** How a count names its kind, in one place: "five-hour", so two numerals never touch ("2 5-hour"). */
++const resetNouns: Readonly<Record<string, string>> = {
++  session: "five-hour",
++  weekly: "weekly",
++  full: "full",
++};
++const kindRank = ["session", "weekly", "full", "model"];
++const known = (scope: Balance["scope"]) => scope?.kind === "account" || scope?.kind === "model";
++
++/** One kind of banked reset on the window it refills, as its row line says it. */
++export interface BankedResetKind {
++  readonly key: string;
++  readonly window: string;
++  readonly count: number;
++  /** "five-hour", "weekly", "full", a model's name such as "Fable", or "banked" when unknown. */
++  readonly noun: string;
++  /** "2 Fable" */
++  readonly text: string;
++  /** "next expires 21.11.2026 14:30", "expires …" for one, or "expiry not reported". */
++  readonly expiry: string;
++  readonly balance: Balance;
++}
++
++/**
++ * Unexpired banked resets, one entry per kind on the window it refills (`resetPlacement`), so
++ * different kinds never add into one count. Resets of no known scope keep the account's longest
++ * window, as before kinds. A kind whose window wasn't reported has no line; Details lists it.
++ */
++export function bankedResetKinds(
++  observation: Observation,
++  windows: readonly Window[],
++  now: number,
++  format: DisplayFormat,
++): BankedResetKind[] {
++  const kinds = new Map<
++    string,
++    { balance: Balance; window: string; count: number; next?: string }
++  >();
++  for (const balance of availableResetBalances(observation, now)) {
++    const window =
++      resetPlacement({ kind: balance.reset?.kind, scope: balance.scope }, windows) ??
++      (known(balance.scope) ? undefined : resetWindow(windows));
++    if (window === undefined) continue;
++    const key = JSON.stringify([
++      window,
++      balance.scope?.kind,
++      balance.scope?.id,
++      balance.reset?.kind,
++    ]);
++    const entry = kinds.get(key);
++    const next =
++      balance.expiresAt === undefined ||
++      (entry?.next !== undefined && Date.parse(entry.next) <= Date.parse(balance.expiresAt))
++        ? entry?.next
++        : balance.expiresAt;
++    kinds.set(key, {
++      balance: entry?.balance ?? balance,
++      window,
++      count: (entry?.count ?? 0) + balance.available,
++      ...(next === undefined ? {} : { next }),
++    });
++  }
++  const order = windows.map((entry) => entry.id);
++  const rank = (balance: Balance) => {
++    const at = known(balance.scope) ? kindRank.indexOf(balance.reset?.kind ?? "") : -1;
++    return at === -1 ? kindRank.length : at;
++  };
++  return [...kinds.entries()]
++    .map(([key, kind]) => {
++      const noun =
++        kind.balance.scope?.kind === "model"
++          ? kind.balance.label.replace(/\s*\bresets?\b\s*/iu, " ").trim() || "model"
++          : known(kind.balance.scope)
++            ? (resetNouns[kind.balance.reset?.kind ?? ""] ?? "banked")
++            : "banked";
++      return {
++        key,
++        window: kind.window,
++        count: kind.count,
++        noun,
++        text: `${amount(kind.count, "resets", format)} ${noun}`,
++        expiry:
++          kind.next === undefined
++            ? "expiry not reported"
++            : `${kind.count === 1 ? "expires" : "next expires"} ${moment(kind.next, format)}`,
++        balance: kind.balance,
++      };
++    })
++    .sort(
++      (a, b) =>
++        order.indexOf(a.window) - order.indexOf(b.window) ||
++        rank(a.balance) - rank(b.balance) ||
++        a.noun.localeCompare(b.noun),
++    );
++}
++
++/**
++ * Whether a credit from the spend catalog is this line's kind, so the line's control spends only
++ * that kind. A line of no known scope takes the account's unclassified credits (Codex) and
++ * credits from a pool that predates kinds, on the same window.
++ */
++export function spendsKind(
++  kind: Pick<BankedResetKind, "window" | "balance">,
++  credit: { readonly kind?: string | undefined; readonly scope?: Balance["scope"] | undefined },
++  windows: readonly Window[],
++): boolean {
++  if (resetPlacement(credit, windows) !== kind.window) return false;
++  const { scope, reset } = kind.balance;
++  if (!known(scope)) return credit.kind === undefined || credit.kind === "unknown";
++  return (
++    credit.kind === reset?.kind &&
++    credit.scope?.kind === scope?.kind &&
++    credit.scope?.id === scope?.id
++  );
++}
++
+ const isModelWindow = (entry: Window) => entry.scope?.kind === "model";
+ 
+ /**
+diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+index 53d294f92..47bc1eb02 100644
+--- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
++++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+@@ -1,15 +1,15 @@
+ /**
+- * The banked reset control on a usage cell: `↻ n` opens a confirm step, and only its "Use reset"
+- * spends. The server's retained attempt is the truth for recovery. The only client memory is the
+- * IDs of a spend the server may never have recorded, kept for this tab so a reload cannot mint a
+- * second request while one is unresolved.
++ * The banked reset controls on a usage cell: each kind's `↻ n` opens a confirm step for that kind,
++ * and only its "Use reset" spends. The server's retained attempt is the truth for recovery. The
++ * only client memory is the IDs of a spend the server may never have recorded, kept for this tab
++ * so a reload cannot mint a second request while one is unresolved.
+  */
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
+ import { cn } from "../lib/utils.ts";
+-import { moment } from "./account-observation-format.ts";
++import { moment, span } from "./account-observation-format.ts";
+ 
+ type Provider = "codex" | "claude";
+ type Outcome =
+@@ -120,9 +120,11 @@ type Unresolved = {
+ };
+ type State =
+   | { readonly kind: "idle" }
+-  | { readonly kind: "checking" }
++  | { readonly kind: "checking"; readonly key: string }
+   | {
+       readonly kind: "confirm";
++      /** The kind whose control opened the confirm. */
++      readonly key: string;
+       readonly provider: Provider;
+       readonly credit: ResetCreditView;
+       readonly usable: number;
+@@ -229,16 +231,26 @@ const memory = {
+   },
+ };
+ 
++/** One kind's control: the line's count, its noun and what a reset of it refills. */
++export interface ResetKindControl {
++  readonly key: string;
++  readonly count: number;
++  /** "2 Fable" */
++  readonly text: string;
++  readonly noun: string;
++  /** What one reset of this kind gives back, from the source, said in the confirm. */
++  readonly effect: string | undefined;
++  readonly accepts: (credit: ResetCreditView) => boolean;
++}
++
+ /**
+- * The control for the cell header and the note under the cells. `reading` is when the account's
+- * usage was last observed: a confirmed reset keeps the control disabled until a newer reading
+- * arrives, since the count is never decremented here.
++ * A control per kind of banked reset, for the lines under the bars they refill, and the note under
++ * the cells. `reading` is when the account's usage was last observed: a confirmed reset keeps the
++ * controls disabled until a newer reading arrives, since the counts are never decremented here.
+  */
+ export function useResetControl({
+   actions,
+-  accepts,
+-  count,
+-  title,
++  kinds,
+   stale,
+   label,
+   reading,
+@@ -246,16 +258,14 @@ export function useResetControl({
+   format,
+ }: {
+   readonly actions: AccountResetActions;
+-  /** Whether a credit refills the window this control sits on; only those are offered. */
+-  readonly accepts: (credit: ResetCreditView) => boolean;
+-  readonly count: number;
+-  readonly title: string;
++  /** One control per kind of banked reset; each spends only credits its `accepts` takes. */
++  readonly kinds: readonly ResetKindControl[];
+   readonly stale: boolean;
+   readonly label: string;
+   readonly reading: string;
+   readonly now: number;
+   readonly format: DisplayFormat;
+-}): { readonly control: ReactNode; readonly note: ReactNode } {
++}): { readonly controls: ReadonlyMap<string, ReactNode>; readonly note: ReactNode } {
+   const [stored, setState] = useState<State>({ kind: "idle" });
+   const state: State =
+     stored.kind === "confirmed" && stored.reading !== reading ? { kind: "idle" } : stored;
+@@ -359,8 +369,8 @@ export function useResetControl({
+   };
+ 
+   // Clicking only reads. Anything unresolved shows its state instead of offering a new spend.
+-  const start = () => {
+-    setState({ kind: "checking" });
++  const start = (kind: ResetKindControl) => {
++    setState({ kind: "checking", key: kind.key });
+     const remembered = memory.read(key);
+     void Promise.all([actions.attempt(), actions.credits()]).then(([attempt, catalog]) => {
+       const spend =
+@@ -372,10 +382,10 @@ export function useResetControl({
+       }
+       if (!attempt.ok) return setState({ kind: "refused", message: attempt.message });
+       if (!catalog.ok) return setState({ kind: "refused", message: catalog.message });
+-      // The catalog's total counts unusable grants and other windows' resets too; only these may
+-      // be offered, so a press here never spends a reset that refills a different limit.
++      // The catalog's total counts unusable grants and other kinds too; only this kind may be
++      // offered, so a press never spends a reset that refills a different limit.
+       const here = catalog.value.credits.filter(
+-        (credit) => credit.remaining > 0 && accepts(credit),
++        (credit) => credit.remaining > 0 && kind.accepts(credit),
+       );
+       const offered = here.filter((credit) => credit.usableNow !== false);
+       const [credit] = offered;
+@@ -384,11 +394,12 @@ export function useResetControl({
+           kind: "refused",
+           message:
+             here.length === 0
+-              ? "None of this account's banked resets refills this limit"
+-              : "No banked reset for this limit can be used right now",
++              ? `No ${kind.noun} reset is available to use; the count may be out of date`
++              : `No ${kind.noun} reset can be used right now`,
+         });
+       setState({
+         kind: "confirm",
++        key: kind.key,
+         provider: catalog.value.provider,
+         credit,
+         usable: offered.reduce((total, entry) => total + entry.remaining, 0),
+@@ -408,38 +419,41 @@ export function useResetControl({
+             : replayable(state, now)
+               ? "The last reset request has no answer yet. Retry it below; a new one can't start."
+               : "The last reset request never got an answer and its retry window ended, so no new reset can start.";
+-  const button = (
+-    <Button
+-      variant="ghost"
+-      size="xs"
+-      loading={state.kind === "checking" || state.kind === "pending"}
+-      disabledReason={disabledReason}
+-      title={
+-        disabledReason === undefined ? `${title}. Click to use one; you confirm first.` : undefined
+-      }
+-      aria-label={disabledReason === undefined ? `${title}. Use one` : title}
+-      data-reset-count={count}
+-      data-reset-control={state.kind === "unresolved" ? state.status : state.kind}
+-    >
+-      <span
+-        aria-hidden
+-        className={cn(
+-          "font-semibold tabular-nums",
+-          stale ? "text-muted-foreground" : "text-foreground",
+-        )}
++  // One state for the whole account: while any kind's spend is pending or unresolved, every
++  // kind's control waits with it.
++  const control = (kind: ResetKindControl) => {
++    const name = `${kind.text} ${kind.count === 1 ? "reset" : "resets"}`;
++    const button = (
++      <Button
++        variant="ghost"
++        size="xs"
++        loading={(state.kind === "checking" && state.key === kind.key) || state.kind === "pending"}
++        disabledReason={disabledReason}
++        title={
++          disabledReason === undefined ? `${name}. Click to use one; you confirm first.` : undefined
++        }
++        aria-label={disabledReason === undefined ? `${name}. Use one` : name}
++        data-reset-count={kind.count}
++        data-reset-control={state.kind === "unresolved" ? state.status : state.kind}
+       >
+-        ↻ {count}
+-      </span>
+-    </Button>
+-  );
+-  const control =
+-    disabledReason !== undefined ? (
+-      button
+-    ) : (
++        <span
++          className={cn(
++            "font-semibold tabular-nums",
++            stale ? "text-muted-foreground" : "text-foreground",
++          )}
++        >
++          <span aria-hidden>↻ </span>
++          {kind.text}
++        </span>
++      </Button>
++    );
++    if (disabledReason !== undefined) return button;
++    const open = state.kind === "confirm" && state.key === kind.key;
++    return (
+       <Confirm
+-        open={state.kind === "confirm"}
++        open={open}
+         onOpen={() => {
+-          if (state.kind === "idle" || state.kind === "refused") start();
++          if (state.kind === "idle" || state.kind === "refused") start(kind);
+         }}
+         onCancel={() => setState({ kind: "idle" })}
+         onConfirm={() => {
+@@ -455,14 +469,18 @@ export function useResetControl({
+               false,
+             );
+         }}
+-        title="Use a banked reset?"
++        title={`Use a ${kind.noun} reset?`}
+         action="Use reset"
+         trigger={button}
+       >
+-        {state.kind === "confirm" && (
++        {open && (
+           <>
+             <p>
+-              Spends <b className="font-medium text-foreground">1 of {state.usable}</b> on {label}:{" "}
++              Spends{" "}
++              <b className="font-medium text-foreground">
++                1 of {state.usable} {kind.noun}
++              </b>{" "}
++              {state.usable === 1 ? "reset" : "resets"} on {label}:{" "}
+               {state.credit.expiresAt === null ? (
+                 "the one that doesn't expire"
+               ) : (
+@@ -471,10 +489,13 @@ export function useResetControl({
+                   <b className="font-medium text-foreground">
+                     {moment(state.credit.expiresAt, format)}
+                   </b>
++                  {Date.parse(state.credit.expiresAt) > now &&
++                    `, in ${span(Date.parse(state.credit.expiresAt) - now)}`}
+                 </>
+               )}
+               . It can't be undone.
+             </p>
++            {kind.effect !== undefined && <p data-reset-effect>{kind.effect}</p>}
+             <p data-reset-applies>
+               {state.credit.usableNow === true
+                 ? `${providers[state.provider]} says it applies now.`
+@@ -484,6 +505,8 @@ export function useResetControl({
+         )}
+       </Confirm>
+     );
++  };
++  const controls = new Map(kinds.map((kind) => [kind.key, control(kind)] as const));
+   const note =
+     state.kind === "pending" ? (
+       <p role="status" className={noteLine} data-reset-note="pending">
+@@ -516,7 +539,7 @@ export function useResetControl({
+         </Button>
+       </div>
+     ) : null;
+-  return { control, note };
++  return { controls, note };
+ }
+ 
+ const noteLine = "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground/80";
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+index 788e0b196..664bf8690 100644
+--- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
++++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+@@ -24,8 +24,9 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
+  * One limited window: its label, what remains, the bar and when it resets. A healthy bar takes its
+  * lab's `brand` colour; low and critical keep their warning colours. A stale reading keeps its
+  * exact amount and drawn width, greys the bar and says plainly that it is stale and how old it is.
+- * `resets` is the banked reset count for the window they refill; it becomes the reset control only
+- * when the product passes one for a caller who may spend. `tokens` is what a gateway counted in
++ * `resets` are the banked resets that refill this window, one line per kind under the bar; a
++ * line's count becomes that kind's reset control when the product passes one for a caller who
++ * may spend. `tokens` is what a gateway counted in
+  * the window, at the left of the footer.
+  */
+ export function UsageCell({
+@@ -42,7 +43,13 @@ export function UsageCell({
+   /** The lab's bar colour from `brandFill`, for a reading with room to spare. */
+   readonly brand?: string | undefined;
+   readonly resets?:
+-    | { readonly count: number; readonly title: string; readonly control?: ReactNode }
++    | readonly {
++        readonly key: string;
++        readonly count: number;
++        readonly text: string;
++        readonly expiry: string;
++        readonly control?: ReactNode;
++      }[]
+     | undefined;
+   readonly now: number;
+   readonly format: DisplayFormat;
+@@ -71,24 +78,6 @@ export function UsageCell({
+           </span>
+         )}
+         <span className="flex-1" />
+-        {resets !== undefined && (
+-          <>
+-            {resets.control ?? (
+-              <span
+-                className={cn(
+-                  "shrink-0 font-semibold tabular-nums",
+-                  stale ? "text-muted-foreground" : "text-foreground",
+-                )}
+-                title={resets.title}
+-                data-reset-count={resets.count}
+-              >
+-                <span aria-hidden>↻ {resets.count}</span>
+-                <span className="sr-only">{resets.title}</span>
+-              </span>
+-            )}
+-            <span className="h-3 w-px shrink-0 bg-border" aria-hidden />
+-          </>
+-        )}
+         <span className="shrink-0 text-muted-foreground tabular-nums" data-reading-value>
+           {reading.lead !== undefined && `${reading.lead} `}
+           <span
+@@ -160,6 +149,25 @@ export function UsageCell({
+           )}
+         </div>
+       )}
++      {resets?.map((line) => (
++        // Each kind on its own line: the count, which may be its control, then its nearest expiry.
++        <div
++          key={line.key}
++          className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-muted-foreground tabular-nums"
++          data-reset-kind={line.key}
++        >
++          {line.control ?? (
++            <span
++              className={cn("font-semibold", stale ? "text-muted-foreground" : "text-foreground")}
++              data-reset-count={line.count}
++            >
++              <span aria-hidden>↻ </span>
++              {line.text}
++            </span>
++          )}
++          <span className="whitespace-nowrap">· {line.expiry}</span>
++        </div>
++      ))}
+     </div>
+   );
+ }
