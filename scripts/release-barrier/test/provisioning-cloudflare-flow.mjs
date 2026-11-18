@@ -98,36 +98,24 @@ const baseline = {
     content_type: part.contentType,
     content_base64: part.contentBase64,
   })),
+  // Production's alchemy, migrations-based read-back: no exports, and the class the deploy created.
   containers: [{ class_name: "PoolContainer" }],
-  exports: {
-    default: { type: "worker", cache_options: { enabled: true } },
-    PoolContainer: {
-      type: "durable-object",
-      storage: "sqlite",
-      container: "PoolContainer",
-      state: "created",
-    },
-  },
-  bindings: [
-    {
-      name: "PoolContainer",
-      type: "durable_object_namespace",
-      namespace_id: "legacy-namespace",
-      class_name: "PoolContainer",
-    },
-    { name: "KEEP", type: "plain_text", text: "synthetic-private-setting" },
-  ],
-  cache_options: { enabled: true },
+  bindings: f.baseline.version.bindings.map((binding) =>
+    binding.type === "durable_object_namespace"
+      ? {
+          name: binding.name,
+          type: binding.type,
+          namespace_id: binding.namespaceId,
+          class_name: binding.className,
+        }
+      : { name: binding.name, type: binding.type, text: binding.text },
+  ),
   compatibility_date: "2026-06-01",
   compatibility_flags: ["nodejs_compat"],
   usage_model: "standard",
-  limits: { cpu_ms: 30_000 },
-  placement: { mode: "smart" },
 };
-let staged,
-  deployed = baseline.id,
-  application,
-  saved;
+const deployed = baseline.id;
+let application, saved;
 const calls = [];
 const client = HttpClient.make((request, url) =>
   Effect.sync(() => {
@@ -145,7 +133,7 @@ const client = HttpClient.make((request, url) =>
       result = {
         deployments: [
           {
-            id: deployed === baseline.id ? "prior-deployment" : "new-deployment",
+            id: "prior-deployment",
             created_on: "2026-11-09T00:00:00Z",
             source: "api",
             strategy: "percentage",
@@ -160,65 +148,17 @@ const client = HttpClient.make((request, url) =>
       result = baseline;
     else if (
       request.method === "GET" &&
-      url.pathname === `${base}/workers/workers/${script}/versions/staged-version`
-    )
-      result = staged;
-    else if (
-      request.method === "GET" &&
       url.pathname === `${base}/workers/durable_objects/namespaces`
     )
-      result = [
-        { id: "legacy-namespace", script, class: "PoolContainer", use_sqlite: true },
-        ...(deployed === "staged-version"
-          ? [{ id: f.namespaceId, script, class: resource, use_sqlite: true }]
-          : []),
-      ];
-    else if (
-      request.method === "POST" &&
-      url.pathname === `${base}/workers/workers/${script}/versions`
-    ) {
-      assert.equal(url.searchParams.get("deploy"), "false");
-      assert.deepEqual(body.exports.PoolContainer, baseline.exports.PoolContainer);
-      assert.deepEqual(body.exports.default, baseline.exports.default);
-      assert.deepEqual(body.containers, [
-        { class_name: "PoolContainer" },
-        { class_name: resource },
-      ]);
-      staged = {
-        ...body,
-        id: "staged-version",
-        number: 2,
-        created_on: "2026-11-09T00:00:00Z",
-        urls: [],
-        bindings: [
-          ...baseline.bindings,
-          {
-            name: resource,
-            type: "durable_object_namespace",
-            class_name: resource,
-            namespace_id: f.namespaceId,
-          },
-        ],
-      };
-      result = staged;
-    } else if (
-      request.method === "POST" &&
-      url.pathname === `${base}/workers/scripts/${script}/deployments`
-    ) {
-      assert.deepEqual(body.versions, [{ percentage: 100, version_id: "staged-version" }]);
-      assert.ok(staged);
-      deployed = "staged-version";
-      result = {
-        id: "new-deployment",
-        created_on: "2026-11-09T00:00:00Z",
-        source: "api",
-        strategy: "percentage",
-        versions: body.versions,
-      };
-    } else if (request.method === "GET" && url.pathname === `${base}/containers/applications`)
+      result = f.baseline.namespaces.map((row) => ({
+        id: row.id,
+        script,
+        class: row.className,
+        use_sqlite: row.storage === "sqlite",
+      }));
+    else if (request.method === "GET" && url.pathname === `${base}/containers/applications`)
       result = application ? [application] : [];
     else if (request.method === "POST" && url.pathname === `${base}/containers/applications`) {
-      assert.equal(deployed, "staged-version");
       assert.equal(body.durable_objects.namespace_id, f.namespaceId);
       assert.equal(application, undefined);
       application = {
@@ -410,8 +350,7 @@ if (sourcePlan)
 assert.deepEqual(
   calls.filter((call) => call.method !== "GET"),
   [
-    { method: "POST", path: `${base}/workers/workers/${script}/versions` },
-    { method: "POST", path: `${base}/workers/scripts/${script}/deployments` },
+    // The Worker is never uploaded: alchemy's deploy owns its classes and migrations.
     { method: "POST", path: `${base}/containers/applications` },
   ],
 );

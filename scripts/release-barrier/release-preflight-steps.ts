@@ -53,6 +53,12 @@ import { verifyBoundProviderObservation } from "./runtime-provider-observation.t
 import { releaseSelectedReady } from "./runtime-release-readiness.ts";
 import { runtimeReleaseState, type RuntimeReleaseState } from "./runtime-release-state.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
+import type { DeclaredChanges } from "./declared-change-schema.ts";
+import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
+import { bootstrapNamespacePlan } from "./runtime-bootstrap-preflight.ts";
+import { readDeclaredClass } from "./class-cloudflare.ts";
+import { releaseImagePlan } from "./runtime-release-plan.ts";
+import { plannedContainerClasses } from "../../src/pool/fleet-deployment.ts";
 
 /**
  * The release promotes a fleet primary before finalize, so it never reads readiness from the legacy
@@ -102,6 +108,8 @@ export const preflightSteps = (
     receipts: readonly (typeof ControllerCode.Type)[];
     /** Each live-controller inspect: the code it signed with and how the controller answered. */
     attempts: ControllerAttempt[];
+    /** The repository's reviewed release declarations, as the release loads them. */
+    declarations?: DeclaredChanges;
   },
 ) =>
   Effect.gen(function* () {
@@ -192,6 +200,56 @@ export const preflightSteps = (
       );
       const native = await step("runtime-state", ["state-version"], () =>
         read(runtimeReleaseState(compiled)),
+      );
+      // Runs before the code phase would: GETs only, then the bootstrap's own pure builder.
+      await step(
+        "runtime-bootstrap",
+        ["runtime-state"],
+        async () => {
+          if (!native)
+            throw new BarrierRefusal("release-preflight-state-unavailable", "PoolWorker");
+          const colors = (["blue", "green"] as const).filter(
+            (color) => !native.applications[color],
+          );
+          if (!colors.length)
+            throw new NotApplicable("both fleet colors already have applications");
+          const accountId = native.applications.root.attributes.accountId;
+          const namespaces = await read(
+            Effect.gen(function* () {
+              const reader = yield* runtimeNamespaceReader(accountId, native.target.worker);
+              return yield* Effect.promise(() => reader.baseline());
+            }),
+          );
+          const plans = bootstrapNamespacePlan({
+            baseline: namespaces,
+            accountId,
+            colors,
+            declarations: input.declarations,
+            // The controller code phase evaluates the stack with the release's own image plan.
+            plannedContainers: plannedContainerClasses(
+              releaseImagePlan({ baseline: native, desiredConfiguration: native.configuration }),
+            ),
+          });
+          // A class the code phase still has to add goes through the reviewed class path; its own
+          // read refuses a baseline it cannot extend.
+          const migration = plans.some((plan) => plan.source === "declared")
+            ? await read(
+                readDeclaredClass({ accountId, scriptName: native.target.worker }, input.fetch),
+              )
+            : undefined;
+          return {
+            plans,
+            migrationTag: !migration
+              ? "not-needed"
+              : migration.migrationTag
+                ? "tagged"
+                : "untagged",
+          };
+        },
+        ({ plans, migrationTag }) => ({
+          colors: plans.map(({ color, source }) => ({ color, source })),
+          migrationTag,
+        }),
       );
       if (native && baseline) await controllerReads(native, baseline, journal?.prior);
       else

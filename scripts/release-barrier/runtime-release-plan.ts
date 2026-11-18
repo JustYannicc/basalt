@@ -2,7 +2,9 @@ import type { ImageReleasePlan, RuntimeColor } from "../../src/pool/image-releas
 import type { RuntimeReleaseRecord } from "./runtime-release-journal.ts";
 
 /** The image pins a release evaluates the stack with: native retained images, never new builds. */
-export const releaseImagePlan = (record: RuntimeReleaseRecord): ImageReleasePlan => ({
+export const releaseImagePlan = (
+  record: Pick<RuntimeReleaseRecord, "baseline" | "update" | "desiredConfiguration">,
+): ImageReleasePlan => ({
   ...(record.baseline.applications.legacy
     ? {
         legacy: {

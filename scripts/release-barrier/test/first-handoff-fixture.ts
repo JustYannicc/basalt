@@ -29,7 +29,9 @@ export async function firstHandoffFixture() {
     ...f.manifest,
     selection: { ...selection, expectedEpoch: 1, active: { ...legacy.target, bootId } },
   });
-  const baseline = namespaceBaseline();
+  // The legacy first handoff models a Worker on declarative exports; the shared fixture is the
+  // migrations-based PoolWorker, so add the exports this path reads.
+  const baseline = namespaceBaseline([]);
   const manifest = freezeFirstHandoff({
     schemaVersion: 3,
     disposition: "first-handoff",
@@ -40,7 +42,13 @@ export async function firstHandoffFixture() {
       version: {
         ...baseline.version,
         exports: {
-          ...baseline.version.exports,
+          default: { type: "worker", cache: { enabled: true } },
+          PoolContainer: {
+            type: "durable-object",
+            storage: "sqlite",
+            container: "PoolContainer",
+            state: "created",
+          },
           PoolRuntime: {
             type: "durable-object",
             storage: "sqlite",

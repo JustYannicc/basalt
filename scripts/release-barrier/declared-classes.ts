@@ -84,7 +84,7 @@ export const expandDeclaredClasses = (
         saved = { ...saved, status: "acknowledged", startupTimeMs: result.startupTimeMs };
         yield* saveClassHistory(scope, entry.fqn, saved);
         yield* progress(entry.fqn, saved, "acknowledged");
-        if (result.migrationTag !== saved.newTag)
+        if ((result.migrationTag ?? undefined) !== saved.newTag)
           throw declaredMismatch(
             "declared-class-deployment-tag-mismatch",
             entry.fqn,

@@ -37,6 +37,34 @@
         "nativeStateRow": true,
         "recoveryDescriptor": true
       }
+    },
+    {
+      "action": "add-sqlite-class",
+      "type": "Cloudflare.Worker",
+      "fqn": "PoolWorker",
+      "newSqliteClasses": [
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen"
+      ],
+      "addedBindings": [
+        {
+          "type": "durable_object_namespace",
+          "name": "PoolRuntimeBlue",
+          "className": "PoolRuntimeBlue",
+          "location": "local"
+        },
+        {
+          "type": "durable_object_namespace",
+          "name": "PoolRuntimeGreen",
+          "className": "PoolRuntimeGreen",
+          "location": "local"
+        }
+      ],
+      "retention": {
+        "data": true,
+        "nativeStateRow": true,
+        "recoveryDescriptor": true
+      }
     }
   ]
 }
