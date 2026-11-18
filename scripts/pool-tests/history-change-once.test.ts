@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type pg from "pg";
-import { backendUserName } from "../../src/pool/backend-users.ts";
+import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { insertBulkRequests } from "../../src/pool/model-history/bulk-store.ts";
 import { projectPoolHistoryChanges } from "../../src/pool/model-history/change-projection.ts";
 import type { ModelRequest } from "../../src/pool/model-history/record.ts";
@@ -184,7 +184,10 @@ for (const journal of [true, false])
 test("one model request and one bulk import chunk run far fewer trigger statements", async (t) => {
   const request = await historyRows([pools[0]]);
   const chunk = await historyRows(Array.from({ length: 5000 }, () => pools[0]));
-  const counts: Record<string, { request: number; bulk: number; requestKeys: unknown }> = {};
+  const counts: Record<
+    string,
+    { request: number; projection: number; bulk: number; requestKeys: unknown }
+  > = {};
   for (const version of ["v11", "v12"] as const)
     await homeChangeFixture(version, true, async ({ a }) => {
       const counter = await countTriggerStatements(a);
@@ -201,11 +204,14 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
       const capture = (await produced(db)).dirty;
       await db.query("COMMIT");
       const requestStatements = counter.take();
+      while ((await projectPoolHistoryChanges(db)) > 0);
+      const projection = counter.take();
       await db.query("BEGIN");
       await insertBulkRequests(db, chunk);
       await db.query("COMMIT");
       counts[version] = {
         request: requestStatements,
+        projection,
         bulk: counter.take(),
         requestKeys: [billing, capture],
       };
@@ -215,9 +221,14 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   // v11: 7 per resolved row plus the commit notification. v12: the charge resolves once (1 query,
   // 2 journal inserts), its update looks up the user only, the credit update skips, capture
   // resolves once, plus the two commit notifications. The 5000-row chunk resolves once.
+  // Projection upserts one head per key; each head write evaluated the SQL hash as a statement.
+  const measured = (version: Version) => {
+    const { request, projection, bulk } = counts[version]!;
+    return { request, projection, bulk };
+  };
   assert.deepEqual(
-    { v11: [counts.v11!.request, counts.v11!.bulk], v12: [counts.v12!.request, counts.v12!.bulk] },
-    { v11: [34, 35001], v12: [9, 4] },
+    { v11: measured("v11"), v12: measured("v12") },
+    { v11: { request: 34, projection: 0, bulk: 35001 }, v12: { request: 9, projection: 0, bulk: 4 } },
   );
 });
 
@@ -247,4 +258,24 @@ test("concurrent transactions and a stale session memo each produce their own en
     );
     assert.equal(head.rows[0]!.revision, 3);
   });
+});
+
+// Guarantee: retained index entries still match. The replaced hash returns the writers' digest.
+test("the replaced history hash returns the same 16 hex digits as before and as writers", async () => {
+  const inputs = ["app_a", "app_ü-ß", "app_quote'\\back", `app_${"x".repeat(252)}`, ""];
+  const hashes = (version: Version) =>
+    homeChangeFixture(version, false, async ({ owner }) =>
+      (
+        await owner.query(
+          "SELECT basalt_pool_history_hash(v) AS hash FROM unnest($1::text[]) WITH ORDINALITY u(v,n) ORDER BY n",
+          [inputs],
+        )
+      ).rows.map((row) => row.hash),
+    );
+  const legacy = await hashes("v11");
+  assert.deepEqual(await hashes("v12"), legacy);
+  assert.deepEqual(
+    legacy,
+    await Promise.all(inputs.map(async (input) => (await digest(input)).slice(0, 16))),
+  );
 });

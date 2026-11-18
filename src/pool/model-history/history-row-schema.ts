@@ -81,13 +81,20 @@ const credentialIds = `CASE WHEN mode='auth' THEN ARRAY[before_row->>'uuid',befo
         ELSE ARRAY[before_row->>'credential_id',after_row->>'credential_id'] END`;
 
 /**
- * Same function, triggers and producer as v5/v11, so no table lock is taken. Each row still resolves
- * at its own trigger snapshot: a resolver that runs once at statement end returns a stale count to a
- * reader that registers after a mid-statement mapping delete (history-change-once.test.ts). What runs
- * once per transaction is the bump: with the journal active, a later row whose hash already bumped
- * its pool in this transaction would only repeat a no-op insert, so it skips without a statement.
+ * Replaces function bodies only: triggers, indexes and the producer stay, so no table lock is taken.
+ * Each row still resolves at its own trigger snapshot. A resolver run once at statement end leaves a
+ * reader that registers after a mid-statement mapping delete with a stale count and no later change
+ * (the delete case in history-insert-races.test.ts). What happens once per transaction is the bump:
+ * with the journal active, a row whose hash already bumped its pool in this transaction would only
+ * repeat no-op inserts, so it skips them. The memo is transaction-local and rolls back with them.
  */
 export const historyChangeOnceStatements = [
+  // textsend is STABLE, so the SQL body is never inlined and every heads index write ran it as a
+  // statement. A PL/pgSQL RETURN is one simple expression with the same bytes and result.
+  `CREATE OR REPLACE FUNCTION basalt_pool_history_hash(value text) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+      BEGIN RETURN left(encode(sha256(textsend(value)),'hex'),16); END
+    $$`,
   `CREATE OR REPLACE FUNCTION basalt_pool_record_change() RETURNS trigger LANGUAGE plpgsql AS $$
     DECLARE before_row jsonb := '{}'::jsonb; after_row jsonb := '{}'::jsonb;
       mode text := TG_ARGV[0]; change_topic text := TG_ARGV[2]; field text; changed boolean := false;
