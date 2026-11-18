@@ -233,6 +233,7 @@ for (const membership of ["connected", "removed", "legacy-removed", "legacy-remo
         const index = await chunks.get<Record<string, unknown>>(key);
         assert.ok(index);
         delete index.demandRevisions;
+        delete index.demandPolicies;
         if (membership === "legacy-removed-other") {
           index.demandRevisions = {
             [JSON.stringify(["openai", windowSeconds, null, "chatgpt-plus-equivalent"])]: {
