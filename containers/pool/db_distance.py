@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import socket
 import statistics
@@ -25,6 +26,7 @@ ATTEMPT_TIMEOUT_NS = 500_000_000
 TOTAL_BUDGET_NS = 3_500_000_000
 MAX_RTT_MS = 3_500
 HOLD_ENV = "POOL_DB_RTT_HOLD_MS"
+DATABASE_URL_ENV = "POOL_DATABASE_URL"
 LOCATION_ENV = "CLOUDFLARE_LOCATION"
 LOCATION = re.compile(r"[a-z]{3}[0-9]{2}")
 HOLD = re.compile(r"[1-9][0-9]{0,3}")
@@ -57,13 +59,6 @@ def hold_bound(environment: Mapping[str, str]) -> int | None:
     return int(value)
 
 
-def pooler_endpoint(database_url: str) -> tuple[str, int]:
-    parsed = urllib.parse.urlsplit(database_url)
-    if not parsed.hostname:
-        raise ValueError("database URL has no host")
-    return parsed.hostname, parsed.port or 5432
-
-
 def _milliseconds(nanoseconds: int) -> int:
     return min(MAX_RTT_MS, max(1, math.ceil(nanoseconds / 1_000_000)))
 
@@ -75,7 +70,7 @@ def _within(work: Callable[[], Any], timeout_s: float) -> Any:
     def run() -> None:
         try:
             result.append(work())
-        except (OSError, IndexError, ValueError):
+        except (OSError, ValueError):
             pass
 
     thread = threading.Thread(target=run, daemon=True)
@@ -90,34 +85,32 @@ def measure(
     hold_ms: int | None,
     *,
     clock: Callable[[], int] = time.monotonic_ns,
-    resolve: Callable[..., list] = socket.getaddrinfo,
-    open_socket: Callable[[int], socket.socket] = lambda family: socket.socket(
-        family, socket.SOCK_STREAM
-    ),
+    connect: Callable[[tuple[str, int], float], socket.socket] | None = None,
 ) -> Distance:
     deadline = clock() + TOTAL_BUDGET_NS
-    # One lookup up front keeps DNS out of every sample; it shares the overall budget.
-    resolved = _within(lambda: resolve(host, port, type=socket.SOCK_STREAM)[0], TOTAL_BUDGET_NS / 1e9)
-    if resolved is None:
-        return Distance("failed", None, None, 0)
-    family, _, _, _, address = resolved
     samples: list[int] = []
     for _ in range(ATTEMPTS):
         remaining = deadline - clock()
         if remaining <= 0:
             break
-        connection = None
-        try:
-            connection = open_socket(family)
-            connection.settimeout(min(ATTEMPT_TIMEOUT_NS, remaining) / 1e9)
+        timeout = min(ATTEMPT_TIMEOUT_NS, remaining) / 1e9
+
+        def attempt() -> int:
             started = clock()
-            connection.connect(address)
-            samples.append(clock() - started)
-        except OSError:
-            pass
-        finally:
-            if connection is not None:
-                connection.close()
+            # Each sample includes the name lookup, as every new Home connection does.
+            connection = (
+                socket.create_connection((host, port), timeout=timeout)
+                if connect is None
+                else connect((host, port), timeout)
+            )
+            elapsed = clock() - started
+            connection.close()
+            return elapsed
+
+        # The thread bound also covers a stalled lookup, which the socket timeout does not.
+        elapsed = _within(attempt, timeout)
+        if elapsed is not None:
+            samples.append(elapsed)
     if len(samples) < MIN_SAMPLES:
         return Distance("failed", None, None, len(samples))
     rtt_ms = _milliseconds(int(statistics.median(samples)))
@@ -125,12 +118,16 @@ def measure(
     return Distance(state, rtt_ms, _milliseconds(max(samples)), len(samples))
 
 
-def measure_database(database_url: str, environment: Mapping[str, str]) -> Distance:
+def measure_database() -> Distance:
+    """Dial exactly the host the model declares as the pool database's address."""
     try:
-        host, port = pooler_endpoint(database_url)
-    except ValueError:
+        host = urllib.parse.urlsplit(os.environ[DATABASE_URL_ENV]).hostname
+        port = urllib.parse.urlsplit(os.environ[DATABASE_URL_ENV]).port or 5432
+    except (KeyError, ValueError):
         return Distance("failed", None, None, 0)
-    return measure(host, port, hold_bound(environment))
+    if not host:
+        return Distance("failed", None, None, 0)
+    return measure(host, port, hold_bound(os.environ))
 
 
 def report(distance: Distance, where: str | None) -> None:

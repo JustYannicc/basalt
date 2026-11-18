@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import pathlib
 import socket
 import tempfile
@@ -25,36 +26,23 @@ class FakeNetwork:
     def __init__(self, durations_ms: list[float | None]) -> None:
         self.now = 0
         self.durations = list(durations_ms)
-        self.opened = 0
+        self.dialled: list[tuple[str, int]] = []
 
     def clock(self) -> int:
         return self.now
 
-    def resolve(self, *_args, **_kwargs):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.0.2.1", 6432))]
-
-    def open_socket(self, _family: int) -> Mock:
-        self.opened += 1
-        connection = Mock()
-
-        def connect(_address) -> None:
-            duration = self.durations.pop(0)
-            if duration is None:
-                self.now += 500 * MS
-                raise TimeoutError()
-            self.now += int(duration * MS)
-
-        connection.connect.side_effect = connect
-        return connection
+    def connect(self, address: tuple[str, int], _timeout: float) -> Mock:
+        self.dialled.append(address)
+        duration = self.durations.pop(0)
+        if duration is None:
+            self.now += 500 * MS
+            raise TimeoutError()
+        self.now += int(duration * MS)
+        return Mock()
 
     def measure(self, hold_ms: int | None = None) -> Distance:
         return db_distance.measure(
-            "pooler.invalid",
-            6432,
-            hold_ms,
-            clock=self.clock,
-            resolve=self.resolve,
-            open_socket=self.open_socket,
+            "pooler.invalid", 6432, hold_ms, clock=self.clock, connect=self.connect
         )
 
 
@@ -75,44 +63,55 @@ class MeasureTests(unittest.TestCase):
     def test_total_budget_stops_further_attempts(self) -> None:
         network = FakeNetwork([1200.0, 1200.0, 1200.0, 1.0, 1.0, 1.0, 1.0])
         distance = network.measure()
-        self.assertEqual(network.opened, 3)
+        self.assertEqual(len(network.dialled), 3)
         self.assertEqual(distance.samples, 3)
         self.assertEqual(distance.rtt_ms, 1200)
 
-    def test_dns_failure_is_unknown(self) -> None:
+    def test_failed_lookups_are_unknown(self) -> None:
         network = FakeNetwork([])
         distance = db_distance.measure(
-            "pooler.invalid",
-            6432,
-            20,
-            clock=network.clock,
-            resolve=Mock(side_effect=socket.gaierror()),
-            open_socket=network.open_socket,
+            "pooler.invalid", 6432, 20, clock=network.clock, connect=Mock(side_effect=socket.gaierror())
         )
         self.assertEqual(distance, Distance("failed", None, None, 0))
-        self.assertEqual(network.opened, 0)
 
-    def test_real_loopback_listener(self) -> None:
+    def test_real_loopback_listener_named_by_the_database_url(self) -> None:
         with socket.create_server(("127.0.0.1", 0)) as server:
             port = server.getsockname()[1]
             url = f"postgresql://user:secret@127.0.0.1:{port}/basalt_pool?sslmode=verify-full"
-            distance = db_distance.measure_database(url, {})
+            with patch.dict(os.environ, {"POOL_DATABASE_URL": url}, clear=True):
+                distance = db_distance.measure_database()
         self.assertEqual(distance.state, "measured")
         self.assertEqual(distance.samples, 7)
         self.assertGreaterEqual(distance.rtt_ms, 1)
 
-    def test_pooler_endpoint_forms(self) -> None:
-        self.assertEqual(
-            db_distance.pooler_endpoint("postgresql://u:p@db.example.invalid:6432/x?sslmode=verify-full"),
-            ("db.example.invalid", 6432),
-        )
-        self.assertEqual(db_distance.pooler_endpoint("postgresql://u:p@[2001:db8::1]:6432/x"), ("2001:db8::1", 6432))
-        self.assertEqual(db_distance.pooler_endpoint("postgresql://u:p@db.example.invalid/x"), ("db.example.invalid", 5432))
+    def test_the_database_url_decides_what_is_dialled(self) -> None:
+        dialled: list[tuple[str, int]] = []
 
-    def test_unparseable_url_is_unknown(self) -> None:
+        def measure(host: str, port: int, hold_ms: int | None, **_kwargs) -> Distance:
+            dialled.append((host, port))
+            return Distance("measured", 1, 1, 7)
+
+        with patch.object(db_distance, "measure", side_effect=measure):
+            for url in (
+                "postgresql://u:p@db.example.invalid:6432/x?sslmode=verify-full",
+                "postgresql://u:p@[2001:db8::1]:6432/x",
+                "postgresql://u:p@db.example.invalid/x",
+            ):
+                with patch.dict(os.environ, {"POOL_DATABASE_URL": url}):
+                    db_distance.measure_database()
         self.assertEqual(
-            db_distance.measure_database("not a url", {}), Distance("failed", None, None, 0)
+            dialled,
+            [("db.example.invalid", 6432), ("2001:db8::1", 6432), ("db.example.invalid", 5432)],
         )
+
+    def test_missing_or_hostless_url_is_unknown(self) -> None:
+        for env in (
+            {},
+            {"POOL_DATABASE_URL": "not a url"},
+            {"POOL_DATABASE_URL": "postgresql://h:notaport/x"},
+        ):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
+                self.assertEqual(db_distance.measure_database(), Distance("failed", None, None, 0))
 
 
 class EnvironmentTests(unittest.TestCase):

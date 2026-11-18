@@ -288,7 +288,7 @@ def main(stop: threading.Event | None = None) -> int:
             original_signals[signum] = signal.signal(signum, request_stop)
 
         with startup_phase(StartupPhase.DB_DISTANCE, supervisor_started_ns):
-            distance = db_distance.measure_database(database_url, os.environ)
+            distance = db_distance.measure_database()
         readiness.set_database_distance(distance)
         db_distance.report(distance, location)
         if distance.state == "held":
