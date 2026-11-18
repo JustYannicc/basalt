@@ -26,6 +26,7 @@ import {
 } from "../preview/lifecycle.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { describeError, redactor } from "./redact.ts";
+import { alchemyPreviewStateReader } from "../preview/inventory.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
@@ -160,13 +161,38 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
  * The stage's legacy-root pin, read the way production's preflight reads it: the root application's
  * image by digest, and the build input PoolWorker already knows it by (`POOL_IMAGE_HASH`).
  */
-async function rootPin(hooks: ReturnType<typeof nativeHooks>) {
-  const { blue: image } = await hooks.fleetImages();
-  const read = await hooks.readBack("root-pin");
-  const input = read.plainText?.POOL_IMAGE_HASH;
-  if (!input || !/^[a-f0-9]{16}$/u.test(input))
-    throw new Error("PoolWorker has no 16-hex POOL_IMAGE_HASH to pin the root by");
-  return JSON.stringify({ image, input });
+async function rootPin(
+  hooks: ReturnType<typeof nativeHooks>,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+) {
+  // P1c's source: PoolContainer's State row records the image digest Alchemy published and the
+  // build input (`hash.image`) the controller knows the root by. The registry tag can be gone.
+  const config = stageEnvironment(subject, source);
+  const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(config.stage);
+  const row = (stacks[stageNames(subject).stack] ?? []).find((entry) =>
+    entry.path.endsWith("/PoolContainer"),
+  )?.value as
+    | { attr?: { configuration?: { image?: string }; hash?: { image?: string; digest?: string } } }
+    | undefined;
+  const reference = row?.attr?.configuration?.image ?? "";
+  const digest = row?.attr?.hash?.digest ?? "";
+  const input = row?.attr?.hash?.image ?? "";
+  const repository =
+    /^(registry\.cloudflare\.com\/[a-f0-9]{32}\/[a-z0-9/_-]+)(?::[^/@]+|@sha256:[a-f0-9]{64})$/u.exec(
+      reference,
+    )?.[1];
+  if (!repository || !/^sha256:[a-f0-9]{64}$/u.test(digest) || !/^[a-f0-9]{16}$/u.test(input))
+    throw new Error(
+      "PoolContainer's State row has no image digest and build input to pin the root by",
+    );
+  // The controller must already know the root by that input, or the pin would move its identity.
+  const live = (await hooks.readBack("root-pin")).plainText?.POOL_IMAGE_HASH;
+  if (live !== input)
+    throw new Error(
+      `PoolWorker's POOL_IMAGE_HASH (${live ?? "none"}) is not the root row's build input (${input})`,
+    );
+  return JSON.stringify({ image: `${repository}@${digest}`, input });
 }
 
 export async function runStageMode(mode: StageMode, lane: number, source = process.env) {
@@ -209,12 +235,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       "plan",
       subject,
       source,
-      { ...declaration.cutover, POOL_ROOT_IMAGE: await rootPin(hooks) },
+      { ...declaration.cutover, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) },
       outputs,
     );
   } else if (mode === "apply") {
     result.before = await hooks.readBack("before-apply");
-    const pin = await rootPin(hooks);
+    const pin = await rootPin(hooks, subject, source);
     // Controller availability and the root's identity, sampled every 2 s across the apply.
     const probe = startProbe(lane, join(outputs, "probe.jsonl"), source);
     try {
