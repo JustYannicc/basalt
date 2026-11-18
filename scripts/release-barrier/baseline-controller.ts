@@ -48,8 +48,16 @@ export const readBaselineControllerKey = (stack: Pick<CompiledStack, "name" | "s
     return text(Schema.decodeUnknownSync(envSchema)(worker.props).env.POOL_DEPLOYMENT_KEY);
   });
 
-/** The persisted readiness command records the code that finished the previous deployment, not this checkout's code. */
-export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stage">) =>
+/**
+ * The persisted readiness command records the code that finished the previous deployment, not this
+ * checkout's code. After a controller-active settlement or an abort it names an older controller
+ * than the live one, so the caller passes the live-proven `sourceController` the image journal
+ * returned; only an authorized settlement or a confirmed abort supplies one.
+ */
+export const readBaselineController = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  sourceController?: typeof ControllerCode.Type,
+) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
     const key = { stack: stack.name, stage: stack.stage };
@@ -88,7 +96,7 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
       scriptName: target.worker,
     });
     return Schema.decodeUnknownSync(BaselineController)({
-      code: {
+      code: sourceController ?? {
         candidate: text(env.GITHUB_SHA),
         workerInput: text(env.DATABASE_BUDGET_WORKER_INPUT),
       },
