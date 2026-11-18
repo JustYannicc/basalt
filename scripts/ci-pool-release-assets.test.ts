@@ -147,7 +147,11 @@ test("built compatibility images are reused only for a byte-identical context", 
     assert.match(key, /^pool-compatibility-images-v1-x64-[a-f0-9]{64}$/);
     assert.notEqual(compatibilityImagesKey(data.context, "arm64"), key);
     assert.equal(compatibilityImagesKey(data.context, "x64"), key);
-    const archive = join(data.context, ".release-archives", poolReleaseAssets(data.manifest).assets[0]!.sha256 + ".tar.gz");
+    const archive = join(
+      data.context,
+      ".release-archives",
+      poolReleaseAssets(data.manifest).assets[0]!.sha256 + ".tar.gz",
+    );
     const bytes = readFileSync(archive);
     writeFileSync(archive, Buffer.concat([bytes, Buffer.from("x")]));
     assert.notEqual(compatibilityImagesKey(data.context, "x64"), key);
