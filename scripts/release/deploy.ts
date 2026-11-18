@@ -45,7 +45,12 @@ const { positionals, values } = parseArgs({
 });
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
-const config = values.config ? relative(root, resolve(values.config)) : "alchemy.run.ts";
+// Accept a config relative to the working directory (the cloud dir, as previews call it) or the repo root.
+const config = values.config
+  ? ([relative(root, resolve(values.config)), relative(root, resolve(root, values.config))].find(
+      (path) => configs.includes(path),
+    ) ?? values.config)
+  : "alchemy.run.ts";
 if (!configs.includes(config)) throw new Error(`Unknown stack config ${config}`);
 
 if (command !== "compare") {
@@ -90,7 +95,8 @@ if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
   throw new Error("--attempt <id printed by the plan run> is required");
 if (stage === "production") {
   const { deployEnvironment } = await import("../environment.ts");
-  Object.assign(process.env, deployEnvironment());
+  // Production always declares the legacy root by its pinned digest (src/pool/root-image-pin.ts).
+  Object.assign(process.env, deployEnvironment(), { POOL_ROOT_IMAGE_REQUIRED: "true" });
 }
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
