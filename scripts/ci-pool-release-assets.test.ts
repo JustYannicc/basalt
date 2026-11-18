@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  compatibilityImageRecipe,
   compatibilityImagesKey,
   compatibilityPoolManifest,
   poolCompatibilityCommit,
@@ -143,10 +144,10 @@ test("built compatibility images are reused only for a byte-identical context", 
   const data = fixture();
   try {
     preparePoolCompatibilityContext(root, data.context, data.cache, data.manifest);
-    const key = compatibilityImagesKey(data.context, "amd64");
+    const key = compatibilityImagesKey(data.context, "amd64", root);
     assert.match(key, /^pool-compatibility-images-v1-amd64-[a-f0-9]{64}$/);
-    assert.notEqual(compatibilityImagesKey(data.context, "arm64"), key);
-    assert.equal(compatibilityImagesKey(data.context, "amd64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "arm64", root), key);
+    assert.equal(compatibilityImagesKey(data.context, "amd64", root), key);
     const archive = join(
       data.context,
       ".release-archives",
@@ -154,16 +155,27 @@ test("built compatibility images are reused only for a byte-identical context", 
     );
     const bytes = readFileSync(archive);
     writeFileSync(archive, Buffer.concat([bytes, Buffer.from("x")]));
-    assert.notEqual(compatibilityImagesKey(data.context, "amd64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64", root), key);
     writeFileSync(archive, bytes);
-    assert.equal(compatibilityImagesKey(data.context, "amd64"), key);
+    assert.equal(compatibilityImagesKey(data.context, "amd64", root), key);
     const script = join(data.context, "fetch_releases.py");
     const mode = statSync(script).mode & 0o777;
     chmodSync(script, mode ^ 0o100);
-    assert.notEqual(compatibilityImagesKey(data.context, "amd64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64", root), key);
     chmodSync(script, mode);
     writeFileSync(join(data.context, "extra.txt"), "");
-    assert.notEqual(compatibilityImagesKey(data.context, "amd64"), key);
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64", root), key);
+    // The recipe that maps targets to tags is part of what the cached images are.
+    const recipe = mkdtempSync(join(data.temporary, "recipe-"));
+    for (const file of compatibilityImageRecipe) {
+      mkdirSync(join(recipe, file, ".."), { recursive: true });
+      writeFileSync(join(recipe, file), readFileSync(join(root, file)));
+    }
+    rmSync(join(data.context, "extra.txt"));
+    assert.equal(compatibilityImagesKey(data.context, "amd64", recipe), key);
+    const action = join(recipe, compatibilityImageRecipe[0]!);
+    writeFileSync(action, readFileSync(action, "utf8").replace("legacy-runtime", "runtime"));
+    assert.notEqual(compatibilityImagesKey(data.context, "amd64", recipe), key);
   } finally {
     rmSync(data.temporary, { recursive: true, force: true });
   }

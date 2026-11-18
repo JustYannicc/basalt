@@ -89,11 +89,19 @@ export function preparePoolCompatibilityContext(
 }
 
 // The prepared context pins the compatibility images' inputs (base images by digest, release
-// archives by SHA-256), so its bytes key the built-image cache: any changed path, mode or byte builds
-// them again. The frozen Dockerfile's few unpinned Alpine packages keep the versions of the build
-// that filled the cache, as the historical image kept those of its own build.
-export function compatibilityImagesKey(context: string, architecture: string) {
+// archives by SHA-256) and the recipe files say which target becomes which tag with which flags, so
+// together they key the built-image cache: any changed path, mode or byte builds them again. The
+// frozen Dockerfile's few unpinned Alpine packages keep the versions of the build that filled the
+// cache, as the historical image kept those of its own build.
+export const compatibilityImageRecipe = [
+  ".github/actions/pool-compatibility-images/action.yml",
+  "scripts/ci/pool-image-build.sh",
+];
+
+export function compatibilityImagesKey(context: string, architecture: string, root: string) {
   const hash = createHash("sha256").update(architecture);
+  for (const file of compatibilityImageRecipe)
+    hash.update(JSON.stringify([file])).update(readFileSync(join(root, file)));
   const files = readdirSync(context, { recursive: true, encoding: "utf8" }).sort();
   for (const file of files) {
     const path = join(context, file);
@@ -141,7 +149,7 @@ function main(mode: string | undefined) {
     if (process.env.GITHUB_OUTPUT)
       appendFileSync(
         process.env.GITHUB_OUTPUT,
-        `context=${process.argv[3]}\nkey=${compatibilityImagesKey(process.argv[3], dockerArchitecture())}\n`,
+        `context=${process.argv[3]}\nkey=${compatibilityImagesKey(process.argv[3], dockerArchitecture(), root)}\n`,
       );
   } else throw new Error("Expected identify, warm, verify or context with its path");
 }
