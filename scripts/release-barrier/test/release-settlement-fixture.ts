@@ -33,12 +33,19 @@ import {
 /**
  * `controllerActive` is the source after its controller phase: every Worker activated, nothing
  * adopted. `adopted` is that source after its adopt committed, as the production observe found it.
+ * `recovered` is that adopted root after the controller's selected-runtime recovery restarted it
+ * twice, leaving the selection at epoch 3.
  * `staleReadiness` is an abandoned source whose release froze the controller an earlier settlement
  * proved live, while the deferred readiness row still names the one before it.
  */
 export async function releaseSettlementFixture(
   context: TestContext,
-  options: { controllerActive?: boolean; adopted?: boolean; staleReadiness?: boolean } = {},
+  options: {
+    controllerActive?: boolean;
+    adopted?: boolean;
+    recovered?: boolean;
+    staleReadiness?: boolean;
+  } = {},
 ) {
   context.mock.method(globalThis, "fetch", async () => {
     throw new Error("No network in the offline settlement proof");
@@ -330,6 +337,10 @@ export async function releaseSettlementFixture(
       legacyAdoptionTarget(baseline.applications.root, instanceId),
       `adopt-${sourceCandidate}`,
     );
+  if (options.recovered) {
+    await controller.restart("recovered-boot-1");
+    await controller.restart("recovered-boot-2");
+  }
   const io: SettlementOperationIo = {
     directory,
     intent: async (value) => {
