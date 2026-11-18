@@ -91,17 +91,31 @@ test("only dropped or stalled connections count as retryable", () => {
 });
 
 test("error summaries drop detail lines", () => {
-  assert.deepEqual(errorSummary({ code: "22P02", message: "invalid input\nDETAIL: value 'x'" }), {
+  assert.deepEqual(errorSummary({ code: "22P02", message: 'invalid input syntax: "secret"' }), {
     code: "22P02",
-    message: "invalid input",
+    message: "data exception",
+  });
+  assert.deepEqual(errorSummary({ code: "57P01", message: "terminating\nDETAIL: x" }), {
+    code: "57P01",
+    message: "terminating",
   });
 });
 
 test("a primary volume above 60% stops the load for good", () => {
-  assert.equal(decide(fresh(), observe(t, 10, { diskPct: 60 }), t).kind, "go");
-  assert.deepEqual(decide(fresh(), observe(t, 10, { diskPct: 60.1 }), t), {
-    kind: "stop",
-    reason: "disk_high",
+  assert.equal(
+    decide(fresh(), observe(t, 10, { diskPct: 60, usedBytes: 25_125_558_682 }), t).kind,
+    "go",
+  );
+  assert.deepEqual(
+    decide(fresh(), observe(t, 10, { diskPct: 60.1, usedBytes: 25_167_434_613 }), t),
+    {
+      kind: "stop",
+      reason: "disk_high",
+    },
+  );
+  assert.deepEqual(decide(fresh(), observe(t, 10, { diskPct: 0.25 }), t), {
+    kind: "wait",
+    reason: "guard_invalid",
   });
   assert.deepEqual(decide(fresh(), observe(t, 10, { diskPct: undefined }), t), {
     kind: "wait",
