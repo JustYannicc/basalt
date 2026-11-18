@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-device-report-label-module",
+  "file": "9999-device-report-label-module.patch",
+  "content_sha256": "7a4fc8eb9d1d8ea685541adc515b0060794490d1c0bc5bf9a3369486d49028b5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

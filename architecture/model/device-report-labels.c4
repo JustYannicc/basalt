@@ -1,0 +1,9 @@
+model {
+  extend basalt.toolsGateway {
+    deviceReportLabels = part "Device report labels" {
+      description "What a device says about itself when it asks to connect, such as its name and the vault it connects, is kept by one rule. The rule has no imports, so a client compares its own names with the stored ones by exactly that rule."
+      metadata { code ".upstream/packages/mcp-auth/src/contracts/device-label.ts" }
+    }
+  }
+  basalt.toolsGateway.obsidianSync -> basalt.toolsGateway.deviceReportLabels "Compares a link's vault with this vault by the stored label rule"
+}
