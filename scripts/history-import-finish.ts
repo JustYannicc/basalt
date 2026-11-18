@@ -24,6 +24,7 @@ import { parseBulkChunk } from "../src/pool/model-history/bulk-parser.ts";
 import {
   decide,
   diskHeadroom,
+  isObservation,
   errorSummary,
   isConnectionReset,
   type FinishGuardState,
@@ -261,12 +262,13 @@ async function load() {
       throw new Error("The import role cannot set session_replication_role");
     const committed = await committedRows(db, def.job);
     run.processed = [...committed.values()].reduce((a, b) => a + b, 0);
-    const disk = readJson(values["guard-file"]) as {
-      capacityBytes?: unknown;
-      usedBytes?: unknown;
-    } | null;
-    if (typeof disk?.capacityBytes !== "number" || typeof disk.usedBytes !== "number")
-      throw new Error("Guard file has no volume capacity for the headroom check");
+    // Headroom is computed from a reading the guard itself accepts now: valid, fresh and clear.
+    const disk = readJson(values["guard-file"]);
+    const start = decide({ throttled: false, criticalSince: null, lastAt: null }, disk, Date.now());
+    if (start.kind !== "go" || !isObservation(disk))
+      throw new Error(
+        `The guard file must be valid, fresh and clear before the headroom check (${start.kind === "go" ? "invalid" : start.reason})`,
+      );
     const walBudget = Number(
       (
         await db.query(

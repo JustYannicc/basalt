@@ -49,9 +49,12 @@ function valid(value: unknown): value is FinishObservation {
     o.diskPct <= 100 &&
     count(o.capacityBytes) &&
     (o.capacityBytes as number) > 0 &&
-    count(o.usedBytes)
+    count(o.usedBytes) &&
+    // A reader reporting a 0-1 fraction or mismatched bytes must not slip under the disk stop.
+    Math.abs(o.diskPct - ((o.usedBytes as number) / (o.capacityBytes as number)) * 100) <= 2
   );
 }
+export const isObservation = valid;
 
 /**
  * bulk-load.ts thresholds: pause at 70, resume below 60, 90 sustained for 120 s is a durable stop.
@@ -114,6 +117,8 @@ export function errorSummary(error: unknown) {
     code?: unknown;
     message?: unknown;
   };
+  // Class 22 (data exception) first lines can quote the offending value.
+  if (typeof code === "string" && code.startsWith("22")) return { code, message: "data exception" };
   return {
     code: typeof code === "string" ? code : null,
     message: String(message ?? error)
