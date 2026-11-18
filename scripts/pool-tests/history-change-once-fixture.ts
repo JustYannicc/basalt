@@ -38,7 +38,15 @@ const homeTables = `CREATE TABLE channel_group(id bigint PRIMARY KEY,channel_nam
     completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
 
 /** Every PL/pgSQL variable the v12 watcher's queries reference, as a future Home column could name it. */
-const triggerVariables = ["mode", "before_row", "after_row", "change_topic", "memo", "pending", "targets"];
+const triggerVariables = [
+  "mode",
+  "before_row",
+  "after_row",
+  "change_topic",
+  "memo",
+  "pending",
+  "targets",
+];
 
 /** One fresh schema at production's v11 state, or after the real v12 apply on top of it. */
 export async function homeChangeFixture<T>(
