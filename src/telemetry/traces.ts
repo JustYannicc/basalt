@@ -17,26 +17,38 @@ interface ParentTrace {
 }
 
 const validTraceparent = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/i;
-const methods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+export const methods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 const timeoutMs = 3000;
 
 function isTelemetryRoute(path: string): boolean {
-  return path === "/__telemetry" || path.startsWith("/__telemetry/") ||
-    path === "/feedback/v1" || path.startsWith("/feedback/v1/") ||
-    path === "/api/telemetry" || path.startsWith("/api/telemetry/");
+  return (
+    path === "/__telemetry" ||
+    path.startsWith("/__telemetry/") ||
+    path === "/feedback/v1" ||
+    path.startsWith("/feedback/v1/") ||
+    path === "/api/telemetry" ||
+    path.startsWith("/api/telemetry/")
+  );
 }
 
-function randomHex(length: number): string {
+export function randomHex(length: number): string {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
   if (bytes.every((byte) => byte === 0)) bytes[length - 1] = 1;
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function parentTrace(request: Request): ParentTrace | undefined {
-  const match = validTraceparent.exec(request.headers.get("traceparent") ?? "");
+/** Only a well-formed W3C parent is continued; anything else starts a new trace. */
+export function parseTraceparent(value: string | null): ParentTrace | undefined {
+  const match = validTraceparent.exec(value ?? "");
   if (!match || /^0+$/.test(match[1]!) || /^0+$/.test(match[2]!)) return undefined;
-  return { traceId: match[1]!.toLowerCase(), spanId: match[2]!.toLowerCase(), flags: match[3]!.toLowerCase() };
+  return {
+    traceId: match[1]!.toLowerCase(),
+    spanId: match[2]!.toLowerCase(),
+    flags: match[3]!.toLowerCase(),
+  };
 }
+
+const parentTrace = (request: Request) => parseTraceparent(request.headers.get("traceparent"));
 
 function sanitizedRequest(request: Request, traceparent?: string): Request {
   const headers = new Headers(request.headers);
@@ -47,7 +59,13 @@ function sanitizedRequest(request: Request, traceparent?: string): Request {
   return new Request(request, { headers });
 }
 
-function traceRequestHeaders(request: Request): { request: Request; traceId: string; spanId: string; parentSpanId?: string; flags: string } {
+function traceRequestHeaders(request: Request): {
+  request: Request;
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  flags: string;
+} {
   const parent = parentTrace(request);
   const traceId = parent?.traceId ?? randomHex(16);
   const spanId = randomHex(8);
@@ -85,7 +103,65 @@ function otlpAttribute(key: string, value: string | number) {
   };
 }
 
-async function exportSpan(
+export interface OtlpSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  /** OTLP span kind: 1 internal, 2 server. */
+  kind: 1 | 2;
+  startUnixNano: bigint;
+  endUnixNano: bigint;
+  attributes: Readonly<Record<string, string | number>>;
+  failed?: boolean;
+}
+
+/** One request to the configured EU trace endpoint. Delivery never alters the operation's response. */
+export async function exportSpans(env: TraceEnv, spans: readonly OtlpSpan[]): Promise<void> {
+  const target = sentryOtlpTarget(env);
+  if (!target || spans.length === 0) return;
+  const data = {
+    resourceSpans: [
+      {
+        resource: {
+          attributes: [otlpAttribute("service.name", "basalt")],
+        },
+        scopeSpans: [
+          {
+            scope: { name: "basalt.telemetry" },
+            spans: spans.map((span) => ({
+              traceId: span.traceId,
+              spanId: span.spanId,
+              ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
+              name: span.name,
+              kind: span.kind,
+              startTimeUnixNano: span.startUnixNano.toString(),
+              endTimeUnixNano: span.endUnixNano.toString(),
+              attributes: Object.entries(span.attributes).map(([key, value]) =>
+                otlpAttribute(key, value),
+              ),
+              ...(span.failed ? { status: { code: 2 } } : {}),
+            })),
+          },
+        ],
+      },
+    ],
+  };
+  try {
+    const response = await fetch(target.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-sentry-auth": target.authHeader },
+      body: JSON.stringify(data),
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    await response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Telemetry delivery must never alter the operation's response.
+  }
+}
+
+function exportSpan(
   env: TraceEnv,
   span: {
     traceId: string;
@@ -99,50 +175,23 @@ async function exportSpan(
     endUnixNano: bigint;
   },
 ): Promise<void> {
-  const target = sentryOtlpTarget(env);
-  if (!target) return;
-  const attributes = [
-    otlpAttribute("http.request.method", span.method),
-    otlpAttribute("http.route", span.route),
-    otlpAttribute("http.response.status_code", span.status),
-  ];
-  const data = {
-    resourceSpans: [{
-      resource: {
-        attributes: [otlpAttribute("service.name", "basalt")],
+  return exportSpans(env, [
+    {
+      traceId: span.traceId,
+      spanId: span.spanId,
+      ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
+      name: span.name,
+      kind: 2,
+      startUnixNano: span.startUnixNano,
+      endUnixNano: span.endUnixNano,
+      attributes: {
+        "http.request.method": span.method,
+        "http.route": span.route,
+        "http.response.status_code": span.status,
       },
-      scopeSpans: [{
-        scope: { name: "basalt.telemetry" },
-        spans: [{
-          traceId: span.traceId,
-          spanId: span.spanId,
-          ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
-          name: span.name,
-          kind: 2,
-          startTimeUnixNano: span.startUnixNano.toString(),
-          endTimeUnixNano: span.endUnixNano.toString(),
-          attributes,
-          ...(span.status >= 500 ? { status: { code: 2 } } : {}),
-        }],
-      }],
-    }],
-  };
-  try {
-    const response = await fetch(target.url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-sentry-auth": target.authHeader },
-      body: JSON.stringify(data),
-      redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (response.status < 200 || response.status >= 300) {
-      await response.body?.cancel().catch(() => undefined);
-      return;
-    }
-    await response.body?.cancel().catch(() => undefined);
-  } catch {
-    // Telemetry delivery must never alter the operation's response.
-  }
+      ...(span.status >= 500 ? { failed: true } : {}),
+    },
+  ]);
 }
 
 /**
@@ -159,7 +208,9 @@ export async function traceRequest(
   // Reporting requests must not emit spans or errors back into their own telemetry destination.
   if (isTelemetryRoute(pathname)) {
     const parent = parentTrace(request);
-    return handler(sanitizedRequest(request, parent && `00-${parent.traceId}-${parent.spanId}-${parent.flags}`));
+    return handler(
+      sanitizedRequest(request, parent && `00-${parent.traceId}-${parent.spanId}-${parent.flags}`),
+    );
   }
   const route = pageTemplate(pathname);
   const method = methods.has(request.method) ? request.method : "OTHER";
@@ -182,17 +233,20 @@ export async function traceRequest(
   const endUnixNano = startUnixNano + BigInt(Math.round(elapsed * 1_000_000));
   if (status >= 500 && !didThrow) schedule(context, captureError(env, `http_${status}`, route));
   if ((Number.parseInt(parent.flags, 16) & 1) !== 0) {
-    schedule(context, exportSpan(env, {
-      traceId: parent.traceId,
-      spanId: parent.spanId,
-      ...(parent.parentSpanId ? { parentSpanId: parent.parentSpanId } : {}),
-      name: `${method} ${route}`,
-      method,
-      route,
-      status,
-      startUnixNano,
-      endUnixNano,
-    }));
+    schedule(
+      context,
+      exportSpan(env, {
+        traceId: parent.traceId,
+        spanId: parent.spanId,
+        ...(parent.parentSpanId ? { parentSpanId: parent.parentSpanId } : {}),
+        name: `${method} ${route}`,
+        method,
+        route,
+        status,
+        startUnixNano,
+        endUnixNano,
+      }),
+    );
   }
   if (didThrow) throw thrown;
   return response!;

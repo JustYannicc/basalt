@@ -3,6 +3,7 @@ import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { accessPath } from "./access-contract.ts";
 import type { HomeApiKeyLookup } from "./model-auth.ts";
+import { poolReceiveHeader } from "./pool-arrival.ts";
 
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -46,6 +47,16 @@ const {
   ): Promise<Response>;
 } = await import(workerModule);
 hooks.deregister();
+
+/** Everything a caller sent arrives as sent; the Worker adds only its own receive times. */
+function assertForwarded(forwarded: Request, sent: Request) {
+  assert.equal(forwarded.method, sent.method);
+  assert.equal(forwarded.url, sent.url);
+  const headers = new Headers(forwarded.headers);
+  assert.match(headers.get(poolReceiveHeader) ?? "", /^\d{13},\d{13}$/);
+  headers.delete(poolReceiveHeader);
+  assert.deepEqual([...headers], [...sent.headers]);
+}
 
 function poolStub(connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool") {
   const calls = { lookups: 0, forwarded: [] as Request[] };
@@ -130,7 +141,7 @@ test("the exported Worker rejects bad credentials before controller lookup and p
     assert.equal(calls.lookups, status === 202 ? 1 : 0);
     assert.equal(calls.forwarded.length, status === 202 ? 1 : 0);
     if (status === 202) {
-      assert.equal(calls.forwarded[0], request);
+      assertForwarded(calls.forwarded[0]!, request);
       if (request.method === "POST")
         assert.equal(await calls.forwarded[0]!.text(), "unchanged model request");
     }
@@ -237,7 +248,8 @@ test("any matching candidate continues unchanged through the pool Durable Object
   assert.deepEqual(checked, ["wrong-bearer-key", "valid-home-key", "wrong-query-key"]);
   assert.equal(calls.lookups, 1);
   assert.equal(calls.forwarded.length, 1);
-  assert.equal(calls.forwarded[0], request);
+  assertForwarded(calls.forwarded[0]!, request);
+  assert.equal(await calls.forwarded[0]!.text(), "model request");
 });
 
 test("valid legacy Home key transports continue to the pool Durable Object", async () => {

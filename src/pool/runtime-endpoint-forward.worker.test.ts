@@ -29,6 +29,7 @@ for (const failure of ["throw", "refusal"] as const)
     const response = await forwardPoolRequest(new Request("http://pool/v1/models"), 8317, {
       env: { POOL_APP_SIGNING_KEY: "synthetic" },
       memberships: { configured: async () => false },
+      streams: { active: 0 },
       route: async () => {
         try {
           await driver.health(slotIdentity("primary"), AbortSignal.timeout(2000));

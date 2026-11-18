@@ -106,6 +106,10 @@ import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
+import { poolArrival, stampPoolReceive, type PoolArrival } from "./pool-arrival.ts";
+import { startPoolRequestEvent } from "../telemetry/pool-request.ts";
+import { pageTemplate } from "../telemetry/privacy.ts";
+import { endpointMetadata } from "./model-history/record.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { captureError } from "../telemetry/sentry.ts";
@@ -752,6 +756,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    // Before the first await: what follows is this object's own work, not time spent queued for it.
+    const arrival = poolArrival(request);
+    request = arrival.request;
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
       return readCommittedPoolChanges(request, {
@@ -940,13 +947,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
-    return this.forward(request);
+    return this.forward(request, undefined, arrival);
   }
 
-  private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
+  private forward(
+    request: Request,
+    appModel?: ModelIdentity,
+    arrival?: PoolArrival,
+  ): Promise<Response> {
     const port = poolPort(new URL(request.url).pathname);
     return forwardPoolRequest(request, port, {
       ...(appModel === undefined ? {} : { appModel }),
+      ...(arrival === undefined ? {} : { arrival }),
       env: this.env,
       computers: this.computers,
       memberships: this.memberships,
@@ -978,11 +990,50 @@ function singleton(env: PoolEnvironment) {
   return env.PoolContainer.jurisdiction("eu").getByName("control-plane");
 }
 
+/**
+ * Every call to the pool's Durable Object carries the Worker's receive times. A call that fails
+ * before the object answers is the one request the object can never report itself.
+ */
+async function callController(
+  request: Request,
+  env: PoolEnvironment,
+  receivedAt: number,
+  defer: (work: Promise<unknown>) => void,
+): Promise<Response> {
+  const calledAt = Date.now();
+  try {
+    return await singleton(env).fetch(stampPoolReceive(request, receivedAt, calledAt));
+  } catch (error) {
+    const pathname = new URL(request.url).pathname;
+    const event = startPoolRequestEvent(env, () => ({
+      requestId: crypto.randomUUID(),
+      method: request.method,
+      route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
+      port: poolPort(pathname),
+      receivedAt,
+      calledAt,
+      traceparent: request.headers.get("traceparent"),
+      defer,
+    }));
+    event?.set({
+      cause:
+        error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
+      // Cloudflare marks an error from an object that has more work queued than it can take.
+      overloaded:
+        typeof error === "object" && error !== null && Reflect.get(error, "overloaded") === true,
+    });
+    event?.end({ outcome: "controller_unavailable" });
+    throw error;
+  }
+}
+
 export async function handlePoolWorkerRequest(
   request: Request,
   env: PoolEnvironment,
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
+  defer: (work: Promise<unknown>) => void = (work) => void work,
 ): Promise<Response> {
+  const receivedAt = Date.now();
   request = stripModelLifetimeRequest(request);
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)
@@ -1002,7 +1053,7 @@ export async function handlePoolWorkerRequest(
     pathname === nativeControlPath ||
     pathname === nativeSessionPath
   )
-    return singleton(env).fetch(request);
+    return callController(request, env, receivedAt, defer);
   if (
     pathname !== accountAcquisitionPath &&
     pathname !== accessPath &&
@@ -1014,7 +1065,8 @@ export async function handlePoolWorkerRequest(
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {
-    if (request.headers.has(nativeModelHeader)) return singleton(env).fetch(request);
+    if (request.headers.has(nativeModelHeader))
+      return callController(request, env, receivedAt, defer);
     const { supplied, values } = homeApiKeyCandidates(request);
     if (!supplied) return modelAuthResponse(401, "Missing API key");
     if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
@@ -1027,7 +1079,7 @@ export async function handlePoolWorkerRequest(
       return modelAuthResponse(503, "Authentication service unavailable");
     }
   }
-  return singleton(env).fetch(request);
+  return callController(request, env, receivedAt, defer);
 }
 
 function modelAuthResponse(status: 401 | 503, error: string): Response {
@@ -1119,8 +1171,10 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
 }
 
 export default {
-  fetch(request: Request, env: PoolEnvironment) {
-    return handlePoolWorkerRequest(request, env);
+  fetch(request: Request, env: PoolEnvironment, ctx?: ExecutionContext) {
+    return handlePoolWorkerRequest(request, env, hasActiveHomeApiKey, (work) =>
+      ctx ? ctx.waitUntil(work) : void work,
+    );
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
     if (event.cron === availabilityCron) {

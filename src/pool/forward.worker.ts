@@ -39,6 +39,9 @@ import { endpointMetadata } from "./model-history/record.ts";
 import { terminalSocket } from "./terminal-socket.worker.ts";
 import { captureRefusalModel } from "./refusal-model.ts";
 import { endpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
+import type { PoolArrival } from "./pool-arrival.ts";
+import { startPoolRequestEvent, type PoolRequestOutcome } from "../telemetry/pool-request.ts";
+import { pageTemplate } from "../telemetry/privacy.ts";
 
 interface Dependencies {
   terminal?: TerminalRecorder;
@@ -63,6 +66,8 @@ interface Dependencies {
   protection: RuntimeProtection;
   fetch(request: Request, port: 8317 | 8327): Promise<Response>;
   defer(work: Promise<unknown>): void;
+  /** When the Durable Object received the request, and what the Worker measured before it. */
+  arrival?: PoolArrival;
 }
 
 /** Admission, forwarding and stream lifetime share one refusal path. */
@@ -98,6 +103,28 @@ export async function forwardPoolRequest(
   let modelLease: ReturnType<NativeStreams["acquire"]> | undefined;
   let assertionExpiresAt: number | undefined;
   const started = performance.now();
+  // The prewarm is the Worker's own cron, not a caller's request.
+  const event =
+    pathname === "/__warm"
+      ? undefined
+      : startPoolRequestEvent(deps.env, () => ({
+          requestId,
+          method: request.method,
+          route: endpoint.endpoint ?? pageTemplate(pathname),
+          kind: socketCall ? "socket" : modelCall ? "model" : "other",
+          port,
+          inFlight: deps.streams.active,
+          receivedAt: deps.arrival?.receive?.receivedAt,
+          calledAt: deps.arrival?.receive?.calledAt,
+          arrivedAt: deps.arrival?.at,
+          started: deps.arrival?.started,
+          traceparent: request.headers.get("traceparent"),
+          defer: (work) => deps.defer(work),
+        }));
+  const settle = (response: Response, outcome: PoolRequestOutcome) => {
+    event?.end({ outcome, status: response.status });
+    return response;
+  };
   const resolveIdentity = async () => {
     if (identity) return identity;
     const known = native ?? deps.appModel;
@@ -149,6 +176,8 @@ export async function forwardPoolRequest(
       modelLease = gate.lease;
       assertionExpiresAt = gate.assertionExpiresAt;
     }
+    event?.pool(identity?.pool ?? native?.pool ?? deps.appModel?.pool);
+    event?.admitted();
     guard = "runtime_readiness";
     const warm = () => deps.lifecycle.then((lifecycle) => lifecycle.warm());
     if (pathname === "/__warm") {
@@ -162,6 +191,7 @@ export async function forwardPoolRequest(
       refusalModel?.discard();
       guard = "upstream_dispatch";
       dispatched = true;
+      event?.dispatched();
       if (modelCall && !terminal) terminal = observe(requestId);
     };
     const legacy = async (forwarded: Request, prepared: () => void = () => {}) => {
@@ -197,6 +227,7 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch, identity)
       : await legacy(outbound);
     guard = "upstream_response";
+    event?.firstByte();
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
     const runtimeRequestId = endpointRequestId(upstream) ?? requestId;
     if (runtimeRefusal)
@@ -206,7 +237,10 @@ export async function forwardPoolRequest(
         status: upstream.status,
         ...runtimeRefusal,
       });
-    logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
+    event?.home(logDispatchTiming(upstream.headers.get(dispatchTimingHeader)));
+    // A runtime's refusal answers under the runtime's own request ID.
+    if (runtimeRefusal)
+      event?.set({ ...runtimeRefusal, runtimeRefused: true, responseRequestId: runtimeRequestId });
     let response = await rewriteCapResponse(upstream, pathname);
     if (modelCall && request.method === "POST" && response.ok)
       deps.defer(
@@ -248,7 +282,11 @@ export async function forwardPoolRequest(
             )
           : response;
       const forwarded = native === undefined ? relayed : nativeResponse(relayed, native);
-      return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
+      // A held socket's lifetime is the conversation's, not a wait this event explains.
+      return settle(
+        modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease),
+        "upgraded",
+      );
     }
     if (terminal && upstream.headers.get("X-Basalt-Request-Id") !== requestId) {
       terminal("unavailable", response.status, 0);
@@ -263,15 +301,20 @@ export async function forwardPoolRequest(
       headers.set("X-Request-Id", runtimeRefusal ? runtimeRequestId : requestId);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
+    if (observedBoot) event?.set({ boot: observedBoot });
     const forwarded = new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers,
     });
-    const observed = terminal
+    const finishTerminal = terminal;
+    const observed = finishTerminal
       ? terminalResponse(
           forwarded,
-          terminal,
+          (outcome, status, bytes) => {
+            finishTerminal(outcome, status, bytes);
+            event?.end({ outcome, status, bytes });
+          },
           request.signal,
           pathname,
           // A status poll delivers job state, including failure; it does not execute the job again.
@@ -279,6 +322,12 @@ export async function forwardPoolRequest(
         )
       : forwarded;
     const delivered = native === undefined ? observed : nativeResponse(observed, native);
+    // Without a terminal observer nothing reads the body here, so the event ends at the headers.
+    if (!finishTerminal)
+      event?.end({
+        outcome: runtimeRefusal ? "runtime_refused" : "responded",
+        status: response.status,
+      });
     return modelLease === undefined ? delivered : nativeResponse(delivered, modelLease);
   } catch (error) {
     native?.release();
@@ -302,38 +351,50 @@ export async function forwardPoolRequest(
                     ? "Error"
                     : "unknown",
     };
+    event?.set({
+      guard: diagnostic.guard,
+      cause: diagnostic.cause,
+      refusalReason: diagnostic.refusalReason,
+      runtimeStep: diagnostic.runtimeStep,
+      runtimeReason: diagnostic.runtimeReason,
+      responseRequestId: diagnostic.runtimeEndpointRequestId,
+    });
     if (dispatched && isPublicModelPath(pathname)) {
       terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
-      return gatewayOutcomeUnknown(
-        deps.env,
-        request,
-        (work) => deps.defer(work),
-        diagnostic,
-        requestId,
+      return settle(
+        gatewayOutcomeUnknown(deps.env, request, (work) => deps.defer(work), diagnostic, requestId),
+        "outcome_unknown",
       );
     }
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
-    if (error instanceof ControlFailure) return failureResponse(error);
+    event?.pool(identity?.pool);
+    if (error instanceof ControlFailure) return settle(failureResponse(error), "refused");
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))
-      return gatewayUnavailable(
-        deps.env,
-        request,
-        identity,
-        started,
-        (work) => deps.defer(work),
-        diagnostic,
-        requestId,
-        refusalModel?.read(),
+      return settle(
+        gatewayUnavailable(
+          deps.env,
+          request,
+          identity,
+          started,
+          (work) => deps.defer(work),
+          diagnostic,
+          requestId,
+          refusalModel?.read(),
+        ),
+        "refused",
       );
     // Startup and port errors are fixed runtime messages without request data or credentials.
     console.error(
       "Pool backend unavailable",
       error instanceof Error ? error.message.slice(0, 300) : "unknown error",
     );
-    return new Response(null, {
-      status: 503,
-      headers: { "Retry-After": "5", "Cache-Control": "no-store" },
-    });
+    return settle(
+      new Response(null, {
+        status: 503,
+        headers: { "Retry-After": "5", "Cache-Control": "no-store" },
+      }),
+      "refused",
+    );
   } finally {
     refusalModel?.discard();
   }

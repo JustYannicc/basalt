@@ -1,6 +1,6 @@
 # Feedback and telemetry
 
-What the feedback form, error reporting and product analytics send, and where.
+What the feedback form, error reporting, request timings and product analytics send, and where.
 
 `SENTRY_DSN`, `SENTRY_OTLP_ENDPOINT`, `POSTHOG_PROJECT_KEY` and `POSTHOG_HOST` are optional GitHub Actions settings. The DSN enables the feedback form and error reporting. Copy the exact direct OTLP trace endpoint from that project's Client Keys settings into `SENTRY_OTLP_ENDPOINT`; the DSN alone does not select a trace endpoint. Both Sentry settings must use the same EU ingestion host. `POSTHOG_PROJECT_KEY` selects the product analytics project. Set `POSTHOG_HOST` to that project's exact `https://us.i.posthog.com` or `https://eu.i.posthog.com` ingestion origin. Omission preserves the EU default. Product analytics currently uses an existing US project; Sentry remains in the EU. Missing settings disable the corresponding feature and produce a deployment warning.
 
@@ -8,6 +8,23 @@ The dashboard sidebar's Feedback form (carry 0047) sends what the person writes,
 
 Product events use opaque account IDs and a closed property allowlist. Catalog misses carry a known service identifier only when the local catalog yields one unambiguous match; the raw query never leaves the tools service. Product analytics never receives names, email addresses, credentials, tool arguments, results or model content. Browser autocapture and person profiles are disabled. All vendor requests originate in Workers and omit client headers.
 
+Each request the pool forwards to its runtime produces one timing event. It says how long the request spent:
+
+- in the Worker before the pool's Durable Object was called (`workerMs`);
+- waiting for that object's handler to start, including the network hop to it (`queueMs`);
+- in admission: the organization check, identity and membership (`admissionMs`);
+- in dispatch: runtime readiness, protection and routing, including retries (`dispatchMs`);
+- between handing the request to the runtime and its response headers (`firstByteMs`), or until it failed without answering (`unansweredMs`);
+- in the response body (`streamMs`), only while model history observes that body.
+
+`totalMs` is their sum, and `durationMs` is evlog's own measure of the time inside the forwarding step. The dispatch stages Home reports arrive as `home…Ms` fields, with `homeFaults` naming a stage that did not finish. The event also has a closed `outcome`, the response status, the response size when the body was observed, and the guard and cause of a refusal.
+
+To group a burst it carries the pool's request ID, a trace ID, the runtime's boot ID, the number of model streams already open and `poolRef`, a short hash of the pool's ID. The request ID is the `X-Request-Id` the caller received on a model call; a runtime's refusal answers under its own ID, recorded as `responseRequestId`. A valid `traceparent` from the caller is continued, so its trace ID is the caller's. Nothing else from a request or a response enters the event: no path beyond a fixed route label, no other header, no body, no model name, no person and no key.
+
+The event is written to Workers Logs. When both Sentry settings are present and the trace is sampled, it is also sent to Sentry as one trace: the event's fields on the request's span and one child span per step that took a millisecond or more.
+
+A call that fails before the Durable Object answers, for example because the object is overloaded, is reported by the Worker with `outcome: controller_unavailable` and its wait as `queueMs`. These requests produce no event: one refused for a missing or invalid key, one the Durable Object answers without forwarding, and the Worker's own prewarm. A caller that disconnects while its request waits for the object may leave none either. A request from another app through the pool's app-model route has no `workerMs` or `queueMs`. Inside a fleet, the wait for a runtime's own Durable Object is part of `firstByteMs`.
+
 The activation funnel uses `sign_up`, `pool_created`, `account_connected`, `setup_started` and `first_model_request`, in that order. `setup_completed` follows successful model and MCP tool observations and can be measured after first use. Local tests prove event shapes, authenticated web and agent feedback delivery to a capture server, redaction and Worker compatibility. Actual vendor ingestion, EU project configuration and a real activation funnel require live acceptance after deployment.
 
-API Worker size checks enable the optional destinations with synthetic settings. The upstream cold-start budget remains 5,450,000 bytes of uncompressed JavaScript. Vendor SDKs are not added by the destination patches; the router uses small HTTP transports. Direct Sentry error and trace exporters strip arbitrary exception text and attributes before sending. Cloudflare platform trace export is disabled in this mode because it can include raw URLs or IP addresses.
+API Worker size checks enable the optional destinations with synthetic settings. The upstream cold-start budget remains 5,450,000 bytes of uncompressed JavaScript. Vendor SDKs are not added by the destination patches; the router uses small HTTP transports. Direct Sentry error and trace exporters send fixed codes, fixed route labels and closed attributes, never exception text. Cloudflare platform trace export is disabled in this mode because it can include raw URLs or IP addresses.

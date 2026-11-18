@@ -197,8 +197,8 @@ model {
 
     telemetry = module "Telemetry" {
       #basalt #v1 #deep #funnel
-      description "Shared privacy-filtered HTTP boundary for product events, feedback, traces and errors. Product events carry account IDs and allowlisted properties, never content, credentials or email. AccountConnected remains distinct from app_installed. Direct diagnostic export disables runtime platform trace export; only scrubbed Effect spans and router traces reach the observability adapter. Diagnostic DSN, OTLP endpoint and product capture key settings are optional."
-      metadata { code "src/telemetry" }
+      description "Shared privacy-filtered HTTP boundary for product events, feedback, traces and errors. Product events carry account IDs and allowlisted properties, never content, credentials or email. AccountConnected remains distinct from app_installed. Direct diagnostic export disables runtime platform trace export; only scrubbed Effect spans, router traces and pool request traces reach the observability adapter. Diagnostic DSN, OTLP endpoint and product capture key settings are optional. Each request the model gateway forwards to the pool runtime emits one content-free wide event: the time spent in the Worker before the pool controller was called, waiting for the controller, in admission, in dispatch, before the runtime's first byte or until it failed unanswered, and in an observed stream, with Home's reported dispatch stages, a closed outcome, the pool's request ID and a short hash of the pool ID. A call the controller never answers is reported by the Worker as waiting time. The event reaches the runtime log and, as one sampled trace with a span per step, the trace exporter. The model gateway carries the Worker's receive times to the controller in a header its public entry overwrites on every call and the controller strips from every request. Labels are checked against closed shapes at this boundary; paths, other headers, bodies, model names, people and keys never enter the event."
+      metadata { code "src/telemetry"; libraries "evlog" }
     }
 
     setupInstaller = module "Config installer" {
