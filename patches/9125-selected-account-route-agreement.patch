@@ -1,0 +1,78 @@
+diff --git a/e2e/support/pool-source-query-proof.ts b/e2e/support/pool-source-query-proof.ts
+--- a/e2e/support/pool-source-query-proof.ts
++++ b/e2e/support/pool-source-query-proof.ts
+@@ -17,10 +17,26 @@
+     content: `import { json } from "apps";
+ import { createAppClient, queryReference } from "apps/client";
+ const client = createAppClient();
+-Object.assign(globalThis, { sourceViews: (accounts: string[]) => Promise.all(accounts.map(account => client.query(queryReference("resolve"), {account}, json()))) });`,
++Object.assign(globalThis, {
++  sourceViews: (accounts: string[]) => Promise.all(accounts.map(account => client.query(queryReference("resolve"), {account}, json()))),
++  sourceInspections: (accounts: string[]) => Promise.all(accounts.map(account => client.query(queryReference("inspect"), {account}, json()).then(value => ({value}), error => ({error: String(error)})))),
++});`,
+   },
+ ];
+ 
++/**
++ * Each account's native read through the app page `sourceQueryProof` opened. A refused query is
++ * kept as its error, so the caller compares every account with the same read through tools/call.
++ */
++export const sourceInspections = (name: string, accounts: readonly string[]) =>
++  Effect.flatMap(Browser, (browser) =>
++    browser.use(
++      `Run three concurrent ${name} native reads through the app page`,
++      (page): Promise<unknown> =>
++        page.evaluate(`globalThis.sourceInspections(${JSON.stringify(accounts)})`),
++    ),
++  );
++
+ /** Observe each real query's own SQL trace without retaining statements or bind values. */
+ export const sourceQueryProof = (actor: Session, appPath: string) =>
+   Effect.gen(function* () {
+diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-account-source-bindings.spec.ts
+--- a/e2e/tests/pool-account-source-bindings.spec.ts
++++ b/e2e/tests/pool-account-source-bindings.spec.ts
+@@ -1,6 +1,10 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+-import { sourceQueryFiles, sourceQueryProof } from "../support/pool-source-query-proof.ts";
++import {
++  sourceInspections,
++  sourceQueryFiles,
++  sourceQueryProof,
++} from "../support/pool-source-query-proof.ts";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body, type Session } from "../support/api.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+@@ -39,6 +43,10 @@
+ ]);
+ const Resolution = Schema.Struct({ selected: Schema.Array(Schema.String), account: Schema.String });
+ const Inspection = Schema.Struct({ selected: Schema.Array(Schema.String), native: Native });
++const PageInspection = Schema.Union([
++  Schema.Struct({ value: Inspection }),
++  Schema.Struct({ error: Schema.String }),
++]);
+ const View = Schema.Struct({
+   selected: Schema.Array(Schema.String),
+   native: Native,
+@@ -345,6 +353,20 @@
+               state: "available",
+               sourceConnection: { target: expectedAmbiguous, account: ambiguous },
+             });
++            // The app page and tools/call are two routes to one member and one saved selection.
++            // Each account's native read must agree: a usable account is never denied on the
++            // page, and a revoked selection is refused on both.
++            const pages = yield* Schema.decodeUnknownEffect(Schema.Array(PageInspection))(
++              yield* sourceInspections(name, inputs),
++            );
++            expect
++              .soft(
++                pages.map((page) => ("value" in page ? page.value.native : page)),
++                `${name}: native reads through the app page match tools/call`,
++              )
++              .toEqual(replies.map((reply) => reply.native));
++            for (const page of pages)
++              if ("value" in page) expect.soft(page.value.selected).toEqual(selected);
+           });
+ 
+         yield* concurrentViews("disabled", true, second);
