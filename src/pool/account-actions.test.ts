@@ -294,6 +294,8 @@ test("Codex credit reads preserve usable metadata and exclude expired or unrelat
       usableNow: null,
       requiresLimit: false,
       clears: null,
+      kind: "unknown",
+      scope: { kind: "account" },
     },
   ]);
   assert.equal(JSON.stringify(value).includes("SECRET-NOT-IN-RESULTS"), false);
