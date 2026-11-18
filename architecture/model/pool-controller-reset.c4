@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "The runtime adapter may end the single pool controller instance at any time and asks callers to reconnect. The model gateway entry treats that closed error class, never an overloaded one, as a controller reset. The controller may already have dispatched any request it received, so the entry replays only a safe read that writes no request record, account choice or usage: GET or HEAD without an upgrade, excluding video status polls. It waits one second, re-resolves the controller and sends once more; a second reset returns retry advice. Every other request that failed before its response gets the native retry advice with Retry-After of one second: overloaded status 529 for messages, a server error 503 for other model routes and the backend-unavailable 503 for control routes. A started stream is never replayed and ends with the native retry terminal. Each event writes one closed POOL_CONTROLLER_INTERRUPTED line with count 1, outcome, cause, method and endpoint template, and one pool_controller_interrupted observability adapter event joined by request identifier. Exception text, query strings and bodies never enter either."
+    }
+  }
+}

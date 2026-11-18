@@ -26,7 +26,11 @@ export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
 }
 
 /** Once headers commit, only a native SSE terminal can describe the interruption. */
-export function nativeRuntimeStream(response: Response, request: Request) {
+export function nativeRuntimeStream(
+  response: Response,
+  request: Request,
+  interrupted?: (error: unknown) => void,
+) {
   if (
     !response.ok ||
     !response.body ||
@@ -106,6 +110,7 @@ export function nativeRuntimeStream(response: Response, request: Request) {
             controller.error(error);
             return;
           }
+          interrupted?.(error);
           const event = claude
             ? { type: "error", error: { type: "overloaded_error", message } }
             : {
