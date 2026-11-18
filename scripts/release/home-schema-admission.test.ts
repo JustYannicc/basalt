@@ -41,7 +41,7 @@ const transition = {
 async function declarations(context: { after(fn: () => Promise<void>): void }, value: unknown) {
   const root = await mkdtemp(join(tmpdir(), "home-schema-admission-"));
   context.after(() => rm(root, { recursive: true, force: true }));
-  const path = join(root, "scripts/release-barrier");
+  const path = join(root, "scripts/release");
   await mkdir(path, { recursive: true });
   await writeFile(join(path, "home-schema-admissions.json"), JSON.stringify(value));
   return homeSchemaAdmission(root);

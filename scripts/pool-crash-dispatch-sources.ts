@@ -12,15 +12,7 @@ export class RunListRefused extends Error {
   }
 }
 
-/** The account and PoolWorker script a crash command is sent to. */
-export type ReleaseTarget = { accountId: string; worker: string };
-/** The root PoolContainer application a legacy slot witness names. */
-export type RootApplication = {
-  applicationId: string;
-  applicationVersion: string;
-  imageDigest: string;
-  imageInput: string;
-};
+export type { ReleaseTarget, RootApplication } from "./pool-fleet/release-target.ts";
 
 /** The dispatch title is the only durable record a fresh runner has of earlier nonces. */
 export const workflowRunLister =
@@ -57,58 +49,54 @@ export const workflowRunLister =
   };
 
 /** Native release provenance names the worker; every State write and non-GET fetch is refused. */
-export async function readReleaseTarget(
-  env: NodeJS.ProcessEnv,
-): Promise<ReleaseTarget & { root: RootApplication }> {
+export async function readReleaseTarget(env: NodeJS.ProcessEnv) {
   // Loaded lazily so refusals and offline tests never initialize the deployment SDK.
-  const [{ Cause, ConfigProvider, Context, Effect, Exit, Logger }, { FetchHttpClient }] =
-    await Promise.all([import("effect"), import("effect/http")]);
-  const [{ State }, { evalStack }] = await Promise.all([
+  const [{ Cause, ConfigProvider, Effect, Exit, Logger }, { FetchHttpClient }] = await Promise.all([
+    import("effect"),
+    import("effect/http"),
+  ]);
+  const [{ State }, { Stack, evalStack }, Cloudflare, { stackState }, target] = await Promise.all([
     import("alchemy/State/State"),
     import("alchemy/Stack"),
+    import("alchemy/Cloudflare"),
+    import("../.upstream/apps/hosted/cloud/src/infrastructure/state.ts"),
+    import("./pool-fleet/release-target.ts"),
   ]);
-  const rehearsal = await import("./release-barrier/release-resume-rehearsal.ts");
-  const { runtimeReleaseState } = await import("./release-barrier/runtime-release-state.ts");
-  const { releaseStateStack } = await import("./release-barrier/release-state-stack.ts");
-  const { assertReleaseStateVersion } = await import("./release-barrier/release-state-version.ts");
-  const { withReleaseRuntime } = await import("./release-barrier/runtime.ts");
+  const { AlchemyContextLive } = await import("alchemy/AlchemyContext");
+  const { layerNonInteractive } = await import("alchemy/Interaction");
+  const { provideFreshArtifactStore } = await import("alchemy/Artifacts");
+  const NodeServices = await import("@effect/platform-node/NodeServices");
+  const { Layer } = await import("effect");
   const { CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: apiToken } = env;
   const encryptionKey = env.EXECUTOR_ENCRYPTION_KEY;
   if (!accountId || !apiToken || !encryptionKey)
     throw new BarrierRefusal("crash-dispatch-release-state-credentials-unavailable", "PoolWorker");
-  const counters = rehearsal.createRehearsalCounters();
+  // Observes saved rows only; it never plans or applies a declaration.
+  const stack = Stack(
+    "basalt",
+    { providers: Cloudflare.providers(), state: stackState },
+    Effect.succeed(undefined),
+  );
   const nativeFetch = globalThis.fetch;
-  const guarded = rehearsal.countReadOnlyProbeFetch(accountId, counters, nativeFetch);
+  const guarded = target.readOnlyFetch(accountId, nativeFetch);
   globalThis.fetch = guarded;
   try {
     const program = evalStack(
-      releaseStateStack,
+      stack,
       (compiled) =>
         Effect.gen(function* () {
-          yield* assertReleaseStateVersion(compiled, guarded, "forward-probe");
-          const state = rehearsal.countReadOnlyState(yield* yield* State, counters);
-          const services = Context.add(compiled.services, State, Effect.succeed(state));
-          const baseline = yield* runtimeReleaseState(compiled).pipe(
-            Effect.provideContext(services),
-          );
-          const root = baseline.applications.root;
-          return {
-            accountId: baseline.target.accountId,
-            worker: baseline.target.worker,
-            root: {
-              applicationId: root.attributes.applicationId,
-              applicationVersion: String(root.attributes.version),
-              // An image without a pinned digest leaves this empty; the witness then reports "not sent".
-              imageDigest: root.attributes.configuration.image.split("@")[1] ?? "",
-              imageInput: root.image.inputHash,
-            },
-          };
+          const state = target.readOnlyState(yield* yield* State);
+          return yield* target.releaseTargetFromState(state, compiled.name, compiled.stage);
         }).pipe(Effect.provideContext(compiled.services)),
       { stage: "production" },
     );
     const exit = await Effect.runPromiseExit(
       program.pipe(
-        withReleaseRuntime,
+        provideFreshArtifactStore,
+        Effect.provide(layerNonInteractive()),
+        Effect.provide(AlchemyContextLive.pipe(Layer.provideMerge(NodeServices.layer))),
+        // evalStack retains State in its type; the evaluated stack supplies its actual store.
+        Effect.provideService(State, Effect.die(new Error("missing compiled state"))),
         Effect.timeout("2 minutes"),
         Effect.provide(Logger.layer([])),
         Effect.provideService(FetchHttpClient.Fetch, guarded),
@@ -128,8 +116,6 @@ export async function readReleaseTarget(
       ),
     );
     if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
-    if (counters.state.writeAttempts || counters.fetch.blockedMutationAttempts)
-      throw new BarrierRefusal("crash-dispatch-release-state-mutation-attempted", "PoolWorker");
     return exit.value;
   } finally {
     // The private operations bridge must not inherit the GET-only guard.

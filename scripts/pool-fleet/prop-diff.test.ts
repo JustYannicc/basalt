@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Redacted } from "effect";
+import { Effect, Redacted } from "effect";
 import { changedProps } from "./prop-diff.ts";
 
 test("public diffs omit credentials, opaque tokens, hosts and arbitrary strings", () => {

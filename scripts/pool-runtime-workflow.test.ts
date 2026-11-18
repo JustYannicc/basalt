@@ -16,7 +16,7 @@ test("restart authority is main-only, serialized with releases and unavailable t
     ),
   );
   const release = parse(
-    await readFile(new URL("../.github/workflows/release-main.yml", import.meta.url), "utf8"),
+    await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"),
   );
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
   assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), [
