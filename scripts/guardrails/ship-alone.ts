@@ -4,16 +4,23 @@ import { onReleasePath, releasePaths, releasePathsAt, unionOfPaths } from "./rel
 
 // A change to how releases are made ships alone, so a failed release can be traced to it and
 // reverted without taking product work with it. Release-path files may travel only with the
-// architecture model, the release docs and package.json (where the test globs live).
-export const companions = ["architecture/**", "docs/releases.md", "package.json"];
+// architecture model, the release docs, package.json (where the test globs live) and the
+// TypeScript project files that register new files for typechecking.
+export const companions = ["architecture/**", "docs/releases.md", "package.json", "tsconfig*.json"];
 
 export type ShipAlone = { pass: boolean; releasePath: string[]; other: string[] };
+
+// A test of a release-path file (`x.test.ts` beside `x.ts`) travels with it.
+const testOf = (file: string, paths: readonly string[]) =>
+  /\.test\./u.test(file) && onReleasePath(file.replace(".test.", "."), paths);
 
 export function shipAlone(files: string[], paths: readonly string[] = releasePaths): ShipAlone {
   const releasePath = files.filter((file) => onReleasePath(file, paths));
   const other = files.filter(
     (file) =>
-      !onReleasePath(file, paths) && !companions.some((pattern) => matchesGlob(file, pattern)),
+      !onReleasePath(file, paths) &&
+      !testOf(file, paths) &&
+      !companions.some((pattern) => matchesGlob(file, pattern)),
   );
   return { pass: releasePath.length === 0 || other.length === 0, releasePath, other };
 }
