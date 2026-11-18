@@ -172,7 +172,7 @@ for (const journal of [true, false])
     // Not vacuous: the request, capture and savepoint retry each produce entries.
     const keys = (index: number) =>
       journal ? legacy[index]!.inside.dirty : legacy[index]!.inside.heads;
-    assert.ok(journal ? keys(0).length === 1 : keys(0).some((row) => row.revision > 0));
+    assert.ok(journal ? keys(0).length === 1 : keys(0).some((row) => Number(row.revision) > 0));
     if (journal) {
       assert.deepEqual(keys(1), [
         { pool: pools[0], topic: "pool-usage" },
