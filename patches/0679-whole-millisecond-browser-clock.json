@@ -1,7 +1,7 @@
 {
   "identity": "basalt-whole-millisecond-browser-clock",
   "file": "0679-whole-millisecond-browser-clock.patch",
-  "content_sha256": "7867dd3f10495195d961917dc4bee578386b776cc1a33dd44c9d3d3524a86119",
+  "content_sha256": "81230588e0962a25d922384883cf909aedb993964cfbb525f3dad5a9df694110",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
