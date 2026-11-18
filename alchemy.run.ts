@@ -130,31 +130,13 @@ export default Alchemy.Stack(
       timeout: "1 minute",
     });
     yield* cloudDeployment;
+    let previewMigration: Effect.Success<ReturnType<typeof previewDatabase>> | undefined;
     if (preview !== undefined) {
-      const migration = yield* previewDatabase({
+      previewMigration = yield* previewDatabase({
         name: stage,
         slug: preview.names.slug,
         domain: preview.domain,
         origin: previewStageOrigin(preview.names.slug, preview.domain, false),
-      });
-      const seedScript = fileURLToPath(new URL("./scripts/preview-auth/seed.ts", import.meta.url));
-      yield* Command.Exec("PreviewAuthSeed", {
-        command: `node ${basename(seedScript)}`,
-        cwd: dirname(seedScript),
-        env: {
-          ALCHEMY_STAGE: stage,
-          TEST_STAGE_DOMAIN: preview.domain,
-          BETTER_AUTH_URL: previewStageOrigin(preview.names.slug, preview.domain),
-          DATABASE_URL: migration.migrationUrl,
-          TEST_STAGE_DATABASE_BRANCH: migration.branchName,
-          TEST_STAGE_DATABASE_NAME: migration.databaseName,
-          TEST_STAGE_DATABASE_USERNAME: migration.username,
-          PREVIEW_SMOKE_EMAIL: yield* Config.String("PREVIEW_SMOKE_EMAIL"),
-          PREVIEW_SMOKE_PASSWORD: yield* Config.Redacted("PREVIEW_SMOKE_PASSWORD"),
-          PREVIEW_AUTH_SEED_OUTPUT: yield* Config.NonEmptyString("PREVIEW_AUTH_SEED_OUTPUT"),
-        },
-        memo: false,
-        timeout: "2 minutes",
       });
     }
     const api = yield* Api;
@@ -248,6 +230,31 @@ export default Alchemy.Stack(
         SOURCE_NAMESPACE_READY: namespace.hash.pipe(Output.map(() => "eu")),
       },
     });
+    if (preview !== undefined && previewMigration !== undefined) {
+      const seedScript = fileURLToPath(new URL("./scripts/preview-auth/seed.ts", import.meta.url));
+      yield* Command.Exec("PreviewAuthSeed", {
+        command: `node ${basename(seedScript)}`,
+        cwd: dirname(seedScript),
+        env: {
+          ALCHEMY_STAGE: stage,
+          TEST_STAGE_DOMAIN: preview.domain,
+          BETTER_AUTH_URL: previewStageOrigin(preview.names.slug, preview.domain),
+          DATABASE_URL: previewMigration.migrationUrl,
+          TEST_STAGE_DATABASE_BRANCH: previewMigration.branchName,
+          TEST_STAGE_DATABASE_NAME: previewMigration.databaseName,
+          TEST_STAGE_DATABASE_USERNAME: previewMigration.username,
+          PREVIEW_SMOKE_EMAIL: yield* Config.String("PREVIEW_SMOKE_EMAIL"),
+          PREVIEW_SMOKE_PASSWORD: yield* Config.Redacted("PREVIEW_SMOKE_PASSWORD"),
+          PREVIEW_AUTH_SEED_OUTPUT: yield* Config.NonEmptyString("PREVIEW_AUTH_SEED_OUTPUT"),
+          // Alchemy orders work only by inputs: the seed signs in through these, so it waits for them.
+          PREVIEW_STACK_DEPLOYED: Output.all(router.hash, api.hash, pool.hash).pipe(
+            Output.map((hashes) => hashes.join(":")),
+          ),
+        },
+        memo: false,
+        timeout: "5 minutes",
+      });
+    }
     return { url: router.url, emailReady };
   }).pipe(adopt(true), Effect.provide(cloudWorkers)),
 );

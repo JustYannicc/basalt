@@ -192,7 +192,8 @@ async function runAlchemy(
       "--no-input",
     ),
     cloudDirectory,
-    environment,
+    // Provider credentials alone have no PATH or HOME; the CLI needs both to start.
+    { ...safeEnvironment(process.env), ...environment },
   );
 }
 
@@ -348,7 +349,7 @@ function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
         "bun",
         [join(rootFromModule, "scripts/preview/stage-outputs.ts"), mode, identity.stage],
         rootFromModule,
-        { ...environment, ALCHEMY_STAGE: identity.stage },
+        { ...safeEnvironment(process.env), ...environment, ALCHEMY_STAGE: identity.stage },
       ),
   };
 }

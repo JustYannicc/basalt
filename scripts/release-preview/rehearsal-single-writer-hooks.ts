@@ -111,6 +111,8 @@ export function singleWriterHooks(context: SingleWriterContext) {
             {
               ...context.writerEnvironment(),
               BASALT_RELEASE_ATTEMPT: randomUUID(),
+              // Evaluating a disposable stage's stack reads the seed output path, as its release does.
+              PREVIEW_AUTH_SEED_OUTPUT: join(privateRoot, `seed-probe-${randomUUID()}.json`),
             },
             5,
             "bun",
