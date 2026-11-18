@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkpoint } from "./checkpoint.ts";
 import { privateOperation } from "./process.ts";
+import { describeError, redactor } from "./redact.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 
 /** Which rehearsal stages a finished, unsuccessful rehearsal run left a checkpoint for. */
@@ -132,8 +133,9 @@ async function main(): Promise<void> {
         phase = destroyed ? "verify" : "destroy and verify";
         await operation("verify");
         if (!destroyed) { phase = "destroy"; throw new Error("destroy"); }
-      } catch {
+      } catch (error) {
         failures.push(new Error(`${slug}: ${phase} failed`));
+        console.error(describeError(error, redactor(process.env)));
       }
     }
     if (failures.length) {
@@ -148,5 +150,9 @@ async function main(): Promise<void> {
 
 if (process.argv[1]?.endsWith("/rehearsal-cleanup.ts")) {
   try { await main(); }
-  catch { console.error("Rehearsal cleanup failed; provider resource absence is not established"); process.exitCode = 1; }
+  catch (error) {
+    console.error(describeError(error, redactor(process.env)));
+    console.error("Rehearsal cleanup failed; provider resource absence is not established");
+    process.exitCode = 1;
+  }
 }

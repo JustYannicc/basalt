@@ -139,3 +139,13 @@ test("a rehearsal reads its own stack name and refuses records from a PR stack",
   for (const other of ["production", "test-e2e-17", "test-pr-0"])
     await assert.rejects(reader.read(other));
 });
+
+test("no script launches a package bin with a bare bun exec, which drops its arguments or misses the bin", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { readFileSync } = await import("node:fs");
+  const files = execFileSync("git", ["ls-files", "scripts/*.ts", "scripts/**/*.ts"], { encoding: "utf8" })
+    .split("\n").filter((file) => file && !file.endsWith(".test.ts"));
+  // "bun" then "exec" then a bare bin name, on one line or split across lines.
+  const offenders = files.filter((file) => /"bun",\s*\[?\s*"exec",\s*"[a-z]/u.test(readFileSync(file, "utf8")));
+  assert.deepEqual(offenders, []);
+});

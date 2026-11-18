@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { open } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
+import { redactor } from "./redact.ts";
 
 type Operation = {
   label: string;
@@ -12,7 +13,18 @@ type Operation = {
   signal?: AbortSignal;
 };
 
-/** Capture provider output privately. Errors exposed to Actions have fixed, credential-free labels. */
+/**
+ * Capture provider output in a private log. A failure prints that log's tail with every secret
+ * value redacted: a swallowed error once cost a whole release cycle.
+ */
+/** The redacted tail of a failed child's own output, so the job log always shows the real error. */
+async function printFailure(operation: Operation): Promise<void> {
+  const text = await readFile(operation.logPath, "utf8").catch(() => "");
+  const redact = redactor(operation.environment, process.env);
+  const tail = text.split(/\r?\n/u).filter(Boolean).slice(-60).join("\n");
+  console.error(`::group::${operation.label} output (last 60 lines, secrets redacted)\n${redact(tail)}\n::endgroup::`);
+}
+
 export async function privateOperation(operation: Operation): Promise<void> {
   if (!/^[a-z-]+$/.test(operation.label)) throw new Error("Invalid preview operation label");
   const log = await open(operation.logPath, "wx", 0o600);
@@ -59,9 +71,11 @@ export async function privateOperation(operation: Operation): Promise<void> {
       operation.signal?.removeEventListener("abort", abort);
       await Promise.all(writes);
     }
-    if (cancelled) throw new Error(`Preview ${operation.label} cancelled`);
-    if (timedOut) throw new Error(`Preview ${operation.label} timed out`);
-    if (oversized) throw new Error(`Preview ${operation.label} exceeded its output limit`);
-    if (code !== 0) throw new Error(`Preview ${operation.label} failed`);
-  } finally { await log.close(); }
+    const failure = cancelled ? "cancelled" : timedOut ? "timed out" : oversized ? "exceeded its output limit" : code !== 0 ? "failed" : undefined;
+    if (failure) {
+      await log.close();
+      await printFailure(operation);
+      throw new Error(`Preview ${operation.label} ${failure}`);
+    }
+  } finally { await log.close().catch(() => {}); }
 }

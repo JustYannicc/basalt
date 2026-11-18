@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { redactor } from "../release-preview/redact.ts";
+import { alchemyArgs } from "../alchemy.ts";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
 import {
@@ -37,7 +39,7 @@ export interface PreviewStateReader {
   read(stage: string): Promise<Readonly<Record<PreviewStack, readonly PreviewStateEntry[]>>>;
 }
 
-type CommandResult = { readonly status: number | null; readonly stdout: string; readonly error?: Error | undefined };
+type CommandResult = { readonly status: number | null; readonly stdout: string; readonly stderr?: string; readonly error?: Error | undefined };
 export type StateCommand = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => CommandResult;
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -125,14 +127,14 @@ export function parsePreviewInventory(value: unknown, stage: string): PreviewInv
 }
 
 function defaultStateCommand(args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): CommandResult {
-  const result = spawnSync("bun", ["exec", "alchemy", ...args], {
+  const result = spawnSync("bun", alchemyArgs(...args), {
     cwd,
     env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 16 * 1024 * 1024,
   });
-  return { status: result.status, stdout: result.stdout ?? "", error: result.error };
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", error: result.error };
 }
 
 function runStateCommand(
@@ -141,7 +143,11 @@ function runStateCommand(
   env: NodeJS.ProcessEnv,
 ): string {
   const result = command(args, cloudDirectory, env);
-  if (result.error || result.status !== 0) throw new Error("Authenticated Alchemy remote state read failed");
+  if (result.error || result.status !== 0) {
+    const detail = [result.error?.message, ...(result.stderr ?? "").split(/\r?\n/u).filter(Boolean).slice(-20)]
+      .filter(Boolean).join("\n");
+    throw new Error(`Authenticated Alchemy remote state read failed (exit ${result.status ?? "none"})${detail ? `:\n${redactor(env)(detail)}` : ""}`);
+  }
   return result.stdout;
 }
 

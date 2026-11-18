@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { alchemyArgs } from "../alchemy.ts";
+import { describeError, redactor } from "../release-preview/redact.ts";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -166,18 +168,7 @@ async function runAlchemy(
 ): Promise<void> {
   await runChild(
     "bun",
-    [
-      "exec",
-      "alchemy",
-      "--log-level",
-      "none",
-      action,
-      config,
-      "--stage",
-      identity.stage,
-      "--yes",
-      "--no-input",
-    ],
+    alchemyArgs("--log-level", "none", action, config, "--stage", identity.stage, "--yes", "--no-input"),
     cloudDirectory,
     environment,
   );
@@ -482,7 +473,7 @@ export async function planStageVariant(
       output = await new Promise<string>((resolvePlan, rejectPlan) => {
         const child = spawn(
           "bun",
-          ["exec", "alchemy", "plan", mainConfig, "--stage", config.stage, "--no-input"],
+          alchemyArgs("plan", mainConfig, "--stage", config.stage, "--no-input"),
           {
             cwd: cloudDirectory,
             env: { ...config.deploy, ...config.seed, PREVIEW_AUTH_SEED_OUTPUT: seedFile },
@@ -648,7 +639,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     await main();
     console.log("Preview lifecycle step passed");
-  } catch {
+  } catch (error) {
+    console.error(describeError(error, redactor(process.env)));
     console.error("Preview lifecycle step failed; remote provider absence is not established");
     process.exitCode = 1;
   }

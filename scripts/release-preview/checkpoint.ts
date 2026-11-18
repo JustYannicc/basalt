@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { describeError, redactor } from "./redact.ts";
 import { pathToFileURL } from "node:url";
 import { openManifest, sealManifest } from "./manifest.ts";
 import { parseSubjectArgument, stageNames, toSubject, type StageSubject } from "../preview/subject.ts";
@@ -51,7 +52,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     }
     await checkpoint(mode, process.cwd(), resolve(destination), process.env.PREVIEW_STATE_KEY ?? "", parseSubjectArgument(owner));
     console.log(`Preview cleanup checkpoint ${mode === "seal" ? "encrypted" : "restored"}`);
-  } catch {
+  } catch (error) {
+    console.error(describeError(error, redactor(process.env)));
     console.error("Preview cleanup checkpoint failed");
     process.exitCode = 1;
   }
