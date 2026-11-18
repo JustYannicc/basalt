@@ -34,22 +34,35 @@ test("a rise fails, a fall fails until the baseline is lowered, and deleted file
   );
 });
 
-test("the committed baseline may only shrink against the base commit, and counts may move with code", () => {
+test("the committed baseline may only shrink against the base commit; counts move only with code", () => {
   const base = { schemaSync: { "src/a.ts": 2, "src/b.ts": 1 } };
   const baseFiles = new Set(["src/a.ts", "src/b.ts"]);
   assert.deepEqual(baseProblems({ schemaSync: { "src/a.ts": 1 } }, base, baseFiles), []);
-  // A split moves counts into a new file without growing the total.
+  // A split takes the counts its git copy source lost.
+  const split = new Map([["src/a-part.ts", ["src/a.ts"]]]);
   assert.deepEqual(
-    baseProblems({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 2 } }, base, baseFiles),
+    baseProblems({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 1 } }, base, baseFiles, split),
     [],
   );
-  const raised = baseProblems({ schemaSync: { "src/a.ts": 1, "src/b.ts": 2 } }, base, baseFiles);
-  assert.match(raised.join("\n"), /raises src\/b\.ts schemaSync from 1 to 2/);
-  const grown = baseProblems(
-    { schemaSync: { "src/a.ts": 2, "src/b.ts": 1, "src/new.ts": 1 } },
+  assert.match(
+    baseProblems(
+      { schemaSync: { "src/a.ts": 1, "src/a-part.ts": 2 } },
+      base,
+      baseFiles,
+      split,
+    ).join("\n"),
+    /raises src\/a-part\.ts schemaSync from 1 to 2/,
+  );
+  // Fixing a site does not pay for a new one elsewhere.
+  const traded = baseProblems(
+    { schemaSync: { "src/a.ts": 1, "src/b.ts": 1, "src/new.ts": 1 } },
     base,
     baseFiles,
   );
+  assert.match(traded.join("\n"), /raises src\/new\.ts schemaSync from 0 to 1/);
+  const raised = baseProblems({ schemaSync: { "src/a.ts": 1, "src/b.ts": 2 } }, base, baseFiles);
+  assert.match(raised.join("\n"), /raises src\/b\.ts schemaSync from 1 to 2/);
+  const grown = baseProblems({ schemaSync: { "src/a.ts": 3, "src/b.ts": 1 } }, base, baseFiles);
   assert.match(grown.join("\n"), /raises the schemaSync total from 3 to 4/);
 });
 

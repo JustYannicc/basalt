@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
+import { run } from "./process.ts";
 import {
   configPath,
   inheritingConfigs,
@@ -16,10 +17,8 @@ import {
   type Diagnostic,
 } from "./effect-diagnostics-record.ts";
 
-// Effect's language service runs inside the type checker. tsconfig.effect.json raises these rules
-// to errors and keeps them out of the compiler's exit code; this gate then holds Basalt's own code
-// to a shrink-only count per rule and file. The pinned compiler knows only these rule names, so
-// newer upstream rules (effectTryWithoutCatch and the 0.63/0.64 pipeline rewrites) need a bump.
+// Raised to errors in tsconfig.effect.json and held to the baseline. Names the pinned compiler
+// does not know fail the gate as unknownRuleName, so newer upstream rules wait for a compiler bump.
 export const gatedRules = [
   "acquireReleaseDisposable",
   "allOfMapToForEach",
@@ -154,7 +153,7 @@ const total = (files: Record<string, number> = {}) =>
 const rulesOf = (...all: Counts[]) =>
   [...new Set(all.flatMap((counts) => Object.keys(counts)))].sort();
 
-// A rise fails; a fall fails until the baseline is lowered. Entries for deleted files are ignored.
+// Entries for deleted files never fail, so deleting code needs no baseline change.
 export function baselineProblems(
   current: Counts,
   baseline: Counts,
@@ -187,18 +186,29 @@ export function baselineProblems(
   return problems;
 }
 
-// The committed baseline never grows against the base commit: no file the base had may gain a
-// count, and no rule's total may rise. New files only take over counts moved out of others.
-export function baseProblems(head: Counts, base: Counts, baseFiles: ReadonlySet<string>) {
+// The committed baseline never grows against the base commit. A new path may only carry what
+// git's rename or copy sources for it lost, so moved code keeps its counts and new code has none.
+export function baseProblems(
+  head: Counts,
+  base: Counts,
+  baseFiles: ReadonlySet<string>,
+  sources: ReadonlyMap<string, readonly string[]> = new Map(),
+) {
   const problems: string[] = [];
   for (const rule of rulesOf(head, base)) {
     const now = head[rule] ?? {};
     const before = base[rule] ?? {};
-    for (const [file, count] of Object.entries(now))
-      if (baseFiles.has(file) && count > (before[file] ?? 0))
+    for (const [file, count] of Object.entries(now)) {
+      const moved = (sources.get(file) ?? []).reduce(
+        (sum, source) => sum + Math.max(0, (before[source] ?? 0) - (now[source] ?? 0)),
+        0,
+      );
+      const allowed = baseFiles.has(file) ? (before[file] ?? 0) : moved;
+      if (count > allowed)
         problems.push(
-          `${baselinePath} raises ${file} ${rule} from ${before[file] ?? 0} to ${count} over the base commit.`,
+          `${baselinePath} raises ${file} ${rule} from ${allowed} to ${count} over the base commit.`,
         );
+    }
     if (total(now) > total(before))
       problems.push(
         `${baselinePath} raises the ${rule} total from ${total(before)} to ${total(now)} over the base commit.`,
@@ -240,19 +250,61 @@ function baseCommitProblems(head: Counts) {
     spawnSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 });
   if (git("rev-parse", "--verify", "--quiet", `${base}^{commit}`).status !== 0)
     return [`BASE_SHA ${base} is not a commit in this checkout.`];
-  const committed = git("show", `${base}:${baselinePath}`);
-  if (committed.status !== 0) {
+  const files = git("ls-tree", "-r", "--name-only", base, "--", "scripts", "src");
+  if (files.status !== 0) return [`git ls-tree ${base} failed: ${files.stderr.trim()}`];
+  const baseFiles = new Set(files.stdout.split("\n"));
+  if (!baseFiles.has(baselinePath)) {
     console.log(`The base commit ${base} has no ${baselinePath}; nothing to compare it with.`);
     return [];
   }
-  const files = git("ls-tree", "-r", "--name-only", base, "--", "scripts", "src");
-  if (files.status !== 0) return [`git ls-tree ${base} failed: ${files.stderr.trim()}`];
-  return baseProblems(head, JSON.parse(committed.stdout), new Set(files.stdout.split("\n")));
+  const committed = git("show", `${base}:${baselinePath}`);
+  if (committed.status !== 0)
+    return [`git show ${base}:${baselinePath} failed: ${committed.stderr.trim()}`];
+  const diff = git("diff", "-z", "--name-status", "-M30%", "-C30%", base, "--", "scripts", "src");
+  if (diff.status !== 0) return [`git diff ${base} failed: ${diff.stderr.trim()}`];
+  const sources = new Map<string, string[]>();
+  const fields = diff.stdout.split("\0");
+  for (let index = 0; index < fields.length; index++)
+    if (/^[RC]\d*$/.test(fields[index]!)) {
+      const [source, target] = [fields[index + 1]!, fields[index + 2]!];
+      sources.set(target, [...(sources.get(target) ?? []), source]);
+      index += 2;
+    } else index += 1;
+  return baseProblems(
+    head,
+    readCounts(committed.stdout, `${base}:${baselinePath}`),
+    baseFiles,
+    sources,
+  );
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const isCounts = (value: unknown): value is Counts =>
+  isRecord(value) &&
+  Object.values(value).every(
+    (files) =>
+      isRecord(files) && Object.values(files).every((n) => Number.isInteger(n) && Number(n) > 0),
+  );
+
+// A conflicted or hand-edited baseline fails by name instead of comparing strings.
+function readCounts(text: string, source: string): Counts {
+  let counts: unknown;
+  try {
+    counts = JSON.parse(text);
+  } catch {
+    counts = undefined;
+  }
+  if (!isCounts(counts))
+    throw new Error(
+      `${source} is not a {rule: {file: count}} baseline. Recreate it with ${writeCommand}.`,
+    );
+  return counts;
 }
 
 function check() {
   const record = readRecord();
-  const baseline: Counts = JSON.parse(readFileSync(join(root, baselinePath), "utf8"));
+  const baseline = readCounts(readFileSync(join(root, baselinePath), "utf8"), baselinePath);
   const problems = [
     ...configProblems(),
     ...record.misconfigured.map(
@@ -279,12 +331,7 @@ function check() {
 
 function write() {
   writeFileSync(join(root, configPath), pluginConfig());
-  const typecheck = spawnSync(process.execPath, ["scripts/typecheck.ts"], {
-    cwd: root,
-    stdio: "inherit",
-  });
-  if (typecheck.status !== 0)
-    throw new Error(`node scripts/typecheck.ts failed with exit ${typecheck.status}`);
+  run(process.execPath, ["scripts/typecheck.ts"], root);
   const counts = sorted(readRecord().counts);
   writeFileSync(join(root, baselinePath), JSON.stringify(counts, null, 2) + "\n");
   console.log(
@@ -299,7 +346,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (process.argv.includes("--write")) write();
     else check();
   } catch (error) {
-    process.stderr.write(`Effect diagnostics gate failed: ${(error as Error).message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Effect diagnostics gate failed: ${message}\n`);
     process.exitCode = 1;
   }
 }

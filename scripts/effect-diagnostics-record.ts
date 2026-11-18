@@ -43,7 +43,7 @@ export const inheritingConfigs = [
 ];
 const effectCode = /^377\d{3}$/;
 const header = /^(.+?)\((\d+),(\d+)\): (error|warning|suggestion|message) TS(\d+): /;
-// Matched in comment text only, so this file and its test do not count themselves.
+// Needs a comment opener before the directive; code that spells one out builds it from parts.
 const hidingDirective = /(?:\/\/|\/\*)[^\n]*@(?:effect-diagnostics|ts-nocheck)\b/g;
 
 export const inScope = (file: string) =>
@@ -104,7 +104,8 @@ export function compile(compiler: string, config: string): Program {
   const parsed = parseCompilerOutput(result.stdout, root);
   const printed = [...parsed.other, ...parsed.diagnostics.filter((d) => !isEffect(d)).map(render)];
   if (printed.length) process.stdout.write(printed.join("\n") + "\n");
-  if (result.status !== 0) throw new Error(`${compiler} failed with exit ${result.status}`);
+  if (result.status !== 0)
+    throw new Error(`${compiler} -p ${config} failed with exit ${result.status}`);
   return parsed;
 }
 
@@ -140,12 +141,14 @@ const add = (counts: Counts, rule: string, file: string, by = 1) => {
 
 export function recordEffectDiagnostics(programs: readonly Program[]) {
   const files = scopeFiles();
+  // Generated and ignored sources are neither fingerprinted nor counted.
+  const scope = new Set(files);
   const read = new Set(programs.flatMap((program) => program.files));
   const seen = new Set<string>();
   const diagnostics: Diagnostic[] = [];
   const counts: Counts = {};
   for (const diagnostic of programs.flatMap((program) => program.diagnostics)) {
-    if (!isEffect(diagnostic) || diagnostic.severity !== "error" || !inScope(diagnostic.file))
+    if (!isEffect(diagnostic) || diagnostic.severity !== "error" || !scope.has(diagnostic.file))
       continue;
     const key = `${diagnostic.file}:${diagnostic.line}:${diagnostic.column}:${diagnostic.code}`;
     if (seen.has(key)) continue;
