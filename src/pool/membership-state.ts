@@ -1,5 +1,5 @@
 import { ControlFailure } from "./json.ts";
-import type { NativeMembershipPolicy } from "./membership-contract.ts";
+import { membershipReadMs, type NativeMembershipPolicy } from "./membership-contract.ts";
 
 export interface MembershipState extends NativeMembershipPolicy {
   native: boolean;
@@ -30,6 +30,23 @@ export const membershipPolicy = ({
   accounts,
   dirty,
 });
+
+/**
+ * A pass reads the host after a reservation, an unacknowledged revision or a failure, on a
+ * controller's first pass, and otherwise once per read interval. A host-confirmed non-native pool
+ * stays dirty but waits for the interval: only a reservation can make it native.
+ */
+export const membershipReadDue = (
+  policy: MembershipState,
+  readAt: number | undefined,
+  failed: boolean,
+  now: number,
+) =>
+  readAt === undefined ||
+  failed ||
+  (policy.dirty && policy.native) ||
+  policy.installedRevision !== policy.revision ||
+  now - readAt >= membershipReadMs;
 
 /** Only a clean acknowledgement grants grace. A desired renewal cannot move its deadline. */
 export function acknowledgedMembership(policy: MembershipState | undefined, now: number) {

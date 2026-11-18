@@ -16,6 +16,7 @@ import {
   acknowledgedMembership,
   equalMembershipAccounts as equal,
   membershipPolicy as publicPolicy,
+  membershipReadDue,
   type MembershipState as State,
 } from "./membership-state.ts";
 interface Storage {
@@ -44,6 +45,9 @@ const confirmedNative = (state: State | undefined) =>
 export class NativeMemberships {
   private queue: Promise<unknown> = Promise.resolve();
   private running = new Map<string, Promise<void>>();
+  private renewing = new Map<string, Promise<boolean>>();
+  // In memory on purpose: a restarted controller reads every pool on its first pass.
+  private readAt = new Map<string, number>();
   private initializing = new Map<string, Promise<void>>();
   private ticking?: Promise<void>;
   private failures = new Map<string, PoolFailureDiagnostic>();
@@ -309,7 +313,7 @@ export class NativeMemberships {
     if (!pools.length) return;
     await this.schedule();
     try {
-      const results = await Promise.allSettled(pools.map((pool) => this.refresh(pool)));
+      const results = await Promise.allSettled(pools.map((pool) => this.upkeep(pool)));
       for (const result of results)
         if (result.status === "rejected") reportPoolFailure(result.reason);
     } finally {
@@ -322,12 +326,17 @@ export class NativeMemberships {
     // A handoff can call back before its first host read finishes preparing retained mirrors.
     // Wait for that read, then renew authority with a fresh repair rather than sharing its snapshot.
     if (initialization) return initialization.then(() => this.refresh(pool));
+    // A renewal re-signs the same revision. Let it land first so this read's lease is the newest.
+    const renewal = this.renewing.get(pool);
+    if (renewal) return renewal.then(() => this.refresh(pool), () => this.refresh(pool));
     const active = this.running.get(pool);
     if (active) return active;
+    const started = this.now();
     const task = this.repair(pool)
       .then(
         () => {
           this.failures.delete(pool);
+          this.readAt.set(pool, started);
         },
         (error: unknown) => {
           this.failures.set(
@@ -340,6 +349,56 @@ export class NativeMemberships {
       .finally(() => this.running.delete(pool));
     this.running.set(pool, task);
     return task;
+  }
+  /** A pass reads the host only when this pool's read is due; otherwise it renews the lease locally. */
+  private async upkeep(pool: string): Promise<void> {
+    if (!this.running.has(pool) && !this.initializing.has(pool) && (await this.renew(pool))) return;
+    await this.refresh(pool);
+  }
+  private renew(pool: string): Promise<boolean> {
+    const active = this.renewing.get(pool);
+    if (active) return active;
+    const task = this.renewOnce(pool).finally(() => this.renewing.delete(pool));
+    this.renewing.set(pool, task);
+    return task;
+  }
+  /** Re-installs the last read's selection with a fresh lease. Grace stays anchored to that read. */
+  private async renewOnce(pool: string): Promise<boolean> {
+    const policy = await this.run(async (state) => {
+      const current = state[pool];
+      if (
+        !current ||
+        current.retired ||
+        membershipReadDue(current, this.readAt.get(pool), this.failures.has(pool), this.now())
+      )
+        return undefined;
+      const next: State = { ...current, expiresAt: this.now() + membershipTtlMs };
+      state[pool] = next;
+      await this.save(state);
+      return next;
+    });
+    if (!policy) return false;
+    try {
+      await this.install(policy);
+    } catch (error) {
+      // The next pass reads the host instead of renewing again.
+      this.failures.set(
+        pool,
+        poolFailureDiagnostic(error) ?? { guard: "native_policy_install", failure: "unknown" },
+      );
+      throw error;
+    }
+    return this.run(async (state) => {
+      const current = state[pool];
+      if (!current || current.retired || current.revision !== policy.revision) return false;
+      state[pool] = {
+        ...current,
+        installedRevision: policy.revision,
+        installedUntil: Math.max(current.installedUntil ?? 0, policy.expiresAt),
+      };
+      await this.save(state);
+      return true;
+    });
   }
   private async repair(pool: string): Promise<void> {
     // Reservations can supersede either external read or installation while this repair is running.
