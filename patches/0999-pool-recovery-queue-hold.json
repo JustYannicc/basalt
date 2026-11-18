@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-recovery-queue-hold",
+  "file": "0999-pool-recovery-queue-hold.patch",
+  "content_sha256": "204d7fee1c0f1b4941855970ecedcaab6e6d2be50df522b725062609d8ac2867",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

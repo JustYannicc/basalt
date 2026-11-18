@@ -1,33 +1,36 @@
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 --- a/e2e/tests/pool-account-recovery.spec.ts
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -65,12 +65,20 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+@@ -65,11 +65,23 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
            yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
          );
          const owner = session.user.id;
 -        const deferJobs = () =>
 -          rows(
 -            `update hosted_provisioning set available_at = now() + interval '1 day'
+-            where organization_id = $1 and status = 'queued'`,
+-            [actors.organization.id],
++        // The actors' own user jobs have no team. A started one ends in a follow-up dispatch.
 +        const deferral = {
 +          sql: `update hosted_provisioning set available_at = now() + interval '1 day'
-             where organization_id = $1 and status = 'queued'`,
--            [actors.organization.id],
--          );
++            where status = 'queued' and (organization_id = $1
++              or user_id in (select "userId" from member where "organizationId" = $1))`,
 +          params: [actors.organization.id],
 +        };
 +        const deferJobs = () => database.run(deferral);
-+        // Role and verification updates queue a ready member job by trigger, which any request
-+        // finalizer still running from setup would dispatch. Commit each with its deferral.
++        // Any dispatch claims every ready job of any team, and role and verification updates
++        // queue ready jobs by trigger. Commit each such update together with its deferral.
 +        const queueDeferred = (sql: string, params: readonly string[]) =>
-+          Effect.gen(function* () {
-+            yield* database.hold({ sql, params });
-+            yield* database.hold(deferral);
-+            yield* database.release;
-+          });
++          Effect.uninterruptible(
++            Effect.gen(function* () {
++              yield* database.hold({ sql, params });
++              yield* database.hold(deferral);
++              yield* database.release;
++            }),
+           );
          // Onboarding has not started these jobs. Keep them out of request-finalizer dispatch.
          yield* deferJobs();
-         // The warm-up also dispatches jobs. Defer actor onboarding before it can start a workflow.
-@@ -163,23 +171,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+@@ -163,23 +175,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
              yield* record({ app: app.id });
              yield* noRecovery;
              yield* record({ app: app.id, version: app.activeVersion });

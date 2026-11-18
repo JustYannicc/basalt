@@ -1,7 +1,0 @@
-model {
-  extend basalt.build {
-    metadata {
-      constraint "The pool account recovery scenario changes a member's role or email verification only inside a held database transaction that also defers the member job its trigger queues, and commits both together. A request finalizer still dispatching from setup therefore never sees that job ready, so the exact queue observations around each editor read stay unchanged by anything except the read."
-    }
-  }
-}
