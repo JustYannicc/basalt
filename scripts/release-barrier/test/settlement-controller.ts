@@ -1,7 +1,12 @@
 import { canonical } from "../manifest.ts";
 import { Schema } from "effect";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
-import { ControllerCode, type SlotTarget } from "../../../src/pool/runtime-slots/contract.ts";
+import {
+  ControllerCode,
+  sameIdentity,
+  type SlotTarget,
+} from "../../../src/pool/runtime-slots/contract.ts";
+import { FleetConfigurationRecord } from "../../../src/pool/runtime-fleet/configuration.ts";
 import {
   LaunchAuthorization,
   RestartAuthorization,
@@ -36,6 +41,7 @@ const Command = Schema.Struct({
   expiresAt: Schema.Number,
 });
 const Authorization = Schema.Union([LaunchAuthorization, UnattestedActive]);
+const FleetKnob = Schema.Struct({ permission: Schema.optional(FleetConfigurationRecord) });
 
 /** The controller the image journal froze before the source candidate activated its own. */
 export const previousController = (accountId: string, imageHash: string) => ({
@@ -48,8 +54,12 @@ export const previousController = (accountId: string, imageHash: string) => ({
 });
 
 /** A finished controller phase: every Worker accepted and activated, the container unchanged. */
-export function activatedReceipt(workers: readonly string[], containerVersion: number) {
-  const accepted = workers.map((worker) => ({ worker, versionId: `accepted-${worker}` }));
+export function activatedReceipt(
+  workers: readonly string[],
+  containerVersion: number,
+  prefix = "accepted",
+) {
+  const accepted = workers.map((worker) => ({ worker, versionId: `${prefix}-${worker}` }));
   return {
     phase: "complete",
     accepted: accepted.map((row) => ({ ...row, startupTimeMs: 125 })),
@@ -119,47 +129,51 @@ export function settlementController(input: {
     POOL_DEPLOYMENT_KEY: input.key,
     POOL_CONTAINER_APPLICATION_ID: input.applicationId,
   };
-  const handoff = new RuntimeHandoff(
-    {
-      id: { toString: () => input.controllerId },
-      storage: state,
-      container: {
-        running: true,
-        start: () => {},
-        destroy: async () => {},
-        monitor: async () => {},
-        setInactivityTimeout: async () => {},
-        // Only a selected runtime's health read reaches the container.
-        getTcpPort: () => ({
-          fetch: async (url: string) => {
-            if (new URL(url).pathname !== "/ready")
-              throw new Error("A settlement read never reaches the container otherwise");
-            return Response.json(
-              { boot_id: knobs.bootId, started_at: "baseline-started" },
-              {
-                headers: {
-                  [policyHealthHeader]: "1500",
-                  // A launched boot reports its launch, which the handoff joins to the witness.
-                  ...(knobs.launch
-                    ? {
-                        [launchGenerationHeader]: String(knobs.launch.generation),
-                        [launchTokenHashHeader]: knobs.launch.tokenHash,
-                      }
-                    : {}),
+  // A later candidate's controller phase replaces the code over the same durable slot storage.
+  let code = input.code;
+  const build = () =>
+    new RuntimeHandoff(
+      {
+        id: { toString: () => input.controllerId },
+        storage: state,
+        container: {
+          running: true,
+          start: () => {},
+          destroy: async () => {},
+          monitor: async () => {},
+          setInactivityTimeout: async () => {},
+          // Only a selected runtime's health read reaches the container.
+          getTcpPort: () => ({
+            fetch: async (url: string) => {
+              if (new URL(url).pathname !== "/ready")
+                throw new Error("A settlement read never reaches the container otherwise");
+              return Response.json(
+                { boot_id: knobs.bootId, started_at: "baseline-started" },
+                {
+                  headers: {
+                    [policyHealthHeader]: "1500",
+                    // A launched boot reports its launch, which the handoff joins to the witness.
+                    ...(knobs.launch
+                      ? {
+                          [launchGenerationHeader]: String(knobs.launch.generation),
+                          [launchTokenHashHeader]: knobs.launch.tokenHash,
+                        }
+                      : {}),
+                  },
                 },
-              },
-            );
-          },
-        }),
+              );
+            },
+          }),
+        },
+        waitUntil: () => {},
       },
-      waitUntil: () => {},
-    },
-    env,
-    input.code,
-    { wrap: (response) => response },
-  );
+      env,
+      code,
+      { wrap: (response) => response },
+    );
+  let handoff = build();
   let inspections = 0;
-  const live = (request: Request) => handleRuntimeHandoff(request, handoff, input.code, input.key);
+  const live = (request: Request) => handleRuntimeHandoff(request, handoff, code, input.key);
   const knobs: {
     selectionAt?: "first" | "final";
     realReads?: boolean;
@@ -191,7 +205,7 @@ export function settlementController(input: {
         kind,
         operationId: options.operationId ?? "adopt-retained",
         manifestDigest: "e".repeat(64),
-        controllerCode: input.code,
+        controllerCode: code,
         target,
         configurationFingerprint: await configurationDigest(configuration),
         selection: {
@@ -272,7 +286,7 @@ export function settlementController(input: {
         kind: "restart",
         operationId,
         manifestDigest,
-        controllerCode: input.code,
+        controllerCode: code,
         target,
         configurationFingerprint,
         selection: {
@@ -319,8 +333,31 @@ export function settlementController(input: {
         epoch: selection.epoch + 1,
         active: { ...selection.active, identity },
       });
+      // Recovery rewrites the fleet permission in the same transaction (configuration.ts recoverPrimary).
+      const fleet = Schema.decodeUnknownSync(FleetKnob)(knobs.fleet);
+      if (fleet.permission) {
+        const current = fleet.permission;
+        if (!sameIdentity(current.configuration.legacy, previous))
+          throw new Error("Recovery refuses a permission whose legacy is another boot");
+        const configuration = {
+          ...current.configuration,
+          legacy: identity,
+          revision: current.configuration.revision + 1,
+          previousDigest: current.digest,
+        };
+        knobs.fleet = {
+          ...knobs.fleet,
+          permission: { ...current, configuration, digest: await providerDigest(configuration) },
+        };
+      }
       knobs.bootId = bootId;
       knobs.launch = launch;
+    },
+    /** What a later candidate's activated controller phase leaves: its code, the same storage. */
+    activate(next: typeof ControllerCode.Type) {
+      code = next;
+      handoff = build();
+      inspections = 0;
     },
     async handle(request: Request) {
       const forwarded = request.clone();
@@ -332,7 +369,7 @@ export function settlementController(input: {
       );
       input.calls.push(`POST ${command.action}`);
       // Another controller code is refused by the real handler, as production refuses it.
-      if (canonical(command.controllerCode) !== canonical(input.code)) return live(forwarded);
+      if (canonical(command.controllerCode) !== canonical(code)) return live(forwarded);
       if (command.action === "fleet-inspect")
         return knobs.fleetResponse?.() ?? Response.json({ result: knobs.fleet });
       const real = () => live(forwarded);
@@ -346,7 +383,7 @@ export function settlementController(input: {
         (knobs.selectionAt === "first" && inspections === 1) ||
         (knobs.selectionAt === "final" && inspections > 1);
       return Response.json({
-        result: { controllerCode: input.code, ...(selected ? { selection: {} } : {}) },
+        result: { controllerCode: code, ...(selected ? { selection: {} } : {}) },
       });
     },
   });

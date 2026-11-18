@@ -106,11 +106,14 @@ test("an adopted root the controller has since recovered twice is archived and r
   assert.equal(await next.read(), undefined);
 });
 
-test("a root restarted again between plan and apply refuses apply", async (context) => {
+test("a root restarted again between plan and apply refuses apply, naming the epoch and boot it moved to", async (context) => {
   const f = await controllerRecoveredFixture(context);
   const manifest = await planSettlement(f, "controller-active-adopted");
   await f.controller.restart("recovered-boot-3");
-  await assert.rejects(apply(f, manifest), /release-settlement-plan-drift \(PoolWorker\)/);
+  await assert.rejects(
+    apply(f, manifest),
+    /release-settlement-selection-changed \(selection\.epoch\) expected=3 observed=4 observedBoot=recovered-boot-3$/,
+  );
   assert.equal(f.writes(), 0);
   // The new epoch is itself settleable; it needs its own reviewed plan.
   const replanned = await planSettlement(f, "controller-active-adopted");

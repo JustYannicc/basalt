@@ -23,7 +23,13 @@ import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { bootstrapReleaseApplication } from "./runtime-release-bootstrap.ts";
 import { bootstrapImagePlan, releaseImagePlan } from "./runtime-release-plan.ts";
-import { configureReleaseFleet } from "./runtime-release-fleet.ts";
+import {
+  configureReleaseFleet,
+  fleetRowsOnActive,
+  releaseFleetActive,
+  releaseFleetApplications,
+  releaseInactiveColor,
+} from "./runtime-release-fleet.ts";
 import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
 import { assertReleaseImageCapacity, runtimeReleaseImage } from "./runtime-release-image.ts";
 import {
@@ -268,6 +274,8 @@ export const releaseRuntimeImage = <A, StackError>(
       client = yield* codePhase(`bind-${color}`);
       stopAt(`after-bind-${color}`);
     }
+    // The configuration this release sends declares these, so its rows must already run on them.
+    const fleetApplications = releaseFleetApplications(record);
     yield* Effect.promise(() =>
       waitReleaseObservation(
         async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
@@ -275,8 +283,14 @@ export const releaseRuntimeImage = <A, StackError>(
           !value.slots.selection?.draining &&
           (!value.slots.selection?.candidate ||
             value.slots.selection.candidate.target.slotId === `primary-${options.candidate}`) &&
-          value.fleet.resources.every(
-            (row) => row.target.imageInput === value.slots.selection?.active.target.imageInput,
+          fleetRowsOnActive(
+            value.fleet.resources,
+            fleetApplications,
+            releaseFleetActive(
+              fleetApplications,
+              value.slots.selection?.active.target,
+              value.fleet.permission?.configuration,
+            ),
           ),
         "PoolWorker.previous-generation",
       ),
@@ -291,13 +305,11 @@ export const releaseRuntimeImage = <A, StackError>(
       const fleet = yield* Effect.promise(() => client.fleet());
       const selected = yield* Effect.promise(() => client.inspect());
       const activeApplication = selected.selection!.active.target.applicationId;
-      const inactive =
-        record.update?.baseline.color ??
-        (fleet.permission!.configuration.applications.find(
-          (app) => app.applicationId === activeApplication,
-        )?.color === "green"
-          ? "blue"
-          : "green");
+      const inactive = releaseInactiveColor(
+        record.update,
+        fleet.permission!.configuration.applications,
+        activeApplication,
+      );
       const resource = fleetClassName(inactive);
       if (selected.selection?.candidate) {
         if (
