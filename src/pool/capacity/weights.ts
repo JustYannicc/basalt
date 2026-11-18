@@ -5,7 +5,7 @@ import {
   type PlanAllowanceCatalog,
 } from "apps";
 
-import { seedCatalog } from "../allowances/data.ts";
+import { markContradictions, seedCatalog } from "../allowances/data.ts";
 
 export interface CapacityWeight {
   readonly multiplier: number;
@@ -35,7 +35,9 @@ export function capacityWeight(
   const catalog = options.catalog ?? seedCatalog;
   const now = options.now ?? Date.now();
   const resolved = planAllowance(catalog, provider, plan, windowSeconds, now);
-  const value = resolved.known ? resolved : (lastKnown(catalog, resolved, now) ?? resolved);
+  const value = resolved.known
+    ? resolved
+    : (lastKnown(catalog, provider, plan, windowSeconds, resolved, now) ?? resolved);
   return {
     multiplier: value.full,
     source: !value.known
@@ -59,12 +61,16 @@ export function capacityWeight(
 }
 
 /**
- * Aging is not a policy change: when every source for a plan has expired, the plan keeps the
- * value, unit and revision it last had, so capacity training survives until a source decides.
- * A live row (revoked, contradicted or unlimited) or a newer revocation still decides.
+ * Aging is not a policy change: once every row for a plan has expired, the plan keeps what the
+ * resolver decided at the last instant a row was live, so its unit and revision, and the capacity
+ * training keyed on them, survive until a source decides again. A live row or a later revocation
+ * still decides.
  */
 function lastKnown(
   catalog: PlanAllowanceCatalog,
+  provider: string,
+  plan: string | null,
+  windowSeconds: number,
   unknown: ReturnType<typeof planAllowance>,
   now: number,
 ) {
@@ -77,23 +83,29 @@ function lastKnown(
       entry.checkedAt <= now,
   );
   if (candidates.some((entry) => entry.expiresAt !== null && entry.expiresAt > now)) return;
-  const latest = candidates.toSorted(
-    (a, b) => (b.fetchedAt ?? b.checkedAt ?? 0) - (a.fetchedAt ?? a.checkedAt ?? 0),
-  )[0];
+  const lastLive = Math.max(
+    ...candidates.flatMap((entry) =>
+      entry.expiresAt !== null && Number.isFinite(entry.expiresAt) ? [entry.expiresAt - 1] : [],
+    ),
+  );
+  if (!Number.isFinite(lastLive)) return;
+  const decided = planAllowance(
+    { entries: markContradictions(candidates, lastLive) },
+    provider,
+    plan,
+    windowSeconds,
+    lastLive,
+  );
   if (
-    !latest ||
-    latest.verification === "unknown" ||
-    latest.contradicted ||
-    latest.unlimited ||
-    latest.full === null ||
-    !Number.isFinite(latest.full) ||
-    latest.full <= 0
+    !decided.known ||
+    candidates.some(
+      (entry) =>
+        entry.verification === "unknown" && (entry.fetchedAt ?? 0) > (decided.fetchedAt ?? 0),
+    )
   )
     return;
   return {
-    ...latest,
-    full: latest.full,
-    known: true,
-    detail: `${latest.detail ?? "Last known allowance"}; its source expired, so the last known value is kept`,
+    ...decided,
+    detail: `${(decided.detail ?? "Last known allowance").replace(/\.$/u, "")}; its source expired, so the last known value is kept`,
   };
 }

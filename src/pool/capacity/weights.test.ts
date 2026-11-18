@@ -142,3 +142,60 @@ test("Max 20x counts as twenty weekly units under the pool's plan policy", () =>
     assert.equal(capacityWeight(provider, "Ultra", 604_800).revision, "2026-11-09");
   }
 });
+
+test("an expired plan keeps the row that last decided, not the latest fetched", () => {
+  const expiry = clock + 86_400_000;
+  const row = {
+    vendor: "anthropic",
+    plan: "max_20x",
+    windowSeconds: 18_000,
+    unit: { id: "claude-pro-equivalent", label: "Pro-eq" },
+    sources: ["https://example.test/allowances.json"],
+  };
+  const policy = {
+    ...row,
+    full: 20,
+    kind: "policy" as const,
+    verification: "policy" as const,
+    checkedAt: clock - 86_400_000,
+    fetchedAt: clock - 86_400_000,
+    expiresAt: expiry,
+    revision: "policy-20",
+  };
+  const calibration = {
+    ...row,
+    full: 900_000,
+    unit: { id: "observed-tokens", label: "tokens" },
+    kind: "account-calibration" as const,
+    verification: "verified" as const,
+    checkedAt: expiry - 4 * 3_600_000,
+    fetchedAt: expiry + 3_600_000,
+    expiresAt: expiry - 2 * 3_600_000,
+    revision: "calibration-900000",
+  };
+  const weight = capacityWeight("claude", "Max 20x", 18_000, {
+    now: expiry + 2 * 3_600_000,
+    catalog: { entries: [policy, calibration] },
+  });
+  assert.equal(weight.revision, "policy-20");
+  assert.equal(weight.multiplier, 20);
+
+  const disagreeing = {
+    ...row,
+    windowSeconds: 604_800,
+    checkedAt: clock - 86_400_000,
+    fetchedAt: clock,
+    expiresAt: expiry,
+    verification: "verified" as const,
+  };
+  const contradicted = capacityWeight("claude", "Max 20x", 604_800, {
+    now: expiry + 3_600_000,
+    catalog: {
+      entries: [
+        { ...disagreeing, full: 20, kind: "dataset" as const, revision: "dataset-20" },
+        { ...disagreeing, full: 15, kind: "vendor" as const, revision: "vendor-15" },
+      ],
+    },
+  });
+  assert.equal(contradicted.known, false);
+});
