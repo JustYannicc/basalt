@@ -17,6 +17,23 @@ test("only the rehearsal stack's repositories in this account qualify", () => {
   );
 });
 
+test("verify counts only tags whose manifest still resolves", async () => {
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/credentials"))
+      return Response.json({ success: true, result: { username: "u", password: "p" } });
+    if (url.endsWith("_catalog?n=10000"))
+      return Response.json({ repositories: ["acct/basalt-rehearsal-pool"] });
+    if (url.endsWith("/tags/list")) return Response.json({ tags: ["stale"] });
+    if (init?.method === "HEAD") return new Response(null, { status: 404 });
+    return new Response(null, { status: 500 });
+  }) as typeof fetch;
+  assert.deepEqual(
+    await rehearsalRegistry("verify", { accountId: "acct", token: "tok" }, fetcher),
+    { repositories: ["basalt-rehearsal-pool"], tags: 0, deleted: 0 },
+  );
+});
+
 test("delete removes each rehearsal tag by digest and never touches production", async () => {
   const calls: string[] = [];
   const digest = `sha256:${"a".repeat(64)}`;

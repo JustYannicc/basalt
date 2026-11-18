@@ -63,9 +63,8 @@ export async function rehearsalRegistry(
     if (listed.status === 404) continue;
     if (!listed.ok) throw new Error(`Registry tag list failed with HTTP ${listed.status}`);
     const found = ((await listed.json()) as { tags?: string[] | null }).tags ?? [];
-    tags += found.length;
-    if (mode !== "delete") continue;
     for (const tag of found) {
+      // The tag list keeps names whose manifest is already gone; only a resolving tag is an image.
       const head = await call(`${path}/manifests/${encodeURIComponent(tag)}`, {
         method: "HEAD",
         headers: { Accept: manifestTypes },
@@ -74,6 +73,8 @@ export async function rehearsalRegistry(
       const digest = head.headers.get("docker-content-digest");
       if (!head.ok || !digest || !/^sha256:[a-f0-9]{64}$/u.test(digest))
         throw new Error(`Registry manifest read failed with HTTP ${head.status}`);
+      tags += 1;
+      if (mode !== "delete") continue;
       const removed = await call(`${path}/manifests/${digest}`, { method: "DELETE" });
       if (!removed.ok && removed.status !== 404)
         throw new Error(`Registry manifest delete failed with HTTP ${removed.status}`);
