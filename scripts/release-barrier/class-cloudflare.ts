@@ -4,7 +4,7 @@ import { Config, Effect, Redacted } from "effect";
 import type { ClassTarget, ClassContent } from "./declared-class-contract.ts";
 import { classConstraint, classRefusal } from "./class-refusal.ts";
 import { digest, canonical } from "./manifest.ts";
-import { classTag, classUntagged } from "./declared-class-contract.ts";
+import { classTag, classTarget, classUntagged } from "./declared-class-contract.ts";
 import { readBaseline } from "./cloudflare.ts";
 import { encodePathSegment, withBearer, type Fetcher } from "../deploy-safety/http.ts";
 import { readClassSettings } from "./class-settings.ts";
@@ -77,8 +77,9 @@ export const readClassContent = (
     });
   }).pipe(Effect.timeout("15 seconds"));
 
-export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch) =>
+export const readDeclaredClass = (caller: ClassTarget, fetcher: Fetcher = fetch) =>
   Effect.gen(function* () {
+    const target = classTarget(caller);
     const versions = yield* readBaseline(target);
     if (versions.length !== 1 || versions[0]!.percentage !== 100)
       throw classRefusal("declared-class-split-baseline", undefined, [

@@ -13,6 +13,17 @@ export interface ClassTarget {
   accountId: string;
   scriptName: string;
 }
+/**
+ * Callers hold wider values (the captured upload request, a frozen observation). The SDK sends
+ * every key its schema doesn't model as a body field, even on GET, and fetch refuses a GET body.
+ * `readCurrentDeployment` in cloudflare.ts narrows its baseline read for the same reason.
+ */
+export const classTarget = (value: ClassTarget) => {
+  const { accountId, scriptName } = value;
+  if (typeof accountId !== "string" || !accountId || typeof scriptName !== "string" || !scriptName)
+    throw new TypeError("Class target requires an account and script name");
+  return { accountId, scriptName };
+};
 export interface ClassObservation extends ClassTarget {
   workerId: string;
   versionId: string;
