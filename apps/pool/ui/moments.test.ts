@@ -24,7 +24,12 @@ test("the host's shared formatter writes day-month-year and a 24-hour clock in e
     assert.equal(formatMoment(march, format), "04.03.2026 16:07", locale);
     // The Accounts, Details and metadata rows' short moment.
     assert.equal(
-      formatMoment(march, format, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+      formatMoment(march, format, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
       "04.03.2026 16:07",
       locale,
     );
@@ -48,11 +53,19 @@ test("midnight reads 00:00, summer time follows the zone and an explicit zone wi
   assert.equal(formatMoment("2026-11-21T23:00:00Z", format), "22.11.2026 00:00");
   assert.equal(formatMoment("2026-07-01T12:00:00Z", format), "01.07.2026 14:00");
   assert.equal(
-    formatMoment("2026-11-21T23:00:00Z", format, { day: "numeric", month: "short", timeZone: "UTC" }),
+    formatMoment("2026-11-21T23:00:00Z", format, {
+      day: "numeric",
+      month: "short",
+      timeZone: "UTC",
+    }),
     "21.11.2026",
   );
   assert.equal(
-    formatMoment(march, { locale: "en-US", timeZone: "UTC" }, { dateStyle: "medium", timeStyle: "long" }),
+    formatMoment(
+      march,
+      { locale: "en-US", timeZone: "UTC" },
+      { dateStyle: "medium", timeStyle: "long" },
+    ),
     "04.03.2026 15:07:09 UTC",
   );
 });

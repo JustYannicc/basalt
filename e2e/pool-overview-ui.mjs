@@ -632,7 +632,9 @@ const program = Effect.gen(function* () {
   checked(
     "the forecast distinguishes missing records from unknown metric values",
     (yield* page(() =>
-      screen.getByText(/Week of Nov 2 has 1 day with no records and 1 day with unknown /u).count(),
+      screen
+        .getByText(/Week of 02\.11\.2026 has 1 day with no records and 1 day with unknown /u)
+        .count(),
     )) > 0,
     true,
   );

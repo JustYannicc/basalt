@@ -4,7 +4,7 @@ import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
 import { providerName } from "./accounts.tsx";
 import { Button, ExternalIcon, Problem, Segmented } from "./controls.tsx";
-import { exactTime, percent, resetsIn } from "./usage.ts";
+import { percent, resetsIn } from "./usage.ts";
 import {
   advice,
   columns,
@@ -326,14 +326,10 @@ export function Models({
 /** What's left of the cap the owner set, and when it resets. Only ever the caller's own. */
 function CapLine({ cap, now }: { cap: Cap; now: number }) {
   const left = share(cap.remaining, cap.weekly);
-  const resetAt = Date.parse(cap.resetAt);
   const reset = resetsIn(cap, now);
   const out = cap.remaining <= 0;
   return (
-    <div
-      className="grid gap-2 rounded-md border border-border px-4 py-3"
-      title={Number.isNaN(resetAt) ? undefined : `Resets ${exactTime(cap.resetAt)}`}
-    >
+    <div className="grid gap-2 rounded-md border border-border px-4 py-3">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 text-sm">
         <span className="font-medium">Your weekly cap</span>
         <span className="text-xs text-muted-foreground tabular-nums">

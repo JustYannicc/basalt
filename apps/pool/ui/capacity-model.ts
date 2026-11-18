@@ -1,4 +1,5 @@
 import { accountPlanName, type AllowanceProvenance } from "apps";
+import { utcMoment } from "./moments.ts";
 import {
   hasCurrentLimitReading,
   supportedLimitWindows,
@@ -404,7 +405,7 @@ export function verdict(
       detail:
         line.lastReadingAt === undefined
           ? `No previous ${label} reading is available.`
-          : `Last ${label} reading: ${new Date(line.lastReadingAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
+          : `Last ${label} reading: ${utcMoment(line.lastReadingAt)}.`,
     };
   }
   if (

@@ -599,7 +599,7 @@ test("a missing current five-hour window keeps its last reading time without cla
     assert.equal(line.lastReadingAt, start);
     const unknown = verdict(line, lineFacts(line, observed.to), 7);
     assert.equal(unknown.short, "No current 5-hour reading");
-    assert.match(unknown.detail!, /Last 5-hour reading: 2026-11-02 00:00 UTC/);
+    assert.match(unknown.detail!, /Last 5-hour reading: 02\.11\.2026 00:00 UTC/);
     assert.doesNotMatch(JSON.stringify(unknown), /idle|100%|full allowance|Enough/i);
     assert.deepEqual(observed, snapshot);
   }
