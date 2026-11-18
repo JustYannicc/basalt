@@ -4,6 +4,8 @@ import { Schema } from "effect";
 import { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 import { canonical } from "./manifest.ts";
 import { ReleaseSettlementDisposition } from "./release-settlement-contract.ts";
+import type { RuntimeReleaseRecord } from "./runtime-release-journal.ts";
+import { fleetColors } from "./runtime-release-fleet.ts";
 
 type Code = typeof ControllerCode.Type;
 const Receipt = Schema.Struct(ControllerCode.fields);
@@ -70,24 +72,54 @@ export function liveControllerCodes(input: {
   });
 }
 
+/**
+ * What settlement needs from the unsettled prior's record: fleet applications in its baseline, and
+ * nothing past them journaled, which fleet-attached-unstarted's own source guards also require.
+ */
+export const unsettledPrior = (
+  record: Pick<
+    RuntimeReleaseRecord,
+    "candidate" | "baseline" | "promotion" | "update" | "abort" | "complete"
+  >,
+) => ({
+  candidate: record.candidate,
+  fleetAttached:
+    fleetColors(record).length > 0 &&
+    !record.promotion &&
+    !record.update &&
+    !record.abort &&
+    !record.complete,
+});
+
 export const supportedDispositions: readonly string[] = ReleaseSettlementDisposition.literals;
 
 /**
  * Which settlement an unsettled prior candidate needs: once its controller runs, adopted or not by
- * whether a slot is selected; before that, abandoned. Supported means this candidate can settle it.
+ * whether a slot is selected, and fleet-attached when its record's baseline holds fleet applications
+ * and nothing past them is journaled; before that, abandoned. A selected fleet primary, with the
+ * root retired, is a state no disposition proves yet (#1341), so it is named and never supported.
+ * Supported means this candidate can settle it.
  */
 export function settlementVerdict(input: {
   prior: string;
   liveCandidate: string;
   selected: boolean;
+  /** `unsettledPrior(record).fleetAttached` for the prior record. */
+  fleetAttached?: boolean;
+  /** The selection's active slot is the legacy root (legacy-adoption-target.ts), not a primary. */
+  rootSelected?: boolean;
   supported?: readonly string[];
 }) {
   const disposition =
     input.liveCandidate !== input.prior
       ? "abandoned-before-controller"
-      : input.selected
-        ? "controller-active-adopted"
-        : "controller-active-unadopted";
+      : !input.selected
+        ? "controller-active-unadopted"
+        : input.rootSelected === false
+          ? "selected-fleet-primary"
+          : input.fleetAttached
+            ? "fleet-attached-unstarted"
+            : "controller-active-adopted";
   return {
     disposition,
     supported: (input.supported ?? supportedDispositions).includes(disposition),

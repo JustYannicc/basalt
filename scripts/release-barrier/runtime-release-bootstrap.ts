@@ -24,6 +24,13 @@ import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 import { applicationTemplateDigest, expectedApplicationRequest } from "./provisioning-wire.ts";
 import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
 
+/**
+ * A bootstrapped fleet application's image input: a reference hash of the root's retained image,
+ * never the root's own build-context input.
+ */
+export const referenceImageInput = (image: string) =>
+  sha256Object({ image, imageName: undefined }).pipe(Effect.map((hash) => hash.slice(0, 16)));
+
 /** The reviewed create declaration for one fleet color, from its compiled props and the root image. */
 export const bootstrapDeclaration = (input: {
   name: "PoolRuntimeBlue" | "PoolRuntimeGreen";
@@ -34,10 +41,7 @@ export const bootstrapDeclaration = (input: {
 }) =>
   Effect.gen(function* () {
     const { name, root, metadata } = input;
-    const imageInput = (yield* sha256Object({
-      image: root.image.image,
-      imageName: undefined,
-    })).slice(0, 16);
+    const imageInput = yield* referenceImageInput(root.image.image);
     const require = createRequire(import.meta.url);
     const sdk = new URL(
       "../src/Cloudflare/Containers/ContainerProvider.ts",

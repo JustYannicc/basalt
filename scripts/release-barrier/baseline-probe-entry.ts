@@ -1,13 +1,9 @@
-import { baselineRoles, BaselineInventoryError, type BaselineProbeRow } from "./baseline-probe.ts";
+import { BaselineInventoryError, type BaselineProbeRow } from "./baseline-probe.ts";
+import { baselineProbeFailureRows } from "./baseline-probe-failure.ts";
 import { reportBaselineProbe } from "./baseline-probe-report.ts";
 import { probeWorkerSettings } from "./settings-probe.ts";
 import { deployEnvironment } from "../environment.ts";
-import { safeProviderFailure } from "./operation-failure.ts";
-import {
-  CandidateSettingsReadFailure,
-  candidateReadFailure,
-  candidateFailureDetails,
-} from "./candidate-failure.ts";
+import { candidateReadFailure } from "./candidate-failure.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true")
   throw new Error("The live baseline probe runs only in GitHub Actions");
@@ -32,30 +28,7 @@ try {
   }
   rows = await probeWorkerSettings(accountId, apiToken, environment);
 } catch (error) {
-  const failure = safeProviderFailure(error);
-  const candidate =
-    error instanceof CandidateSettingsReadFailure
-      ? error
-      : failure.type === "Error" || failure.type === "unknown"
-        ? candidateReadFailure(error, "inventory")
-        : undefined;
-  rows = baselineRoles.map((role) => ({
-    role,
-    reason:
-      error instanceof BaselineInventoryError
-        ? error.refusals.map((item) => `${item.role}: ${item.reason}`).join("; ")
-        : (candidate?.message ?? failure.reason ?? "inventory-read-failed"),
-    ok: false,
-    type:
-      error instanceof BaselineInventoryError
-        ? "BaselineInventoryError"
-        : (candidate?._tag ?? failure.type),
-    ...(candidate ? { candidateFailure: candidateFailureDetails(candidate) } : {}),
-    status: failure.status ?? null,
-    bytes: 0,
-    ms: Math.round(performance.now() - start),
-    attempts: 0,
-  }));
+  rows = baselineProbeFailureRows(error, Math.round(performance.now() - start));
 }
 await reportBaselineProbe(rows, output, process.env.GITHUB_STEP_SUMMARY);
 if (rows.some((row) => !row.ok)) process.exitCode = 1;
