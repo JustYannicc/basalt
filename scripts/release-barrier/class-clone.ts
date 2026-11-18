@@ -8,6 +8,7 @@ import { withOperation } from "./operation-failure.ts";
 import { classConstraint, classRefusal } from "./class-refusal.ts";
 import { changedProps } from "./prop-diff.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
+import { classAnnotations } from "./class-settings.ts";
 
 /** Legacy inherit selects the latest upload. Stage the exact active bytes with version-qualified binding inheritance first. */
 export function cloneRequest(
@@ -42,7 +43,10 @@ export function cloneRequest(
       name: binding.name,
       versionId: baseline.versionId,
     })),
-    annotations: { ...settings.annotations, workersMessage: `${marker}:clone` },
+    annotations: {
+      ...classAnnotations(settings.annotations, fqn, "settings"),
+      workersMessage: `${marker}:clone`,
+    },
     compatibilityDate: settings.compatibilityDate ?? undefined,
     compatibilityFlags: settings.compatibilityFlags ?? undefined,
     limits: settings.limits ?? undefined,
@@ -69,8 +73,9 @@ export function assertClone(
   actual: Workers.GetBetaWorkerVersionResponse | undefined,
 ) {
   const request = saved.clone.request;
+  // Cloudflare stamps its own provider-managed annotations on the read-back; only caller-owned ones are ours to compare.
   const expected = {
-    annotations: request.annotations,
+    annotations: classAnnotations(request.annotations, fqn, "clone.request"),
     mainModule: request.mainModule,
     modules: request.modules,
     compatibilityDate: request.compatibilityDate,
@@ -82,7 +87,7 @@ export function assertClone(
     containers: saved.baseline.containers ?? [],
   };
   const observed = actual && {
-    annotations: actual.annotations,
+    annotations: classAnnotations(actual.annotations, fqn, "clone"),
     mainModule: actual.mainModule,
     modules: actual.modules,
     compatibilityDate: actual.compatibilityDate,
