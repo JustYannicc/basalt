@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-access-memory",
+  "file": "0681-native-access-memory.patch",
+  "content_sha256": "cfd41fcf79646e46bbb60802c201129de0a6b9718aa22a53b11a3a856c6e47fa",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

@@ -124,6 +124,20 @@ test("an operation after the bound checks again and honours the answer", async (
   assert.equal(session.assertions.length, 2, "the refused request never reaches the pool");
 });
 
+test("reuse counts from when the tools gateway read a remembered answer", async (context) => {
+  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const session = await tunnel(context, "device-a", [
+    Response.json({ ...grant("device-a"), checkedAt: now - 2_000 }),
+  ]);
+  assert.equal(await session.request(), 200);
+  context.mock.timers.tick(bound - 2_000 - 1);
+  assert.equal(await session.request(), 200);
+  assert.equal(session.checks.length, 1);
+  context.mock.timers.tick(1);
+  assert.equal(await session.request(), 200);
+  assert.equal(session.checks.length, 2, "the answer's own age ends the reuse, not the call's");
+});
+
 test("each session's operations carry only that session's check", async (context) => {
   context.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const first = await tunnel(context, "device-a");

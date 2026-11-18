@@ -18,6 +18,8 @@ const Access = Schema.Struct({
   userId: Schema.NonEmptyString,
   clientId: Schema.NonEmptyString,
   expiresAt: Schema.Int,
+  /** When the tools gateway read this answer's rows; a remembered answer predates the call. */
+  checkedAt: Schema.optionalKey(Schema.Int),
   policy: Schema.Struct({
     kind: Schema.Literal("native"),
     computer: Schema.NonEmptyString,
@@ -27,8 +29,8 @@ const Access = Schema.Struct({
   }),
 });
 const readAccess = Schema.decodeUnknownSync(Access);
-/** `checkedAt` is when this bearer's check started, so reuse is measured conservatively. */
-export type TunnelAccess = typeof Access.Type & { readonly checkedAt?: number };
+/** `checkedAt` is the earliest time this answer can describe, so reuse never extends it. */
+export type TunnelAccess = typeof Access.Type;
 export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
   const authorization = request.headers.get("authorization");
   if (!authorization || !/^Bearer [^\s]+$/iu.test(authorization))
@@ -45,7 +47,7 @@ export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
   if (access.expiresAt <= Date.now()) return new Response(null, { status: 401 });
   if (!access.policy.models && !access.policy.toolsOrganization)
     return new Response(null, { status: 403 });
-  return { ...access, checkedAt };
+  return { ...access, checkedAt: Math.min(checkedAt, access.checkedAt ?? checkedAt) };
 }
 export async function tunnelLease(request: Request, env: TunnelEnvironment, access: TunnelAccess) {
   const envelope = await signEnvelope(env.POOL_APP_SIGNING_KEY, nativeControlPrefix, {
