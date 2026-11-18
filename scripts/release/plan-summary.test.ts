@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { changedRows, remainingRows, type Snapshot } from "./plan-summary.ts";
+import {
+  changedRows,
+  destroyTargets,
+  remainingRows,
+  updatesWorkerWithoutReadiness,
+  type Snapshot,
+} from "./plan-summary.ts";
 import { safeJson } from "./safe-json.ts";
 
 /** A Worker node as apply leaves it: its binding prop resolved to a resource that points back. */
@@ -59,4 +65,68 @@ test("safeJson marks only a real cycle; a shared object prints in full each time
   assert.equal(safeJson({ loop }), '{"loop":{"id":2,"self":"[cycle]"}}');
   assert.equal(safeJson({ big: 10n }), '{"big":"10"}');
   assert.equal(safeJson(undefined), "null");
+});
+
+const rows = (...resources: Snapshot["resources"]): Snapshot =>
+  ({ resources, summary: {}, native: { resources: {}, deletions: {} } }) as never;
+const row = (fqn: string, resourceType: string, action: string) => ({
+  fqn,
+  resourceType,
+  action,
+  bindings: [],
+});
+
+test("a command that re-runs on every deploy is not a change left after apply", () => {
+  const after = rows(
+    row("PoolBackendBudgetRuntimeReady", "Command.Exec", "update"),
+    row("PoolWorker", "Cloudflare.Worker", "noop"),
+  );
+  assert.deepEqual(remainingRows(after), []);
+  assert.deepEqual(
+    remainingRows(
+      rows(row("PoolWorker", "Cloudflare.Worker", "update"), row("Seed", "Command.Exec", "create")),
+    ),
+    [
+      { fqn: "PoolWorker", type: "Cloudflare.Worker", action: "update" },
+      { fqn: "Seed", type: "Command.Exec", action: "create" },
+    ],
+  );
+});
+
+test("a PoolWorker update must carry the readiness command that waits for adoption", () => {
+  const worker = row("PoolWorker", "Cloudflare.Worker", "update");
+  assert.equal(updatesWorkerWithoutReadiness(rows(worker), "PoolWorker"), true);
+  assert.equal(
+    updatesWorkerWithoutReadiness(
+      rows(worker, row("PoolBackendBudgetRuntimeReady", "Command.Exec", "update")),
+      "PoolWorker",
+    ),
+    false,
+  );
+  assert.equal(
+    updatesWorkerWithoutReadiness(
+      rows(row("PoolWorker", "Cloudflare.Worker", "noop")),
+      "PoolWorker",
+    ),
+    false,
+  );
+});
+
+test("a destroy plan's targets are the names and ids its deleted rows record", () => {
+  const deleted = (attr: Record<string, unknown>) => ({ action: "delete", state: { attr } });
+  const plan = {
+    resources: {
+      Worker: deleted({
+        workerName: "basalt-test-pr-7-poolworker",
+        bindings: [{ id: "shared-db" }],
+      }),
+      Kept: { action: "noop", state: { attr: { workerName: "basalt-test-pr-7-router" } } },
+    },
+    deletions: { Bucket: deleted({ name: "vault-test-pr-7", jurisdiction: "eu" }) },
+  };
+  // Ids a row only refers to (a binding's target) are not targets.
+  assert.deepEqual(destroyTargets(plan as never), [
+    "basalt-test-pr-7-poolworker",
+    "vault-test-pr-7",
+  ]);
 });

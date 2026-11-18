@@ -11,6 +11,7 @@ import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
 import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
+import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
 import { PoolAcceptanceClient } from "../../pool-acceptance/client.ts";
 import type { PoolOperationsTarget } from "../../pool-operations.ts";
 import type { DispatchDependencies } from "../dispatch.ts";
@@ -219,6 +220,17 @@ export async function harness(options: HarnessOptions = {}) {
       target: null,
     }),
   };
+  // The real bookmark rules over a storage double that has the platform's recovery calls.
+  const bookmarks = new StorageBookmarks({
+    storage: storage as never,
+    port: {
+      current: async () => `0000002a-00000000-00000000-${"c".repeat(32)}`,
+      forTime: async () => `00000005-00000000-00000000-${"c".repeat(32)}`,
+      restoreOnNextSession: async () => `00000900-00000000-00000000-${"c".repeat(32)}`,
+      abort: () => {},
+    },
+    afterReply: () => {},
+  });
   const slots = {
     slots: {
       inspect: async () => ({
@@ -237,7 +249,15 @@ export async function harness(options: HarnessOptions = {}) {
           const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
           const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
           actions.push((opened as { action: string }).action);
-          return handleRuntimeHandoff(request, slots, code, signingKey, fleet);
+          return handleRuntimeHandoff(
+            request,
+            slots,
+            code,
+            signingKey,
+            fleet,
+            undefined,
+            bookmarks,
+          );
         },
       },
     },

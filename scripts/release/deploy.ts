@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
+import { assignEnvironment } from "./process-env.ts";
+import { failureReport } from "./public-report.ts";
 import { safeJson } from "./safe-json.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -49,6 +51,7 @@ const { positionals, values } = parseArgs({
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
+    "root-boot": { type: "string" },
   },
 });
 const command = positionals[0] ?? "";
@@ -82,6 +85,31 @@ if (command !== "compare") {
   }
 }
 
+/**
+ * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
+ * gitignored .local, in the stage runner's own sealed output when it gives one, and sealed with the
+ * deployment key next to the uploaded records on production.
+ */
+const keepPrivate = async (name: string, detail: string) => {
+  await mkdir(resolve(root, ".local/release"), { recursive: true });
+  await writeFile(resolve(root, `.local/release/${name}.txt`), `${detail}\n`);
+  if (process.env.BASALT_STAGE_OUTPUT_DIR)
+    await appendFile(
+      resolve(process.env.BASALT_STAGE_OUTPUT_DIR, `release-${name}.txt`),
+      `${detail}\n`,
+    );
+  const key = process.env.EXECUTOR_ENCRYPTION_KEY;
+  if (stage === "production" && key)
+    try {
+      const { sealRecord } = await import("./legacy-records.ts");
+      await writeFile(
+        resolve(root, `.local/release/${name}.sealed.json`),
+        safeJson(sealRecord(detail, key, `release-${name}`)),
+      );
+    } catch (error) {
+      console.error(`The ${name} detail could not be sealed (${failureReport(error).publicText})`);
+    }
+};
 const summary = async (text: string) => {
   if (process.env.GITHUB_STEP_SUMMARY)
     await appendFile(process.env.GITHUB_STEP_SUMMARY, `${text}\n`);
@@ -104,10 +132,26 @@ if (command === "compare") {
   process.exit(0);
 }
 
-if (command === "accept") {
+if (command === "boot" || command === "accept") {
   // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
-  const { runAcceptance } = await import("./acceptance.ts");
+  const { Schema } = await import("effect");
+  const { runAcceptance, servingBoot } = await import("./acceptance.ts");
   const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
+  const client = process.env.POOL_ACCEPTANCE_ORIGIN
+    ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
+    : new PoolAcceptanceClient();
+  if (command === "boot") {
+    // Read before the apply: the root serves alone until a fleet is enabled.
+    const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client);
+    await output(resolve(values.out ?? ""), { boot });
+    await summary("The root's boot is recorded before the apply.");
+    process.exit(0);
+  }
+  const rootBoot = values["root-boot"]
+    ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
+        JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
+      ).boot
+    : undefined;
   const expect = values.expect ?? "same-boot";
   if (!["same-boot", "two-runtimes", "any"].includes(expect))
     throw new Error(`Unknown --expect ${expect}`);
@@ -115,12 +159,20 @@ if (command === "accept") {
     apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
     ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
     expect: expect as "same-boot",
-    ...(process.env.POOL_ACCEPTANCE_ORIGIN
-      ? { client: new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN }) }
-      : {}),
+    ...(rootBoot ? { rootBoot } : {}),
+    client,
   });
-  if (values.out) await output(resolve(values.out), result);
-  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(result)}`);
+  // Failure messages can name hosts; the public record keeps counts and timings only.
+  const view = {
+    passed: result.passed,
+    requests: result.requests,
+    failed: result.failures.length,
+    runtimes: result.boots.length,
+    firstByteMs: result.firstByteMs,
+  };
+  if (values.out) await output(resolve(values.out), view);
+  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);
+  if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
   process.exit(result.passed ? 0 : 1);
 }
 
@@ -152,7 +204,7 @@ if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
 if (stage === "production") {
   const { deployEnvironment } = await import("../environment.ts");
   // Production always declares the legacy root by its pinned digest (src/pool/root-image-pin.ts).
-  Object.assign(process.env, deployEnvironment(), { POOL_ROOT_IMAGE_REQUIRED: "true" });
+  assignEnvironment(process.env, { ...deployEnvironment(), POOL_ROOT_IMAGE_REQUIRED: "true" });
 }
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
@@ -164,7 +216,9 @@ const policy = values.policy
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;
 const include: string[] = values.include?.length ? values.include : [...(policy?.include ?? [])];
-if (stage === "production" && !policy) throw new Error("Production needs a policy");
+// Only planning reads the policy; the read-only and rollback commands never plan.
+if (stage === "production" && !policy && ["plan", "apply"].includes(command))
+  throw new Error("Production plans and applies only under a policy");
 
 process.chdir(cloud);
 const { Effect } = await import("effect");
@@ -172,7 +226,13 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
-const { changedRows, remainingRows } = await import("./plan-summary.ts");
+const {
+  changedRows,
+  destroyTargets,
+  readinessCommand,
+  remainingRows,
+  updatesWorkerWithoutReadiness,
+} = await import("./plan-summary.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -207,10 +267,14 @@ const reporter = (event: unknown) =>
       ),
     );
     events.push(line);
-    console.log(line);
+    // The log is public; Alchemy's free-text messages (which can carry URLs) stay in the kept file.
+    const { message: _message, ...shown } = JSON.parse(line) as Record<string, unknown>;
+    console.log(safeJson(shown));
   });
 
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
+// Filled by a destroy from its own plan, before anything is deleted.
+const deletable: string[] = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   Effect.runPromise(
     Effect.scoped(
@@ -224,6 +288,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
+          deletable,
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
@@ -334,6 +399,12 @@ try {
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
+        if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
+          return yield* Effect.die(
+            new Error(
+              `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
+            ),
+          );
         if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
@@ -344,7 +415,7 @@ try {
         const planned = changedRows(snapshot);
         yield* Alchemist.Stack.apply(snapshot as never);
         const after = yield* planOf("deploy");
-        if (Alchemist.Stack.hasChanges(after.summary as never))
+        if (remainingRows(after).length > 0)
           return yield* Effect.die(
             new Error(`Changes remain after apply: ${safeJson(remainingRows(after))}`),
           );
@@ -369,7 +440,9 @@ try {
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {
-        yield* Alchemist.Stack.apply((yield* planOf("destroy")) as never);
+        const plan = yield* planOf("destroy");
+        deletable.push(...destroyTargets(plan.native));
+        yield* Alchemist.Stack.apply(plan as never);
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
@@ -507,49 +580,11 @@ try {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
 } catch (error) {
-  // Say exactly what stopped the run: every tagged refusal in the failure chain, with its fields.
-  const reasons: string[] = [];
-  const seen = new Set<unknown>();
-  const visit = (value: unknown, depth: number) => {
-    if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
-    seen.add(value);
-    const record = value as Record<string, unknown>;
-    if (
-      typeof record._tag === "string" &&
-      /Refus|Refused|Failed|Unavailable|Possible/u.test(record._tag)
-    )
-      reasons.push(
-        `${record._tag}: ${[
-          "resource",
-          "check",
-          "rule",
-          "script",
-          "method",
-          "path",
-          "field",
-          "value",
-          "why",
-          "fix",
-        ]
-          .filter((key) => typeof record[key] === "string" || typeof record[key] === "number")
-          .map((key) => `${key}=${String(record[key])}`)
-          .join(
-            " ",
-          )}${record.detail ? ` detail=${safeJson(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${safeJson(record.violations)}` : ""}`,
-      );
-    for (const key of ["cause", "reason", "error", "defect", "failures", "reasons", "issue"])
-      if (key in record) {
-        const next = record[key];
-        if (Array.isArray(next)) for (const item of next) visit(item, depth + 1);
-        else visit(next, depth + 1);
-      }
-  };
-  visit(error, 0);
-  const text = reasons.length
-    ? `Release stopped:\n${reasons.map((reason) => `- ${reason}`).join("\n")}`
-    : `Release stopped: ${error instanceof Error ? error.message : String(error)}`;
-  console.error(text);
-  await summary(text);
+  // Public: the tagged reason in our own vocabulary. Names, ids and raw messages stay private.
+  const report = failureReport(error);
+  console.error(report.publicText);
+  await summary(report.publicText);
+  await keepPrivate("failure", report.detail);
   process.exitCode = 1;
 } finally {
   if (events.length) await mkdir(resolve(root, ".local/release"), { recursive: true });
@@ -558,8 +593,15 @@ try {
       resolve(root, `.local/release/${command}-events.jsonl`),
       `${events.join("\n")}\n`,
     ).catch(() => {});
-  if (journal.length)
+  if (journal.length) {
+    // Vendor API hosts are public; any other host (an account subdomain, a custom domain) is not.
+    const vendor = ["api.cloudflare.com", "api.planetscale.com", "registry.cloudflare.com"];
     await summary(
-      `Outgoing requests:\n${journal.map((entry) => `${entry.method} ${entry.host}${entry.path}`).join("\n")}`,
+      `Outgoing requests:\n${journal.map((entry) => `${entry.method} ${vendor.includes(entry.host) ? entry.host : "{host}"}${entry.path}`).join("\n")}`,
     );
+    await keepPrivate(
+      "requests",
+      journal.map((entry) => `${entry.method} ${entry.host}${entry.path}`).join("\n"),
+    );
+  }
 }

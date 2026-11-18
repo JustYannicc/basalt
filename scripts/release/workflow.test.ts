@@ -84,6 +84,7 @@ test("the class change states what was verified first and never pretends it can 
     "database load",
     "counts",
     "serving version",
+    "controller storage bookmark",
   ])
     assert.ok(verified.includes(item), item);
   const [summary, apply] = order(
@@ -151,8 +152,9 @@ test("a dispatched apply applies exactly the reviewed plan, and every record nam
   const plan = step("Plan and check");
   assert.match(plan, /\$\{ATTEMPT_INPUT:\+--attempt "\$ATTEMPT_INPUT"\}/u);
   assert.match(plan, /"\$digest" != "\$PLAN_DIGEST_INPUT"[\s\S]*exit 1/u);
+  assert.match(plan, /PLAN_DIGEST=%s\\nATTEMPT=%s\\n' "\$digest" "\$attempt" >> "\$GITHUB_ENV"/u);
   const apply = step("Apply the reviewed plan");
-  assert.match(apply, /PLAN_DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
+  assert.match(apply, /--plan-digest "\$PLAN_DIGEST" --attempt "\$ATTEMPT"/u);
   assert.doesNotMatch(apply, /inputs\.plan_digest/u);
   assert.match(step("Record the deployment"), /DIGEST: \$\{\{ steps\.plan\.outputs\.digest \}\}/u);
 });
@@ -162,4 +164,102 @@ test("the stop-the-line gate names who triggered the run", () => {
   assert.match(gate, /TRIGGERING_ACTOR: \$\{\{ github\.triggering_actor \}\}/u);
   assert.match(gate, /GH_TOKEN: \$\{\{ github\.token \}\}/u);
   assert.match(job("release"), /statuses: read/u);
+});
+
+test("every production entry call the workflow makes is one the entry accepts", () => {
+  const calls = [...workflow.matchAll(/deploy\.ts (\w[\w-]*) --stage production([^\n]*)/gu)];
+  assert.ok(calls.length >= 8, `found ${calls.length}`);
+  for (const [line, command, rest] of calls) {
+    assert.ok(
+      [
+        "preflight",
+        "plan",
+        "db-load",
+        "serving",
+        "backup",
+        "snapshot",
+        "boot",
+        "apply",
+        "accept",
+        "rollback",
+      ].includes(command!),
+      line,
+    );
+    // The entry reads a policy only to plan or apply, and refuses those without one.
+    if (command === "plan" || command === "apply")
+      assert.match(rest!, /--policy "\$POLICY"/u, line);
+  }
+});
+
+test("production secrets reach only the steps that run the entry", () => {
+  const env = /\n    env:\n([\s\S]*?)\n    steps:/u.exec(job("release"))?.[1] ?? "";
+  assert.doesNotMatch(env, /secrets\./u, "no secret in the job env");
+  const secretSteps = workflow
+    .split("\n      - ")
+    .filter((block) => /secrets\.|\*release-secrets/u.test(block))
+    .map((block) => /^name: (.*)$/mu.exec(block)?.[1] ?? block.split("\n")[0]);
+  for (const name of secretSteps)
+    assert.match(
+      step(name),
+      /scripts\/release\/deploy\.ts |scripts\/pool-fleet\/dispatch\.ts/u,
+      name,
+    );
+  for (const name of [
+    "Prepare",
+    "Build and measure Worker startup",
+    "Keep the plan and the counts",
+  ])
+    assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
+  assert.equal(secretSteps.length, 12);
+});
+
+test("acceptance covers the public app as well as the pool", () => {
+  const accept = step("Accept the release through the live pool");
+  const [pool, app] = [accept.indexOf("deploy.ts accept"), accept.indexOf("node scripts/smoke.ts")];
+  assert.ok(pool >= 0 && app > pool);
+});
+
+test("the root's boot is read before the apply and must still serve after it", () => {
+  const [boot, apply, accept] = order(
+    "Record the root's boot before the apply",
+    "Apply the reviewed plan",
+    "Accept the release through the live pool",
+  );
+  assert.ok(boot! < apply! && apply! < accept!);
+  assert.match(
+    step("Record the root's boot before the apply"),
+    /deploy\.ts boot --stage production --out \.local\/release\/root-boot\.json/u,
+  );
+  assert.match(
+    step("Accept the release through the live pool"),
+    /--root-boot \.local\/release\/root-boot\.json/u,
+  );
+  assert.match(
+    step("Accept the release through the live pool"),
+    /env\.POLICY_NAME == 'code' \|\| env\.POLICY_NAME == 'cutover-code'\) && 'same-boot'/u,
+  );
+});
+
+test("the class change takes the controller storage bookmark first, under the same GO", () => {
+  const bookmark = step("Take the controller storage bookmark");
+  assert.equal(
+    condition("Take the controller storage bookmark"),
+    "env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'",
+  );
+  assert.match(bookmark, /POOL_FLEET_MODE=bookmark POOL_FLEET_GO="\$GO_INPUT"/u);
+  const [taken, verified, apply] = order(
+    "Take the controller storage bookmark",
+    "What was verified before the irreversible step",
+    "Apply the reviewed plan",
+  );
+  assert.ok(taken! < verified! && verified! < apply!);
+});
+
+test("while the hold is set an automatic run is skipped, and a failed rollback is said out loud", () => {
+  const pick = step("Pick the candidate");
+  assert.match(pick, /PRODUCTION_RELEASE_HOLD: \$\{\{ vars\.PRODUCTION_RELEASE_HOLD \}\}/u);
+  assert.match(pick, /if \[ -n "\$PRODUCTION_RELEASE_HOLD" \]; then[\s\S]*?release=false/u);
+  const rollback = step("Roll back a failed release");
+  assert.doesNotMatch(rollback, /\|\| true/u);
+  assert.match(rollback, /::error::The rolled-back version also fails acceptance/u);
 });

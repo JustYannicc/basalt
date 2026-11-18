@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { runAcceptance } from "./acceptance.ts";
+import { runAcceptance, servingBoot } from "./acceptance.ts";
 
 // A pool endpoint speaking the real wire: /v1/models JSON and a streamed chat completion, each with
 // the serving runtime's boot header, as the live pool answers the repo's acceptance client.
@@ -89,5 +89,55 @@ test("the fleet passes only when a second runtime served", async () => {
     );
   } finally {
     fleet.close();
+  }
+});
+
+test("a root that restarted during the apply fails acceptance, so the release rolls back", async () => {
+  const live = await pool({ boots: ["boot-root-new"] });
+  try {
+    const before = "boot-root";
+    const result = await runAcceptance({
+      apiKey: "k",
+      expect: "same-boot",
+      rootBoot: before,
+      client: live.client,
+    });
+    assert.equal(result.passed, false);
+    assert.match(result.cause ?? "", /The root restarted: boot boot-root before the apply/u);
+  } finally {
+    live.close();
+  }
+});
+
+test("the root's boot read before the apply passes when the root kept it", async () => {
+  const live = await pool();
+  try {
+    const before = await servingBoot("k", live.client);
+    assert.equal(before, "boot-root");
+    const result = await runAcceptance({
+      apiKey: "k",
+      expect: "same-boot",
+      rootBoot: before,
+      client: live.client,
+    });
+    assert.equal(result.passed, true, result.cause ?? "");
+  } finally {
+    live.close();
+  }
+});
+
+test("with fleet cells serving, the root's boot must still be among the runtimes", async () => {
+  const live = await pool({ boots: ["boot-cell-1", "boot-cell-2"] });
+  try {
+    const result = await runAcceptance({
+      apiKey: "k",
+      expect: "any",
+      rootBoot: "boot-root-gone",
+      client: live.client,
+    });
+    assert.equal(result.passed, false);
+    assert.match(result.cause ?? "", /The root restarted/u);
+  } finally {
+    live.close();
   }
 });

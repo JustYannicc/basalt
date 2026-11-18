@@ -50,10 +50,51 @@ export const changedRows = (snapshot: Snapshot) =>
       };
     });
 
-/** What a fresh plan after apply still wants to change: names only, no props. */
+/**
+ * What a fresh plan after apply still wants to change: names only, no props. A command that re-runs
+ * on every deploy (`memo: false`) always plans as an update, so a command update is not a leftover.
+ */
 export const remainingRows = (snapshot: Snapshot) =>
   snapshot.resources
     .filter(
       (row) => row.action !== "noop" || row.bindings.some((binding) => binding.action !== "noop"),
     )
+    .filter((row) => !(row.resourceType.startsWith("Command.") && row.action === "update"))
     .map((row) => ({ fqn: row.fqn, type: row.resourceType, action: row.action }));
+
+/**
+ * The deploy-time readiness command polls until the pool's Durable Object has adopted the new
+ * code (Cloudflare defers that up to 300 s for an active object). A plan that updates PoolWorker
+ * without it would hand acceptance the old code, and a failure inside that window would roll back.
+ */
+export const readinessCommand = "PoolBackendBudgetRuntimeReady";
+export const updatesWorkerWithoutReadiness = (snapshot: Snapshot, poolWorker: string) =>
+  snapshot.resources.some((row) => row.fqn === poolWorker && row.action !== "noop") &&
+  !snapshot.resources.some((row) => row.fqn === readinessCommand && row.action !== "noop");
+
+// The attributes providers record as a resource's own name or id (not ids it merely refers to).
+const IDENTITY = [
+  "workerName",
+  "scriptName",
+  "applicationId",
+  "applicationName",
+  "id",
+  "name",
+  "databaseId",
+  "databaseName",
+  "bucketName",
+  "namespaceId",
+  "configId",
+  "queueId",
+  "indexName",
+] as const;
+
+/** The names and ids of every resource a destroy plan deletes, read from their recorded rows. */
+export const destroyTargets = (plan: AlchemyPlan.Plan) =>
+  [...Object.values(plan.resources), ...Object.values(plan.deletions)].flatMap((node) => {
+    if (!node || (node.action !== "delete" && node.action !== "orphaned")) return [];
+    const attr = (node.state as { attr?: Record<string, unknown> } | undefined)?.attr ?? {};
+    return IDENTITY.map((key) => attr[key]).filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+  });

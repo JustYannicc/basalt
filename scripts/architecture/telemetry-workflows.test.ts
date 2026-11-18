@@ -10,16 +10,28 @@ test("every release job with a capture key also receives its configured region",
   for (const name of readdirSync(directory).filter((name) => /\.ya?ml$/.test(name))) {
     const workflow = parse(readFileSync(join(directory, name), "utf8"));
     for (const [job, configuration] of Object.entries(workflow.jobs ?? {})) {
-      const env = (configuration as { env?: Record<string, string> }).env;
-      if (!env?.POSTHOG_PROJECT_KEY) continue;
+      const { env, steps } = configuration as {
+        env?: Record<string, string>;
+        steps?: Array<{ env?: Record<string, string> }>;
+      };
+      // A job may scope its secrets to the steps that need them.
+      const scopes = [env, ...(steps ?? []).map((step) => step.env)].filter(
+        (scope) => scope?.POSTHOG_PROJECT_KEY,
+      );
+      if (!scopes.length) continue;
       releases.push(`${name}:${job}`);
-      expect(env.POSTHOG_HOST, `${name}:${job}`).toBe("${{ secrets.POSTHOG_HOST }}");
+      for (const scope of scopes)
+        expect(scope!.POSTHOG_HOST, `${name}:${job}`).toBe("${{ secrets.POSTHOG_HOST }}");
     }
   }
   expect(releases.sort()).toEqual([
+    "ci.yml:baseline-probe",
+    "ci.yml:release-preflight",
     "deploy.yml:deploy",
+    "release-main.yml:backup",
     "release-main.yml:deploy",
     "release-main.yml:migration-activation",
+    "release-manual.yml:backup",
     "release-manual.yml:deploy",
     "release-rollback.yml:rollback",
     "release.yml:release",
