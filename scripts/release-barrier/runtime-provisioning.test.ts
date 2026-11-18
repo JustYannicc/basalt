@@ -163,7 +163,7 @@ test("provider configuration readback cannot drop settings or introduce a secret
       environmentVariables: [{ name: "UNREVIEWED_SECRET", value: "synthetic-private" }],
     },
   });
-  await assert.rejects(h.run(), /provisioning-input-drift/);
+  await assert.rejects(h.run(), /provisioning-configuration-drift/);
   assert.equal(h.counts.create, 1);
 });
 

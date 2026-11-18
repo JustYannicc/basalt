@@ -3,7 +3,8 @@
  * Worker with no migration tag, PoolContainer as its only container class, and the account's DO
  * namespaces. It answers the reviewed class path's own SDK and fetch calls (read, content, the
  * additive script PUT and the inactive clone) and the bootstrap's namespace read, and it refuses
- * what Cloudflare refuses: a migration tag on an untagged script, or re-creating an existing class.
+ * what Cloudflare refuses: a migration tag on an untagged script, re-creating an existing class, a
+ * module that does not parse, or an upload that copies Cloudflare's own triggered_by annotation.
  * An upload that omits container links drops them, as a full-script PUT would. Every version and
  * settings read-back is built by production-pool-worker-shape.ts, the same source as the GET-only
  * stand-in; the inactive clone's read-back echoes the posted body.
@@ -16,11 +17,13 @@ import {
   cloudflareResult,
   productionDeploymentsBody,
   productionNamespaceResponse,
+  productionModuleRefusal,
   productionNamespaceRow,
   productionProfileBody,
   productionScriptVersionBody,
   productionSdkLayer,
   productionSettingsBody,
+  providerTriggeredBy,
   productionTags,
   productionVersionBody,
 } from "./production-pool-worker-shape.ts";
@@ -41,7 +44,8 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
   const tags = productionTags(Object.keys(classes));
   let serial = 0;
   const versions = new Map<string, Version>();
-  const clones = new Map<string, Record<string, unknown>>();
+  // Inactive clones are ordinary versions that no deployment serves.
+  const clones = new Set<string>();
   const doBinding = (name: string): Binding => ({
     type: "durable_object_namespace",
     name,
@@ -78,7 +82,11 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
   // Cloudflare's code for an absent Worker version; the SDK maps it to WorkerVersionNotFound.
   const versionMissing = () => failure("version not found", 404, 10071);
   const ok = cloudflareResult;
-  const settings = () => productionSettingsBody(current().bindings, tags, current().annotations);
+  // Production's /settings follows the latest upload, deployed or not, not the serving version.
+  const settings = () => {
+    const version = versions.get(latest)!;
+    return productionSettingsBody(version.bindings, tags, version.annotations);
+  };
 
   async function respond(method: string, url: URL, body: () => Promise<unknown>) {
     const base = `/client/v4/accounts/${accountId}/workers`;
@@ -113,8 +121,6 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
       const beta = new RegExp(`^${base}/workers/${scriptName}/versions/([^/]+)$`, "u").exec(path);
       if (beta) {
         const id = beta[1] === "latest" ? latest : beta[1]!;
-        const clone = clones.get(id);
-        if (clone) return ok(clone);
         const version = versions.get(id);
         if (!version) return versionMissing();
         return ok(
@@ -160,6 +166,28 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
         main_module: string;
       };
       log.puts.push(metadata);
+      // Cloudflare refused an upload that copied its own annotation (State Worker, 2026-11-08).
+      if (metadata.annotations?.[providerTriggeredBy] !== undefined) {
+        log.refusals.push("provider-managed-annotation");
+        return failure("annotations: workers/triggered_by is read-only");
+      }
+      const files = await Promise.all(
+        [...form.entries()]
+          .filter(([name]) => name !== "metadata")
+          .map(async ([, item]) => {
+            const file = item as File;
+            return {
+              name: file.name,
+              type: file.type,
+              bytes: new Uint8Array(await file.arrayBuffer()),
+            };
+          }),
+      );
+      const unparsed = await productionModuleRefusal(files);
+      if (unparsed) {
+        log.refusals.push("module-syntax-error");
+        return unparsed;
+      }
       const migration = metadata.migrations ?? {};
       if (migration.old_tag || migration.new_tag) {
         log.refusals.push("migration-tag-on-untagged-script");
@@ -179,42 +207,58 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
             ? doBinding(String(binding.class_name))
             : binding,
       );
-      const files = [...form.entries()]
-        .filter(([name]) => name !== "metadata")
-        .map(([, file]) => file as File);
       deploy({
         id: `expanded-${++serial}`,
         bindings,
         containers: (metadata.containers ?? []).map((container) => container.class_name),
-        files: await Promise.all(
-          files.map(async (file) => ({
-            name: file.name,
-            type: file.type,
-            bytes: new Uint8Array(await file.arrayBuffer()),
-          })),
-        ),
+        files,
         mainModule: metadata.main_module,
-        ...(metadata.annotations ? { annotations: metadata.annotations } : {}),
+        annotations: { ...metadata.annotations, [providerTriggeredBy]: "upload" },
       });
       tags.splice(0, tags.length, ...metadata.tags);
       return ok({ id: scriptName, tag: scriptName, startup_time_ms: 100 });
     }
     if (method === "POST" && path === `${base}/workers/${scriptName}/versions`) {
-      const clone = (await body()) as Record<string, unknown>;
+      const clone = (await body()) as Record<string, unknown> & {
+        annotations?: Record<string, string>;
+      };
+      if (clone.annotations?.[providerTriggeredBy] !== undefined) {
+        log.refusals.push("provider-managed-annotation");
+        return failure("annotations: workers/triggered_by is read-only");
+      }
+      const files = (
+        (clone.modules ?? []) as { name: string; content_type: string; content_base64: string }[]
+      ).map((module) => ({
+        name: module.name,
+        type: module.content_type,
+        bytes: new Uint8Array(Buffer.from(module.content_base64, "base64")),
+      }));
+      const unparsed = await productionModuleRefusal(files);
+      if (unparsed) {
+        log.refusals.push("module-syntax-error");
+        return unparsed;
+      }
       const id = `clone-${++serial}`;
       latest = id;
-      clones.set(id, {
-        ...clone,
+      clones.add(id);
+      versions.set(id, {
         id,
-        number: 1,
-        created_on: "2026-11-17T00:00:00Z",
-        urls: [],
         bindings: current().bindings,
+        containers: ((clone.containers ?? []) as { class_name: string }[]).map(
+          (container) => container.class_name,
+        ),
+        files,
+        mainModule: String(clone.main_module),
+        annotations: { ...clone.annotations, [providerTriggeredBy]: "version_upload" },
       });
       return ok({ id, number: 1, created_on: "2026-11-17T00:00:00Z", urls: [] });
     }
     const removed = new RegExp(`^${base}/workers/${scriptName}/versions/([^/]+)$`, "u").exec(path);
-    if (method === "DELETE" && removed && clones.delete(removed[1]!)) return ok(null);
+    if (method === "DELETE" && removed && clones.delete(removed[1]!)) {
+      versions.delete(removed[1]!);
+      if (latest === removed[1]) latest = active;
+      return ok(null);
+    }
     return undefined;
   }
 

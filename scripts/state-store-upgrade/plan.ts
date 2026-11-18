@@ -1,6 +1,7 @@
 import { comparableSettings, uploadMetadata } from "./metadata.ts";
 import { digest, bytesDigest } from "./encoding.ts";
 import { UpgradeRefusal, differences, bindingDifferences, refuseChanges } from "./refusal.ts";
+import { providerManagedAnnotations } from "../release-barrier/worker-annotations.ts";
 
 export const workerId = "alchemy-state-store";
 export const targetVersion = 8;
@@ -129,7 +130,7 @@ export function makePlan(observed: Observation, candidate: Candidate) {
         "tail_consumers",
         "tags",
       ],
-      providerManagedFields: ["annotations.workers/triggered_by"],
+      providerManagedFields: [...providerManagedAnnotations].map((key) => `annotations.${key}`),
     },
     runtimeSettingsSha256: digest(observed.runtimeSettings),
     bindingsSha256: bindingDigest(observed.bindings),

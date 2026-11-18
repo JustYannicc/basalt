@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { Effect, Schema } from "effect";
-import { deployClassExpansion } from "./class-cloudflare.ts";
+import { deployClassExpansion, stageClassClone } from "./class-cloudflare.ts";
 import {
+  productionSettingsKeys,
   productionTagPrefixes,
   productionTags,
   productionVersionKeys,
+  providerTriggeredBy,
 } from "./test/production-pool-worker-shape.ts";
 import { productionPoolWorker } from "./test/production-pool-worker.ts";
 import { productionWorker, productionWorkerResponse } from "./test/production-worker-api.ts";
@@ -26,9 +28,14 @@ async function assertProductionShape(read: Read, accountId: string, scriptName: 
     deployments: { versions: { version_id: string }[] }[];
   };
   const active = deployments.deployments[0]!.versions[0]!.version_id;
-  const version = await result(`${base}/workers/${scriptName}/versions/${active}`);
+  const version = await result(`${base}/workers/${scriptName}/versions/${active}?include=modules`);
   assert.deepEqual(Object.keys(version), [...productionVersionKeys]);
-  const settings = (await result(`${base}/scripts/${scriptName}/settings`)) as { tags: string[] };
+  const settings = (await result(`${base}/scripts/${scriptName}/settings`)) as {
+    tags: string[];
+    annotations: Record<string, string>;
+  };
+  assert.deepEqual(Object.keys(settings), [...productionSettingsKeys]);
+  assert.equal(typeof settings.annotations[providerTriggeredBy], "string");
   assert.deepEqual(
     settings.tags.map((tag) => productionTagPrefixes.find((prefix) => tag.startsWith(prefix))),
     [...productionTagPrefixes],
@@ -42,10 +49,17 @@ async function assertProductionShape(read: Read, accountId: string, scriptName: 
 
 test("the GET-only stand-in serves PoolWorker's version, settings and runtime as production reads", async () => {
   const worker = productionWorker();
-  await assertProductionShape(
-    async (path) => productionWorkerResponse(worker, "GET", new URL(`${origin}${path}`)),
-    worker.accountId,
-    worker.scriptName,
+  const read: Read = async (path) =>
+    productionWorkerResponse(worker, "GET", new URL(`${origin}${path}`));
+  await assertProductionShape(read, worker.accountId, worker.scriptName);
+  // Without include=modules production omits the key entirely.
+  const response = await read(
+    `/accounts/${worker.accountId}/workers/workers/${worker.scriptName}/versions/${worker.versionId}`,
+  );
+  const { result } = (await response!.json()) as { result: Record<string, unknown> };
+  assert.deepEqual(
+    Object.keys(result),
+    productionVersionKeys.filter((key) => key !== "modules"),
   );
 });
 
@@ -81,4 +95,54 @@ test("the stateful stand-in keeps production's shape before and after the class 
   await assertProductionShape(read, target.accountId, target.scriptName);
   worker.deployCode(["PoolContainer", "PoolRuntimeBlue"]);
   await assertProductionShape(read, target.accountId, target.scriptName);
+});
+
+test("the stateful stand-in refuses what Cloudflare refuses before any change: an uncompilable module, a copied triggered_by", async () => {
+  const target = { accountId: "0".repeat(32), scriptName: "PoolWorker" };
+  const worker = productionPoolWorker(target);
+  const run = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(Effect.exit(effect));
+  const duplicate =
+    'export class PoolRuntimeBlue {}\nexport default {};\nexport { PoolRuntimeBlue } from "./declared.mjs";\n';
+  const put = await run(
+    deployClassExpansion({
+      ...target,
+      bindingsInherit: "strict",
+      metadata: Schema.decodeUnknownSync(Schema.toType(Workers.PutScriptMetadata))({
+        mainModule: "worker.js",
+        bindings: [
+          { type: "inherit", name: "PoolContainer" },
+          {
+            type: "durable_object_namespace",
+            name: "PoolRuntimeBlue",
+            className: "PoolRuntimeBlue",
+          },
+        ],
+        migrations: { newSqliteClasses: ["PoolRuntimeBlue"] },
+        containers: [{ className: "PoolContainer" }],
+        tags: productionTags(["PoolContainer", "PoolRuntimeBlue"]),
+        annotations: { workersMessage: "synthetic-marker" },
+      }),
+      files: [new File([duplicate], "worker.js", { type: "application/javascript+module" })],
+    }).pipe(Effect.provide(worker.layer)),
+  );
+  const clone = await run(
+    stageClassClone({
+      accountId: target.accountId,
+      workerId: target.scriptName,
+      deploy: false,
+      mainModule: "worker.js",
+      modules: [
+        {
+          name: "worker.js",
+          contentType: "application/javascript+module",
+          contentBase64: Buffer.from("export default {};\n").toString("base64"),
+        },
+      ],
+      annotations: { workersMessage: "synthetic-marker:clone", workersTriggeredBy: "upload" },
+    }).pipe(Effect.provide(worker.layer)),
+  );
+  assert.equal(put._tag, "Failure");
+  assert.equal(clone._tag, "Failure");
+  assert.deepEqual(worker.log.refusals, ["module-syntax-error", "provider-managed-annotation"]);
+  assert.equal(worker.classes().PoolRuntimeBlue, undefined);
 });

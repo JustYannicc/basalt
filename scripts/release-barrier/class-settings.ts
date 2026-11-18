@@ -6,8 +6,10 @@ import {
   cloudflareResult,
   type Fetcher,
 } from "../deploy-safety/http.ts";
-import type { ClassTarget } from "./declared-class-contract.ts";
+import type { ClassObservation, ClassTarget } from "./declared-class-contract.ts";
 import { classConstraint, classSchemaRefusal } from "./class-refusal.ts";
+import { canonical } from "./manifest.ts";
+import { callerAnnotations } from "./worker-annotations.ts";
 
 const fromWire = (value: unknown, path: readonly string[] = []): unknown => {
   // These SDK fields contain caller data, not Cloudflare wire property names.
@@ -90,3 +92,32 @@ export const readClassSettings = (target: ClassTarget, fetcher: Fetcher = fetch)
       catch: (error) => error,
     });
   }).pipe(Effect.timeout("15 seconds"));
+
+/** What a class request may carry, or compare, from a read's annotations (worker-annotations.ts). */
+export const classAnnotations = <T extends object>(
+  annotations: T | null | undefined,
+  fqn: string | undefined,
+  path: string,
+) =>
+  callerAnnotations(annotations, (wire) => {
+    throw classConstraint(
+      "declared-class-annotation-unsupported",
+      fqn,
+      `${path}.annotations`,
+      "caller-owned-or-provider-managed",
+      wire,
+    );
+  });
+
+/** Cloudflare reads back no placement as `{}` on settings and as absent on a version; both mean none. */
+export const classPlacement = (placement: unknown) =>
+  placement && typeof placement === "object" && !Object.keys(placement).length
+    ? undefined
+    : (placement ?? undefined);
+
+/**
+ * The live-baseline drift key. /settings follows the latest upload, so once the inactive clone is
+ * staged its own annotations show there; the clone's identity is proven by assertClone instead.
+ */
+export const baselineKey = (observation: ClassObservation) =>
+  canonical({ ...observation, settings: { ...observation.settings, annotations: undefined } });

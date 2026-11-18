@@ -33,14 +33,13 @@ export const runtimeNamespaceReader = (accountId: string, scriptName: string) =>
           }),
         ),
       );
+    // Module bodies stay out: the bootstrap journals this baseline, and the entry module alone is
+    // larger than one State value.
     const version = (versionId: string) =>
       run(
-        Workers.getBetaWorkerVersion({
-          accountId,
-          workerId: scriptName,
-          versionId,
-          include: "modules",
-        }).pipe(Retry.none),
+        Workers.getBetaWorkerVersion({ accountId, workerId: scriptName, versionId }).pipe(
+          Retry.none,
+        ),
       );
     // Classes are read from the version's own local bindings. A migrations-based Worker (the
     // alchemy-owned shape) has no `exports` key at all; when one is present it must agree.

@@ -18,6 +18,9 @@ import {
 } from "./provisioning-namespace.ts";
 import { provisioningJournal, type ProvisioningStore } from "./provisioning-journal.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
+import { jsonType, setConfigurationDrift } from "./container-configuration.ts";
+import { changedProps, type PropChange } from "./prop-diff.ts";
+import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 
 export interface RuntimeProvisioningProvider {
   namespaceBaseline(): Promise<NamespaceBaseline>;
@@ -43,7 +46,7 @@ export async function provisionRuntime(
   try {
     return await provisionEnabled(manifest, input, store, provider, enable, now);
   } catch (error) {
-    if (error instanceof BarrierRefusal)
+    if (error instanceof BarrierRefusal && error.worker !== manifest.declaration.fqn)
       throw new BarrierRefusal(
         error.reason,
         manifest.declaration.fqn,
@@ -77,7 +80,7 @@ async function provisionEnabled(
     sameProvisioningValue("active.runtime", manifest.active, await provider.active());
   };
   await active();
-  const baseline = await journal.once(
+  const baseline = await journal.observe(
     "namespace-baseline",
     manifest.namespaceBaselineDigest,
     () => provider.namespaceBaseline(),
@@ -126,10 +129,32 @@ async function provisionEnabled(
       native.digest,
     );
   const application = await provider.readApplication(created.applicationId);
-  sameProvisioningValue(
+  const configuration = {
+    image: manifest.declaration.props.image,
+    instanceType: manifest.declaration.props.instanceType,
+    environmentVariables: [
+      { name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: manifest.declaration.accountId },
+    ],
+    observability: manifest.declaration.props.observability,
+  };
+  assertSetConfiguration(manifest, "application.created.configuration", configuration, created);
+  assertSetConfiguration(manifest, "application.configuration", configuration, application);
+  // The fleet pins this color from the create's stored result and later hashes a read against it.
+  const pinned = (value: CreatedRuntimeApplication) => ({
+    applicationId: value.applicationId,
+    accountId: value.accountId,
+    version: value.version,
+    ...runtimeApplicationSettings(value),
+  });
+  refuseChanged(
+    manifest,
+    "provisioning-create-readback-drift",
     "application.readback",
-    { ...created, hash: undefined, dev: undefined },
-    { ...application, hash: undefined, dev: undefined },
+    changedProps(pinned(created), pinned(application), (old, next) => ({
+      old: jsonType(old),
+      new: jsonType(next),
+    })),
+    "The create's stored result must equal its readback wherever the fleet pins it.",
   );
   sameProvisioningValue(
     "application.account",
@@ -150,18 +175,6 @@ async function provisionEnabled(
     "application.image",
     manifest.declaration.props.image,
     application.configuration.image,
-  );
-  sameProvisioningValue(
-    "application.configuration",
-    {
-      image: manifest.declaration.props.image,
-      instanceType: manifest.declaration.props.instanceType,
-      environmentVariables: [
-        { name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: manifest.declaration.accountId },
-      ],
-      observability: manifest.declaration.props.observability,
-    },
-    application.configuration,
   );
   sameProvisioningValue(
     "application.maxInstances",
@@ -189,4 +202,44 @@ async function provisionEnabled(
   };
   await journal.finish(digest(canonical(receipt)));
   return receipt;
+}
+
+function assertSetConfiguration(
+  manifest: RuntimeProvisioningManifest,
+  path: string,
+  set: CreatedRuntimeApplication["configuration"],
+  application: CreatedRuntimeApplication,
+) {
+  refuseChanged(
+    manifest,
+    "provisioning-configuration-drift",
+    path,
+    setConfigurationDrift(set, application.configuration),
+    "A created application must read back what its create request set.",
+  );
+}
+
+/** Refuses with redacted paths and JSON types only, in the receipt and the error line. */
+function refuseChanged(
+  manifest: RuntimeProvisioningManifest,
+  reason: string,
+  path: string,
+  changes: PropChange[],
+  why: string,
+) {
+  const changed = changes.map((change) => ({ ...change, path: `${path}.${change.path}` }));
+  if (!changed.length) return;
+  const { fqn } = manifest.declaration;
+  const refusal = new BarrierRefusal(reason, fqn, {
+    fqn,
+    type: "Cloudflare.Container",
+    changed,
+    why: [why],
+  });
+  refusal.message += `: ${changed
+    .map((change) =>
+      "old" in change ? `${change.path} ${change.old} -> ${change.new}` : change.path,
+    )
+    .join(", ")}`;
+  throw refusal;
 }

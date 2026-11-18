@@ -13,6 +13,7 @@ export const ReleaseSettlementDisposition = Schema.Literals([
   "abandoned-before-controller",
   "controller-active-unadopted",
   "controller-active-adopted",
+  "abandoned-before-forward",
 ]);
 export type ReleaseSettlementDisposition = typeof ReleaseSettlementDisposition.Type;
 export const ReleaseSettlementPlanRequest = Schema.Struct({
@@ -23,8 +24,9 @@ export const ReleaseSettlementPlanRequest = Schema.Struct({
   expiresAt: Schema.Int,
   // Absent keeps earlier reviewed requests, and their digests, as abandoned-before-controller.
   disposition: Schema.optional(ReleaseSettlementDisposition),
-  // Required for both controller-active dispositions. Scale-out code phases defer the readiness
-  // command, so native state still names the previous controller; the live controller confirms this code.
+  // Required for both controller-active dispositions, and refused for the abandoned ones.
+  // Scale-out code phases defer the readiness command, so native state still names the previous
+  // controller; the live controller confirms this code.
   sourceController: Schema.optional(ControllerCode),
 });
 const proofFields = {
@@ -89,6 +91,15 @@ export const ReleaseSettlementProof = Schema.Union([
   Schema.Struct({
     disposition: Schema.Literal("controller-active-adopted"),
     controllerReads: ReleaseSettlementAdoptedReads,
+    ...proofFields,
+  }),
+  // The source stopped before freezing a forward packet, so the live controller and its adopted
+  // root are still the ones its image record froze as its baseline.
+  Schema.Struct({
+    disposition: Schema.Literal("abandoned-before-forward"),
+    controllerReads: ReleaseSettlementAdoptedReads,
+    // The stack output holding class history, which preparation writes before the forward journal.
+    stackOutputDigest: SettlementHash,
     ...proofFields,
   }),
 ]);
