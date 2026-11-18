@@ -331,6 +331,22 @@ test("the release receipt for the running release supplies the code the controll
   assert.deepEqual(await releaseReceiptCodes(undefined), []);
 });
 
+test("a resumed release's frozen code goes first and the readiness code stays a fallback", () => {
+  const frozen = { candidate: "6".repeat(40), workerInput: "7".repeat(64) };
+  const codes = liveControllerCodes({
+    release: { source: "journal-record", code: frozen },
+    recorded: liveCode,
+    running: undefined,
+    receipts: [],
+    workerInput: "5".repeat(64),
+  });
+  assert.deepEqual(
+    codes.map(({ source }) => source),
+    ["journal-record", "recorded"],
+  );
+  assert.equal(codes.find(({ code }) => accepts(code))?.source, "recorded");
+});
+
 test("an unsettled prior candidate needs the settlement its live controller state implies", () => {
   const prior = "8".repeat(40);
   // Support follows this candidate's own disposition list, so the test holds with or without

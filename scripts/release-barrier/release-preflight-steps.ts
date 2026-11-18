@@ -12,7 +12,9 @@ import {
   baselineControllerHealth,
   readBaselineController,
   readBaselineControllerKey,
+  releaseBaselineController,
   type BaselineController,
+  type BaselineControllerSource,
 } from "./baseline-controller.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
@@ -132,16 +134,16 @@ export const preflightSteps = (
         ["state-version"],
         async () => {
           try {
-            const record = await (
+            // The release's own first verdict on its journal: the head its init reads.
+            const head = await (
               await read(runtimeReleaseJournal(compiled, writer, encryptionKey))
-            ).read();
-            // The release's own first verdict on its journal.
-            if (record?.abort)
+            ).head();
+            if (head.record?.abort)
               throw new BarrierRefusal(
                 "runtime-release-candidate-aborted-or-pending",
                 "PoolWorker",
               );
-            return { record, prior: undefined };
+            return { head, prior: undefined };
           } catch (error) {
             if (
               !(error instanceof BarrierRefusal) ||
@@ -151,26 +153,39 @@ export const preflightSteps = (
             // Which settlement it needs depends on the live controller; release-settlement decides.
             const head = await read(state.getOutput(releaseImageJournalKey(compiled)));
             return {
-              record: undefined,
+              head: { record: undefined, sourceController: undefined },
               prior: decodeRuntimeReleaseHead(head, encryptionKey).record.candidate,
             };
           }
         },
-        ({ record, prior }) =>
+        ({ head: { record, sourceController }, prior }) =>
           prior
             ? { record: "prior-candidate-unsettled", prior }
             : record
               ? { record: "this-candidate", complete: record.complete }
-              : { record: "none-or-settled" },
+              : sourceController
+                ? { record: "prior-settled-or-aborted", sourceCandidate: sourceController.candidate }
+                : { record: "none" },
       );
+      // After a controller-active settlement the readiness row names an older controller than the
+      // live one; the release's own choice for this journal head names the live one.
       const baseline = await step(
         "baseline-controller",
-        ["state-version"],
-        async () => ({
-          controller: await read(readBaselineController(compiled)),
-          key: await read(readBaselineControllerKey(compiled)),
-        }),
-        (value) => ({ recordedCandidate: value.controller.code.candidate }),
+        ["state-version", "release-journal"],
+        async () => {
+          const chosen = await read(releaseBaselineController(compiled, journal!.head));
+          // A resumed release's frozen code may be older than the one its own code phase recorded,
+          // so the readiness code stays a fallback; unreadable, it is simply not offered.
+          const recorded =
+            chosen.source === "recorded"
+              ? chosen.controller.code
+              : await read(readBaselineController(compiled)).then(
+                  (value) => value.code,
+                  () => undefined,
+                );
+          return { ...chosen, recorded, key: await read(readBaselineControllerKey(compiled)) };
+        },
+        (value) => ({ candidate: value.controller.code.candidate, source: value.source }),
       );
       const native = await step("runtime-state", ["state-version"], () =>
         read(runtimeReleaseState(compiled)),
@@ -201,7 +216,12 @@ export const preflightSteps = (
 
     async function controllerReads(
       native: RuntimeReleaseState,
-      baseline: { controller: BaselineController; key: string },
+      baseline: {
+        controller: BaselineController;
+        source: BaselineControllerSource;
+        recorded: typeof ControllerCode.Type | undefined;
+        key: string;
+      },
       prior: string | undefined,
     ) {
       const target = {
@@ -253,15 +273,19 @@ export const preflightSteps = (
               throw error;
             }
           };
+          // The release's own choice goes first; it is the readiness code when its source is.
+          const chosen = { source: baseline.source, code: baseline.controller.code };
+          const release = chosen.source === "recorded" ? undefined : chosen;
           let first: unknown;
           try {
-            return await attempt("recorded", baseline.controller.code);
+            return await attempt(chosen.source, chosen.code);
           } catch (error) {
             first = error;
           }
           // The controller refuses any code but its own, so an accepted inspect proves the code.
           const options = liveControllerCodes({
-            recorded: baseline.controller.code,
+            ...(release ? { release } : {}),
+            recorded: baseline.recorded,
             ...(prior ? { prior } : {}),
             running: await runningRelease(target),
             receipts: input.receipts,

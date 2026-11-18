@@ -108,6 +108,34 @@ export const readBaselineController = (
     });
   });
 
+/**
+ * The baseline controller a release uses for the image journal head it sees: this candidate's own
+ * record keeps the one its init froze, and otherwise init reads it with the head's live-proven code.
+ * The preflight calls this too, so both pick the same code by construction.
+ */
+export const releaseBaselineController = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  head: {
+    record?: { baselineController?: BaselineController };
+    sourceController?: typeof ControllerCode.Type;
+  },
+) =>
+  Effect.gen(function* () {
+    const frozen = head.record?.baselineController;
+    if (frozen) return { controller: frozen, source: "journal-record" as const };
+    // A record from before init froze one has no source code; the readiness row is all there is.
+    const source = head.record ? undefined : head.sourceController;
+    return {
+      controller: yield* readBaselineController(stack, source),
+      // A settlement archive or a confirmed abort; the journal head does not say which.
+      source: source ? ("journal-source" as const) : ("recorded" as const),
+    };
+  });
+
+export type BaselineControllerSource = Effect.Success<
+  ReturnType<typeof releaseBaselineController>
+>["source"];
+
 export type BaselineRead = {
   method: "GET" | "POST";
   path: typeof runtimeRecoveryPath | typeof runtimeHandoffPath;
