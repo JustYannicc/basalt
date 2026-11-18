@@ -108,3 +108,40 @@ test("renewal proof uploads public evidence without fixture sessions or raw repo
   ])
     assert.equal(included(file), false, file);
 });
+
+test("jobs running the pool harness upload its gateway forwarding diagnostics", async () => {
+  const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+  const workflow = parse(
+    await readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  let jobs = 0;
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    let harness = -1;
+    for (const [index, step] of job.steps.entries()) {
+      const runner = /\bnode (e2e\/[\w-]+\.mjs)\b/.exec(step.run ?? "")?.[1];
+      if (!runner) continue;
+      const source = await readFile(new URL(`../../${runner}`, import.meta.url), "utf8");
+      if (source.includes("poolCloudHarness")) harness = index;
+    }
+    if (harness < 0) continue;
+    jobs++;
+    const uploadIndex = job.steps.findLastIndex((step) =>
+      step.uses?.startsWith("actions/upload-artifact@"),
+    );
+    assert.ok(uploadIndex > harness, `${name} uploads after its last pool harness runner`);
+    const upload = job.steps[uploadIndex];
+    assert.equal(upload.if, "always()", name);
+    const patterns = upload.with.path.split("\n").filter(Boolean);
+    const included = (file) => patterns.some((pattern) => matchesGlob(file, pattern));
+    // The SDK keeps each runner's Cloud runtime here after the gateway drains on scope close.
+    const runtime = ".upstream/.local/testing/0123456789abcdef01234567";
+    assert.equal(
+      included(`${runtime}/cloud-forwarding-errors.ndjson`),
+      true,
+      `${name} retains the gateway's forwarding diagnostics`,
+    );
+    // Raw runtime logs stay private; the harness retains a redacted copy instead.
+    assert.equal(included(`${runtime}/cloud.log`), false, `${name} uploads a raw runtime log`);
+  }
+  assert.ok(jobs > 0, "no CI job runs a pool harness runner");
+});
