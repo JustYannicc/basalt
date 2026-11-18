@@ -328,7 +328,11 @@ export class NativeMemberships {
     if (initialization) return initialization.then(() => this.refresh(pool));
     // A renewal re-signs the same revision. Let it land first so this read's lease is the newest.
     const renewal = this.renewing.get(pool);
-    if (renewal) return renewal.then(() => this.refresh(pool), () => this.refresh(pool));
+    if (renewal)
+      return renewal.then(
+        () => this.refresh(pool),
+        () => this.refresh(pool),
+      );
     const active = this.running.get(pool);
     if (active) return active;
     const started = this.now();
