@@ -2650,8 +2650,8 @@ jobs:
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
           bash scripts/ci/pool-image-build.sh --target runtime --tag basalt-1409-pool:test containers/pool
-      - name: Allow pool fixture HTTP from Docker bridges on Boat
-        if: contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime')
+      - name: Allow pool fixture HTTP from Docker bridges on self-hosted runners
+        if: runner.environment == 'self-hosted'
         run: |
           sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
           sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT

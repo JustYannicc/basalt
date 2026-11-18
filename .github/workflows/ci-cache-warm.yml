@@ -14,7 +14,7 @@ on:
       - scripts/ci/pool-image-build.sh
       - scripts/ci/pool-release-assets.ts
   schedule:
-    - cron: "17 3 * * 1"
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
