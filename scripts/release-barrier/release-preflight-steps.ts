@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Exit, Schema } from "effect";
+import { Cause, Context, Effect, Exit } from "effect";
 import type { StateService } from "alchemy/State/State";
 import { State } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
@@ -12,10 +12,12 @@ import {
   baselineControllerHealth,
   readBaselineController,
   readBaselineControllerKey,
+  releaseBaselineController,
   type BaselineController,
+  type BaselineControllerSource,
 } from "./baseline-controller.ts";
 import { verifyContainerHealth } from "./container-health.ts";
-import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
+import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import {
@@ -44,7 +46,7 @@ import {
   type PreflightBridgeCounters,
 } from "./release-preflight-guard.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
-import { runtimeReleaseClient, type RuntimeReleaseClient } from "./runtime-release-client.ts";
+import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import { assertReleaseImageCapacity } from "./runtime-release-image.ts";
 import { decodeRuntimeReleaseHead, runtimeReleaseJournal } from "./runtime-release-journal.ts";
 import { verifyBoundProviderObservation } from "./runtime-provider-observation.ts";
@@ -52,16 +54,18 @@ import { releaseSelectedReady } from "./runtime-release-readiness.ts";
 import { runtimeReleaseState, type RuntimeReleaseState } from "./runtime-release-state.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 
-/** The controller's own witness kind; an adopted legacy root stays unattested until promote. */
-export async function activeUnattested(
-  client: Pick<RuntimeReleaseClient, "call">,
-  target: typeof SlotTarget.Type,
+/**
+ * The release promotes a fleet primary before finalize, so it never reads readiness from the legacy
+ * root, whether adopt's unattested grant or a recovery restart is its witness.
+ */
+export async function finalReadiness<T>(
+  selection: { active: { target: SlotTarget } } | undefined,
+  ready: () => Promise<T>,
 ) {
-  const witness = Schema.decodeUnknownSync(
-    Schema.Struct({ result: Schema.Struct({ kind: Schema.String }) }),
-    { onExcessProperty: "ignore" },
-  )(await client.call({ action: "witness", target }));
-  return witness.result.kind === "unattested-active";
+  if (!selection) throw new NotApplicable("no selection; finalize runs after promotion");
+  if (isLegacyAdoptionTarget(selection.active.target))
+    throw new NotApplicable("post-promote-only: the active slot is the legacy root");
+  return ready();
 }
 
 // Steps that need the live controller, in release order; listed so a missing input still reports each.
@@ -130,16 +134,16 @@ export const preflightSteps = (
         ["state-version"],
         async () => {
           try {
-            const record = await (
+            // The release's own first verdict on its journal: the head its init reads.
+            const head = await (
               await read(runtimeReleaseJournal(compiled, writer, encryptionKey))
-            ).read();
-            // The release's own first verdict on its journal.
-            if (record?.abort)
+            ).head();
+            if (head.record?.abort)
               throw new BarrierRefusal(
                 "runtime-release-candidate-aborted-or-pending",
                 "PoolWorker",
               );
-            return { record, prior: undefined };
+            return { head, prior: undefined };
           } catch (error) {
             if (
               !(error instanceof BarrierRefusal) ||
@@ -149,26 +153,42 @@ export const preflightSteps = (
             // Which settlement it needs depends on the live controller; release-settlement decides.
             const head = await read(state.getOutput(releaseImageJournalKey(compiled)));
             return {
-              record: undefined,
+              head: { record: undefined, sourceController: undefined },
               prior: decodeRuntimeReleaseHead(head, encryptionKey).record.candidate,
             };
           }
         },
-        ({ record, prior }) =>
+        ({ head: { record, sourceController }, prior }) =>
           prior
             ? { record: "prior-candidate-unsettled", prior }
             : record
               ? { record: "this-candidate", complete: record.complete }
-              : { record: "none-or-settled" },
+              : sourceController
+                ? {
+                    record: "prior-settled-or-aborted",
+                    sourceCandidate: sourceController.candidate,
+                  }
+                : { record: "none" },
       );
+      // After a controller-active settlement the readiness row names an older controller than the
+      // live one; the release's own choice for this journal head names the live one.
       const baseline = await step(
         "baseline-controller",
-        ["state-version"],
-        async () => ({
-          controller: await read(readBaselineController(compiled)),
-          key: await read(readBaselineControllerKey(compiled)),
-        }),
-        (value) => ({ recordedCandidate: value.controller.code.candidate }),
+        ["state-version", "release-journal"],
+        async () => {
+          const chosen = await read(releaseBaselineController(compiled, journal!.head));
+          // A resumed release's frozen code may be older than the one its own code phase recorded,
+          // so the readiness code stays a fallback; unreadable, it is simply not offered.
+          const recorded =
+            chosen.source === "recorded"
+              ? chosen.controller.code
+              : await read(readBaselineController(compiled)).then(
+                  (value) => value.code,
+                  () => undefined,
+                );
+          return { ...chosen, recorded, key: await read(readBaselineControllerKey(compiled)) };
+        },
+        (value) => ({ candidate: value.controller.code.candidate, source: value.source }),
       );
       const native = await step("runtime-state", ["state-version"], () =>
         read(runtimeReleaseState(compiled)),
@@ -199,7 +219,12 @@ export const preflightSteps = (
 
     async function controllerReads(
       native: RuntimeReleaseState,
-      baseline: { controller: BaselineController; key: string },
+      baseline: {
+        controller: BaselineController;
+        source: BaselineControllerSource;
+        recorded: typeof ControllerCode.Type | undefined;
+        key: string;
+      },
       prior: string | undefined,
     ) {
       const target = {
@@ -251,15 +276,19 @@ export const preflightSteps = (
               throw error;
             }
           };
+          // The release's own choice goes first; it is the readiness code when its source is.
+          const chosen = { source: baseline.source, code: baseline.controller.code };
+          const release = chosen.source === "recorded" ? undefined : chosen;
           let first: unknown;
           try {
-            return await attempt("recorded", baseline.controller.code);
+            return await attempt(chosen.source, chosen.code);
           } catch (error) {
             first = error;
           }
           // The controller refuses any code but its own, so an accepted inspect proves the code.
           const options = liveControllerCodes({
-            recorded: baseline.controller.code,
+            ...(release ? { release } : {}),
+            recorded: baseline.recorded,
             ...(prior ? { prior } : {}),
             running: await runningRelease(target),
             receipts: input.receipts,
@@ -370,15 +399,10 @@ export const preflightSteps = (
           throw new NotApplicable("image input unchanged; the release keeps the live image");
         return assertReleaseImageCapacity(client);
       });
-      await step("final-readiness", ["live-controller"], async () => {
-        if (!selection) throw new NotApplicable("no selection; finalize runs after promotion");
-        // The controller refuses readiness for an unattested active slot, the adopted legacy root;
-        // the release promotes an attested slot before finalize, so this read is post-promote-only.
-        if (await activeUnattested(client, selection.active.target))
-          throw new NotApplicable(
-            "post-promote-only: the active slot is the unattested adopted root",
-          );
-        return releaseSelectedReady(live, code, client, selection.active.target.imageInput);
-      });
+      await step("final-readiness", ["live-controller"], () =>
+        finalReadiness(selection, () =>
+          releaseSelectedReady(live, code, client, selection!.active.target.imageInput),
+        ),
+      );
     }
   });
