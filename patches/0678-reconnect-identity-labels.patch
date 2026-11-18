@@ -1,0 +1,233 @@
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -2819,7 +2819,24 @@ export const makeOAuth = (
+             }
+             // Read again after the remote exchange: deletion must win, and a concurrent rename must survive.
+             const target = attempt.reconnect ? yield* reconnectTarget(tx, attempt) : undefined;
+-            const saved =
++            const replacedId = target?.identityId ?? null;
++            const replaced =
++              replacedId === null || verified === undefined
++                ? null
++                : yield* query(() =>
++                    tx.findFirst("accountIdentities", { where: (b) => b("id", "=", replacedId) }),
++                  );
++            // A reconnect may sign in as another upstream identity. A label or description taken
++            // from the identity it replaces would then name an address this account no longer has.
++            const refreshed =
++              target === undefined ||
++              verified === undefined ||
++              replaced === null ||
++              replaced.owner !== target.owner ||
++              (replaced.issuer === verified.issuer && replaced.subject === verified.subject)
++                ? {}
++                : replacedIdentityMetadata(target, replaced, verified.label);
++            let saved =
+               target !== undefined
+                 ? accountMetadata(target)
+                 : yield* decode(Account, {
+@@ -2850,6 +2867,32 @@ export const makeOAuth = (
+                   },
+                 }),
+               );
++              if (Object.keys(refreshed).length > 0) {
++                // Only while the label and description are still what this reconnect read: a
++                // rename committed meanwhile is the person's and must survive.
++                yield* query(() =>
++                  tx.updateMany("accounts", {
++                    where: (b) =>
++                      b.and(
++                        b("id", "=", target.id),
++                        b("label", "=", target.label),
++                        target.description === null
++                          ? b("description", "is", null)
++                          : b("description", "=", target.description),
++                      ),
++                    set: refreshed,
++                  }),
++                );
++                const written = yield* query(() =>
++                  tx.findFirst("accounts", { where: (b) => b("id", "=", target.id) }),
++                );
++                if (written !== null)
++                  saved = accountMetadata({
++                    ...target,
++                    label: written.label,
++                    description: written.description,
++                  });
++              }
+               yield* resumeWaitingSources(tx, target.id);
+             } else {
+               yield* query(() =>
+@@ -4215,3 +4258,39 @@ export const makeOAuth = (
+     revokeRemoved,
+   };
+ };
++
++const sameText = (left: string, right: string) =>
++  left.trim().toLowerCase() === right.trim().toLowerCase();
++
++const addressShaped = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
++
++/** Whether `text` names `address` as a whole address, not as part of a longer one. */
++const namesAddress = (text: string, address: string) => {
++  const exact = address.trim();
++  if (!addressShaped.test(exact)) return false;
++  const escaped = exact.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
++  return new RegExp(`(?:^|[^\\w.%+-])${escaped}(?:$|[^\\w.-]|\\.(?:$|\\s))`, "iu").test(text);
++};
++
++/**
++ * The label and description to keep when a reconnect verifies another identity than the account
++ * had. A label equal to the replaced identity's address or name, or a "Default" one, was derived
++ * from it and follows the new identity; a label the person typed stays. A description naming the
++ * replaced address is cleared. Only changed fields are returned.
++ */
++const replacedIdentityMetadata = (
++  account: { readonly label: string; readonly description: string | null },
++  replaced: { readonly label: string; readonly name: string },
++  label: string,
++) => {
++  const derived =
++    sameText(account.label, replaced.label) ||
++    sameText(account.label, replaced.name) ||
++    /^default(?: account| \d+)?$/iu.test(account.label);
++  const namesReplaced =
++    account.description !== null && namesAddress(account.description, replaced.label);
++  return {
++    ...(derived && !sameText(account.label, label) ? { label } : {}),
++    ...(namesReplaced ? { description: null } : {}),
++  };
++};
+diff --git a/e2e/support/account-identity-issuer.ts b/e2e/support/account-identity-issuer.ts
+--- a/e2e/support/account-identity-issuer.ts
++++ b/e2e/support/account-identity-issuer.ts
+@@ -12,6 +12,8 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+   const address = yield* Deferred.make<string>();
+   const revoked = yield* Queue.unbounded<void>();
+   let subject = "person-one";
++  /** A subject's own address, when a scenario gives it one. */
++  const emails = new Map<string, string>();
+   let profileFails = false;
+   let denied = false;
+   let expiresIn = 3600;
+@@ -133,7 +135,10 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+         const grant = access.get(request.headers.authorization?.replace(/^Bearer /, "") ?? "");
+         if (grant === undefined || profileFails) return HttpServerResponse.empty({ status: 401 });
+         // Deliberately identical email for different subjects: it cannot be a grouping key.
+-        return yield* HttpServerResponse.json({ sub: grant.subject, email: "same@example.test" });
++        return yield* HttpServerResponse.json({
++          sub: grant.subject,
++          email: emails.get(grant.subject) ?? "same@example.test",
++        });
+       }),
+     ),
+     HttpRouter.add(
+@@ -145,7 +150,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+         if (grant === undefined || profileFails) return HttpServerResponse.empty({ status: 401 });
+         return yield* HttpServerResponse.json({
+           account_id: grant.subject,
+-          email: "same@example.test",
++          email: emails.get(grant.subject) ?? "same@example.test",
+         });
+       }),
+     ),
+@@ -188,6 +193,8 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+     awaitRevocation: Queue.take(revoked),
+     configure: (input: {
+       subject?: string;
++      /** The configured subject's address; every other subject keeps the shared one. */
++      email?: string;
+       profileFails?: boolean;
+       denied?: boolean;
+       expiresIn?: number;
+@@ -198,6 +205,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+     }) =>
+       Effect.sync(() => {
+         if (input.subject !== undefined) subject = input.subject;
++        if (input.email !== undefined) emails.set(subject, input.email);
+         if (input.profileFails !== undefined) profileFails = input.profileFails;
+         if (input.denied !== undefined) denied = input.denied;
+         if (input.expiresIn !== undefined) expiresIn = input.expiresIn;
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -147,6 +147,77 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+       }),
+     ),
+   );
++  it.effect(scenarios.accountIdentityReconnectLabels.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const issuer = yield* accountIdentityIssuer,
++          product = yield* accountIdentityProduct;
++        const Described = Schema.Struct({
++          ...IdentityAccount.fields,
++          description: Schema.NullOr(Schema.String),
++        });
++        const current = (id: string) =>
++          Effect.flatMap(product.request("GET", `/v1/accounts/${id}`), (response) =>
++            body(Described, response),
++          );
++        const reconnect = (app: string, id: string) =>
++          Effect.gen(function* () {
++            const completed = yield* product.consent(yield* product.connection(app, id));
++            expect(completed.status).toBe(200);
++            return yield* current(id);
++          });
++        const edit = (id: string, change: { label?: string; description?: string }) =>
++          Effect.map(product.request("PATCH", `/v1/accounts/${id}`, change), (response) =>
++            expect(response.status).toBe(200),
++          );
++        yield* issuer.configure({ subject: "person-one", email: "one@example.test" });
++        const app = yield* product.deploy(issuer.origin, "Reconnected identity", ["read"]);
++        const account = yield* product.connect(app);
++        expect(account.label).toBe("one@example.test");
++        expect(account.identity?.label).toBe("one@example.test");
++
++        // The same identity again leaves the row as it was, with a derived or a typed label.
++        const same = yield* reconnect(app, account.id);
++        expect(same.label).toBe("one@example.test");
++        expect(same.identity?.id).toBe(account.identity?.id);
++        yield* edit(account.id, { label: "Personal inbox", description: "Shared with family" });
++        const kept = yield* reconnect(app, account.id);
++        expect(kept.label).toBe("Personal inbox");
++        expect(kept.description).toBe("Shared with family");
++
++        // Another identity replaces the address taken from the old one, and the description
++        // that named it, so the row never names a mailbox it no longer has.
++        yield* edit(account.id, {
++          label: "one@example.test",
++          description: "Mailbox for one@example.test.",
++        });
++        yield* issuer.configure({ subject: "person-two", email: "two@example.test" });
++        const moved = yield* reconnect(app, account.id);
++        expect(moved.identity?.label).toBe("two@example.test");
++        expect(moved.identity?.id).not.toBe(account.identity?.id);
++        expect(moved.label).toBe("two@example.test");
++        expect(moved.description).toBeNull();
++
++        // A default label also follows the new identity.
++        yield* edit(account.id, { label: "Default" });
++        yield* issuer.configure({ subject: "person-three", email: "three@example.test" });
++        const defaulted = yield* reconnect(app, account.id);
++        expect(defaulted.label).toBe("three@example.test");
++
++        // A label the person typed stays, even one naming another address; the verified
++        // address is returned beside it, and the dashboard titles the row with it.
++        yield* edit(account.id, { label: "other@example.test", description: "Shared inbox" });
++        yield* issuer.configure({ subject: "person-four", email: "four@example.test" });
++        const typed = yield* reconnect(app, account.id);
++        expect(typed.label).toBe("other@example.test");
++        expect(typed.description).toBe("Shared inbox");
++        expect(typed.identity?.label).toBe("four@example.test");
++        expect((yield* product.read(app)).status).toBe(200);
++      }),
++    ),
++  );
++
+   it.effect(scenarios.accountGrantReuse.title, (context) =>
+     withCase(
+       context,
