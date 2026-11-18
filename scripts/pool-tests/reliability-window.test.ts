@@ -156,7 +156,11 @@ test(
         `EXPLAIN (ANALYZE, FORMAT JSON) ${statement.text}`,
         statement.values,
       );
-      const plan = (explained.rows[0]?.["QUERY PLAN"] as { Plan: PlanNode }[])[0]!.Plan;
+      const [explain] = explained.rows;
+      assert.ok(explain, "EXPLAIN returns its plan row");
+      const [root] = explain["QUERY PLAN"] as { Plan: PlanNode }[];
+      assert.ok(root);
+      const plan = root.Plan;
       const { into: read, indexes } = rowsRead(plan);
       console.log("reliability window read", Object.fromEntries(read), [...indexes].sort());
       const history = historyRows + importedRows + dayRows;
