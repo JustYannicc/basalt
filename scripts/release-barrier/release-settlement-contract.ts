@@ -61,11 +61,22 @@ export const ReleaseSettlementControllerReads = Schema.Struct({
   finalInspect: Schema.Literal("no-selection"),
 });
 // The lease is checked live but never recorded: apply re-collects this proof and must match it exactly.
-export const ReleaseSettlementAdoptedReads = Schema.Struct({
-  fleetDigest: SettlementHash,
-  witness: Schema.Literal("unattested-adoption"),
-  selection: Schema.Struct({ epoch: Schema.Literal(1), identity: SlotIdentity }),
-});
+// Adopt commits epoch 1; every selected-runtime recovery since commits the next epoch under a restart.
+export const ReleaseSettlementAdoptedReads = Schema.Union([
+  Schema.Struct({
+    fleetDigest: SettlementHash,
+    witness: Schema.Literal("unattested-adoption"),
+    selection: Schema.Struct({ epoch: Schema.Literal(1), identity: SlotIdentity }),
+  }),
+  Schema.Struct({
+    fleetDigest: SettlementHash,
+    witness: Schema.Literal("recovered-restart"),
+    selection: Schema.Struct({
+      epoch: Schema.Int.check(Schema.isGreaterThan(1)),
+      identity: SlotIdentity,
+    }),
+  }),
+]);
 // Only an activated controller has adoption reads to prove; the earlier disposition never carries them.
 export const ReleaseSettlementProof = Schema.Union([
   Schema.Struct({ disposition: Schema.Literal("abandoned-before-controller"), ...proofFields }),
