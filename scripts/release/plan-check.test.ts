@@ -9,6 +9,7 @@ import {
   makePlan,
   pinnedImage,
   productionRows,
+  recordedActionRow,
   retainedScratchRow,
   type PlanInput,
 } from "./test/plan-fixture.ts";
@@ -135,6 +136,111 @@ test("replacing the vault attachments bucket is refused", async (context) => {
   assert.match(message, /props\.jurisdiction: eu -> default/u);
 });
 
+const scratchReplace = [
+  {
+    fqn: "ScratchRecords",
+    type: "Cloudflare.R2.Bucket",
+    action: "replace",
+    reason: "reviewed: the scratch bucket moves jurisdiction",
+  },
+];
+
+test("replacing an unprotected resource is refused in every mode, naming what forced it", async (context) => {
+  const rows = { ...productionRows(), ScratchRecords: retainedScratchRow() };
+  const { plan } = await planned(context, { rows, declared: { scratchJurisdiction: "default" } });
+  assert.equal(plan.resources.ScratchRecords?.action, "replace");
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, ["unreviewed-replace ScratchRecords"]);
+  assert.match(
+    message,
+    /\[unreviewed-replace\] ScratchRecords \(Cloudflare\.R2\.Bucket\) replace/u,
+  );
+  assert.match(message, /\$resource: recorded -> replaced by a new one/u);
+  assert.match(message, /props\.jurisdiction: eu -> default/u);
+  // An allow entry is not a reviewed replace: code-only and the cutover refuse it too.
+  const allow = [{ fqn: "ScratchRecords", action: "replace" }];
+  for (const mode of ["code-only", "cutover-classes"])
+    assert.ok(
+      (await refused(plan, { mode, allow })).rules.includes("unreviewed-replace ScratchRecords"),
+      mode,
+    );
+  // A reviewed entry with the wrong action or type does not admit it.
+  for (const entry of [
+    { ...scratchReplace[0], action: "delete" },
+    { ...scratchReplace[0], type: "Cloudflare.D1Database" },
+  ])
+    assert.deepEqual((await refused(plan, { removals: [entry] })).rules, [
+      "unreviewed-replace ScratchRecords",
+    ]);
+  assert.ok(
+    (await admitted(plan, { removals: scratchReplace })).includes("replace ScratchRecords"),
+  );
+});
+
+test("a protected resource's replace is refused even when listed in removals", async (context) => {
+  // The root's row lost its attachment binding: Alchemy recreates the application to attach it.
+  const rows = productionRows();
+  (rows.PoolContainer as { bindings: unknown[] }).bindings = [];
+  const { plan } = await planned(context, { rows });
+  assert.equal(plan.resources.PoolContainer?.action, "replace");
+  const removals = [
+    { fqn: "PoolContainer", type: "Cloudflare.Container", action: "replace", reason: "attempted" },
+  ];
+  const { rules, message } = await refused(plan, { removals });
+  assert.deepEqual(rules, ["protected-resource-destroyed PoolContainer"]);
+  assert.match(message, /replaced by a new one/u);
+});
+
+test("a destroy plan is refused", async (context) => {
+  const { plan } = await planned(context, { destroy: true });
+  assert.equal(plan.destroy, true);
+  const { rules } = await refused(plan);
+  assert.equal(rules[0], "destroy-plan (plan)");
+  assert.ok(rules.includes("protected-resource-destroyed PoolContainer"));
+});
+
+test("a plain Worker binding removed from a Worker is refused", async (context) => {
+  const { plan } = await planned(context, { declared: { vaultBinding: false } });
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, ["worker-binding-removed PoolWorker"]);
+  assert.match(message, /bindings\.VAULT: r2_bucket VAULT -> absent/u);
+  // A recorded binding row that carries no wire bindings is still a removal.
+  const rows = productionRows();
+  (rows.PoolWorker as { bindings: unknown[] }).bindings.push({ sid: "LegacyRoute", data: {} });
+  const legacy = await refused((await planned(context, { rows })).plan);
+  assert.deepEqual(legacy.rules, ["worker-binding-removed PoolWorker"]);
+  assert.match(legacy.message, /bindings\.LegacyRoute: present -> absent/u);
+});
+
+test("a root container that State lost is refused: created, and attached anew", async (context) => {
+  const rows = productionRows();
+  delete (rows as Partial<typeof rows>).PoolContainer;
+  const { plan } = await planned(context, { rows });
+  assert.equal(plan.resources.PoolContainer?.action, "create");
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, [
+    "pool-container-lifecycle PoolContainer",
+    // With no recorded props, every declared prop is a change.
+    "pool-container-configuration-change PoolContainer",
+    "pool-container-attachment-change PoolContainer",
+  ]);
+  assert.match(message, /\$resource: recorded -> create/u);
+  assert.match(message, /bindings\.PoolContainer: absent -> present/u);
+});
+
+test("an undeclared action row is refused until its removal is reviewed", async (context) => {
+  const rows = { ...productionRows(), OldMigration: recordedActionRow("OldMigration") };
+  const { plan } = await planned(context, { rows });
+  assert.ok(plan.actionDeletions.OldMigration);
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, ["unreviewed-removal OldMigration"]);
+  assert.match(message, /OldMigration \(Release\.Migration\) delete/u);
+  const removals = [
+    { fqn: "OldMigration", type: "Release.Migration", action: "delete", reason: "step retired" },
+  ];
+  assert.ok((await admitted(plan, { removals })).includes("delete OldMigration"));
+});
+
 test("an undeclared retained row is refused until its removal is reviewed", async (context) => {
   const rows = { ...productionRows(), ScratchRecords: retainedScratchRow() };
   const { plan } = await planned(context, { rows });
@@ -166,10 +272,10 @@ test("a resource is protected by its type, exactly or by prefix", async (context
   const rows = { ...productionRows(), ScratchRecords: retainedScratchRow() };
   const { plan } = await planned(context, { rows });
   const fqns = ["PoolContainer"];
+  // Protected wins alone: listing it in `removals` could not admit it, so that fix is not offered.
   for (const types of [["Cloudflare.R2.Bucket"], ["Cloudflare.R2.*"]])
     assert.deepEqual((await refused(plan, { protected: { fqns, types } })).rules, [
       "protected-resource-destroyed ScratchRecords",
-      "unreviewed-removal ScratchRecords",
     ]);
   assert.deepEqual((await refused(plan, { protected: { fqns, types: ["Cloudflare.R2"] } })).rules, [
     "unreviewed-removal ScratchRecords",
