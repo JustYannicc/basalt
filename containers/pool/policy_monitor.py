@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import secrets
-import sys
 import threading
 import time
 from typing import Literal
@@ -17,23 +15,12 @@ POLICY_PROBE_TIMEOUT_SECONDS = 0.25
 POLICY_HEALTH_PATH = "/v8/management/plugins"
 
 ProbeState = Literal["healthy", "unavailable", "missed"]
-ProbeStage = Literal["plugins", "probe", "observe"]
-MAX_PROBE_RECORD_MS = 86_400_000
-
-
-class ProbeObservation:
-    """The last stage a probe reached, so a miss says which Home path was slow."""
-
-    def __init__(self) -> None:
-        self.stage: ProbeStage = "plugins"
 
 
 def probe_home_policy(
     management_key: str,
     readiness: Readiness,
-    observation: ProbeObservation | None = None,
 ) -> tuple[ProbeState, str | None]:
-    observation = observation or ProbeObservation()
     generation = readiness.generation()
     deadline = time.monotonic() + POLICY_PROBE_TIMEOUT_SECONDS
     remaining = deadline - time.monotonic()
@@ -69,7 +56,6 @@ def probe_home_policy(
     if remaining <= 0:
         return "missed", None
     nonce = secrets.token_urlsafe(24)
-    observation.stage = "probe"
     status, probe = native_policy_request(
         "/probe",
         {"nonce": nonce},
@@ -85,7 +71,6 @@ def probe_home_policy(
         or POLICY_INSTANCE_ID.fullmatch(probe["instance"]) is None
     ):
         return "unavailable", None
-    observation.stage = "observe"
     remaining = deadline - time.monotonic()
     if remaining <= 0 or not readiness.wait_for_policy_probe(
         nonce, remaining, generation
@@ -102,18 +87,12 @@ class PolicyHealthMonitor:
     ) -> None:
         self.readiness = readiness
         self.management_key = management_key
-        self._missed = 0
-        self._missed_max_ms = 0
-        self._missed_stage: ProbeStage = "plugins"
 
     def check_once(self) -> ProbeState:
         generation = self.readiness.policy_observation_generation()
         if generation is None:
             return "missed"
-        observation = ProbeObservation()
-        started = time.monotonic()
-        state, instance = probe_home_policy(self.management_key, self.readiness, observation)
-        self._record(state, observation.stage, time.monotonic() - started)
+        state, instance = probe_home_policy(self.management_key, self.readiness)
         if state == "healthy" and instance is not None:
             if not self.readiness.refresh_policy_lease(instance, generation):
                 return "unavailable"
@@ -121,40 +100,9 @@ class PolicyHealthMonitor:
             self.readiness.invalidate_policy(generation)
         return state
 
-    def _record(self, state: ProbeState, stage: ProbeStage, elapsed_seconds: float) -> None:
-        """Two closed records per run of misses: where the first stalled, and how the run ended."""
-        elapsed_ms = max(0, min(MAX_PROBE_RECORD_MS, round(elapsed_seconds * 1000)))
-        if state == "missed":
-            if self._missed == 0:
-                _emit("POOL_POLICY_PROBE_MISSED", {"stage": stage, "elapsed_ms": elapsed_ms})
-            self._missed += 1
-            self._missed_max_ms = max(self._missed_max_ms, elapsed_ms)
-            self._missed_stage = stage
-            return
-        if self._missed:
-            _emit(
-                "POOL_POLICY_PROBE_MISSES",
-                {
-                    "missed": self._missed,
-                    "max_elapsed_ms": self._missed_max_ms,
-                    "last_stage": self._missed_stage,
-                    "ended": state,
-                    "elapsed_ms": elapsed_ms,
-                },
-            )
-        self._missed = 0
-        self._missed_max_ms = 0
-
     def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
             started = time.monotonic()
             self.check_once()
             remaining = max(0.0, POLICY_REFRESH_SECONDS - (time.monotonic() - started))
             stop.wait(remaining)
-
-
-def _emit(marker: str, fields: dict[str, int | str]) -> None:
-    try:
-        print(marker + " " + json.dumps(fields, separators=(",", ":")), file=sys.stderr, flush=True)
-    except Exception:
-        pass

@@ -7,7 +7,7 @@ model {
   }
   extend basalt.poolRuntime {
     metadata {
-      constraint "Native policy installation still requires an authenticated signed projection with at most 15 seconds remaining. Only successful clean installation retains the exact account set for at most 24 hours beyond that signed expiry. Rejected installation and expired-envelope replay cannot extend it. A newer dirty policy immediately replaces the clean snapshot and has no grace. Request assertions, candidate-set vetoes and the independent scheduler-plugin health lease remain mandatory. An empty or replaced runtime never invents a previously installed policy. The scheduler-plugin health probe emits one closed record when a run of missed probes starts, with the stage it reached (management listing, plugin control or Home's log callback) and its bounded elapsed milliseconds, and one when the run ends, with the miss count, longest elapsed time, last stage and the outcome that ended it. Neither record carries Home output, nonces or payloads."
+      constraint "Native policy installation still requires an authenticated signed projection with at most 15 seconds remaining. Only successful clean installation retains the exact account set for at most 24 hours beyond that signed expiry. Rejected installation and expired-envelope replay cannot extend it. A newer dirty policy immediately replaces the clean snapshot and has no grace. Request assertions, candidate-set vetoes and the independent scheduler-plugin health lease remain mandatory. An empty or replaced runtime never invents a previously installed policy."
     }
   }
 }
