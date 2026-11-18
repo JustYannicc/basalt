@@ -159,15 +159,19 @@ export default Alchemy.Stack(
     }
     const api = yield* Api;
     const pool = yield* poolWorker;
-    const runtimeRole = yield* Planetscale.PostgresRole.ref("RuntimeRole");
-    const migrationRole = yield* Planetscale.PostgresRole.ref("MigrationRole");
-    yield* verifyRuntimeDatabaseBudget("ToolsBackendBudget", {
-      adminUrl: migrationRole.connectionUrl,
-      runtimeLogin: runtimeRole.username,
-      databases: ["postgres"],
-      deployment: api.hash,
-      candidate: productionOpsRelease,
-    });
+    // The shared cluster's runtime budget is production's. `.ref` reads deployed state, which a
+    // disposable stage's first deploy does not have; its own database carries the preview pool cap.
+    if (preview === undefined) {
+      const runtimeRole = yield* Planetscale.PostgresRole.ref("RuntimeRole");
+      const migrationRole = yield* Planetscale.PostgresRole.ref("MigrationRole");
+      yield* verifyRuntimeDatabaseBudget("ToolsBackendBudget", {
+        adminUrl: migrationRole.connectionUrl,
+        runtimeLogin: runtimeRole.username,
+        databases: ["postgres"],
+        deployment: api.hash,
+        candidate: productionOpsRelease,
+      });
+    }
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
       env: {
