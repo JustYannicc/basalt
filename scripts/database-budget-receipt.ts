@@ -16,12 +16,23 @@ export type BudgetOutcome =
   | "invalid-observation"
   | "incomplete-visibility"
   | "teardown-error";
+/** One refused runtime readiness call, and what the identity-only check said right after it. */
+export interface ReadinessRefusal {
+  status: number;
+  outcome?: string;
+  stage?: string;
+  /** False while the controller object still runs the previous release's code. */
+  adopted?: boolean;
+  candidateMatches?: boolean;
+}
 export interface BudgetReceipt {
   candidate: string;
   target?: Pick<RuntimeReady, "candidate" | "workerInput" | "imageHash">;
   operationStartedAt?: number;
   overallDeadlineMs?: number;
   commandDeadlineMs?: number;
+  /** How often readiness was refused and asked again, with the last refusal. */
+  refusals?: { count: number } & ReadinessRefusal;
   outcome: BudgetOutcome;
   stage: BudgetStage;
   elapsedMs: number;
