@@ -45,6 +45,15 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # Two checkouts, two prepared builds and two pool image builds; the same cleanup the pool CI build uses.
+      - name: Free runner disk before pool builds
+        run: |
+          echo "Runner disk before cleanup (bytes)"
+          df -B1 /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          docker builder prune --all --force
+          echo "Runner disk after cleanup (bytes)"
+          df -B1 /
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
