@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { deploymentReadinessPrefix } from "./deployment-readiness.ts";
-import { RuntimeCrashAuthorization } from "./runtime-crash-contract.ts";
+import { RuntimeCrashAuthorization, targetsCell } from "./runtime-crash-contract.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 import { openEnvelope } from "./token.ts";
 
@@ -18,18 +18,23 @@ const Topology = Schema.Struct({
     }),
   ),
 });
-export type CellCrashRefusal =
+export type HomeCrashRefusal =
   | "master"
   | "reported_master"
   | "missing_master"
   | "home_unknown"
   | "topology_unreadable";
+/**
+ * One Home heartbeat is 5 s and the read is local to the runtime, so a healthy Home answers well
+ * inside a second. A slower one counts as unreadable, which refuses the kill.
+ */
+const topologyReadTimeoutMs = 1_000;
 
 /** The owner verifies the envelope. An unreadable one counts as a cell, so the check still runs. */
 export async function crashTargetsCell(secret: string, envelope: string) {
   try {
     const opened = await openEnvelope(secret, deploymentReadinessPrefix, envelope);
-    return Schema.decodeUnknownSync(RuntimeCrashAuthorization)(opened).command.kind === "cell";
+    return targetsCell(Schema.decodeUnknownSync(RuntimeCrashAuthorization)(opened).command);
   } catch {
     return true;
   }
@@ -39,10 +44,13 @@ export async function crashTargetsCell(secret: string, envelope: string) {
  * Only the elected master Home refreshes provider tokens, so only a kill there can land between a
  * provider rotating a token and Home storing it. Anything short of a proven follower refuses.
  */
-export async function assertFollowerHome(read: (signal: AbortSignal) => Promise<Response>) {
-  let reason: CellCrashRefusal | undefined;
+export async function assertFollowerHome(
+  target: "cell" | "primary",
+  read: (signal: AbortSignal) => Promise<Response>,
+) {
+  let reason: HomeCrashRefusal | undefined;
   try {
-    const response = await read(AbortSignal.timeout(1_000));
+    const response = await read(AbortSignal.timeout(topologyReadTimeoutMs));
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error("Home topology unavailable");
@@ -59,7 +67,7 @@ export async function assertFollowerHome(read: (signal: AbortSignal) => Promise<
     reason = "topology_unreadable";
   }
   if (!reason) return;
-  console.warn("POOL_CELL_CRASH_REFUSED " + JSON.stringify({ reason }));
+  console.warn("POOL_CRASH_REFUSED " + JSON.stringify({ target, reason }));
   throw new SlotRefused(
     reason === "topology_unreadable" || reason === "home_unknown" ? "uncertain" : "selection",
   );
