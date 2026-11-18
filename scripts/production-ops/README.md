@@ -254,6 +254,30 @@ app pointer and preserves the rest of the slot. Missing provenance refuses;
 it never reconstructs apps or moves ownership. Journal activation does not
 run this repair automatically.
 
+## Adopt Cloudflare accounts into the Cloudflare family
+
+An app keeps its provider ref when a version only adds OAuth scopes, so a
+Cloudflare app installed before the full-scope declaration still holds the ref
+its first definition derived. Every app that declares Cloudflare now derives
+the family's canonical ref, so those apps cannot link the older accounts.
+`cloudflare-family-adoption-v1` moves one organization's accounts and the
+versions that name the retained ref onto the family ref:
+
+```json
+{"organization":"<organization-id>","from":"<retained-provider-ref>","accounts":[{"account":"<account-id>","generation":<credential-generation>}],"apps":[{"app":"<app-id>","version":"<active-version-id>"}]}
+```
+
+List every account still under `from` with the `accounts` inventory, and every
+app whose active version names it with `app-links`. The selection must be
+exact. The runtime computes the target from the host's Cloudflare declaration
+and refuses a `from` whose stored definition is a different provider. It also
+refuses a sign-in still in progress, an acquisition outside the selection and an
+OAuth client saved under the retained ref. The dry run lists each account,
+version and connection with its before and after hashes, and the links it keeps.
+Account IDs, credentials, generations and links never change; provider rows are
+only read. Apply with the standard saved-plan GO. Verification checks that
+nothing still names `from` and that every kept link resolves to the family ref.
+
 ## Retire redundant Google bindings
 
 Use `google-duplicate-bindings-v1` with

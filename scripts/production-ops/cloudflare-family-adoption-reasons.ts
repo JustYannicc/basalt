@@ -1,0 +1,15 @@
+export const cloudflareFamilyAdoptionReasons = [
+  "already-family",
+  "family-provider-missing",
+  "retained-provider-not-family",
+  "account-set-changed",
+  "account-method-outside-family",
+  "app-set-changed",
+  "connection-in-progress",
+  "acquisition-outside-selection",
+  "provider-keyed-oauth-client",
+  "link-unresolved",
+  "reviewed-plan-changed",
+  "write-count-changed",
+  "post-write-checks-failed",
+] as const;

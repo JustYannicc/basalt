@@ -1,3 +1,4 @@
+import { cloudflareFamilyAdoptionReasons } from "./cloudflare-family-adoption-reasons.ts";
 import { poolAssociationRepairReasons } from "./pool-association-repair-reasons.ts";
 import { retainedReasonCodes } from "./retained-reasons.ts";
 import {
@@ -179,7 +180,8 @@ export interface FailureReceipt {
   readonly retainedRead?: RetainedReadDiagnostic;
   readonly reasonCode?:
     | (typeof retainedReasonCodes)[number]
-    | (typeof poolAssociationRepairReasons)[number];
+    | (typeof poolAssociationRepairReasons)[number]
+    | (typeof cloudflareFamilyAdoptionReasons)[number];
 }
 
 export class OperationFailure extends Error {
@@ -197,7 +199,11 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
   const category = categories.find((entry) => entry === row.category);
   const phase = phases.find((entry) => entry === row.phase);
   if (row.format !== "basalt-production-ops-failure-v1" || !category || !phase) return;
-  const reasonCode = [...retainedReasonCodes, ...poolAssociationRepairReasons].find(
+  const reasonCode = [
+    ...retainedReasonCodes,
+    ...poolAssociationRepairReasons,
+    ...cloudflareFamilyAdoptionReasons,
+  ].find(
     (code) => code === row.reasonCode,
   );
   const reason =

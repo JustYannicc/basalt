@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Cloudflare family adoption moves one organization's accounts from the provider ref an app lineage retained across additive scope changes onto the Cloudflare family's canonical provider, which the host derives from its shared declaration. Only a ref whose stored definition derives that identity moves. The exact reviewed account set, generations and active versions must match; a pending sign-in, an acquisition outside the selection or a provider-keyed OAuth client refuses. Account IDs, credentials, generations and links stay; account, version, connection and acquisition provider refs change in one receipt, and every kept link must resolve to the family provider afterwards. Provider rows are only read."
+    }
+  }
+}
