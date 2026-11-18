@@ -2,6 +2,10 @@ import type { SlotTarget } from "../../src/pool/runtime-slots/contract.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import type { RuntimeReleaseState } from "./runtime-release-state.ts";
 
+/** The adopted root container's own slot, as `adopt` retains it. */
+export const isLegacyAdoptionTarget = (target: SlotTarget) =>
+  target.slotId === "legacy" && target.instanceId === target.controllerId;
+
 /** The legacy slot `adopt` retains for the serving root container; settlement reads the same one. */
 export function legacyAdoptionTarget(
   root: RuntimeReleaseState["applications"]["root"],

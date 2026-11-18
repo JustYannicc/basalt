@@ -108,7 +108,9 @@ test("a candidate that refuses a retired denial cannot promote over the serving 
       throw new Error("retired denial unacknowledged");
   };
   await assert.rejects(f.slots.stage(f.candidate), /retired denial unacknowledged/);
-  await assert.rejects(f.slots.promote(await f.intent()), /retired denial unacknowledged/);
+  // The candidate's refusal settles the attempt; it never reaches the selection.
+  const receipt = await f.slots.promote(await f.intent());
+  assert.deepEqual([receipt.status, receipt.reason], ["refused", "unclassified"]);
   assert.equal((await f.slots.inspect()).selection?.active.identity?.bootId, f.old.bootId);
   assert.equal((await f.slots.inspect()).selection?.epoch, 1);
   assert.equal(f.calls.retire.length, 0);

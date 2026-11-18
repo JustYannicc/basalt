@@ -48,8 +48,16 @@ export const readBaselineControllerKey = (stack: Pick<CompiledStack, "name" | "s
     return text(Schema.decodeUnknownSync(envSchema)(worker.props).env.POOL_DEPLOYMENT_KEY);
   });
 
-/** The persisted readiness command records the code that finished the previous deployment, not this checkout's code. */
-export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stage">) =>
+/**
+ * The persisted readiness command records the code that finished the previous deployment, not this
+ * checkout's code. After a controller-active settlement or an abort it names an older controller
+ * than the live one, so the caller passes the live-proven `sourceController` the image journal
+ * returned; only an authorized settlement or a confirmed abort supplies one.
+ */
+export const readBaselineController = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  sourceController?: typeof ControllerCode.Type,
+) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
     const key = { stack: stack.name, stage: stack.stage };
@@ -88,7 +96,7 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
       scriptName: target.worker,
     });
     return Schema.decodeUnknownSync(BaselineController)({
-      code: {
+      code: sourceController ?? {
         candidate: text(env.GITHUB_SHA),
         workerInput: text(env.DATABASE_BUDGET_WORKER_INPUT),
       },
@@ -103,9 +111,38 @@ export const readBaselineController = (stack: Pick<CompiledStack, "name" | "stag
 export type BaselineRead = {
   method: "GET" | "POST";
   path: typeof runtimeRecoveryPath | typeof runtimeHandoffPath;
-  action?: "inspect" | "fleet-inspect" | "witness";
+  action?: "inspect" | "active-health" | "fleet-inspect" | "witness";
 };
 type PoolOperationsBridge = Awaited<ReturnType<typeof openPoolOperations>>;
+
+/**
+ * Runs one sequence of signed reads over one bridge. Opening and closing have their own deadlines,
+ * and a close that fails or times out never replaces the reads' own refusal.
+ */
+export async function withPoolOperations<T>(
+  target: PoolOperationsTarget,
+  reads: (bridge: PoolOperationsBridge, signal: AbortSignal) => Promise<T>,
+) {
+  const opening = openPoolOperations(target);
+  const bridge = await bounded(opening, AbortSignal.timeout(60_000)).catch((error: unknown) => {
+    // A bridge that opens after its deadline still holds a platform to dispose.
+    void opening.then((late) => late.close()).catch(() => {});
+    throw error;
+  });
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
+  try {
+    outcome = { ok: true, value: await reads(bridge, AbortSignal.timeout(30_000)) };
+  } catch (error) {
+    outcome = { ok: false, error };
+  }
+  const closed = bounded(bridge.close(), AbortSignal.timeout(10_000));
+  if (!outcome.ok) {
+    await closed.catch(() => {});
+    throw outcome.error;
+  }
+  await closed;
+  return outcome.value;
+}
 
 /** One signed send of a read-only handoff action. The caller owns the response body. */
 export async function handoffRead(input: {
@@ -115,6 +152,8 @@ export async function handoffRead(input: {
   action: RuntimeCommandAction & { action: NonNullable<BaselineRead["action"]> };
   signal: AbortSignal;
   record?(call: BaselineRead): Promise<void>;
+  /** Runs right before the send, so a caller can time only this request on an open bridge. */
+  dispatched?(): void;
 }) {
   const at = Date.now();
   const envelope = await signEnvelope(input.key, runtimeHandoffCommandPrefix, {
@@ -125,6 +164,7 @@ export async function handoffRead(input: {
   });
   await input.record?.({ method: "POST", path: runtimeHandoffPath, action: input.action.action });
   const { bridge, signal } = input;
+  input.dispatched?.();
   return bounded(
     bridge.service.fetch(
       new Request(`http://pool-operations${runtimeHandoffPath}`, {
@@ -170,9 +210,7 @@ export async function baselineControllerHealth(input: {
   record?(call: BaselineRead): Promise<void>;
 }) {
   const { baseline } = input;
-  const bridge = await openPoolOperations(input.target ?? baseline.target);
-  const signal = AbortSignal.timeout(30_000);
-  try {
+  return withPoolOperations(input.target ?? baseline.target, async (bridge, signal) => {
     // This path proves the legacy PoolContainer before the first slot handoff.
     await readUnselectedInspection(
       await handoffRead({
@@ -217,7 +255,5 @@ export async function baselineControllerHealth(input: {
     );
     sameProvisioningValue("baseline-controller.health-image", baseline.imageHash, health.imageHash);
     return { instanceId: health.instanceId, bootId: health.bootId, checkedAt: Date.now() };
-  } finally {
-    await bounded(bridge.close(), signal);
-  }
+  });
 }
