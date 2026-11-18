@@ -1,4 +1,3 @@
-// Regression: adopt-dirty-pool-policies (a 409 on adopt when existing pool policies were dirty)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { slotFixture } from "../../scripts/pool-tests/runtime-slots-fixture.ts";
