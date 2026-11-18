@@ -1,7 +1,10 @@
+// Regression: release-phases-real-client (every phase drives the real release client, so health() and the witness readback run as in production)
 // End-to-end proof of the first scale-out release: the production runner's deploy and image steps,
 // releaseRuntimeImage through every phase, deployStack, Alchemy Plan/Apply and its Command provider,
 // against a local Cloudflare and controller fake (test/runtime-release-world.ts). The modules that
-// reach the live controller are stand-ins (test/runtime-release-standins.ts).
+// reach the live controller are stand-ins (test/runtime-release-standins.ts); the controller client
+// is the real one over a fake pool-operations bridge with production's setup latency, and only its
+// adopt and promote mutations go straight to the fake controller.
 // Not covered: fleet bootstrap provisioning internals, container staging (runtimeImage prepare and
 // verify), the client's promotion internals and startup abort, forward-resume after a failed
 // phase, and the database phase with a real migration.
@@ -29,6 +32,7 @@ import { waitForPoolImage } from "../deploy-safety/pool-image.ts";
 import { executeRelease, type CommandResult } from "../deploy-safety/release-runner.ts";
 import type { ClassificationReport } from "../releases/types.ts";
 import { attributes, preparedUpload } from "./fixture.ts";
+import { BarrierRefusal } from "./refusal.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { readySqlSchemas } from "./sql-schema-fixture.ts";
@@ -44,6 +48,7 @@ import {
   origin,
   runtimeEnvironment,
   type World,
+  type WorldOptions,
 } from "./test/runtime-release-world.ts";
 
 // Only runtime-image-release.ts's own imports of these modules are redirected; every other importer,
@@ -204,10 +209,11 @@ async function firstScaleOutRelease(
   options: {
     isolateReceipt?: boolean;
     beforeImageCheck?: (w: World) => void;
+    world?: WorldOptions;
     sourceController?: { candidate: string; workerInput: string };
   } = {},
 ) {
-  const w = createWorld();
+  const w = createWorld(options.world);
   installWorld(w);
   standin.resetJournal(options.sourceController);
   const scratch = mkdtempSync(join(tmpdir(), "runtime-image-release-"));
@@ -301,7 +307,15 @@ async function firstScaleOutRelease(
           }).pipe(withReleaseRuntime),
         );
         if (Exit.isSuccess(exit)) return { started: true, exitCode: 0 };
-        failures.push(`deploy: ${String(Cause.squash(exit.cause))}`);
+        const error = Cause.squash(exit.cause);
+        // A refusal's delta names the refused command and the controller's closed reason.
+        const delta =
+          error instanceof BarrierRefusal
+            ? (error.delta?.changed ?? [])
+                .map((row) => ` ${row.path}=${"new" in row ? String(row.new) : "changed"}`)
+                .join("")
+            : "";
+        failures.push(`deploy: ${String(error)}${delta}`);
         return { started: true, exitCode: 1 };
       },
       assertImages: async (): Promise<CommandResult> => {
@@ -479,4 +493,34 @@ test("the fixture's receipt Command matches the one the production stack declare
   assert.ok(source.includes("POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput"));
   const retained = readFileSync(new URL("./preserve-runtime-plan.ts", import.meta.url), "utf8");
   assert.ok(!retained.includes('"POOL_DESIRED_IMAGE_INPUT"'), "the desired input is not retained");
+});
+
+// Regression: finalize-health-bridge-latency
+test("release health over a bridge whose setup outlasts the health lease does not expire", async () => {
+  // Every runtime command opens a fresh bridge, and from a CI runner its setup alone outlasts the
+  // controller's 1,500 ms active-health lease (test/bridge-latency.ts).
+  const result = await firstScaleOutRelease();
+  assert.doesNotMatch(
+    result.failures.join("\n"),
+    /runtime-release-health-expired/,
+    explain(result),
+  );
+  assert.equal(result.journal?.complete, true, explain(result));
+  assert.deepEqual(result.marks, ["success"], explain(result));
+});
+
+// Regression: adopted-root-witness-under-new-controller
+test("a controller-only release over a root an earlier controller adopted promotes a fleet primary", async () => {
+  // The root already serves this candidate's image, so the release asks selectedCurrent about the
+  // adopted legacy slot; its readback is pinned to the controller that adopted it, not this one.
+  const result = await firstScaleOutRelease({ world: { root: "prior-controller" } });
+  assert.doesNotMatch(
+    result.failures.join("\n"),
+    /handoff\.command\.action=witness/,
+    explain(result),
+  );
+  assert.equal(result.journal?.complete, true, explain(result));
+  assert.ok(result.w.events.includes("promote:application-green"), explain(result));
+  assert.equal(result.w.controller.selection?.active.target.applicationId, "application-green");
+  assert.deepEqual(result.marks, ["success"], explain(result));
 });

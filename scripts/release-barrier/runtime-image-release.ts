@@ -31,6 +31,7 @@ import {
 } from "./runtime-release-readiness.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import type { RuntimeReleasePhase } from "./runtime-image-release-phases.ts";
 import {
   baselineControllerHealth,
   readBaselineController,
@@ -163,7 +164,7 @@ export const releaseRuntimeImage = <A, StackError>(
           write: async (promotion) => save({ ...record, promotion }),
         },
       });
-    const retainPhase = async (name: string) => {
+    const retainPhase = async (name: RuntimeReleasePhase) => {
       for (const file of [
         "manifest.json",
         "receipt.json",
@@ -179,7 +180,7 @@ export const releaseRuntimeImage = <A, StackError>(
           if (error.code !== "ENOENT") throw error;
         });
     };
-    const codePhase = (name: string) =>
+    const codePhase = (name: RuntimeReleasePhase) =>
       evaluate(plan(), (compiled) =>
         Effect.gen(function* () {
           const client = yield* clientFor();

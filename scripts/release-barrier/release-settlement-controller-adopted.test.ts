@@ -1,3 +1,4 @@
+// Regression: adopted-root-settlement-refusals (each guard of an adopted-root settlement refuses the production shape it protects against)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Schema } from "effect";

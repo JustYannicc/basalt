@@ -20,6 +20,9 @@ import {
 import { equalContainerConfiguration } from "./container-configuration.ts";
 import { containerDrift } from "./container-diagnostics.ts";
 import type { ContainerRollout } from "./container-cloudflare.ts";
+import { barrierPhases, type BarrierPhase } from "./barrier-phases.ts";
+
+export { barrierPhases, type BarrierPhase };
 
 export interface ContainerVersionProvider {
   prepare?(container: FrozenContainer): Promise<void>;
@@ -44,14 +47,7 @@ export interface BarrierReceipt {
   candidate: string;
   manifest: string;
   ceilingMs: number;
-  phase:
-    | "upload"
-    | "admitted"
-    | "schema"
-    | "baseline"
-    | "activation"
-    | "container-activation"
-    | "complete";
+  phase: BarrierPhase;
   sqlSchemas?: SqlSchemaReceipt;
   accepted: { worker: string; versionId: string; startupTimeMs: number }[];
   startupMeasurements?: { worker: string; versionId: string; startupTimeMs: number }[];

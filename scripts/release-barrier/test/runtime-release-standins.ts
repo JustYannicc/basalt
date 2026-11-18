@@ -3,7 +3,8 @@
  * the Alchemy state store's version endpoint or native state rows. The release test redirects only
  * runtime-image-release.ts's own imports here; deployStack, Alchemy Plan/Apply, the Command provider,
  * configureReleaseFleet and runtimeReleaseImage stay real, and waitReleaseObservation is the real
- * function on a virtual clock.
+ * function on a virtual clock. The controller client is the real one over a fake pool-operations
+ * bridge (signed envelopes, production setup latency), except for adopt and promote.
  */
 import { Effect, Layer, Schema } from "effect";
 import { Stack } from "alchemy/Stack";
@@ -12,10 +13,24 @@ import type { CompiledStack } from "alchemy/Stack";
 import type { RuntimeConfiguration } from "../../../src/pool/runtime-slots/configuration.ts";
 import type { RuntimeColor } from "../../../src/pool/image-release-plan.ts";
 import { BarrierRefusal } from "../refusal.ts";
+import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
 import type { RuntimeReleaseRecord } from "../runtime-release-journal.ts";
 import type { BaselineController } from "../baseline-controller.ts";
 import { RuntimeReleaseState } from "../runtime-release-state.ts";
-import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
+import {
+  runtimeReleaseClient as liveClient,
+  type RuntimeReleaseClient,
+} from "../runtime-release-client.ts";
+import {
+  decodeRuntimeHandoffCommand,
+  runtimeHandoffCommandPrefix,
+} from "../../../src/pool/runtime-slots/handoff-command.ts";
+import type { ControllerCode as SlotControllerCode } from "../../../src/pool/runtime-slots/contract.ts";
+import { openEnvelope } from "../../../src/pool/token.ts";
+import { SlotRefused } from "../../../src/pool/runtime-slots/contract.ts";
+import { runtimeErrorResponse } from "../../../src/pool/runtime-slots/request-error.ts";
+import type { PoolOperationsPlatform } from "../../pool-operations.ts";
+import { bridgeSetupMs, elapse } from "./bridge-latency.ts";
 import { waitReleaseObservation as liveWait } from "../runtime-release-readiness.ts";
 import {
   accountId,
@@ -136,7 +151,7 @@ export async function releaseCodeReady(_state: RuntimeReleaseState, code: { cand
 export async function releaseSelectedReady(
   _state: RuntimeReleaseState,
   _code: unknown,
-  client: ReturnType<typeof clientOver>,
+  client: RuntimeReleaseClient,
   desiredInput: string,
 ) {
   const before = await client.inspect();
@@ -149,12 +164,58 @@ export async function releaseSelectedReady(
   return client.health();
 }
 
-const clientOver = (desired?: RuntimeConfiguration) => {
+/**
+ * The PoolWorker's private PoolOperations entrypoint, answered by the world's controller. Every
+ * open pays production's bridge setup before the first byte can go out, and every request is the
+ * signed envelope sendRuntimeCommand builds, opened and decoded as the controller does.
+ */
+const bridge = (): PoolOperationsPlatform["env"]["POOL_OPERATIONS"] => ({
+  fetch: async (request) => {
+    const w = world();
+    const { envelope } = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
+      await request.json(),
+    );
+    const command = decodeRuntimeHandoffCommand(
+      await openEnvelope(deploymentKey, runtimeHandoffCommandPrefix, envelope),
+    );
+    try {
+      switch (command.action) {
+        case "inspect":
+          return Response.json({ result: w.inspect() });
+        case "active-health":
+          return Response.json({ result: w.activeHealth() });
+        case "witness":
+          return Response.json({ result: w.witness(command.target) });
+        case "fleet-inspect":
+          return Response.json({ result: w.fleet(command.operationId) });
+        case "fleet-configure":
+          return Response.json({ result: w.configure(command.operationId, command.configuration) });
+        case "image-inspect":
+          return Response.json({ result: null });
+        default:
+          throw new BarrierRefusal("runtime-release-command-unmodeled", command.action);
+      }
+    } catch (error) {
+      // The controller's own refusal response (request-error.ts runtimeErrorResponse).
+      if (error instanceof SlotRefused) return runtimeErrorResponse(error, "handoff");
+      if (error instanceof BarrierRefusal && error.reason !== "runtime-release-command-unmodeled")
+        return runtimeErrorResponse(new SlotRefused("unhealthy"), "handoff");
+      throw error;
+    }
+  },
+});
+const connect = async (): Promise<PoolOperationsPlatform> => {
+  await elapse(bridgeSetupMs);
+  return { env: { POOL_OPERATIONS: bridge() }, dispose: async () => {} };
+};
+
+/**
+ * Admission proofs, staging, the startup wait and the public candidate probe behind the real
+ * adopt and promote are not modelled, so those two mutations go to the world's controller.
+ */
+const worldMutations = (desired?: RuntimeConfiguration) => {
   const w = world();
   return {
-    inspect: async () => w.inspect(),
-    health: async () => w.health(),
-    fleet: async (operationId?: string) => w.fleet(operationId),
     adopt: async () => {
       w.adopt();
     },
@@ -162,22 +223,41 @@ const clientOver = (desired?: RuntimeConfiguration) => {
       if (pool !== monitorPool) throw new BarrierRefusal("runtime-release-public-pool", pool);
       await w.promote(applicationId, operationId, desired ?? baselineConfiguration);
     },
-    selectedCurrent: (imageInput: string, configuration: RuntimeConfiguration) =>
-      w.selectedCurrent(imageInput, configuration),
-    observeProvider: async () => {
-      throw new BarrierRefusal("runtime-release-provider-observation-unmodeled");
-    },
-    call: async (action: RuntimeCommandAction) => {
-      if (action.action === "fleet-configure")
-        return { result: w.configure(action.operationId, action.configuration) };
-      if (action.action === "image-inspect") return { result: null };
-      throw new BarrierRefusal("runtime-release-command-unmodeled", action.action);
-    },
   };
 };
-/** The controller client, answered by the world's PoolWorker controller. */
-export const runtimeReleaseClient = (input: { desiredConfiguration?: RuntimeConfiguration }) =>
-  Effect.sync(() => clientOver(input.desiredConfiguration));
+/** Commands the world answers instead of the controller; the coverage gate credits no test with them. */
+export const standInCommandActions = [
+  "adopt",
+  "promote",
+] as const satisfies readonly RuntimeCommandAction["action"][];
+// worldMutations replaces exactly the client methods that send these actions, one each.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _standInsListed: Same<
+  keyof ReturnType<typeof worldMutations>,
+  (typeof standInCommandActions)[number]
+> = true;
+/** The real controller client over the fake bridge, with adopt and promote on the world. */
+export const runtimeReleaseClient = (input: {
+  state: RuntimeReleaseState;
+  code: typeof SlotControllerCode.Type;
+  desiredConfiguration?: RuntimeConfiguration;
+  promotion: Parameters<typeof liveClient>[0]["promotion"];
+}) =>
+  liveClient({
+    ...input,
+    // The test's writer is a stand-in; the real client only asserts and serializes through it.
+    writer: {
+      candidate: input.code.candidate,
+      assert: () => {},
+      exclusive: (work) => work(),
+    } as Parameters<typeof liveClient>[0]["writer"],
+    target: { ...input.state.target, connect },
+  }).pipe(
+    Effect.map((client): RuntimeReleaseClient => ({
+      ...client,
+      ...worldMutations(input.desiredConfiguration),
+    })),
+  );
 
 /** Fleet bootstrap: one empty application on the root image, as provisioning creates it. */
 export const bootstrapReleaseApplication = (

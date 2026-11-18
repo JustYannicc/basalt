@@ -6,11 +6,12 @@ import {
   runtimeConfiguration,
   type RuntimeConfiguration,
 } from "../../../src/pool/runtime-slots/configuration.ts";
-import type {
-  SlotIdentity,
-  SlotRecord,
-  SlotSelection,
-  SlotTarget,
+import {
+  SlotRefused,
+  type SlotIdentity,
+  type SlotRecord,
+  type SlotSelection,
+  type SlotTarget,
 } from "../../../src/pool/runtime-slots/contract.ts";
 import type { FleetConfiguration } from "../../../src/pool/runtime-fleet/configuration.ts";
 import { canonical, digest } from "../manifest.ts";
@@ -88,7 +89,34 @@ export interface Application {
 /** The root PoolContainer object, which is the controller and serves the legacy slot itself. */
 const controllerId = "controller-root";
 
-export function createWorld() {
+/** The controller code an earlier release ran, for a legacy root it adopted before this one. */
+export const priorControllerCode = { candidate: "9".repeat(40), workerInput: "8".repeat(64) };
+
+/**
+ * Pools whose stored policy is dirty, as production kept them: a pool whose tools-service
+ * membership is not native, or whose accounts lack a Home reference, repairs to an empty dirty row
+ * and stays there until the pool changes. They sort before the monitor pool.
+ */
+const dirtyPolicies = [
+  { pool: "000-unready-pool", organization: "organization-a", revision: 3, dirty: true },
+  { pool: "001-unready-pool", organization: "organization-b", revision: 1, dirty: true },
+  { pool: "002-not-native-pool", organization: "organization-b", revision: 2, dirty: true },
+];
+
+export interface WorldOptions {
+  /** "clean" drops the dirty pool policies production carried; say why at the call site. */
+  state?: "production" | "clean";
+  /**
+   * "prior-controller": an earlier release's controller already adopted the root as the legacy
+   * primary, and the root already runs this candidate's image (a controller-only release).
+   */
+  root?: "unadopted" | "prior-controller";
+}
+
+/** The active-health lease the controller grants, measured from its own dispatch to the runtime. */
+const healthLeaseMs = 1_500;
+
+export function createWorld(options: WorldOptions = {}) {
   const events: string[] = [];
   const applications = new Map<string, Application>();
   const root: Application = {
@@ -103,6 +131,11 @@ export function createWorld() {
       { id: "instance-root", state: "running", image: baselineImage.ref, owner: controllerId },
     ],
   };
+  if (options.root === "prior-controller") {
+    root.image = candidateImage;
+    root.input = candidateInput;
+    root.instances[0]!.image = candidateImage.ref;
+  }
   applications.set(root.id, root);
   const byColor = (color: RuntimeColor) =>
     [...applications.values()].find(
@@ -139,6 +172,8 @@ export function createWorld() {
     latest: undefined as string | undefined,
     started: new Map<string, string>(),
     boots: 0,
+    /** The code of the controller that adopted the legacy root; its readback is pinned to it. */
+    adoptedBy: undefined as { candidate: string; workerInput: string } | undefined,
   };
   const target = (app: Application, slotId: string, instanceId: string): SlotTarget => ({
     format: "pool-runtime-slot-v1",
@@ -228,6 +263,7 @@ export function createWorld() {
       controllerCode: controller.code,
       selection: controller.selection,
       policies: [
+        ...(options.state === "clean" ? [] : dirtyPolicies),
         { pool: monitorPool, organization: "organization-fixture", revision: 1, dirty: false },
       ],
       denials: [],
@@ -248,8 +284,44 @@ export function createWorld() {
     };
     // The adopted process runs the baseline settings, so selectedCurrent is false until promotion.
     controller.started.set(controllerId, "baseline");
+    controller.adoptedBy = { ...controller.code };
     events.push("adopt:legacy");
     return health();
+  };
+  if (options.root === "prior-controller") {
+    adopt();
+    controller.adoptedBy = priorControllerCode;
+    events.length = 0;
+  }
+
+  /** The controller's `active-health`: the selected identity and the lease left on its answer. */
+  const activeHealth = () => {
+    health();
+    return { identity: controller.selection!.active.identity!, leaseMs: healthLeaseMs };
+  };
+
+  /**
+   * The controller's `witness` readback. A fleet primary's record carries the launch witness with
+   * its startup fingerprint. The adopted legacy root has only the unattested adoption record, which
+   * adoption-observation.ts refuses with `identity` when the adopting controller's code is not the
+   * running one (and adoption-readback.ts's AdoptionReadbackMismatch maps to the same refusal).
+   */
+  const witness = (slot: SlotTarget) => {
+    const active = controller.selection?.active;
+    if (!active || active.target.slotId !== slot.slotId) throw new SlotRefused("selection");
+    if (slot.slotId === "legacy") {
+      const adopter = controller.adoptedBy;
+      if (
+        !adopter ||
+        adopter.candidate !== controller.code.candidate ||
+        adopter.workerInput !== controller.code.workerInput
+      )
+        throw new SlotRefused("identity");
+      return { kind: "unattested-active", configurationFingerprint: "baseline" };
+    }
+    return {
+      witness: { configurationFingerprint: controller.started.get(slot.instanceId) ?? "" },
+    };
   };
 
   /**
@@ -417,6 +489,8 @@ export function createWorld() {
     controller,
     inspect,
     health,
+    activeHealth,
+    witness,
     fleet,
     adopt,
     promote,
