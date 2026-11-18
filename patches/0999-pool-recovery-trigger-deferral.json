@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-recovery-trigger-deferral",
+  "file": "0999-pool-recovery-trigger-deferral.patch",
+  "content_sha256": "896d372c25320a52b69554cccb7acdc2f1c0f1809be05c074fd3adc520170614",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
