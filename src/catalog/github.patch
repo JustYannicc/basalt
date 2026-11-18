@@ -1,0 +1,78 @@
+--- a/README.md
++++ b/README.md
+@@ -11,6 +11,10 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
+ 
+ Health check: `GET https://api.github.com/user`.
+ 
++## Results
++
++REST results drop `temp_clone_token` and `temp_download_token`, the short-lived credentials GitHub adds to repository and runner-download reads. GitHub's description says to keep them out of logs, and tool results reach agent transcripts.
++
+ ## Known gaps
+ 
+ - Release asset upload (`uploads.github.com`) is skipped.
+--- a/index.ts
++++ b/index.ts
+@@ -67,6 +67,42 @@ type Account =
+ 
+ const token = (account: Account) => (account.method === "oauth" ? account.fields.access_token : account.fields.token);
+ 
++type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
++
++// GitHub puts short-lived credentials in some read responses: `temp_clone_token` on every repository
++// shape and `temp_download_token` on runner downloads. GitHub's description says to keep them out of
++// logs, and tool results land in agent transcripts, so the REST tools drop them before decoding.
++const credentialFields = ["temp_clone_token", "temp_download_token"];
++
++const withoutCredentialFields =
++  (fetch: Fetch): Fetch =>
++  async (input, init) => {
++    const response = await fetch(input, init);
++    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
++    const type = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
++    if (
++      !response.ok ||
++      new URL(url).origin !== "https://api.github.com" ||
++      !/^application\/(?:[\w.-]+\+)?json$/i.test(type)
++    )
++      return response;
++    const text = await response.text();
++    let body = text;
++    if (credentialFields.some((field) => text.includes(`"${field}"`)))
++      try {
++        body = JSON.stringify(
++          JSON.parse(text, (key, value) => (credentialFields.includes(key) ? undefined : value)),
++        );
++      } catch {
++        // Not JSON after all: the router reports the unreadable body as it would have.
++      }
++    const headers = new Headers(response.headers);
++    // The body is already decoded and may be shorter now.
++    headers.delete("content-encoding");
++    headers.delete("content-length");
++    return new Response(body, { status: response.status, statusText: response.statusText, headers });
++  };
++
+ export default defineApp(
+   { user: { accounts: { github: github.many() } }, icons },
+   async ({ user, cache, fetch, signal }) => {
+@@ -100,7 +136,7 @@ export default defineApp(
+             await accountRouter(
+               accounts,
+               (account) =>
+-                withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
++                withApprovals(liveOpenapiRouter({ ...options, cache, fetch: withoutCredentialFields(fetch), signal, account }), (tool) =>
+                   tool.kind === "mutation" ? always() : undefined,
+                 ),
+               { signal },
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "GitHub"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.140",
++    "apps": "0.0.1-beta.104-basalt.15",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }
