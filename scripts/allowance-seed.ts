@@ -42,7 +42,10 @@ export async function renewSeed(
   await registry.refresh();
   const entries = (await registry.read()).entries
     .filter((entry) => entry.verification !== "unknown")
-    .map(({ contradicted: _, ...entry }) => entry as PlanAllowance);
+    .map((entry) => {
+      const { contradicted, ...rest } = entry;
+      return contradicted === undefined ? entry : rest;
+    });
   const latest = (rows: readonly PlanAllowance[]) => {
     const found = new Map<string, PlanAllowance>();
     for (const entry of rows) {
