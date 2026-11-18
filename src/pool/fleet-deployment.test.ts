@@ -336,10 +336,7 @@ test("POOL_FLEET_CLASSES=absent leaves both fleet classes out of PoolWorker and 
       poolWorkerClasses(input, { POOL_FLEET_CLASSES: "absent", ...env }),
       /fleet-classes-absent-with-fleet/,
     );
-  await assert.rejects(
-    poolWorkerClasses("", { POOL_FLEET_CLASSES: "none" }),
-    /POOL_FLEET_CLASSES/,
-  );
+  await assert.rejects(poolWorkerClasses("", { POOL_FLEET_CLASSES: "none" }), /POOL_FLEET_CLASSES/);
 });
 
 test("POOL_WORKER_VERSION_TRAFFIC uploads PoolWorker as a version at that traffic, within 0-100", async () => {

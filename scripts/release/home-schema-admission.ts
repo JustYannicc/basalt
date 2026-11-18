@@ -30,10 +30,7 @@ export async function homeSchemaAdmission(root: string): Promise<HomeMigrationAd
   try {
     declarations = Schema.decodeUnknownSync(codec, { onExcessProperty: "error" })(
       JSON.parse(
-        await readFile(
-          resolve(root, "scripts/release/home-schema-admissions.json"),
-          "utf8",
-        ),
+        await readFile(resolve(root, "scripts/release/home-schema-admissions.json"), "utf8"),
       ),
     );
   } catch {

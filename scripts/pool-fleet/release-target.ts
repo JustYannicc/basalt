@@ -18,7 +18,9 @@ const Worker = Schema.Struct({
   resourceType: Schema.Literal("Cloudflare.Worker"),
   attr: Schema.Struct({ accountId: Schema.NonEmptyString, workerName: Schema.NonEmptyString }),
   props: Schema.Struct({
-    env: Schema.Struct({ POOL_IMAGE_HASH: Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u)) }),
+    env: Schema.Struct({
+      POOL_IMAGE_HASH: Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u)),
+    }),
   }),
 });
 const Root = Schema.Struct({

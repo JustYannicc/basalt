@@ -101,4 +101,3 @@ test("masking a private ancestor keeps its descendants private", () => {
     [{ path: "[changed].name", changed: true }],
   );
 });
-

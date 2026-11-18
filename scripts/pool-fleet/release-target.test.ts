@@ -69,7 +69,12 @@ test("the read-only State refuses every write", async () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const state = readOnlyState(yield* InMemoryService());
-        yield* state.set({ stack: "basalt", stage: "production", fqn: "PoolWorker", value: worker as never });
+        yield* state.set({
+          stack: "basalt",
+          stage: "production",
+          fqn: "PoolWorker",
+          value: worker as never,
+        });
       }),
     ),
     /release-target-state-write-refused/,
