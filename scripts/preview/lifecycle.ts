@@ -618,8 +618,9 @@ export async function destroyStage(
   ] as const) {
     try {
       await action();
-    } catch {
-      failures.push(new Error("Preview " + stack + " cleanup failed"));
+    } catch (error) {
+      // The cause is what says which resource is left; the CLI prints it redacted.
+      failures.push(new Error("Preview " + stack + " cleanup failed", { cause: error }));
     }
   }
   if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");
