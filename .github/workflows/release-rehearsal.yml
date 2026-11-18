@@ -83,6 +83,9 @@ jobs:
         run: |
           npm install --prefix .ci-tools --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-code@2.1.309 @openai/codex@0.164.0
           echo "$GITHUB_WORKSPACE/.ci-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Set this run's stage deadline
+        # The upstream test stage requires a deadline and stops serving after it; seven hours outlasts the job.
+        run: echo "TEST_STAGE_EXPIRES_AT=$(( ($(date +%s) + 25200) * 1000 ))" >> "$GITHUB_ENV"
       - name: Plan isolated resources and encrypt the cleanup checkpoint
         run: |
           node scripts/preview/lifecycle.ts plan "$REHEARSAL_SUBJECT"

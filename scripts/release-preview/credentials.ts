@@ -24,6 +24,7 @@ export function lifecycleEnvironment(
     "GITHUB_ACTIONS",
     "PREVIEW_STATE_KEY",
     "PREVIEW_MANIFEST_CHECKPOINTED",
+    "TEST_STAGE_EXPIRES_AT",
     ...(mode === "deploy"
       ? [...requiredPreviewDeploySecrets, "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]
       : requiredPreviewCleanupSecrets),

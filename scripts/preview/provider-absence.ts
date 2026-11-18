@@ -141,7 +141,9 @@ function cloudflareApi(account: string, token: string) {
     if (!response.ok)
       throw new Error(`Cloudflare preview absence readback failed with HTTP ${response.status}`);
     const body = record(await response.json());
-    if (body.success !== true || !Array.isArray(body.errors) || body.errors.length !== 0)
+    // Some endpoints (Worker domains) send `errors: null` on success rather than an empty list.
+    const errors = body.errors ?? [];
+    if (body.success !== true || !Array.isArray(errors) || errors.length !== 0)
       throw new Error("Cloudflare preview absence readback was not authoritative");
     return body;
   };

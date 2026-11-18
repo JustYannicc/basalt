@@ -326,6 +326,14 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
   return stageEnvironment(pullRequestSubject(pullRequest), source);
 }
 
+/** A disposable stage's deadline in epoch milliseconds, set once per run by its workflow. */
+export function stageExpiry(value: string | undefined): string | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (!/^[1-9][0-9]{12}$/u.test(value))
+    throw new Error("TEST_STAGE_EXPIRES_AT must be epoch milliseconds");
+  return value;
+}
+
 /** The same isolated deploy environment for any disposable stage, PR or rehearsal. */
 export function stageEnvironment(value: StageSubject, source = process.env): PreviewEnvironment {
   const subject = toSubject(value);
@@ -372,6 +380,8 @@ export function stageEnvironment(value: StageSubject, source = process.env): Pre
     EXECUTOR_APP_UI_EMBEDDED: "true",
     EXECUTOR_APP_UI_MANAGED_ROUTE: "false",
     TEST_STAGE_DOMAIN: domain,
+    // The upstream test stage stops serving at this deadline; every disposable stage must carry one.
+    TEST_STAGE_EXPIRES_AT: stageExpiry(source.TEST_STAGE_EXPIRES_AT),
     TEST_STAGE_DATABASE_PROVIDER: "planetscale",
     TEST_STAGE_DATABASE: databaseName,
     TEST_STAGE_PASSWORD_SIGN_IN: "true",
