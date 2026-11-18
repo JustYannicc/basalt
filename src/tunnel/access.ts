@@ -27,11 +27,13 @@ const Access = Schema.Struct({
   }),
 });
 const readAccess = Schema.decodeUnknownSync(Access);
-export type TunnelAccess = typeof Access.Type;
+/** `checkedAt` is when this bearer's check started, so reuse is measured conservatively. */
+export type TunnelAccess = typeof Access.Type & { readonly checkedAt?: number };
 export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
   const authorization = request.headers.get("authorization");
   if (!authorization || !/^Bearer [^\s]+$/iu.test(authorization))
     return new Response(null, { status: 401 });
+  const checkedAt = Date.now();
   const response = await readNativeAuthorization(request, env);
   if (!response.ok) {
     await response.body?.cancel();
@@ -43,7 +45,7 @@ export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
   if (access.expiresAt <= Date.now()) return new Response(null, { status: 401 });
   if (!access.policy.models && !access.policy.toolsOrganization)
     return new Response(null, { status: 403 });
-  return access;
+  return { ...access, checkedAt };
 }
 export async function tunnelLease(request: Request, env: TunnelEnvironment, access: TunnelAccess) {
   const envelope = await signEnvelope(env.POOL_APP_SIGNING_KEY, nativeControlPrefix, {
