@@ -116,7 +116,9 @@ async function addAgentLocked(home: string, id: string, capabilities: readonly C
   await writePrivate(path, JSON.stringify({ version: 1, id, token }));
   await writePrivate(profilePath(home), JSON.stringify(updated));
   // The connection keeps its first port across restarts, so this address outlives this run.
-  return { token, origin: profile.port ? `http://127.0.0.1:${profile.port}` : undefined };
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(profile.port);
+  return { token, origin: profile.port ? origin.origin : undefined };
 }
 
 export async function removeAgent(home: string, id: string) {
