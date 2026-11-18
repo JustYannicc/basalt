@@ -128,6 +128,16 @@ const baseline = {
 };
 export const readBaselineController = (_stack: CompiledStack, source?: ControllerCode) =>
   Effect.succeed(source ? { ...baseline, code: source } : baseline);
+/** The production choice (baseline-controller.ts) over the stand-in reader. */
+export const releaseBaselineController = (
+  stack: CompiledStack,
+  head: { record?: { baselineController?: BaselineController }; sourceController?: ControllerCode },
+) =>
+  head.record?.baselineController
+    ? Effect.succeed({ controller: head.record.baselineController })
+    : readBaselineController(stack, head.record ? undefined : head.sourceController).pipe(
+        Effect.map((controller) => ({ controller })),
+      );
 export const readBaselineControllerKey = (_stack: CompiledStack) => Effect.succeed(deploymentKey);
 export const baselineControllerHealth = async () => ({
   instanceId: "instance-root",

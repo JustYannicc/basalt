@@ -34,8 +34,8 @@ import { BarrierRefusal } from "./refusal.ts";
 import type { RuntimeReleasePhase } from "./runtime-image-release-phases.ts";
 import {
   baselineControllerHealth,
-  readBaselineController,
   readBaselineControllerKey,
+  releaseBaselineController,
 } from "./baseline-controller.ts";
 import { controllerForwardHealth } from "./controller-forward-health.ts";
 
@@ -81,7 +81,10 @@ export const releaseRuntimeImage = <A, StackError>(
         if (record?.abort)
           throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
-          const baselineController = yield* readBaselineController(compiled, head.sourceController);
+          const { controller: baselineController } = yield* releaseBaselineController(
+            compiled,
+            head,
+          );
           const key = yield* readBaselineControllerKey(compiled);
           yield* resumeForwardRelease(compiled, {
             directory: options.directory,
@@ -184,8 +187,9 @@ export const releaseRuntimeImage = <A, StackError>(
       evaluate(plan(), (compiled) =>
         Effect.gen(function* () {
           const client = yield* clientFor();
-          const baselineController =
-            record.baselineController ?? (yield* readBaselineController(compiled));
+          const { controller: baselineController } = yield* releaseBaselineController(compiled, {
+            record,
+          });
           const forward = yield* resumeForwardRelease(compiled, {
             directory: options.directory,
             runtime: (container, _observed, observation) =>
