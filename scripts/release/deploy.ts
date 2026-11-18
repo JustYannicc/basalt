@@ -42,6 +42,7 @@ const { positionals, values } = parseArgs({
     before: { type: "string" },
     after: { type: "string" },
     fqn: { type: "string" },
+    from: { type: "string" },
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
@@ -430,24 +431,52 @@ try {
     await output(resolve(root, ".local/release/preflight.json"), result);
     await summary(`Preflight: ${JSON.stringify({ ...result, rows: result.rows.length })}`);
   } else if (command === "serving" || command === "rollback") {
-    // A code-only release records the serving version first; on a failed acceptance it goes back to it.
-    const fqn = values.fqn ?? "PoolWorker";
+    // A code release records the serving version of every Worker its plan updates; on a failed apply
+    // or acceptance it puts each of them back. `--fqn` names one Worker instead.
+    const plan = values.from
+      ? (JSON.parse(await readFile(resolve(values.from), "utf8")) as {
+          changes?: { fqn: string; type: string; action: string }[];
+          workers?: { fqn: string; version: string }[];
+        })
+      : undefined;
+    const fqns =
+      command === "serving"
+        ? values.fqn
+          ? [values.fqn]
+          : (plan?.changes ?? [])
+              .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
+              .map((change) => change.fqn)
+        : [];
     const result = await run(
       Effect.gen(function* () {
-        const script = yield* scriptName(fqn);
-        const at = {
+        const at = (script: string) => ({
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
           token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
           script,
-        };
-        if (command === "serving") return { fqn, version: yield* servingVersion(at) };
-        if (!values.to) return yield* Effect.die(new Error("--to <version id> is required"));
-        yield* rollbackTo(
-          at,
-          values.to,
-          `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
-        );
-        return { fqn, version: values.to, rolledBack: true };
+        });
+        if (command === "serving") {
+          const workers: { fqn: string; version: string }[] = [];
+          for (const fqn of fqns)
+            workers.push({ fqn, version: yield* servingVersion(at(yield* scriptName(fqn))) });
+          return { workers };
+        }
+        const targets =
+          plan?.workers ??
+          (values.fqn && values.to ? [{ fqn: values.fqn, version: values.to }] : []);
+        if (!targets.length)
+          return yield* Effect.die(
+            new Error("rollback needs --from <serving.json> or --fqn and --to"),
+          );
+        const rolledBack: { fqn: string; version: string }[] = [];
+        for (const target of targets) {
+          yield* rollbackTo(
+            at(yield* scriptName(target.fqn)),
+            target.version,
+            `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+          );
+          rolledBack.push(target);
+        }
+        return { workers: rolledBack, rolledBack: true };
       }),
     );
     if (values.out) await output(resolve(values.out), result);

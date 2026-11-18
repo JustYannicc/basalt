@@ -488,17 +488,23 @@ export const checkPlan = (
     if (policy.mode === "code-only")
       for (const change of changes)
         if (
-          // `allow` names what else a reviewer accepted, such as the per-attempt PoolDatabase command.
+          // `allow` names what else a reviewer accepted. Otherwise only code moves: an update of any
+          // Worker but the bulk-import store's (binding and class changes are refused above), the
+          // pinned root's hash, and Command runs such as a migration step (the backup covers those).
           !policy.allow.some(
             (entry) => entry.fqn === change.fqn && entry.action === change.action,
           ) &&
-          (change.action !== "update" ||
-            (change.fqn !== policy.poolWorker && change.fqn !== policy.poolContainer.fqn))
+          !(
+            change.action === "update" &&
+            ((change.type === "Cloudflare.Worker" && change.fqn !== policy.artifactsCredentials) ||
+              change.fqn === policy.poolContainer.fqn ||
+              change.type.startsWith("Command."))
+          )
         )
           outside(
             change,
             "noop",
-            "A code-only release moves the pool Worker's code and nothing else, so a Worker rollback undoes all of it.",
+            "A code-only release moves Worker code (and runs migration steps) and nothing else, so a Worker rollback undoes the code.",
             "Ship this change in its own release, or review a policy in release mode.",
           );
     if (policy.mode === "cutover-classes") {

@@ -42,7 +42,7 @@ test("the release hold stops every run except a dispatch carrying a coordinator 
 test("nothing applies before the load gate, the serving version, the backup and the counts", () => {
   const [gate, serving, backup, before, apply] = order(
     "Refuse while the pool database is busy",
-    "Record the serving PoolWorker version",
+    "Record the serving version of every Worker the plan updates",
     "Back up the pool database",
     "Count accounts and history before",
     "Apply the reviewed plan",
@@ -61,7 +61,7 @@ test("a failed apply or acceptance rolls PoolWorker back by itself and ends red"
     rollback,
     /steps\.apply\.outcome == 'failure' \|\| steps\.accept\.outcome == 'failure'/u,
   );
-  assert.match(rollback, /rollback --stage production --fqn PoolWorker --to/u);
+  assert.match(rollback, /rollback --stage production --from .local\/release\/serving.json/u);
   assert.match(rollback, /exit 1/u);
   assert.match(rollback, /POLICY_NAME != 'cutover-classes'/u);
   assert.match(step("Apply the reviewed plan"), /continue-on-error: true/u);
@@ -85,4 +85,16 @@ test("the class change states what was verified first and never pretends it can 
   );
   assert.ok(summary! < apply!);
   assert.match(step("Stop on a failed class change"), /cannot be rolled back/u);
+});
+
+test("every production attempt from the backup on leaves a GitHub Deployment with its outcome", async () => {
+  const [record, backup] = order("Record the deployment", "Back up the pool database");
+  assert.ok(record! < backup!);
+  assert.match(step("Record the deployment"), /environment=production/u);
+  assert.match(step("Record the deployment"), /override: \$override/u);
+  const finish = step("Finish the deployment record");
+  assert.match(finish, /always\(\)/u);
+  assert.match(finish, /job\.status == 'success' && 'success' \|\| 'failure'/u);
+  assert.match(workflow, /run-name: ".*override_reason.*Release \(override: \{0\}\)/u);
+  assert.match(step("Stop the line and require a rehearsal"), /OVERRIDE_REASON/u);
 });
