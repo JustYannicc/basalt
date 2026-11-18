@@ -152,10 +152,13 @@ function runStateCommand(
   return result.stdout;
 }
 
-function parsePaths(stdout: string): string[] {
-  const paths = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+const stdoutLines = (stdout: string) => stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+function parsePaths(stdout: string, prefix: string, redact: (text: string) => string): string[] {
+  const paths = stdoutLines(stdout);
   for (const path of paths) {
-    if (!/^[^/\s]+\/[^/\s]+\/.+$/.test(path)) throw new Error("Alchemy returned a malformed remote state path");
+    if (!/^[^/\s]+\/[^/\s]+\/.+$/.test(path) || !path.startsWith(prefix))
+      throw new Error(`Alchemy returned a malformed remote state path: ${JSON.stringify(redact(path).slice(0, 160))}`);
   }
   return paths;
 }
@@ -193,15 +196,17 @@ export function alchemyPreviewStateReader(options: {
         throw new Error("Remote state reads are restricted to PR and rehearsal stages");
       // Callers pass provider credentials only; the CLI still needs this process's PATH and HOME.
       const env = { PATH: process.env.PATH, HOME: process.env.HOME, ...source, ALCHEMY_STAGE: stage, CI: "true" };
-      const listed = runStateCommand(command, [
-        "--log-level", "none", "state", "list", "--recursive", "--config", stateConfig,
-        "--backend", "configured", "--no-input",
-      ], env);
-      const allPaths = parsePaths(listed);
+      const flags = ["--config", stateConfig, "--backend", "configured", "--no-input"];
+      const list = (...args: string[]) => runStateCommand(command, ["--log-level", "none", "state", "list", ...args, ...flags], env);
       const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
       for (const stack of previewStacks(stage)) {
         const prefix = `${stack}/${stage}/`;
-        const paths = allPaths.filter((path) => path.startsWith(prefix)).sort((a, b) => a.localeCompare(b, "en"));
+        // Only this stage's own rows are listed: the stack's stage directories, then this one stage.
+        if (!stdoutLines(list(stack)).includes(prefix)) {
+          stacks[stack] = [];
+          continue;
+        }
+        const paths = parsePaths(list(`${stack}/${stage}`, "--recursive"), prefix, redactor(env)).sort((a, b) => a.localeCompare(b, "en"));
         if (paths.length === 0) {
           stacks[stack] = [];
           continue;

@@ -41,14 +41,16 @@ test("reads exact stage rows and resource values from the configured Alchemy sta
     calls.push(args.join(" "));
     assert.equal(env.ALCHEMY_STAGE, stage);
     assert.equal(env.CI, "true");
-    if (args.includes("list")) return {
-      status: 0,
-      stdout: [
-        ...primary.map((entry) => entry.path),
-        `basalt/${stage}/output`,
-        ...database.map((entry) => entry.path),
-      ].join("\n") + "\n",
-    };
+    if (args.includes("list")) {
+      // Each stack lists its stage directories; only then is the one stage listed recursively.
+      const at = args[args.indexOf("list") + 1];
+      if (at === "basalt") return { status: 0, stdout: `basalt/test-pr-99/\nbasalt/${stage}/\n` };
+      if (at === "basalt-preview-database") return { status: 0, stdout: `basalt-preview-database/${stage}/\n` };
+      if (at === `basalt/${stage}`)
+        return { status: 0, stdout: [...primary.map((entry) => entry.path), `basalt/${stage}/output`].join("\n") + "\n" };
+      if (at === `basalt-preview-database/${stage}`) return { status: 0, stdout: database.map((entry) => entry.path).join("\n") };
+      throw new Error(`unexpected list ${at}`);
+    }
     const requested = args.find((value) => value === `basalt/${stage}` || value === `basalt-preview-database/${stage}`);
     if (requested === `basalt/${stage}`) return {
       status: 0,
@@ -117,7 +119,12 @@ test("a rehearsal reads its own stack name and refuses records from a PR stack",
   const reads: string[] = [];
   const reader = alchemyPreviewStateReader({
     command: (args) => {
-      if (args.includes("list")) return { status: 0, stdout: `${router.path}\n` };
+      if (args.includes("list")) {
+        const at = args[args.indexOf("list") + 1];
+        if (at === "basalt-rehearsal") return { status: 0, stdout: `basalt-rehearsal/${rehearsal}/\n` };
+        if (at === `basalt-rehearsal/${rehearsal}`) return { status: 0, stdout: `${router.path}\n` };
+        return { status: 0, stdout: "" };
+      }
       reads.push(args.find((value) => value.includes("/"))!);
       return { status: 0, stdout: JSON.stringify(router.value) };
     },
@@ -165,4 +172,19 @@ test("the state reader runs the CLI with this process's PATH, and a failure show
     /used \[redacted\]/.test(error.message) && !error.message.includes("fixture-secret-token"));
   assert.equal(seen[0]!.PATH, process.env.PATH);
   assert.equal(seen[0]!.ALCHEMY_STAGE, "test-rehearsal-7");
+});
+
+test("a listing line outside the stage is refused and named, with secrets redacted", async () => {
+  const reader = alchemyPreviewStateReader({
+    environment: { CLOUDFLARE_API_TOKEN: "fixture-secret-token" },
+    command: (args) => {
+      const at = args[args.indexOf("list") + 1];
+      if (at === "basalt") return { status: 0, stdout: `basalt/${stage}/\n` };
+      if (at === `basalt/${stage}`) return { status: 0, stdout: "basalt/production/Router fixture-secret-token\n" };
+      return { status: 0, stdout: "" };
+    },
+  });
+  await assert.rejects(reader.read(stage), (error: Error) =>
+    error.message.includes("malformed remote state path") && error.message.includes("[redacted]") &&
+    !error.message.includes("fixture-secret-token"));
 });
