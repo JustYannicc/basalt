@@ -29,7 +29,7 @@ export interface ControllerHop {
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
 
-type Outcome = "replayed" | "replay_failed" | "retry_advised" | "stream_ended";
+type Outcome = "replayed" | "replay_failed" | "retry_advised" | "surfaced" | "stream_ended";
 
 /** These reads write no request record, choose no account and reserve no usage in the controller. */
 function replayable(request: Request): boolean {
@@ -77,7 +77,7 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
 
 /**
  * The controller may have dispatched any request it received, so only a safe read is sent twice.
- * Everything else gets the native retry advice its client already follows, and a stream that
+ * A model call gets the native retry advice its client already follows, and a stream that
  * started is never replayed: it ends with the native retry terminal instead.
  */
 export async function fetchController(request: Request, hop: ControllerHop): Promise<Response> {
@@ -88,7 +88,10 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
     if (!controllerInstanceEnded(error) || request.signal.aborted) throw error;
     const requestId = crypto.randomUUID();
     if (!replayable(request)) {
-      report(hop, request, requestId, "retry_advised", error);
+      // A control write's callers keep today's unknown-outcome failure; only model clients retry.
+      const model = isPublicModelPath(new URL(request.url).pathname);
+      report(hop, request, requestId, model ? "retry_advised" : "surfaced", error);
+      if (!model) throw error;
       return retryAdvice(request, requestId);
     }
     try {

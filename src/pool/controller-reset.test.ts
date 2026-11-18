@@ -167,7 +167,6 @@ test("requests the controller records, assigns an account to or meters are never
     new Request("https://pool.example/v1/videos", { method: "POST", body: "{}" }),
     new Request("https://pool.example/v1/videos/video_1"),
     new Request("https://pool.example/v1/responses", { headers: { Upgrade: "websocket" } }),
-    new Request("https://pool.example/pool/v1/sign-ins", { method: "POST", body: "{}" }),
   ];
   const observed = observe(context);
   for (const request of recorded) {
@@ -257,4 +256,26 @@ test("unrelated failures and closed clients keep today's behaviour", async (cont
   );
   assert.equal(client.resolved, 1);
   assert.deepEqual((await observed.events()).lines, []);
+});
+
+test("a control write cut before its response keeps today's failure and is never sent twice", async (context) => {
+  const h = harness(context, [
+    async () => {
+      throw reset();
+    },
+  ]);
+  await assert.rejects(
+    fetchController(
+      new Request("https://pool.example/pool/v1/sign-ins", { method: "POST", body: "{}" }),
+      h.hop,
+    ),
+    /no longer active/,
+  );
+  assert.equal(h.resolved, 1);
+  const { lines, sentry } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.method]),
+    [["surfaced", "POST"]],
+  );
+  assert.equal(sentry.length, 1);
 });
