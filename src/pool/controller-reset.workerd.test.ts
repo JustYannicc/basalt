@@ -23,6 +23,9 @@ export class Echo extends DurableObject {
 export default {
   fetch(request, env, ctx) {
     let attempt = 0;
+    const echo = () => env.ECHO.get(env.ECHO.idFromName("echo"));
+    // With this header the first send is the real one, to prove the copy giving up never touches it.
+    if (request.headers.has("x-send-first")) return fetchController(request, { controller: echo, env: {}, defer: (work) => ctx.waitUntil(work), wait: async () => {} });
     return fetchController(request, {
       controller: () =>
         ++attempt === 1
@@ -121,5 +124,15 @@ test(
     assert.equal(advised.status, 503);
     assert.equal(advised.headers.get("Retry-After"), "1");
     assert.equal((await advised.json()).error.type, "api_error");
+    // The copy gives up past 4 MiB, midway through 64 KiB reads; the real send keeps every byte.
+    const whole = streamed(5 * 1024 * 1024);
+    const sent = await mf.dispatchFetch("http://pool/v1/messages", {
+      method: "POST",
+      headers: { "x-send-first": "1" },
+      body: whole.body,
+      duplex: "half",
+    });
+    assert.equal(sent.status, 200);
+    assert.deepEqual(await sent.json(), { size: 5 * 1024 * 1024, digest: whole.digest });
   },
 );

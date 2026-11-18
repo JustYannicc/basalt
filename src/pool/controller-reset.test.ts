@@ -45,6 +45,7 @@ function observe(context: TestContext) {
       return {
         lines: marked("POOL_CONTROLLER_INTERRUPTED"),
         calls: marked("POOL_CONTROLLER_CALL_FAILED"),
+        skipped: marked("POOL_CONTROLLER_HOLD_SKIPPED"),
         logged: JSON.stringify(log.mock.calls),
         sentry,
       };
@@ -473,7 +474,22 @@ test("a held body is dropped as soon as the controller answers", async (context)
     new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
     h.hop,
   );
+  assert.equal(controllerHeldBytes(), 0);
   assert.equal((await response.text()).length, 4096);
+});
+
+test("a reservation whose request never cleaned up stops counting when its window closes", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const h = harness(context, [() => new Promise<Response>(() => {})]);
+  void fetchController(
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
+    h.hop,
+  );
+  while (controllerHeldBytes() === 0) await turn();
+  assert.equal(controllerHeldBytes(), 4096);
+  // Only the clock moves: neither the request's own release nor its timer runs, as when the
+  // platform cancels a request whose client left.
+  context.mock.timers.setTime(1_000_000 + controllerReplayWindowMs);
   assert.equal(controllerHeldBytes(), 0);
 });
 
@@ -505,7 +521,7 @@ test("a held body is dropped when the replay window closes, and the cut gets adv
 });
 
 test("past the isolate's hold budget a call is forwarded unheld, logged and not replayed", async (context) => {
-  const log = context.mock.method(console, "error", () => {});
+  const observed = observe(context);
   const budget = 1024 * 1024;
   let finish!: (response: Response) => void;
   const holding = controllerHop(
@@ -515,7 +531,7 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
           finish = resolve;
         }),
     ],
-    [],
+    observed.deferred,
   );
   holding.hop.holdBudgetBytes = budget;
   const first = fetchController(
@@ -534,7 +550,7 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
         Response.json({})
       ),
     ],
-    [],
+    observed.deferred,
   );
   unheld.hop.holdBudgetBytes = budget;
   const served = await fetchController(
@@ -546,7 +562,7 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
   );
   assert.equal(served.status, 200);
   assert.deepEqual(received, [512 * 1024]);
-  const cut = controllerHop([fails(reset)], []);
+  const cut = controllerHop([fails(reset)], observed.deferred);
   cut.hop.holdBudgetBytes = budget;
   const advised = await fetchController(
     new Request("https://pool.example/v1/messages", {
@@ -560,13 +576,14 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
   finish(Response.json({}));
   await (await first).text();
   assert.equal(controllerHeldBytes(), 0);
-  const marked = (marker: string) =>
-    log.mock.calls
-      .filter((call) => call.arguments[0] === marker)
-      .map((call) => JSON.parse(String(call.arguments[1])));
-  assert.equal(marked("POOL_CONTROLLER_HOLD_SKIPPED").length, 2);
+  const { lines, skipped, sentry } = await observed.events();
   assert.deepEqual(
-    marked("POOL_CONTROLLER_INTERRUPTED").map((line) => [line.outcome, line.reason]),
+    skipped.map((line) => line.count),
+    [1, 1],
+  );
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.reason]),
     [["retry_advised", "hold_budget_full"]],
   );
+  assert.equal(sentry.length, 1);
 });
