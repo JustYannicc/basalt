@@ -56,7 +56,12 @@ function Capacity({
           {group.measured} {group.measured === 1 ? "account's" : "accounts'"}{" "}
           {group.windowLabel.toLowerCase()} limit left
           {group.serving > group.measured && <> · {group.serving - group.measured} not read yet</>}
-          {reset && <> · {reset}</>}
+          {reset && (
+            <>
+              {" · "}
+              <span className="whitespace-nowrap">{reset}</span>
+            </>
+          )}
         </p>
       )}
     </div>

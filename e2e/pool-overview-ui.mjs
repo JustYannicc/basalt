@@ -409,7 +409,7 @@ const program = Effect.gen(function* () {
       );
       checked(
         "an import certificate names the interval it proves",
-        /Import complete \w+ \d+ to \w+ \d+/u.test(pills),
+        /Import complete \d{2}\.\d{2}\.\d{4} to \d{2}\.\d{2}\.\d{4}/u.test(pills),
         true,
       );
       checked(

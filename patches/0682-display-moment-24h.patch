@@ -28,7 +28,7 @@ index 3751f5694..b6c955715 100644
        );
      } catch (error) {
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
-index 1bda47a1d..cc4c98326 100644
+index 1bda47a1d..909c982fb 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
 @@ -10,7 +10,7 @@ import { LocalTime } from "@executor-js/ui/components/local-time";
@@ -40,12 +40,15 @@ index 1bda47a1d..cc4c98326 100644
  import {
    capInput,
    capText,
-@@ -127,7 +127,7 @@ export function CapSummary({
+@@ -127,7 +127,10 @@ export function CapSummary({
          ) : (
            `${format.credits(cap.remaining)} left`
          )}{" "}
 -        · resets <LocalTime value={cap.resetAt} options={resetDay} title={resetMoment} />
-+        · resets <LocalTime value={cap.resetAt} options={resetMoment} />
++        ·{" "}
++        <span className="whitespace-nowrap">
++          resets <LocalTime value={cap.resetAt} options={resetMoment} />
++        </span>
        </span>
      </>
    );
@@ -71,28 +74,35 @@ index c6279f105..d8af7b21e 100644
    minute: "2-digit",
    timeZoneName: "short",
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index 0c621d472..ade75a59f 100644
+index 0c621d472..68fc32c50 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
-@@ -238,6 +238,39 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -238,6 +238,53 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
                "image/png",
                yield* browser.use("Capture the account list", (page) => page.screenshot()),
              );
 +            if (scheme === "light") {
-+              // Phones have no hover: the countdown and its exact moment are visible text that
-+              // fits the cell, and the page writes no 12-hour time anywhere.
++              // Phones have no hover: each countdown and its exact moment are visible text that
++              // stays inside its own cell, and the page writes no 12-hour or month-first date.
 +              const shown = yield* browser.use(`Read the visible resets at ${width}px`, (page) =>
 +                Promise.all([
-+                  cell(page, "Studio", "seven_day")
-+                    .locator("[data-reset]")
-+                    .evaluate((element) => ({
-+                      text: (element as HTMLElement).innerText,
-+                      title: element.getAttribute("title"),
-+                      clipped: element.scrollWidth > element.clientWidth,
-+                      outside:
-+                        element.getBoundingClientRect().right >
-+                        document.documentElement.clientWidth,
-+                    })),
++                  block(page, "Studio")
++                    .locator("[data-reading]")
++                    .evaluateAll((cells) =>
++                      cells.map((element) => {
++                        const reset = element.querySelector("[data-reset]");
++                        const own = reset?.getBoundingClientRect();
++                        const box = element.getBoundingClientRect();
++                        return {
++                          text: reset instanceof HTMLElement ? reset.innerText : null,
++                          title: reset?.getAttribute("title") ?? null,
++                          inside:
++                            own !== undefined &&
++                            own.left >= box.left - 0.5 &&
++                            own.right <= box.right + 0.5,
++                        };
++                      }),
++                    ),
 +                  page.evaluate(
 +                    () =>
 +                      document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -100,21 +110,28 @@ index 0c621d472..ade75a59f 100644
 +                  page.locator("body").innerText(),
 +                ]),
 +              );
-+              expect(shown[0].text, `${width}px`).toMatch(
-+                /^in 4 days · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/,
-+              );
-+              expect(shown[0], `${width}px`).toMatchObject({
-+                title: null,
-+                clipped: false,
-+                outside: false,
-+              });
++              expect(shown[0], `${width}px`).toEqual([
++                {
++                  text: expect.stringMatching(
++                    /^in [12] h \d+ min · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/,
++                  ),
++                  title: null,
++                  inside: true,
++                },
++                {
++                  text: expect.stringMatching(/^in 4 days · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/),
++                  title: null,
++                  inside: true,
++                },
++              ]);
 +              expect(shown[1], `no sideways scroll at ${width}px`).toBe(false);
 +              expect(shown[2], `${width}px`).not.toMatch(/\d\s?(AM|PM)\b/);
++              expect(shown[2], `${width}px`).not.toMatch(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/);
 +            }
              for (const [label, file] of [
                ["Work mail", "work-mail"],
                ["Optional usage", "optional-usage"],
-@@ -349,10 +382,12 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -349,10 +396,12 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
          expect([spareCells[0]?.state, spareCells[0]?.value]).toEqual(["bad", "Rem 8% · Low"]);
          const fills = new Set([studioCells[0]?.fill, studioCells[1]?.fill, spareCells[0]?.fill]);
          expect(fills.size, "green, amber and red are distinct fills").toBe(3);
@@ -131,7 +148,7 @@ index 0c621d472..ade75a59f 100644
          // Stale only when stale: fresh cells name no age and keep their color.
          expect(
            [...studioCells, ...spareCells].every((entry) => !entry.stale && entry.age === null),
-@@ -384,6 +419,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -384,6 +433,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
            (page) => block(page, "Spare").locator("[data-observation-details]").innerText(),
          );
          expect(spareExpiry.match(/Expires /g)?.length, spareExpiry).toBe(2);
@@ -232,7 +249,7 @@ index 3c840cd60..a382511eb 100644
      </>
    );
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-index 963e52fa2..1115b65a8 100644
+index 963e52fa2..d3ef0ce5c 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
 @@ -8,6 +8,9 @@
@@ -298,7 +315,7 @@ index 963e52fa2..1115b65a8 100644
  
  const currencies = new Set(Intl.supportedValuesOf("currency"));
  const isCurrency = (unit: string) => currencies.has(unit);
-@@ -261,25 +237,21 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+@@ -261,25 +237,22 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
    };
  }
  
@@ -308,10 +325,12 @@ index 963e52fa2..1115b65a8 100644
 + * exact moment is part of the text, so a phone, which has no hover, shows it too.
 + */
  function windowTiming(entry: Window, now: number, format: DisplayFormat) {
-   if (entry.resetsAt !== undefined) {
+-  if (entry.resetsAt !== undefined) {
 -    const at = Date.parse(entry.resetsAt);
 -    const when = moment(entry.resetsAt, now, format);
 -    if (at <= now)
++  // An unreadable time is a reset not reported, never "in NaN days" on a row.
++  if (entry.resetsAt !== undefined && Number.isFinite(Date.parse(entry.resetsAt))) {
 +    if (Date.parse(entry.resetsAt) <= now) {
 +      const when = moment(entry.resetsAt, format);
        return {
@@ -333,7 +352,7 @@ index 963e52fa2..1115b65a8 100644
    }
    const length = entry.period === undefined ? undefined : periodSpan(entry.period);
    if (entry.period?.mode === "rolling")
-@@ -295,14 +267,15 @@ function windowTiming(entry: Window, now: number, format: DisplayFormat) {
+@@ -295,14 +268,15 @@ function windowTiming(entry: Window, now: number, format: DisplayFormat) {
   * A missing expiry is unknown, never a promise that the balance lasts.
   */
  export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
@@ -478,7 +497,7 @@ index 000000000..2fd84e704
 +    .join(" ");
 +};
 diff --git a/packages/ui/src/implementation/hooks/display-format.ts b/packages/ui/src/implementation/hooks/display-format.ts
-index a0633465c..871eb48dd 100644
+index a0633465c..0cad5bcaf 100644
 --- a/packages/ui/src/implementation/hooks/display-format.ts
 +++ b/packages/ui/src/implementation/hooks/display-format.ts
 @@ -22,12 +22,11 @@ export function useDisplayFormat(): DisplayFormat {
@@ -492,8 +511,8 @@ index a0633465c..871eb48dd 100644
 -  options?: Intl.DateTimeFormatOptions,
 -) => new Date(value).toLocaleString(format.locale, { timeZone: format.timeZone, ...options });
 +/**
-+ * Format a moment with explicit parts; the default is a full date and time. Every screen writes
-+ * day-month-year on a 24-hour clock in the reader's time zone; the shared module owns that shape.
++ * A moment in the reader's time zone, always day-month-year on a 24-hour clock: options choose
++ * only which parts show, and the default is the date and time. The shared module owns the shape.
 + */
 +export { formatMoment } from "../dashboard/moment-format.ts";
  

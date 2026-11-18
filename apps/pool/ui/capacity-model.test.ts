@@ -809,9 +809,9 @@ test("allowance rows show source, check age and expiry without changing the read
         accounts: 2,
         basis: "Plan dataset",
         detail: null,
-        checked: "Checked Thu 29 Oct UTC, 4 days old",
-        expires: "Expires Thu 12 Nov UTC",
-        retrieved: "Retrieved Sun 1 Nov 23:30 UTC",
+        checked: "Checked 29.10.2026 UTC, 4 days old",
+        expires: "Expires 12.11.2026 UTC",
+        retrieved: "Retrieved 01.11.2026 23:30 UTC",
         sources: [
           { label: "example.test/plans", href: "https://example.test/plans?x=1" },
           { label: "urn:example:usage", href: null },
@@ -841,7 +841,7 @@ test("allowance rows show source, check age and expiry without changing the read
   );
   assert.equal(
     allowanceRows(snapshot, start + 11 * 24 * hourMs)[0]!.expires,
-    "Expired Thu 12 Nov UTC",
+    "Expired 12.11.2026 UTC",
   );
   assert.deepEqual(snapshot, before);
 });

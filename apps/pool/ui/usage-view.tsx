@@ -336,7 +336,13 @@ function CapLine({ cap, now }: { cap: Cap; now: number }) {
           <span className={out ? "font-medium text-destructive" : "font-medium text-foreground"}>
             {credits(cap.remaining)}
           </span>{" "}
-          of {credits(cap.weekly)} left{reset && <> · {reset}</>}
+          of {credits(cap.weekly)} left
+          {reset && (
+            <>
+              {" · "}
+              <span className="whitespace-nowrap">{reset}</span>
+            </>
+          )}
         </span>
       </div>
       <div

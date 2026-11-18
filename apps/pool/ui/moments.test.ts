@@ -70,7 +70,7 @@ test("midnight reads 00:00, summer time follows the zone and an explicit zone wi
   );
 });
 
-// The r4 sample clock: 18.11.2026 21:30 in Zurich.
+// A fixed clock: 18.11.2026 21:30 in Zurich.
 const now = Date.parse("2026-11-18T20:30:00Z");
 const weekly = {
   id: "seven_day",
