@@ -4,9 +4,14 @@ import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { ControllerCode, type SlotTarget } from "../../../src/pool/runtime-slots/contract.ts";
 import {
   LaunchAuthorization,
+  RestartAuthorization,
+  RestartRuntimeAttestation,
+  StartupWitness,
   UnattestedActive,
   runtimeAttestationFormat,
 } from "../../../src/pool/runtime-slots/admission-proof.ts";
+import { providerDigest } from "../../../src/pool/runtime-provider/canonical.ts";
+import { launchGenerationHeader, launchTokenHashHeader } from "../../../src/pool/runtime-health.ts";
 import {
   configurationDigest,
   runtimeConfiguration,
@@ -15,10 +20,16 @@ import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/han
 import { RuntimeHandoff } from "../../../src/pool/runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "../../../src/pool/runtime-slots/http.ts";
 import { RuntimeWitnessStore } from "../../../src/pool/runtime-slots/witness-store.ts";
+import {
+  RuntimeSlotStorage,
+  nativeMembershipKey,
+  slotSelectionKey,
+} from "../../../src/pool/runtime-slots/storage.ts";
+import { policyHealthHeader } from "../../../src/pool/runtime-health.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
 
 const Command = Schema.Struct({
-  action: Schema.Literals(["inspect", "fleet-inspect", "witness"]),
+  action: Schema.Literals(["inspect", "active-health", "fleet-inspect", "witness"]),
   controllerCode: ControllerCode,
   target: Schema.optional(Schema.Unknown),
   at: Schema.Number,
@@ -48,9 +59,41 @@ export function activatedReceipt(workers: readonly string[], containerVersion: n
   };
 }
 
+/** Production's membership shape when adopt ran: six dirty pools with no accounts and one clean. */
+export function adoptedMemberships(now: number) {
+  const rows = Array.from({ length: 7 }, (_, index) => {
+    const clean = index === 3;
+    return {
+      pool: `pool-${index}`,
+      organization: `organization-${index}`,
+      revision: index + 1,
+      expiresAt: clean ? now + 600_000 : now - 1,
+      accounts: clean ? ["account-a"] : [],
+      dirty: !clean,
+      native: true,
+    };
+  });
+  return Object.fromEntries(rows.map((row) => [row.pool, row]));
+}
+
+/** The sorted policy revisions a selection proof binds, as adopt and recovery both derive them. */
+const revisions = (snapshot: Awaited<ReturnType<RuntimeSlotStorage["inspect"]>>) =>
+  [
+    ...snapshot.policies.map((row) => ({ ...row, retired: false })),
+    ...snapshot.denials.map((row) => ({ ...row, retired: true })),
+  ]
+    .map(({ pool, organization, revision, retired }) => ({
+      pool,
+      organization,
+      revision,
+      retired,
+    }))
+    .sort((left, right) => left.pool.localeCompare(right.pool));
+
 /**
- * The live controller's handoff for settlement reads. Inspect and fleet reads are knobs; the
- * witness read goes through the real handoff over a slot store that tests may retain records in.
+ * The live controller's handoff for settlement reads. Fleet reads are knobs. Witness reads, and with
+ * `realReads` set inspect and active-health too, go through the real handoff over a slot store that
+ * tests may retain records and a selection in.
  */
 export function settlementController(input: {
   controllerId: string;
@@ -86,9 +129,26 @@ export function settlementController(input: {
         destroy: async () => {},
         monitor: async () => {},
         setInactivityTimeout: async () => {},
+        // Only a selected runtime's health read reaches the container.
         getTcpPort: () => ({
-          fetch: async () => {
-            throw new Error("A witness read never reaches the container");
+          fetch: async (url: string) => {
+            if (new URL(url).pathname !== "/ready")
+              throw new Error("A settlement read never reaches the container otherwise");
+            return Response.json(
+              { boot_id: knobs.bootId, started_at: "baseline-started" },
+              {
+                headers: {
+                  [policyHealthHeader]: "1500",
+                  // A launched boot reports its launch, which the handoff joins to the witness.
+                  ...(knobs.launch
+                    ? {
+                        [launchGenerationHeader]: String(knobs.launch.generation),
+                        [launchTokenHashHeader]: knobs.launch.tokenHash,
+                      }
+                    : {}),
+                },
+              },
+            );
           },
         }),
       },
@@ -102,27 +162,43 @@ export function settlementController(input: {
   const live = (request: Request) => handleRuntimeHandoff(request, handoff, input.code, input.key);
   const knobs: {
     selectionAt?: "first" | "final";
+    realReads?: boolean;
+    bootId: string;
+    launch?: { generation: number; tokenHash: string };
     fleet: Record<string, unknown>;
     fleetResponse?: () => Response;
-    finalInspect?: () => Response;
-    witness?: () => Response;
-  } = { fleet: { resources: [], bindings: [] } };
+    firstInspect?: (live: () => Promise<Response>) => Response | Promise<Response>;
+    finalInspect?: (live: () => Promise<Response>) => Response | Promise<Response>;
+    activeHealth?: (live: () => Promise<Response>) => Response | Promise<Response>;
+    witness?: (live: () => Promise<Response>) => Response | Promise<Response>;
+  } = { bootId: "baseline-boot", fleet: { resources: [], bindings: [] } };
   return Object.assign(knobs, {
     storage,
     live,
     /** Writes a witness record through the real store, as `admit` does before adoption commits. */
-    async retain(kind: "start" | "unattested-active", target: SlotTarget) {
+    async retain(
+      kind: "start" | "unattested-active",
+      target: SlotTarget,
+      options: {
+        operationId?: string;
+        selection?: { policyDigest: string; revisions: readonly unknown[] };
+      } = {},
+    ) {
       const configuration = runtimeConfiguration(env);
       const unattested = kind === "unattested-active";
       const authorization = Schema.decodeUnknownSync(Authorization)({
         format: runtimeAttestationFormat,
         kind,
-        operationId: "adopt-retained",
+        operationId: options.operationId ?? "adopt-retained",
         manifestDigest: "e".repeat(64),
         controllerCode: input.code,
         target,
         configurationFingerprint: await configurationDigest(configuration),
-        selection: { expectedEpoch: 0, active: null, policyDigest: "6".repeat(64), revisions: [] },
+        selection: {
+          expectedEpoch: 0,
+          active: null,
+          ...(options.selection ?? { policyDigest: "6".repeat(64), revisions: [] }),
+        },
         provider: {
           accountId: "1".repeat(32),
           namespaceId: "namespace",
@@ -144,6 +220,108 @@ export function settlementController(input: {
         unattested ? { ...target, bootId: "baseline-boot" } : undefined,
       );
     },
+    /**
+     * The state a committed adopt leaves: the retained unattested witness, bound to the policy
+     * snapshot it saw, and the legacy root selected at epoch 1.
+     */
+    async adopt(target: SlotTarget, operationId: string) {
+      await storage.put(nativeMembershipKey, adoptedMemberships(Date.now()));
+      const snapshot = await new RuntimeSlotStorage(state).inspect();
+      await this.retain("unattested-active", target, {
+        operationId,
+        selection: { policyDigest: snapshot.digest, revisions: revisions(snapshot) },
+      });
+      const identity = { ...target, bootId: "baseline-boot" };
+      await storage.put(slotSelectionKey, {
+        epoch: 1,
+        active: { target, identity, fenced: false },
+      });
+      knobs.realReads = true;
+    },
+    /**
+     * What selected-runtime recovery leaves once it restarted the selected root onto `bootId`: the
+     * restart grant and its attested launch in the real witness store, under recovery's own
+     * operation and manifest digests, and the selection committed at the next epoch.
+     */
+    async restart(bootId: string) {
+      const snapshot = await new RuntimeSlotStorage(state).inspect();
+      const selection = snapshot.selection!;
+      const previous = selection.active.identity!;
+      const { target } = selection.active;
+      const store = new RuntimeWitnessStore(state, input.key);
+      const { record } = await store.read(target);
+      const { configurationFingerprint } = record.authorization;
+      const operationId = `restart-${(await providerDigest(previous)).slice(0, 48)}`;
+      const manifestDigest = await providerDigest({
+        operationId,
+        previous,
+        fingerprint: configurationFingerprint,
+      });
+      const provider = {
+        accountId: "1".repeat(32),
+        namespaceId: "namespace",
+        applicationId: target.applicationId,
+        applicationVersion: target.applicationVersion,
+        imageDigest: target.imageDigest,
+        applicationConfigDigest: "5".repeat(64),
+        observationDigest: "4".repeat(64),
+        observedAt: 1,
+      };
+      const authorization = Schema.decodeUnknownSync(RestartAuthorization)({
+        format: runtimeAttestationFormat,
+        kind: "restart",
+        operationId,
+        manifestDigest,
+        controllerCode: input.code,
+        target,
+        configurationFingerprint,
+        selection: {
+          expectedEpoch: selection.epoch,
+          active: previous,
+          policyDigest: snapshot.digest,
+          revisions: revisions(snapshot),
+        },
+        previous,
+        provider,
+        at: 1,
+        expiresAt: 2,
+      });
+      const launch = {
+        operationId: "00000000-0000-4000-8000-00000000000" + String(selection.epoch % 10),
+        generation: selection.epoch,
+        tokenHash: "3".repeat(64),
+      };
+      const witness = Schema.decodeUnknownSync(StartupWitness)({
+        operationId,
+        manifestDigest,
+        target,
+        configurationFingerprint,
+        launch,
+        bootId,
+      });
+      const attestation = Schema.decodeUnknownSync(RestartRuntimeAttestation)({
+        ...authorization,
+        kind: "restart-attested",
+        provider: { ...provider, instanceId: target.instanceId },
+        launch,
+        bootId,
+      });
+      const identity = { ...target, bootId };
+      await store.put(target, {
+        authorization,
+        sealed: record.sealed,
+        identity,
+        witness,
+        attestation,
+      });
+      await storage.put(slotSelectionKey, {
+        ...selection,
+        epoch: selection.epoch + 1,
+        active: { ...selection.active, identity },
+      });
+      knobs.bootId = bootId;
+      knobs.launch = launch;
+    },
     async handle(request: Request) {
       const forwarded = request.clone();
       const body = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
@@ -157,9 +335,13 @@ export function settlementController(input: {
       if (canonical(command.controllerCode) !== canonical(input.code)) return live(forwarded);
       if (command.action === "fleet-inspect")
         return knobs.fleetResponse?.() ?? Response.json({ result: knobs.fleet });
-      if (command.action === "witness") return knobs.witness?.() ?? live(forwarded);
+      const real = () => live(forwarded);
+      if (command.action === "witness") return knobs.witness?.(real) ?? real();
+      if (command.action === "active-health") return knobs.activeHealth?.(real) ?? real();
       inspections++;
-      if (inspections > 1 && knobs.finalInspect) return knobs.finalInspect();
+      if (inspections === 1 && knobs.firstInspect) return knobs.firstInspect(real);
+      if (inspections > 1 && knobs.finalInspect) return knobs.finalInspect(real);
+      if (knobs.realReads) return real();
       const selected =
         (knobs.selectionAt === "first" && inspections === 1) ||
         (knobs.selectionAt === "final" && inspections > 1);

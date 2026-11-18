@@ -10,6 +10,14 @@ type Disposition = (typeof ReleaseSettlementPlanRequest.Type)["disposition"];
 export const controllerActiveFixture = (context: TestContext) =>
   releaseSettlementFixture(context, { controllerActive: true });
 
+/** The source after its adopt committed the legacy root, as production's observe found it. */
+export const controllerAdoptedFixture = (context: TestContext) =>
+  releaseSettlementFixture(context, { controllerActive: true, adopted: true });
+
+/** That adopted root after selected-runtime recovery restarted it twice, as production later found it. */
+export const controllerRecoveredFixture = (context: TestContext) =>
+  releaseSettlementFixture(context, { controllerActive: true, adopted: true, recovered: true });
+
 /** The never-adopted legacy slot the fixture's source controller would retain. */
 export const fixtureAdoptionTarget = {
   format: "pool-runtime-slot-v1",
@@ -37,7 +45,9 @@ export const planSettlement = (
           coordinatorGo: "read-only-plan",
           expiresAt: Date.now() + 60_000,
           ...(disposition === "omitted" ? {} : { disposition }),
-          ...(disposition === "controller-active-unadopted" && f.sourceController
+          ...((disposition === "controller-active-unadopted" ||
+            disposition === "controller-active-adopted") &&
+          f.sourceController
             ? { sourceController: f.sourceController }
             : {}),
         },

@@ -3,6 +3,7 @@ import {
   PromotionIntent,
   PromotionReceipt,
   SlotRefused,
+  type PromotionRefusal,
   sameIdentity,
   sameIntent,
   sameControllerCode,
@@ -21,6 +22,13 @@ interface Dependencies {
   driver: SlotDriver;
   beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
 }
+// A fixed vocabulary only: receipts are readable through the handoff receipt command.
+const refusalReason = (error: unknown): PromotionRefusal =>
+  error instanceof SlotRefused
+    ? error.reason
+    : error instanceof DOMException && error.name === "TimeoutError"
+      ? "timeout"
+      : "unclassified";
 const revisions = (snapshot: SlotSnapshot) =>
   [...snapshot.policies, ...snapshot.denials]
     .sort((left, right) => left.pool.localeCompare(right.pool))
@@ -66,13 +74,14 @@ export class SlotPromotion {
     });
     // A started receipt after eviction is inspection-only, even when no selection changed.
     if (!started.snapshot) return started.receipt;
+    let proof: Awaited<ReturnType<typeof proveSlot>>;
     try {
-      const proof = await proveSlot(
-        this.deps.driver,
-        intent.candidate,
-        started.snapshot,
-        this.clock,
-      );
+      proof = await proveSlot(this.deps.driver, intent.candidate, started.snapshot, this.clock);
+    } catch (error) {
+      // No selection write was attempted, so a failed proof is a settled refusal a new attempt can follow.
+      return this.refuse(key, refusalReason(error));
+    }
+    try {
       return await this.deps.storage.transact(async (snapshot, transaction) => {
         verify?.();
         this.eligible(snapshot, intent);
@@ -97,17 +106,19 @@ export class SlotPromotion {
       // A failed commit may have succeeded. Never overwrite its durable result.
       const retained = await this.deps.storage.receipt(intent.operationId);
       if (retained?.status === "promoted") return retained;
-      if (error instanceof SlotRefused) {
-        return this.deps.storage.transact(async (_, transaction) => {
-          const retained = Schema.decodeUnknownSync(PromotionReceipt)(await transaction.get(key));
-          if (retained.status !== "started") return retained;
-          const refused: PromotionReceipt = { ...retained, status: "refused" };
-          await transaction.put(key, refused);
-          return refused;
-        });
-      }
+      if (error instanceof SlotRefused) return this.refuse(key, error.reason);
       throw error;
     }
+  }
+
+  private refuse(key: string, reason: PromotionRefusal) {
+    return this.deps.storage.transact(async (_, transaction) => {
+      const retained = Schema.decodeUnknownSync(PromotionReceipt)(await transaction.get(key));
+      if (retained.status !== "started") return retained;
+      const refused: PromotionReceipt = { ...retained, status: "refused", reason };
+      await transaction.put(key, refused);
+      return refused;
+    });
   }
 
   private eligible(snapshot: SlotSnapshot, intent: PromotionIntent) {
