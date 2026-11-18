@@ -128,24 +128,21 @@ export async function readyAfterAdoption(
 ): Promise<RuntimeReady> {
   const { signal } = options;
   for (;;) {
-    let last: ReadinessResponseError;
-    try {
-      return await bounded(connection.ready(signal), signal);
-    } catch (error) {
-      if (!(error instanceof ReadinessResponseError) || ![503, 409].includes(error.status))
-        throw error;
-      last = error;
-    }
+    const answer = await bounded(connection.ready(signal), signal).catch((error: unknown) => {
+      if (error instanceof ReadinessResponseError && [503, 409].includes(error.status))
+        return error;
+      throw error;
+    });
+    if (!(answer instanceof ReadinessResponseError)) return answer;
     // Says which side refused: an object still on the old code, or the runtime behind a new one.
     // One slow answer may not use up the wait, so it gets no longer than a pause.
-    const adoption = await withinDeadline(
-      connection.adoption?.(signal) ?? Promise.resolve(undefined),
-      readinessRetryMs,
-    ).catch(() => undefined);
+    const adoption = connection.adoption
+      ? await withinDeadline(connection.adoption(signal), readinessRetryMs).catch(() => undefined)
+      : undefined;
     options.refused({
-      status: last.status,
-      ...(last.outcome ? { outcome: last.outcome } : {}),
-      ...(last.stage ? { stage: last.stage } : {}),
+      status: answer.status,
+      ...(answer.outcome ? { outcome: answer.outcome } : {}),
+      ...(answer.stage ? { stage: answer.stage } : {}),
       ...(adoption
         ? {
             adopted: adoption.adopted,
@@ -156,7 +153,8 @@ export async function readyAfterAdoption(
     try {
       await options.pause(signal);
     } catch {
-      throw last;
+      // The deadline ended the wait: the refusal is the failure, not the abort.
+      throw answer;
     }
   }
 }
