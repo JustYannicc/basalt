@@ -61,7 +61,13 @@ export function nativeHooks(context: Context): NativeHooks {
   const readBack = async (label: string): Promise<NativeReadBack> => {
     const script = await poolWorker();
     const settings = (await cf(`/workers/scripts/${encodeURIComponent(script)}/settings`)) as {
-      bindings?: { name: string; type: string; class_name?: string; script_name?: string }[];
+      bindings?: {
+        name: string;
+        type: string;
+        class_name?: string;
+        script_name?: string;
+        text?: string;
+      }[];
     };
     const namespaces: { id: string; class: string; script?: string }[] = [];
     for (let page = 1; page < 20; page += 1) {
@@ -94,6 +100,16 @@ export function nativeHooks(context: Context): NativeHooks {
         })),
       namespaces: own.map((namespace) => namespace.class).sort(),
       applications: [],
+      // Only the identity bindings a pin or check needs; never secrets.
+      plainText: Object.fromEntries(
+        (settings.bindings ?? [])
+          .filter(
+            (binding) =>
+              binding.type === "plain_text" &&
+              /^POOL_IMAGE_HASH$|_APPLICATION_ID$/u.test(binding.name),
+          )
+          .map((binding) => [binding.name, binding.text ?? ""]),
+      ),
     };
     for (const application of ownApplications) {
       const detail = await cf(`/containers/applications/${application.id}`);

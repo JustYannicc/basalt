@@ -14,6 +14,8 @@ export type NativeReadBack = {
     shape: unknown;
     instancesShape?: unknown;
   }[];
+  /** Plain-text identity bindings (POOL_IMAGE_HASH, application ids); never secret values. */
+  plainText?: Record<string, string>;
 };
 
 export interface NativeHooks {

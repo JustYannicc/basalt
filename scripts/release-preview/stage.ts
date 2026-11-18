@@ -73,8 +73,9 @@ async function runEntry(
         config.stage,
         "--config",
         "alchemy.run.ts",
-        "--include",
-        "PoolWorker",
+        // The cutover's own allow-list, include and wire rules, exactly as production will run it.
+        "--policy",
+        join(root, "scripts/release/policies/cutover-classes.json"),
       ],
       {
         cwd: cloud,
@@ -111,6 +112,19 @@ async function runEntry(
   return { record, highlights: planHighlights(redact(text)) };
 }
 
+/**
+ * The stage's legacy-root pin, read the way production's preflight reads it: the root application's
+ * image by digest, and the build input PoolWorker already knows it by (`POOL_IMAGE_HASH`).
+ */
+async function rootPin(hooks: ReturnType<typeof nativeHooks>) {
+  const { blue: image } = await hooks.fleetImages();
+  const read = await hooks.readBack("root-pin");
+  const input = read.plainText?.POOL_IMAGE_HASH;
+  if (!input || !/^[a-f0-9]{16}$/u.test(input))
+    throw new Error("PoolWorker has no 16-hex POOL_IMAGE_HASH to pin the root by");
+  return JSON.stringify({ image, input });
+}
+
 export async function runStageMode(mode: StageMode, lane: number, source = process.env) {
   if (source.GITHUB_ACTIONS !== "true")
     throw new Error("Standing stages run only in GitHub Actions");
@@ -137,14 +151,33 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     requireBaselineShape(read);
     result.readBack = read;
   } else if (mode === "plan") {
-    result.plan = await runEntry("plan", subject, source, declaration.cutover, outputs);
+    result.plan = await runEntry(
+      "plan",
+      subject,
+      source,
+      { ...declaration.cutover, POOL_ROOT_IMAGE: await rootPin(hooks) },
+      outputs,
+    );
   } else if (mode === "apply") {
     result.before = await hooks.readBack("before-apply");
-    result.apply = await runEntry("deploy", subject, source, declaration.cutover, outputs);
+    const pin = await rootPin(hooks);
+    result.apply = await runEntry(
+      "deploy",
+      subject,
+      source,
+      { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
+      outputs,
+    );
     const after = await hooks.readBack("cutover");
     requireCutoverShape(after);
     result.after = after;
-    result.replan = await runEntry("plan", subject, source, declaration.cutover, outputs);
+    result.replan = await runEntry(
+      "plan",
+      subject,
+      source,
+      { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
+      outputs,
+    );
   } else if (mode === "destroy") {
     await destroyStage(root, subject, source);
     await verifyStageAbsent(root, subject, source);

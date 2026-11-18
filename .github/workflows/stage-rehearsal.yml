@@ -23,7 +23,7 @@ jobs:
     concurrency:
       group: stage-rehearsal-lane-${{ endsWith(github.event.label.name, '-2') && '2' || endsWith(github.event.label.name, '-3') && '3' || '1' }}
       cancel-in-progress: false
-    # The box runners when BASALT_REHEARSAL_RUNNER=boat-large; hosted when it is unset.
+    # The owner's box (BASALT_REHEARSAL_RUNNER=basalt-box); hosted when it is unset.
     runs-on: ${{ vars.BASALT_REHEARSAL_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 90
     env:
