@@ -51,6 +51,24 @@ export {
   type RemoteOptions,
 } from "./wire.ts";
 
+const refusalLimit = 120;
+/**
+ * A remote's refusal text as it may be logged and shown: printable ASCII on one line, capped, with
+ * any word that could name a path, ref, address or credential redacted.
+ */
+const refusal = (text: string) => {
+  const reason =
+    text
+      .replace(/[^\x21-\x7e]+/g, " ")
+      .trim()
+      .split(" ")
+      .map((word) =>
+        /[/\\@]|\w\.\w/.test(word) || (word.length >= 32 && /\d/.test(word)) ? "[redacted]" : word,
+      )
+      .join(" ") || "unspecified";
+  return reason.length > refusalLimit ? `${reason.slice(0, refusalLimit - 3)}...` : reason;
+};
+
 export function createGitRemote(options: RemoteOptions) {
   let url: URL;
   try {
@@ -142,6 +160,7 @@ export function createGitRemote(options: RemoteOptions) {
     async refs(): Promise<Record<string, string>> {
       return { ...(await receiveAdvertisement()).refs };
     },
+    /** A refused ref maps to its bounded refusal reason; only the status word decides `applied`. */
     async push(input: { updates: readonly RefUpdate[]; objects: readonly GitObject[] }): Promise<{
       applied: boolean;
       results: Record<string, "ok" | string>;
@@ -176,6 +195,7 @@ export function createGitRemote(options: RemoteOptions) {
       if (lines.shift() !== "unpack ok")
         throw new ProtocolError("Git remote could not unpack push");
       const results: Record<string, string> = Object.create(null);
+      let refused = false;
       for (const line of lines) {
         const match = /^(ok|ng) ([^ ]+)(?: (.+))?$/.exec(line);
         if (
@@ -185,14 +205,12 @@ export function createGitRemote(options: RemoteOptions) {
           (match[1] === "ng" && !match[3])
         )
           throw new ProtocolError("Malformed push status");
-        results[match[2]!] = match[1] === "ok" ? "ok" : match[3]!;
+        refused ||= match[1] === "ng";
+        results[match[2]!] = match[1] === "ok" ? "ok" : refusal(match[3]!);
       }
       if (Object.keys(results).length !== updates.length)
         throw new ProtocolError("Missing push status");
-      return {
-        applied: Object.values(results).every((result) => result === "ok"),
-        results: { ...results },
-      };
+      return { applied: !refused, results: { ...results } };
     },
     /** A sink streams objects into storage and returns an empty array; without it, replies are capped. */
     async fetchObjects(

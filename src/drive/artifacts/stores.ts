@@ -17,6 +17,7 @@ import type {
 /** What a vault needs from its Artifacts repository: Git smart HTTP plus a by-id blob read. */
 export interface VaultRepository {
   refs(): Promise<Record<string, string>>;
+  /** Each ref's result is "ok" or the remote's bounded, sanitized refusal reason. */
   push(input: {
     updates: ReadonlyArray<{ ref: string; old: string | null; next: string }>;
     objects: ReadonlyArray<GitObject>;
@@ -164,14 +165,16 @@ export function createArtifactsStores(input: {
   };
   /**
    * Push one ref. Any refusal, in any wording, counts as a lost compare-and-swap: the caller merges
-   * again from the remote main and keeps the work on its branch. Nothing is ever forced.
+   * again from the remote main and keeps the work on its branch. Nothing is ever forced. The
+   * remote's bounded reason is logged and returned, so a limit or permission refusal is not
+   * mistaken for a race.
    */
   const pushRef = async (
     transaction: RefTransaction,
     ref: string,
     old: string | null,
     next: string,
-  ) => {
+  ): Promise<{ landed: boolean; refused?: string }> => {
     const sent = unpushed(next);
     storage.transactionSync(() =>
       sql.exec(
@@ -181,17 +184,24 @@ export function createArtifactsStores(input: {
         JSON.stringify(transaction),
       ),
     );
-    let accepted: boolean;
+    let result: Awaited<ReturnType<VaultRepository["push"]>>;
     try {
-      const result = await repository.push({ updates: [{ ref, old, next }], objects: sent });
-      accepted = result.applied && result.results[ref] === "ok";
+      result = await repository.push({ updates: [{ ref, old, next }], objects: sent });
     } catch {
       // A lost reply or a report we can't read: the remote ref is the only truth.
-      return (await settle()) === true;
+      return { landed: (await settle()) === true };
     }
-    if (accepted) pushed(sent);
-    else clearIntent();
-    return accepted;
+    if (result.applied && result.results[ref] === "ok") {
+      pushed(sent);
+      return { landed: true };
+    }
+    clearIntent();
+    const refused = result.results[ref] ?? "unspecified";
+    console.warn(
+      "VAULT_PUSH_REFUSED " +
+        JSON.stringify({ ref: ref === main ? "main" : "conflict", reason: refused }),
+    );
+    return { landed: false, refused };
   };
   const setLocal = (ref: string, oid: string) =>
     storage.transactionSync(() =>
@@ -224,9 +234,10 @@ export function createArtifactsStores(input: {
       ) as Record<string, string | null>;
       if (transaction.changes.some((change) => current[change.ref] !== change.expected))
         return { applied: false, current };
-      const lost = async () => ({
-        applied: false as const,
+      const lost = async ({ refused }: { refused?: string }): Promise<Published> => ({
+        applied: false,
         current: { ...current, [main]: await adoptRemoteMain() },
+        ...(refused === undefined ? {} : { refused }),
       });
       // Record the transaction locally, then retire its push intent. A settle after a lost reply
       // may already have recorded it.
@@ -242,19 +253,18 @@ export function createArtifactsStores(input: {
         (change) => change.ref === main && change.expected !== change.next,
       );
       if (moved) {
-        if (!(await pushRef(transaction, main, moved.expected, moved.next))) return lost();
-        return finish();
+        const push = await pushRef(transaction, main, moved.expected, moved.next);
+        return push.landed ? finish() : lost(push);
       }
       if (transaction.receipt.state === "conflict") {
         // Kept conflicts are part of the record, so other devices and agents can review them. A
         // refused push re-enters the land's bounded retry like a lost race on main.
         const ref = conflictRef(transaction.receipt.ref),
           remote = (await repository.refs())[ref] ?? null;
-        if (
-          remote !== transaction.receipt.oid &&
-          !(await pushRef(transaction, ref, remote, transaction.receipt.oid))
-        )
-          return lost();
+        if (remote !== transaction.receipt.oid) {
+          const push = await pushRef(transaction, ref, remote, transaction.receipt.oid);
+          if (!push.landed) return lost(push);
+        }
       }
       return finish();
     },

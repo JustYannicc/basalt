@@ -59,7 +59,8 @@ export interface RefTransaction {
 
 export type Published =
   | { applied: true; receipt: Receipt }
-  | { applied: false; current: Readonly<Record<Ref, Oid | null>> };
+  /** `refused` is a remote record's bounded reason, when it gave one. */
+  | { applied: false; current: Readonly<Record<Ref, Oid | null>>; refused?: string };
 
 export interface RefStore {
   get(ref: Ref): Promise<Oid | null>;

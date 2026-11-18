@@ -198,6 +198,7 @@ export function createDrive(options: DriveOptions): Drive {
       const hash = await fingerprint("land", { ref: input.ref, expected: input.expected, author });
       const prior = await refs.receipt(input.operation, hash);
       if (prior) return prior;
+      let refused: string | undefined;
       for (let attempt = 0; attempt < 8; attempt++) {
         if ((await refs.get(input.ref)) !== input.expected)
           throw new DriveError("stale", "Writer head changed before landing");
@@ -231,10 +232,11 @@ export function createDrive(options: DriveOptions): Drive {
           receipt,
         });
         if (result.applied) return result.receipt;
+        refused = result.refused ?? refused;
       }
       throw new DriveError(
         "contended",
-        "Main kept advancing; the writer branch is saved and can land later",
+        `Main kept advancing; the writer branch is saved and can land later${refused ? ` (last refusal: ${refused})` : ""}`,
       );
     },
     async read(input) {
