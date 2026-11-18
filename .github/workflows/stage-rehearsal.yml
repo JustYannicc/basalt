@@ -104,6 +104,6 @@ jobs:
         # curl, not gh: the box image carries no GitHub CLI.
         run: >-
           curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
-          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/labels/$STAGE_LABEL" > /dev/null
+          "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/labels/$STAGE_LABEL" > /dev/null
         env:
           GH_TOKEN: ${{ github.token }}
