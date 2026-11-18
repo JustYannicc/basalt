@@ -14,6 +14,9 @@ import { applyReleaseSettlement } from "./release-settlement-operation.ts";
 import { releaseSettlementDigest } from "./release-settlement-contract.ts";
 import { preflightRunner } from "./release-preflight.ts";
 import { createPreflightBridgeCounters } from "./release-preflight-guard.ts";
+import { decodeDeclaredChanges, type DeclaredChanges } from "./declared-change-schema.ts";
+import { productionWorker, productionWorkerResponse } from "./test/production-worker-api.ts";
+import { repositoryDeclarations } from "./test/repository-declarations.ts";
 
 const steps = new URL("./release-preflight-steps.ts", import.meta.url).href;
 const standins = new URL("./test/release-preflight-standins.ts", import.meta.url).href;
@@ -28,7 +31,18 @@ registerHooks({
 const { preflightSteps } = await import("./release-preflight-steps.ts");
 const standin = await import("./test/release-preflight-standins.ts");
 
-async function settledRecoveredState(context: TestContext) {
+// The compiled stack's HTTP client can keep the first test's fetch, so the production stand-in
+// reads these at call time rather than closing over one test's values.
+let productionClasses: Readonly<Record<string, string>> = {};
+let productionMigrationTag: string | undefined;
+let productionRead = { scriptName: "unread", versionId: "unread" };
+
+async function settledRecoveredState(
+  context: TestContext,
+  /** Local classes the production-shaped PoolWorker version already has, beside PoolContainer. */
+  classes: Readonly<Record<string, string>> = {},
+  migrationTag?: string,
+) {
   const f = await controllerRecoveredFixture(context);
   const manifest = await planSettlement(f, "controller-active-adopted");
   await Effect.runPromise(
@@ -52,8 +66,29 @@ async function settledRecoveredState(context: TestContext) {
   standin.installPoolOperations(f.io.connect);
   // The preflight reads through the compiled stack's own HTTP client, so answer its deployments
   // GET from the same active versions the fixture's client serves.
+  productionClasses = classes;
+  productionMigrationTag = migrationTag;
+  productionRead = { scriptName: "unread", versionId: "unread" };
   context.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
     const url = new URL(input instanceof Request ? input.url : input);
+    const method = input instanceof Request ? input.method : "GET";
+    // The namespace reads answer as production does: a migrations-based version with no exports.
+    // The reader reads the version before listing namespaces, so the listing names its script.
+    const version = url.pathname.match(
+      /\/workers\/(?:workers|scripts)\/([^/]+)\/versions\/([^/]+)$/u,
+    );
+    if (version) productionRead = { scriptName: version[1]!, versionId: version[2]! };
+    const production = productionWorkerResponse(
+      {
+        ...productionWorker(productionClasses),
+        accountId: f.accountId,
+        migrationTag: productionMigrationTag,
+        ...productionRead,
+      },
+      method,
+      url,
+    );
+    if (production && !url.pathname.endsWith("/deployments")) return production;
     const worker = url.pathname.split("/").at(-2)!;
     if (!url.pathname.endsWith("/deployments") || !f.active.has(worker))
       throw new Error("No network in the offline preflight proof");
@@ -77,7 +112,10 @@ async function settledRecoveredState(context: TestContext) {
   return f;
 }
 
-async function preflight(f: Awaited<ReturnType<typeof settledRecoveredState>>) {
+async function preflight(
+  f: Awaited<ReturnType<typeof settledRecoveredState>>,
+  declarations?: DeclaredChanges,
+) {
   const runner = preflightRunner();
   const attempts: Parameters<typeof preflightSteps>[1]["attempts"] = [];
   await Effect.runPromise(
@@ -85,8 +123,21 @@ async function preflight(f: Awaited<ReturnType<typeof settledRecoveredState>>) {
       preflightSteps(f.compiled, {
         candidate: f.candidate,
         state: f.state,
-        fetch: async () => {
-          throw new Error("No network in the offline preflight proof");
+        // Only the class path's settings GET uses the preflight's fetch; it reads production's shape.
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(input instanceof Request ? input.url : input);
+          const response = productionWorkerResponse(
+            {
+              ...productionWorker(productionClasses),
+              accountId: f.accountId,
+              migrationTag: productionMigrationTag,
+              ...productionRead,
+            },
+            init?.method ?? "GET",
+            url,
+          );
+          if (!response) throw new Error("No network in the offline preflight proof");
+          return response;
         },
         bridge: createPreflightBridgeCounters(),
         runner,
@@ -94,6 +145,7 @@ async function preflight(f: Awaited<ReturnType<typeof settledRecoveredState>>) {
         directory: f.io.directory,
         receipts: [],
         attempts,
+        declarations,
       }),
     ),
   );
@@ -167,4 +219,99 @@ test("after a settlement the preflight inspects with the archive's live controll
     status: "pass",
     summary: { expectedEpoch: 3, revisions: 7 },
   });
+});
+
+// The class path reads its token from configuration; the stand-in never sends it anywhere real.
+const withToken = async <T>(work: () => Promise<T>) => {
+  const previous = process.env.CLOUDFLARE_API_TOKEN;
+  process.env.CLOUDFLARE_API_TOKEN = "synthetic-never-sent";
+  try {
+    return await work();
+  } finally {
+    if (previous === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+    else process.env.CLOUDFLARE_API_TOKEN = previous;
+  }
+};
+
+test("before the code phase, the preflight proves each bootstrap attaches to a class the deploy declares on a PoolWorker version with no exports", async (context) => {
+  const f = await settledRecoveredState(context, {}, "alchemy:v3");
+  const { result, results } = await withToken(async () =>
+    preflight(f, await repositoryDeclarations()),
+  );
+  assert.deepEqual(
+    result("runtime-bootstrap"),
+    {
+      step: "runtime-bootstrap",
+      status: "pass",
+      summary: {
+        colors: [
+          { color: "blue", source: "declared" },
+          { color: "green", source: "declared" },
+        ],
+        migrationTag: "tagged",
+      },
+    },
+    JSON.stringify(results),
+  );
+});
+
+// The release owner's read: four alchemy tags (stack, stage, id, dos), none a migration tag, and a
+// runtime without `migration_tag`. Alchemy sends this Worker untagged migrations.
+test("an untagged PoolWorker, as production reads, passes the declared class before the code phase", async (context) => {
+  const f = await settledRecoveredState(context);
+  const { result, results } = await withToken(async () =>
+    preflight(f, await repositoryDeclarations()),
+  );
+  assert.deepEqual(
+    result("runtime-bootstrap"),
+    {
+      step: "runtime-bootstrap",
+      status: "pass",
+      summary: {
+        colors: [
+          { color: "blue", source: "declared" },
+          { color: "green", source: "declared" },
+        ],
+        migrationTag: "untagged",
+      },
+    },
+    JSON.stringify(results),
+  );
+});
+
+test("once the deploy created both classes, the preflight attaches each bootstrap to its existing namespace", async (context) => {
+  const f = await settledRecoveredState(context, {
+    PoolRuntimeBlue: "blue-namespace",
+    PoolRuntimeGreen: "green-namespace",
+  });
+  const { result, results } = await preflight(f, await repositoryDeclarations());
+  assert.deepEqual(
+    result("runtime-bootstrap"),
+    {
+      step: "runtime-bootstrap",
+      status: "pass",
+      summary: {
+        colors: [
+          { color: "blue", source: "existing" },
+          { color: "green", source: "existing" },
+        ],
+        migrationTag: "not-needed",
+      },
+    },
+    JSON.stringify(results),
+  );
+});
+
+test("without the reviewed PoolWorker class intent, the preflight refuses the bootstrap before any code phase", async (context) => {
+  const f = await settledRecoveredState(context);
+  const declarations = await repositoryDeclarations();
+  const { result } = await preflight(
+    f,
+    decodeDeclaredChanges({
+      ...declarations,
+      changes: declarations.changes.filter((entry) => entry.action !== "add-sqlite-class"),
+    }),
+  );
+  assert.equal(result("runtime-bootstrap")?.status, "refused");
+  assert.match(JSON.stringify(result("runtime-bootstrap")), /provisioning-class-not-declared/u);
 });

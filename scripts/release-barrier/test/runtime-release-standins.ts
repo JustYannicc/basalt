@@ -17,6 +17,10 @@ import type { BaselineController } from "../baseline-controller.ts";
 import { RuntimeReleaseState } from "../runtime-release-state.ts";
 import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
 import { waitReleaseObservation as liveWait } from "../runtime-release-readiness.ts";
+import { runtimeNamespaceReader } from "../runtime-namespace-read.ts";
+import { runtimeNamespaceAttachment, type NamespaceAttachment } from "../provisioning-namespace.ts";
+import type { productionPoolWorker } from "./production-pool-worker.ts";
+import { fleetClassName } from "../../../src/pool/fleet-deployment.ts";
 import {
   accountId,
   baselineConfiguration,
@@ -189,13 +193,43 @@ const clientOver = (desired?: RuntimeConfiguration) => {
 export const runtimeReleaseClient = (input: { desiredConfiguration?: RuntimeConfiguration }) =>
   Effect.sync(() => clientOver(input.desiredConfiguration));
 
-/** Fleet bootstrap: one empty application on the root image, as provisioning creates it. */
+let production: ReturnType<typeof productionPoolWorker> | undefined;
+/** The production-shaped PoolWorker the release's class path and bootstraps both talk to. */
+export const installProductionWorker = (value: ReturnType<typeof productionPoolWorker>) => {
+  production = value;
+};
+/** What each bootstrap attached to, and the Worker writes made while it ran. */
+export const bootstrapAttachments: NamespaceAttachment[] = [];
+export const bootstrapCalls = { writes: 0 };
+export const resetBootstrap = () => {
+  bootstrapAttachments.length = 0;
+  bootstrapCalls.writes = 0;
+};
+
+/**
+ * Fleet bootstrap: the real namespace read and attachment builder against the same production
+ * PoolWorker the code phases' class path wrote (no `exports`, untagged), then one empty application
+ * on the root image, as provisioning creates it.
+ */
 export const bootstrapReleaseApplication = (
   _stack: CompiledStack,
   options: { color: RuntimeColor },
 ) =>
-  Effect.sync(() => {
+  Effect.gen(function* () {
     const w = world();
+    const worker = production!;
+    const writes = worker.log.writes;
+    const baseline = yield* Effect.gen(function* () {
+      const reader = yield* runtimeNamespaceReader(accountId, workerName);
+      return yield* Effect.promise(() => reader.baseline());
+    }).pipe(Effect.provide(worker.layer));
+    const name = fleetClassName(options.color);
+    const attachment = runtimeNamespaceAttachment(baseline, {
+      accountId,
+      namespace: { className: name, binding: name },
+    });
+    bootstrapCalls.writes += worker.log.writes - writes;
+    bootstrapAttachments.push(attachment);
     w.createApplication(options.color, w.root.image, w.root.input);
   });
 

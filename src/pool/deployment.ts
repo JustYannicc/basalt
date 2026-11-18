@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { euPlacement } from "./placement.ts";
-import { fleetInfrastructure } from "./fleet-deployment.ts";
+import { fleetBindings, fleetInfrastructure } from "./fleet-deployment.ts";
 import { desiredPoolImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
 import { bindPoolObservationSecret } from "./fleet-observation.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
@@ -59,7 +59,7 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
-      ...fleet,
+      ...fleetBindings(fleet),
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       POOL_PRESERVE_LEGACY_IMAGE: "true",
       POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),

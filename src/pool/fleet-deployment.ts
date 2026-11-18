@@ -4,7 +4,11 @@ import { retain } from "alchemy/RemovalPolicy";
 import { euPlacement } from "./placement.ts";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Schema } from "effect";
-import { RuntimeImageReleasePlan } from "./image-release-plan.ts";
+import {
+  RuntimeImageReleasePlan,
+  type ImageReleasePlan,
+  type RuntimeColor,
+} from "./image-release-plan.ts";
 import { fileURLToPath } from "node:url";
 
 const Image = Schema.String.check(
@@ -44,6 +48,30 @@ export function decodeFleetDeploymentImages(value: string, accountId: string) {
   }
 }
 
+/**
+ * PoolWorker always hosts both fleet classes, so its alchemy deploy is the one writer of their
+ * migrations. A color without an image is a plain SQLite class; when its Container replaces this
+ * binding under the same env key, the logical id and class are unchanged and no migration is sent.
+ * Never drop these: alchemy would compute `deleted_classes` for a class its tags still name.
+ */
+export const fleetBindings = <Fleet extends object>(fleet: Fleet | undefined) => ({
+  PoolRuntimeBlue: Cloudflare.DurableObject("PoolRuntimeBlue", { className: "PoolRuntimeBlue" }),
+  PoolRuntimeGreen: Cloudflare.DurableObject("PoolRuntimeGreen", { className: "PoolRuntimeGreen" }),
+  ...fleet,
+});
+
+/** The Durable Object class, and Alchemy resource, that hosts a fleet color. */
+export const fleetClassName = (color: RuntimeColor) =>
+  color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
+
+/** The classes PoolWorker links to containers when evaluated with this plan, in sorted order. */
+export const plannedContainerClasses = (plan: ImageReleasePlan | undefined) =>
+  [
+    "PoolContainer",
+    ...(plan?.legacy ? ["PoolRuntime"] : []),
+    ...(["blue", "green"] as const).filter((color) => plan?.images[color]).map(fleetClassName),
+  ].sort();
+
 /** Image pins declare infrastructure; only a separate signed fleet command grants launch permission. */
 export const fleetInfrastructure = Effect.gen(function* () {
   const input = yield* Config.String("POOL_FLEET_IMAGES").pipe(Config.withDefault(""));
@@ -73,9 +101,9 @@ export const fleetInfrastructure = Effect.gen(function* () {
       throw new Error("Fleet image belongs to another deployment account");
   }
   const declare = (color: "blue" | "green") =>
-    Cloudflare.Container(color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen", {
+    Cloudflare.Container(fleetClassName(color), {
       name: `basalt-${stage}-pool-runtime-${color}`,
-      className: color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen",
+      className: fleetClassName(color),
       ...(plan?.build === color
         ? { context: fileURLToPath(new URL("../../containers/pool/", import.meta.url)) }
         : { image: images[color]! }),

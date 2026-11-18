@@ -21,6 +21,47 @@ const projection = (value: ClassObservation, added: readonly string[]) => ({
   bindings: (value.settings.bindings ?? []).filter((binding) => !added.includes(binding.name)),
 });
 
+type Links = readonly { className: string }[] | null | undefined;
+/** The sorted, distinct class names a Worker links to containers. */
+export const linkedClasses = (value: Links) =>
+  [...new Set((value ?? []).map((container) => container.className))].sort();
+
+/**
+ * The class step may run on a Worker with container links, but alchemy's planned upload must carry
+ * exactly the live links and must not link a class the step is adding.
+ */
+export function classStepContainersMatch(
+  entry: Pick<SqliteClassDeclaration, "newSqliteClasses">,
+  live: Links,
+  planned: Links,
+) {
+  const before = linkedClasses(live);
+  return (
+    canonical(linkedClasses(planned)) === canonical(before) &&
+    before.length === (live ?? []).length &&
+    !entry.newSqliteClasses.some((name) => before.includes(name))
+  );
+}
+
+/**
+ * The class step's own read must leave linkage exactly as it was. Later releases bind the new
+ * classes' containers one color at a time, so a ready read keeps every prior link and may add only
+ * this entry's classes.
+ */
+export function classContainersMatch(
+  entry: Pick<SqliteClassDeclaration, "newSqliteClasses">,
+  saved: Links,
+  live: Links,
+  attributable: boolean,
+) {
+  const before = linkedClasses(saved);
+  const after = linkedClasses(live);
+  return attributable
+    ? canonical(before) === canonical(after)
+    : before.every((name) => after.includes(name)) &&
+        after.every((name) => before.includes(name) || entry.newSqliteClasses.includes(name));
+}
+
 /** A fresh active version, migration tag and namespace mapping establish readiness without invoking the new class. */
 export function assertClassObservation(
   entry: SqliteClassDeclaration,
@@ -43,13 +84,13 @@ export function assertClassObservation(
         workerIdentityHash: digest(saved.baseline.workerId),
         accountIdentityHash: digest(saved.baseline.accountId),
         scriptIdentityHash: digest(saved.baseline.scriptName),
-        migrationTagHash: digest(saved.newTag),
+        migrationTagHash: saved.newTag ? digest(saved.newTag) : null,
       },
       {
         workerIdentityHash: digest(observed.workerId),
         accountIdentityHash: digest(observed.accountId),
         scriptIdentityHash: digest(observed.scriptName),
-        migrationTagHash: digest(observed.migrationTag),
+        migrationTagHash: observed.migrationTag ? digest(observed.migrationTag) : null,
       },
     );
   const bindings = observed.settings.bindings ?? [];
@@ -80,6 +121,16 @@ export function assertClassObservation(
         names: expectedNames,
       },
       { namespaces: actual },
+    );
+  if (
+    saved.baseline.containers &&
+    observed.containers &&
+    !classContainersMatch(entry, saved.baseline.containers, observed.containers, attributable)
+  )
+    fail(
+      "declared-class-container-drift",
+      { containers: linkedClasses(saved.baseline.containers) },
+      { containers: linkedClasses(observed.containers) },
     );
   if (
     attributable &&
