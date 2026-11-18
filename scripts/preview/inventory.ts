@@ -238,15 +238,20 @@ function parseStageValues(
   paths: readonly string[],
 ): PreviewStateEntry[] {
   let decoded: unknown;
-  // Progress lines precede the JSON on stdout; only the document itself is parsed.
-  const json = stdout
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*[•✓✗✔✖⚠ℹ]\s/u.test(line))
-    .join("\n");
+  // Progress and log lines precede the JSON on stdout; only the document itself is parsed.
+  const lines = stdout.split(/\r?\n/).filter((line) => !/^\s*[•✓✗✔✖⚠ℹ]\s/u.test(line));
+  const start = lines.findIndex((line) => /^\s*(?:[{["]|null\b|-?\d)/u.test(line));
+  const json = (start < 0 ? lines : lines.slice(start)).join("\n");
   try {
     decoded = JSON.parse(json);
   } catch {
-    throw new Error("Alchemy returned malformed remote resource state");
+    // Name the first lines without values: log and progress text only, never the state document.
+    const preamble = (start < 0 ? lines : lines.slice(0, start))
+      .slice(0, 5)
+      .map((line) => line.replace(/[0-9a-f]{16,}/giu, "[hex]").slice(0, 120));
+    throw new Error(
+      `Alchemy returned malformed remote resource state (${lines.length} lines; before the document: ${JSON.stringify(preamble)})`,
+    );
   }
   const prefix = `${stack}/${stage}/`;
   if (paths.length === 1) {
