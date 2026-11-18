@@ -17,6 +17,7 @@ import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
 import { spotifySource } from "./spotify.ts";
+import { gmailSource } from "./gmail.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -154,6 +155,11 @@ export async function handleCatalog(
   if (relative === "apps/spotify.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(spotifySource)),
+      { headers },
+    );
+  if (relative === "apps/gmail.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(gmailSource)),
       { headers },
     );
   if (relative === "apps/exa.json")
