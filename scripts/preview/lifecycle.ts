@@ -159,7 +159,7 @@ function runChild(
           .split(/\r?\n/u)
           // Stack frames go; Effect's schema paths (`at ["field"]`) stay, they say what failed.
           .filter((line) => line.trim() && !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line))
-          .slice(-80);
+          .slice(-150);
         return rejectPromise(
           new Error(
             "Preview command failed" +
@@ -183,7 +183,8 @@ async function runAlchemy(
     "bun",
     alchemyArgs(
       "--log-level",
-      "none",
+      // Errors only: at "none" a failed apply can exit 1 with nothing to say why.
+      "error",
       action,
       config,
       "--stage",

@@ -21,9 +21,9 @@ type Operation = {
 async function printFailure(operation: Operation): Promise<void> {
   const text = await readFile(operation.logPath, "utf8").catch(() => "");
   const redact = redactor(operation.environment, process.env);
-  const tail = text.split(/\r?\n/u).filter(Boolean).slice(-60).join("\n");
+  const tail = text.split(/\r?\n/u).filter(Boolean).slice(-120).join("\n");
   console.error(
-    `::group::${operation.label} output (last 60 lines, secrets redacted)\n${redact(tail)}\n::endgroup::`,
+    `::group::${operation.label} output (last 120 lines, secrets redacted)\n${redact(tail)}\n::endgroup::`,
   );
 }
 
