@@ -144,9 +144,11 @@ export async function readPoolReliabilityWindows(
       WHERE s.pool=$1
         AND ${finishedTimeRange}
         AND f.outcome <> 'unavailable'
+        -- A Home attempt or a gateway refusal with this id already counts the request.
         AND NOT EXISTS (
           SELECT 1 FROM basalt_model_requests h
-          WHERE h.pool=s.pool AND h.source=$3 AND h.request_id=s.request_id::text
+          WHERE h.pool=s.pool AND h.source=ANY($2::character(64)[])
+            AND h.request_id=s.request_id::text
         )`
           : ""
       }
