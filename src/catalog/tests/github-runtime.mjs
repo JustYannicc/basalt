@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 // Run with the prepared Basalt checkout, the GitHub source the catalog serves and a path for the
 // results. GitHub is never called: fetch answers with a trimmed copy of GitHub's REST description
 // and GitHub's documented response bodies, and each REST tool's result is written out unjudged.
+// One more repository answers with a JSON body larger than the router reads, sent only as fast as
+// it is read, so the results also say how much of it anything read.
 const [root, sourcePath, resultsPath] = process.argv.slice(2);
 assert.ok(root && sourcePath && resultsPath, "Pass the checkout, served source and results path");
 const source = JSON.parse(await readFile(sourcePath, "utf8"));
@@ -43,6 +45,8 @@ const routes = new Map([
     recorded["GET /repos/{owner}/{repo}/actions/runners/downloads"],
   ],
 ]);
+const oversized = { total: 32 * 1_048_576, sent: 0 };
+const megabyte = new TextEncoder().encode("a".repeat(1_048_576));
 const originalFetch = globalThis.fetch;
 try {
   for (const file of source.files) {
@@ -63,6 +67,19 @@ try {
       `${request.method} ${request.url}`,
     );
     const url = new URL(request.url);
+    if (url.pathname === "/repos/octocat/oversized")
+      return new Response(
+        new ReadableStream({
+          pull: (controller) => {
+            if (oversized.sent >= oversized.total) return controller.close();
+            const next =
+              oversized.sent === 0 ? new TextEncoder().encode('{"description":"') : megabyte;
+            oversized.sent += next.byteLength;
+            controller.enqueue(next);
+          },
+        }),
+        { headers: { "content-type": "application/json; charset=utf-8" } },
+      );
     const body = routes.get(`${request.method} ${url.origin}${url.pathname}`);
     const text = JSON.stringify(body ?? { message: "Not Found" });
     // GitHub's own headers: a JSON media type and the length of the body as sent.
@@ -102,7 +119,21 @@ try {
     assert.equal(result.ok, true, `${tool}: ${JSON.stringify(result).slice(0, 2_000)}`);
     results[tool] = result.value;
   }
-  await writeFile(resultsPath, JSON.stringify(results));
+  const refused = await request(
+    {
+      operation: "call",
+      tool: "api.repos.get",
+      input: { accountId: account.id, input: { path: { owner: "octocat", repo: "oversized" } } },
+    },
+    accounts,
+  );
+  await writeFile(
+    resultsPath,
+    JSON.stringify({
+      results,
+      oversized: { ok: refused.ok, error: refused.error, ...oversized },
+    }),
+  );
 } finally {
   globalThis.fetch = originalFetch;
   await rm(directory, { recursive: true, force: true });

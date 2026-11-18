@@ -39,7 +39,8 @@ test("GitHub REST results never carry the clone or download tokens GitHub adds",
     },
   );
   assert.equal(served.status, 200);
-  // GitHub's documented bodies, with synthetic token values. Its example omits the optional
+  // GitHub's documented bodies, with synthetic token values and the repository marked private,
+  // as GitHub sends the clone token only for private repositories. Its example omits the optional
   // `temp_download_token`, so the first runner download carries one as GitHub's schema declares.
   const recorded = JSON.parse(
     readFileSync(new URL("./tests/github-responses.json", import.meta.url), "utf8"),
@@ -62,7 +63,10 @@ test("GitHub REST results never carry the clone or download tokens GitHub adds",
       [new URL("./tests/github-runtime.mjs", import.meta.url).pathname, root, source, output],
       { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const results = JSON.parse(readFileSync(output, "utf8")) as Record<string, unknown>;
+    const { results, oversized } = JSON.parse(readFileSync(output, "utf8")) as {
+      results: Record<string, unknown>;
+      oversized: { ok: boolean; error: unknown; sent: number; total: number };
+    };
     assert.deepEqual(credentialPaths(results), [], "tool results carry GitHub credentials");
     // Everything else GitHub sent arrives unchanged.
     const without = (body: unknown) => JSON.parse(JSON.stringify(body), dropCredentials);
@@ -73,6 +77,12 @@ test("GitHub REST results never carry the clone or download tokens GitHub adds",
         recorded["GET /repos/{owner}/{repo}/actions/runners/downloads"],
       ),
     });
+    // The router refuses a body over its 16 MiB limit; nothing reads all of it into memory first.
+    assert.equal(oversized.ok, false, "an oversized body is refused");
+    assert.ok(
+      oversized.sent < oversized.total,
+      `read ${oversized.sent} of ${oversized.total} bytes: ${JSON.stringify(oversized.error)}`,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
