@@ -130,6 +130,7 @@ import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
+import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -188,6 +189,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private importRemoval: ImportRemoval;
   private recovery: RuntimeRecovery;
   private changes: PoolChanges;
+  private bookmarks: StorageBookmarks;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
@@ -199,6 +201,19 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       isolateAgeMs: Date.now() - controllerIsolate.startedAt,
       construction: ++controllerConstructions,
       containerRunning: ctx.container?.running ?? null,
+    });
+    this.bookmarks = new StorageBookmarks({
+      storage: ctx.storage,
+      port: {
+        current: () => ctx.storage.getCurrentBookmark(),
+        forTime: (at) => ctx.storage.getBookmarkForTime(at),
+        restoreOnNextSession: (bookmark) => ctx.storage.onNextSessionRestoreBookmark(bookmark),
+        abort: () => ctx.abort("storage restore"),
+      },
+      // The caller needs the undo bookmark, so the session ends just after the reply leaves.
+      afterReply: (work) => {
+        setTimeout(work, 250);
+      },
     });
     this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
     this.changes = new PoolChanges(
@@ -796,6 +811,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.env.POOL_DEPLOYMENT_KEY ?? "",
       this.fleet,
       this.candidateProbe,
+      this.bookmarks,
     );
   }
 
