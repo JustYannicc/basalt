@@ -19,14 +19,21 @@ export const controllerHoldBytes = 4 * 1024 * 1024;
 /** A device call's signed assertion lives 25 s (token.ts); a later replay would be refused as stale. */
 export const controllerReplayWindowMs = 20_000;
 /**
- * All held bodies in one isolate stay under a quarter of its 128 MB, so holding can never be what
- * runs the Worker out of memory. Past it a call is forwarded unheld: it is only not replayable.
+ * Held copies in one isolate stay under a quarter of its 128 MB (the tee's own queue and the brief
+ * join are not counted). Past it a call is forwarded unheld: it is only not replayable.
  */
 export const controllerHoldBudgetBytes = 32 * 1024 * 1024;
-let heldBytes = 0;
+// Each reservation carries its own deadline: a request the platform cancels never runs its own
+// release, and its bytes must not stay counted for the life of the isolate.
+const reservations = new Map<object, { bytes: number; until: number }>();
 /** Bytes held for replay in this isolate right now. */
-export function controllerHeldBytes() {
-  return heldBytes;
+export function controllerHeldBytes(now = Date.now()) {
+  let total = 0;
+  for (const [key, reservation] of reservations) {
+    if (reservation.until <= now) reservations.delete(key);
+    else total += reservation.bytes;
+  }
+  return total;
 }
 
 // The platform may end the controller instance at any time; this is its "reconnect or retry" error.
@@ -102,6 +109,8 @@ function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: 
       release() {},
     };
   const reader = body.getReader();
+  const key = {};
+  const until = Date.now() + controllerReplayWindowMs;
   let chunks: Uint8Array[] | undefined = [];
   let joined: Uint8Array<ArrayBuffer> | undefined;
   let refused: Refusal | undefined;
@@ -112,7 +121,7 @@ function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: 
     if (reason === "released" && !refused) refused = "too_late";
     chunks = undefined;
     joined = undefined;
-    heldBytes -= reserved;
+    reservations.delete(key);
     reserved = 0;
     clearTimeout(timer);
     void reader.cancel().catch(() => {});
@@ -124,12 +133,12 @@ function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: 
         const { value, done } = await reader.read();
         if (done || !chunks) break;
         if (reserved + value.byteLength > controllerHoldBytes) return free("body_too_large");
-        if (heldBytes + value.byteLength > budget) {
+        if (controllerHeldBytes() + value.byteLength > budget) {
           skipped();
           return free("hold_budget_full");
         }
-        heldBytes += value.byteLength;
         reserved += value.byteLength;
+        reservations.set(key, { bytes: reserved, until });
         chunks.push(value);
       }
     } catch {
@@ -211,7 +220,12 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
     () =>
       console.error(
         "POOL_CONTROLLER_HOLD_SKIPPED",
-        JSON.stringify({ count: 1, requestId, endpoint: endpointOf(request), heldBytes }),
+        JSON.stringify({
+          count: 1,
+          requestId,
+          endpoint: endpointOf(request),
+          heldBytes: controllerHeldBytes(),
+        }),
       ),
   );
   try {
