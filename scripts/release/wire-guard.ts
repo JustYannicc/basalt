@@ -1,6 +1,8 @@
 /**
- * Wire guard: the deploy process's own outgoing HTTP refuses Durable Object class changes and
- * deletes of protected resources before a byte leaves (native cutover 3b, review R2 and R4).
+ * Wire guard: the deploy process's own outgoing HTTP refuses Durable Object class changes, deletes
+ * of data-holding resources, and a class change that ships unreviewed code, before a byte leaves.
+ * A class change cannot be rolled back, so the upload that carries one must re-send the exact code
+ * that is serving; and the guard must cover every route a deploy sends through, or it proves nothing.
  *
  * Why a global wrap, a layer and a self-test (effect 4.0.1, alchemy 2.0.0-beta.80):
  * - Alchemy's deploy platform and its PlanetScale provider send through `FetchHttpClient.layer`
@@ -45,8 +47,17 @@ export interface WireGuardConfig {
   readonly sqliteClasses?: Readonly<Record<string, ReadonlyArray<string>>>;
   /** Disposable stages only: a first deploy creates every class; creating one never loses data. */
   readonly anyNewSqliteClass?: boolean;
-  /** Expected sha256 (hex) of each script's uploaded main module. */
+  /**
+   * Expected sha256 (hex) of each script's uploaded main module. An upload that adds an allow-listed
+   * SQLite class is refused unless its script has one: the class change must not move code with it.
+   */
   readonly mainModuleSha256?: Readonly<Record<string, string>>;
+  /**
+   * Container applications no request may change: the legacy root. Alchemy patches and rolls out an
+   * application whenever its desired configuration differs from the recorded one, including env it
+   * derives from bindings, which the plan does not show. A rollout restarts the root's master Home.
+   */
+  readonly rootApplications?: ReadonlyArray<string>;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -63,8 +74,19 @@ const REASONS = {
   export: ["A non-live export deletes, renames or transfers a namespace.", BY_HAND],
   main: ["The main module is not in the upload, so its hash cannot be checked.", "Upload it."],
   hash: ["The code differs from the reviewed build.", "Rebuild from the reviewed commit."],
-  application: ["Only an application this process created may be deleted.", BY_HAND],
+  pinned: [
+    "A new class cannot be rolled back, so the upload that adds it must carry the serving code byte for byte, and nothing pinned that code.",
+    "Configure the script's live main module digest before the class change.",
+  ],
+  application: [
+    "Only an application this process created, or one with no Durable Object attachment and no active instance (an attachment-less precreate a killed apply left behind), may be deleted.",
+    BY_HAND,
+  ],
   delete: ["Deleting it loses data or breaks the live service.", BY_HAND],
+  root: [
+    "Alchemy found a configuration difference on the root application, and a PATCH or rollout restarts the root and its master Home.",
+    "Make the declaration match the recorded application, or restart the root in its own named step.",
+  ],
   store: [
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
     "Upgrade or bootstrap the store by hand under its own approval.",
@@ -85,7 +107,7 @@ const refuse = (
 
 // Path words kept in the journal; every other segment (accounts, names, ids) prints as {id}.
 const WORDS = new Set(
-  "client v1 v4 accounts zones organizations workers scripts services environments versions deployments content settings script-settings edge-preview previews subdomain secrets schedules tails durable_objects namespaces objects containers applications rollouts instances registries hyperdrive configs r2 buckets d1 database query secrets_store stores databases branches roles passwords backups assets upload assets-upload-session routes domains queues consumers workflows tokens user".split(
+  "client v1 v2 v4 accounts zones organizations workers scripts services environments versions deployments content settings script-settings edge-preview previews subdomain secrets schedules tails durable_objects namespaces objects containers applications rollouts instances registries hyperdrive configs r2 buckets d1 database query secrets_store stores databases branches roles passwords backups assets upload assets-upload-session routes domains queues consumers purge messages workflows storage kv bulk delete values vectorize indexes delete_by_ids artifacts repos tokens user".split(
     " ",
   ),
 );
@@ -104,7 +126,22 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/accounts\/[^/]+\/d1\/database\/([^/]+)/, "D1 database"],
   [/^\/accounts\/[^/]+\/(?:workers\/)?durable_objects\/namespaces\/([^/]+)/, "DO namespace"],
   [/^\/accounts\/[^/]+\/secrets_store\/stores\/([^/]+)/, "Secrets Store store"],
+  [/^\/accounts\/[^/]+\/storage\/kv\/namespaces\/([^/]+)/, "KV namespace"],
+  [/^\/accounts\/[^/]+\/queues\/([^/]+)/, "Queue"],
+  [/^\/accounts\/[^/]+\/vectorize\/(?:v2\/)?indexes\/([^/]+)/, "Vectorize index"],
+  [/^\/accounts\/[^/]+\/workflows\/([^/]+)/, "Workflow"],
+  // The Artifacts API (scripts/ensure-artifacts.ts): a namespace holds every repo and its history.
+  [/^\/accounts\/[^/]+\/artifacts\/namespaces\/([^/]+)/, "Artifacts namespace"],
   [/^\/organizations\/[^/]+\/databases\/([^/]+)/, "PlanetScale database"],
+];
+// Deletes that the API spells as a POST: they drop stored keys, vectors or messages.
+const DATA_DELETE: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^\/accounts\/[^/]+\/storage\/kv\/namespaces\/([^/]+)\/bulk\/delete$/, "KV namespace"],
+  [
+    /^\/accounts\/[^/]+\/vectorize\/(?:v2\/)?indexes\/([^/]+)\/delete[_-]by[_-]ids$/,
+    "Vectorize index",
+  ],
+  [/^\/accounts\/[^/]+\/queues\/([^/]+)\/(?:messages\/)?purge$/, "Queue"],
 ];
 // Alchemy's shared State store Worker (StateStore/State.ts STATE_STORE_SCRIPT_NAME) and every secret write.
 const STATE_STORE =
@@ -151,6 +188,16 @@ const Metadata = Schema.Struct({
   modules: Schema.optional(Schema.Array(Module)),
 });
 const Created = Schema.Struct({ result: Schema.Struct({ id: Schema.String }) });
+// The application read (lenient: production carries more keys). `health.instances` counts
+// instances by state; `durable_objects` is the immutable namespace attachment.
+const ApplicationRead = Schema.Struct({
+  result: Schema.Struct({
+    durable_objects: Schema.optional(Schema.Unknown),
+    health: Schema.Struct({ instances: Schema.Record(Schema.String, Schema.Number) }),
+  }),
+});
+// Every state but these means an instance is running or about to; `active` must be reported.
+const SETTLED = new Set(["stopped", "failed"]);
 const CHANGES = [
   "deleted_classes",
   "renamed_classes",
@@ -186,18 +233,21 @@ const checkUpload = (config: WireGuardConfig, request: Request, at: At, script: 
       : [];
     const allowed = config.sqliteClasses?.[script] ?? [];
     const anyNew = config.anyNewSqliteClass === true;
+    const expected = config.mainModuleSha256?.[script];
     for (const [step, value] of steps) {
       for (const key of CHANGES)
         if (value[key]?.length)
           return yield* refuse(at, "change", `${step}.${key}`, JSON.stringify(value[key]));
-      const extra = (value.new_sqlite_classes ?? []).filter((name) => !allowed.includes(name));
+      const added = value.new_sqlite_classes ?? [];
+      const extra = added.filter((name) => !allowed.includes(name));
       if (extra.length && !anyNew)
         return yield* refuse(at, "sqlite", `${step}.new_sqlite_classes`, JSON.stringify(extra));
+      if (added.length && !anyNew && expected === undefined)
+        return yield* refuse(at, "pinned", "main_module sha256", "not configured");
     }
     for (const [name, entry] of Object.entries(meta.exports ?? {}))
       if (entry.state !== undefined && entry.state !== "created")
         return yield* refuse(at, "export", `exports.${name}.state`, entry.state);
-    const expected = config.mainModuleSha256?.[script];
     if (expected === undefined) return;
     const main = meta.main_module ?? "";
     const part = body.part(main);
@@ -247,9 +297,48 @@ const checkStoreCredentialRead = (request: Request, at: At) =>
       return yield* refuse(at, "store", "edge-preview parts", JSON.stringify(body.parts));
   });
 
+/**
+ * Alchemy deletes and recreates an application that exists without its Durable Object attachment
+ * (ContainerProvider: precreate, then the real reconcile), which is what a rerun after a killed
+ * apply meets. The delete is admitted only when a fresh read, sent around the guard with the same
+ * credentials, shows no attachment and nothing running; any other answer or a failed read refuses.
+ */
+const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: At) =>
+  Effect.gen(function* () {
+    const url = new URL(request.url);
+    url.pathname = url.pathname.replace(/(\/containers\/applications\/[^/]+).*$/u, "$1");
+    url.search = "";
+    const authorization = request.headers.get("authorization");
+    const read = yield* Effect.tryPromise(async () => {
+      const response = await inner(url, {
+        method: "GET",
+        headers: authorization ? { authorization } : {},
+      });
+      if (!response.ok) throw new Error(`application read answered ${response.status}`);
+      return (await response.json()) as unknown;
+    }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(ApplicationRead)),
+      Effect.mapError((cause) => refuse(at, "application", "application read", "failed", cause)),
+    );
+    const { durable_objects: attached, health } = read.result;
+    if (attached !== undefined && attached !== null)
+      return yield* refuse(at, "application", "durable_objects", "attached");
+    const running = Object.entries(health.instances).filter(
+      ([state, count]) => !SETTLED.has(state) && count !== 0,
+    );
+    if (health.instances.active === undefined || running.length)
+      return yield* refuse(
+        at,
+        "application",
+        "health.instances",
+        running.length ? JSON.stringify(Object.fromEntries(running)) : "active not reported",
+      );
+  });
+
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
+  inner: typeof globalThis.fetch,
   request: Request,
   path: string,
 ) =>
@@ -279,18 +368,25 @@ const check = (
         "method",
         method,
       );
+    const application = name(APPLICATION);
+    if (
+      application !== undefined &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      config.rootApplications?.includes(application)
+    )
+      return yield* refuse(at("container application", application), "root", "method", method);
     const script = name(UPLOAD);
     if (script !== undefined && ["PUT", "POST", "PATCH"].includes(method))
       return yield* checkUpload(config, request, at("Worker", script), script);
+    if (method === "POST")
+      for (const [pattern, kind] of DATA_DELETE) {
+        const id = name(pattern);
+        if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
+      }
     if (method !== "DELETE") return;
-    const application = name(APPLICATION);
     if (application !== undefined && !created.has(application))
-      return yield* refuse(
-        at("container application", application),
-        "application",
-        "application id",
-        application,
-      );
+      return yield* checkUnattached(inner, request, at("container application", application));
     for (const [pattern, kind] of PROTECTED) {
       const id = name(pattern);
       if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "DELETE");
@@ -309,7 +405,7 @@ export const install = (config: WireGuardConfig = {}) =>
       const url = new URL(request.url);
       const path = apiPath(url.pathname);
       journal.push({ method: request.method, host: url.host, path: template(path) });
-      const exit = await Effect.runPromiseExit(check(config, created, request, path));
+      const exit = await Effect.runPromiseExit(check(config, created, inner, request, path));
       if (Exit.isFailure(exit)) {
         const error = Cause.squash(exit.cause);
         // The self-test's own probe is refused on purpose and must not end the run.
@@ -318,7 +414,8 @@ export const install = (config: WireGuardConfig = {}) =>
         throw error;
       }
       const response = await inner(request);
-      if (request.method === "POST" && response.ok && APPLICATION.exec(path)?.[1] === undefined) {
+      // Only a create of an application (a POST to the collection itself) feeds the created set.
+      if (request.method === "POST" && response.ok && path.endsWith("/containers/applications")) {
         const decoded = Schema.decodeUnknownExit(Created)(
           await response
             .clone()
