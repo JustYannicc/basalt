@@ -1989,6 +1989,7 @@ jobs:
             .generated/pool-removal-intent/**/report.json
             .generated/pool-removal-intent/**/partial-checks.json
             .generated/pool-removal-intent/**/failure.txt
+            .generated/pool-removal-intent/**/runtime-diagnostics.json
             .generated/pool-recipe-checks/**/report.json
             .generated/pool-recipe-checks/**/partial-checks.json
             .generated/pool-recipe-checks/**/failure.txt
@@ -2001,16 +2002,18 @@ jobs:
             .generated/pool-reset-ui/**/report.json
             .generated/pool-reset-ui/**/failure.json
             .generated/pool-reset-ui/**/*.png
+            .generated/pool-reset-ui/**/runtime-diagnostics.json
             .generated/scoped-change-consumers/**/report.json
             .generated/scoped-change-consumers/**/failure.json
             .generated/scoped-change-consumers/**/*.png
+            .generated/scoped-change-consumers/**/runtime-diagnostics.json
             .generated/pool-overview-ui/**/report.json
             .generated/pool-overview-ui/**/failure.json
             .generated/pool-overview-ui/**/*.png
+            .generated/pool-overview-ui/**/runtime-diagnostics.json
             .upstream/.local/testing/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
