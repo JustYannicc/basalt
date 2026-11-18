@@ -180,9 +180,7 @@ export async function runDatabaseBudgetCommand(
         initialReady,
         readyReceivedAt: previous?.readyReceivedAt,
         overallDeadline,
-        ...(readiness
-          ? { ready: (signal: AbortSignal) => awaitReady(readiness!, signal) }
-          : {}),
+        ...(readiness ? { ready: (signal: AbortSignal) => awaitReady(readiness!, signal) } : {}),
         signal: operation,
         now,
         retain: async (value) => {
