@@ -182,7 +182,7 @@ export async function runDatabaseBudgetCommand(
           let at: unknown = error, depth = 0;
           at instanceof Error && depth < 4;
           at = at.cause, depth += 1
-        )
+        ) {
           const fields = Object.fromEntries(Object.entries(at));
           chain.push(
             `${at.name}${["code", "status", "outcome", "stage"]
@@ -194,6 +194,7 @@ export async function runDatabaseBudgetCommand(
               .replace(/[A-Za-z0-9+/_=-]{32,}/gu, "[redacted]")
               .slice(0, 300),
           );
+        }
         console.error(`readiness failure (rehearsal stage): ${chain.join(" <- ")}`);
       }
       receipt = {
