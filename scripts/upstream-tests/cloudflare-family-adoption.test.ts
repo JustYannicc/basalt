@@ -14,6 +14,8 @@ import { addLink } from "../../.upstream/apps/hosted/server/src/implementation/a
 import { productionMigrations } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts";
 import { runProductionOperation } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts";
 import { openArtifact } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts";
+import { readOnly } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/read-only.ts";
+import { checkPlanScope } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts";
 
 const crypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
@@ -243,14 +245,18 @@ test("a Cloudflare account connected under the first catalog definition links to
         planSha256: dry.artifact.sha256,
         go: `GO ${dry.artifact.sha256}`,
       };
-      const applied = yield* runProductionOperation(settings, apply as never).pipe(
-        Effect.tapError(() =>
-          productionMigrations["cloudflare-family-adoption-v1"]!.verify(
-            input.request,
-            plan as never,
-          ).pipe(Effect.tap((verified) => Effect.sync(() => assert.deepEqual(verified, {})))),
+      const outcome = yield* Effect.exit(runProductionOperation(settings, apply as never));
+      const migration = productionMigrations["cloudflare-family-adoption-v1"]!;
+      const direct = yield* Effect.exit(migration.verify(input.request, plan as never));
+      const guarded = yield* Effect.exit(
+        readOnly(
+          checkPlanScope(plan as never, organization, "after").pipe(
+            Effect.andThen(migration.verify(input.request, plan as never)),
+          ),
         ),
       );
+      assert.deepEqual({ direct, guarded }, {}, String(outcome._tag));
+      const applied = yield* runProductionOperation(settings, apply as never);
       assert.ok(applied.action === "apply" && applied.repeated === false);
 
       assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "linked");
