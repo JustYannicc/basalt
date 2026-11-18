@@ -11,7 +11,6 @@ const workflow = parse(
 const lane = workflow.jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env
   .FULL_SUITE;
 const repository = "fixture/repository";
-const head = "b".repeat(40);
 const fullLabels = ["ci:full", "ci:boat", "release-update"];
 const labelSets = Array.from({ length: 1 << fullLabels.length }, (_, mask) =>
   fullLabels.filter((_, bit) => mask & (1 << bit)),
@@ -20,13 +19,11 @@ const labelSets = Array.from({ length: 1 << fullLabels.length }, (_, mask) =>
 const pullRequest = (action: string, labels: string[], branch: string, fork = false) => ({
   repository,
   event_name: "pull_request",
-  ref: "refs/pull/42/merge",
-  sha: "c".repeat(40),
   head_ref: branch,
   event: {
     action,
     pull_request: {
-      head: { ref: branch, sha: head, repo: { full_name: fork ? "fork/repository" : repository } },
+      head: { repo: { full_name: fork ? "fork/repository" : repository } },
       labels: labels.map((name) => ({ name })),
     },
   },
@@ -35,25 +32,27 @@ const push = (branch: string) => ({
   repository,
   event_name: "push",
   ref: `refs/heads/${branch}`,
-  sha: head,
   head_ref: "",
-  event: { after: head },
+  event: {},
 });
 
-// The lane and aggregate-name expressions use only string literals, property paths, ==, !=, !,
-// &&, || and these two functions, which keep their GitHub meaning in JavaScript for exact-case
-// fixtures. Anything else throws instead of evaluating differently.
-const evaluate = (expression: string, context: Record<string, unknown>): unknown =>
-  runInNewContext(
-    expression
-      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-      .replaceAll(".labels.*.name", ".labels.map((label) => label.name)"),
+// GitHub compares strings case-insensitively and reads missing properties as null; exact-case,
+// populated fixtures keep JavaScript's reading of this subset identical. Any other token, such as
+// a number, `<`, `===`, `?:` or a method call, fails here instead of being evaluated differently.
+const supported =
+  /^(?:\s|'[^']*'|(?:startsWith|contains)\(|[A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\*))*(?![\w.(])|[!=]=|!|&&|\|\||[(),])*$/;
+const evaluate = (expression: string, context: Record<string, unknown>): unknown => {
+  const source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+  assert.match(source, supported);
+  return runInNewContext(
+    source.replaceAll(".labels.*.name", ".labels.map((label) => label.name)"),
     {
       ...context,
       startsWith: (value: string, prefix: string) => value.startsWith(prefix),
       contains: (values: string[], value: string) => values.includes(value),
     },
   );
+};
 const fullSuite = (github: object) => {
   const full = evaluate(lane, { github });
   // The select step's shell compares the rendered value with the literal `true`.
@@ -68,18 +67,20 @@ const checkName = (github: object) =>
     },
   });
 
-test("a batch push with an open PR starts one full Check, which the PR head shows as check", () => {
+test("a batch push with an open PR selects one full Check, named check", () => {
+  // A paths or ignore filter would let some batch pushes start no Check at all.
+  assert.deepEqual(Object.keys(workflow.on.push), ["branches"]);
   assert.ok(workflow.on.push.branches.includes("batch/**"));
+  const batchPush = push("batch/proof");
+  assert.equal(checkName(batchPush), "check");
   for (const action of workflow.on.pull_request.types)
     for (const labels of labelSets) {
-      const batchPush = push("batch/proof");
       const pr = pullRequest(action, labels, "batch/proof");
       assert.deepEqual(
         [batchPush, pr].filter(fullSuite).map((run) => run.event_name),
         ["push"],
         `${action} [${labels}]`,
       );
-      assert.equal(checkName(batchPush), "check");
       assert.equal(checkName(pr), "check (fast-only)");
     }
 });
