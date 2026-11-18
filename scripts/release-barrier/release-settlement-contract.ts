@@ -1,6 +1,7 @@
-import { Schema } from "effect";
+import { Schema, Tuple } from "effect";
 import { ControllerCode, SlotIdentity } from "../../src/pool/runtime-slots/contract.ts";
 import { BaselineController } from "./baseline-controller.ts";
+import { RuntimeColorSchema } from "../../src/pool/image-release-plan.ts";
 import { canonical, digest } from "./manifest.ts";
 import { ReleaseStackName, ReleaseStageName } from "./release-stage.ts";
 
@@ -13,6 +14,7 @@ export const ReleaseSettlementDisposition = Schema.Literals([
   "abandoned-before-controller",
   "controller-active-unadopted",
   "controller-active-adopted",
+  "fleet-attached-unstarted",
 ]);
 export type ReleaseSettlementDisposition = typeof ReleaseSettlementDisposition.Type;
 export const ReleaseSettlementPlanRequest = Schema.Struct({
@@ -23,7 +25,7 @@ export const ReleaseSettlementPlanRequest = Schema.Struct({
   expiresAt: Schema.Int,
   // Absent keeps earlier reviewed requests, and their digests, as abandoned-before-controller.
   disposition: Schema.optional(ReleaseSettlementDisposition),
-  // Required for both controller-active dispositions. Scale-out code phases defer the readiness
+  // Required for every disposition but abandoned-before-controller. Scale-out code phases defer the readiness
   // command, so native state still names the previous controller; the live controller confirms this code.
   sourceController: Schema.optional(ControllerCode),
 });
@@ -78,6 +80,20 @@ export const ReleaseSettlementAdoptedReads = Schema.Union([
     }),
   }),
 ]);
+/**
+ * The adopted root still selected after fleet applications were attached: the same witness reads,
+ * plus the fleet colours in the record's baseline and whether a retained fleet permission is
+ * present. The fleet digest covers bindings and that permission; fleet rows and instances change
+ * with demand, so they are checked live and never recorded.
+ */
+export const ReleaseSettlementFleetReads = ReleaseSettlementAdoptedReads.mapMembers(
+  Tuple.map(
+    Schema.fieldsAssign({
+      colors: Schema.Array(RuntimeColorSchema).check(Schema.isMinLength(1), Schema.isMaxLength(2)),
+      permission: Schema.Literals(["absent", "present"]),
+    }),
+  ),
+);
 // Only an activated controller has adoption reads to prove; the earlier disposition never carries them.
 export const ReleaseSettlementProof = Schema.Union([
   Schema.Struct({ disposition: Schema.Literal("abandoned-before-controller"), ...proofFields }),
@@ -89,6 +105,11 @@ export const ReleaseSettlementProof = Schema.Union([
   Schema.Struct({
     disposition: Schema.Literal("controller-active-adopted"),
     controllerReads: ReleaseSettlementAdoptedReads,
+    ...proofFields,
+  }),
+  Schema.Struct({
+    disposition: Schema.Literal("fleet-attached-unstarted"),
+    controllerReads: ReleaseSettlementFleetReads,
     ...proofFields,
   }),
 ]);
