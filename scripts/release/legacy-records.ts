@@ -37,6 +37,9 @@ const embedded = ["$basaltDeclaredChanges", "$basaltDeclaredClasses"];
 /** AES-256-GCM under a key derived from the deployment encryption key: CI artifacts of a public repo
  *  must hold only ciphertext, even for records that are not themselves sealed. */
 export function sealRecord(plaintext: string, key: string, record: string) {
+  // A short or non-hex key would derive from fewer bytes than it looks like it has.
+  if (!/^[0-9a-f]{64}$/iu.test(key))
+    throw new Error("The encryption key must be 64 hex characters");
   const derived = Buffer.from(
     hkdfSync(
       "sha256",
