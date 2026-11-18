@@ -82,7 +82,7 @@ export function singleWriterHooks(context: SingleWriterContext) {
       if (edit) await writeFile(path!, original!.replace(edit.from, edit.to));
       try {
         // A refused row also exits non-zero; the rows say why, so only a missing report is fatal here.
-        await operation(edit ? "baseline-probe-variant" : "baseline-probe", root, "scripts/release-barrier/baseline-probe-entry.ts", [], {
+        await operation(edit ? "baseline-probe-variant" : "baseline-probe", root, "scripts/release-preview/rehearsal-baseline-probe.ts", [], {
           ...context.writerEnvironment(),
           BASALT_RELEASE_ATTEMPT: randomUUID(),
         }, 5, "bun").catch((error: unknown) => { exit = error; });
