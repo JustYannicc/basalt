@@ -8,7 +8,7 @@ function hooks(overrides: Partial<SingleWriterHooks> = {}) {
     deployBaseline: async () => void events.push("baseline"),
     shape: async (phase, label) => void events.push(`shape:${phase}:${label}`),
     preflight: async () => (events.push("preflight"), {
-      steps: [{ step: "runtime-bootstrap", status: "pass", summary: { blue: "declared", green: "declared", migrationTag: "untagged" } }],
+      steps: [{ step: "runtime-bootstrap", status: "pass", summary: { colors: [{ color: "blue", source: "declared" }, { color: "green", source: "declared" }], migrationTag: "untagged" } }],
     }),
     seedPools: async () => (events.push("seed"), { cleanPool: "clean" }),
     release: async (request) => (events.push(`release:${request.candidate}:${request.cleanPool}`), { ok: true }),
@@ -61,13 +61,16 @@ test("a refused release or a shape change stops the rehearsal at that step", asy
 
 test("the preflight must pass runtime-bootstrap with both colors declared on an untagged PoolWorker", async () => {
   const { requireRuntimeBootstrap } = await import("./rehearsal-single-writer.ts");
+  const declared = [{ color: "blue", source: "declared" }, { color: "green", source: "declared" }];
   const step = (status: string, summary: unknown) => ({ steps: [{ step: "runtime-bootstrap", status, summary }] });
-  requireRuntimeBootstrap(step("pass", { blue: "declared", green: "declared", migrationTag: "untagged" }));
+  requireRuntimeBootstrap(step("pass", { colors: declared, migrationTag: "untagged" }));
   for (const report of [
     {},
-    step("refused", { blue: "declared", green: "declared", migrationTag: "untagged" }),
-    step("pass", { blue: "declared", green: "declared", migrationTag: "v1" }),
-    step("pass", { blue: "declared", green: "missing", migrationTag: "untagged" }),
+    step("refused", { colors: declared, migrationTag: "untagged" }),
+    step("pass", { colors: declared, migrationTag: "tagged" }),
+    step("pass", { colors: declared, migrationTag: "not-needed" }),
+    step("pass", { colors: [declared[0], { color: "green", source: "existing" }], migrationTag: "untagged" }),
+    step("pass", { colors: [declared[0]], migrationTag: "untagged" }),
   ])
     assert.throws(() => requireRuntimeBootstrap(report));
 });

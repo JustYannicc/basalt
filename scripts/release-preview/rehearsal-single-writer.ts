@@ -55,17 +55,21 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
   };
 }
 
-/** The preflight must see both fleet classes declared for alchemy's untagged class step. */
+/**
+ * The preflight's runtime-bootstrap step must plan both colors' classes through alchemy's own
+ * class step (`source: "declared"`) on a PoolWorker it reads as untagged, as production is.
+ */
 export function requireRuntimeBootstrap(report: unknown) {
   const steps = (report as { steps?: unknown } | null)?.steps;
   const step = Array.isArray(steps)
     ? (steps as { step?: unknown; status?: unknown; summary?: unknown }[]).find((entry) => entry.step === "runtime-bootstrap")
     : undefined;
-  const summary = JSON.stringify(step?.summary ?? null);
   if (step?.status !== "pass") throw new Error("The release preflight's runtime-bootstrap step did not pass");
-  if (!summary.includes('"migrationTag":"untagged"'))
+  const summary = step.summary as { colors?: unknown; migrationTag?: unknown } | undefined;
+  if (summary?.migrationTag !== "untagged")
     throw new Error("The release preflight did not read PoolWorker as untagged");
+  const colors = Array.isArray(summary.colors) ? (summary.colors as { color?: unknown; source?: unknown }[]) : [];
   for (const color of ["blue", "green"])
-    if (!new RegExp(`"${color}":"declared"`).test(summary))
-      throw new Error(`The release preflight did not see ${color} declared`);
+    if (!colors.some((entry) => entry.color === color && entry.source === "declared"))
+      throw new Error(`The release preflight did not plan ${color} through the declared class step`);
 }

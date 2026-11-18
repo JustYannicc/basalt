@@ -77,6 +77,12 @@ export interface LifecycleServices {
     inventory: PreviewInventory,
     environment: NodeJS.ProcessEnv,
   ) => Promise<void>;
+  /** A rehearsal's pool builds push registry images its stack destroy leaves behind. */
+  readonly stageImages: (
+    mode: "delete" | "verify",
+    identity: PreviewIdentity,
+    environment: NodeJS.ProcessEnv,
+  ) => Promise<void>;
   /** A rehearsal's release barrier keeps outputs outside the stage's own stacks. */
   readonly stageOutputs: (
     mode: "delete" | "verify",
@@ -289,6 +295,14 @@ function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
     },
     verifyProviders: (identity, inventory, environment) =>
       verifyPreviewProvidersAbsent(identity, inventory, providerReadbacks(environment)),
+    stageImages: async (mode, identity, environment) => {
+      const { stageImages } = await import("./stage-images.ts");
+      await stageImages(mode, {
+        accountId: environment.CLOUDFLARE_ACCOUNT_ID ?? "",
+        token: environment.CLOUDFLARE_API_TOKEN ?? "",
+        stage: identity.stage,
+      });
+    },
     stageOutputs: (mode, identity, environment) =>
       runChild(
         "bun",
@@ -465,6 +479,9 @@ export async function destroyStage(
       ? ([["fixture", () => services.destroyStack("fixture", config, config.providers)]] as const)
       : []),
     ["basalt", () => services.destroyStack("basalt", config, config.providers)],
+    ...(subject.kind === "rehearsal"
+      ? ([["images", () => services.stageImages("delete", config, config.providers)]] as const)
+      : []),
     ["database", () => services.destroyStack("database", config, config.providers)],
     ["artifacts", () => services.deleteArtifacts(config.sourceNamespace, config.providers)],
     ...(subject.kind === "rehearsal"
@@ -507,7 +524,10 @@ export async function verifyStageAbsent(
   if (inventoryResourceCount(remaining) !== 0)
     throw new Error("Preview Alchemy stage state is still present");
   await services.verifyProviders(config, inventory, config.providers);
-  if (subject.kind === "rehearsal") await services.stageOutputs("verify", config, config.providers);
+  if (subject.kind === "rehearsal") {
+    await services.stageImages("verify", config, config.providers);
+    await services.stageOutputs("verify", config, config.providers);
+  }
   if (inventoryResourceCount(inventory) === 0)
     throw new Error("Preview was not backed by a non-empty pre-destroy remote inventory");
 

@@ -11,25 +11,38 @@ const run = (command: string, args: string[], cwd?: string) =>
 const label = "release-rehearsal-single-writer";
 
 /**
- * Starts one paid single-change rehearsal: this branch with the change merged on top, as its own
- * pull request carrying the rehearsal label. Nothing is deployed until the label's run starts.
+ * Starts one paid single-change rehearsal: this branch with the change's exact commit merged on
+ * top, as its own pull request carrying the rehearsal label. Nothing is deployed until that
+ * label's run starts. `dryRun` merges in a scratch checkout and reports, without pushing.
  */
-export function dispatchSingleWriter(root: string, change: string, base = "feat/release-rehearsal") {
-  if (!/^[A-Za-z0-9._/-]{1,200}$/u.test(change)) throw new Error("Name the change's branch");
-  run("git", ["fetch", "-q", "origin", base, change], root);
+export function dispatchSingleWriter(root: string, change: string, options: { base?: string; dryRun?: boolean } = {}) {
+  if (!/^[a-f0-9]{40}$/u.test(change)) throw new Error("Name the change by its exact 40-character head commit");
+  const base = options.base ?? "origin/feat/release-rehearsal";
+  if (!options.dryRun) run("git", ["fetch", "-q", "origin", "feat/release-rehearsal"], root);
+  run("git", ["fetch", "-q", "origin", change], root);
   const scratch = mkdtempSync(join(tmpdir(), "rehearsal-dispatch-"));
   try {
-    run("git", ["worktree", "add", "-q", "--detach", scratch, `origin/${base}`], root);
-    run("git", ["-c", "user.name=Release rehearsal", "-c", "user.email=release-rehearsal@users.noreply.github.com",
-      "merge", "-q", "--no-ff", "--no-edit", `origin/${change}`], scratch);
+    run("git", ["worktree", "add", "-q", "--detach", scratch, base], root);
+    const onto = run("git", ["rev-parse", "HEAD"], scratch);
+    try {
+      run("git", ["-c", "user.name=Release rehearsal", "-c", "user.email=release-rehearsal@users.noreply.github.com",
+        "merge", "-q", "--no-ff", "--no-edit", change], scratch);
+    } catch {
+      const conflicts = run("git", ["diff", "--name-only", "--diff-filter=U"], scratch).split("\n").filter(Boolean);
+      run("git", ["merge", "--abort"], scratch);
+      throw new Error(`The change does not merge onto the rehearsal cleanly: ${conflicts.join(", ")}`);
+    }
     const head = run("git", ["rev-parse", "HEAD"], scratch);
+    if (run("git", ["rev-parse", "HEAD^1"], scratch) !== onto || run("git", ["rev-parse", "HEAD^2"], scratch) !== change)
+      throw new Error("The rehearsal candidate is not the rehearsal branch plus the change");
     const branch = `rehearse/${head.slice(0, 12)}`;
+    if (options.dryRun) return { dryRun: true, onto, change, head, branch, changed: run("git", ["diff", "--name-only", "HEAD^1", "HEAD"], scratch).split("\n").length };
     run("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], scratch);
     const body = join(scratch, ".rehearsal-body.md");
-    writeFileSync(body, `Rehearsal only, never merge: \`${change}\` on the release rehearsal at \`${head}\`.\n`);
+    writeFileSync(body, `Rehearsal only, never merge: \`${change}\` on the release rehearsal at \`${onto}\`.\n`);
     const url = run("gh", ["pr", "create", "--base", "main", "--head", branch, "--title",
-      `rehearse: ${change}`, "--body-file", body, "--label", label]);
-    return { branch, head, url };
+      `rehearse: ${change.slice(0, 12)}`, "--body-file", body, "--label", label]);
+    return { dryRun: false, onto, change, head, branch, url };
   } finally {
     run("git", ["worktree", "remove", "--force", scratch], root);
     rmSync(scratch, { recursive: true, force: true });
@@ -74,7 +87,11 @@ export function verifyTeardown(repository: string, pullRequest: number) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [mode, value] = process.argv.slice(2);
   const repository = process.env.GITHUB_REPOSITORY ?? "JustYannicc/basalt";
-  if (mode === "dispatch" && value) console.log(JSON.stringify(dispatchSingleWriter(process.cwd(), value)));
+  if (mode === "dispatch" && value)
+    console.log(JSON.stringify(dispatchSingleWriter(process.cwd(), value, {
+      dryRun: process.argv.includes("--dry-run"),
+      base: process.argv.includes("--local") ? "HEAD" : undefined,
+    })));
   else if (mode === "verify" && /^[1-9][0-9]*$/u.test(value ?? "")) console.log(JSON.stringify(verifyTeardown(repository, Number(value))));
-  else throw new Error("Usage: dispatch-rehearsal.ts dispatch <change-branch> | verify <pull-request>");
+  else throw new Error("Usage: dispatch-rehearsal.ts dispatch <change-head-sha> [--dry-run] [--local] | verify <pull-request>");
 }
