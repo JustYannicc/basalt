@@ -39,7 +39,11 @@ export interface GatewayFailureDiagnostic extends Partial<RuntimeRouteDiagnostic
   refusalReason: GatewayFailureDiagnostic["guard"] | ProtectionRefusal["reason"];
 }
 
-/** Fixed metadata joins the caller's retryable response, its failed history row and error trace. */
+/**
+ * Fixed metadata joins the caller's retryable response to its error trace. The failed history row
+ * keeps the attempt's identity, which the request's terminal evidence and Home usage share, so
+ * reliability counts the request once; an endpoint correlation id would never join them.
+ */
 export function gatewayUnavailable(
   env: Dependencies,
   request: Request,
@@ -47,10 +51,10 @@ export function gatewayUnavailable(
   started: number,
   defer: (work: Promise<unknown>) => void,
   diagnostic: GatewayFailureDiagnostic,
-  fallbackRequestId = crypto.randomUUID(),
+  attemptRequestId = crypto.randomUUID(),
   requestedModel?: Promise<string | null>,
 ): Response {
-  const requestId = diagnostic.runtimeEndpointRequestId ?? fallbackRequestId;
+  const requestId = diagnostic.runtimeEndpointRequestId ?? attemptRequestId;
   const pathname = new URL(request.url).pathname;
   console.error("POOL_GATEWAY_FAILURE", {
     code: "pool_protection_unavailable",
@@ -73,7 +77,7 @@ export function gatewayUnavailable(
           await withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
             recordGatewayRefusal(db, {
               ...caller,
-              requestId,
+              requestId: attemptRequestId,
               at: new Date().toISOString(),
               pathname,
               latencyMs: performance.now() - started,
