@@ -9,6 +9,18 @@ export const rehearsalScenarios = [
 ] as const;
 export type RehearsalScenario = (typeof rehearsalScenarios)[number];
 
+/**
+ * An infra-only rehearsal proves the Cloudflare-side release path without subscription accounts:
+ * no provider accounts, model traffic, pool stream or native serving check. Only the single-writer
+ * scenarios have no traffic step to lose, so only they may run this way.
+ */
+export function rehearsalInfraOnly(value: string | undefined, scenario: RehearsalScenario): boolean {
+  if (value === undefined || value === "" || value === "false") return false;
+  if (value !== "true") throw new Error("Invalid infra-only rehearsal flag");
+  if (!scenario.startsWith("single-writer")) throw new Error("Only a single-writer rehearsal runs infra-only");
+  return true;
+}
+
 export function rehearsalScenario(value: string | undefined): RehearsalScenario {
   const scenario = rehearsalScenarios.find((name) => name === value);
   if (!scenario) throw new Error("Unknown release rehearsal scenario");

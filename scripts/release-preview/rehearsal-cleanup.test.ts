@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ownRehearsalRun, provenTeardown, rehearsalCheckpoints, rehearsalCleanupRun } from "./rehearsal-cleanup.ts";
+import { nothingDeployedReceipt } from "./rehearsal.ts";
 
 const repository = "owner/basalt";
 const event = (run: Record<string, unknown>) => ({
@@ -67,4 +68,11 @@ test("the rehearsal's own cleanup job cleans only its own run", () => {
   assert.equal(ownRehearsalRun(env, repository), 99);
   for (const change of [{ GITHUB_JOB: "rehearsal" }, { GITHUB_RUN_ID: "0" }, { GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/deploy.yml@refs/heads/main` }])
     assert.throws(() => ownRehearsalRun({ ...env, ...change }, repository), /Invalid rehearsal cleanup event/);
+});
+
+test("a rehearsal that failed before deploying proves its stage holds nothing, for that stage only", () => {
+  const subject = { kind: "rehearsal", number: 8121 } as const;
+  assert.deepEqual(nothingDeployedReceipt(subject), { version: 1, stage: "test-rehearsal-8121", deployed: false, teardown: true });
+  assert.equal(provenTeardown(nothingDeployedReceipt(subject), subject), true);
+  assert.equal(provenTeardown(nothingDeployedReceipt({ kind: "rehearsal", number: 8122 }), subject), false);
 });

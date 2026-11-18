@@ -58,3 +58,19 @@ test("skips and incomplete runner output cannot create a success receipt", async
   await assert.rejects(runPreview(hooks), /missing or incomplete/);
   assert.deepEqual(calls.slice(-2), ["destroy", "verifyAbsent"]);
 });
+
+test("a run without a native serving check must name what its smoke proves, and still tears down", async () => {
+  const events: string[] = [];
+  const hooks = {
+    prepare: async () => {}, deploy: async () => void events.push("deploy"), seed: async () => {},
+    smoke: async () => ({ skipped: "infra-only" }),
+    destroy: async () => void events.push("destroy"), verifyAbsent: async () => void events.push("verify"),
+  };
+  await assert.rejects(runPreview(hooks), /smoke result/);
+  const accept = (result: unknown) => {
+    if (JSON.stringify(result) !== JSON.stringify({ skipped: "infra-only" })) throw new Error("unproven");
+  };
+  assert.deepEqual(await runPreview({ ...hooks, requireSmoke: accept }), { smoke: { skipped: "infra-only" }, teardown: true });
+  await assert.rejects(runPreview({ ...hooks, smoke: async () => ({ skipped: "other" }), requireSmoke: accept }), /unproven/);
+  assert.deepEqual(events, ["deploy", "destroy", "verify", "deploy", "destroy", "verify", "deploy", "destroy", "verify"]);
+});

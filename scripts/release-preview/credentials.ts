@@ -20,15 +20,23 @@ export function lifecycleEnvironment(source: NodeJS.ProcessEnv, mode: "deploy" |
   return Object.fromEntries(names.flatMap(name => source[name] === undefined ? [] : [[name, source[name]]]));
 }
 
-export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
-  for (const name of [
-    "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD",
-    "PREVIEW_CLAUDE_MODEL", "PREVIEW_CODEX_MODEL", ...Object.keys(loginFiles),
-  ]) {
+/** The subscription-backed inputs: provider accounts, model traffic and the native serving check. */
+export const subscriptionSmokeInputs = ["PREVIEW_CLAUDE_MODEL", "PREVIEW_CODEX_MODEL", ...Object.keys(loginFiles)] as const;
+
+/** The product sign-in a stage's pools are created through; needed even without subscriptions. */
+export function validateSmokeIdentity(source: NodeJS.ProcessEnv): void {
+  for (const name of ["PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]) {
     if (!source[name]?.trim()) throw new Error(`Missing preview smoke input: ${name}`);
   }
   if (!source.PREVIEW_SMOKE_EMAIL!.endsWith("@example.invalid")) {
     throw new Error("The preview smoke identity must use the reserved example.invalid domain");
+  }
+}
+
+export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
+  validateSmokeIdentity(source);
+  for (const name of subscriptionSmokeInputs) {
+    if (!source[name]?.trim()) throw new Error(`Missing preview smoke input: ${name}`);
   }
   for (const name of Object.keys(loginFiles)) {
     let value: unknown;

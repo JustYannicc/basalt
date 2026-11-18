@@ -45,6 +45,8 @@ jobs:
         scenario: ${{ fromJSON(github.event_name == 'push' && '["straight"]' || contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer-step4') && '["single-writer-resume","single-writer-rollback"]' || contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer') && '["single-writer"]' || '["straight","drain-resume"]') }}
     env:
       REHEARSAL_SCENARIO: ${{ matrix.scenario }}
+      # Cloudflare-side only: no subscription accounts, traffic, pool stream or serving check. The receipt records it.
+      REHEARSAL_INFRA_ONLY: ${{ contains(github.event.pull_request.labels.*.name, 'release-rehearsal-infra-only') }}
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4

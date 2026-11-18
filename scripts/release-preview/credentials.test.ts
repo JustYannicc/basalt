@@ -40,3 +40,10 @@ test("missing, malformed or real-person smoke identities fail without revealing 
   assert.throws(() => validateSmokeSecrets({ ...secrets, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
     /reserved example.invalid/);
 });
+
+test("an infra-only rehearsal needs only the smoke identity, still on the reserved domain", async () => {
+  const { validateSmokeIdentity } = await import("./credentials.ts");
+  validateSmokeIdentity({ PREVIEW_SMOKE_EMAIL: "smoke@example.invalid", PREVIEW_SMOKE_PASSWORD: "fixture" });
+  assert.throws(() => validateSmokeIdentity({ PREVIEW_SMOKE_EMAIL: "smoke@example.invalid" }), /PREVIEW_SMOKE_PASSWORD/);
+  assert.throws(() => validateSmokeIdentity({ PREVIEW_SMOKE_EMAIL: "a@b.c", PREVIEW_SMOKE_PASSWORD: "x" }), /reserved/);
+});

@@ -3,13 +3,13 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { lifecycleEnvironment, materializeSmokeSecrets, validateSmokeSecrets } from "./credentials.ts";
+import { lifecycleEnvironment, materializeSmokeSecrets, validateSmokeIdentity, validateSmokeSecrets } from "./credentials.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { privateOperation } from "./process.ts";
 import { runPreview } from "./lifecycle.ts";
 import { rehearsalReceipt, rehearsalSteps, type RehearsalHooks, type ReleaseRequest } from "./rehearsal-plan.ts";
 import { adoptedSnapshot, releaseInput, releaseOutcome, releaseWaits } from "./rehearsal-release.ts";
-import { rehearsalScenario } from "./rehearsal-stage.ts";
+import { rehearsalInfraOnly, rehearsalScenario } from "./rehearsal-stage.ts";
 import {
   seedRehearsalPools,
   verifyRehearsalPolicies,
@@ -38,13 +38,27 @@ const writerInputs = [
   "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RELEASE_REHEARSAL_SENTRY_DSN",
 ] as const;
 
-export async function executeRehearsal(root: string, subject: StageSubject, source: NodeJS.ProcessEnv) {
+/** Set once the first provider-touching step starts; before that, the stage holds nothing. */
+export type RehearsalProgress = { deployed: boolean };
+
+export async function executeRehearsal(
+  root: string,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  progress: RehearsalProgress = { deployed: false },
+) {
   if (source.GITHUB_ACTIONS !== "true") throw new Error("Release rehearsals run only in GitHub Actions");
   if (subject.kind !== "rehearsal") throw new Error("A release rehearsal needs a rehearsal stage");
   if (source.PREVIEW_MANIFEST_CHECKPOINTED !== "1")
     throw new Error("The encrypted cleanup checkpoint must be uploaded before deployment");
-  validateSmokeSecrets(source);
+  // Only this run's own receipt may reach the uploaded artifact.
+  await rm(join(root, "rehearsal-receipt.json"), { force: true });
   const scenario = rehearsalScenario(source.REHEARSAL_SCENARIO);
+  const infraOnly = rehearsalInfraOnly(source.REHEARSAL_INFRA_ONLY, scenario);
+  if (infraOnly && source.GITHUB_STEP_SUMMARY)
+    await writeFile(source.GITHUB_STEP_SUMMARY, "**Infra-only rehearsal:** no subscription accounts, pool stream or native serving check.\n", { flag: "a" });
+  if (infraOnly) validateSmokeIdentity(source);
+  else validateSmokeSecrets(source);
   const previousRoot = resolve(source.REHEARSAL_PREVIOUS_ROOT ?? "");
   const candidate = head(root);
   // A step-4 rehearsal releases later commits in the same checkout; every operation follows it.
@@ -94,7 +108,8 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   const built = new Set<string>();
   const runner: NodeJS.ProcessEnv = {};
   try {
-    const materialized = await materializeSmokeSecrets(source, join(privateRoot, "credentials"));
+    // Infra-only has no subscription logins to materialize; the runner keeps only the smoke identity.
+    const materialized = infraOnly ? source : await materializeSmokeSecrets(source, join(privateRoot, "credentials"));
     for (const name of ["PATH", "LANG", "RUNNER_TEMP", "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD",
       "PREVIEW_CLAUDE_AUTH_FILE", "PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE", "PREVIEW_CODEX_CLI_AUTH_FILE",
       "PREVIEW_CLAUDE_MODEL", "PREVIEW_CODEX_MODEL"] as const)
@@ -122,6 +137,8 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         // Production's post-deploy checks, against the stage's own host while its brand is in place.
         // The public-site smoke isn't rehearsed: a disposable stage has no public site.
         await operation("assert-pool-image", which, "scripts/deploy-safety/assert-pool-image.ts", [], environment, 10);
+        // The pool stream is a model turn; an infra-only rehearsal has no account to stream it with.
+        if (infraOnly) return;
         await operation("pool-stream", which, "scripts/verify-pool-stream.ts", [], {
           ...environment,
           POOL_ACCEPTANCE_KEY: access?.modelKey,
@@ -165,12 +182,19 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
           PREVIEW_SMOKE_ORGANIZATION_ID: manifest.organizationId, PREVIEW_SMOKE_POOL_APP_ID: manifest.poolAppId,
           POOL_ACCEPTANCE_ACCOUNTS_FILE: join(privateRoot, "provider-accounts.json"),
         });
-        await operation("provider-account-setup", root, "scripts/pool-acceptance/preview-accounts.ts", [], runner, 30);
-        const config = await previewConfigFromEnvironment(runner);
-        model = config.models.codex;
+        // Infra-only: an account-less clean pool, which the promotion gate's candidate probe still uses.
+        const accounts = infraOnly
+          ? []
+          : await (async () => {
+              await operation("provider-account-setup", root, "scripts/pool-acceptance/preview-accounts.ts", [], runner, 30);
+              const config = await previewConfigFromEnvironment(runner);
+              model = config.models.codex;
+              return config.accounts;
+            })();
         const seed = await seedRehearsalPools({
+          infraOnly,
           origin: manifest.origin, email: source.PREVIEW_SMOKE_EMAIL!, password: source.PREVIEW_SMOKE_PASSWORD!,
-          organizationId: manifest.organizationId, poolAppId: manifest.poolAppId, accounts: config.accounts,
+          organizationId: manifest.organizationId, poolAppId: manifest.poolAppId, accounts,
         });
         access = seed.access;
         cleanPool = seed.cleanPool;
@@ -231,6 +255,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       startTraffic: () => modelTraffic(access!, model, controller.signal),
       waits: () => releaseWaits(join(root, ".local", "release-barrier")),
       serve: async () => {
+        if (infraOnly) return { skipped: "infra-only" };
         const resultPath = join(privateRoot, "smoke-result.json");
         await operation("native-smoke", root, "scripts/pool-acceptance.ts", [], {
           ...runner, PREVIEW_CLAUDE_AUTH_FILE: undefined, PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE: undefined,
@@ -260,7 +285,10 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         await readFile(manifestPath(root, subject));
         if (controller.signal.aborted) throw new Error("Rehearsal cancelled");
       },
-      deploy: steps.deploy,
+      deploy: async () => {
+        progress.deployed = true;
+        await steps.deploy();
+      },
       seed: steps.seed,
       smoke: async () => {
         try {
@@ -269,12 +297,21 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
           if (access) await revokeTraffic(runner, cleanPool, access).catch(() => {});
         }
       },
+      // Infra-only runs no native serving check; its smoke must say so and nothing else.
+      ...(infraOnly
+        ? {
+            requireSmoke: (result: unknown) => {
+              if (JSON.stringify(result) !== JSON.stringify({ skipped: "infra-only" }))
+                throw new Error("The infra-only rehearsal ran a serving check it cannot prove");
+            },
+          }
+        : {}),
       destroy: () => operation("destroy", root, "scripts/preview/lifecycle.ts", ["destroy", slug], cleanupEnvironment, 15),
       verifyAbsent: () => operation("verify-absence", root, "scripts/preview/lifecycle.ts", ["verify", slug], cleanupEnvironment, 15),
     });
     const receipt =
       "steps" in steps.record
-        ? { version: 1, candidate, finalCandidate: current, baseline, stage, ...steps.record, serving: true, teardown: outcome.teardown }
+        ? { version: 1, candidate, finalCandidate: current, baseline, stage, ...steps.record, infraOnly, serving: !infraOnly, teardown: outcome.teardown }
         : rehearsalReceipt(steps.record, { candidate, previous, stage }, outcome.teardown);
     await writeFile(join(root, "rehearsal-receipt.json"), `${JSON.stringify(receipt)}\n`, { flag: "wx", mode: 0o600 });
     console.log("Release rehearsal and remote teardown passed");
@@ -284,6 +321,11 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
     await rm(privateRoot, { recursive: true, force: true });
   }
 }
+
+/** A stage that never reached a provider step: cleanup and verify accept it as torn down. */
+export const nothingDeployedReceipt = (subject: StageSubject) => ({
+  version: 1, stage: stageNames(subject).stage, deployed: false, teardown: true,
+});
 
 /** The traffic computer is the rehearsal's own credential; it goes before the stack does. */
 async function revokeTraffic(runner: NodeJS.ProcessEnv, cleanPool: string, access: RehearsalPoolAccess) {
@@ -298,13 +340,20 @@ async function revokeTraffic(runner: NodeJS.ProcessEnv, cleanPool: string, acces
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const progress: RehearsalProgress = { deployed: false };
+  let subject: StageSubject | undefined;
   try {
-    await executeRehearsal(process.cwd(), parseSubjectArgument(process.argv[2]), process.env);
+    subject = parseSubjectArgument(process.argv[2]);
+    await executeRehearsal(process.cwd(), subject, process.env, progress);
   } catch (error) {
     // Child output stays private; these messages are the runner's own fixed, credential-free labels.
     const messages = error instanceof AggregateError ? error.errors : [error];
     for (const item of messages) console.error(`::error::${item instanceof Error ? item.message : "Release rehearsal failed"}`);
-    console.error("Release rehearsal failed; no rehearsal receipt was written. Release cleanup recovers any remaining stage.");
     process.exitCode = 1;
+    if (subject?.kind === "rehearsal" && !progress.deployed) {
+      // Failed before its first provider step: the stage holds nothing, so there is nothing to tear down.
+      await writeFile(join(process.cwd(), "rehearsal-receipt.json"), `${JSON.stringify(nothingDeployedReceipt(subject))}\n`, { mode: 0o600 });
+      console.error("Release rehearsal failed before deploying anything; its receipt records that the stage holds nothing.");
+    } else console.error("Release rehearsal failed; no rehearsal receipt was written. Release cleanup recovers any remaining stage.");
   }
 }

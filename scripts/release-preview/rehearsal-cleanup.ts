@@ -109,6 +109,8 @@ async function main(): Promise<void> {
         try { receipt = JSON.parse(text); } catch { receipt = undefined; }
         if (provenTeardown(receipt, subject)) continue;
       }
+      // Each stage's failure names its phase with a fixed label; provider output stays in the private logs.
+      let phase = "download";
       const operation = (mode: string) =>
         privateOperation({
           label: mode, command: process.execPath, args: ["scripts/preview/lifecycle.ts", mode, slug], directory: root,
@@ -122,16 +124,22 @@ async function main(): Promise<void> {
         if (entries.length !== 1 || entries[0] !== "preview-plan.json.enc") throw new Error("Invalid rehearsal checkpoint archive");
         const encryptedPath = join(privateRoot, `${slug}.json.enc`);
         await writeFile(encryptedPath, execFileSync("unzip", ["-p", zipPath, "preview-plan.json.enc"], { maxBuffer: 2 * 1024 * 1024 }), { mode: 0o600 });
+        phase = "restore";
         await checkpoint("restore", root, encryptedPath, process.env.PREVIEW_STATE_KEY ?? "", subject);
-        let failure: unknown;
-        try { await operation("destroy"); } catch (error) { failure = error; }
+        phase = "destroy";
+        let destroyed = true;
+        try { await operation("destroy"); } catch { destroyed = false; }
+        phase = destroyed ? "verify" : "destroy and verify";
         await operation("verify");
-        if (failure) throw failure;
-      } catch (error) {
-        failures.push(error);
+        if (!destroyed) { phase = "destroy"; throw new Error("destroy"); }
+      } catch {
+        failures.push(new Error(`${slug}: ${phase} failed`));
       }
     }
-    if (failures.length) throw new AggregateError(failures, "Rehearsal cleanup did not finish");
+    if (failures.length) {
+      for (const failure of failures) console.error(`::error::Rehearsal cleanup ${(failure as Error).message}`);
+      throw new AggregateError(failures, "Rehearsal cleanup did not finish");
+    }
     console.log("Temporary release rehearsal resources are absent");
   } finally {
     await rm(privateRoot, { recursive: true, force: true });

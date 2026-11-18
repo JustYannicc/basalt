@@ -200,3 +200,13 @@ test("the verifier refuses any other policy shape", () => {
       (error) => error instanceof RehearsalRefusal && message.test(error.message),
     );
 });
+
+test("an infra-only seed creates the same pools with no accounts and claims no traffic computer", async () => {
+  const host = fakeHost();
+  const seed = await seedRehearsalPools({ ...input, accounts: [], infraOnly: true, emptyCount: 2, fetch: host.fetch });
+  assert.deepEqual(seed, { cleanPool: "app_pool0", emptyPools: ["app_pool1", "app_pool2"] });
+  for (const pool of ["app_preview", "app_pool0", ...seed.emptyPools])
+    assert.equal(host.links.get(pool)?.size ?? 0, 0, pool);
+  assert.ok(host.calls.every((call) => call.method !== "PUT" && !call.path.includes("computer")));
+  await assert.rejects(seedRehearsalPools({ ...input, infraOnly: true, emptyCount: 2, fetch: host.fetch }), /no accounts/);
+});

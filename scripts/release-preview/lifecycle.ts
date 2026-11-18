@@ -5,6 +5,8 @@ export type PreviewHooks = {
   deploy(): Promise<void>;
   seed(): Promise<void>;
   smoke(): Promise<unknown>;
+  /** Defaults to the native serving check's own receipt; a run without one names what it proves instead. */
+  requireSmoke?(result: unknown): void;
   destroy(): Promise<void>;
   verifyAbsent(): Promise<void>;
 };
@@ -22,7 +24,7 @@ export async function runPreview(hooks: PreviewHooks): Promise<PreviewOutcome> {
     await hooks.deploy();
     await hooks.seed();
     result = await hooks.smoke();
-    requireSuccessfulSmoke(result);
+    (hooks.requireSmoke ?? requireSuccessfulSmoke)(result);
   } catch (error) { failure = error; }
 
   if (deploymentAttempted) {

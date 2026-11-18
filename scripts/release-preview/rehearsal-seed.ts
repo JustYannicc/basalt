@@ -17,6 +17,8 @@ export interface RehearsalSeedInput {
   readonly poolAppId: string;
   /** The stage's saved provider accounts, as written to the acceptance accounts file. */
   readonly accounts: readonly PreviewSavedAccount[];
+  /** No subscription accounts: the clean pool stays account-less and no traffic computer is claimed. */
+  readonly infraOnly?: boolean;
   readonly emptyCount?: number;
   readonly fetch?: typeof fetch;
 }
@@ -32,7 +34,8 @@ export interface RehearsalSeed {
   /** The executor app id. PoolWorker keys policies by it and the availability target names it. */
   readonly cleanPool: string;
   readonly emptyPools: readonly string[];
-  readonly access: RehearsalPoolAccess;
+  /** Absent for an infra-only seed, which claims no traffic computer. */
+  readonly access?: RehearsalPoolAccess;
 }
 
 export interface RehearsalPolicy {
@@ -113,7 +116,8 @@ export async function seedRehearsalPools(input: RehearsalSeedInput): Promise<Reh
   const emptyCount = input.emptyCount ?? rehearsalEmptyPoolCount;
   if (!Number.isSafeInteger(emptyCount) || emptyCount < 0 || emptyCount > 20)
     throw new AcceptanceFailure("Rehearsal empty pool count must be between 0 and 20");
-  requireAccounts(input.accounts);
+  if (!input.infraOnly) requireAccounts(input.accounts);
+  else if (input.accounts.length) throw new AcceptanceFailure("An infra-only seed takes no accounts");
   const preview = new PreviewClient(input, { fetch: input.fetch });
   await preview.signIn();
   try {
@@ -128,6 +132,7 @@ export async function seedRehearsalPools(input: RehearsalSeedInput): Promise<Reh
       pools.push(id);
     }
     const [cleanPool, ...emptyPools] = pools as [string, ...string[]];
+    if (input.infraOnly) return { cleanPool, emptyPools };
     const clean = new PreviewClient({ ...input, poolAppId: cleanPool }, { fetch: input.fetch });
     await clean.signIn();
     try {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { commitPreviousCandidate } from "./rehearsal-previous.ts";
-import { rehearsalNumber, rehearsalScenario } from "./rehearsal-stage.ts";
+import { rehearsalInfraOnly, rehearsalNumber, rehearsalScenario } from "./rehearsal-stage.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], {
@@ -86,4 +86,14 @@ test("a single-change rehearsal's baseline is its merge candidate's first parent
   assert.equal(checkoutChangeBaseline(repo, join(root, "baseline")), rehearsal);
   assert.equal(readFileSync(join(root, "baseline", "c.ts"), "utf8"), "rehearsal");
   assert.throws(() => readFileSync(join(root, "baseline", "b.ts")));
+});
+
+test("only a single-writer rehearsal may run infra-only, and only when asked exactly", () => {
+  for (const scenario of ["single-writer", "single-writer-resume", "single-writer-rollback"] as const) {
+    assert.equal(rehearsalInfraOnly("true", scenario), true);
+    for (const off of [undefined, "", "false"]) assert.equal(rehearsalInfraOnly(off, scenario), false);
+    assert.throws(() => rehearsalInfraOnly("1", scenario), /Invalid/);
+  }
+  for (const scenario of ["straight", "drain-resume"] as const)
+    assert.throws(() => rehearsalInfraOnly("true", scenario), /single-writer/);
 });
