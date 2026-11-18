@@ -51,6 +51,7 @@ const { positionals, values } = parseArgs({
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
+    "root-boot": { type: "string" },
   },
 });
 const command = positionals[0] ?? "";
@@ -131,10 +132,26 @@ if (command === "compare") {
   process.exit(0);
 }
 
-if (command === "accept") {
+if (command === "boot" || command === "accept") {
   // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
-  const { runAcceptance } = await import("./acceptance.ts");
+  const { Schema } = await import("effect");
+  const { runAcceptance, servingBoot } = await import("./acceptance.ts");
   const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
+  const client = process.env.POOL_ACCEPTANCE_ORIGIN
+    ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
+    : new PoolAcceptanceClient();
+  if (command === "boot") {
+    // Read before the apply: the root serves alone until a fleet is enabled.
+    const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client);
+    await output(resolve(values.out ?? ""), { boot });
+    await summary("The root's boot is recorded before the apply.");
+    process.exit(0);
+  }
+  const rootBoot = values["root-boot"]
+    ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
+        JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
+      ).boot
+    : undefined;
   const expect = values.expect ?? "same-boot";
   if (!["same-boot", "two-runtimes", "any"].includes(expect))
     throw new Error(`Unknown --expect ${expect}`);
@@ -142,9 +159,8 @@ if (command === "accept") {
     apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
     ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
     expect: expect as "same-boot",
-    ...(process.env.POOL_ACCEPTANCE_ORIGIN
-      ? { client: new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN }) }
-      : {}),
+    ...(rootBoot ? { rootBoot } : {}),
+    client,
   });
   // Failure messages can name hosts; the public record keeps counts and timings only.
   const view = {

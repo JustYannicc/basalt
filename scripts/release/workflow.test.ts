@@ -177,6 +177,7 @@ test("every production entry call the workflow makes is one the entry accepts", 
         "serving",
         "backup",
         "snapshot",
+        "boot",
         "apply",
         "accept",
         "rollback",
@@ -203,11 +204,32 @@ test("production secrets reach only the steps that run the entry", () => {
     "Keep the plan and the counts",
   ])
     assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
-  assert.equal(secretSteps.length, 10);
+  assert.equal(secretSteps.length, 11);
 });
 
 test("acceptance covers the public app as well as the pool", () => {
   const accept = step("Accept the release through the live pool");
   const [pool, app] = [accept.indexOf("deploy.ts accept"), accept.indexOf("node scripts/smoke.ts")];
   assert.ok(pool >= 0 && app > pool);
+});
+
+test("the root's boot is read before the apply and must still serve after it", () => {
+  const [boot, apply, accept] = order(
+    "Record the root's boot before the apply",
+    "Apply the reviewed plan",
+    "Accept the release through the live pool",
+  );
+  assert.ok(boot! < apply! && apply! < accept!);
+  assert.match(
+    step("Record the root's boot before the apply"),
+    /deploy\.ts boot --stage production --out \.local\/release\/root-boot\.json/u,
+  );
+  assert.match(
+    step("Accept the release through the live pool"),
+    /--root-boot \.local\/release\/root-boot\.json/u,
+  );
+  assert.match(
+    step("Accept the release through the live pool"),
+    /env\.POLICY_NAME == 'code' \|\| env\.POLICY_NAME == 'cutover-code'\) && 'same-boot'/u,
+  );
 });

@@ -11,7 +11,14 @@ export interface AcceptanceOptions {
   readonly model?: string;
   readonly burst?: number;
   readonly expect: "same-boot" | "two-runtimes" | "any";
+  /** The root's boot read before the apply: no release may restart the root, whatever it serves. */
+  readonly rootBoot?: string;
   readonly client?: PoolAcceptanceClient;
+}
+
+/** The boot of the runtime serving the pool now: the root while no fleet cell serves. */
+export async function servingBoot(apiKey: string, client = new PoolAcceptanceClient()) {
+  return (await client.modelCatalog(apiKey)).boot;
 }
 
 export interface AcceptanceResult {
@@ -56,11 +63,15 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
   const distinct = [...new Set(boots)];
   const cause = failures.length
     ? `${failures.length} of ${(options.burst ?? 25) + 2} requests failed: ${[...new Set(failures)].join("; ")}`
-    : options.expect === "same-boot" && distinct.length !== 1
-      ? `The root changed boot during acceptance (${distinct.length} boots)`
-      : options.expect === "two-runtimes" && distinct.length < 2
-        ? "Every request was served by one runtime; no fleet cell served"
-        : undefined;
+    : options.rootBoot !== undefined &&
+        (!distinct.includes(options.rootBoot) ||
+          (options.expect === "same-boot" && distinct.length !== 1))
+      ? `The root restarted: boot ${options.rootBoot} before the apply, ${distinct.join(", ")} after`
+      : options.expect === "same-boot" && distinct.length !== 1
+        ? `The root changed boot during acceptance (${distinct.length} boots)`
+        : options.expect === "two-runtimes" && distinct.length < 2
+          ? "Every request was served by one runtime; no fleet cell served"
+          : undefined;
   return {
     passed: cause === undefined,
     requests: (options.burst ?? 25) + 2,

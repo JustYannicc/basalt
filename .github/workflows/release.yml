@@ -288,6 +288,11 @@ jobs:
         if: env.MODE == 'apply'
         # A code-only release changes no data by itself; skip the multi-million-row count then.
         run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code') && '--light' || '' }}
+      # No release may restart the root: its boot is read now and must still serve after the apply.
+      - name: Record the root's boot before the apply
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json
       - name: What was verified before the irreversible step
         if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
         run: |
@@ -317,7 +322,7 @@ jobs:
         # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
         # release may change the hosted app's Workers too.
         run: |
-          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance.json
+          bun scripts/release/deploy.ts accept --stage production --expect ${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }} --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
           node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
