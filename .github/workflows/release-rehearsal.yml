@@ -206,7 +206,7 @@ jobs:
       - name: List, delete and verify rehearsal registry images
         run: |
           node scripts/release-preview/rehearsal-registry-cleanup.ts list
-          npx --yes wrangler@4.155.0 containers images list --filter '^basalt-rehearsal-' --json > "$RUNNER_TEMP/images.json"
+          npx --yes wrangler@4.155.0 containers images list --filter '^[0-9a-f]{32}/basalt-rehearsal-' --json > "$RUNNER_TEMP/images.json"
           node scripts/release-preview/rehearsal-registry-cleanup.ts refs "$RUNNER_TEMP/images.json" > "$RUNNER_TEMP/refs.txt"
           while IFS= read -r ref; do
             [ -n "$ref" ] && npx --yes wrangler@4.155.0 containers images delete "$ref" > /dev/null && echo "deleted ${ref%%:*}"
