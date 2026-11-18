@@ -1,0 +1,54 @@
+name: Allowance seed renewal
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: allowance-seed
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Renew the seed from current sources
+        run: |
+          node scripts/allowance-seed.ts --write --body-file "$RUNNER_TEMP/allowance-seed.md" \
+            --overdue-file "$RUNNER_TEMP/allowance-seed-overdue.txt"
+      - name: Open the renewal
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_UPDATE_TOKEN }}
+          branch: allowance-seed/latest
+          title: "chore(pool): renew the allowance seed"
+          commit-message: "chore(pool): renew the allowance seed"
+          body-path: ${{ runner.temp }}/allowance-seed.md
+          draft: false
+          add-paths: |
+            src/pool/allowances/seed.json
+      # Overdue means a committed row expires within 7 days while its own source already runs
+      # later; the run stays red until the renewal merges.
+      - name: Fail while main ships an overdue seed
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -s "$RUNNER_TEMP/allowance-seed-overdue.txt" ]; then
+            cat "$RUNNER_TEMP/allowance-seed-overdue.txt"
+            exit 1
+          fi
