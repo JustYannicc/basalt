@@ -1,5 +1,5 @@
 // Rules for child processes and node:test: keep a failure's reason, and test the real thing.
-import { SPAWNERS, importedNames, isTest, keyName, propertyName } from "./ast.mjs";
+import { SPAWNERS, isTest, keyName, propertyName, resolved, unwrap } from "./ast.mjs";
 
 // git subcommands whose exit status is the whole answer.
 const GIT_PROBES = new Set([
@@ -12,27 +12,45 @@ const GIT_PROBES = new Set([
   "check-ignore",
   "ls-files",
 ]);
+const DISCARDED_SHELL = /2>\s*(?:\/dev\/null|&-)/u;
 const NODE_TEST = /^(?:node:)?test$/u;
 const NODE_TEST_REPLACERS = new Set(["method", "module", "property", "getter", "setter"]);
 const TEST_CALLS = new Set(["test", "it", "describe", "suite"]);
 const HOOK_CALLS = new Set(["before", "after", "beforeEach", "afterEach"]);
+const RUNNERS = new Set([...SPAWNERS, "spawn", "$"]);
+
+// The options object, read through a local constant, a cast or spreads of other constants.
+const optionProperties = (context, node, depth = 0) => {
+  const options = resolved(context, node);
+  if (options?.type !== "ObjectExpression" || depth > 3) return [];
+  return options.properties.flatMap((property) =>
+    property.type === "SpreadElement"
+      ? optionProperties(context, property.argument, depth + 1)
+      : [property],
+  );
+};
 
 export const noDiscardedChildOutput = {
   meta: { type: "problem", docs: { description: "A child process keeps its error output." } },
   create(context) {
     if (isTest(context)) return {};
-    const ignored = (node) => node?.type === "Literal" && node.value === "ignore";
+    const message =
+      "The child's stderr is discarded, so when it exits non-zero the error can only say it failed. Pipe stderr and attach a bounded, redacted tail of it to the error.";
+    const ignored = (node) => {
+      const value = resolved(context, node);
+      return value?.type === "Literal" && value.value === "ignore";
+    };
     return {
       CallExpression(node) {
-        if (!SPAWNERS.has(propertyName(node.callee))) return;
+        const name = propertyName(node.callee);
+        // Bun.spawn(...) and Bun.spawnSync(...) name it stderr.
+        if (!RUNNERS.has(name)) return;
         const [command, args] = node.arguments;
+        const list = resolved(context, args);
         const subcommand =
-          args?.type === "ArrayExpression"
-            ? args.elements.find(
-                (element) =>
-                  element?.type === "Literal" &&
-                  !String(element.value).startsWith("-") &&
-                  element.value !== "-C",
+          list?.type === "ArrayExpression"
+            ? list.elements.find(
+                (element) => element?.type === "Literal" && !String(element.value).startsWith("-"),
               )
             : undefined;
         if (
@@ -41,16 +59,30 @@ export const noDiscardedChildOutput = {
           GIT_PROBES.has(String(subcommand?.value))
         )
           return;
-        for (const options of node.arguments) {
-          if (options?.type !== "ObjectExpression") continue;
-          const stdio = options.properties.find((property) => keyName(property) === "stdio")?.value;
-          if (ignored(stdio) || (stdio?.type === "ArrayExpression" && ignored(stdio.elements[2])))
-            context.report({
-              node: stdio,
-              message:
-                "The child's stderr is discarded, so when it exits non-zero the error can only say it failed. Pipe stderr and attach a bounded, redacted tail of it to the error.",
-            });
-        }
+        const words = [command, ...(list?.type === "ArrayExpression" ? list.elements : [])];
+        const shell = words.find(
+          (word) =>
+            word?.type === "Literal" &&
+            typeof word.value === "string" &&
+            DISCARDED_SHELL.test(word.value),
+        );
+        if (shell) return context.report({ node: shell, message });
+        for (const argument of node.arguments.slice(1))
+          for (const property of optionProperties(context, argument)) {
+            const key = keyName(property);
+            const value = unwrap(property.value);
+            const discarded =
+              (key === "stdio" &&
+                (ignored(value) ||
+                  (value?.type === "ArrayExpression" && ignored(value.elements[2])))) ||
+              (key === "stderr" && ignored(value));
+            // Report where the call is when the option comes from a shared constant.
+            if (discarded)
+              context.report({
+                node: property.parent === unwrap(argument) ? property : argument,
+                message,
+              });
+          }
       },
     };
   },
@@ -63,7 +95,16 @@ export const noNodeTestDoubles = {
   },
   create(context) {
     if (!isTest(context)) return {};
-    const mocks = importedNames(context, NODE_TEST);
+    // `import { mock as m } from "node:test"` is still the mock tracker.
+    const mocks = new Set();
+    for (const statement of context.sourceCode.ast.body)
+      if (statement.type === "ImportDeclaration" && NODE_TEST.test(statement.source.value))
+        for (const specifier of statement.specifiers)
+          if (
+            specifier.type === "ImportSpecifier" &&
+            (specifier.imported.name ?? specifier.imported.value) === "mock"
+          )
+            mocks.add(specifier.local.name);
     const message =
       "This replaces a dependency's behaviour, so the test proves the replacement, not the code. Run the real implementation; for an external API, run the real client against a local server that serves a recorded response. Observation-only spies (mock.fn() with no implementation) are fine.";
     return {
@@ -73,7 +114,7 @@ export const noNodeTestDoubles = {
         const method = propertyName(callee);
         const owner = callee.object;
         const isMock =
-          (owner.type === "Identifier" && owner.name === "mock" && mocks.has("mock")) ||
+          (owner.type === "Identifier" && mocks.has(owner.name)) ||
           (owner.type === "MemberExpression" && propertyName(owner) === "mock");
         if (!isMock) return;
         // Clock control and output capture are not dependency behaviour.
@@ -101,12 +142,10 @@ export const noNodeTestFlakeMasking = {
       "Do not raise a test's timeout. Wait on the event the test depends on, or move slow shared setup into a before hook.";
     const skip =
       "Do not skip a test on a condition. If it needs a tool or a service, make that a declared prerequisite so the test fails loudly when it is missing.";
-    const inspect = (options, keys) => {
-      if (options?.type !== "ObjectExpression") return;
-      for (const property of options.properties) {
+    const inspect = (options, timeouts) => {
+      for (const property of optionProperties(context, options)) {
         const key = keyName(property);
-        if (keys.has("timeout") && key === "timeout")
-          context.report({ node: property, message: timeout });
+        if (timeouts && key === "timeout") context.report({ node: property, message: timeout });
         if (
           (key === "skip" || key === "todo") &&
           !(property.value.type === "Literal" && property.value.value === false)
@@ -123,13 +162,13 @@ export const noNodeTestFlakeMasking = {
           if (TEST_CALLS.has(owner) || /^(?:t|context|ctx)$/u.test(owner ?? ""))
             return context.report({ node, message: skip });
         }
-        // Landmines covers test/it/describe timeouts; these are the node:test forms it does not see.
-        if (callee.type === "MemberExpression" && name === "test")
-          inspect(node.arguments[1], new Set(["timeout"]));
+        // landmines covers test/it/describe timeouts; these are the node:test forms it does not see.
+        if (callee.type === "MemberExpression" && (name === "test" || HOOK_CALLS.has(name)))
+          inspect(node.arguments[1], true);
         else if (callee.type === "Identifier" && HOOK_CALLS.has(name))
-          inspect(node.arguments[1], new Set(["timeout"]));
+          inspect(node.arguments[1], true);
         else if (callee.type === "Identifier" && TEST_CALLS.has(name))
-          inspect(node.arguments[1], new Set());
+          inspect(node.arguments[1], false);
       },
     };
   },

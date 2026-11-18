@@ -1,11 +1,13 @@
 // Rules for code that calls providers: what goes into a request, how a response is decoded,
 // how a write is compared with its read-back, and who may call Cloudflare directly.
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   PROVIDER_SDK,
   SPAWNERS,
+  addAliases,
   filePath,
+  importAliases,
   importedNames,
   isTest,
   keyName,
@@ -14,30 +16,50 @@ import {
   requestTypeAnnotation,
   sdkCall,
   typedParameter,
+  unwrap,
   variableInit,
 } from "./ast.mjs";
 
 const CLOUDFLARE_SDK = /^(?:@distilled\.cloud\/cloudflare|cloudflare)(?:\/|$)/u;
 const CLOUDFLARE_API = /https?:\/\/api\.cloudflare\.com|\/client\/v4(?:\/|$)/u;
-// Files that talk to a provider: an SDK, Alchemy, or HTTP. Rule d only applies there.
+const WRANGLER = /(?:^|[\s/])wrangler(?:[\s@]|$)/u;
+// Files that talk to a provider: an SDK, Alchemy, or HTTP. The read-back rule applies only there.
 const PROVIDER_FACING =
   /from\s+["'](?:@distilled\.cloud\/|alchemy(?:\/|["'])|@octokit\/|cloudflare(?:\/|["']))|\b(?:fetch|fetcher)\s*\(|\bprovider\??\.\w+\s*\(|HttpClient\b|https?:\/\/api\./u;
 // scripts/process.ts run(command, args) and its siblings start processes too.
 const COMMAND_RUNNERS = new Set([...SPAWNERS, "run", "runCommand", "capture"]);
 const RUNNERS = new Set(["npx", "bunx", "pnpx", "pnpm", "yarn", "bun", "npm"]);
-const SERIALIZERS = new Set(["canonical", "canonicalJson", "stableStringify"]);
-const DIGESTS = /^(?:digest|hash|sha256|sha1|fingerprint)\w*$/iu;
-const DEEP_EQUAL = new Set(["isDeepStrictEqual", "deepStrictEqual", "deepEqual", "isEqual"]);
+const SERIALIZER = /^(?:canonical|stable)\w*$|Stringify$|^stringify$/u;
+const DIGEST = /^(?:digest|hash|sha\d*|fingerprint)\w*$/iu;
+const DEEP_EQUAL = new Set([
+  "isDeepStrictEqual",
+  "deepStrictEqual",
+  "deepEqual",
+  "isEqual",
+  "equals",
+]);
 const EQUIVALENCE_MODULE = /-equivalence\.[cm]?[jt]s$/u;
 const EQUIVALENCE_NAME = /^equivalent[A-Z]\w*$|^\w+Equivalent$/u;
-// Every object spread of a non-literal value inside a request value, at any depth. Copying a
-// list (`[...tags]`) is fine; spreading an object copies keys nobody named.
-function* spreads(node) {
+const RECORDED_IMPORT =
+  /^\s*import\b[^;]*?\bfrom\s+["']([^"']*(?:-shapes?|recorded-[^"'/]*|prod-shapes\/[^"']*)(?:\.[cm]?[jt]s)?)["']/gmu;
+
+// A copy of a whole object: Object.assign, Object.fromEntries, structuredClone.
+const copies = (node) =>
+  node.type === "CallExpression" &&
+  ((memberRoot(node.callee) === "Object" &&
+    ["assign", "fromEntries"].includes(propertyName(node.callee))) ||
+    (node.callee.type === "Identifier" && node.callee.name === "structuredClone"));
+
+// Every object spread or whole-object copy of a non-literal value inside a request value, at
+// any depth. Copying a list (`[...tags]`) is fine; spreading an object copies keys nobody named.
+function* spreads(input) {
+  const node = unwrap(input);
   if (!node || typeof node !== "object") return;
   if (node.type === "ObjectExpression") {
     for (const property of node.properties)
       if (property.type !== "SpreadElement") yield* spreads(property.value);
-      else if (property.argument.type === "ObjectExpression") yield* spreads(property.argument);
+      else if (unwrap(property.argument).type === "ObjectExpression")
+        yield* spreads(property.argument);
       else {
         yield property;
         yield* spreads(property.argument);
@@ -49,11 +71,14 @@ function* spreads(node) {
     yield* spreads(node.consequent);
     yield* spreads(node.alternate);
   } else if (node.type === "LogicalExpression") yield* spreads(node.right);
+  else if (
+    copies(node) &&
+    node.arguments.some((argument) => unwrap(argument).type !== "ObjectExpression")
+  )
+    yield node;
   // withoutNull({ ... }) and similar wrappers pass the value through.
   else if (node.type === "CallExpression" && node.callee.type === "Identifier")
     for (const argument of node.arguments) yield* spreads(argument);
-  else if (node.type === "TSAsExpression" || node.type === "TSSatisfiesExpression")
-    yield* spreads(node.expression);
 }
 
 export const noSpreadIntoProviderRequest = {
@@ -76,8 +101,8 @@ export const noSpreadIntoProviderRequest = {
     const reportSpreads = (value) => {
       for (const node of spreads(value)) context.report({ node, message: spreadMessage });
     };
+    // Schema.decodeUnknownSync(Schema.toType(Workers.PutScriptMetadata), options)(input)
     const strictRequestDecode = (node) => {
-      // Schema.decodeUnknownSync(Schema.toType(Workers.PutScriptMetadata), options)(input)
       const decoder = node.callee;
       if (decoder.type !== "CallExpression") return false;
       const [schema] = decoder.arguments;
@@ -86,26 +111,24 @@ export const noSpreadIntoProviderRequest = {
     };
     return {
       CallExpression(node) {
-        if (sdkCall(node, sdk)) {
-          const [request] = node.arguments;
-          if (!request) return;
-          if (request.type === "ObjectExpression") return reportSpreads(request);
-          if (request.type === "Identifier") {
-            const declarator = variableInit(context, request);
-            if (declarator && requestTypeAnnotation(declarator.id.typeAnnotation, types))
-              return reportSpreads(declarator.init);
-            if (typedParameter(context, request, types)) return;
-            context.report({ node: request, message: wholeMessage });
-            return;
-          }
-          if (request.type === "CallExpression" || request.type === "MemberExpression")
-            context.report({ node: request, message: wholeMessage });
+        if (!sdkCall(node, sdk)) {
+          if (strictRequestDecode(node))
+            for (const argument of node.arguments) reportSpreads(argument);
           return;
         }
-        if (strictRequestDecode(node))
-          for (const argument of node.arguments) reportSpreads(argument);
+        const request = unwrap(node.arguments[0]);
+        if (!request) return;
+        if (request.type === "ObjectExpression") return reportSpreads(request);
+        if (request.type === "Identifier") {
+          const declarator = variableInit(context, request);
+          if (declarator && requestTypeAnnotation(declarator.id.typeAnnotation, types))
+            return reportSpreads(declarator.init);
+          if (typedParameter(context, request, types)) return;
+        }
+        context.report({ node: request, message: wholeMessage });
       },
       VariableDeclarator(node) {
+        addAliases(node, sdk);
         if (requestTypeAnnotation(node.id.typeAnnotation, types)) reportSpreads(node.init);
       },
       ReturnStatement(node) {
@@ -163,21 +186,6 @@ export const noStrictProviderDecode = {
   },
 };
 
-const serialization = (node) => {
-  if (node?.type !== "CallExpression") return false;
-  const name = propertyName(node.callee);
-  if (!name) return false;
-  if (name === "stringify")
-    return node.callee.type === "MemberExpression" && memberRoot(node.callee) === "JSON";
-  if (SERIALIZERS.has(name)) return true;
-  const [value] = node.arguments;
-  return (
-    DIGESTS.test(name) &&
-    (serialization(value) ||
-      value?.type === "ObjectExpression" ||
-      value?.type === "ArrayExpression")
-  );
-};
 const insideEquivalenceHelper = (context, node) => {
   if (!EQUIVALENCE_MODULE.test(filePath(context))) return false;
   for (let current = node.parent; current; current = current.parent) {
@@ -188,6 +196,19 @@ const insideEquivalenceHelper = (context, node) => {
           ? current.parent.id.name
           : undefined;
     if (name && EQUIVALENCE_NAME.test(name)) return true;
+  }
+  return false;
+};
+// The helper's test must import a recorded-shapes module that exists next to it.
+const provenOnRecording = (test) => {
+  if (!existsSync(test)) return false;
+  for (const [, specifier] of readFileSync(test, "utf8").matchAll(RECORDED_IMPORT)) {
+    const target = resolve(dirname(test), specifier);
+    if (
+      existsSync(target) ||
+      ["ts", "mts", "js", "mjs"].some((extension) => existsSync(`${target}.${extension}`))
+    )
+      return true;
   }
   return false;
 };
@@ -210,37 +231,58 @@ export const noExactReadbackCompare = {
   create(context) {
     if (isTest(context) || !PROVIDER_FACING.test(context.sourceCode.text)) return {};
     const comparators = new Set(context.options[0]?.comparators ?? []);
+    const aliases = importAliases(context);
+    const named = (node) => {
+      const name = propertyName(node.callee);
+      return node.callee.type === "Identifier" ? (aliases.get(name) ?? name) : name;
+    };
     const message =
       "Exact compare of whole values. A provider normalises, resolves and stamps what it stores, so a write never equals its read-back. Compare through a named equivalence helper (`export function <thing>Equivalent` in a `*-equivalence.ts` module) that projects the fields this step controls and is tested against a recorded read-back.";
     const report = (node) => {
       if (!insideEquivalenceHelper(context, node)) context.report({ node, message });
     };
+    const serialization = (input) => {
+      const node = unwrap(input);
+      if (node?.type !== "CallExpression") return false;
+      let name = named(node);
+      // `const encode = JSON.stringify` is still JSON.stringify.
+      const alias =
+        node.callee.type === "Identifier"
+          ? unwrap(variableInit(context, node.callee)?.init)
+          : undefined;
+      if (alias?.type === "MemberExpression") name = propertyName(alias);
+      if (!name) return false;
+      if (SERIALIZER.test(name)) return true;
+      if (!DIGEST.test(name)) return false;
+      // `createHash(...).update(x).digest("hex")` and `digest(x)` both stand for the whole value.
+      return (
+        node.callee.type === "MemberExpression" ||
+        node.arguments.some((argument) => argument.type !== "Literal")
+      );
+    };
+    const serialized = (side) =>
+      serialization(side) ||
+      (side.type === "Identifier" && serialization(variableInit(context, side)?.init));
     return {
       BinaryExpression(node) {
-        // A serialised value parked in a variable first is the same compare.
-        const serialized = (side) =>
-          serialization(side) ||
-          (side.type === "Identifier" && serialization(variableInit(context, side)?.init));
+        // Both sides serialised is a compare of two whole values; one side against a stored
+        // digest is an integrity check of our own data.
         if (
           ["===", "!==", "==", "!="].includes(node.operator) &&
-          (serialized(node.left) || serialized(node.right))
+          serialized(node.left) &&
+          serialized(node.right)
         )
           report(node);
       },
       CallExpression(node) {
-        const name = propertyName(node.callee);
+        const name = named(node);
         if (name && (DEEP_EQUAL.has(name) || comparators.has(name))) report(node);
       },
       Program(node) {
         const path = filePath(context);
         if (!EQUIVALENCE_MODULE.test(path)) return;
         const test = join(dirname(path), basename(path).replace(/\.([cm]?[jt]s)$/u, ".test.$1"));
-        const recorded =
-          existsSync(test) &&
-          /from\s+["'][^"']*(?:-shapes?|recorded-[^"'/]*|prod-shapes\/[^"']*)(?:\.[cm]?[jt]s)?["']/u.test(
-            readFileSync(test, "utf8"),
-          );
-        if (!recorded)
+        if (!provenOnRecording(test))
           context.report({
             node,
             message: `An equivalence helper is only as good as the read-back it was proven on. Add ${basename(test)} next to it, importing a recorded-shapes module (a *-shapes.ts file built from a real, redacted provider response).`,
@@ -261,7 +303,7 @@ export const noDirectCloudflareApi = {
     const wrangler = (node) => {
       const [command, args] = node.arguments;
       if (command?.type !== "Literal" || typeof command.value !== "string") return false;
-      if (/(?:^|\/)wrangler(?:\s|$)/u.test(command.value)) return true;
+      if (WRANGLER.test(command.value)) return true;
       if (!RUNNERS.has(command.value) || args?.type !== "ArrayExpression") return false;
       return args.elements
         .slice(0, 3)
@@ -270,13 +312,30 @@ export const noDirectCloudflareApi = {
             element?.type === "Literal" && /^wrangler(?:@|$)/u.test(String(element.value)),
         );
     };
+    const wranglerModule = (node) => node?.type === "Literal" && node.value === "wrangler";
     return {
+      VariableDeclarator(node) {
+        addAliases(node, sdk);
+      },
       CallExpression(node) {
+        // createRequire(import.meta.url)("wrangler") loads Wrangler's API directly.
+        const required = node.callee.type === "CallExpression" && wranglerModule(node.arguments[0]);
         if (
           sdkCall(node, sdk) ||
+          required ||
           (COMMAND_RUNNERS.has(propertyName(node.callee)) && wrangler(node))
         )
           context.report({ node, message });
+      },
+      NewExpression(node) {
+        if (sdk.has(propertyName(node.callee)) || sdk.has(memberRoot(node.callee)))
+          context.report({ node, message });
+      },
+      ImportDeclaration(node) {
+        if (wranglerModule(node.source)) context.report({ node, message });
+      },
+      ImportExpression(node) {
+        if (wranglerModule(node.source)) context.report({ node, message });
       },
       Literal(node) {
         if (literal(node) && node.parent.type !== "ImportDeclaration")
