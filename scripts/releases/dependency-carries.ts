@@ -4,9 +4,20 @@ import { join } from "node:path";
 // A carry that patches a third-party package (it edits upstream's patches/<package>@<version>.patch)
 // is a fork nobody upstream knows about. Each one names the upstream issue or pull request that
 // would retire it and who follows it. The entries that had neither when this started may be
-// completed or removed, never added to: the frozen list in dependency-carries.test.ts only shrinks.
+// completed or removed, never added to: the test compares the unlinked set with the base commit's.
 export type Entry = { packages: string[]; upstream: string | null; owner: string | null };
 export type Registry = { carries: Record<string, Entry> };
+
+// The dependency's own tracker, never this repository's.
+const upstreamLink =
+  /^https:\/\/github\.com\/(?!JustYannicc\/basalt\/)[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+$/u;
+
+export const unlinked = (registry: Registry) =>
+  new Set(
+    Object.entries(registry.carries)
+      .filter(([, entry]) => entry.upstream === null || !entry.owner)
+      .map(([stem]) => stem),
+  );
 
 const dependencyPatch = /^diff --git a\/patches\/(\S+)@[^@\s]+\.patch /gm;
 
@@ -39,9 +50,10 @@ export function carryErrors(
       );
       continue;
     }
-    if ((!entry.upstream || !entry.owner) && !unlinkedAllowed.has(stem))
+    const linked = entry.upstream !== null && upstreamLink.test(entry.upstream) && !!entry.owner;
+    if (!linked && !unlinkedAllowed.has(stem))
       errors.push(
-        `${stem} patches ${packages.join(", ")}: name its upstream issue or pull request and its owner`,
+        `${stem} patches ${packages.join(", ")}: name its upstream issue or pull request (a github.com issues or pull URL outside this repository) and its owner`,
       );
   }
   for (const stem of Object.keys(registry.carries))
