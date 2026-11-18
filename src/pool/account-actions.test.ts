@@ -22,7 +22,32 @@ class Storage implements ControlStorage {
   }
   async setAlarm() {}
 }
-async function fixture(t: TestContext, provider = "codex", audience: readonly string[] = []) {
+const claudeGrants: readonly Json[] = [
+  {
+    id: "grant_1",
+    resets_left: 2,
+    starts_at: null,
+    ends_at: "2030-01-04T00:00:00Z",
+    paused: false,
+    usable_now: true,
+    use_requires_limit: true,
+    clears: ["seven_day"],
+  },
+  {
+    id: "blocked",
+    resets_left: 2,
+    paused: false,
+    usable_now: false,
+    use_requires_limit: true,
+    clears: ["five_hour"],
+  },
+];
+async function fixture(
+  t: TestContext,
+  provider = "codex",
+  audience: readonly string[] = [],
+  grants = claudeGrants,
+) {
   let now = Date.parse("2030-01-01T00:00:00Z");
   let disabled = false,
     member = true,
@@ -135,26 +160,7 @@ async function fixture(t: TestContext, provider = "codex", audience: readonly st
                 eligible: true,
                 at_limit: true,
                 cooldown_until: claudeCooldown,
-                grants: [
-                  {
-                    id: "grant_1",
-                    resets_left: 2,
-                    starts_at: null,
-                    ends_at: "2030-01-04T00:00:00Z",
-                    paused: false,
-                    usable_now: true,
-                    use_requires_limit: true,
-                    clears: ["seven_day"],
-                  },
-                  {
-                    id: "blocked",
-                    resets_left: 2,
-                    paused: false,
-                    usable_now: false,
-                    use_requires_limit: true,
-                    clears: ["five_hour"],
-                  },
-                ],
+                grants,
               },
             }),
           };
@@ -378,6 +384,136 @@ test("Claude grants retain windows and use conditions, and claims pin the exact 
     grant_id: "grant_1",
     request_id: requestId,
   });
+});
+
+// Grants as Anthropic reports them: a Fable reset gives back only Fable's weekly use, and its
+// `clears` names the weekly overage window, so the window alone reads like a weekly reset.
+const kindGrants: readonly Json[] = [
+  {
+    id: "weekly",
+    type: "weekly",
+    resets_left: 1,
+    ends_at: "2030-01-04T00:00:00Z",
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["seven_day"],
+  },
+  {
+    id: "fable",
+    type: "weekly",
+    resets_left: 3,
+    gives_back_weekly: true,
+    ends_at: "2030-01-03T00:00:00Z",
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["seven_day_overage_included"],
+  },
+  {
+    id: "session",
+    resets_left: 2,
+    ends_at: "2030-01-02T00:00:00Z",
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["five_hour"],
+  },
+  {
+    id: "full",
+    resets_left: 1,
+    ends_at: "2030-01-05T00:00:00Z",
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["five_hour", "seven_day"],
+  },
+  {
+    id: "spark",
+    resets_left: 1,
+    ends_at: "2030-01-06T00:00:00Z",
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["seven_day_spark"],
+  },
+];
+
+test("the spend catalog names each grant's kind and scope by the Home's rule, so a model reset never reads as weekly", async (t) => {
+  const f = await fixture(t, "claude", [], kindGrants);
+  const value = (await (await f.call("resets")).json()) as ResetCredits;
+  const kinds = Object.fromEntries(
+    value.credits.map((credit) => [credit.id, [credit.kind, credit.scope]]),
+  );
+  assert.deepEqual(kinds, {
+    weekly: ["weekly", { kind: "account" }],
+    fable: ["model", { kind: "model", id: "fable" }],
+    session: ["session", { kind: "account" }],
+    full: ["full", { kind: "account" }],
+    spark: ["model", { kind: "model", id: "spark" }],
+  });
+  const codex = await fixture(t);
+  const credits = (await (await codex.call("resets")).json()) as ResetCredits;
+  // Codex decides which of the account's limits a reset clears; it is never a model's reset.
+  assert.deepEqual(
+    credits.credits.map((credit) => [credit.kind, credit.scope]),
+    [["unknown", { kind: "account" }]],
+  );
+});
+
+test("a spend confirmed as a weekly reset never consumes a model reset's grant", async (t) => {
+  const f = await fixture(t, "claude", [], kindGrants);
+  const weekly = { kind: "weekly", scope: { kind: "account" } };
+  const refused = await f.call("resets/use", { requestId, creditId: "fable", ...weekly });
+  assert.equal(refused.status, 409);
+  assert.equal(f.counts().consumes, 0);
+  // The refusal recorded nothing, so the same request can still spend what was confirmed.
+  const spent = await f.call("resets/use", { requestId, creditId: "weekly", ...weekly });
+  assert.equal(((await spent.json()) as ResetResult).outcome, "reset");
+  const claim = f.calls.find(
+    (call) => call.path === "/requests/api-call" && call.body.method === "POST",
+  )!;
+  assert.equal(JSON.parse(String(claim.body.data)).grant_id, "weekly");
+  const fable = await f.call("resets/use", {
+    requestId: secondId,
+    creditId: "fable",
+    kind: "model",
+    scope: { kind: "model", id: "fable" },
+  });
+  assert.equal(((await fable.json()) as ResetResult).outcome, "reset");
+  assert.equal(f.counts().consumes, 2);
+});
+
+test("two spends on one account run one after the other: the second reads grants only after the first claim answered", async (t) => {
+  const f = await fixture(t, "claude", [], kindGrants);
+  const grantReads = () =>
+    f.calls.filter(
+      (call) =>
+        call.path === "/requests/api-call" &&
+        call.body.method === "GET" &&
+        String(call.body.url).includes("cedar_ember"),
+    ).length;
+  const readsAtClaim: number[] = [];
+  f.consume(async () => {
+    readsAtClaim.push(grantReads());
+    return { status_code: 200, body: JSON.stringify({ result: "reset" }) };
+  });
+  const [first, second] = await Promise.all([
+    f.call("resets/use", {
+      requestId,
+      creditId: "weekly",
+      kind: "weekly",
+      scope: { kind: "account" },
+    }),
+    f.call("resets/use", {
+      requestId: secondId,
+      creditId: "full",
+      kind: "full",
+      scope: { kind: "account" },
+    }),
+  ]);
+  assert.deepEqual([first.status, second.status], [200, 200]);
+  assert.deepEqual(readsAtClaim, [1, 2]);
 });
 
 test("removing membership blocks reset replays and malformed request IDs never reach a provider", async (t) => {
