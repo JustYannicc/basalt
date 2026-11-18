@@ -54,6 +54,7 @@ import { executeRelease, type CommandResult } from "../deploy-safety/release-run
 import type { ClassificationReport } from "../releases/types.ts";
 import { attributes, preparedUpload } from "./fixture.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
+import type { RuntimeReleaseRecord } from "./runtime-release-journal.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import {
@@ -362,6 +363,19 @@ async function firstScaleOutRelease(
     isolateReceipt?: boolean;
     beforeImageCheck?: (w: World) => void;
     sourceController?: { candidate: string; workerInput: string };
+    /**
+     * First runs a source release in the same world that stops before this colour's bootstrap, or
+     * before its bind once the bootstrap's native baseline is saved. The release under test then
+     * runs as the next candidate with the head a fleet-attached-unstarted archive gives it: no
+     * record, and `sourceController`. The archive itself is not written here; this world has no
+     * native container rows or signed handoff, so release-settlement-fleet-attached.test.ts drives
+     * the real plan, apply and next head.
+     */
+    sourceStops?:
+      | { color: "blue" | "green"; at: "bootstrap" | "bind" }
+      | { color?: undefined; at: "configured" };
+    /** Runs on the world once the source stopped, before the next candidate's release. */
+    afterSource?: (w: World) => void;
     /** Omit the reviewed PoolWorker class intent: the code phase then creates no fleet class. */
     withoutClassIntent?: boolean;
   } = {},
@@ -371,6 +385,7 @@ async function firstScaleOutRelease(
   const production = productionPoolWorker(target);
   standin.installProductionWorker(production);
   standin.resetBootstrap();
+  standin.stopRelease(undefined);
   const expansions: ClassProgress[] = [];
   standin.resetJournal(options.sourceController);
   const scratch = mkdtempSync(join(tmpdir(), "runtime-image-release-"));
@@ -417,6 +432,8 @@ async function firstScaleOutRelease(
     assert.ok(Exit.isSuccess(seeded), Exit.isFailure(seeded) ? Cause.pretty(seeded.cause) : "");
     receipts.seeding = false;
     w.events.length = 0;
+    const sourceEvents: string[] = [];
+    const sourceRecords: RuntimeReleaseRecord[] = [];
 
     const failures: string[] = [];
     let verified: Awaited<ReturnType<typeof waitForPoolImage>> | undefined;
@@ -438,42 +455,72 @@ async function firstScaleOutRelease(
       deploy: async (): Promise<CommandResult> => {
         // release-runner.ts:249-251 removes the receipt once, before the one deploy command.
         rmSync(receiptPath, { force: true });
-        const exit = await provide(
-          releaseRuntimeImage(stack, {
-            candidate,
-            directory,
-            writer,
-            encryptionKey: "b".repeat(64),
-            forwardEncryptionKey: "b".repeat(64),
-            record: async () => {},
-            manifest: async () => {},
-            ...(options.withoutClassIntent
-              ? {}
-              : {
-                  declarations: poolWorkerDeclaration(),
-                  declared: async () => {},
-                  declaredReadiness: async () => {},
-                  expansion: async (value: ClassProgress) => {
-                    expansions.push(value);
-                  },
-                }),
-            io: {
-              classes: classProvider(production),
-              sqlSchemas: async () => readySqlSchemas(candidate),
-              placements: (_worker, baseline) =>
-                Effect.succeed(
-                  baseline.map(({ versionId }) => ({
-                    id: versionId,
-                    placement: undefined,
-                    bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: w.root.input }],
-                  })),
-                ),
-              baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
-              upload: (worker) =>
-                Effect.succeed({ versionId: `accepted-${worker.id}`, startupTimeMs: 100 }),
-            },
-          }).pipe(withReleaseRuntime),
-        );
+        // The source is its own candidate, the one its settled controller code names.
+        const run = (release = candidate) =>
+          provide(
+            releaseRuntimeImage(stack, {
+              candidate: release,
+              directory,
+              writer,
+              encryptionKey: "b".repeat(64),
+              forwardEncryptionKey: "b".repeat(64),
+              record: async () => {},
+              manifest: async () => {},
+              ...(options.withoutClassIntent
+                ? {}
+                : {
+                    declarations: poolWorkerDeclaration(),
+                    declared: async () => {},
+                    declaredReadiness: async () => {},
+                    expansion: async (value: ClassProgress) => {
+                      expansions.push(value);
+                    },
+                  }),
+              io: {
+                classes: classProvider(production),
+                sqlSchemas: async () => readySqlSchemas(release),
+                placements: (_worker, baseline) =>
+                  Effect.succeed(
+                    baseline.map(({ versionId }) => ({
+                      id: versionId,
+                      placement: undefined,
+                      bindings: [
+                        { name: "POOL_IMAGE_HASH", type: "plain_text", text: w.root.input },
+                      ],
+                    })),
+                  ),
+                baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
+                upload: (worker) =>
+                  Effect.succeed({ versionId: `accepted-${worker.id}`, startupTimeMs: 100 }),
+              },
+            }).pipe(withReleaseRuntime),
+          );
+        if (options.sourceStops) {
+          standin.stopRelease(options.sourceStops);
+          const source = await run(options.sourceController?.candidate);
+          assert.ok(Exit.isFailure(source), "the source release stopped");
+          assert.match(
+            String(Cause.squash(source.cause)),
+            /synthetic-source-stopped/u,
+            JSON.stringify(w.events),
+          );
+          standin.stopRelease(undefined);
+          // Every application the source created is in its saved baseline, as settlement requires.
+          const saved = standin.readJournal()!;
+          for (const color of ["blue", "green"] as const)
+            assert.equal(
+              !!saved.baseline.applications[color],
+              w.events.includes(`create:application-${color}`),
+              `the source saved ${color}'s native baseline`,
+            );
+          sourceRecords.push(saved);
+          options.afterSource?.(w);
+          standin.resetJournal(options.sourceController);
+          standin.resetBootstrap();
+          sourceEvents.push(...w.events);
+          w.events.length = 0;
+        }
+        const exit = await run();
         if (Exit.isSuccess(exit)) return { started: true, exitCode: 0 };
         failures.push(`deploy: ${String(Cause.squash(exit.cause))}`);
         return { started: true, exitCode: 1 };
@@ -518,6 +565,8 @@ async function firstScaleOutRelease(
       journal: standin.readJournal(),
       production,
       expansions,
+      sourceEvents,
+      sourceRecords,
     };
   } finally {
     globalThis.fetch = network;
@@ -629,6 +678,67 @@ test("a release after a settled or aborted prior candidate freezes that candidat
   const result = await firstScaleOutRelease({ sourceController });
   assert.equal(result.journal?.complete, true, explain(result));
   assert.deepEqual(result.journal?.baselineController?.code, sourceController);
+});
+
+// The next release reads the source's applications as its native baseline and skips their
+// bootstrap, so it never creates a second application on a class: it adopts them. A colour the
+// source never created is bootstrapped once, by the next release.
+const stops = [
+  ["after saving blue, before bind-blue", { color: "blue", at: "bind" }, ["blue"]],
+  ["after bind-blue, before green", { color: "green", at: "bootstrap" }, ["blue"]],
+  ["after saving green, before bind-green", { color: "green", at: "bind" }, ["blue", "green"]],
+] as const;
+for (const [name, sourceStops, created] of stops)
+  test(`a release after a fleet-attached-unstarted source stopped ${name} adopts its applications`, async () => {
+    const sourceController = { candidate: "4".repeat(40), workerInput: "3".repeat(64) };
+    const result = await firstScaleOutRelease({ sourceController, sourceStops });
+    assert.deepEqual(
+      created.map((color) => result.sourceEvents.includes(`create:application-${color}`)),
+      created.map(() => true),
+      `the source created exactly these applications: ${JSON.stringify(result.sourceEvents)}`,
+    );
+    assert.ok(result.sourceEvents.includes("adopt:legacy"));
+    assert.equal(result.sourceRecords.length, 1);
+    assert.equal(result.journal?.complete, true, explain(result));
+    assert.deepEqual(result.journal?.baselineController?.code, sourceController);
+    const missing = (["blue", "green"] as const).filter(
+      (color) => !(created as readonly string[]).includes(color),
+    );
+    assert.deepEqual(
+      standin.bootstrapAttachments.map(({ className }) => className),
+      missing.map((color) => (color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen")),
+    );
+    assert.deepEqual(Object.keys(result.journal?.bootstrap ?? {}), []);
+    for (const color of created)
+      assert.ok(!result.w.events.includes(`create:application-${color}`), explain(result));
+    assert.ok(!result.w.events.includes("adopt:legacy"), "the adopted root stays selected");
+    assert.deepEqual(result.failures, [], explain(result));
+    assert.deepEqual(result.outcome, { ok: true, value: { state: "deployed", deploymentId: 1 } });
+  });
+
+test("a release after a source that configured its fleet passes the previous-generation wait on runtimes serving their own application's input", async () => {
+  const sourceController = { candidate: "4".repeat(40), workerInput: "3".repeat(64) };
+  const result = await firstScaleOutRelease({
+    sourceController,
+    sourceStops: { at: "configured" },
+    // Demand starts a fleet runtime on blue under the source's enabled permission.
+    afterSource: (w) => w.serveFleet(),
+  });
+  assert.ok(result.sourceEvents.some((event) => event.startsWith("fleet-configure:")));
+  assert.deepEqual(Object.keys(result.sourceRecords[0]!.configurations).length, 1);
+  const blue = result.w.byColor("blue")!;
+  // The runtime runs blue's reference input, which is not the selected root's.
+  assert.notEqual(blue.input, result.w.root.input);
+  assert.deepEqual(result.failures, [], explain(result));
+  assert.equal(result.journal?.complete, true, explain(result));
+  assert.deepEqual(standin.bootstrapAttachments, []);
+  // Its own configure ran over the serving runtime, and promotion then drained it.
+  assert.ok(
+    result.w.events.some((event) => event.startsWith("fleet-configure:")),
+    explain(result),
+  );
+  assert.ok(result.w.events.includes(`fleet-drain:${blue.id}`), explain(result));
+  assert.deepEqual(result.outcome, { ok: true, value: { state: "deployed", deploymentId: 1 } });
 });
 
 test("the post-deploy image check accepts the fleet a completed release leaves behind", async () => {
