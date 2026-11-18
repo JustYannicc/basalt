@@ -1,3 +1,4 @@
+import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -83,6 +84,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
         historyJournalPrepareVersion,
+        historyRowSchemaVersion,
         historySchemaVersion,
       ].sort(),
     );

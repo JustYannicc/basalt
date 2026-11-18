@@ -13,3 +13,19 @@ export const historyImportCompletionStatements = [
       AND ids_digest ~ '^[a-f0-9]{64}$')
   )`,
 ];
+
+export const historyImportReconcileVersion = "model_request_history_v12_import_reconcile";
+/** Per-range progress of an import-completion reconciliation; safe to drop, never authoritative. */
+export const historyImportReconcileStatements = [
+  `CREATE TABLE IF NOT EXISTS basalt_model_import_reconcile (
+    pool char(16) NOT NULL, source char(64) NOT NULL,
+    fence bigint NOT NULL CHECK (fence >= 0), rewrites numeric NOT NULL CHECK (rewrites >= 0),
+    range_index smallint NOT NULL CHECK (range_index BETWEEN 0 AND 255),
+    bucket char(2), rows bigint NOT NULL CHECK (rows >= 0),
+    first_at varchar(30), last_at varchar(30), digest char(64),
+    computed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (pool,source,range_index),
+    CHECK ((rows = 0) = (bucket IS NULL AND digest IS NULL AND first_at IS NULL AND last_at IS NULL)),
+    CHECK (pool ~ '^[a-f0-9]{16}$' AND source ~ '^[a-f0-9]{64}$')
+  )`,
+];

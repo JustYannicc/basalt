@@ -8,50 +8,17 @@ import {
   type ImportCompletionSelection,
   type CompletionDifference,
 } from "./import-completion-contract.ts";
+import {
+  inLimitedTransaction,
+  ReconcileIncomplete,
+  reconcileRanges,
+  reconcileStep,
+  reconciledProgress,
+  resetReconcile,
+} from "./import-reconcile.ts";
 
-const hex = "0123456789abcdef";
-// Every ID matches ^[0-9a-f]{64}$ (schema check), so [prefix, next prefix) ranges ending at "g"
-// cover each row exactly once in a deterministic collation; reconciled() refuses any other result.
-const bounds = [...[...hex].flatMap((first) => [...hex].map((second) => first + second)), "g"];
-const rangeBuckets = `SELECT left(id,2) AS bucket, count(*)::bigint AS rows,
-    min(timestamp_exact) AS first_at, max(timestamp_exact) AS last_at,
-    encode(sha256(convert_to(string_agg(id::text,E'\\n' ORDER BY id),'UTF8')),'hex') AS digest
-  FROM basalt_model_requests WHERE pool=$1 AND source=$2 AND id >= $3 AND id < $4 GROUP BY left(id,2)`;
+const reconcileBudgetMs = 8_000;
 
-/**
- * One statement per two-character ID prefix keeps every ordered aggregate inside the operation's
- * statement timeout as a source grows: one statement over a 2.26M-row source took 5.5 s against
- * the 5 s bound, and 16 wider ranges would not fit on the smallest primary. Each range still groups
- * by prefix, so the result equals the single-statement digest. The caller's REPEATABLE READ
- * transaction gives every range one snapshot. No IDs or rows leave the database.
- */
-async function reconciled(db: HistoryDatabase, scope: { pool: string; source: string }) {
-  const isolation = await db.query("SELECT current_setting('transaction_isolation') AS level");
-  if (isolation.rows[0]?.level !== "repeatable read")
-    throw new Error("Import completion reconciliation needs one REPEATABLE READ snapshot");
-  const buckets: Record<string, unknown>[] = [];
-  for (let index = 0; index + 1 < bounds.length; index++) {
-    const { rows } = await db.query(rangeBuckets, [
-      scope.pool,
-      scope.source,
-      bounds[index],
-      bounds[index + 1],
-    ]);
-    // A range holding any other prefix means the collation does not order hex IDs bytewise.
-    if (rows.length > 1 || (rows.length === 1 && rows[0]!.bucket !== bounds[index]))
-      throw new Error("Import completion ranges do not match the ID prefixes");
-    buckets.push(...rows);
-  }
-  // Combining in SQL keeps the database's own ordering and min/max semantics.
-  const result = await db.query(
-    `SELECT COALESCE(sum(rows),0)::text AS rows,min(first_at) AS "frozenFrom",
-    max(last_at) AS "frozenTo",
-    encode(sha256(convert_to(COALESCE(string_agg(bucket||':'||digest,E'\\n' ORDER BY bucket),''),'UTF8')),'hex') AS "idsDigest"
-    FROM jsonb_to_recordset($1::jsonb) AS b(bucket text, rows bigint, first_at varchar(30), last_at varchar(30), digest text)`,
-    [JSON.stringify(buckets)],
-  );
-  return result.rows[0]!;
-}
 async function savedCompletion(db: HistoryDatabase, scope: { pool: string; source: string }) {
   return (
     (
@@ -71,7 +38,7 @@ export async function planImportCompletion(
 ) {
   const scope = await importCompletionScope(selection);
   const current = await savedCompletion(db, scope);
-  const actual = await reconciled(db, scope);
+  const actual = await reconciledProgress(db, scope);
   const exact =
     actual.rows === selection.verifiedRows &&
     actual.idsDigest === selection.idsDigest &&
@@ -164,42 +131,36 @@ export async function planImportCompletion(
   };
 }
 
-/** Only the existing private operations entrypoint can approve a reconciled completion plan. */
-export async function handleImportCompletion(
-  request: Request,
+const refused = (differences: unknown[]) =>
+  Response.json({ error: "import_completion_refused", differences }, { status: 409 });
+
+/** Plans, and with approval records, inside one REPEATABLE READ snapshot over stored progress. */
+async function settle(
   db: HistoryDatabase,
-): Promise<Response> {
-  if (request.method !== "POST") return new Response(null, { status: 405 });
-  const raw = historyObject(await request.json()),
-    selection = importCompletionSelection(raw.selection);
-  const apply = raw.go === true;
-  if (apply && !completionHash(raw.digest)) throw new HistoryInputError();
-  await db.query(
-    apply
-      ? "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-      : "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
-  );
+  raw: Record<string, unknown>,
+  selection: ImportCompletionSelection,
+  scope: { pool: string; source: string },
+  apply: boolean,
+) {
   try {
-    await db.query("SET LOCAL lock_timeout = '500ms'");
-    await db.query("SET LOCAL statement_timeout = '5s'");
-    await db.query("SET LOCAL work_mem = '8MB'");
-    const scope = await importCompletionScope(selection);
-    if (apply)
-      await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
-        `model-import-completion:${scope.pool}:${scope.source}`,
-      ]);
-    const plan = await planImportCompletion(db, selection);
-    if (
-      apply &&
-      (raw.digest !== plan.digest ||
-        !plan.reconciled ||
-        (!plan.contiguous && !plan.alreadyComplete))
-    ) {
-      await db.query("ROLLBACK");
-      return Response.json(
-        {
-          error: "import_completion_refused",
-          differences: [
+    return await inLimitedTransaction(
+      db,
+      apply
+        ? "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        : "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      async () => {
+        if (apply)
+          await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+            `model-import-completion:${scope.pool}:${scope.source}`,
+          ]);
+        const plan = await planImportCompletion(db, selection);
+        if (
+          apply &&
+          (raw.digest !== plan.digest ||
+            !plan.reconciled ||
+            (!plan.contiguous && !plan.alreadyComplete))
+        )
+          throw refused([
             ...plan.differences,
             ...(raw.digest === plan.digest
               ? []
@@ -211,45 +172,91 @@ export async function handleImportCompletion(
                     observed: plan.digest,
                   },
                 ]),
-          ],
-        },
-        { status: 409 },
-      );
-    }
-    if (apply && !plan.alreadyComplete)
-      await db.query(
-        `INSERT INTO basalt_model_import_completion
-      (pool,source,frozen_from,frozen_to,upper_source_id,manifest_digest,map_digest,ids_digest,verified_rows)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(pool,source) DO UPDATE SET
-      frozen_from=EXCLUDED.frozen_from,frozen_to=EXCLUDED.frozen_to,upper_source_id=EXCLUDED.upper_source_id,
-      manifest_digest=EXCLUDED.manifest_digest,map_digest=EXCLUDED.map_digest,ids_digest=EXCLUDED.ids_digest,
-      verified_rows=EXCLUDED.verified_rows,completed_at=CURRENT_TIMESTAMP`,
-        [
-          scope.pool,
-          scope.source,
-          selection.frozenFrom,
-          selection.frozenTo,
-          selection.upperSourceId,
-          selection.manifestDigest,
-          selection.accountMappingDigest,
-          selection.idsDigest,
-          selection.verifiedRows,
-        ],
-      );
-    await db.query("COMMIT");
-    return Response.json(
-      apply
-        ? {
-            status: "complete",
-            digest: plan.digest,
-            selection,
-            alreadyComplete: plan.alreadyComplete,
-          }
-        : plan,
-      { headers: { "Cache-Control": "no-store" } },
+          ]);
+        if (apply && !plan.alreadyComplete)
+          await db.query(
+            `INSERT INTO basalt_model_import_completion
+          (pool,source,frozen_from,frozen_to,upper_source_id,manifest_digest,map_digest,ids_digest,verified_rows)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(pool,source) DO UPDATE SET
+          frozen_from=EXCLUDED.frozen_from,frozen_to=EXCLUDED.frozen_to,upper_source_id=EXCLUDED.upper_source_id,
+          manifest_digest=EXCLUDED.manifest_digest,map_digest=EXCLUDED.map_digest,ids_digest=EXCLUDED.ids_digest,
+          verified_rows=EXCLUDED.verified_rows,completed_at=CURRENT_TIMESTAMP`,
+            [
+              scope.pool,
+              scope.source,
+              selection.frozenFrom,
+              selection.frozenTo,
+              selection.upperSourceId,
+              selection.manifestDigest,
+              selection.accountMappingDigest,
+              selection.idsDigest,
+              selection.verifiedRows,
+            ],
+          );
+        return Response.json(
+          apply
+            ? {
+                status: "complete",
+                digest: plan.digest,
+                selection,
+                alreadyComplete: plan.alreadyComplete,
+              }
+            : plan,
+          { headers: { "Cache-Control": "no-store" } },
+        );
+      },
     );
-  } catch (error) {
-    await db.query("ROLLBACK").catch(() => {});
-    throw error;
+  } catch (outcome) {
+    // A refusal rolls back like any error but is the operation's answer.
+    if (outcome instanceof Response || outcome instanceof ReconcileIncomplete) return outcome;
+    throw outcome;
+  }
+}
+
+/**
+ * Only the existing private operations entrypoint can approve a reconciled completion plan. A dry
+ * run first advances stored reconciliation within its budget and answers 202 until every range is
+ * stored, so a large source finishes across operator calls; a small one still plans in one call.
+ * The plan's writes describe the completion record; dry runs do write reconciliation progress.
+ */
+export async function handleImportCompletion(
+  request: Request,
+  db: HistoryDatabase,
+  options: { budgetMs?: number } = {},
+): Promise<Response> {
+  const started = Date.now();
+  const budgetMs = options.budgetMs ?? reconcileBudgetMs;
+  if (request.method !== "POST") return new Response(null, { status: 405 });
+  const raw = historyObject(await request.json()),
+    selection = importCompletionSelection(raw.selection);
+  const apply = raw.go === true;
+  if (apply && !completionHash(raw.digest)) throw new HistoryInputError();
+  const scope = await importCompletionScope(selection);
+  const reconciling = (ranges: number) =>
+    Response.json(
+      { status: "reconciling", progressWrites: true, ranges, totalRanges: reconcileRanges },
+      { status: 202, headers: { "Cache-Control": "no-store" } },
+    );
+  for (let attempt = 0; ; attempt++) {
+    if (!apply) {
+      const step = await reconcileStep(db, scope, budgetMs - (Date.now() - started));
+      if (!step.complete || (step.computed && Date.now() - started >= budgetMs))
+        return reconciling(step.ranges);
+    }
+    const outcome = await settle(db, raw, selection, scope, apply);
+    if (!(outcome instanceof ReconcileIncomplete)) return outcome;
+    if (outcome.ranges === 0) await resetReconcile(db, scope);
+    // A small source that grew since its last plan reconciles again within the same call; a large
+    // one answers 202 rather than spend a second fence inside the session deadline.
+    if (!apply && attempt === 0 && Date.now() - started < budgetMs / 4) continue;
+    if (!apply) return reconciling(0);
+    return refused([
+      {
+        field: "reconciledRanges",
+        comparison: "equal",
+        expected: String(reconcileRanges),
+        observed: String(outcome.ranges),
+      },
+    ]);
   }
 }

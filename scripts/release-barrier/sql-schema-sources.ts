@@ -111,7 +111,11 @@ const commandEnv = (
   state: StateService,
   stack: Pick<CompiledStack, "name" | "stage">,
   fqn: "Migrations" | "PoolDatabase",
-  inspectUpdate = false,
+  /**
+   * A failed Command remains updating. Inspection reads it only while both recorded authorities
+   * agree exactly; a preflight reads the props the release's resume will apply.
+   */
+  updating: "refuse" | "unchanged" | "next" = "refuse",
 ) =>
   Effect.gen(function* () {
     const value = yield* state.get({ stack: stack.name, stage: stack.stage, fqn });
@@ -122,14 +126,13 @@ const commandEnv = (
     if (
       value.status !== "created" &&
       value.status !== "updated" &&
-      !(inspectUpdate && value.status === "updating")
+      !(updating !== "refuse" && value.status === "updating")
     )
       throw new SqlSchemaAuthorityFailure(fqn, "resource-status", status);
     const env: unknown = value.props?.env;
     if (!env || typeof env !== "object" || Array.isArray(env))
       throw new SqlSchemaAuthorityFailure(fqn, "environment", status);
-    // A failed Command remains updating. Inspect only when both recorded authorities agree exactly.
-    if (value.status === "updating") {
+    if (value.status === "updating" && updating === "unchanged") {
       const before: unknown = value.old.props.env;
       if (
         !before ||
@@ -156,7 +159,7 @@ export const inspectionSqlSource = (state: StateService) =>
       state,
       { name: "basalt", stage: "production" },
       "Migrations",
-      true,
+      "unchanged",
     );
     if (!("DATABASE_URL" in tools.env))
       throw new SqlSchemaAuthorityFailure("Migrations", "database-authority", tools.status);
@@ -171,10 +174,11 @@ export const inspectionSqlSource = (state: StateService) =>
 export const deploymentSqlSources = (
   state: StateService,
   stack: Pick<CompiledStack, "name" | "stage">,
+  updating: "refuse" | "next" = "refuse",
 ) =>
   Effect.gen(function* () {
-    const tools = (yield* commandEnv(state, stack, "Migrations")).env;
-    const pool = (yield* commandEnv(state, stack, "PoolDatabase")).env;
+    const tools = (yield* commandEnv(state, stack, "Migrations", updating)).env;
+    const pool = (yield* commandEnv(state, stack, "PoolDatabase", updating)).env;
     if (!("DATABASE_URL" in tools) || !("POOL_DATABASE_ADMIN_URL" in pool))
       throw new BarrierRefusal("sql-schema-authority-unavailable");
     const toolsUrl = secret(tools.DATABASE_URL);

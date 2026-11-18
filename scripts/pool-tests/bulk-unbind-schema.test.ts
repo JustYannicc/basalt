@@ -49,6 +49,7 @@ test("an existing v6 bulk import journal upgrades through the current schema wit
         "model_request_history_v8_import_completion",
         "model_request_history_v9_change_journal_prepare",
         "model_request_history_v11_indexed_row_invalidation",
+        "model_request_history_v12_import_reconcile",
       ].sort(),
     );
     assert.deepEqual((await db.query("SELECT id,total_rows FROM basalt_model_import_jobs")).rows, [
