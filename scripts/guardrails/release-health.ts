@@ -2,6 +2,9 @@ import { execFileSync } from "node:child_process";
 
 // Production release health, computed from GitHub's own records so nobody types the numbers.
 export const limits = { consecutiveFailures: 2, waitingHours: 12, stuckHours: 4 };
+// GitHub stamps a pull request merged a few seconds after the merge commit it created, so the
+// released commit's own pull requests fall inside this window and count as released.
+const mergeStampSlackMs = 60_000;
 
 // A deployment is good once any of its statuses was success (GitHub later marks it inactive).
 // One that never finishes counts as failed after `stuckHours`.
@@ -17,6 +20,7 @@ export type Health = {
   hoursSinceLastGood: number | null;
   consecutiveFailures: number;
   failingSince: string | null;
+  latestFailureAt: string | null;
   unreleasedPullRequests: number;
   oldestUnreleasedMergeAt: string | null;
   waitingHours: number;
@@ -42,7 +46,7 @@ export function releaseHealth(deployments: Deployment[], merges: Merge[], now: D
     .filter((d) => d.state === "failure" || hours(d.createdAt, now) >= limits.stuckHours)
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   // Work merged after the released commit is unreleased, also when the release was a rollback.
-  const since = lastGood ? Date.parse(lastGood.committedAt) : -Infinity;
+  const since = lastGood ? Date.parse(lastGood.committedAt) + mergeStampSlackMs : -Infinity;
   const unreleased = merges
     .filter((m) => Date.parse(m.mergedAt) > since && Date.parse(m.mergedAt) <= now.getTime())
     .sort((a, b) => Date.parse(a.mergedAt) - Date.parse(b.mergedAt));
@@ -55,6 +59,7 @@ export function releaseHealth(deployments: Deployment[], merges: Merge[], now: D
     hoursSinceLastGood: lastGood ? round(hours(lastGood.createdAt, now)) : null,
     consecutiveFailures: failures.length,
     failingSince: failures[0]?.createdAt ?? null,
+    latestFailureAt: failures.at(-1)?.createdAt ?? null,
     unreleasedPullRequests: unreleased.length,
     oldestUnreleasedMergeAt: oldest,
     waitingHours: round(waiting),
