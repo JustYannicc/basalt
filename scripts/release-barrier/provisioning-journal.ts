@@ -125,11 +125,13 @@ export function provisioningJournal(
         );
         return result;
       }),
+    /** `recover` may prove an unacknowledged write landed; without that proof it stays unknown. */
     once: <A>(
       name: string,
       request: string,
       perform: () => Promise<A>,
       parse: (value: unknown) => A,
+      recover?: () => Promise<A | undefined>,
     ) =>
       store.exclusive(async () => {
         const record = await read();
@@ -137,6 +139,20 @@ export function provisioningJournal(
         if (prior) {
           sameProvisioningValue(`journal.${name}.request`, request, prior.request);
           if (prior.outcome === "acknowledged") return parse(prior.result);
+          const landed = await recover?.();
+          if (landed !== undefined) {
+            const result = parse(landed);
+            await store.write(
+              decodeProvisioningRecord({
+                ...record,
+                operations: {
+                  ...record.operations,
+                  [name]: { request, outcome: "acknowledged", result },
+                },
+              }),
+            );
+            return result;
+          }
           throw provisioningRefusal(
             "provisioning-operation-unknown",
             `journal.${name}.outcome`,

@@ -81,3 +81,37 @@ for (const tree of ["src", "lib"])
     );
     assert.match(output, /__PROVISIONING_SOURCE_REFUSED_BEFORE_IO__/);
   });
+
+for (const tree of ["src", "lib"])
+  for (const resource of ["PoolRuntimeBlue", "PoolRuntimeGreen"])
+    test(`a rerun through the actual ${tree} SDK adopts ${resource} after its create's reply was lost, without a second create`, () => {
+      const output = execFileSync(
+        tree === "src" ? "bun" : process.execPath,
+        [
+          fileURLToPath(new URL("./test/provisioning-cloudflare-flow.mjs", import.meta.url)),
+          tree,
+          resource,
+          "source",
+          "lost-reply",
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      assert.match(output, /__PROVISIONING_FULL_FLOW_PASS__/);
+    });
+
+test("the flow finds its classes past the first page of namespaces", () => {
+  const output = execFileSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("./test/provisioning-cloudflare-flow.mjs", import.meta.url)),
+      "lib",
+      "PoolRuntimeBlue",
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, PROVISIONING_FLOW_NAMESPACES: "41" },
+    },
+  );
+  assert.match(output, /__PROVISIONING_FULL_FLOW_PASS__/);
+});

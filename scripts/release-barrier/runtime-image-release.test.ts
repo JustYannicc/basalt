@@ -8,7 +8,7 @@
 // verify), the client's promotion internals and startup abort, forward-resume after a failed
 // phase, and the database phase with a real migration.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -366,13 +366,15 @@ async function firstScaleOutRelease(
     withoutClassIntent?: boolean;
     /** The class step's read fails in transport, as production's controller phase once did. */
     failClassRead?: { reads: number };
+    /** Stops one color's bootstrap on the first attempt; the same release then runs again. */
+    stopBootstrap?: Parameters<typeof standin.resetBootstrap>[0];
   } = {},
 ) {
   const w = createWorld();
   installWorld(w);
   const production = productionPoolWorker(target);
   standin.installProductionWorker(production);
-  standin.resetBootstrap();
+  standin.resetBootstrap(options.stopBootstrap);
   const expansions: ClassProgress[] = [];
   standin.resetJournal(options.sourceController);
   const scratch = mkdtempSync(join(tmpdir(), "runtime-image-release-"));
@@ -428,98 +430,109 @@ async function firstScaleOutRelease(
     let now = 0;
     // assertReleaseMode reads the GitHub event: an automatic release from a push to main.
     Object.assign(process.env, { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" });
-    const outcome = await executeRelease(report, "automatic", {
-      validateCredentials: () => {},
-      assertBackup: async () => {
-        throw new Error("No database change in this release");
-      },
-      begin: async () => 1,
-      mark: async (_id, value) => {
-        marks.push(value);
-      },
-      deploy: async (): Promise<CommandResult> => {
-        // release-runner.ts:249-251 removes the receipt once, before the one deploy command.
-        rmSync(receiptPath, { force: true });
-        const exit = await provide(
-          releaseRuntimeImage(stack, {
-            candidate,
-            directory,
-            writer,
-            encryptionKey: "b".repeat(64),
-            forwardEncryptionKey: "b".repeat(64),
-            record: async () => {},
-            manifest: async () => {},
-            ...(options.withoutClassIntent
-              ? {}
-              : {
-                  declarations: poolWorkerDeclaration(),
-                  declared: async () => {},
-                  declaredReadiness: async () => {},
-                  expansion: async (value: ClassProgress) => {
-                    expansions.push(value);
-                  },
-                }),
-            io: {
-              classes: options.failClassRead
-                ? {
-                    ...classProvider(production),
-                    read: async () => {
-                      options.failClassRead!.reads++;
-                      throw new TypeError("fetch failed");
+    const attempt = () =>
+      executeRelease(report, "automatic", {
+        validateCredentials: () => {},
+        assertBackup: async () => {
+          throw new Error("No database change in this release");
+        },
+        begin: async () => 1,
+        mark: async (_id, value) => {
+          marks.push(value);
+        },
+        deploy: async (): Promise<CommandResult> => {
+          // release-runner.ts:249-251 removes the receipt once, before the one deploy command.
+          rmSync(receiptPath, { force: true });
+          // A rerun is a new job: its receipt directory exists again although dispose removed it.
+          mkdirSync(dirname(receiptPath), { recursive: true });
+          const exit = await provide(
+            releaseRuntimeImage(stack, {
+              candidate,
+              directory,
+              writer,
+              encryptionKey: "b".repeat(64),
+              forwardEncryptionKey: "b".repeat(64),
+              record: async () => {},
+              manifest: async () => {},
+              ...(options.withoutClassIntent
+                ? {}
+                : {
+                    declarations: poolWorkerDeclaration(),
+                    declared: async () => {},
+                    declaredReadiness: async () => {},
+                    expansion: async (value: ClassProgress) => {
+                      expansions.push(value);
                     },
-                  }
-                : classProvider(production),
-              sqlSchemas: async () => readySqlSchemas(candidate),
-              placements: (_worker, baseline) =>
-                Effect.succeed(
-                  baseline.map(({ versionId }) => ({
-                    id: versionId,
-                    placement: undefined,
-                    bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: w.root.input }],
-                  })),
-                ),
-              baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
-              upload: (worker) =>
-                Effect.succeed({ versionId: `accepted-${worker.id}`, startupTimeMs: 100 }),
-            },
-          }).pipe(withReleaseRuntime),
-        );
-        if (Exit.isSuccess(exit)) return { started: true, exitCode: 0 };
-        failures.push(`deploy: ${String(Cause.squash(exit.cause))}`);
-        return { started: true, exitCode: 1 };
-      },
-      assertImages: async (): Promise<CommandResult> => {
-        // assert-pool-image.ts, with the fixture network and a virtual clock for its 240 s budget.
-        options.beforeImageCheck?.(w);
-        try {
-          verified = await waitForPoolImage(
-            JSON.parse(readFileSync(receiptPath, "utf8")),
-            candidate,
-            { accountId, apiToken: "synthetic-api-token" },
-            origin,
-            w.fetch,
-            {
-              // assert-pool-image.ts computes this from the candidate's own pool image source.
-              candidateImageInput: candidateInput,
-              now: () => now,
-              sleep: async (ms: number) => void (now += ms),
-            },
+                  }),
+              io: {
+                classes: options.failClassRead
+                  ? {
+                      ...classProvider(production),
+                      read: async () => {
+                        options.failClassRead!.reads++;
+                        throw new TypeError("fetch failed");
+                      },
+                    }
+                  : classProvider(production),
+                sqlSchemas: async () => readySqlSchemas(candidate),
+                placements: (_worker, baseline) =>
+                  Effect.succeed(
+                    baseline.map(({ versionId }) => ({
+                      id: versionId,
+                      placement: undefined,
+                      bindings: [
+                        { name: "POOL_IMAGE_HASH", type: "plain_text", text: w.root.input },
+                      ],
+                    })),
+                  ),
+                baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
+                upload: (worker) =>
+                  Effect.succeed({ versionId: `accepted-${worker.id}`, startupTimeMs: 100 }),
+              },
+            }).pipe(withReleaseRuntime),
           );
-          return { started: true, exitCode: 0 };
-        } catch (error) {
-          failures.push(`assertImages: ${String(error)}`);
+          if (Exit.isSuccess(exit)) return { started: true, exitCode: 0 };
+          failures.push(`deploy: ${String(Cause.squash(exit.cause))}`);
           return { started: true, exitCode: 1 };
-        }
-      },
-      smoke: async () => ({ started: true, exitCode: 0 }),
-      dispose: () => rmSync(dirname(receiptPath), { recursive: true, force: true }),
-      log: () => {},
-    }).then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error: String(error) }),
-    );
+        },
+        assertImages: async (): Promise<CommandResult> => {
+          // assert-pool-image.ts, with the fixture network and a virtual clock for its 240 s budget.
+          options.beforeImageCheck?.(w);
+          try {
+            verified = await waitForPoolImage(
+              JSON.parse(readFileSync(receiptPath, "utf8")),
+              candidate,
+              { accountId, apiToken: "synthetic-api-token" },
+              origin,
+              w.fetch,
+              {
+                // assert-pool-image.ts computes this from the candidate's own pool image source.
+                candidateImageInput: candidateInput,
+                now: () => now,
+                sleep: async (ms: number) => void (now += ms),
+              },
+            );
+            return { started: true, exitCode: 0 };
+          } catch (error) {
+            failures.push(`assertImages: ${String(error)}`);
+            return { started: true, exitCode: 1 };
+          }
+        },
+        smoke: async () => ({ started: true, exitCode: 0 }),
+        dispose: () => rmSync(dirname(receiptPath), { recursive: true, force: true }),
+        log: () => {},
+      }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error: String(error) }),
+      );
+    // A rerun is the same release command again, over the State and image record the stop left.
+    const stopped = options.stopBootstrap
+      ? { outcome: await attempt(), failures: failures.splice(0), journal: standin.readJournal() }
+      : undefined;
+    const outcome = await attempt();
     return {
       w,
+      stopped,
       outcome,
       failures,
       marks,
@@ -746,3 +759,34 @@ test("the fixture's receipt Command matches the one the production stack declare
   const retained = readFileSync(new URL("./preserve-runtime-plan.ts", import.meta.url), "utf8");
   assert.ok(!retained.includes('"POOL_DESIRED_IMAGE_INPUT"'), "the desired input is not retained");
 });
+
+const bootstrapStops = [
+  ["readback", /provisioning-configuration-drift \(PoolRuntime(Blue|Green)\)/u],
+  ["create-reply-lost", /provisioning-operation-unknown \(PoolRuntime(Blue|Green)\)/u],
+  ["namespace-baseline-pending", /SQLITE_TOOBIG/u],
+] as const;
+for (const color of ["blue", "green"] as const)
+  for (const [at, refusal] of bootstrapStops)
+    test(`a rerun after the ${color} bootstrap stopped at ${at} finishes it from its journal, binds it and completes the release`, async () => {
+      const result = await firstScaleOutRelease({ stopBootstrap: { color, at } });
+      const stopped = result.stopped!;
+      assert.notEqual(stopped.outcome.ok, true, explain(result));
+      assert.match(stopped.failures.join("\n"), refusal, stopped.failures.join("\n"));
+      // The stop left this color's frozen manifest and no retained application.
+      assert.ok(stopped.journal?.bootstrap[color], explain(result));
+      assert.equal(stopped.journal?.baseline.applications[color], undefined);
+      assert.equal(result.journal?.complete, true, explain(result));
+      // An acknowledged or recorded create is adopted, never sent again; a pending read reads again.
+      assert.deepEqual(standin.bootstrapCalls.creates, { blue: 1, green: 1 });
+      assert.equal(standin.bootstrapCalls.writes, 0);
+      assert.deepEqual(standin.bootstrapAttachments.map(({ className }) => className).sort(), [
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+      ]);
+      assert.deepEqual(result.production.containers(), [
+        "PoolContainer",
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+      ]);
+      assert.equal(result.w.root.instances.length, 0, "retirement destroyed the root runtime");
+    });

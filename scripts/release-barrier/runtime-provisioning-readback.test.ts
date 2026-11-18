@@ -18,7 +18,8 @@ import { BarrierRefusal } from "./manifest.ts";
 import { provisionRuntime, type RuntimeProvisioningProvider } from "./runtime-provisioning.ts";
 import { stateProvisioningStore } from "./provisioning-state.ts";
 import { provisioningManifestDigest } from "./provisioning-contract.ts";
-import { readForwardJournal, unsettledRuntimeProvisioning } from "./forward-journal.ts";
+import { journalKey, readForwardJournal } from "./forward-journal.ts";
+import { readRuntimeProvisioningHeader } from "./provisioning-header.ts";
 import { provisioningFixture, resolvedApplication } from "./test/provisioning-fixtures.ts";
 import { Schema } from "effect";
 import { RuntimeReleaseState } from "./runtime-release-state.ts";
@@ -104,6 +105,7 @@ async function bootstrap(
   const wire = await cloudflare(context, (configuration) => current(configuration), answers);
   let current = readback;
   let native: ReturnType<typeof decodeCreatedRuntime> | undefined;
+  let loseReply = false;
   const provider: RuntimeProvisioningProvider = {
     active: async () => f.manifest.active,
     namespaceBaseline: async () => f.baseline,
@@ -139,6 +141,10 @@ async function bootstrap(
           ),
         ),
       );
+      if (loseReply) {
+        loseReply = false;
+        throw new Error("The create's reply was lost after alchemy recorded it");
+      }
       return native;
     },
     readApplication: async (id) =>
@@ -148,16 +154,17 @@ async function bootstrap(
         ),
       ),
     nativeState: async () => ({ application: native!, digest: "1".repeat(64) }),
+    createdApplication: async () => native,
   };
   const state = await Effect.runPromise(InMemoryService());
   const scope = { name: f.manifest.stack, stage: f.manifest.stage };
   const store = stateProvisioningStore(state, scope, key, (work) => work());
-  const head = () =>
-    Effect.runPromise(
-      unsettledRuntimeProvisioning(scope, key).pipe(
-        Effect.provideService(State, Effect.succeed(state)),
-      ),
-    );
+  // The provisioning record heading the forward journal while it is unsettled.
+  const head = async () => {
+    const value = await Effect.runPromise(state.getOutput(journalKey(scope)));
+    const runtime = readRuntimeProvisioningHeader(value, key);
+    return runtime && !runtime.record.complete ? runtime.record : undefined;
+  };
   const forward = () =>
     Effect.runPromise(
       readForwardJournal(scope, key).pipe(Effect.provideService(State, Effect.succeed(state))),
@@ -171,6 +178,9 @@ async function bootstrap(
     run: () => provisionRuntime(f.manifest, store, provider, f.enable, () => 100),
     serve: (next: (created: Configuration) => Configuration) => {
       current = next;
+    },
+    loseReply: () => {
+      loseReply = true;
     },
   };
 }
@@ -318,4 +328,16 @@ test("the pin taken from the created application matches the Worker's reading of
   );
   const worker = decodeProviderApplication(((await raw.json()) as { result: unknown }).result);
   assert.equal(runtimeApplicationConfigDigest(stored), runtimeApplicationConfigDigest(worker));
+});
+
+test("a rerun adopts the application a lost create reply left created, without a second create", async (context) => {
+  const h = await bootstrap(context, "PoolRuntimeGreen");
+  h.loseReply();
+  assert.equal((await refusal(h.run)).reason, "provisioning-operation-unknown");
+  assert.equal((await h.head())?.operations["application-create"]?.outcome, "unknown");
+  await assert.rejects(h.forward(), /runtime-provisioning-journal-unsettled/);
+  const receipt = await h.run();
+  assert.equal(receipt.applicationId, applicationId);
+  assert.deepEqual(h.wire.calls, ["POST", "GET", "GET"], "adopted, never created again");
+  assert.deepEqual(await h.forward(), { complete: true });
 });

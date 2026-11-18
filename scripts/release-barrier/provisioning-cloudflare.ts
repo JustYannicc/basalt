@@ -11,7 +11,7 @@ import {
 } from "./provisioning-contract.ts";
 import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
 import type { RuntimeProvisioningProvider } from "./runtime-provisioning.ts";
-import { runtimeNativeState } from "./provisioning-native.ts";
+import { runtimeNativeCreated, runtimeNativeState } from "./provisioning-native.ts";
 
 type Services =
   | Effect.Services<ReturnType<typeof applyRuntimeCreate>>
@@ -56,6 +56,7 @@ export const runtimeProvisioningProvider = (input: {
           ),
         ),
       nativeState: (namespaceId) => run(runtimeNativeState(manifest, namespaceId)),
+      createdApplication: (namespaceId) => run(runtimeNativeCreated(manifest, namespaceId)),
     };
     return provider;
   });

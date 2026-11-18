@@ -60,8 +60,10 @@ export function setConfigurationDrift(set: Configuration, observed: Configuratio
   });
   if (equalContainerConfiguration(resources(set), resources(observed))) return changes;
   const preset = { image: set.image, instanceType: set.instanceType };
+  const field = (key: string): unknown =>
+    Object.entries(observed).find(([name]) => name === key)?.[1];
   const resolved = Object.keys(resolvedTypes).filter((key) => {
-    const value = (observed as Record<string, unknown>)[key];
+    const value = field(key);
     return value === undefined
       ? observed.instanceType === undefined
       : !equalContainerValues(preset, { ...preset, [key]: value });
@@ -74,7 +76,7 @@ export function setConfigurationDrift(set: Configuration, observed: Configuratio
     ...resolved.map((key) => ({
       path: key,
       old: resolvedTypes[key]!,
-      new: jsonType((observed as Record<string, unknown>)[key]),
+      new: jsonType(field(key)),
     })),
   ];
 }

@@ -12,6 +12,8 @@ function harness(name: RuntimeResourceName = "PoolRuntime") {
   let current = f.baseline.version.id;
   let record: ProvisioningRecord | undefined;
   let lostCreate = false;
+  let lostReplyAfterCommit = false;
+  let committed = false;
   const application = decodeCreatedRuntime({
     applicationId: "new-application",
     applicationName: f.manifest.declaration.props.name,
@@ -55,11 +57,14 @@ function harness(name: RuntimeResourceName = "PoolRuntime") {
     applicationAbsent: async () => true,
     createApplication: async () => {
       counts.create++;
-      if (lostCreate) throw new Error("Lost reply after commit");
+      if (lostCreate) throw new Error("Lost reply before alchemy recorded a result");
+      committed = true;
+      if (lostReplyAfterCommit) throw new Error("Lost reply after alchemy recorded the result");
       return application;
     },
     readApplication: async () => application,
     nativeState: async () => ({ application, digest: "1".repeat(64) }),
+    createdApplication: async () => (committed ? application : undefined),
   };
   const store: ProvisioningStore = {
     exclusive: (work) => work(),
@@ -82,6 +87,9 @@ function harness(name: RuntimeResourceName = "PoolRuntime") {
     },
     loseCreate: () => {
       lostCreate = true;
+    },
+    loseReplyAfterCommit: () => {
+      lostReplyAfterCommit = true;
     },
     record: () => record,
   };
@@ -116,6 +124,17 @@ test("lost application reply remains unknown even after restart sees absence", a
   await assert.rejects(h.run(), /provisioning-operation-unknown/);
   assert.equal(h.counts.create, 1);
   assert.equal(h.record()!.operations["application-create"]!.outcome, "unknown");
+});
+
+test("a reply lost after alchemy recorded the created row is adopted on rerun without a second create", async () => {
+  const h = harness("PoolRuntimeBlue");
+  h.loseReplyAfterCommit();
+  await assert.rejects(h.run(), /provisioning-operation-unknown/);
+  assert.equal(h.record()!.operations["application-create"]!.outcome, "unknown");
+  const receipt = await h.run();
+  assert.equal(receipt.applicationId, "new-application");
+  assert.equal(h.counts.create, 1);
+  assert.equal(h.record()!.complete, true);
 });
 
 test("Worker version drift after the frozen baseline refuses without an application create", async () => {

@@ -7,17 +7,21 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { Effect } from "effect";
 import type { StateService } from "alchemy/State/State";
-import { canonical, digest } from "./manifest.ts";
+import { encodeState } from "alchemy/State/StateEncoding";
+import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { decodeNamespaceBaseline } from "./provisioning-namespace.ts";
-import { provisioningJournal } from "./provisioning-journal.ts";
-import { stateProvisioningStore, stateValueLimit, storedStateBytes } from "./provisioning-state.ts";
-import { journalKey } from "./forward-journal.ts";
-import { namespaceBaseline } from "./test/provisioning-fixtures.ts";
+import { provisioningManifestDigest } from "./provisioning-contract.ts";
+import { stateProvisioningStore } from "./provisioning-state.ts";
+import { provisionRuntime, type RuntimeProvisioningProvider } from "./runtime-provisioning.ts";
+import { provisioningFixture } from "./test/provisioning-fixtures.ts";
 import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
 import { productionWorker, productionWorkerApi } from "./test/production-worker-api.ts";
 
 const durableObjectValueLimit = 2 * 1024 * 1024;
-const scope = { name: "basalt", stage: "production" };
+
+/** What the State store hands to storage.put: base64 of a 16-byte nonce and the encrypted JSON. */
+const storedBytes = (value: unknown) =>
+  Math.ceil((16 + Buffer.byteLength(JSON.stringify(encodeState(value)))) / 3) * 4;
 
 /** A State whose setOutput refuses what the Durable Object would refuse. */
 function durableObjectState(previous: unknown) {
@@ -27,7 +31,7 @@ function durableObjectState(previous: unknown) {
     getOutput: () => Effect.succeed(output),
     setOutput: ({ value }: { value: unknown }) =>
       Effect.sync(() => {
-        const bytes = storedStateBytes(value);
+        const bytes = storedBytes(value);
         writes.push(bytes);
         if (bytes > durableObjectValueLimit)
           throw new Error(`string or blob too big: SQLITE_TOOBIG (${bytes} bytes)`);
@@ -38,22 +42,23 @@ function durableObjectState(previous: unknown) {
   return { state, writes, output: () => output };
 }
 
-test("a baseline too large for one State value is refused by name and nothing is written", async () => {
-  const fixture = namespaceBaseline();
-  const modules = fixture.version.modules!;
+test("a baseline too large for one State value refuses by name and writes nothing", async () => {
+  const f = provisioningFixture("PoolRuntimeBlue");
   const baseline = decodeNamespaceBaseline({
-    ...fixture,
+    ...f.baseline,
     version: {
-      ...fixture.version,
+      ...f.baseline.version,
       modules: [
         {
-          ...modules[0]!,
+          name: f.baseline.version.mainModule,
+          contentType: "application/javascript+module",
           contentBase64: randomBytes(Math.round(1623.8 * 1024)).toString("base64"),
         },
-        ...modules.slice(1),
       ],
     },
   });
+  const manifest = { ...f.manifest, namespaceBaselineDigest: digest(canonical(baseline)) };
+  const enable = { ...f.enable, manifest: provisioningManifestDigest(manifest) };
   const previous = {
     schemaVersion: 1,
     candidate: "e".repeat(40),
@@ -62,27 +67,36 @@ test("a baseline too large for one State value is refused by name and nothing is
     complete: true,
   };
   const db = durableObjectState(previous);
+  const scope = { name: manifest.stack, stage: manifest.stage };
   const store = stateProvisioningStore(db.state, scope, "c".repeat(64), (work) => work());
-  const journal = provisioningJournal(store, "a".repeat(40), "b".repeat(64), "PoolRuntimeBlue");
-  await assert.rejects(
-    journal.observe(
-      "namespace-baseline",
-      digest(canonical(baseline)),
-      async () => baseline,
-      decodeNamespaceBaseline,
-    ),
-    (error: Error) => {
-      assert.match(error.message, /provisioning-journal-value-too-large/);
-      assert.match(error.message, new RegExp(`journal\\.storedBytes \\d+ > ${stateValueLimit}`));
-      return true;
+  let creates = 0;
+  const unreachable = async () => assert.fail("no provider write or read-back may follow");
+  const provider: RuntimeProvisioningProvider = {
+    active: async () => manifest.active,
+    namespaceBaseline: async () => baseline,
+    observeNamespace: unreachable,
+    applicationAbsent: unreachable,
+    createApplication: async () => {
+      creates++;
+      return unreachable();
     },
+    readApplication: unreachable,
+    nativeState: unreachable,
+    createdApplication: unreachable,
+  };
+  const outcome = await provisionRuntime(manifest, store, provider, enable, () => 100).then(
+    () => undefined,
+    (error: unknown) => error,
   );
+  assert.ok(outcome instanceof BarrierRefusal, `refused with ${String(outcome)}`);
+  assert.equal(outcome.reason, "provisioning-journal-value-too-large");
+  assert.match(outcome.message, /journal\.storedBytes \d+ > \d+/);
   assert.deepEqual(db.writes, [], "no write reached State");
   assert.deepEqual(db.output(), previous, "the completed forward head is untouched");
-  assert.ok(stateValueLimit < durableObjectValueLimit);
+  assert.equal(creates, 0);
 });
 
-test("the production reader's baseline carries no module bodies and journals far below the limit", async () => {
+test("the production reader's baseline carries no module bodies", async () => {
   const worker = productionWorker({
     PoolRuntimeBlue: "blue-namespace",
     PoolRuntimeGreen: "green-namespace",
@@ -95,16 +109,5 @@ test("the production reader's baseline carries no module bodies and journals far
     }).pipe(Effect.provide(api.layer)),
   );
   assert.equal(baseline.version.modules, undefined);
-  const db = durableObjectState(undefined);
-  const store = stateProvisioningStore(db.state, scope, "c".repeat(64), (work) => work());
-  const journal = provisioningJournal(store, "a".repeat(40), "b".repeat(64), "PoolRuntimeBlue");
-  await journal.observe(
-    "namespace-baseline",
-    digest(canonical(baseline)),
-    async () => baseline,
-    decodeNamespaceBaseline,
-  );
-  assert.equal(db.writes.length, 1, "a read is journaled once, already acknowledged");
-  assert.ok(db.writes[0]! < 64 * 1024, `${db.writes[0]} bytes`);
-  assert.equal(journalKey(scope).stack, "basalt-release-barrier");
+  assert.ok(storedBytes(baseline) < 64 * 1024, `${storedBytes(baseline)} bytes`);
 });

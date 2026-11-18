@@ -32,6 +32,8 @@ export interface RuntimeProvisioningProvider {
   nativeState(
     namespaceId: string,
   ): Promise<{ application: CreatedRuntimeApplication; digest: string }>;
+  /** The native row's created application, or undefined while alchemy never recorded a result. */
+  createdApplication(namespaceId: string): Promise<CreatedRuntimeApplication | undefined>;
 }
 
 /** The dedicated provisioning workflow supplies a reviewed GO; ordinary releases never construct one. */
@@ -46,15 +48,19 @@ export async function provisionRuntime(
   try {
     return await provisionEnabled(manifest, input, store, provider, enable, now);
   } catch (error) {
-    if (error instanceof BarrierRefusal && error.worker !== manifest.declaration.fqn)
-      throw new BarrierRefusal(
-        error.reason,
-        manifest.declaration.fqn,
-        error.delta ? { ...error.delta, fqn: manifest.declaration.fqn } : undefined,
-        error.refusals,
-        error.stateStore,
-      );
-    throw error;
+    if (!(error instanceof BarrierRefusal)) throw error;
+    const named = new BarrierRefusal(
+      error.reason,
+      manifest.declaration.fqn,
+      error.delta ? { ...error.delta, fqn: manifest.declaration.fqn } : undefined,
+      error.refusals,
+      error.stateStore,
+    );
+    // Keep the detail a refusal appended to its error line.
+    named.message += error.message.slice(
+      new BarrierRefusal(error.reason, error.worker).message.length,
+    );
+    throw named;
   }
 }
 
@@ -118,6 +124,29 @@ async function provisionEnabled(
       return provider.createApplication(namespace.namespaceId);
     },
     decodeCreatedRuntime,
+    // alchemy marks the row created only from Cloudflare's create response, so a refused or lost
+    // reply after that is adopted once Cloudflare still serves the same application.
+    async () => {
+      const stored = await provider.createdApplication(namespace.namespaceId);
+      if (!stored) return undefined;
+      const live = await provider.readApplication(stored.applicationId);
+      sameProvisioningValue(
+        "application.adopted",
+        {
+          applicationId: stored.applicationId,
+          applicationName: manifest.declaration.props.name,
+          accountId: manifest.declaration.accountId,
+          durableObjects: { namespaceId: namespace.namespaceId },
+        },
+        {
+          applicationId: live.applicationId,
+          applicationName: live.applicationName,
+          accountId: live.accountId,
+          durableObjects: live.durableObjects,
+        },
+      );
+      return stored;
+    },
   );
   const native = await provider.nativeState(namespace.namespaceId);
   sameProvisioningValue("native.acknowledgedResult", created, native.application);

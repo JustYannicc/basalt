@@ -55,16 +55,8 @@ export const namespaceBaseline = (classes: readonly string[] = runtimeClasses) =
       createdOn: "2026-11-09T00:00:00Z",
       number: 1,
       urls: [],
+      // The reader asks without include=modules, so Cloudflare sends no module bodies.
       mainModule: "worker/index.mjs",
-      modules: [
-        {
-          name: "worker/index.mjs",
-          contentType: "application/javascript+module",
-          contentBase64: Buffer.from(
-            "export class PoolContainer {}\nexport default {};\n",
-          ).toString("base64"),
-        },
-      ],
       containers: [{ className: "PoolContainer" }],
       bindings: [
         {

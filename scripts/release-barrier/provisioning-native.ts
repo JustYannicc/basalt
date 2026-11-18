@@ -50,3 +50,16 @@ export const runtimeNativeState = (manifest: RuntimeProvisioningManifest, namesp
     const application = decodeCreatedRuntime(row.attr);
     return { application, digest: digest(canonical(encodeState(row))) };
   });
+
+/** The created application alchemy recorded, or undefined when it never recorded one. */
+export const runtimeNativeCreated = (manifest: RuntimeProvisioningManifest, namespaceId: string) =>
+  Effect.gen(function* () {
+    const state = yield* yield* State;
+    const row = yield* state.get({
+      stack: manifest.stack,
+      stage: manifest.stage,
+      fqn: manifest.declaration.fqn,
+    });
+    if (row === undefined || row.status === "creating") return undefined;
+    return (yield* runtimeNativeState(manifest, namespaceId)).application;
+  });

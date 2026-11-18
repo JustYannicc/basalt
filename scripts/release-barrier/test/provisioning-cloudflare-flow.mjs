@@ -20,8 +20,13 @@ import { provisioningManifestDigest } from "../provisioning-contract.ts";
 import { provisioningFixture, resolvedApplication } from "./provisioning-fixtures.ts";
 const tree = process.argv[2];
 const resource = process.argv[3] ?? "PoolRuntime";
-const sourceDrift = process.argv[4] === "source-drift";
-const sourcePlan = process.argv[4] === "source" || sourceDrift;
+const flags = process.argv.slice(4);
+const sourceDrift = flags.includes("source-drift");
+const sourcePlan = flags.includes("source") || sourceDrift;
+// The create's reply is lost after alchemy recorded the created row; a rerun must adopt it.
+const lostReply = flags.includes("lost-reply");
+// Production has 18 namespaces before the release and 20 after it, one full page.
+const namespaceCount = Number(process.env.PROVISIONING_FLOW_NAMESPACES ?? "20");
 assert.ok(["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(resource));
 const load = (name) =>
   import(
@@ -93,11 +98,6 @@ const baseline = {
   urls: [],
   created_on: "2026-11-09T00:00:00Z",
   main_module: f.baseline.version.mainModule,
-  modules: f.baseline.version.modules.map((part) => ({
-    name: part.name,
-    content_type: part.contentType,
-    content_base64: part.contentBase64,
-  })),
   // Production's alchemy, migrations-based read-back: no exports, and the class the deploy created.
   containers: [{ class_name: "PoolContainer" }],
   bindings: f.baseline.version.bindings.map((binding) =>
@@ -114,6 +114,33 @@ const baseline = {
   compatibility_flags: ["nodejs_compat"],
   usage_model: "standard",
 };
+// Module bodies come back only for include=modules, as on Cloudflare.
+const modules = [
+  {
+    name: f.baseline.version.mainModule,
+    content_type: "application/javascript+module",
+    content_base64: Buffer.from("export class PoolContainer {}\nexport default {};\n").toString(
+      "base64",
+    ),
+  },
+];
+const rootApplication = {
+  ...resolvedApplication("root-application", account, {
+    name: "synthetic-root",
+    scheduling_policy: "default",
+    instances: 1,
+    max_instances: 1,
+    constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
+    configuration: {
+      image: `registry.cloudflare.com/${account}/root@sha256:${"9".repeat(64)}`,
+      instance_type: "basic",
+      environment_variables: [{ name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: account }],
+      observability: { logs: { enabled: true } },
+    },
+    durable_objects: { namespace_id: "legacy-namespace" },
+  }),
+  version: 57,
+};
 const deployed = baseline.id;
 let application, saved;
 const calls = [];
@@ -125,7 +152,7 @@ const client = HttpClient.make((request, url) =>
         ? JSON.parse(new TextDecoder().decode(request.body.body))
         : undefined;
     calls.push({ method: request.method, path: url.pathname });
-    let result;
+    let result, info;
     if (
       request.method === "GET" &&
       url.pathname === `${base}/workers/scripts/${script}/deployments`
@@ -145,20 +172,34 @@ const client = HttpClient.make((request, url) =>
       request.method === "GET" &&
       url.pathname === `${base}/workers/workers/${script}/versions/${baseline.id}`
     )
-      result = baseline;
+      result = url.searchParams.get("include") === "modules" ? { ...baseline, modules } : baseline;
     else if (
       request.method === "GET" &&
       url.pathname === `${base}/workers/durable_objects/namespaces`
-    )
-      result = f.baseline.namespaces.map((row) => ({
+    ) {
+      const owned = f.baseline.namespaces.map((row) => ({
         id: row.id,
+        name: `${script}_${row.className}`,
         script,
         class: row.className,
         use_sqlite: row.storage === "sqlite",
+        ...(row.className === "PoolContainer" ? { use_containers: true } : {}),
       }));
-    else if (request.method === "GET" && url.pathname === `${base}/containers/applications`)
-      result = application ? [application] : [];
-    else if (request.method === "POST" && url.pathname === `${base}/containers/applications`) {
+      const foreign = Array.from({ length: namespaceCount - owned.length }, (_, index) => ({
+        id: `foreign-${index}`,
+        name: `other_Class${index}`,
+        script: "synthetic-other-worker",
+        class: `Class${index}`,
+        use_sqlite: true,
+      }));
+      const all = [...foreign, ...owned];
+      const page = Number(url.searchParams.get("page") ?? "1");
+      result = all.slice((page - 1) * 20, page * 20);
+      info = { page, per_page: 20, count: result.length, total_count: all.length };
+    } else if (request.method === "GET" && url.pathname === `${base}/containers/applications`) {
+      result = [rootApplication, ...(application ? [application] : [])];
+      info = {};
+    } else if (request.method === "POST" && url.pathname === `${base}/containers/applications`) {
       assert.equal(body.durable_objects.namespace_id, f.namespaceId);
       assert.equal(application, undefined);
       application = resolvedApplication("new-application", account, body);
@@ -176,17 +217,7 @@ const client = HttpClient.make((request, url) =>
         errors: [],
         messages: [],
         result,
-        ...(Array.isArray(result)
-          ? {
-              result_info: {
-                page: 1,
-                per_page: 100,
-                count: result.length,
-                total_count: result.length,
-                total_pages: 1,
-              },
-            }
-          : {}),
+        ...(info ? { result_info: info } : {}),
       }),
     );
   }),
@@ -206,7 +237,18 @@ const legacy = {
 const stateRows = { synthetic: { production: { PoolContainer: structuredClone(legacy) } } };
 const program = Effect.gen(function* () {
   const provider = yield* ContainerPlatform.Provider;
-  const state = yield* InMemoryService(stateRows);
+  const memory = yield* InMemoryService(stateRows);
+  let lose = lostReply;
+  const state = {
+    ...memory,
+    get: (key) =>
+      lose && key.fqn === resource && stateRows.synthetic.production[resource]?.status === "created"
+        ? Effect.suspend(() => {
+            lose = false;
+            return Effect.die(new Error("The created row's read was lost"));
+          })
+        : memory.get(key),
+  };
   const props = f.manifest.declaration.props;
   const plan = {
     resources: {
@@ -301,6 +343,13 @@ const program = Effect.gen(function* () {
           now: () => 100,
         }).pipe(Effect.provideService(State, Effect.succeed(state)))
       : Effect.promise(() => provisionRuntime(f.manifest, store, adapter, f.enable, () => 100));
+  if (lostReply) {
+    const lost = yield* Effect.exit(invoke());
+    assert.equal(lost._tag, "Failure");
+    assert.match(String(lost.cause), /provisioning-operation-unknown/);
+    assert.equal(saved.operations["application-create"].outcome, "unknown");
+    assert.equal(stateRows.synthetic.production[resource].status, "created");
+  }
   const receipt = yield* invoke();
   assert.equal(receipt.applicationId, "new-application");
   assert.equal(receipt.disposition, "idle");
