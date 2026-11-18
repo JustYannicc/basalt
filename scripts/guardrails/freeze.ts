@@ -67,18 +67,9 @@ if (import.meta.main) {
   const numbers = target
     ? [Number(target)]
     : gh([
-        "pr",
-        "list",
-        "--repo",
-        repository,
-        "--base",
-        "main",
-        "--state",
-        "open",
-        "--limit",
-        "200",
-        "--json",
-        "number",
+        "api",
+        "--paginate",
+        `repos/${repository}/pulls?state=open&base=main&per_page=100`,
         "--jq",
         ".[].number",
       ])

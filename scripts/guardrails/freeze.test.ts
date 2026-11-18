@@ -1,30 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { freezeVerdict } from "./freeze.ts";
-import { releaseHealth, type Deployment, type Merge } from "./release-health.ts";
+import { releaseHealth, type Merge } from "./release-health.ts";
+import { deployments, merges } from "./test/history.ts";
 
-const recorded = JSON.parse(
-  readFileSync(new URL("./fixtures/production-2026-11.json", import.meta.url), "utf8"),
-);
-const deployments: Deployment[] = recorded.deployments.map(
-  ([sha, createdAt, committedAt, state]: [string, string, string, Deployment["state"]]) => ({
-    sha,
-    createdAt,
-    committedAt,
-    state,
-  }),
-);
-const merges: Merge[] = recorded.merges.map(([number, mergedAt]: [number, string]) => ({
-  number,
-  mergedAt,
-}));
 const justBefore = (merge: Merge) =>
   releaseHealth(deployments, merges, new Date(Date.parse(merge.mergedAt) - 1000));
 
-test("would have held 182 of the 677 merges of 5-18 Nov, inside the two spirals and the stuck 5 Nov", () => {
+test("would have held 173 of the 677 merges of 5-18 Nov, all while releases were stuck", () => {
   const held = merges.filter((merge) => justBefore(merge).freeze);
-  assert.equal(held.length, 182);
+  assert.equal(held.length, 173);
   const days = new Set(held.map((merge) => merge.mergedAt.slice(0, 10)));
   assert.deepEqual(
     [...days],
@@ -38,10 +23,10 @@ test("would have held 182 of the 677 merges of 5-18 Nov, inside the two spirals 
       "2026-11-18",
     ],
   );
-  // From 16 Nov 17:38, when the freeze began, every one of the 56 merges would have needed to be
+  // From 16 Nov 19:29, when the freeze began, every one of the 55 merges would have needed to be
   // a release-path change or labelled release-unblock.
-  const spiral = merges.filter((merge) => merge.mergedAt > "2026-11-16T17:38:00Z");
-  assert.equal(spiral.length, 56);
+  const spiral = merges.filter((merge) => merge.mergedAt > "2026-11-16T19:29:00Z");
+  assert.equal(spiral.length, 55);
   assert.ok(spiral.every((merge) => justBefore(merge).freeze));
 });
 
