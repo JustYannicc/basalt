@@ -24,6 +24,10 @@ test("passes a release fix that touches only the release path, its carries model
 test("passes product changes and release-path changes on their own", () => {
   assert.equal(shipAlone(["src/pool/worker.ts", "docs/pools.md"]).pass, true);
   assert.equal(shipAlone(["scripts/release/deploy.ts", "architecture/model/x.c4"]).pass, true);
+  assert.equal(
+    shipAlone(["scripts/release/deploy.ts", "tsconfig.json", "package.json"]).pass,
+    true,
+  );
   assert.equal(shipAlone(["scripts/release/deploy.ts", "src/pool/worker.ts"]).pass, false);
 });
 
