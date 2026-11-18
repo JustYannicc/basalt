@@ -106,7 +106,10 @@ export async function openDeploymentReadiness(options: {
 }
 
 export const readinessRetryMs = 5_000;
-type Readiness = Awaited<ReturnType<typeof openDeploymentReadiness>>;
+export type DeploymentReadiness = Awaited<ReturnType<typeof openDeploymentReadiness>>;
+/** The identity-only check is optional: without it a refusal is still asked again. */
+export type ReadinessCalls = Pick<DeploymentReadiness, "ready"> &
+  Partial<Pick<DeploymentReadiness, "adoption">>;
 
 /**
  * Refusals that pass by themselves while an upload settles: 409 from an entrypoint still on the
@@ -125,7 +128,7 @@ const settles = (status: number) => status === 409 || status === 429 || status >
  * an abort, as a stalled call always has.
  */
 export async function readyAfterAdoption(
-  connection: Pick<Readiness, "ready"> & Partial<Pick<Readiness, "adoption">>,
+  connection: ReadinessCalls,
   target: Pick<RuntimeReady, "candidate">,
   options: {
     signal: AbortSignal;
