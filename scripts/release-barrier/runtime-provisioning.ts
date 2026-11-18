@@ -18,7 +18,9 @@ import {
 } from "./provisioning-namespace.ts";
 import { provisioningJournal, type ProvisioningStore } from "./provisioning-journal.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
-import { setConfigurationDrift } from "./container-configuration.ts";
+import { jsonType, setConfigurationDrift } from "./container-configuration.ts";
+import { changedProps, type PropChange } from "./prop-diff.ts";
+import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 
 export interface RuntimeProvisioningProvider {
   namespaceBaseline(): Promise<NamespaceBaseline>;
@@ -127,8 +129,6 @@ async function provisionEnabled(
       native.digest,
     );
   const application = await provider.readApplication(created.applicationId);
-  // Create and read responses may stamp or resolve fields differently; identity and settings may not.
-  sameProvisioningValue("application.readback", settingsOf(created), settingsOf(application));
   const configuration = {
     image: manifest.declaration.props.image,
     instanceType: manifest.declaration.props.instanceType,
@@ -139,6 +139,23 @@ async function provisionEnabled(
   };
   assertSetConfiguration(manifest, "application.created.configuration", configuration, created);
   assertSetConfiguration(manifest, "application.configuration", configuration, application);
+  // The fleet pins this color from the create's stored result and later hashes a read against it.
+  const pinned = (value: CreatedRuntimeApplication) => ({
+    applicationId: value.applicationId,
+    accountId: value.accountId,
+    version: value.version,
+    ...runtimeApplicationSettings(value),
+  });
+  refuseChanged(
+    manifest,
+    "provisioning-create-readback-drift",
+    "application.readback",
+    changedProps(pinned(created), pinned(application), (old, next) => ({
+      old: jsonType(old),
+      new: jsonType(next),
+    })),
+    "The create's stored result must equal its readback wherever the fleet pins it.",
+  );
   sameProvisioningValue(
     "application.account",
     manifest.declaration.accountId,
@@ -187,34 +204,37 @@ async function provisionEnabled(
   return receipt;
 }
 
-const settingsOf = (value: CreatedRuntimeApplication) => ({
-  applicationId: value.applicationId,
-  applicationName: value.applicationName,
-  accountId: value.accountId,
-  schedulingPolicy: value.schedulingPolicy,
-  instances: value.instances,
-  maxInstances: value.maxInstances,
-  constraints: value.constraints,
-  durableObjects: value.durableObjects,
-});
-
 function assertSetConfiguration(
   manifest: RuntimeProvisioningManifest,
   path: string,
   set: CreatedRuntimeApplication["configuration"],
   application: CreatedRuntimeApplication,
 ) {
-  const changed = setConfigurationDrift(set, application.configuration).map((change) => ({
-    ...change,
-    path: `${path}.${change.path}`,
-  }));
+  refuseChanged(
+    manifest,
+    "provisioning-configuration-drift",
+    path,
+    setConfigurationDrift(set, application.configuration),
+    "A created application must read back what its create request set.",
+  );
+}
+
+/** Refuses with redacted paths and JSON types only, in the receipt and the error line. */
+function refuseChanged(
+  manifest: RuntimeProvisioningManifest,
+  reason: string,
+  path: string,
+  changes: PropChange[],
+  why: string,
+) {
+  const changed = changes.map((change) => ({ ...change, path: `${path}.${change.path}` }));
   if (!changed.length) return;
   const { fqn } = manifest.declaration;
-  const refusal = new BarrierRefusal("provisioning-configuration-drift", fqn, {
+  const refusal = new BarrierRefusal(reason, fqn, {
     fqn,
     type: "Cloudflare.Container",
     changed,
-    why: ["A created application must read back what its create request set."],
+    why: [why],
   });
   refusal.message += `: ${changed
     .map((change) =>

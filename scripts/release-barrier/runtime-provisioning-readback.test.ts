@@ -20,14 +20,26 @@ import { stateProvisioningStore } from "./provisioning-state.ts";
 import { provisioningManifestDigest } from "./provisioning-contract.ts";
 import { readForwardJournal, unsettledRuntimeProvisioning } from "./forward-journal.ts";
 import { provisioningFixture, resolvedApplication } from "./test/provisioning-fixtures.ts";
+import { Schema } from "effect";
+import { RuntimeReleaseState } from "./runtime-release-state.ts";
+import { runtimeApplicationConfigDigest } from "./runtime-slot-provider-proof.ts";
+import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 
 const applicationId = "new-application";
 const key = "a".repeat(64);
 type Configuration = Record<string, unknown>;
 
+interface Answers {
+  /** What Cloudflare adds to every response for this application. */
+  added?: Configuration;
+  /** A difference only the read shows, as a whole application. */
+  read?: (application: Record<string, unknown>) => Record<string, unknown>;
+}
+
 async function cloudflare(
   context: TestContext,
   readback: (created: Configuration) => Configuration,
+  answers: Answers,
 ) {
   const calls: string[] = [];
   let created: Record<string, unknown> | undefined;
@@ -35,14 +47,16 @@ async function cloudflare(
     calls.push(request.method!);
     let body = "";
     for await (const chunk of request) body += chunk;
-    if (request.method === "POST")
-      created = resolvedApplication(applicationId, "1".repeat(32), JSON.parse(body));
+    if (request.method === "POST") {
+      const resolved = resolvedApplication(applicationId, "1".repeat(32), JSON.parse(body));
+      created = { ...resolved, configuration: { ...resolved.configuration, ...answers.added } };
+    }
     const result =
       request.method === "GET" && created
-        ? {
+        ? (answers.read ?? ((value) => value))({
             ...created,
             configuration: readback(created.configuration as Configuration),
-          }
+          })
         : created;
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({ success: true, errors: [], messages: [], result }));
@@ -76,17 +90,18 @@ async function cloudflare(
         ),
       ),
     );
-  return { calls, run };
+  return { calls, run, url: (path: string) => `http://127.0.0.1:${address.port}${path}` };
 }
 
 async function bootstrap(
   context: TestContext,
   name: "PoolRuntimeBlue" | "PoolRuntimeGreen",
   readback: (created: Configuration) => Configuration = (configuration) => configuration,
+  answers: Answers = {},
 ) {
   const f = provisioningFixture(name);
   const { accountId, props } = f.manifest.declaration;
-  const wire = await cloudflare(context, (configuration) => current(configuration));
+  const wire = await cloudflare(context, (configuration) => current(configuration), answers);
   let current = readback;
   let native: ReturnType<typeof decodeCreatedRuntime> | undefined;
   const provider: RuntimeProvisioningProvider = {
@@ -181,12 +196,26 @@ for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"] as const)
   });
 
 test("fields Cloudflare adds that the create never set do not refuse", async (context) => {
-  const h = await bootstrap(context, "PoolRuntimeBlue", (configuration) => ({
-    ...configuration,
-    labels: [],
-    ssh_public_key_ids: [],
-  }));
+  const h = await bootstrap(context, "PoolRuntimeBlue", undefined, {
+    added: { labels: [], ssh_public_key_ids: [] },
+  });
   assert.equal((await h.run()).applicationId, applicationId);
+});
+
+test("a read that differs from the create's stored result where the fleet pins it refuses", async (context) => {
+  const h = await bootstrap(context, "PoolRuntimeGreen", undefined, {
+    read: (application) => ({
+      ...application,
+      version: 2,
+      configuration: { ...(application.configuration as Configuration), labels: [] },
+    }),
+  });
+  const error = await refusal(h.run);
+  assert.equal(error.reason, "provisioning-create-readback-drift");
+  assert.deepEqual(error.delta?.changed, [
+    { path: "application.readback.configuration.labels", old: "absent", new: "array" },
+    { path: "application.readback.version", old: "number", new: "number" },
+  ]);
 });
 
 test("a set field that reads back different refuses with its paths and JSON types only", async (context) => {
@@ -273,4 +302,20 @@ test("a rerun after an earlier run left its namespace read pending reads again a
   assert.equal((await h.run()).applicationId, applicationId);
   assert.deepEqual(h.wire.calls, ["POST", "GET"]);
   assert.deepEqual(await h.forward(), { complete: true });
+});
+
+test("the pin taken from the created application matches the Worker's reading of the same readback", async (context) => {
+  const h = await bootstrap(context, "PoolRuntimeBlue");
+  await h.run();
+  const { accountId } = h.f.manifest.declaration;
+  const sdk = await h.wire.run(Containers.getContainerApplication({ accountId, applicationId }));
+  // The release pins a color from its stored attr; the Worker hashes its own read of Cloudflare.
+  const stored = Schema.decodeUnknownSync(
+    RuntimeReleaseState.fields.applications.fields.root.fields.attributes,
+  )({ ...containerAttributes(sdk), hash: { image: "b".repeat(16), digest: "synthetic" } });
+  const raw = await fetch(
+    h.wire.url(`/accounts/${accountId}/containers/applications/${applicationId}`),
+  );
+  const worker = decodeProviderApplication(((await raw.json()) as { result: unknown }).result);
+  assert.equal(runtimeApplicationConfigDigest(stored), runtimeApplicationConfigDigest(worker));
 });

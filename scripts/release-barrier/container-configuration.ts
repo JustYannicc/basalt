@@ -17,7 +17,7 @@ export const equalContainerConfiguration = (left: Configuration, right: Configur
   equalContainerValues(defaults(left), defaults(right));
 
 const resourceKeys = new Set(["instanceType", "vcpu", "memory", "memoryMib", "disk"]);
-const jsonType = (value: unknown) =>
+export const jsonType = (value: unknown) =>
   value === undefined
     ? "absent"
     : value === null
