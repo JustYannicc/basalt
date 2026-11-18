@@ -52,7 +52,9 @@ jobs:
         run: |
           lane="$(node -e 'const m=/^stage-[a-z]+(?:-([1-3]))?$/.exec(process.env.STAGE_LABEL); if(!m) process.exit(1); console.log(m[1] ?? "1")')"
           echo "subject=rehearsal-$lane" >> "$GITHUB_OUTPUT"
-          echo "BASALT_STAGE_OUTPUT_DIR=$RUNNER_TEMP/stage-output" >> "$GITHUB_ENV"
+          # The box keeps a private owner-only directory per job for 14 days; hosted keeps runner temp.
+          if [ -n "${BASALT_BOX_OUTPUT:-}" ]; then out="$BASALT_BOX_OUTPUT/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"; else out="$RUNNER_TEMP/stage-output"; fi
+          echo "BASALT_STAGE_OUTPUT_DIR=$out" >> "$GITHUB_ENV"
           # A standing stage outlives one job; the upstream test stage still needs a deadline.
           echo "TEST_STAGE_EXPIRES_AT=$(( ($(date +%s) + 86400) * 1000 ))" >> "$GITHUB_ENV"
       - name: Plan the stage and save its encrypted cleanup checkpoint
@@ -87,6 +89,18 @@ jobs:
           PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
           PREVIEW_SMOKE_EMAIL: ${{ secrets.PREVIEW_SMOKE_EMAIL }}
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
+      - name: On failure, print the kept output (redacted)
+        if: failure() && steps.prepare.outcome == 'success'
+        run: node scripts/release-preview/stage.ts show-output "$STAGE_LABEL"
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+          PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
       - name: Seal the run's full output
         if: always() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts seal-output "$STAGE_LABEL" "$RUNNER_TEMP/stage-output.enc"

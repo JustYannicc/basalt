@@ -259,7 +259,31 @@ export async function sealOutputs(lane: number, out: string, source = process.en
   });
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "seal-output") {
+/** Each kept child output's reason lines and last lines, redacted, for the public job log. */
+export async function showOutputs(source = process.env) {
+  const directory = resolve(source.BASALT_STAGE_OUTPUT_DIR ?? join(root, ".local/stage"));
+  const { readdir } = await import("node:fs/promises");
+  const redact = redactor(source);
+  for (const name of (await readdir(directory).catch(() => [] as string[])).sort()) {
+    if (!name.endsWith(".log")) continue;
+    const lines = (await readFile(join(directory, name), "utf8"))
+      .split(/\r?\n/u)
+      .filter((line) => line.trim() && !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line));
+    const reasons = lines.filter((line) =>
+      /stopped|refus|error|fail|defect|timed? ?out/iu.test(line),
+    );
+    console.log(`::group::${name} (${lines.length} lines; reasons, then the last 200)`);
+    console.log(redact([...reasons.slice(-60), "----", ...lines.slice(-200)].join("\n")));
+    console.log("::endgroup::");
+  }
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "show-output") {
+  await showOutputs();
+} else if (
+  process.argv[1] === fileURLToPath(import.meta.url) &&
+  process.argv[2] === "seal-output"
+) {
   await sealOutputs(stageLabel(process.argv[3] ?? "")?.lane ?? 0, process.argv[4] ?? "");
 } else if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const parsed = stageLabel(process.argv[2] ?? "");

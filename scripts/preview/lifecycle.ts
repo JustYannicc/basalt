@@ -164,8 +164,14 @@ function runChild(
       if (code !== 0) {
         const lines = tail
           .split(/\r?\n/u)
-          // Stack frames go; Effect's schema paths (`at ["field"]`) stay, they say what failed.
-          .filter((line) => line.trim() && !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line))
+          // Stack frames go; Effect's schema paths (`at ["field"]`) stay, they say what failed. So does
+          // the entry's request journal, which would otherwise push "Release stopped" out of view.
+          .filter(
+            (line) =>
+              line.trim() &&
+              !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line) &&
+              !/^(?:GET|HEAD|PUT|POST|PATCH|DELETE) [a-z0-9.[\]-]+\.[a-z]+\//u.test(line),
+          )
           .slice(-150);
         return rejectPromise(
           new Error(
