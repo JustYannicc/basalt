@@ -377,6 +377,58 @@ try {
       }),
     );
     await summary(`PlanetScale backup complete: \`${backup.name}\``);
+  } else if (command === "preflight") {
+    // Read-only, once before the cutover: the State store version, every State row, the retired
+    // layer's records exported sealed, no unresolved Home migration, and the root pin against State.
+    const legacy = await import("./legacy-records.ts");
+    const result = await run(
+      Effect.gen(function* () {
+        const state = yield* Alchemist.State.store({
+          backend: "configured",
+          ...target,
+        } as never) as unknown as Fx.Effect<any, unknown, never>;
+        const version = yield* state.getVersion() as Fx.Effect<number, unknown, never>;
+        if (version !== 8)
+          return yield* Effect.die(
+            new Error(`State store version ${version}, expected 8: upgrade deliberately first`),
+          );
+        const rows = yield* legacy.stateRows(state, stage);
+        const key = process.env.EXECUTOR_ENCRYPTION_KEY ?? "";
+        const exported = yield* legacy.exportLegacyRecords(
+          state,
+          stage,
+          resolve(root, ".local/release/legacy"),
+          key,
+          (process.env.BASALT_LEGACY_ARCHIVE_STACKS ?? "").split(",").filter(Boolean),
+        );
+        yield* legacy
+          .assertNoUnresolvedHome(stage, key)
+          .pipe(Effect.provideService(legacy.State, Effect.succeed(state)));
+        const pin = process.env.POOL_ROOT_IMAGE
+          ? JSON.parse(process.env.POOL_ROOT_IMAGE)
+          : undefined;
+        const rootRow = (yield* state.get({
+          stack: "basalt",
+          stage,
+          fqn: "PoolContainer",
+        }) as Fx.Effect<any, unknown, never>) as
+          | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
+          | undefined;
+        const recorded = {
+          image: rootRow?.attr?.configuration?.image,
+          input: rootRow?.attr?.hash?.image,
+        };
+        if (!pin || pin.image !== recorded.image || pin.input !== recorded.input)
+          return yield* Effect.die(
+            new Error(
+              `POOL_ROOT_IMAGE does not match the root's State row (image ${recorded.image === pin?.image ? "equal" : "differs"}, input ${recorded.input === pin?.input ? "equal" : "differs"})`,
+            ),
+          );
+        return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
+      }),
+    );
+    await output(resolve(root, ".local/release/preflight.json"), result);
+    await summary(`Preflight: ${JSON.stringify({ ...result, rows: result.rows.length })}`);
   } else if (command === "serving" || command === "rollback") {
     // A code-only release records the serving version first; on a failed acceptance it goes back to it.
     const fqn = values.fqn ?? "PoolWorker";
