@@ -27,17 +27,19 @@ export function desktopHome(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, h
     platform === "darwin"
       ? path.join(home, "Library", "Application Support")
       : platform === "win32"
-        ? (env.APPDATA ?? path.join(home, "AppData", "Roaming"))
+        ? env.APPDATA || path.join(home, "AppData", "Roaming")
         : env.XDG_CONFIG_HOME || path.join(home, ".config");
   return path.join(data, "Signalbox Client", "connection");
 }
 
-/** Without --home, the CLI acts on the desktop app's connection, so its keys reach that gateway. */
+/**
+ * Without --home, a CLI with no profile of its own acts on the desktop app's, so keys it adds reach
+ * the app's gateway. An existing CLI profile keeps its place when the app is installed later.
+ */
 export function defaultHome() {
+  const own = join(homedir(), ".local", "state", "signalbox", "client");
   const desktop = desktopHome(process.platform, process.env, homedir());
-  return existsSync(profilePath(desktop))
-    ? desktop
-    : join(homedir(), ".local", "state", "signalbox", "client");
+  return !existsSync(profilePath(own)) && existsSync(profilePath(desktop)) ? desktop : own;
 }
 
 export const agentPath = (home: string, id: string) => {

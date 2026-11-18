@@ -37,9 +37,9 @@ node clients/cli/main.mjs agent add coding-agent models tools
 node clients/cli/main.mjs run
 ```
 
-On headless Linux, explicitly add `--storage file` to `login` or `import-direct`. Without `--home`, every command acts on the desktop app's connection once the app has signed in on this computer, and otherwise on the CLI's own profile in `~/.local/state/signalbox/client`. `--home <private-directory>` selects a separate profile for every command. The directory must have permissions `0700`; files containing credentials must have `0600`.
+On headless Linux, explicitly add `--storage file` to `login` or `import-direct`. Without `--home`, commands use the CLI's own profile in `~/.local/state/signalbox/client`; when that profile has never been set up and the desktop app has signed in on this computer, they act on the app's connection instead. `--home <private-directory>` selects a separate profile for every command. The directory must have permissions `0700`; files containing credentials must have `0600`.
 
-`agent add <name> models|tools` gives one app or agent on this computer its own local key, for example a dictation or writing app with a custom model setting. It prints the connection's loopback addresses and the key, once: OpenAI-compatible apps take the `/v1` base URL, Anthropic-compatible apps the bare origin, and MCP clients the `/mcp` URL. Before the connection has run once there is no address yet; `run` prints it. The running connection accepts a new key and refuses a removed one at once, without a restart. Remote credentials never belong in an agent's configuration. Stdio agents run:
+`agent add <id> models|tools [models|tools]` gives one app or agent on this computer its own local key, for example a dictation or writing app with a custom model setting. It prints the connection's loopback addresses and the key, once: OpenAI-compatible apps take the `/v1` base URL, Anthropic-compatible apps the bare origin, and MCP clients the `/mcp` URL. Before the connection has run once there is no address yet; `run` prints it. The running connection accepts a new key at once and refuses the next request from a removed one, without a restart. Remote credentials never belong in an agent's configuration. Stdio agents run:
 
 ```sh
 node clients/cli/main.mjs stdio --agent coding-agent

@@ -62,7 +62,7 @@ try {
     process.stderr.write(
       origin
         ? `Key for ${id} added. It is not shown again; agent remove ${id} revokes it.\n`
-        : `Key for ${id} added. Start the connection once; it prints its local address.\n`,
+        : `Key for ${id} added. Its address appears once the connection has started.\n`,
     );
   } else if (command === "agent" && rest[0] === "remove" && rest.length === 2) {
     await removeAgent(directory, rest[1]);

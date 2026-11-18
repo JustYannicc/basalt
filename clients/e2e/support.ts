@@ -8,9 +8,17 @@ import { request } from "node:http";
 
 export const main = fileURLToPath(new URL("../cli/main.mjs", import.meta.url));
 export const root = dirname(dirname(main));
-export function launch(args: readonly string[], home: string, execArgv: readonly string[] = []) {
-  const child = spawn(process.execPath, [...execArgv, main, "--home", home, ...args], {
+/** Without a home, the CLI picks its default profile, as it does for a person. */
+export function launch(
+  args: readonly string[],
+  home: string | undefined,
+  execArgv: readonly string[] = [],
+  env = process.env,
+) {
+  const profile = home === undefined ? [] : ["--home", home];
+  const child = spawn(process.execPath, [...execArgv, main, ...profile, ...args], {
     cwd: root,
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "",
