@@ -23,7 +23,6 @@ import type {
 } from "../runtime-fleet/configuration.ts";
 import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/image-update.ts";
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
-import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 
 export interface HandoffFleet {
   crash?(command: RuntimeCrashCommand): Promise<unknown>;
@@ -57,7 +56,6 @@ export async function handleRuntimeHandoff(
   secret: string,
   fleet?: HandoffFleet,
   probe?: RuntimeCandidateProbe,
-  databasePool?: () => HomeDatabasePoolObservation | null,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
@@ -159,11 +157,7 @@ export async function handleRuntimeHandoff(
         result = await handoff.slots.inspect();
         break;
       case "active-health":
-        // The counters are the last ones Home reported; reading Home here would spend the lease.
-        result = {
-          ...(await handoff.activeHealth()),
-          ...(databasePool ? { homeDatabasePool: databasePool() } : {}),
-        };
+        result = await handoff.activeHealth();
         break;
       case "receipt":
         result = await handoff.slots.receipt(value.operationId);

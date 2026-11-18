@@ -209,6 +209,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
         ),
         selectedChanged: () => this.alarms.schedule("fleet", Date.now() + 2_000),
+        // Reading Home inside active-health would spend the lease that release tooling times.
+        databasePool: () => this.homeDatabasePool.observation(),
         recovery: {
           provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
           beforeCommit: (previous, next, transaction) =>
@@ -760,7 +762,6 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.env.POOL_DEPLOYMENT_KEY ?? "",
       this.fleet,
       this.candidateProbe,
-      () => this.homeDatabasePool.observation(),
     );
   }
 
