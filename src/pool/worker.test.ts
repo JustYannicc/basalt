@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
-import { membershipPrefix, membershipReadMs, type NativeMembershipPolicy } from "./membership-contract.ts";
+import {
+  membershipPrefix,
+  membershipReadMs,
+  type NativeMembershipPolicy,
+} from "./membership-contract.ts";
 import { runtimeRecoveryPrefix } from "./runtime-recovery.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 
