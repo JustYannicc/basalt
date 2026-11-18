@@ -11,7 +11,7 @@ import {
 
 const hex = "0123456789abcdef";
 // Every ID matches ^[0-9a-f]{64}$ (schema check), so [prefix, next prefix) ranges ending at "g"
-// cover each row exactly once in any collation.
+// cover each row exactly once in a deterministic collation; reconciled() refuses any other result.
 const bounds = [...[...hex].flatMap((first) => [...hex].map((second) => first + second)), "g"];
 const rangeBuckets = `SELECT left(id,2) AS bucket, count(*)::bigint AS rows,
     min(timestamp_exact) AS first_at, max(timestamp_exact) AS last_at,
@@ -26,13 +26,22 @@ const rangeBuckets = `SELECT left(id,2) AS bucket, count(*)::bigint AS rows,
  * transaction gives every range one snapshot. No IDs or rows leave the database.
  */
 async function reconciled(db: HistoryDatabase, scope: { pool: string; source: string }) {
+  const isolation = await db.query("SELECT current_setting('transaction_isolation') AS level");
+  if (isolation.rows[0]?.level !== "repeatable read")
+    throw new Error("Import completion reconciliation needs one REPEATABLE READ snapshot");
   const buckets: Record<string, unknown>[] = [];
-  for (let index = 0; index + 1 < bounds.length; index++)
-    buckets.push(
-      ...(
-        await db.query(rangeBuckets, [scope.pool, scope.source, bounds[index], bounds[index + 1]])
-      ).rows,
-    );
+  for (let index = 0; index + 1 < bounds.length; index++) {
+    const { rows } = await db.query(rangeBuckets, [
+      scope.pool,
+      scope.source,
+      bounds[index],
+      bounds[index + 1],
+    ]);
+    // A range holding any other prefix means the collation does not order hex IDs bytewise.
+    if (rows.length > 1 || (rows.length === 1 && rows[0]!.bucket !== bounds[index]))
+      throw new Error("Import completion ranges do not match the ID prefixes");
+    buckets.push(...rows);
+  }
   // Combining in SQL keeps the database's own ordering and min/max semantics.
   const result = await db.query(
     `SELECT COALESCE(sum(rows),0)::text AS rows,min(first_at) AS "frozenFrom",
