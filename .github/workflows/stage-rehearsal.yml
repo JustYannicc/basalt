@@ -37,13 +37,15 @@ jobs:
         # Hosted runners only; the box gives each job a fresh container with room for the pool build.
         if: runner.environment == 'github-hosted'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android
-      - uses: actions/setup-node@v4
+      # The repo's checksum-pinned installers, which also work in the box's fresh containers.
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Prepare the pinned build
+        id: prepare
         run: npm run prepare:upstream
       - name: Name the lane's stage and set its deadline
         id: lane
@@ -86,7 +88,7 @@ jobs:
           PREVIEW_SMOKE_EMAIL: ${{ secrets.PREVIEW_SMOKE_EMAIL }}
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
       - name: Seal the run's full output
-        if: always()
+        if: always() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts seal-output "$STAGE_LABEL" "$RUNNER_TEMP/stage-output.enc"
         env:
           PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
@@ -99,6 +101,9 @@ jobs:
           retention-days: 30
       - name: Clear the label so adding it again runs the mode again
         if: always()
-        run: gh pr edit "${{ github.event.pull_request.number }}" -R "$GITHUB_REPOSITORY" --remove-label "$STAGE_LABEL"
+        # curl, not gh: the box image carries no GitHub CLI.
+        run: >-
+          curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/labels/$STAGE_LABEL" > /dev/null
         env:
           GH_TOKEN: ${{ github.token }}
