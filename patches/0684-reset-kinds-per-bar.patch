@@ -1,5 +1,5 @@
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index 68fc32c50..de79591db 100644
+index 68fc32c50..44e436b51 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
 @@ -362,6 +362,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
@@ -12,7 +12,7 @@ index 68fc32c50..de79591db 100644
                        buttons: element.querySelectorAll("button").length,
                      })),
                    );
-@@ -420,8 +423,11 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -420,8 +423,13 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
          );
          // Banked resets are a count on the window they refill, never a control.
          expect(spareCells[0]?.count).toContain("↻ 2");
@@ -21,12 +21,14 @@ index 68fc32c50..de79591db 100644
 +        // Each kind is a line under its bar with its nearest expiry as visible text, no tooltip.
 +        expect(spareCells[0]?.countTitle).toBeNull();
 +        expect(spareCells[0]?.resetLines).toEqual([
-+          expect.stringMatching(/^↻ 2 banked\s*· next expires \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/),
++          expect.stringMatching(
++            /^↻ 2 banked resets\s*· next expires \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/,
++          ),
 +        ]);
          expect(spareCells[0]?.buttons).toBe(0);
          yield* browser.use("Open Spare Details", (page) =>
            openRowDetails(page, accountRow(page, "Spare"), "Spare").then(() =>
-@@ -527,8 +533,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -527,8 +535,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
            ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
          }
  
@@ -38,7 +40,7 @@ index 68fc32c50..de79591db 100644
          const scopedReset = (
            id: string,
            label: string,
-@@ -623,36 +630,36 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -623,36 +632,36 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
                group
                  .locator("[data-reading]")
                  .evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-reading"))),
@@ -85,15 +87,15 @@ index 68fc32c50..de79591db 100644
 +          expect(resetLines).toEqual([
 +            [],
 +            [
-+              expect.stringMatching(new RegExp(`^↻ 1 weekly\\s*· expires ${moment}$`)),
-+              expect.stringMatching(/^↻ 1 banked\s*· expiry not reported$/),
++              expect.stringMatching(new RegExp(`^↻ 1 weekly reset\\s*· expires ${moment}$`)),
++              expect.stringMatching(/^↻ 1 banked reset\s*· expiry not reported$/),
 +            ],
-+            [expect.stringMatching(new RegExp(`^↻ 3 Fable\\s*· next expires ${moment}$`))],
++            [expect.stringMatching(new RegExp(`^↻ 3 Fable resets\\s*· next expires ${moment}$`))],
 +          ]);
            // A row's first cell is its name; notes and values follow on later lines or cells.
            const name = (text: string) => text.split(/[\t\n]/u)[0]?.trim();
            const row = (label: string) => rows.find((text) => name(text) === label) ?? "";
-@@ -928,7 +935,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -928,7 +937,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
                ),
            );
            expect(shown, "the reading's banked resets are the one-click control").toEqual([
@@ -102,7 +104,7 @@ index 68fc32c50..de79591db 100644
              "2",
            ]);
            // Opening only reads the pool; Cancel spends nothing.
-@@ -953,7 +960,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -953,7 +962,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
              "image/png",
              yield* browser.use("Capture the confirm step", (page) => page.screenshot()),
            );
@@ -232,10 +234,10 @@ index 0e85fc4c1..c357c3752 100644
      </div>
    );
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-index 14ab77a7b..7e8f8fdb3 100644
+index 14ab77a7b..92ea7c0b2 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-@@ -281,8 +281,16 @@ export function balanceView(balance: Balance, now: number, format: DisplayFormat
+@@ -281,16 +281,23 @@ export function balanceView(balance: Balance, now: number, format: DisplayFormat
  }
  
  /** "1 weekly reset", "3 Fable resets": a model's name keeps its capital. */
@@ -254,7 +256,18 @@ index 14ab77a7b..7e8f8fdb3 100644
    return `${count} ${balance.scope?.kind === "model" ? text : text.charAt(0).toLowerCase() + text.slice(1)}`;
  };
  
-@@ -318,6 +326,122 @@ export function bankedResets(observation: Observation, now: number) {
+ /**
+- * Unexpired balances counted in resets, which refill a window early. They sit on the account's
+- * longest window. The title keeps each kind apart, so one weekly reset and three model resets
+- * never read as four whole-week resets; each credit's expiry lives in Details, where touch
+- * screens can reach it too.
++ * Unexpired balances counted in resets, as one total and a title that keeps each kind apart. Rows
++ * use `bankedResetKinds`, which never adds kinds together; this total serves summaries that
++ * report banked resets as one figure beside usage credits.
+  */
+ export function bankedResets(observation: Observation, now: number) {
+   const live = availableResetBalances(observation, now);
+@@ -318,6 +325,122 @@ export function bankedResets(observation: Observation, now: number) {
    return { count, title };
  }
  
@@ -378,7 +391,7 @@ index 14ab77a7b..7e8f8fdb3 100644
  
  /**
 diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
-index 53d294f92..3849f306a 100644
+index 53d294f92..1586f4deb 100644
 --- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 @@ -1,15 +1,15 @@
@@ -402,6 +415,21 @@ index 53d294f92..3849f306a 100644
  
  type Provider = "codex" | "claude";
  type Outcome =
+@@ -90,12 +90,12 @@ type Spend = {
+   readonly kind?: ResetKind;
+   readonly scope?: ResetScope;
+ };
+-const kinds: readonly ResetKind[] = ["session", "weekly", "full", "model", "unknown"];
++const resetKinds: readonly ResetKind[] = ["session", "weekly", "full", "model", "unknown"];
+ const scopes: readonly ResetScope["kind"][] = ["account", "model", "unknown"];
+ /** A remembered spend's confirmed kind, kept only when it is well formed. */
+ const confirmedKind = (value: object): Pick<Spend, "kind" | "scope"> => {
+   const { kind, scope } = value as { kind?: unknown; scope?: unknown };
+-  const named = kinds.find((entry) => entry === kind);
++  const named = resetKinds.find((entry) => entry === kind);
+   if (named === undefined || typeof scope !== "object" || scope === null) return {};
+   const { kind: area, id } = scope as { kind?: unknown; id?: unknown };
+   const where = scopes.find((entry) => entry === area);
 @@ -120,9 +120,11 @@ type Unresolved = {
  };
  type State =
@@ -549,7 +577,7 @@ index 53d294f92..3849f306a 100644
 +      <Button
 +        variant="ghost"
 +        size="xs"
-+        loading={(state.kind === "checking" && state.key === kind.key) || state.kind === "pending"}
++        loading={state.kind === "checking" && state.key === kind.key}
 +        disabledReason={disabledReason}
 +        title={
 +          disabledReason === undefined ? `${name}. Click to use one; you confirm first.` : undefined
@@ -644,22 +672,23 @@ index 53d294f92..3849f306a 100644
  
  const noteLine = "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground/80";
 diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-index 788e0b196..664bf8690 100644
+index 788e0b196..3cf2a97ea 100644
 --- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-@@ -24,8 +24,9 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
+@@ -24,9 +24,9 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
   * One limited window: its label, what remains, the bar and when it resets. A healthy bar takes its
   * lab's `brand` colour; low and critical keep their warning colours. A stale reading keeps its
   * exact amount and drawn width, greys the bar and says plainly that it is stale and how old it is.
 - * `resets` is the banked reset count for the window they refill; it becomes the reset control only
 - * when the product passes one for a caller who may spend. `tokens` is what a gateway counted in
+- * the window, at the left of the footer.
 + * `resets` are the banked resets that refill this window, one line per kind under the bar; a
 + * line's count becomes that kind's reset control when the product passes one for a caller who
-+ * may spend. `tokens` is what a gateway counted in
-  * the window, at the left of the footer.
++ * may spend. `tokens` is what a gateway counted in the window, at the left of the footer.
   */
  export function UsageCell({
-@@ -42,7 +43,13 @@ export function UsageCell({
+   entry,
+@@ -42,7 +42,13 @@ export function UsageCell({
    /** The lab's bar colour from `brandFill`, for a reading with room to spare. */
    readonly brand?: string | undefined;
    readonly resets?:
@@ -674,7 +703,7 @@ index 788e0b196..664bf8690 100644
      | undefined;
    readonly now: number;
    readonly format: DisplayFormat;
-@@ -71,24 +78,6 @@ export function UsageCell({
+@@ -71,24 +77,6 @@ export function UsageCell({
            </span>
          )}
          <span className="flex-1" />
@@ -699,12 +728,11 @@ index 788e0b196..664bf8690 100644
          <span className="shrink-0 text-muted-foreground tabular-nums" data-reading-value>
            {reading.lead !== undefined && `${reading.lead} `}
            <span
-@@ -160,6 +149,25 @@ export function UsageCell({
+@@ -160,6 +148,25 @@ export function UsageCell({
            )}
          </div>
        )}
 +      {resets?.map((line) => (
-+        // Each kind on its own line: the count, which may be its control, then its nearest expiry.
 +        <div
 +          key={line.key}
 +          className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-muted-foreground tabular-nums"
@@ -717,6 +745,7 @@ index 788e0b196..664bf8690 100644
 +            >
 +              <span aria-hidden>↻ </span>
 +              {line.text}
++              <span className="sr-only"> {line.count === 1 ? "reset" : "resets"}</span>
 +            </span>
 +          )}
 +          <span className="whitespace-nowrap">· {line.expiry}</span>
