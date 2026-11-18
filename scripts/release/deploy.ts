@@ -419,6 +419,51 @@ try {
   } else {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
+} catch (error) {
+  // Say exactly what stopped the run: every tagged refusal in the failure chain, with its fields.
+  const reasons: string[] = [];
+  const seen = new Set<unknown>();
+  const visit = (value: unknown, depth: number) => {
+    if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
+    seen.add(value);
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record._tag === "string" &&
+      /Refus|Refused|Failed|Unavailable|Possible/u.test(record._tag)
+    )
+      reasons.push(
+        `${record._tag}: ${[
+          "resource",
+          "check",
+          "rule",
+          "script",
+          "method",
+          "path",
+          "field",
+          "value",
+          "why",
+          "fix",
+        ]
+          .filter((key) => typeof record[key] === "string" || typeof record[key] === "number")
+          .map((key) => `${key}=${String(record[key])}`)
+          .join(
+            " ",
+          )}${record.detail ? ` detail=${JSON.stringify(record.detail)}` : ""}${Array.isArray(record.violations) ? ` violations=${JSON.stringify(record.violations)}` : ""}`,
+      );
+    for (const key of ["cause", "reason", "error", "defect", "failures", "reasons", "issue"])
+      if (key in record) {
+        const next = record[key];
+        if (Array.isArray(next)) for (const item of next) visit(item, depth + 1);
+        else visit(next, depth + 1);
+      }
+  };
+  visit(error, 0);
+  const text = reasons.length
+    ? `Release stopped:\n${reasons.map((reason) => `- ${reason}`).join("\n")}`
+    : `Release stopped: ${error instanceof Error ? error.message : String(error)}`;
+  console.error(text);
+  await summary(text);
+  process.exitCode = 1;
 } finally {
   if (events.length) await mkdir(resolve(root, ".local/release"), { recursive: true });
   if (events.length)

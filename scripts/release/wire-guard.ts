@@ -109,6 +109,22 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
 // Alchemy's shared State store Worker (StateStore/State.ts STATE_STORE_SCRIPT_NAME) and every secret write.
 const STATE_STORE =
   /^\/accounts\/[^/]+\/workers\/(?:scripts|workers|services)\/alchemy-state-store(?:\/|$)/;
+const STATE_STORE_PREVIEW =
+  /^\/accounts\/[^/]+\/workers\/scripts\/alchemy-state-store\/edge-preview$/;
+// The only upload a deploy may send to the store script: one probe module binding one store secret
+// (Cloudflare/StateStore/Token.ts names), nothing that could migrate, export or deploy.
+const StoreCredentialRead = Schema.Struct({
+  compatibility_date: Schema.optional(Schema.String),
+  main_module: Schema.String,
+  bindings: Schema.Tuple([
+    Schema.Struct({
+      type: Schema.Literal("secrets_store_secret"),
+      name: Schema.String,
+      secret_name: Schema.Literals(["AlchemyStateStoreToken", "AlchemyStateStoreEncryptionKey"]),
+      store_id: Schema.String,
+    }),
+  ]),
+});
 const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(?:\/|$)/;
 const APPLICATION = /^\/accounts\/[^/]+\/containers\/applications(?:\/([^/]+))?/;
 
@@ -200,6 +216,37 @@ const checkUpload = (config: WireGuardConfig, request: Request, at: At, script: 
       return yield* refuse(at, "hash", "main_module sha256", `${actual} (expected ${expected})`);
   });
 
+const checkStoreCredentialRead = (request: Request, at: At) =>
+  Effect.gen(function* () {
+    const body = yield* Effect.tryPromise(async () => {
+      const form = await request.clone().formData();
+      const metadata = form.get("metadata");
+      const raw = typeof metadata === "string" ? metadata : ((await metadata?.text()) ?? "");
+      return { parts: [...form.keys()], json: JSON.parse(raw) as unknown };
+    }).pipe(
+      Effect.mapError((cause) => refuse(at, "store", "edge-preview body", "unparsable", cause)),
+    );
+    const meta = yield* Schema.decodeUnknownEffect(StoreCredentialRead, {
+      onExcessProperty: "error",
+    })(body.json).pipe(
+      Effect.mapError((cause) =>
+        refuse(
+          at,
+          "store",
+          "edge-preview metadata",
+          JSON.stringify(body.json).slice(0, 300),
+          cause,
+        ),
+      ),
+    );
+    // Besides the metadata, the preview session's own config part and exactly the probe module.
+    const modules = body.parts.filter(
+      (name) => name !== "metadata" && name !== "wrangler-session-config",
+    );
+    if (modules.length !== 1 || modules[0] !== meta.main_module)
+      return yield* refuse(at, "store", "edge-preview parts", JSON.stringify(body.parts));
+  });
+
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
@@ -217,6 +264,10 @@ const check = (
       method,
       path: template(path),
     });
+    // Alchemy reads the store's token through an ephemeral edge preview of the store script
+    // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
+    if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))
+      return yield* checkStoreCredentialRead(request, at("State store", "edge-preview"));
     if (
       method !== "GET" &&
       method !== "HEAD" &&
