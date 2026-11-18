@@ -6,6 +6,7 @@ import { withHistoryDatabase } from "./model-history/database.ts";
 import { recordGatewayRefusal } from "./model-history/gateway.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { ProtectionRefusal } from "./runtime-protection.ts";
+import type { HomeDatabasePoolObservation } from "./home-database-pool.ts";
 
 interface Dependencies extends SentryEnv {
   POOL_MODEL_HISTORY_ENABLED?: string;
@@ -37,6 +38,8 @@ export interface GatewayFailureDiagnostic extends Partial<RuntimeRouteDiagnostic
     | "Error"
     | "unknown";
   refusalReason: GatewayFailureDiagnostic["guard"] | ProtectionRefusal["reason"];
+  /** Last counters Home reported, so a refusal shows whether its database queue was full. */
+  homeDatabasePool?: HomeDatabasePoolObservation | null;
 }
 
 /** Fixed metadata joins the caller's retryable response, its failed history row and error trace. */
