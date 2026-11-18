@@ -18,6 +18,7 @@ test("release path covers release code, workflows and Alchemy carries but not pr
   assert.equal(onReleasePath("patches/0370-alchemy-worker-upload-hook.patch"), true);
   assert.equal(onReleasePath(".github/workflows/release.yml"), true);
   assert.equal(onReleasePath("alchemy.run.ts"), true);
+  assert.equal(onReleasePath("src/pool/fleet-deployment.ts"), true);
   assert.equal(onReleasePath("src/pool/worker.ts"), false);
   assert.equal(onReleasePath("patches/0006-product-brand.patch"), false);
   assert.equal(onReleasePath("scripts/releases/patches.json"), false);
