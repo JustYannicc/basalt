@@ -7,10 +7,15 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
-import { euPlacement } from "./placement.ts";
-import { fleetBindings, fleetInfrastructure } from "./fleet-deployment.ts";
+import {
+  fleetBindings,
+  fleetClasses,
+  fleetInfrastructure,
+  PoolDeclarationRefused,
+} from "./fleet-deployment.ts";
 import { desiredPoolImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
-import { bindPoolObservationSecret } from "./fleet-observation.ts";
+import { bindPoolObservation } from "./fleet-observation.ts";
+import { rootContainer } from "./root-image-pin.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 import { validSentryDsn } from "../telemetry/sentry-target.ts";
@@ -18,6 +23,26 @@ import { inventoryCron } from "./inventory.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { ArtifactsCredentials } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
+
+/**
+ * POOL_WORKER_VERSION_TRAFFIC uploads PoolWorker as a Worker version instead of a full script PUT.
+ * Below 100 Alchemy uses the versions API: 0 uploads without deploying, 1-99 splits against the
+ * live version. 100 (or unset) is the full PUT. A version cannot carry a class migration, so
+ * Alchemy refuses one below 100.
+ */
+export const poolWorkerVersion = Effect.gen(function* () {
+  const traffic = yield* Config.option(Config.Int("POOL_WORKER_VERSION_TRAFFIC"));
+  if (Option.isNone(traffic)) return {};
+  if (traffic.value < 0 || traffic.value > 100)
+    return yield* Effect.die(
+      new PoolDeclarationRefused({
+        reason: "worker-version-traffic-out-of-range",
+        why: `POOL_WORKER_VERSION_TRAFFIC is a percentage of PoolWorker's traffic, got ${traffic.value}.`,
+        fix: "Set an integer from 0 to 100, or unset it for a full deploy.",
+      }),
+    );
+  return { version: { traffic: traffic.value } };
+});
 
 export const poolWorker = Effect.gen(function* () {
   const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
@@ -36,17 +61,7 @@ export const poolWorker = Effect.gen(function* () {
     );
   const database = yield* poolDatabaseInfrastructure;
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
-  const image = Cloudflare.Container("PoolContainer", {
-    context: fileURLToPath(new URL("../../containers/pool/", import.meta.url)),
-    className: "PoolContainer",
-    // The snapshot policy rejects placement constraints. EU enforcement takes priority.
-    schedulingPolicy: "default",
-    instanceType: "basic",
-    maxInstances: 1,
-    constraints: euPlacement,
-    observability: { logs: { enabled: true } },
-  });
-  const application = yield* image.Application;
+  const { image, application, imageHash, imageInput } = yield* rootContainer;
   const fleet = yield* fleetInfrastructure;
   const imageRelease = yield* RuntimeImageReleasePlan;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
@@ -57,9 +72,10 @@ export const poolWorker = Effect.gen(function* () {
     compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     crons: ["*/5 * * * *", inventoryCron, ...(probeTarget ? [availabilityCron] : [])],
     observability: workerObservability,
+    ...(yield* poolWorkerVersion),
     env: {
       PoolContainer: image,
-      ...fleetBindings(fleet),
+      ...fleetBindings(fleet, yield* fleetClasses),
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       POOL_PRESERVE_LEGACY_IMAGE: "true",
       POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
@@ -92,17 +108,12 @@ export const poolWorker = Effect.gen(function* () {
       ...(Option.isSome(previousSigningKey)
         ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value }
         : {}),
-      POOL_IMAGE_HASH: application.hash.pipe(
-        Output.map((hash) => {
-          if (!hash?.image) throw new Error("The pool image has no build revision");
-          return hash.image;
-        }),
-      ),
+      POOL_IMAGE_HASH: imageHash,
       ...(probeTarget ? { POOL_AVAILABILITY_TARGET: probeTarget } : {}),
       ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
-  if (fleet || imageRelease) yield* bindPoolObservationSecret(worker);
+  yield* bindPoolObservation(worker, Boolean(fleet || imageRelease));
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,
@@ -114,7 +125,7 @@ export const poolWorker = Effect.gen(function* () {
       accountId: application.accountId,
       key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
       workerInput: poolWorkerRevision,
-      imageHash: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
+      imageHash: imageInput,
     },
   });
   const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
@@ -130,7 +141,7 @@ export const poolWorker = Effect.gen(function* () {
         CLOUDFLARE_ACCOUNT_ID: application.accountId,
         CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
         POOL_APPLICATION_ID: application.applicationId,
-        POOL_IMAGE_INPUT_HASH: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
+        POOL_IMAGE_INPUT_HASH: imageInput,
         POOL_IMAGE_DIGEST: application.hash.pipe(Output.map((hash) => hash?.digest ?? "")),
         POOL_IMAGE_REF: application.configuration.pipe(
           Output.map((configuration) => configuration.image),
