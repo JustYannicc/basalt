@@ -38,6 +38,9 @@ export function releaseCoverageGaps(root: string) {
       files.set(path, existsSync(path) ? readFileSync(path, "utf8") : undefined);
     return files.get(path);
   };
+  // An entry whose change hasn't merged: its step and proof file arrive together.
+  const pending = (entry: Coverage) =>
+    entry.landsWith !== undefined && read(proofPath(root, entry.proof)) === undefined;
   return {
     steps,
     debt: knownUncovered.length,
@@ -46,14 +49,20 @@ export function releaseCoverageGaps(root: string) {
       .map((step) => `${step} (from ${origin(root, step, sites)})`),
     // A debt entry that is now covered, or no longer a step, must leave the list.
     settledDebt: knownUncovered.filter((step) => covered.has(step) || !known.has(step)),
-    unknownSteps: all.filter((entry) => !known.has(entry.step)).map((entry) => entry.step),
+    unknownSteps: all
+      .filter((entry) => !known.has(entry.step) && !pending(entry))
+      .map((entry) => entry.step),
     // Every past production failure keeps a proof; a pending one is checked once its file lands.
     missingFailureProofs: releaseFailures
       .filter((failure) => !failureProofHolds(read, root, failure))
       .map((failure) => `${failure.slug} -> ${failure.proof}`),
     // A regression entry names the test that proves it; the test must exist and say what it guards.
     missingProofs: regressionCoverage
-      .filter((entry) => !proofExists(read, root, entry.proof))
+      .filter((entry) =>
+        entry.landsWith === undefined
+          ? !proofExists(read, root, entry.proof)
+          : !pending(entry) && !landedProofHolds(read, root, entry.proof),
+      )
       .map((entry) => `${entry.step} -> ${entry.proof}`),
     // A phase test that swaps the release client for a stand-in never runs the real health() or
     // witness readback, so a phase or command proven that way is untested.
@@ -135,6 +144,13 @@ function failureProofHolds(read: Read, root: string, failure: (typeof releaseFai
 }
 
 const cataloged = new Set(releaseFailures.map((failure) => failure.proof.split("#")[0]!));
+
+/** A landed proof from another change carries no marker of ours; it must still declare the test. */
+function landedProofHolds(read: Read, root: string, proof: string) {
+  const [, name] = proof.split("#");
+  const source = read(proofPath(root, proof));
+  return source !== undefined && (name === undefined || declaresTest(source, name));
+}
 
 /** The proof's file carries a `// Regression:` marker and still declares the named test. */
 function proofExists(read: Read, root: string, proof: string) {
