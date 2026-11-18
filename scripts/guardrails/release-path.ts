@@ -8,7 +8,32 @@ export const releasePaths: readonly string[] = JSON.parse(
   readFileSync(new URL("./release-path.json", import.meta.url), "utf8"),
 ).paths;
 
-export function onReleasePath(file: string, paths = releasePaths): boolean {
+// The list as a given commit had it. Gates judge with the union of the lists on both sides of a
+// change, so narrowing the list cannot take a change off the release path.
+export function releasePathsAt(root: string, commit: string): string[] {
+  try {
+    const text = execFileSync("git", ["show", `${commit}:scripts/guardrails/release-path.json`], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return JSON.parse(text).paths;
+  } catch (error) {
+    if (
+      /does not exist|exists on disk, but not in/u.test(
+        String((error as { stderr?: string }).stderr),
+      )
+    )
+      return [];
+    throw error;
+  }
+}
+
+export const unionOfPaths = (...lists: readonly (readonly string[])[]) => [
+  ...new Set(lists.flat()),
+];
+
+export function onReleasePath(file: string, paths: readonly string[] = releasePaths): boolean {
   return paths.some((pattern) => matchesGlob(file, pattern));
 }
 
@@ -22,7 +47,11 @@ const gitRecords = (root: string, args: string[]) =>
 
 // Covers path, mode and blob of every release-path file, so two commits share the hash
 // exactly when their release path is byte-identical, whatever else changed.
-export function releasePathHash(root: string, commit: string, paths = releasePaths): string {
+export function releasePathHash(
+  root: string,
+  commit: string,
+  paths: readonly string[] = releasePaths,
+): string {
   const entries = gitRecords(root, ["ls-tree", "-r", "--full-tree", commit])
     .filter((line) => line && onReleasePath(line.slice(line.indexOf("\t") + 1), paths))
     .sort();
@@ -35,7 +64,7 @@ export function releasePathChange(
   root: string,
   from: string,
   to: string,
-  paths = releasePaths,
+  paths: readonly string[] = releasePaths,
 ): PathChange {
   const change = { files: 0, added: 0, removed: 0 };
   for (const record of gitRecords(root, [
