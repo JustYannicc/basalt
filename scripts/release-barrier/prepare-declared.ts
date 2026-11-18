@@ -12,12 +12,15 @@ import { expandDeclaredClasses } from "./declared-classes.ts";
 import { assertSupportedPlan } from "./plan-admission.ts";
 import { observeWorkerBaselines } from "./worker-baselines.ts";
 import { BarrierRefusal } from "./manifest.ts";
-import { planStack } from "./plan-stack.ts";
 
-/** Replan only after an observed expansion changed the live baseline and native namespace mapping. */
-export const prepareDeclaredRelease = (
+/**
+ * Replan only after an observed expansion changed the live baseline and native namespace mapping.
+ * `replan` is the caller's own planner, so the replan keeps every transform the first plan had.
+ */
+export const prepareDeclaredRelease = <E, R>(
   stack: CompiledStack,
   evaluated: Plan.Plan,
+  replan: Effect.Effect<Plan.Plan, E, R>,
   options: DeployStackOptions,
   buckets: BucketProvider,
   classes: ClassProvider,
@@ -96,7 +99,7 @@ export const prepareDeclaredRelease = (
       result.workerBaselines,
     );
     if (expanded) {
-      result = yield* attempt(yield* planStack(stack), {
+      result = yield* attempt(yield* replan, {
         buckets: result.declaredBuckets,
         databases: result.declaredDatabases,
       });

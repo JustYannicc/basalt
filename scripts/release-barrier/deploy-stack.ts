@@ -127,10 +127,15 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const imagePlan = preserveLegacyPlan(yield* planStack(stack));
-    const evaluatedPlan = options.preserveRuntimeInputs
-      ? preserveRuntimeInputs(imagePlan)
-      : imagePlan;
+    // Every plan the release prepares from, the replan after a class step included, gets the same
+    // transforms; a bare replan would publish the candidate's image and runtime settings.
+    const releasePlan = planStack(stack).pipe(
+      Effect.map((plan) => {
+        const imagePlan = preserveLegacyPlan(plan);
+        return options.preserveRuntimeInputs ? preserveRuntimeInputs(imagePlan) : imagePlan;
+      }),
+    );
+    const evaluatedPlan = yield* releasePlan;
     assertSupportedPlan(
       evaluatedPlan,
       new Map(),
@@ -184,7 +189,15 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         removeClone: (target, version) => run(deleteClassClone(target, version)),
       } satisfies ClassProvider);
     const { plan, prepared, declaredBuckets, declaredDatabases, declaredStorage, workerBaselines } =
-      yield* prepareDeclaredRelease(stack, evaluatedPlan, options, buckets, classes, d1);
+      yield* prepareDeclaredRelease(
+        stack,
+        evaluatedPlan,
+        releasePlan,
+        options,
+        buckets,
+        classes,
+        d1,
+      );
     const prerequisites = (phase: DeclaredReadiness["phase"]) =>
       declaredChecks([
         {

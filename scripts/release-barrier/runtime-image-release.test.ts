@@ -259,6 +259,8 @@ function releaseGraph(
         const result = poolAttributes(input.id);
         const hook = yield* Effect.serviceOption(WorkerUploadHook);
         if (Option.isNone(hook)) return result;
+        // The runtime image input this captured upload would bind, after the release's plan transforms.
+        w.events.push(`upload:PoolWorker:${unwrap(input.news.env).POOL_IMAGE_HASH}`);
         const phase = plan;
         const upload = yield* Effect.promise(() => alchemyUpload(production, phase));
         return yield* hook.value.capture({
@@ -305,10 +307,12 @@ function releaseGraph(
       // The stack evaluated with `build` publishes the candidate image to that inactive application.
       if (plan?.build) w.buildInactive(plan.build);
       yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
-      // The runtime settings deployStack's preserveRuntimeInputs retains from the baseline.
+      // The seeded baseline records the root's input; the candidate declares its own, as
+      // deployment.ts binds POOL_IMAGE_HASH from the candidate's container. Only deployStack's
+      // preserveRuntimeInputs keeps the baseline's in a controller phase.
       const worker = yield* FixtureWorker("PoolWorker", {
         revision: "candidate",
-        env: runtimeEnvironment(w.root.input),
+        env: runtimeEnvironment(receipts.seeding ? w.root.input : candidateInput),
       });
       yield* Command.Exec("PoolBackendBudgetRuntimeReady", {
         command: "node verify-database-budget.ts --ready",
@@ -745,4 +749,21 @@ test("the fixture's receipt Command matches the one the production stack declare
   assert.ok(source.includes("POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput"));
   const retained = readFileSync(new URL("./preserve-runtime-plan.ts", import.meta.url), "utf8");
   assert.ok(!retained.includes('"POOL_DESIRED_IMAGE_INPUT"'), "the desired input is not retained");
+});
+
+test("the replan after the class step keeps the release's plan transforms", async () => {
+  const result = await firstScaleOutRelease();
+  assert.ok(
+    result.expansions.some((value) => value.outcome === "ready"),
+    explain(result),
+  );
+  const uploads = result.w.events.filter((event) => event.startsWith("upload:PoolWorker:"));
+  // The controller phase captures PoolWorker from its first plan, then again from the replan after
+  // the class step expanded (prepare-declared.ts). Both must keep the baseline's runtime settings
+  // (runtime-image-release.ts asks for preserveRuntimeInputs), not the candidate's.
+  assert.deepEqual(
+    uploads.slice(0, 2),
+    [`upload:PoolWorker:${result.w.root.input}`, `upload:PoolWorker:${result.w.root.input}`],
+    explain(result),
+  );
 });
