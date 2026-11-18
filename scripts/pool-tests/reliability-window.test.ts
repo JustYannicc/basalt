@@ -16,6 +16,7 @@ const historyRows = 100_000,
 interface PlanNode {
   "Node Type": string;
   "Relation Name"?: string;
+  "CTE Name"?: string;
   "Index Name"?: string;
   "Actual Rows": number;
   "Actual Loops": number;
@@ -26,8 +27,9 @@ interface PlanNode {
 
 /** Rows each table's scans examined, including rows their filters discarded. */
 function rowsRead(node: PlanNode, into = new Map<string, number>(), indexes = new Set<string>()) {
-  if (node["Relation Name"]) {
-    const table = node["Relation Name"].replace(/_\d+$/, "");
+  const name = node["Relation Name"] ?? (node["CTE Name"] && `cte ${node["CTE Name"]}`);
+  if (name) {
+    const table = name.replace(/_\d+$/, "");
     const examined =
       (node["Actual Rows"] +
         (node["Rows Removed by Filter"] ?? 0) +
@@ -96,6 +98,31 @@ test(
           [count, prefix],
         );
       }
+      // A request whose only Home attempt precedes the day window but which finished inside it, and a
+      // window row without a request identity.
+      const earlier = await digest("fixture-earlier");
+      await db.query(
+        `INSERT INTO basalt_model_requests
+          (id,source,source_record,timestamp,timestamp_exact,pool,person,client_key,request_id,
+            token_quality,failed,status_code,cost_basis,attribution)
+        VALUES ($1,$2,$1,$3::timestamptz - interval '25 hours',
+          to_char(($3::timestamptz - interval '25 hours') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS".000000000Z"'),
+          $4,$5,$5,md5('earlier')::uuid::text,'unclassified',false,200,'unpriced','unknown'),
+          ($6,$2,$6,$3::timestamptz - interval '10 minutes',
+          to_char(($3::timestamptz - interval '10 minutes') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS".000000000Z"'),
+          $4,$5,$5,NULL,'unclassified',false,200,'unpriced','unknown')`,
+        [earlier, home, at, pool, person, await digest("fixture-unidentified")],
+      );
+      await db.query(
+        `INSERT INTO basalt_model_terminal_starts (request_id,pool,person,client_key,endpoint,started_at)
+        VALUES (md5('earlier')::uuid,$1,$2,$2,'/v1/responses',$3::timestamptz - interval '25 hours')`,
+        [pool, person, at],
+      );
+      await db.query(
+        `INSERT INTO basalt_model_terminal_finishes (request_id,outcome,status,bytes,finished_at)
+        VALUES (md5('earlier')::uuid,'truncated',502,1,$1::timestamptz - interval '23 hours')`,
+        [at],
+      );
       await db.query("ANALYZE");
 
       let statement: { text: string; values?: unknown[] } | undefined;
@@ -118,8 +145,8 @@ test(
       assert.deepEqual(
         [hour, day, current].map((window) => [window!.real.requests, window!.real.failed]),
         [
-          [120, 1],
-          [dayRows, 28],
+          [121, 1],
+          [dayRows + 2, 28 + 1],
           [10, 0],
         ],
       );
@@ -138,6 +165,10 @@ test(
         (read.get("basalt_model_requests") ?? 0) < 5 * dayRows,
         `request rows examined: ${read.get("basalt_model_requests")} of ${history}`,
       );
+      // A nested scan of a CTE per row would grow with the square of the window.
+      for (const [table, count] of read)
+        if (table.startsWith("cte "))
+          assert.ok(count < 5 * dayRows, `${table} rows scanned: ${count}`);
       for (const table of ["basalt_model_terminal_starts", "basalt_model_terminal_finishes"])
         assert.ok(
           (read.get(table) ?? 0) < 5 * dayRows,
