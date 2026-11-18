@@ -37,7 +37,8 @@
     ]
   },
   "include": [
-    "PoolWorker"
+    "PoolWorker",
+    "PoolBackendBudgetRuntimeReady"
   ],
   "wire": {
     "sqliteClasses": {}
