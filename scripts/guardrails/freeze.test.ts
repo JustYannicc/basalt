@@ -41,6 +41,14 @@ test("a frozen main still takes release-path changes and labelled unblocks", () 
   assert.ok(feature.description.length <= 140);
 });
 
+test("model gateway update pull requests ship through a freeze", () => {
+  assert.equal(
+    freezeVerdict(frozen, ["containers/pool/sources.json"], [], "cpa-updates/latest").pass,
+    true,
+  );
+  assert.equal(freezeVerdict(frozen, ["containers/pool/sources.json"], [], "feat/cpa").pass, false);
+});
+
 test("mixing the release path with feature work does not count as release-path only", () => {
   assert.equal(
     freezeVerdict(frozen, ["scripts/release/deploy.ts", "src/pool/worker.ts"], []).pass,
