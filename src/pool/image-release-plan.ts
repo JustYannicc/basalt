@@ -1,11 +1,14 @@
-import { Context } from "effect";
+import { Context, Schema } from "effect";
 import { Effect, FileSystem, Path } from "effect";
 import { fileURLToPath } from "node:url";
 import { hashDockerBuildInputs } from "alchemy/Docker/BuildHash";
 import { sha256Object } from "alchemy/Util/sha256";
 import type { RuntimeConfiguration } from "./runtime-slots/configuration.ts";
 
-export type RuntimeColor = "blue" | "green";
+/** The two fleet colours, in fleet order. */
+export const runtimeColors = ["blue", "green"] as const;
+export type RuntimeColor = (typeof runtimeColors)[number];
+export const RuntimeColorSchema = Schema.Literals(runtimeColors);
 export interface ImageReleasePlan {
   readonly images: Partial<Record<RuntimeColor, string>>;
   readonly build?: RuntimeColor;

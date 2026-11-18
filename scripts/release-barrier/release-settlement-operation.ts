@@ -160,6 +160,10 @@ export const applyReleaseSettlement = (
       manifest.proof.disposition === "abandoned-before-controller"
         ? undefined
         : manifest.proof.controller.code,
+      manifest.proof.disposition === "fleet-attached-unstarted" ||
+        manifest.proof.disposition === "controller-active-adopted"
+        ? manifest.proof.controllerReads.selection
+        : undefined,
     );
     if (
       hash(collected.source.image) !== manifest.imageHeadDigest ||

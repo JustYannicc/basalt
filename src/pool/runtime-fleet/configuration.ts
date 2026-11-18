@@ -38,13 +38,34 @@ export const FleetConfiguration = Schema.Struct({
   idleMilliseconds: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })),
 });
 export type FleetConfiguration = typeof FleetConfiguration.Type;
-const Record = Schema.Struct({
+export type FleetApplicationPins = Pick<
+  FleetApplication,
+  "applicationId" | "applicationVersion" | "imageDigest" | "imageInput"
+>;
+/**
+ * A fleet row occupies a declared application only on that application's full pins. Each fleet
+ * runtime runs its own application's image input, never the selected primary's, so callers outside
+ * the controller judge rows with this too.
+ */
+export const occupiesApplication = (
+  applications: readonly FleetApplicationPins[],
+  target: FleetApplicationPins,
+) =>
+  applications.some(
+    (app) =>
+      app.applicationId === target.applicationId &&
+      app.applicationVersion === target.applicationVersion &&
+      app.imageDigest === target.imageDigest &&
+      app.imageInput === target.imageInput,
+  );
+/** The controller's launch permission record, as fleet-inspect returns it. */
+export const FleetConfigurationRecord = Schema.Struct({
   operationId: Identifier,
   digest: Digest,
   configuration: FleetConfiguration,
   enabled: Schema.Boolean,
 });
-export type FleetConfigurationRecord = typeof Record.Type;
+export type FleetConfigurationRecord = typeof FleetConfigurationRecord.Type;
 const key = "runtime-fleet-v1:configuration";
 const operationKey = (operationId: string) =>
   `runtime-fleet-v1:configuration-operation:${operationId}`;
@@ -81,7 +102,9 @@ export class RuntimeFleetConfiguration {
   }
   async inspect(operationId?: string, storage: SlotStorage = this.deps.storage) {
     const value = await storage.get(operationId ? operationKey(operationId) : key);
-    return value === undefined ? undefined : Schema.decodeUnknownSync(Record)(value);
+    return value === undefined
+      ? undefined
+      : Schema.decodeUnknownSync(FleetConfigurationRecord)(value);
   }
   assertBindings(configuration: FleetConfiguration, currentCode = true) {
     if (
@@ -164,18 +187,9 @@ export class RuntimeFleetConfiguration {
   private async assertOccupied(configuration: FleetConfiguration, storage?: SlotStorage) {
     const occupied = await this.deps.occupied(storage);
     if (occupied.length > configuration.maximum) throw new SlotRefused("uncertain");
-    for (const row of occupied) {
-      const app = configuration.applications.find(
-        (value) => value.applicationId === row.target.applicationId,
-      );
-      if (
-        !app ||
-        app.applicationVersion !== row.target.applicationVersion ||
-        app.imageDigest !== row.target.imageDigest ||
-        app.imageInput !== row.target.imageInput
-      )
+    for (const row of occupied)
+      if (!occupiesApplication(configuration.applications, row.target))
         throw new SlotRefused("uncertain");
-    }
   }
   async configure(operationId: string, input: FleetConfiguration) {
     Schema.decodeUnknownSync(Identifier)(operationId);
@@ -200,7 +214,7 @@ export class RuntimeFleetConfiguration {
     await this.deps.storage.transaction(async (transaction) => {
       const value = await transaction.get(key);
       this.compare(
-        value === undefined ? undefined : Schema.decodeUnknownSync(Record)(value),
+        value === undefined ? undefined : Schema.decodeUnknownSync(FleetConfigurationRecord)(value),
         configuration,
       );
       await this.assertOccupied(configuration, transaction);
