@@ -16,6 +16,19 @@ runs:
       shell: bash
       working-directory: .upstream
       run: |
+        # For the rest of the job, apt reads sources.list and Ubuntu's own ubuntu.sources but no other
+        # sources.list.d entry. Every browser package comes from the Ubuntu archives, so a third-party
+        # source the image ships (Microsoft's once answered 429) must not fail the refresh; errors
+        # from the Ubuntu archives still do.
+        ubuntu_sources="$RUNNER_TEMP/apt-ubuntu-sources"
+        mkdir -p "$ubuntu_sources"
+        # A link, so the installer's later mirror rewrite of the real file still applies. Older
+        # images keep their archives in sources.list instead, which apt still reads.
+        if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+          ln -sf /etc/apt/sources.list.d/ubuntu.sources "$ubuntu_sources/"
+        fi
+        printf 'Dir::Etc::sourceparts "%s";\n' "$ubuntu_sources" |
+          sudo tee /etc/apt/apt.conf.d/98-ubuntu-sources-only > /dev/null
         # Some hosted images omit indexes for otherwise supported Ubuntu packages.
         sudo apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=0 -o APT::Update::Error-Mode=any update
         node ../scripts/ci-browser-packages.ts
