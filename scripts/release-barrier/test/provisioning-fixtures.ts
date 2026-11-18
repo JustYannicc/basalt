@@ -190,5 +190,10 @@ export function resolvedApplication(
       },
     },
     network: { bandwidth_limit_mbps: 250 },
+    // Cloudflare's own key order.
+    constraints: {
+      regions: (request.constraints as { regions: unknown }).regions,
+      jurisdiction: (request.constraints as { jurisdiction: unknown }).jurisdiction,
+    },
   };
 }
