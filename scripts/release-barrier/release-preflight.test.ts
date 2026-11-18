@@ -23,6 +23,7 @@ import {
   liveControllerCodes,
   releaseReceiptCodes,
   settlementVerdict,
+  supportedDispositions,
 } from "./release-preflight-live.ts";
 import { preflightReport } from "./release-preflight-report.ts";
 import { createRehearsalCounters } from "./release-resume-rehearsal.ts";
@@ -332,27 +333,57 @@ test("the release receipt for the running release supplies the code the controll
 
 test("an unsettled prior candidate needs the settlement its live controller state implies", () => {
   const prior = "8".repeat(40);
-  assert.deepEqual(settlementVerdict({ prior, liveCandidate: prior, selected: true }), {
-    disposition: "controller-active-adopted",
-    supported: false,
+  // Support follows this candidate's own disposition list, so the test holds with or without
+  // a change that adds a disposition.
+  for (const [liveCandidate, selected, disposition] of [
+    [prior, true, "controller-active-adopted"],
+    [prior, false, "controller-active-unadopted"],
+    ["9".repeat(40), true, "abandoned-before-controller"],
+  ] as const)
+    assert.deepEqual(settlementVerdict({ prior, liveCandidate, selected }), {
+      disposition,
+      supported: supportedDispositions.includes(disposition),
+    });
+});
+
+test("a disposition missing from the candidate's list is unsupported and refuses everywhere", async () => {
+  const prior = "8".repeat(40);
+  const verdict = settlementVerdict({
+    prior,
+    liveCandidate: prior,
+    selected: true,
+    supported: ["abandoned-before-controller", "controller-active-unadopted"],
   });
-  assert.deepEqual(settlementVerdict({ prior, liveCandidate: prior, selected: false }), {
-    disposition: "controller-active-unadopted",
-    supported: true,
+  assert.deepEqual(verdict, { disposition: "controller-active-adopted", supported: false });
+});
+
+test("once the candidate can perform the settlement, it is required: Check passes, the release blocks", async () => {
+  const prior = "8".repeat(40);
+  const verdict = settlementVerdict({
+    prior,
+    liveCandidate: prior,
+    selected: true,
+    supported: [
+      "abandoned-before-controller",
+      "controller-active-unadopted",
+      "controller-active-adopted",
+    ],
   });
-  assert.deepEqual(settlementVerdict({ prior, liveCandidate: "9".repeat(40), selected: true }), {
-    disposition: "abandoned-before-controller",
-    supported: true,
+  assert.deepEqual(verdict, { disposition: "controller-active-adopted", supported: true });
+  const runner = preflightRunner();
+  await runner.step("release-settlement", [], async () => {
+    throw new SettlementRequired(verdict.disposition);
   });
-  assert.equal(
-    settlementVerdict({
-      prior,
-      liveCandidate: prior,
-      selected: true,
-      supported: ["controller-active-adopted"],
-    }).supported,
-    true,
-  );
+  const status = (mode: "check" | "release") =>
+    preflightReport({
+      candidate: "a".repeat(40),
+      mode,
+      steps: runner.results,
+      state: createRehearsalCounters(),
+      bridge: createPreflightBridgeCounters(),
+    }).status;
+  assert.equal(status("check"), "pass");
+  assert.equal(status("release"), "refused");
 });
 
 test("a required settlement reports in Check but blocks the release; an unsupported one blocks both", async () => {
