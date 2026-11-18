@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   changedRows,
+  destroyTargets,
   remainingRows,
   updatesWorkerWithoutReadiness,
   type Snapshot,
@@ -109,4 +110,23 @@ test("a PoolWorker update must carry the readiness command that waits for adopti
     ),
     false,
   );
+});
+
+test("a destroy plan's targets are the names and ids its deleted rows record", () => {
+  const deleted = (attr: Record<string, unknown>) => ({ action: "delete", state: { attr } });
+  const plan = {
+    resources: {
+      Worker: deleted({
+        workerName: "basalt-test-pr-7-poolworker",
+        bindings: [{ id: "shared-db" }],
+      }),
+      Kept: { action: "noop", state: { attr: { workerName: "basalt-test-pr-7-router" } } },
+    },
+    deletions: { Bucket: deleted({ name: "vault-test-pr-7", jurisdiction: "eu" }) },
+  };
+  // Ids a row only refers to (a binding's target) are not targets.
+  assert.deepEqual(destroyTargets(plan as never), [
+    "basalt-test-pr-7-poolworker",
+    "vault-test-pr-7",
+  ]);
 });
