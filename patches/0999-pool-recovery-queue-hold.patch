@@ -1,7 +1,7 @@
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 --- a/e2e/tests/pool-account-recovery.spec.ts
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -65,11 +65,23 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+@@ -65,11 +65,25 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
            yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
          );
          const owner = session.user.id;
@@ -10,7 +10,8 @@ diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-re
 -            `update hosted_provisioning set available_at = now() + interval '1 day'
 -            where organization_id = $1 and status = 'queued'`,
 -            [actors.organization.id],
-+        // The actors' own user jobs have no team. A started one ends in a follow-up dispatch.
++        // The actors belong to this case alone, and their user jobs have no team. A started job
++        // ends in a follow-up dispatch.
 +        const deferral = {
 +          sql: `update hosted_provisioning set available_at = now() + interval '1 day'
 +            where status = 'queued' and (organization_id = $1
@@ -19,7 +20,8 @@ diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-re
 +        };
 +        const deferJobs = () => database.run(deferral);
 +        // Any dispatch claims every ready job of any team, and role and verification updates
-+        // queue ready jobs by trigger. Commit each such update together with its deferral.
++        // queue ready jobs by trigger. Commit each such update together with its deferral, never
++        // interrupted between: the case's finalizers would otherwise wait on the open transaction.
 +        const queueDeferred = (sql: string, params: readonly string[]) =>
 +          Effect.uninterruptible(
 +            Effect.gen(function* () {
@@ -30,7 +32,7 @@ diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-re
            );
          // Onboarding has not started these jobs. Keep them out of request-finalizer dispatch.
          yield* deferJobs();
-@@ -163,23 +175,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+@@ -163,23 +177,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
              yield* record({ app: app.id });
              yield* noRecovery;
              yield* record({ app: app.id, version: app.activeVersion });
