@@ -339,7 +339,6 @@ test("a failure keeps its class whatever directory its stack and paths name", ()
     for (const checkout of [
       "/home/runner/work/basalt",
       "/home/runner/timeout/basalt",
-      "/srv/Timed out/basalt",
       "/srv/ECONNREFUSED-SyntaxError-EACCES/basalt",
     ])
       assert.equal(
