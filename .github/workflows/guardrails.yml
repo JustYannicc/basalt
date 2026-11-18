@@ -17,6 +17,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +33,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/guardrails/ship-alone.ts "$BASE_SHA" "$HEAD_SHA"
+      - name: Release tooling stays within its budget
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/guardrails/budget.ts "$BASE_SHA"
 
   # Named apart from the release-freshness status it posts, so its own green run is never
   # mistaken for that status.

@@ -1,0 +1,17 @@
+{
+  "about": "Source and test lines of the release path (scripts/guardrails/release-path.json) outside the tombstones. Lower them freely; raising either, dropping a path from the release path or removing a tombstone needs a reuse decision in the pull request and the release-budget-approved label. Tombstoned paths are being removed and take no new lines.",
+  "lines": 7653,
+  "testLines": 1379,
+  "tombstones": [
+    "scripts/release-barrier/**",
+    "scripts/release-phases/**",
+    "scripts/deploy-main/**",
+    "scripts/deploy-safety/**",
+    ".github/workflows/deploy.yml",
+    ".github/workflows/release-main.yml",
+    ".github/workflows/release-manual.yml",
+    ".github/workflows/release-rollback.yml",
+    ".github/workflows/pool-runtime-provision.yml",
+    ".github/workflows/production-schema-inspection.yml"
+  ]
+}
