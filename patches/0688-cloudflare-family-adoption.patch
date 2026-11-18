@@ -41,7 +41,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/clou
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,334 @@
 +import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 +import { familyProviderIdentity } from "@executor-js/hosted-server/provider-account-definitions";
 +import { identifyProvider } from "@executor-js/sdk/core";
@@ -115,7 +115,6 @@ new file mode 100644
 +  connections: Schema.Array(Id),
 +  acquisitions: Schema.Array(Id),
 +  links: Schema.Array(Link),
-+  linksSha256: Schema.String,
 +});
 +
 +const familyTarget = familyProviderIdentity("cloudflare").pipe(Effect.provide(BrowserCrypto.layer));
@@ -248,7 +247,6 @@ new file mode 100644
 +      connections: connections.map((row) => text(row.id)),
 +      acquisitions: acquisitions.map((row) => text(row.account)),
 +      links: links.map(({ link }) => link),
-+      linksSha256: sha256(canonical(links.map(({ link }) => link))),
 +    };
 +    return { changes, data };
 +  });
@@ -290,7 +288,10 @@ new file mode 100644
 +        written.length === plan.changes.length &&
 +        written.every(({ key, row }) => after.get(canonical(key)) === sha256(canonical(row))),
 +      nothingLeftOnRetainedRef: accountsLeft.length === 0 && versionsLeft.length === 0,
-+      linksKept: sha256(canonical(links.map(({ link }) => link))) === data.linksSha256,
++      // People may link the moved accounts once they share the family ref; replay still verifies.
++      linksKept: data.links.every((planned) =>
++        links.some(({ link }) => canonical(link) === canonical(planned)),
++      ),
 +      linksResolve: links.every((link) => link.provider === data.to),
 +    };
 +    return { ok: Object.values(checks).every(Boolean), checks };
