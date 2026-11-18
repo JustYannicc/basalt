@@ -175,7 +175,8 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
-const { changedRows, remainingRows } = await import("./plan-summary.ts");
+const { changedRows, readinessCommand, remainingRows, updatesWorkerWithoutReadiness } =
+  await import("./plan-summary.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -337,6 +338,12 @@ try {
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
+        if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
+          return yield* Effect.die(
+            new Error(
+              `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
+            ),
+          );
         if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
@@ -347,7 +354,7 @@ try {
         const planned = changedRows(snapshot);
         yield* Alchemist.Stack.apply(snapshot as never);
         const after = yield* planOf("deploy");
-        if (Alchemist.Stack.hasChanges(after.summary as never))
+        if (remainingRows(after).length > 0)
           return yield* Effect.die(
             new Error(`Changes remain after apply: ${safeJson(remainingRows(after))}`),
           );
