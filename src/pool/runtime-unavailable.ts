@@ -46,6 +46,7 @@ export function nativeRuntimeStream(
     encoder = new TextEncoder();
   let pending = "",
     ended = false,
+    cancelled = false,
     terminal = false;
   const observe = (frames: string) => {
     for (const frame of frames.split(/(?:\r?\n){2}/)) {
@@ -102,6 +103,8 @@ export function nativeRuntimeStream(
         } catch (error) {
           ended = true;
           void reader.cancel().catch(() => {});
+          // A reader that left ends the pending read early; that is not an interruption.
+          if (cancelled) return;
           if (terminal) {
             controller.close();
             return;
@@ -131,6 +134,7 @@ export function nativeRuntimeStream(
       },
       async cancel(reason) {
         ended = true;
+        cancelled = true;
         await reader.cancel(reason);
       },
     }),

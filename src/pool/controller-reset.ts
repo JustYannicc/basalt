@@ -57,7 +57,6 @@ function report(
       cause: controllerInstanceEnded(error) ? "instance_ended" : "transport",
       method: ["GET", "HEAD", "POST"].includes(request.method) ? request.method : "other",
       endpoint: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
-      signalAborted: request.signal.aborted,
     }),
   );
   hop.defer(captureError(hop.env, "pool_controller_interrupted", pathname, undefined, requestId));
@@ -92,6 +91,8 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
       const model = isPublicModelPath(new URL(request.url).pathname);
       report(hop, request, requestId, model ? "retry_advised" : "surfaced", error);
       if (!model) throw error;
+      // The client may resend a call the old instance had dispatched: a separate, separately
+      // recorded attempt, as after a runtime crash (runtime-fleet/retry.ts). The turn survives.
       return retryAdvice(request, requestId);
     }
     try {

@@ -99,7 +99,6 @@ test("a safe read cut before its response is replayed once on a re-resolved cont
       cause: "instance_ended",
       method: "GET",
       endpoint: "/v1/:operation",
-      signalAborted: false,
     },
   );
   assert.deepEqual(sentry, [
@@ -278,4 +277,47 @@ test("a control write cut before its response keeps today's failure and is never
     [["surfaced", "POST"]],
   );
   assert.equal(sentry.length, 1);
+});
+
+test("a client leaving a stream is not a controller interruption", async (context) => {
+  const h = harness(context, [
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('event: ping\ndata: {"type":"ping"}\n\n'));
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+  ]);
+  const response = await fetchController(
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
+    h.hop,
+  );
+  const reader = response.body!.getReader();
+  await reader.read();
+  const waiting = reader.read();
+  await reader.cancel("client left");
+  assert.equal((await waiting).done, true);
+  const { lines, sentry } = await h.events();
+  assert.deepEqual(lines, []);
+  assert.deepEqual(sentry, []);
+});
+
+test("a complete stream passes through unchanged and records nothing", async (context) => {
+  const body =
+    'event: message_start\ndata: {"type":"message_start"}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+  const h = harness(context, [
+    async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+  ]);
+  const response = await fetchController(
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
+    h.hop,
+  );
+  assert.equal(await response.text(), body);
+  const { lines, sentry } = await h.events();
+  assert.deepEqual(lines, []);
+  assert.deepEqual(sentry, []);
 });
