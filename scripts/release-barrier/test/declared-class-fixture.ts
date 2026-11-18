@@ -70,6 +70,10 @@ export function classProvisioning(
     evidence?: ReturnType<typeof releaseEvidence>;
     secondForeignWorker?: boolean;
     companion?: CompanionMode;
+    /** A tagged upload against an untagged Worker: neither mode, so the class step must refuse. */
+    uploadTagged?: boolean;
+    /** Container linkage alchemy's upload carries; defaults to the live linkage. */
+    uploadContainers?: readonly string[];
   } = {},
 ) {
   const events: string[] = [];
@@ -118,10 +122,34 @@ export function classProvisioning(
                 ? { placement: { region: "aws:eu-central-1" } }
                 : {}),
               bindings: [binding],
-              tags: [`alchemy:migration-tag:${api.expanded() ? 3 : 2}`],
+              ...((options.uploadContainers ?? options.containers)
+                ? {
+                    containers: (options.uploadContainers ?? options.containers)!.map(
+                      (className) => ({ className }),
+                    ),
+                  }
+                : {}),
+              // Alchemy's upload: an untagged Worker keeps untagged migrations and no tag, and its
+              // packed DO tag now names the class (WorkerProvider bumpMigrationTagVersion).
+              tags:
+                options.untagged && !options.uploadTagged
+                  ? [
+                      "alchemy:stack:fixture",
+                      "alchemy:stage:production",
+                      "alchemy:id:AppData",
+                      "alchemy:dos:DriveObject",
+                    ]
+                  : [`alchemy:migration-tag:${api.expanded() ? 3 : 2}`],
               migrations: {
-                oldTag: api.expanded() ? "2" : "1",
-                newTag: api.expanded() ? "3" : "2",
+                ...(options.untagged && !options.uploadTagged
+                  ? { oldTag: undefined, newTag: undefined }
+                  : {
+                      oldTag: api.expanded() ? "2" : "1",
+                      newTag: api.expanded() ? "3" : "2",
+                    }),
+                newClasses: [],
+                renamedClasses: [],
+                transferredClasses: [],
                 newSqliteClasses: api.expanded() ? [] : ["DriveObject"],
                 ...(options.deletedClass ? { deletedClasses: ["ExistingClass"] } : {}),
               },
@@ -385,7 +413,10 @@ export function classProvisioning(
               { ...receipt, manifest: digest(canonical(description)) },
               async () => {},
             ).pipe(
-              Effect.provideService(HttpClient.HttpClient, classRecoveryClient(events)),
+              Effect.provideService(
+                HttpClient.HttpClient,
+                classRecoveryClient(events, options.untagged),
+              ),
               Effect.provideService(
                 Credentials,
                 Effect.succeed({
@@ -410,5 +441,7 @@ export function classProvisioning(
     storageProgress,
     emptyClassSource: api.emptyClassSource,
     cloneState: api.cloneState,
+    expansionContainers: api.expansionContainers,
+    cloneContainers: api.cloneContainers,
   };
 }

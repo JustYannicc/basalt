@@ -232,3 +232,65 @@ test("a same-name foreign immutable Worker refuses before any clone or expansion
   assert.equal(proof.cloneState().staged, 0);
   assert.deepEqual(proof.events, []);
 });
+
+test("a container-backed Worker gains its SQLite class with the live container linkage carried unchanged", async () => {
+  const proof = classProvisioning({ containers: ["PoolContainer"] });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.events.filter((event) => event === "expand").length, 1);
+  assert.deepEqual(proof.expansionContainers(), [{ className: "PoolContainer" }]);
+  // The rollback clone keeps the same linkage, or restoring it would unlink PoolContainer.
+  assert.deepEqual(proof.cloneContainers(), [{ className: "PoolContainer" }]);
+});
+
+test("a class step that would link its new class to a container refuses before any clone or expansion", async () => {
+  const proof = classProvisioning({
+    containers: ["PoolContainer"],
+    uploadContainers: ["PoolContainer", "DriveObject"],
+    expectedFailure: /declared-class-worker-mode-unsupported/,
+  });
+  await Effect.runPromise(proof.effect);
+  assert.ok(!proof.events.includes("expand"));
+  assert.equal(proof.cloneState().staged, 0);
+});
+
+// PoolWorker's production shape: no `alchemy:migration-tag:` tag and no runtime migration tag.
+test("an untagged Worker gains its SQLite class through alchemy's own untagged migration", async () => {
+  const proof = classProvisioning({ untagged: true, containers: ["PoolContainer"] });
+  await Effect.runPromise(proof.effect);
+  assert.deepEqual(proof.failures, []);
+  assert.equal(proof.events.filter((event) => event === "expand").length, 1);
+  assert.deepEqual(proof.expansionContainers(), [{ className: "PoolContainer" }]);
+});
+
+test("an untagged Worker rerun observes its class without another expansion or migration", async () => {
+  const proof = classProvisioning({ untagged: true, rerun: true });
+  await Effect.runPromise(proof.effect);
+  assert.deepEqual(proof.failures, []);
+  assert.equal(proof.events.filter((event) => event === "expand").length, 1);
+});
+
+test("a tagged upload against an untagged Worker is neither mode and refuses before any clone", async () => {
+  const proof = classProvisioning({
+    untagged: true,
+    uploadTagged: true,
+    expectedFailure: /declared-class-migration-mismatch/,
+  });
+  await Effect.runPromise(proof.effect);
+  assert.ok(!proof.events.includes("expand"));
+  assert.equal(proof.cloneState().staged, 0);
+});
+
+test("untagged recovery still refuses a pre-migration Worker version by its missing class", async () => {
+  const proof = classProvisioning({ untagged: true, recover: "pre-migration" });
+  await Effect.runPromise(proof.effect);
+  assert.equal(proof.recoveryFailures.length, 1);
+  assert.match(String(proof.recoveryFailures[0]), /declared-class-recovery-export-missing/);
+  assert.ok(!proof.events.includes("recover-version"));
+});
+
+test("untagged recovery restores a compatible version that retains the class", async () => {
+  const proof = classProvisioning({ untagged: true, recover: "compatible" });
+  await Effect.runPromise(proof.effect);
+  assert.deepEqual(proof.recoveryFailures, []);
+  assert.equal(proof.events.filter((event) => event === "recover-version").length, 1);
+});

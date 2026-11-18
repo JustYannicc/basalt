@@ -16,9 +16,12 @@ export interface ClassTarget {
 export interface ClassObservation extends ClassTarget {
   workerId: string;
   versionId: string;
-  migrationTag: string;
+  /** Absent on an untagged Worker; see `classUntagged`. */
+  migrationTag?: string;
   settings: Workers.GetScriptScriptAndVersionSettingResponse;
   previewUrlsEnabled: boolean;
+  /** Script settings omit container linkage; an additive upload must carry the active version's unchanged. */
+  containers?: readonly { className: string }[];
 }
 export interface ClassContent {
   mainModule: string;
@@ -43,7 +46,7 @@ export interface ClassProgress {
   declaration: string;
   native: { instanceId: string; workerId: string; providerVersion: number; mode?: string };
   baseline: ClassObservation;
-  newTag: string;
+  newTag?: string;
   payload: string;
   request: Workers.PutScriptRequest;
   outcome: "planned" | "pending" | "unknown" | "acknowledged" | "ready" | "not-ready";
@@ -64,12 +67,20 @@ export const classEntries = (declarations?: {
   (declarations?.changes ?? []).filter(
     (entry): entry is SqliteClassDeclaration => entry.action === "add-sqlite-class",
   );
-export const classTag = (tags: readonly string[] = []) => {
-  const values = tags
+const classTagValues = (tags: readonly string[]) =>
+  tags
     .filter((tag) => tag.startsWith("alchemy:migration-tag:"))
     .map((tag) => tag.slice("alchemy:migration-tag:".length));
+export const classTag = (tags: readonly string[] = []) => {
+  const values = classTagValues(tags);
   return values.length === 1 && values[0] ? values[0] : undefined;
 };
+/**
+ * Alchemy writes `alchemy:migration-tag:` only once a Worker has a tag, and never bumps an absent
+ * one, so a Worker it created untagged keeps receiving untagged migrations. Untagged means no such
+ * tag at all; one malformed or several tags is neither mode.
+ */
+export const classUntagged = (tags: readonly string[] = []) => classTagValues(tags).length === 0;
 const sorted = (values: readonly unknown[]) => [...values].map(canonical).sort();
 type BindingIdentity = {
   type: string;
@@ -182,14 +193,28 @@ export function classRequestVerdict(
       { bindings: after.map(project) },
     );
   const migration = metadata.migrations;
+  // Either alchemy's tagged step from the Worker's one tag to the next, or its untagged step on a
+  // Worker that has never had a tag. Untagged carries no old_tag precondition, so the class and
+  // binding checks here and the frozen live baseline are what keep it additive.
+  const untagged =
+    !!migration &&
+    !("steps" in migration) &&
+    !migration.oldTag &&
+    !migration.newTag &&
+    classUntagged(old!.tags ?? []) &&
+    classUntagged(metadata.tags);
+  const tagged =
+    !!migration &&
+    !("steps" in migration) &&
+    !!migration.oldTag &&
+    !!migration.newTag &&
+    migration.oldTag !== migration.newTag &&
+    classTag(old!.tags ?? []) === migration.oldTag &&
+    classTag(metadata.tags) === migration.newTag;
   if (
     !migration ||
     "steps" in migration ||
-    !migration.oldTag ||
-    !migration.newTag ||
-    migration.oldTag === migration.newTag ||
-    classTag(old!.tags ?? []) !== migration.oldTag ||
-    classTag(metadata.tags) !== migration.newTag ||
+    (!untagged && !tagged) ||
     canonical(sorted("newSqliteClasses" in migration ? (migration.newSqliteClasses ?? []) : [])) !==
       canonical(sorted(entry.newSqliteClasses)) ||
     Object.entries(migration).some(
@@ -245,8 +270,8 @@ export function classRequestVerdict(
   );
   return {
     entry: digest(canonical(entry)),
-    oldTag: migration!.oldTag!,
-    newTag: migration!.newTag!,
+    oldTag: untagged ? undefined : migration!.oldTag!,
+    newTag: untagged ? undefined : migration!.newTag!,
     newSqliteClasses: [...entry.newSqliteClasses],
     addedBindings: expected,
   };
