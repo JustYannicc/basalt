@@ -5,6 +5,7 @@ import {
   upstreamOutcomeUnknown,
 } from "../../clients/contracts/model-error.ts";
 import {
+  controllerHeldBytes,
   controllerHoldBytes,
   controllerInstanceEnded,
   controllerReplayDelayMs,
@@ -461,4 +462,110 @@ test("a complete stream passes through unchanged and records nothing", async (co
   assert.deepEqual(lines, []);
   assert.deepEqual(calls, []);
   assert.deepEqual(sentry, []);
+});
+
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("a held body is dropped as soon as the controller answers", async (context) => {
+  const h = harness(context, [async (request) => new Response(await request.text())]);
+  const response = await fetchController(
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
+    h.hop,
+  );
+  assert.equal((await response.text()).length, 4096);
+  assert.equal(controllerHeldBytes(), 0);
+});
+
+test("a held body is dropped when the replay window closes, and the cut gets advice", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let fail!: (error: unknown) => void;
+  const h = harness(context, [
+    () =>
+      new Promise<Response>((_resolve, reject) => {
+        fail = reject;
+      }),
+  ]);
+  const pending = fetchController(
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
+    h.hop,
+  );
+  while (controllerHeldBytes() === 0) await turn();
+  context.mock.timers.tick(controllerReplayWindowMs);
+  assert.equal(controllerHeldBytes(), 0);
+  fail(reset());
+  const response = await pending;
+  assert.equal(h.resolved, 1);
+  assert.equal(response.status, 503);
+  const { lines } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.reason]),
+    [["retry_advised", "too_late"]],
+  );
+});
+
+test("past the isolate's hold budget a call is forwarded unheld, logged and not replayed", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const budget = 1024 * 1024;
+  let finish!: (response: Response) => void;
+  const holding = controllerHop(
+    [
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    ],
+    [],
+  );
+  holding.hop.holdBudgetBytes = budget;
+  const first = fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      body: new Uint8Array(768 * 1024),
+    }),
+    holding.hop,
+  );
+  while (controllerHeldBytes() < 768 * 1024) await turn();
+  const received: number[] = [];
+  const unheld = controllerHop(
+    [
+      async (request) => (
+        received.push((await request.arrayBuffer()).byteLength),
+        Response.json({})
+      ),
+    ],
+    [],
+  );
+  unheld.hop.holdBudgetBytes = budget;
+  const served = await fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      body: new Uint8Array(512 * 1024),
+    }),
+    unheld.hop,
+  );
+  assert.equal(served.status, 200);
+  assert.deepEqual(received, [512 * 1024]);
+  const cut = controllerHop([fails(reset)], []);
+  cut.hop.holdBudgetBytes = budget;
+  const advised = await fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      body: new Uint8Array(512 * 1024),
+    }),
+    cut.hop,
+  );
+  assert.equal(cut.resolved, 1);
+  assert.equal(advised.status, 503);
+  finish(Response.json({}));
+  await (await first).text();
+  assert.equal(controllerHeldBytes(), 0);
+  const marked = (marker: string) =>
+    log.mock.calls
+      .filter((call) => call.arguments[0] === marker)
+      .map((call) => JSON.parse(String(call.arguments[1])));
+  assert.equal(marked("POOL_CONTROLLER_HOLD_SKIPPED").length, 2);
+  assert.deepEqual(
+    marked("POOL_CONTROLLER_INTERRUPTED").map((line) => [line.outcome, line.reason]),
+    [["retry_advised", "hold_budget_full"]],
+  );
 });

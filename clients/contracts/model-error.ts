@@ -32,7 +32,7 @@ export function modelCallReplayable(pathname: string): boolean {
  * does not name its route, keeps the cautious answer so the client decides.
  */
 export function upstreamOutcomeUnknown(
-  requestId = crypto.randomUUID(),
+  requestId: string = crypto.randomUUID(),
   pathname?: string,
 ): Response {
   const replayable = pathname !== undefined && modelCallReplayable(pathname);
