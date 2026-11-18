@@ -1,9 +1,14 @@
 {
-  "about": "Globs for the files that decide how a production release is made. A change here needs a rehearsal, ships alone and counts against the release tooling budget. Entries for the Alchemy release path match nothing until it lands.",
+  "about": "Globs for the files that decide how a production release is made: release code, its workflows and every carry that patches Alchemy. A change here needs a rehearsal, ships alone and counts against the release tooling budget. Entries for the Alchemy release path match nothing until it lands.",
   "paths": [
     "alchemy.run.ts",
     "release-declarations.json",
     "patches/*alchemy*",
+    "patches/0003-eu-durable-objects.*",
+    "patches/0170-container-image-drift.*",
+    "patches/0309-normalized-container-resources.*",
+    "patches/0311-container-publication-outputs.*",
+    "patches/0329-declared-container-instances.*",
     "scripts/release/**",
     "scripts/release-barrier/**",
     "scripts/release-phases/**",
