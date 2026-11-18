@@ -8,8 +8,8 @@ import {
 } from "./worker-annotations.ts";
 
 // Every field Cloudflare's script-settings read returns must, for each class write built from it,
-// be accepted by that write's schema (recursively) or be named here as not echoed. A new
-// provider-managed field then fails this test instead of the next production release.
+// be accepted by that write's schema (recursively) or be named here as not echoed. A field the
+// vendored SDK learns on an upgrade then fails this test before a release can echo it.
 
 interface Node {
   _tag: string;
@@ -113,7 +113,7 @@ for (const [write, plan] of Object.entries(notEchoed))
     assert.deepEqual(unaccepted(read, ast(plan.schema), "", plan.fields), []);
   });
 
-test("the walk catches a provider-managed annotation the write refuses", () => {
+test("the settings read knows workers/triggered_by and the PUT metadata cannot carry it", () => {
   // The vendored PUT schema has no workers/triggered_by: an echo of the whole annotation object fails.
   const put = fields(ast(Workers.PutScriptMetadata))!.get("annotations")!;
   const read = fields(ast(Workers.GetScriptScriptAndVersionSettingResponse))!.get("annotations")!;

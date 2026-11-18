@@ -3,8 +3,8 @@ import type * as Plan from "alchemy/Plan";
 import type { PreparedPlan } from "./alchemy-plan.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
 import { Effect } from "effect";
-import { canonical } from "./manifest.ts";
 import { classConstraint } from "./class-refusal.ts";
+import { baselineKey } from "./class-settings.ts";
 import type { ClassProvider, ClassProgress } from "./declared-class-contract.ts";
 import { saveClassHistory, type ClassRecord } from "./class-history.ts";
 import { classNative, commitClassNative } from "./class-native.ts";
@@ -55,7 +55,7 @@ export const expandDeclaredClasses = (
         const current = yield* call(entry.fqn, "read-class-expansion", () =>
           provider.read(saved.baseline),
         );
-        if (canonical(current) !== canonical(saved.baseline))
+        if (baselineKey(current) !== baselineKey(saved.baseline))
           throw declaredMismatch(
             "declared-class-live-baseline-drift",
             entry.fqn,

@@ -44,7 +44,8 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
   const tags = productionTags(Object.keys(classes));
   let serial = 0;
   const versions = new Map<string, Version>();
-  const clones = new Map<string, Record<string, unknown>>();
+  // Inactive clones are ordinary versions that no deployment serves.
+  const clones = new Set<string>();
   const doBinding = (name: string): Binding => ({
     type: "durable_object_namespace",
     name,
@@ -81,7 +82,11 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
   // Cloudflare's code for an absent Worker version; the SDK maps it to WorkerVersionNotFound.
   const versionMissing = () => failure("version not found", 404, 10071);
   const ok = cloudflareResult;
-  const settings = () => productionSettingsBody(current().bindings, tags, current().annotations);
+  // Production's /settings follows the latest upload, deployed or not, not the serving version.
+  const settings = () => {
+    const version = versions.get(latest)!;
+    return productionSettingsBody(version.bindings, tags, version.annotations);
+  };
 
   async function respond(method: string, url: URL, body: () => Promise<unknown>) {
     const base = `/client/v4/accounts/${accountId}/workers`;
@@ -116,8 +121,6 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
       const beta = new RegExp(`^${base}/workers/${scriptName}/versions/([^/]+)$`, "u").exec(path);
       if (beta) {
         const id = beta[1] === "latest" ? latest : beta[1]!;
-        const clone = clones.get(id);
-        if (clone) return ok(clone);
         const version = versions.get(id);
         if (!version) return versionMissing();
         return ok(
@@ -223,34 +226,39 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
         log.refusals.push("provider-managed-annotation");
         return failure("annotations: workers/triggered_by is read-only");
       }
-      const unparsed = await productionModuleRefusal(
-        (
-          (clone.modules ?? []) as { name: string; content_type: string; content_base64: string }[]
-        ).map((module) => ({
-          name: module.name,
-          type: module.content_type,
-          bytes: new Uint8Array(Buffer.from(module.content_base64, "base64")),
-        })),
-      );
+      const files = (
+        (clone.modules ?? []) as { name: string; content_type: string; content_base64: string }[]
+      ).map((module) => ({
+        name: module.name,
+        type: module.content_type,
+        bytes: new Uint8Array(Buffer.from(module.content_base64, "base64")),
+      }));
+      const unparsed = await productionModuleRefusal(files);
       if (unparsed) {
         log.refusals.push("module-syntax-error");
         return unparsed;
       }
       const id = `clone-${++serial}`;
       latest = id;
-      clones.set(id, {
-        ...clone,
-        annotations: { ...clone.annotations, [providerTriggeredBy]: "version_upload" },
+      clones.add(id);
+      versions.set(id, {
         id,
-        number: 1,
-        created_on: "2026-11-17T00:00:00Z",
-        urls: [],
         bindings: current().bindings,
+        containers: ((clone.containers ?? []) as { class_name: string }[]).map(
+          (container) => container.class_name,
+        ),
+        files,
+        mainModule: String(clone.main_module),
+        annotations: { ...clone.annotations, [providerTriggeredBy]: "version_upload" },
       });
       return ok({ id, number: 1, created_on: "2026-11-17T00:00:00Z", urls: [] });
     }
     const removed = new RegExp(`^${base}/workers/${scriptName}/versions/([^/]+)$`, "u").exec(path);
-    if (method === "DELETE" && removed && clones.delete(removed[1]!)) return ok(null);
+    if (method === "DELETE" && removed && clones.delete(removed[1]!)) {
+      versions.delete(removed[1]!);
+      if (latest === removed[1]) latest = active;
+      return ok(null);
+    }
     return undefined;
   }
 

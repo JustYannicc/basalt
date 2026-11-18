@@ -4,7 +4,7 @@ import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
 import type { ClassContent, ClassObservation } from "./declared-class-contract.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { classRefusal } from "./class-refusal.ts";
-import { classAnnotations } from "./class-settings.ts";
+import { classAnnotations, classPlacement } from "./class-settings.ts";
 import { canonical, digest, type ModulePart } from "./manifest.ts";
 
 export const contentDigest = (content: ClassContent) =>
@@ -156,7 +156,7 @@ export function expansionRequest(
       },
       observability: settings.observability ?? undefined,
       limits: settings.limits ?? undefined,
-      placement: settings.placement ?? undefined,
+      placement: classPlacement(settings.placement),
       logpush: settings.logpush ?? undefined,
       tailConsumers: settings.tailConsumers ?? undefined,
     }),

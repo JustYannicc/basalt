@@ -112,6 +112,7 @@ export const productionObservability = {
   head_sampling_rate: 1,
   logs: { enabled: true, head_sampling_rate: 1, invocation_logs: true, persist: true },
   redact_query_string: true,
+  traces: { enabled: false, persist: true, head_sampling_rate: 1 },
 };
 
 export function productionSettingsBody(

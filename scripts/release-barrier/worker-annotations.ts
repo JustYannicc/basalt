@@ -1,5 +1,5 @@
 /**
- * The one rule for Worker version annotations copied from a Cloudflare read into a write.
+ * Which Worker version annotations may be copied from a Cloudflare read into a write.
  * Cloudflare stamps provider-managed keys on every version and returns them from settings and
  * version reads; a request must never carry them, and they never take part in a request-vs-read-back
  * comparison. Caller-owned keys are Cloudflare's documented writable annotations. Any other key is

@@ -8,7 +8,7 @@ import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Cr
 import { readClassClone, readDeclaredClass, stageClassClone } from "./class-cloudflare.ts";
 import { expansionContent, expansionRequest } from "./class-payload.ts";
 import { assertClone, cloneRequest } from "./class-clone.ts";
-import { classAnnotations } from "./class-settings.ts";
+import { baselineKey, classAnnotations } from "./class-settings.ts";
 import type { ClassRecord } from "./class-history.ts";
 import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
 import { BarrierRefusal, canonical } from "./manifest.ts";
@@ -61,29 +61,31 @@ const baselineContent = {
 
 type Clone = Record<string, unknown> & { annotations?: Record<string, string> };
 
-async function stub(context: TestContext, settings: unknown) {
+async function stub(context: TestContext, settings: Record<string, unknown>) {
   const posts: Clone[] = [];
-  const clones = new Map<string, Clone>();
-  const read = (path: string) =>
-    path.endsWith("/deployments")
-      ? productionDeploymentsBody("active")
-      : path.endsWith("/settings")
-        ? settings
-        : path.endsWith("/workers/workers/fixture-worker/versions/active")
-          ? productionVersionBody({
-              id: "active",
-              mainModule: "worker.js",
-              modules: [],
-              bindings,
-              containers: ["PoolContainer"],
-            })
-          : clones.get(path.split("/").at(-1)!)
-            ? clones.get(path.split("/").at(-1)!)
-            : path.endsWith("/workers/workers/fixture-worker")
-              ? productionProfileBody("fixture-worker", "immutable-worker")
-              : path.endsWith("/scripts/fixture-worker/versions/active")
-                ? productionScriptVersionBody({ id: "active", bindings, classes })
-                : undefined;
+  const clones = new Map<string, ReturnType<typeof productionVersionBody>>();
+  let latest: ReturnType<typeof productionVersionBody> | undefined;
+  const read = (path: string) => {
+    if (path.endsWith("/deployments")) return productionDeploymentsBody("active");
+    // Production's /settings follows the latest upload, so a staged clone's annotations show there.
+    if (path.endsWith("/settings"))
+      return latest ? { ...settings, annotations: latest.annotations } : settings;
+    if (path.endsWith("/workers/workers/fixture-worker/versions/active"))
+      return productionVersionBody({
+        id: "active",
+        mainModule: "worker.js",
+        modules: [],
+        bindings,
+        containers: ["PoolContainer"],
+      });
+    const clone = clones.get(path.split("/").at(-1)!);
+    if (clone) return clone;
+    if (path.endsWith("/workers/workers/fixture-worker"))
+      return productionProfileBody("fixture-worker", "immutable-worker");
+    if (path.endsWith("/scripts/fixture-worker/versions/active"))
+      return productionScriptVersionBody({ id: "active", bindings, classes });
+    return undefined;
+  };
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(chunk as Buffer);
@@ -99,16 +101,16 @@ async function stub(context: TestContext, settings: unknown) {
       if (body.annotations?.[providerTriggeredBy] !== undefined)
         return reply(400, null, [{ code: 10021, message: "workers/triggered_by is read-only" }]);
       const id = `clone-${posts.length}`;
-      clones.set(id, {
-        ...body,
+      // Production's version read-back: its own key set (no placement), stamped by Cloudflare.
+      latest = productionVersionBody({
         id,
-        number: 2,
-        created_on: "2026-11-18T00:00:00Z",
-        urls: [],
+        mainModule: String(body.main_module),
+        modules: body.modules as Parameters<typeof productionVersionBody>[0]["modules"],
         bindings,
-        // Cloudflare stamps its own value; production's settings read showed "version_upload".
+        containers: ((body.containers ?? []) as { class_name: string }[]).map((c) => c.class_name),
         annotations: { ...body.annotations, [providerTriggeredBy]: "version_upload" },
       });
+      clones.set(id, latest);
       return reply(200, { id, number: 2, created_on: "2026-11-18T00:00:00Z", urls: [] });
     }
     const value = request.method === "GET" ? read(path) : undefined;
@@ -150,7 +152,7 @@ async function stub(context: TestContext, settings: unknown) {
 const production = () => productionSettingsBody(bindings, productionTags(classes));
 
 test("the class PUT keeps only caller-owned annotations and echoes production's other settings", async (context) => {
-  // On 374ba512 this threw `Expected no excess property at ["annotations"]["workersTriggeredBy"]`.
+  // Copying the read's annotations wholesale fails the PUT's strict metadata decode.
   const cloudflare = await stub(context, production());
   const observed = await cloudflare.read();
   assert.equal(observed.settings.annotations?.workersTriggeredBy, "version_upload");
@@ -163,7 +165,8 @@ test("the class PUT keeps only caller-owned annotations and echoes production's 
     marker,
   );
   assert.deepEqual(request.metadata.annotations, { workersMessage: marker });
-  assert.deepEqual(request.metadata.placement, {});
+  // Production's settings read shows no placement as `{}`; the PUT sends none.
+  assert.equal(request.metadata.placement, undefined);
   assert.deepEqual(request.metadata.tailConsumers, []);
   assert.equal(request.metadata.logpush, false);
   assert.deepEqual(request.metadata.observability, observed.settings.observability);
@@ -182,8 +185,13 @@ test("the clone POST carries no provider-managed annotation and accepts Cloudfla
     assert.equal(key in sent!, false, `${key} is script-level and stays out of a version`);
   const actual = await cloudflare.readClone(versionId);
   assert.equal(actual?.annotations?.workersTriggeredBy, "version_upload");
+  assert.equal("placement" in sent!, false);
   const saved = { baseline: observed, clone: { request, versionId } } as unknown as ClassRecord;
   assertClone(entry.fqn, saved, actual);
+  // The live baseline is unchanged although /settings now shows the clone's own annotations.
+  const after = await cloudflare.read();
+  assert.notEqual(canonical(after), canonical(observed));
+  assert.equal(baselineKey(after), baselineKey(observed));
   // The comparison still holds the caller-owned keys: a foreign marker refuses.
   assert.throws(
     () =>
@@ -211,7 +219,7 @@ test("an annotation the rule does not know refuses with a named code, from the r
     () => classAnnotations({ workersMessage: "m", workersFutureKey: "x" }, entry.fqn, "settings"),
     (error: unknown) =>
       error instanceof BarrierRefusal &&
-      error.reason === "declared-class-annotation-unrecognised" &&
+      error.reason === "declared-class-annotation-unsupported" &&
       canonical(error.delta?.changed) ===
         canonical([
           {

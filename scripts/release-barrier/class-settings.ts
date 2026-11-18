@@ -6,9 +6,9 @@ import {
   cloudflareResult,
   type Fetcher,
 } from "../deploy-safety/http.ts";
-import type { ClassTarget } from "./declared-class-contract.ts";
+import type { ClassObservation, ClassTarget } from "./declared-class-contract.ts";
 import { classConstraint, classSchemaRefusal } from "./class-refusal.ts";
-import { digest } from "./manifest.ts";
+import { canonical } from "./manifest.ts";
 import { callerAnnotations } from "./worker-annotations.ts";
 
 const fromWire = (value: unknown, path: readonly string[] = []): unknown => {
@@ -101,10 +101,23 @@ export const classAnnotations = <T extends object>(
 ) =>
   callerAnnotations(annotations, (wire) => {
     throw classConstraint(
-      "declared-class-annotation-unrecognised",
+      "declared-class-annotation-unsupported",
       fqn,
       `${path}.annotations`,
       "caller-owned-or-provider-managed",
-      /^[a-z0-9_/]{1,64}$/u.test(wire) ? wire : `sha256:${digest(wire)}`,
+      wire,
     );
   });
+
+/** Cloudflare reads back no placement as `{}` on settings and as absent on a version; both mean none. */
+export const classPlacement = (placement: unknown) =>
+  placement && typeof placement === "object" && !Object.keys(placement).length
+    ? undefined
+    : (placement ?? undefined);
+
+/**
+ * The live-baseline drift key. /settings follows the latest upload, so once the inactive clone is
+ * staged its own annotations show there; the clone's identity is proven by assertClone instead.
+ */
+export const baselineKey = (observation: ClassObservation) =>
+  canonical({ ...observation, settings: { ...observation.settings, annotations: undefined } });

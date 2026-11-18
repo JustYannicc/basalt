@@ -8,7 +8,7 @@ import { withOperation } from "./operation-failure.ts";
 import { classConstraint, classRefusal } from "./class-refusal.ts";
 import { changedProps } from "./prop-diff.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
-import { classAnnotations } from "./class-settings.ts";
+import { baselineKey, classAnnotations, classPlacement } from "./class-settings.ts";
 
 /** Legacy inherit selects the latest upload. Stage the exact active bytes with version-qualified binding inheritance first. */
 export function cloneRequest(
@@ -50,7 +50,7 @@ export function cloneRequest(
     compatibilityDate: settings.compatibilityDate ?? undefined,
     compatibilityFlags: settings.compatibilityFlags ?? undefined,
     limits: settings.limits ?? undefined,
-    placement: settings.placement ?? undefined,
+    placement: classPlacement(settings.placement),
     usageModel: settings.usageModel ?? undefined,
     containers: baseline.containers?.length ? [...baseline.containers] : undefined,
   });
@@ -81,7 +81,7 @@ export function assertClone(
     compatibilityDate: request.compatibilityDate,
     compatibilityFlags: request.compatibilityFlags,
     limits: request.limits,
-    placement: request.placement,
+    placement: classPlacement(request.placement),
     usageModel: request.usageModel,
     bindings: saved.baseline.settings.bindings ?? [],
     containers: saved.baseline.containers ?? [],
@@ -93,7 +93,7 @@ export function assertClone(
     compatibilityDate: actual.compatibilityDate,
     compatibilityFlags: actual.compatibilityFlags,
     limits: actual.limits,
-    placement: actual.placement,
+    placement: classPlacement(actual.placement),
     usageModel: actual.usageModel,
     bindings: actual.bindings ?? [],
     containers: (actual.containers ?? []).map((container) => ({
@@ -171,7 +171,7 @@ export const prepareClassClone = (
         withOperation(fqn, "stage-class-baseline-clone"),
       );
     const active = yield* call(() => provider.read(saved.baseline));
-    if (canonical(active) !== canonical(saved.baseline))
+    if (baselineKey(active) !== baselineKey(saved.baseline))
       throw declaredMismatch(
         "declared-class-live-baseline-drift",
         fqn,
@@ -214,7 +214,7 @@ export const prepareClassClone = (
     const latest = yield* call(() => provider.clone(saved.baseline, "latest"));
     assertClone(fqn, next, latest);
     const confirmed = yield* call(() => provider.read(saved.baseline));
-    if (canonical(confirmed) !== canonical(saved.baseline))
+    if (baselineKey(confirmed) !== baselineKey(saved.baseline))
       throw classConstraint(
         "declared-class-live-baseline-drift",
         fqn,
