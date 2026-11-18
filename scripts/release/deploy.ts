@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
+import { assignEnvironment } from "./process-env.ts";
 import { safeJson } from "./safe-json.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -152,7 +153,7 @@ if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
 if (stage === "production") {
   const { deployEnvironment } = await import("../environment.ts");
   // Production always declares the legacy root by its pinned digest (src/pool/root-image-pin.ts).
-  Object.assign(process.env, deployEnvironment(), { POOL_ROOT_IMAGE_REQUIRED: "true" });
+  assignEnvironment(process.env, { ...deployEnvironment(), POOL_ROOT_IMAGE_REQUIRED: "true" });
 }
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
@@ -164,7 +165,9 @@ const policy = values.policy
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;
 const include: string[] = values.include?.length ? values.include : [...(policy?.include ?? [])];
-if (stage === "production" && !policy) throw new Error("Production needs a policy");
+// Only planning reads the policy; the read-only and rollback commands never plan.
+if (stage === "production" && !policy && ["plan", "apply"].includes(command))
+  throw new Error("Production plans and applies only under a policy");
 
 process.chdir(cloud);
 const { Effect } = await import("effect");
@@ -172,7 +175,8 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
-const { changedRows, remainingRows } = await import("./plan-summary.ts");
+const { changedRows, readinessCommand, remainingRows, updatesWorkerWithoutReadiness } =
+  await import("./plan-summary.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -334,6 +338,12 @@ try {
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
+        if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
+          return yield* Effect.die(
+            new Error(
+              `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
+            ),
+          );
         if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
@@ -344,7 +354,7 @@ try {
         const planned = changedRows(snapshot);
         yield* Alchemist.Stack.apply(snapshot as never);
         const after = yield* planOf("deploy");
-        if (Alchemist.Stack.hasChanges(after.summary as never))
+        if (remainingRows(after).length > 0)
           return yield* Effect.die(
             new Error(`Changes remain after apply: ${safeJson(remainingRows(after))}`),
           );

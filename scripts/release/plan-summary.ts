@@ -50,10 +50,24 @@ export const changedRows = (snapshot: Snapshot) =>
       };
     });
 
-/** What a fresh plan after apply still wants to change: names only, no props. */
+/**
+ * What a fresh plan after apply still wants to change: names only, no props. A command that re-runs
+ * on every deploy (`memo: false`) always plans as an update, so a command update is not a leftover.
+ */
 export const remainingRows = (snapshot: Snapshot) =>
   snapshot.resources
     .filter(
       (row) => row.action !== "noop" || row.bindings.some((binding) => binding.action !== "noop"),
     )
+    .filter((row) => !(row.resourceType.startsWith("Command.") && row.action === "update"))
     .map((row) => ({ fqn: row.fqn, type: row.resourceType, action: row.action }));
+
+/**
+ * The deploy-time readiness command polls until the pool's Durable Object has adopted the new
+ * code (Cloudflare defers that up to 300 s for an active object). A plan that updates PoolWorker
+ * without it would hand acceptance the old code, and a failure inside that window would roll back.
+ */
+export const readinessCommand = "PoolBackendBudgetRuntimeReady";
+export const updatesWorkerWithoutReadiness = (snapshot: Snapshot, poolWorker: string) =>
+  snapshot.resources.some((row) => row.fqn === poolWorker && row.action !== "noop") &&
+  !snapshot.resources.some((row) => row.fqn === readinessCommand && row.action !== "noop");

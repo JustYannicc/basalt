@@ -163,3 +163,27 @@ test("the stop-the-line gate names who triggered the run", () => {
   assert.match(gate, /GH_TOKEN: \$\{\{ github\.token \}\}/u);
   assert.match(job("release"), /statuses: read/u);
 });
+
+test("every production entry call the workflow makes is one the entry accepts", () => {
+  const calls = [...workflow.matchAll(/deploy\.ts (\w[\w-]*) --stage production([^\n]*)/gu)];
+  assert.ok(calls.length >= 8, `found ${calls.length}`);
+  for (const [line, command, rest] of calls) {
+    assert.ok(
+      [
+        "preflight",
+        "plan",
+        "db-load",
+        "serving",
+        "backup",
+        "snapshot",
+        "apply",
+        "accept",
+        "rollback",
+      ].includes(command!),
+      line,
+    );
+    // The entry reads a policy only to plan or apply, and refuses those without one.
+    if (command === "plan" || command === "apply")
+      assert.match(rest!, /--policy "\$POLICY"/u, line);
+  }
+});
