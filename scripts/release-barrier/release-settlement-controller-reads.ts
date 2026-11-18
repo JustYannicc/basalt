@@ -206,6 +206,7 @@ function selectionChanged(
 export function readAdoptedController(input: {
   controller: BaselineController;
   key: string;
+  /** The release whose adopt an epoch-1 witness names: the one that installed this controller. */
   sourceCandidate: string;
   root: RuntimeReleaseState["applications"]["root"];
   /** Instances the root's live placement serves on the baseline image. */
