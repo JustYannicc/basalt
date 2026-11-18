@@ -42,6 +42,7 @@ const { positionals, values } = parseArgs({
     before: { type: "string" },
     after: { type: "string" },
     fqn: { type: "string" },
+    from: { type: "string" },
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
@@ -377,25 +378,105 @@ try {
       }),
     );
     await summary(`PlanetScale backup complete: \`${backup.name}\``);
-  } else if (command === "serving" || command === "rollback") {
-    // A code-only release records the serving version first; on a failed acceptance it goes back to it.
-    const fqn = values.fqn ?? "PoolWorker";
+  } else if (command === "preflight") {
+    // Read-only, once before the cutover: the State store version, every State row, the retired
+    // layer's records exported sealed, no unresolved Home migration, and the root pin against State.
+    const legacy = await import("./legacy-records.ts");
     const result = await run(
       Effect.gen(function* () {
-        const script = yield* scriptName(fqn);
-        const at = {
+        const state = yield* Alchemist.State.store({
+          backend: "configured",
+          ...target,
+        } as never) as unknown as Fx.Effect<any, unknown, never>;
+        const version = yield* state.getVersion() as Fx.Effect<number, unknown, never>;
+        if (version !== 8)
+          return yield* Effect.die(
+            new Error(`State store version ${version}, expected 8: upgrade deliberately first`),
+          );
+        const rows = yield* legacy.stateRows(state, stage);
+        const key = process.env.EXECUTOR_ENCRYPTION_KEY ?? "";
+        const exported = yield* legacy.exportLegacyRecords(
+          state,
+          stage,
+          resolve(root, ".local/release/legacy"),
+          key,
+          (process.env.BASALT_LEGACY_ARCHIVE_STACKS ?? "").split(",").filter(Boolean),
+        );
+        yield* legacy
+          .assertNoUnresolvedHome(stage, key)
+          .pipe(Effect.provideService(legacy.State, Effect.succeed(state)));
+        const pin = process.env.POOL_ROOT_IMAGE
+          ? JSON.parse(process.env.POOL_ROOT_IMAGE)
+          : undefined;
+        const rootRow = (yield* state.get({
+          stack: "basalt",
+          stage,
+          fqn: "PoolContainer",
+        }) as Fx.Effect<any, unknown, never>) as
+          | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
+          | undefined;
+        const recorded = {
+          image: rootRow?.attr?.configuration?.image,
+          input: rootRow?.attr?.hash?.image,
+        };
+        if (!pin || pin.image !== recorded.image || pin.input !== recorded.input)
+          return yield* Effect.die(
+            new Error(
+              `POOL_ROOT_IMAGE does not match the root's State row (image ${recorded.image === pin?.image ? "equal" : "differs"}, input ${recorded.input === pin?.input ? "equal" : "differs"})`,
+            ),
+          );
+        return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
+      }),
+    );
+    await output(resolve(root, ".local/release/preflight.json"), result);
+    await summary(`Preflight: ${JSON.stringify({ ...result, rows: result.rows.length })}`);
+  } else if (command === "serving" || command === "rollback") {
+    // A code release records the serving version of every Worker its plan updates; on a failed apply
+    // or acceptance it puts each of them back. `--fqn` names one Worker instead.
+    const plan = values.from
+      ? (JSON.parse(await readFile(resolve(values.from), "utf8")) as {
+          changes?: { fqn: string; type: string; action: string }[];
+          workers?: { fqn: string; version: string }[];
+        })
+      : undefined;
+    const fqns =
+      command === "serving"
+        ? values.fqn
+          ? [values.fqn]
+          : (plan?.changes ?? [])
+              .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
+              .map((change) => change.fqn)
+        : [];
+    const result = await run(
+      Effect.gen(function* () {
+        const at = (script: string) => ({
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
           token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
           script,
-        };
-        if (command === "serving") return { fqn, version: yield* servingVersion(at) };
-        if (!values.to) return yield* Effect.die(new Error("--to <version id> is required"));
-        yield* rollbackTo(
-          at,
-          values.to,
-          `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
-        );
-        return { fqn, version: values.to, rolledBack: true };
+        });
+        if (command === "serving") {
+          const workers: { fqn: string; version: string }[] = [];
+          for (const fqn of fqns)
+            workers.push({ fqn, version: yield* servingVersion(at(yield* scriptName(fqn))) });
+          return { workers };
+        }
+        const targets =
+          plan?.workers ??
+          (values.fqn && values.to ? [{ fqn: values.fqn, version: values.to }] : []);
+        if (!targets.length)
+          return yield* Effect.die(
+            new Error("rollback needs --from <serving.json> or --fqn and --to"),
+          );
+        const rolledBack: { fqn: string; version: string }[] = [];
+        for (const target of targets) {
+          yield* rollbackTo(
+            at(yield* scriptName(target.fqn)),
+            target.version,
+            `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+          );
+          rolledBack.push(target);
+        }
+        return { workers: rolledBack, rolledBack: true };
       }),
     );
     if (values.out) await output(resolve(values.out), result);
