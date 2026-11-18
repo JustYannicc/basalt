@@ -3,7 +3,11 @@ import { test } from "node:test";
 import { Schema } from "effect";
 import { runtimeConfiguration } from "../../src/pool/runtime-slots/configuration.ts";
 import { nativeMembershipKey } from "../../src/pool/runtime-slots/storage.ts";
+import { launchWitnessKey } from "../../src/pool/runtime-slots/admission-proof.ts";
+import { runtimeResponseDiagnostic } from "../../src/pool/runtime-route-diagnostic.ts";
 import { runtimeReleaseClientFixture as fixture } from "./test/runtime-release-client-fixture.ts";
+
+const earlierController = { candidate: "0".repeat(40), workerInput: "9".repeat(64) };
 
 test(
   "the ordinary release client stages, joins real provider reads, proves public serving and promotes once",
@@ -42,6 +46,7 @@ test(
       (await f.client.inspect()).selection!.active.target.applicationId,
       "green-application",
     );
+    const sentBefore = f.commands.length;
     assert.equal(
       await f.client.selectedCurrent(
         f.candidate.target.imageInput,
@@ -56,6 +61,11 @@ test(
       }),
       false,
     );
+    // An attested fleet primary still proves its configuration through the witness read.
+    assert.deepEqual(
+      f.commands.slice(sentBefore).filter((action) => action === "witness"),
+      ["witness", "witness"],
+    );
     assert.equal(f.old.calls.destroy, 0);
     body!.enqueue(new TextEncoder().encode("terminal"));
     body!.close();
@@ -63,6 +73,41 @@ test(
     f.reconstructRoot();
     assert.ok(await f.client.health());
     assert.equal(f.closes(), f.commands.length);
+  },
+);
+
+test(
+  "the adopted root under a newer controller is never the settled primary and is never witnessed",
+  { timeout: 15_000 },
+  async (context) => {
+    const f = await fixture();
+    context.after(() => f.cleanup());
+    // The fixture worker's controller code is compiled in, so the adopting release's code is the one
+    // that changes: the retained authorization names an earlier controller, as after a deploy.
+    const key = launchWitnessKey("legacy");
+    const Fields = Schema.Record(Schema.String, Schema.Unknown);
+    const record = Schema.decodeUnknownSync(Fields)(await f.old.storage.get(key));
+    const authorization = Schema.decodeUnknownSync(Fields)(record.authorization);
+    assert.equal(authorization.kind, "unattested-active");
+    assert.notDeepEqual(authorization.controllerCode, earlierController);
+    await f.old.storage.put(key, {
+      ...record,
+      authorization: { ...authorization, controllerCode: earlierController },
+    });
+    const active = (await f.client.inspect()).selection!.active;
+    assert.equal(active.target.slotId, "legacy");
+    assert.equal(active.target.instanceId, active.target.controllerId);
+    // The readback is bound to the adopting code, so the newer controller refuses its own witness.
+    const witnessed = await f.command("witness", { target: active.target });
+    await witnessed.body?.cancel();
+    assert.equal(witnessed.status, 409);
+    assert.equal(runtimeResponseDiagnostic(witnessed)?.runtimeReason, "slot_identity");
+    const sentBefore = f.commands.length;
+    assert.equal(
+      await f.client.selectedCurrent(f.old.target.imageInput, runtimeConfiguration(f.old.env)),
+      false,
+    );
+    assert.deepEqual(f.commands.slice(sentBefore), ["inspect"]);
   },
 );
 
