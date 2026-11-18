@@ -29,7 +29,8 @@ export const readActivePlacements = (
   );
 
 export const readCurrentDeployment = (worker: Pick<FrozenWorker, "accountId" | "scriptName">) =>
-  // The SDK serializes excess properties as a body, including on GET. Callers pass upload and frozen objects.
+  // The SDK serializes excess properties as a body, including on GET; see `classTarget` in
+  // declared-class-contract.ts. Callers pass upload and frozen objects.
   Workers.listScriptDeployments({
     accountId: worker.accountId,
     scriptName: worker.scriptName,

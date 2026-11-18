@@ -1,4 +1,5 @@
 import { crashOwnedRuntime } from "../runtime-crash-owner.ts";
+import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runtime-crash-cell.ts";
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
@@ -110,8 +111,9 @@ export class RuntimeEndpoint {
     return pending;
   }
   crash(envelope: string) {
-    return this.serialize(() =>
-      crashOwnedRuntime(
+    return this.serialize(async () => {
+      const cell = await crashTargetsCell(this.env.POOL_DEPLOYMENT_KEY ?? "", envelope);
+      return crashOwnedRuntime(
         this.ctx,
         this.env.POOL_DEPLOYMENT_KEY ?? "",
         this.code,
@@ -120,9 +122,19 @@ export class RuntimeEndpoint {
           if ((await this.activity.inspect(identity))?.phase !== "open")
             throw new SlotRefused("draining");
           await this.health(identity, AbortSignal.timeout(1_000));
+          if (!cell) return;
+          // Stays last: the owner signals right after this check returns.
+          const { configuration } = await this.store.read(identity);
+          await assertFollowerHome((signal) =>
+            this.channel.fetch(
+              configuration,
+              new Request(`http://pool${homeTopologyPath}`, { signal }),
+              8327,
+            ),
+          );
         },
-      ),
-    );
+      );
+    });
   }
   async inspectCrash(identity: SlotIdentity, nonce: string) {
     this.bound(identity);

@@ -13,6 +13,7 @@ import {
 } from "./release-settlement-contract.ts";
 import {
   collectReleaseSettlementProof,
+  settlementSourceActivated,
   type ReleaseSettlementIo,
 } from "./release-settlement-proof.ts";
 import {
@@ -158,9 +159,9 @@ export const applyReleaseSettlement = (
       io.directory,
       io,
       manifest.proof.disposition,
-      manifest.proof.disposition === "abandoned-before-controller"
-        ? undefined
-        : manifest.proof.controller.code,
+      settlementSourceActivated(manifest.proof.disposition)
+        ? manifest.proof.controller.code
+        : undefined,
     );
     if (
       hash(collected.source.image) !== manifest.imageHeadDigest ||

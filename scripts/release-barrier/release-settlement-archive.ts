@@ -127,5 +127,12 @@ export const authorizedReleaseSettlement = (
       const row = yield* state.get({ stack: scope.name, stage: scope.stage, fqn: resource.fqn });
       if (encodedRecordHash(row) !== resource.digest) throw refused();
     }
+    const { proof } = saved.manifest;
+    if (
+      proof.disposition === "abandoned-before-forward" &&
+      hash((yield* state.getOutput({ stack: scope.name, stage: scope.stage })) ?? null) !==
+        proof.stackOutputDigest
+    )
+      throw refused();
     return saved.manifest;
   });

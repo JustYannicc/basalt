@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "6e84fbb3cd8c6a878089596c26816808dd91214af49761a3000cb4c3332feebd" }
+    metadata { bindings "919eb5f70465ede7bc7ff47d290e48c36656879f727d7ed5c01ed5baebc87ade" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -58,6 +58,11 @@ deployment {
       }
     }
     zone group-174079402e0ed306 "Model gateway" {
+      storage resource-1b2e51b245a4b8292afba75d0313d225d371d69fa0dcdebad2820f7e68990723 "Pool Observation Secrets" {
+        app = instanceOf basalt.modelGateway {
+          metadata { resource "resource-1b2e51b245a4b8292afba75d0313d225d371d69fa0dcdebad2820f7e68990723" }
+        }
+      }
       worker resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b "Pool Worker" {
         app = instanceOf basalt.modelGateway {
           metadata { resource "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }
@@ -76,6 +81,11 @@ deployment {
           app = instanceOf basalt.poolRuntime {
             metadata { resource "resource-fa7235e17973da715bc94c7c4eca80038ddf36f3ab914eda710f6cd435871814" }
           }
+        }
+      }
+      storage resource-52af30bf7d07139ed70671e49647c0e511ffba63e231ec5a50ccdb34c9ba8ff8 "Pool Provider Observation Token" {
+        app = instanceOf basalt.modelGateway {
+          metadata { resource "resource-52af30bf7d07139ed70671e49647c0e511ffba63e231ec5a50ccdb34c9ba8ff8" }
         }
       }
     }

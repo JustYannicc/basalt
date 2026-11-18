@@ -1,0 +1,72 @@
+{
+  "description": "Cutover step P2: declare the two fleet classes and create their applications, re-uploading the live PoolWorker code byte for byte. The one step that cannot be undone.",
+  "check": {
+    "mode": "cutover-classes",
+    "protected": {
+      "fqns": [
+        "PoolContainer",
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+        "PoolRuntime",
+        "VaultAttachments",
+        "PublicSiteWaitlist",
+        "PoolObservationSecrets",
+        "PoolProviderObservationToken",
+        "ArtifactsCredentials"
+      ],
+      "types": [
+        "Cloudflare.Hyperdrive",
+        "Planetscale.*",
+        "Cloudflare.R2.Bucket",
+        "Cloudflare.D1Database",
+        "Cloudflare.SecretsStore"
+      ]
+    },
+    "removals": [],
+    "poolContainer": {
+      "fqn": "PoolContainer",
+      "image": ""
+    },
+    "poolWorker": "PoolWorker",
+    "artifactsCredentials": "ArtifactsCredentials",
+    "allow": [
+      {
+        "fqn": "PoolWorker",
+        "action": "update"
+      },
+      {
+        "fqn": "PoolContainer",
+        "action": "update"
+      },
+      {
+        "fqn": "PoolRuntimeBlue",
+        "action": "create"
+      },
+      {
+        "fqn": "PoolRuntimeGreen",
+        "action": "create"
+      },
+      {
+        "fqn": "PoolDatabase",
+        "action": "update"
+      }
+    ]
+  },
+  "include": [
+    "PoolWorker"
+  ],
+  "wire": {
+    "sqliteClasses": {
+      "PoolWorker": [
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen"
+      ]
+    },
+    "expectLiveModule": [
+      "PoolWorker"
+    ]
+  },
+  "env": {
+    "POOL_FLEET_BUILD": "true"
+  }
+}

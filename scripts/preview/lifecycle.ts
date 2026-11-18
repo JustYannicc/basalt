@@ -186,8 +186,7 @@ async function runAlchemy(
   identity: PreviewIdentity,
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
-  // The release entry never lets a deploy or destroy redeploy the shared State store; the CLI's
-  // --yes can (StateStore/State.ts bootstrap). Without the entry this fails instead of falling back.
+  // The release entry never lets a deploy or destroy redeploy the shared State store; the CLI's --yes can.
   await runChild(
     "bun",
     [
