@@ -342,3 +342,100 @@ test("a disposable stage may create any new SQLite class but still never delete 
   );
   assert.equal(refusalOf(deleted.exit).field, "migrations.deleted_classes");
 });
+
+// Alchemy's own store-token read in CI (StateStore/State.ts readSecretViaEdge via
+// Cloudflare/EdgeSession.ts uploadScript), sent through the real Cloudflare client: parts
+// wrangler-session-config, metadata and the probe module, exactly as the stage observed.
+const storeTokenRead = (
+  overrides: { bindings?: unknown[]; extra?: Record<string, unknown> } = {},
+) =>
+  Workers.createScriptEdgePreview({
+    accountId: ACCOUNT,
+    scriptName: "alchemy-state-store",
+    cfPreviewUploadConfigToken: "synthetic-upload-token",
+    wranglerSessionConfig: { workersDev: true, minimalMode: true },
+    metadata: {
+      compatibilityDate: "2025-01-01",
+      bindings: (overrides.bindings ?? [
+        {
+          type: "secrets_store_secret",
+          name: "SECRET",
+          secretName: "AlchemyStateStoreToken",
+          storeId: "synthetic-store",
+        },
+      ]) as never,
+      mainModule: "worker.js",
+      ...overrides.extra,
+    } as never,
+    files: [
+      new File(["export default { fetch() { return new Response('') } }"], "worker.js", {
+        type: "application/javascript+module",
+      }),
+    ],
+  });
+
+test("Alchemy's edge-preview read of the State store token is the one store write let through", async (t) => {
+  const run = await guarded(t, {}, () => storeTokenRead());
+  assert.equal(
+    run.received.filter((entry) =>
+      entry.path.endsWith("/workers/scripts/alchemy-state-store/edge-preview"),
+    ).length,
+    1,
+    `received ${JSON.stringify(run.received)}`,
+  );
+});
+
+test("any other shape of edge-preview upload to the State store is refused", async (t) => {
+  for (const [label, overrides] of [
+    [
+      "a second binding",
+      {
+        bindings: [
+          {
+            type: "secrets_store_secret",
+            name: "SECRET",
+            secretName: "AlchemyStateStoreToken",
+            storeId: "s",
+          },
+          { type: "plain_text", name: "X", text: "y" },
+        ],
+      },
+    ],
+    [
+      "a different secret",
+      {
+        bindings: [
+          {
+            type: "secrets_store_secret",
+            name: "SECRET",
+            secretName: "SomethingElse",
+            storeId: "s",
+          },
+        ],
+      },
+    ],
+    ["a migration", { extra: { migrations: { deletedClasses: ["StateStore"] } } }],
+  ] as const) {
+    const run = await guarded(t, {}, () => storeTokenRead(overrides as never));
+    assert.equal(refusalOf(run.exit).resource, "State store edge-preview", label);
+    assert.deepEqual(run.received, [], label);
+  }
+});
+
+test("every other write to the State store script is still refused", async (t) => {
+  for (const [method, suffix] of [
+    ["PUT", ""],
+    ["PATCH", "/settings"],
+    ["POST", "/versions"],
+    ["POST", "/deployments"],
+    ["PUT", "/content"],
+    ["DELETE", ""],
+  ] as const) {
+    const path = `/accounts/${ACCOUNT}/workers/scripts/alchemy-state-store${suffix}`;
+    const raw = await guarded(t, {}, (base) =>
+      HttpClient.execute(HttpClientRequest.make(method)(`${base}${path}`)),
+    );
+    assert.ok(Exit.isFailure(raw.exit), `${method} ${path}`);
+    assert.deepEqual(raw.received, [], `${method} ${path}`);
+  }
+});
