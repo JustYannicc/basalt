@@ -58,6 +58,11 @@ export interface WireGuardConfig {
    * derives from bindings, which the plan does not show. A rollout restarts the root's master Home.
    */
   readonly rootApplications?: ReadonlyArray<string>;
+  /**
+   * Destroy of a disposable stage only: the names and ids its destroy plan records for the
+   * resources it deletes. A delete of exactly one of them is admitted; every other stays refused.
+   */
+  readonly deletable?: ReadonlyArray<string>;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -385,6 +390,10 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
+    for (const [pattern] of [[APPLICATION], ...PROTECTED] as const) {
+      const id = name(pattern);
+      if (id !== undefined && config.deletable?.includes(id)) return;
+    }
     if (application !== undefined && !created.has(application))
       return yield* checkUnattached(inner, request, at("container application", application));
     for (const [pattern, kind] of PROTECTED) {
