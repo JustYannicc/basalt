@@ -613,6 +613,7 @@ test("the class step against production's real response shapes, end to end", asy
   assert.deepEqual(report.putMigrations, {
     new_sqlite_classes: ["PoolRuntimeBlue", "PoolRuntimeGreen"],
   });
+  assert.equal(report.cloneMismatch, undefined, "clone read-back must match on production shapes");
   assert.equal(report.expansionMismatch, undefined, "expansion read-back must match");
   assert.equal(report.expansionContentMatches, true);
   assert.equal(report.storedModuleBytes, 0, "no module bytes reach State");
