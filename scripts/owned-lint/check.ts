@@ -5,16 +5,15 @@ import { fileURLToPath } from "node:url";
 
 import {
   NATIVE_ALLOWLIST,
-  allowlistAdditions,
+  basePolicy,
   compare,
   configProblems,
-  count,
   directiveProblems,
-  nativeCounts,
-  ratchet,
+  recordable,
   severity,
   total,
   type Allowlist,
+  type BaseState,
   type Config,
   type Counts,
   type Diagnostic,
@@ -31,8 +30,8 @@ const oxlint = join(here, "node_modules/oxlint/bin/oxlint");
 // Alchemy and is not gated; everything else in scripts/ and src/ is, including new files.
 const SCOPE = /^(?:scripts|src)\/.+\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const OUTSIDE = /^scripts\/release-barrier\/|(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
-// Changing these may change what the rules find, so the per-rule ratchet steps aside and the
-// rule cases in rules.test.ts are what guard the change.
+// Changing these may change what the rules find, so a rise against the base is listed for
+// review instead of failing; the rule cases in rules.test.ts guard the change.
 const LINT_INPUTS = [
   "scripts/owned-lint/plugin",
   "scripts/owned-lint/package.json",
@@ -122,15 +121,17 @@ function writeBaseline(files: readonly string[]) {
   } finally {
     rmSync(scratch, { force: true });
   }
-  const allowlist = readJson<Allowlist>(allowlistPath, {});
-  const kept = diagnostics.filter(({ rule, file }) => !allowlist[rule]?.[file]);
-  const native = count(kept.filter(({ rule }) => NATIVE_ALLOWLIST.has(rule)));
+  const { native, baseline, unparsed } = recordable(
+    diagnostics,
+    readJson<Allowlist>(allowlistPath, {}),
+  );
+  if (unparsed.length)
+    throw new Error(
+      `oxlint could not parse:\n${unparsed.map((diagnostic) => `  ${diagnostic.file}:${diagnostic.line} ${diagnostic.message}`).join("\n")}`,
+    );
   for (const rule of NATIVE_ALLOWLIST)
     if (severity(config.rules[rule]) === "error")
       config.rules[rule] = native[rule] ? ["error", { allow: native[rule] }] : "error";
-  const baseline = count(
-    kept.filter(({ rule }) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlint/parse"),
-  );
   writeJson(configPath, config);
   writeJson(baselinePath, baseline);
   const sum = (counts: Counts) =>
@@ -168,7 +169,7 @@ function baseState(base: string) {
     allowlist: (show(allowlistPath) ?? {}) as Allowlist,
     existed: (file: string) => tracked.has(file),
     lintChanged,
-  };
+  } satisfies BaseState;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -191,25 +192,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   ];
   const notices: string[] = [];
   if (process.env.BASE_SHA) {
-    const base = baseState(process.env.BASE_SHA);
-    if (base.config) problems.push(...configProblems(config, base.config));
-    if (base.lintChanged)
-      notices.push(
-        "The rules or their pins changed against the base, so the baseline ratchet is skipped; rules.test.ts guards the rules.",
-      );
-    else if (base.baseline && base.config) {
-      const rules = new Set(Object.keys(base.config.rules));
-      problems.push(...ratchet(baseline, base.baseline, base.existed, rules));
-      problems.push(
-        ...ratchet(nativeCounts(config), nativeCounts(base.config), base.existed, rules),
-      );
-    }
-    notices.push(
-      ...allowlistAdditions(allowlist, base.allowlist).map(
-        (line) => `Allowlist addition, review its reason: ${line}`,
-      ),
-    );
-  }
+    const policy = basePolicy({ config, baseline, allowlist }, baseState(process.env.BASE_SHA));
+    problems.push(...policy.problems);
+    notices.push(...policy.notices);
+  } else problems.push(...configProblems(config, undefined));
   console.log(
     `Owned lint: ${files.length} files, ${diagnostics.length} findings (baselined or allowlisted unless listed below), ${Date.now() - started} ms.`,
   );

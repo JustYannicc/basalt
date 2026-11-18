@@ -27,18 +27,20 @@ Existing findings are recorded with an exact count per rule and file, so only ne
   commit's. A renamed file may carry its findings; the rule's total may not rise. A rule
   enforced at the base may not be switched off.
 - `allowlist.json` records a reasoned exception for `no-direct-cloudflare-api` and
-  `no-strict-provider-decode`, with an exact count per file. You write these entries by
-  hand; `--write-baseline` leaves them alone. With `BASE_SHA`, the check lists new or raised
+  `no-strict-provider-decode` as `{ "count": <findings>, "reason": "<why>" }` per file. You
+  write these entries by hand; `--write-baseline` leaves them alone. With `BASE_SHA`, the check lists new or raised
   entries for review.
 
 To add or tighten a rule, change `plugin/` with a case in `rules.test.ts` and run
-`--write-baseline`. While the rules or their pins differ from the base, the per-rule ratchet
-steps aside and `rules.test.ts` guards the change.
+`--write-baseline`. While the rules or their pins differ from the base, a count that rises is
+listed for review instead of failing, and `rules.test.ts` guards the change. The
+configuration takes no `overrides`.
 
 ## Basalt rules
 
-`plugin/`, one module per concern. Each rule stops a shortcut that broke a production
-release, and `rules.test.ts` holds the shipped lines it catches. They are syntactic: Oxlint
+`plugin/`, one module per concern. All but `no-direct-cloudflare-api` and the two
+`node:test` rules stop a shortcut that broke a production release, and `rules.test.ts`
+holds the shipped lines they catch. They are syntactic: Oxlint
 gives JS plugins no type information.
 
 | Rule | Stops |

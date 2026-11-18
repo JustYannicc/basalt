@@ -1,9 +1,10 @@
-// Basalt's own Oxlint rules. Each one stops a shortcut that shipped a production failure:
-// a value read from a provider echoed into a request, a strict decode of a provider response,
-// an exact compare of a write with its read-back, and test stand-ins that agree with the code
-// because they echo it or were written by hand. Syntactic only: Oxlint gives no type info.
+// Basalt's own Oxlint rules. Most stop a shortcut that shipped a production failure: a value
+// read from a provider echoed into a request, a strict decode of a provider response, an exact
+// compare of a write with its read-back, a child's error output thrown away, and test
+// stand-ins that agree with the code because they echo it or were written by hand.
+// Syntactic only: Oxlint gives no type information.
+import { noDirectCloudflareApi } from "./cloudflare.mjs";
 import {
-  noDirectCloudflareApi,
   noExactReadbackCompare,
   noSpreadIntoProviderRequest,
   noStrictProviderDecode,

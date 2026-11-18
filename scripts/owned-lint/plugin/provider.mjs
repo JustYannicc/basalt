@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   PROVIDER_SDK,
-  SPAWNERS,
   addAliases,
   filePath,
   importAliases,
@@ -20,15 +19,9 @@ import {
   variableInit,
 } from "./ast.mjs";
 
-const CLOUDFLARE_SDK = /^(?:@distilled\.cloud\/cloudflare|cloudflare)(?:\/|$)/u;
-const CLOUDFLARE_API = /https?:\/\/api\.cloudflare\.com|\/client\/v4(?:\/|$)/u;
-const WRANGLER = /(?:^|[\s/])wrangler(?:[\s@]|$)/u;
 // Files that talk to a provider: an SDK, Alchemy, or HTTP. The read-back rule applies only there.
 const PROVIDER_FACING =
   /from\s+["'](?:@distilled\.cloud\/|alchemy(?:\/|["'])|@octokit\/|cloudflare(?:\/|["']))|\b(?:fetch|fetcher)\s*\(|\bprovider\??\.\w+\s*\(|HttpClient\b|https?:\/\/api\./u;
-// scripts/process.ts run(command, args) and its siblings start processes too.
-const COMMAND_RUNNERS = new Set([...SPAWNERS, "run", "runCommand", "capture"]);
-const RUNNERS = new Set(["npx", "bunx", "pnpx", "pnpm", "yarn", "bun", "npm"]);
 const SERIALIZER = /^(?:canonical|stable)\w*$|Stringify$|^stringify$/u;
 const DIGEST = /^(?:digest|hash|sha\d*|fingerprint)\w*$/iu;
 const DEEP_EQUAL = new Set([
@@ -287,62 +280,6 @@ export const noExactReadbackCompare = {
             node,
             message: `An equivalence helper is only as good as the read-back it was proven on. Add ${basename(test)} next to it, importing a recorded-shapes module (a *-shapes.ts file built from a real, redacted provider response).`,
           });
-      },
-    };
-  },
-};
-
-export const noDirectCloudflareApi = {
-  meta: { type: "problem", docs: { description: "Basalt reaches Cloudflare through Alchemy." } },
-  create(context) {
-    if (isTest(context)) return {};
-    const sdk = importedNames(context, CLOUDFLARE_SDK);
-    const message =
-      "Direct Cloudflare control-plane call. Use the Alchemy resource or command for it (a resource in alchemy.run.ts, `alchemy plan`, `alchemy deploy`, `alchemy drift`). If Alchemy has none, add this file to scripts/owned-lint/allowlist.json under basalt/no-direct-cloudflare-api with a one-line reason.";
-    const literal = (node) => typeof node?.value === "string" && CLOUDFLARE_API.test(node.value);
-    const wrangler = (node) => {
-      const [command, args] = node.arguments;
-      if (command?.type !== "Literal" || typeof command.value !== "string") return false;
-      if (WRANGLER.test(command.value)) return true;
-      if (!RUNNERS.has(command.value) || args?.type !== "ArrayExpression") return false;
-      return args.elements
-        .slice(0, 3)
-        .some(
-          (element) =>
-            element?.type === "Literal" && /^wrangler(?:@|$)/u.test(String(element.value)),
-        );
-    };
-    const wranglerModule = (node) => node?.type === "Literal" && node.value === "wrangler";
-    return {
-      VariableDeclarator(node) {
-        addAliases(node, sdk);
-      },
-      CallExpression(node) {
-        // createRequire(import.meta.url)("wrangler") loads Wrangler's API directly.
-        const required = node.callee.type === "CallExpression" && wranglerModule(node.arguments[0]);
-        if (
-          sdkCall(node, sdk) ||
-          required ||
-          (COMMAND_RUNNERS.has(propertyName(node.callee)) && wrangler(node))
-        )
-          context.report({ node, message });
-      },
-      NewExpression(node) {
-        if (sdk.has(propertyName(node.callee)) || sdk.has(memberRoot(node.callee)))
-          context.report({ node, message });
-      },
-      ImportDeclaration(node) {
-        if (wranglerModule(node.source)) context.report({ node, message });
-      },
-      ImportExpression(node) {
-        if (wranglerModule(node.source)) context.report({ node, message });
-      },
-      Literal(node) {
-        if (literal(node) && node.parent.type !== "ImportDeclaration")
-          context.report({ node, message });
-      },
-      TemplateElement(node) {
-        if (CLOUDFLARE_API.test(node.value.raw)) context.report({ node, message });
       },
     };
   },

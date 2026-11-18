@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   allowlistAdditions,
+  basePolicy,
   compare,
   configProblems,
   count,
@@ -158,4 +159,51 @@ test("counts are grouped by rule and file, in a stable order", () => {
     ),
     JSON.stringify({ "a/r": { "y.ts": 1 }, "b/r": { "a.ts": 1, "z.ts": 2 } }),
   );
+});
+
+test("an allowlist entry without a count and a reason exempts nothing", () => {
+  for (const entry of [{ count: 0, reason: "Own data." }, { count: 1, reason: " " }, "Own data."]) {
+    const allowlist = { [strict]: { "src/a.ts": entry } } as never;
+    const problems = compare([finding(strict, "src/a.ts")], {}, allowlist);
+    assert.ok(
+      problems.some((problem) => /needs \{ "count"/u.test(problem)),
+      JSON.stringify(entry),
+    );
+    assert.ok(
+      problems.some((problem) => /found 1, baseline allows 0/u.test(problem)),
+      JSON.stringify(entry),
+    );
+  }
+});
+
+test("the configuration takes no per-file overrides", () => {
+  assert.match(configProblems({ rules: {}, overrides: [] }, undefined)[0]!, /takes no overrides/u);
+});
+
+const state = {
+  config: { rules: { [spread]: "error" } },
+  baseline: { [spread]: { "src/a.ts": 2 } },
+  allowlist: {},
+};
+const base = {
+  config: { rules: { [spread]: "error", "basalt/later": "off" } },
+  baseline: { [spread]: { "src/a.ts": 1 } },
+  allowlist: {},
+  existed: () => true,
+  lintChanged: false,
+};
+
+test("against the base, a rise fails, or is listed for review while the rules change", () => {
+  assert.equal(basePolicy(state, base).problems.length, 2);
+  const changing = basePolicy(state, { ...base, lintChanged: true });
+  assert.deepEqual(changing.problems, []);
+  assert.equal(
+    changing.notices.filter((line) => line.startsWith("Rules or pins changed")).length,
+    2,
+  );
+});
+
+test("a rule that was off at the base can be enabled with its own baseline", () => {
+  const enabled = { ...state, baseline: { ...base.baseline, "basalt/later": { "src/b.ts": 3 } } };
+  assert.deepEqual(basePolicy(enabled, base).problems, []);
 });

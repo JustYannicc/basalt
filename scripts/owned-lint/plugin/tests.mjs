@@ -17,7 +17,6 @@ const NODE_TEST = /^(?:node:)?test$/u;
 const NODE_TEST_REPLACERS = new Set(["method", "module", "property", "getter", "setter"]);
 const TEST_CALLS = new Set(["test", "it", "describe", "suite"]);
 const HOOK_CALLS = new Set(["before", "after", "beforeEach", "afterEach"]);
-const RUNNERS = new Set([...SPAWNERS, "spawn", "$"]);
 
 // The options object, read through a local constant, a cast or spreads of other constants.
 const optionProperties = (context, node, depth = 0) => {
@@ -43,8 +42,8 @@ export const noDiscardedChildOutput = {
     return {
       CallExpression(node) {
         const name = propertyName(node.callee);
-        // Bun.spawn(...) and Bun.spawnSync(...) name it stderr.
-        if (!RUNNERS.has(name)) return;
+        // Node's child_process functions; Bun.spawn and Bun.spawnSync name the option stderr.
+        if (!SPAWNERS.has(name)) return;
         const [command, args] = node.arguments;
         const list = resolved(context, args);
         const subcommand =

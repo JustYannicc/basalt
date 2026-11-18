@@ -16,7 +16,7 @@ const DIRECTIVE = /(?:\/\/|\/\*)\s*(?:oxlint|eslint)-disable(?:-next-line|-line)
 
 export type Counts = Record<string, Record<string, number>>;
 export type Allowlist = Record<string, Record<string, { count: number; reason: string }>>;
-export type Config = { rules: Record<string, unknown> };
+export type Config = { rules: Record<string, unknown>; overrides?: unknown };
 export type Diagnostic = { rule: string; file: string; line: number; message: string };
 
 const sorted = (counts: Counts) =>
@@ -30,8 +30,31 @@ const sorted = (counts: Counts) =>
   ) satisfies Counts;
 export const total = (counts: Record<string, number> = {}) =>
   Object.values(counts).reduce((sum, value) => sum + value, 0);
-export const severity = (setting: unknown) =>
+export const severity = (setting: unknown): unknown =>
   Array.isArray(setting) ? setting[0] : (setting ?? "off");
+// An entry exempts findings only with an exact count and a reason someone can review.
+const validEntry = (entry: unknown) => {
+  const { count, reason } = (entry ?? {}) as { count?: unknown; reason?: unknown };
+  return (
+    Number.isInteger(count) &&
+    Number(count) > 0 &&
+    typeof reason === "string" &&
+    reason.trim() !== ""
+  );
+};
+const exempt = (allowlist: Allowlist, rule: string, file: string) =>
+  validEntry(allowlist[rule]?.[file]);
+const counted = (rule: string) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlint/parse";
+
+/** What --write-baseline records: landmines' own counts and the baseline, apart from allowlisted files. */
+export function recordable(diagnostics: readonly Diagnostic[], allowlist: Allowlist) {
+  const kept = diagnostics.filter(({ rule, file }) => !exempt(allowlist, rule, file));
+  return {
+    native: count(kept.filter(({ rule }) => NATIVE_ALLOWLIST.has(rule))),
+    baseline: count(kept.filter(({ rule }) => counted(rule))),
+    unparsed: kept.filter(({ rule }) => rule === "oxlint/parse"),
+  };
+}
 
 /** A disable comment would hide a finding from the baseline, so the owned rules take none. */
 export function directiveProblems(file: string, text: string) {
@@ -73,13 +96,20 @@ export function compare(
   allowlist: Allowlist,
 ) {
   const problems: string[] = [];
-  const allowed = count(diagnostics.filter(({ rule, file }) => allowlist[rule]?.[file]));
+  const allowed = count(diagnostics.filter(({ rule, file }) => exempt(allowlist, rule, file)));
   for (const [rule, files] of Object.entries(allowlist)) {
     if (!ALLOWLIST_RULES.has(rule))
       problems.push(
         `allowlist.json: ${rule} takes no allowlist entries; fix or baseline its findings.`,
       );
-    for (const [file, { count: recorded, reason }] of Object.entries(files)) {
+    for (const [file, entry] of Object.entries(files)) {
+      if (!validEntry(entry)) {
+        problems.push(
+          `allowlist.json: ${file} under ${rule} needs { "count": <findings>, "reason": "<why this is correct here>" }.`,
+        );
+        continue;
+      }
+      const { count: recorded, reason } = entry;
       const found = allowed[rule]?.[file] ?? 0;
       if (found > recorded)
         problems.push(
@@ -93,16 +123,14 @@ export function compare(
         );
     }
   }
-  const kept = diagnostics.filter(({ rule, file }) => !allowlist[rule]?.[file]);
+  const kept = diagnostics.filter(({ rule, file }) => !exempt(allowlist, rule, file));
   for (const diagnostic of kept.filter(
     ({ rule }) => NATIVE_ALLOWLIST.has(rule) || rule === "oxlint/parse",
   ))
     problems.push(
       `${diagnostic.file}:${diagnostic.line} ${diagnostic.rule}: ${diagnostic.message}${/stale|lower its/u.test(diagnostic.message) ? ` (${regenerate})` : ""}`,
     );
-  const actual = count(
-    kept.filter(({ rule }) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlint/parse"),
-  );
+  const actual = count(kept.filter(({ rule }) => counted(rule)));
   for (const rule of [...new Set([...Object.keys(actual), ...Object.keys(baseline)])].sort())
     for (const file of [
       ...new Set([...Object.keys(actual[rule] ?? {}), ...Object.keys(baseline[rule] ?? {})]),
@@ -148,9 +176,15 @@ export function ratchet(
   return problems;
 }
 
-/** A rule the base enforced may not be switched off or removed. */
-export function configProblems(current: Config, base: Config) {
-  return Object.entries(base.rules)
+/** A rule the base enforced may not be switched off, removed, or turned off per file. */
+export function configProblems(current: Config, base: Config | undefined) {
+  const overrides =
+    current.overrides === undefined
+      ? []
+      : [
+          ".oxlintrc.json: owned rules apply to every file in scope, so the configuration takes no overrides.",
+        ];
+  const switchedOff = Object.entries(base?.rules ?? {})
     .filter(
       ([rule, setting]) =>
         severity(setting) === "error" && severity(current.rules[rule]) !== "error",
@@ -159,13 +193,16 @@ export function configProblems(current: Config, base: Config) {
       ([rule]) =>
         `.oxlintrc.json: ${rule} was enforced at the base commit and is not now. Owned rules are not switched off.`,
     );
+  return [...overrides, ...switchedOff];
 }
 
 /** New or raised allowlist entries are allowed with a reason; the summary lists them for review. */
 export function allowlistAdditions(current: Allowlist, base: Allowlist) {
   return Object.entries(current).flatMap(([rule, files]) =>
     Object.entries(files)
-      .filter(([file, entry]) => entry.count > (base[rule]?.[file]?.count ?? 0))
+      .filter(
+        ([file, entry]) => validEntry(entry) && entry.count > (base[rule]?.[file]?.count ?? 0),
+      )
       .map(
         ([file, entry]) =>
           `${file}: ${rule} allowlisted ${base[rule]?.[file]?.count ?? 0} -> ${entry.count}: ${entry.reason}`,
@@ -183,3 +220,41 @@ export const nativeCounts = (config: Config) =>
       return [rule, options?.allow ?? {}];
     }),
   ) satisfies Counts;
+
+export type BaseState = {
+  baseline?: Counts;
+  config?: Config;
+  allowlist: Allowlist;
+  existed: (file: string) => boolean;
+  lintChanged: boolean;
+};
+
+/**
+ * Against the base commit: committed counts only shrink and allowlist additions are listed.
+ * While the rules or their pins change, a rise is listed for review instead of failing, since
+ * a stricter rule finds more; rules.test.ts guards that change.
+ */
+export function basePolicy(
+  current: { config: Config; baseline: Counts; allowlist: Allowlist },
+  base: BaseState,
+) {
+  const problems = configProblems(current.config, base.config);
+  const notices = allowlistAdditions(current.allowlist, base.allowlist).map(
+    (line) => `Allowlist addition, review its reason: ${line}`,
+  );
+  if (base.baseline && base.config) {
+    const enforced = new Set(
+      Object.keys(base.config.rules).filter(
+        (rule) => severity(base.config!.rules[rule]) === "error",
+      ),
+    );
+    const rises = [
+      ...ratchet(current.baseline, base.baseline, base.existed, enforced),
+      ...ratchet(nativeCounts(current.config), nativeCounts(base.config), base.existed, enforced),
+    ];
+    if (base.lintChanged)
+      notices.push(...rises.map((line) => `Rules or pins changed, review this rise: ${line}`));
+    else problems.push(...rises);
+  }
+  return { problems, notices };
+}
