@@ -36,11 +36,12 @@ const push = (branch: string) => ({
   event: {},
 });
 
-// GitHub compares strings case-insensitively, reads missing properties as null and has no string
-// escapes; exact-case, populated fixtures keep JavaScript's reading of this subset identical. Other
-// syntax, such as a number, `<`, `===`, `?:`, a backslash, `typeof` or a method call, fails here.
+// GitHub compares strings case-insensitively, reads missing properties as null and has no
+// backslash escapes; exact-case, populated fixtures keep JavaScript's reading of this subset
+// identical. Numbers, null, `<`, `===`, `?:`, backslashes, keyword operators and calls other than
+// startsWith and contains fail here instead of being evaluated differently.
 const supported =
-  /^(?:\s|'[^'\\]*'|(?:startsWith|contains)\(|(?!(?:delete|in|instanceof|new|typeof|void)\b)[A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\*))*(?![\w.(])|[!=]=|!(?!=)|&&|\|\||[(),])*$/;
+  /^(?:\s|'[^'\\]*'|(?:startsWith|contains)\(|(?!(?:delete|in|instanceof|new|null|this|typeof|void)\b)[A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\*))*(?!\s*[\w.(])|[!=]=|!(?!=)|&&|\|\||[(,]|\)(?!\s*\())*$/;
 const evaluate = (expression: string, context: Record<string, unknown>): unknown => {
   const source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "");
   assert.match(source, supported);
