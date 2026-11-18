@@ -98,3 +98,12 @@ test("every production attempt from the backup on leaves a GitHub Deployment wit
   assert.match(workflow, /run-name: ".*override_reason.*Release \(override: \{0\}\)/u);
   assert.match(step("Stop the line and require a rehearsal"), /OVERRIDE_REASON/u);
 });
+
+test("every run, plan-only included, passes the read-only preflight before planning", () => {
+  const preflight = step("Preflight against State");
+  assert.match(preflight, /deploy\.ts preflight --stage production/u);
+  assert.doesNotMatch(preflight, /\bif:/u);
+  const [first, plan] = order("Preflight against State", "Plan and check");
+  assert.ok(first! < plan!);
+  assert.match(step("Keep the retired layer's records, sealed"), /always\(\)/u);
+});
