@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { InMemoryService } from "alchemy/State/InMemoryState";
 import { State } from "alchemy/State/State";
-import { Effect, Redacted } from "effect";
+import { Effect } from "effect";
 import { containerPublication } from "./test/container-fixture.ts";
+import { nativeReleaseRows } from "./test/native-release-rows.ts";
 import { provisioningFixture } from "./test/provisioning-fixtures.ts";
 import { runtimeReleaseState, runtimeApplicationPins } from "./runtime-release-state.ts";
 import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-release-journal.ts";
@@ -28,47 +28,7 @@ const writer = (sha = candidate) =>
   });
 
 async function fixture() {
-  const state = await Effect.runPromise(InMemoryService());
-  const put = (
-    fqn: string,
-    resourceType: string,
-    props: Record<string, unknown>,
-    attr: Record<string, unknown>,
-  ) =>
-    Effect.runPromise(
-      state.set({
-        stack: scope.name,
-        stage: scope.stage,
-        fqn,
-        value: {
-          resourceType,
-          fqn,
-          logicalId: fqn,
-          namespace: undefined,
-          instanceId: "2".repeat(32),
-          providerVersion: 0,
-          status: "created",
-          downstream: [],
-          bindings: [],
-          props,
-          attr,
-        },
-      }),
-    );
-  await put(
-    "PoolWorker",
-    "Cloudflare.Worker",
-    {
-      env: {
-        POOL_DATABASE_URL: Redacted.make("postgresql://synthetic-secret@database.invalid/pool"),
-        POOL_MANAGEMENT_KEY: Redacted.make("synthetic-management-secret"),
-        POOL_APP_SIGNING_KEY: Redacted.make(key),
-        POOL_DEPLOYMENT_KEY: Redacted.make(key),
-        POOL_IMAGE_HASH: "3".repeat(16),
-      },
-    },
-    { accountId, workerName: "synthetic-worker" },
-  );
+  const { state, put } = await nativeReleaseRows(scope, accountId, key);
   for (const [index, resource] of [
     "PoolContainer",
     "PoolRuntime",
