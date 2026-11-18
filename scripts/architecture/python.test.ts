@@ -312,3 +312,78 @@ test("HTTP connections require a proven loopback host and reject tunnels", () =>
       0,
     );
 });
+
+test("a TCP dial to the host parsed from a declared address variable maps to that service only", () => {
+  const database: OutsideService = {
+    id: "database",
+    hosts: [],
+    sdks: [],
+    addressEnvs: ["POOL_DATABASE_URL"],
+  };
+  const dial = (host: string, extra = "") =>
+    scan(
+      `import os\nimport socket\nimport urllib.parse\n${extra}def probe():\n    return socket.create_connection((${host}, 6432), timeout=1)\n`,
+      [database],
+    );
+  const declared = 'urllib.parse.urlsplit(os.environ["POOL_DATABASE_URL"]).hostname';
+
+  const allowed = dial(declared);
+  expect(allowed.errors).toEqual([]);
+  expect(allowed.dependencies).toEqual([
+    expect.objectContaining({ source: "app", target: "database" }),
+  ]);
+  expect(dial("HOST", `HOST = ${declared}\n`).errors).toEqual([]);
+  expect(dial('urllib.parse.urlparse(os.getenv("POOL_DATABASE_URL")).hostname').errors).toEqual([]);
+
+  const refused = (result: ReturnType<typeof scan>, message: string) => {
+    expect(result.dependencies).toEqual([]);
+    expect(result.errors.join("\n")).toContain(message);
+  };
+  // Another variable, even one holding a database URL, is not declared.
+  refused(
+    dial('urllib.parse.urlsplit(os.environ["OTHER_DATABASE_URL"]).hostname'),
+    "undeclared environment variable: OTHER_DATABASE_URL",
+  );
+  // The declaration names one host; it cannot be composed into, defaulted to or swapped for another.
+  refused(dial(`${declared} + ".second.invalid"`), "dynamic or unsupported host");
+  refused(
+    dial(`f"{urllib.parse.urlsplit(os.environ['POOL_DATABASE_URL']).hostname}.second.invalid"`),
+    "dynamic or unsupported host",
+  );
+  refused(
+    dial(
+      'urllib.parse.urlsplit(os.environ.get("POOL_DATABASE_URL", "postgresql://second.invalid/x")).hostname',
+    ),
+    "dynamic or unsupported host",
+  );
+  expect(dial(`${declared} if os.environ else "second.invalid"`).errors.join("\n")).toContain(
+    "Unmodelled outside host: second.invalid",
+  );
+  // The raw variable is a URL, not a host, and the declaration grants no other kind of connection.
+  refused(dial('os.environ["POOL_DATABASE_URL"]'), "dynamic or unsupported host");
+  refused(
+    scan(
+      `import os\nimport urllib.request\nurllib.request.urlopen(os.environ["POOL_DATABASE_URL"])\n`,
+      [database],
+    ),
+    "dynamic or unsupported host",
+  );
+  refused(
+    scan(
+      `import os\nimport socket\nimport urllib.parse\nsocket.create_server((${declared}, 0))\n`,
+      [database],
+    ),
+    "Python TCP listeners require a proven loopback host",
+  );
+  // One variable is the address of one service.
+  refused(
+    pythonDependencies(
+      fixture({
+        "src/app.py": `import os\nimport socket\nimport urllib.parse\nsocket.create_connection((${declared}, 6432))\n`,
+      }),
+      [module("app", "src/app.py")],
+      [database, { ...database, id: "copy" }],
+    ),
+    "Several services declare the address POOL_DATABASE_URL",
+  );
+});

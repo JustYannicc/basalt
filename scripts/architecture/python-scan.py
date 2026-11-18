@@ -11,6 +11,12 @@ import sys
 import sysconfig
 
 UNKNOWN = "<dynamic>"
+# A value read from one named environment variable, and a host parsed from such a URL. Only a
+# bare host parsed from a variable that one modelled service declares as its address may be dialled.
+ENV = "<env>:"
+ADDRESS = "<address>:"
+URL_PARSERS = {"urllib.parse.urlsplit", "urllib.parse.urlparse"}
+ENV_READERS = {"os.environ.get", "os.getenv"}
 NETWORK = "urllib.request."
 SINKS = {NETWORK + "urlopen", NETWORK + "urlretrieve"}
 REQUEST = NETWORK + "Request"
@@ -130,6 +136,9 @@ def symbol(node, scope, seen=frozenset()):
 def combine(parts):
     if any(len(part) > 32 for part in parts):
         return {UNKNOWN}
+    if any(value.startswith((ENV, ADDRESS)) for part in parts for value in part):
+        # A declared address is usable only as itself; composing it could name another host.
+        return {UNKNOWN}
     result = {""}
     for part in parts:
         result = {a + b for a, b in itertools.product(result, part)}
@@ -165,7 +174,27 @@ def values(node, scope, seen=frozenset()):
         return values(node.body, scope, seen) | values(node.orelse, scope, seen)
     if isinstance(node, ast.Call) and symbol(node.func, scope) == REQUEST:
         return values(argument(node, "url"), scope, seen)
+    if isinstance(node, ast.Subscript) and symbol(node.value, scope) == "os.environ":
+        return environment(node.slice, [], scope, seen)
+    if isinstance(node, ast.Call) and symbol(node.func, scope) in ENV_READERS and node.args:
+        return environment(node.args[0], node.args[1:] + [kw.value for kw in node.keywords], scope, seen)
+    if (isinstance(node, ast.Attribute) and node.attr == "hostname" and isinstance(node.value, ast.Call)
+            and symbol(node.value.func, scope) in URL_PARSERS and node.value.args):
+        parsed = values(node.value.args[0], scope, seen)
+        if parsed and all(value.startswith(ENV) for value in parsed):
+            return {ADDRESS + value[len(ENV):] for value in parsed}
     return {UNKNOWN}
+
+
+def environment(key, defaults, scope, seen):
+    names = values(key, scope, seen)
+    if any(not name.isidentifier() for name in names):
+        return {UNKNOWN}
+    # A default is a second possible value; it never inherits the variable's declaration.
+    result = {ENV + name for name in names}
+    for default in defaults:
+        result |= {UNKNOWN if value.startswith((ENV, ADDRESS)) else value for value in values(default, scope, seen)}
+    return result
 
 
 def argument(node, name):
@@ -227,6 +256,11 @@ for node, scope in calls:
                     report(scope.file, node, "Python TCP listeners require a proven loopback host")
             else:
                 for host in hosts:
+                    if host.startswith(ADDRESS):
+                        urls.append({"file": scope.file, "line": node.lineno, "value": "env://" + host[len(ADDRESS):], "sink": True})
+                        continue
+                    if host.startswith(ENV):
+                        host = UNKNOWN
                     host = "[" + host + "]" if ":" in host else host
                     urls.append({"file": scope.file, "line": node.lineno, "value": "tcp://" + host, "sink": True})
     elif (name == "http.client.HTTPConnection"

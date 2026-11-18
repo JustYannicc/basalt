@@ -74,11 +74,17 @@ test("deployed resources and deployment instances correspond in both directions"
 
 const services = () =>
   [...model.elements()]
-    .filter((e) => e.isTagged("external") || values(e.metadata.endpointHosts).length)
+    .filter(
+      (e) =>
+        e.isTagged("external") ||
+        values(e.metadata.endpointHosts).length ||
+        values(e.metadata.addressEnv).length,
+    )
     .map((element) => ({
       id: element.id,
       hosts: [...values(element.metadata.hosts), ...values(element.metadata.endpointHosts)],
       sdks: values(element.metadata.sdks),
+      addressEnvs: values(element.metadata.addressEnv),
     }));
 
 test("outside hosts, SDKs and service bindings have caller relationships", () => {
