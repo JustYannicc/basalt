@@ -70,6 +70,14 @@ export const readSnapshot = (session: Session, options: { history?: boolean } = 
             schemaVersion: raw === undefined || raw === null ? null : Number(raw),
           });
         }
+        // No Home tables at all means this is not the pool database; never compare two empty lists.
+        if (homes.length === 0)
+          throw refuse(
+            "home-schema-missing",
+            "no Home auth table found",
+            "check the database the snapshot read",
+            {},
+          );
         if (options.history === false) {
           await session.query("COMMIT");
           return Schema.decodeUnknownSync(DatabaseSnapshot)({ homes, historyRows: null });
@@ -195,9 +203,10 @@ export const connect = (url: Redacted.Redacted<string>) =>
         await client.connect();
         return client;
       },
+      // Driver messages can name hosts and roles; only the error code reaches public logs.
       catch: (cause) =>
         refuse("database-connect", "could not connect read-only", "rerun", {
-          cause: String(cause),
+          code: String((cause as { code?: unknown } | undefined)?.code ?? "unknown"),
         }),
     }),
     (client) => Effect.promise(() => client.end().catch(() => {})),
@@ -205,7 +214,12 @@ export const connect = (url: Redacted.Redacted<string>) =>
     Effect.map((client): Session => ({ query: (text, values) => client.query(text, values) })),
   );
 
-const Backup = Schema.Struct({ id: Schema.String, name: Schema.String, state: Schema.String });
+const Backup = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  state: Schema.String,
+  protected: Schema.optional(Schema.Boolean),
+});
 
 /** A PlanetScale backup of the pool's branch, created and waited to completion before anything applies. */
 export const takeBackup = (input: {
@@ -233,7 +247,7 @@ export const takeBackup = (input: {
     const read = (request: HttpClientRequest.HttpClientRequest) =>
       client.execute(auth(request)).pipe(
         Effect.flatMap((response) => response.json),
-        Effect.map((body) => Schema.decodeUnknownSync(Backup)(body)),
+        Effect.flatMap(Schema.decodeUnknownEffect(Backup)),
       );
     const created = yield* read(
       HttpClientRequest.post(base).pipe(
@@ -251,16 +265,17 @@ export const takeBackup = (input: {
       Effect.flatMap((backup) =>
         backup.state === "success"
           ? Effect.succeed(backup)
-          : ["failed", "canceled", "cancelled", "error"].includes(backup.state)
-            ? Effect.die(
+          : // Only the two in-progress states wait; any other state, known or new, refuses.
+            backup.state === "pending" || backup.state === "running"
+            ? Effect.fail("pending" as const)
+            : Effect.die(
                 refuse(
                   "backup-failed",
-                  "PlanetScale reports the backup failed",
+                  "PlanetScale reports the backup did not complete",
                   "do not deploy; investigate the backup",
                   { state: backup.state, id: backup.id },
                 ),
-              )
-            : Effect.fail("pending" as const),
+              ),
       ),
       Effect.retry({
         while: (error) => error === "pending",
@@ -284,6 +299,21 @@ export const takeBackup = (input: {
         "PlanetScale returned a different backup",
         "do not deploy",
         { expected: input.name, got: done.name },
+      );
+    // Protected, as the earlier release backups were, so retention cannot expire it mid-incident.
+    const kept = done.protected
+      ? done
+      : yield* read(
+          HttpClientRequest.patch(`${base}/${encodeURIComponent(done.id)}`).pipe(
+            HttpClientRequest.bodyJsonUnsafe({ protected: true }),
+          ),
+        );
+    if (kept.protected !== true || kept.state !== "success")
+      return yield* refuse(
+        "backup-unprotected",
+        "The backup completed but could not be protected",
+        "do not deploy; protect it by hand",
+        { id: done.id },
       );
     return { id: done.id, name: done.name };
   }).pipe(
