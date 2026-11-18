@@ -22,7 +22,7 @@ interface Dependencies {
   driver: SlotDriver;
   beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
 }
-// A fixed vocabulary only: the receipt is read back into release evidence.
+// A fixed vocabulary only: receipts are readable through the handoff receipt command.
 const refusalReason = (error: unknown): PromotionRefusal =>
   error instanceof SlotRefused
     ? error.reason

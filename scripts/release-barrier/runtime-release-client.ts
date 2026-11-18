@@ -138,7 +138,7 @@ export const runtimeReleaseClient = (input: {
       };
       return mutation ? writer.exclusive(send) : send();
     };
-    const call: RuntimeCommandCall = (action, ...rest) => prepared(action, ...rest);
+    const call: RuntimeCommandCall = prepared;
     const inspect = async () => {
       const value = result(Snapshot, await call({ action: "inspect" }));
       sameProvisioningValue("runtime-release.controller-code", code, value.controllerCode);
@@ -368,17 +368,30 @@ export const runtimeReleaseClient = (input: {
           candidate: identity,
           policyDigest: retained.selection.policyDigest,
         };
+        // The journal write takes the writer queue itself, so it stays outside the queued send.
+        await beforePromotion();
+        let dispatched = false;
         let reply: unknown;
         try {
-          reply = await prepared(async () => {
-            // The provider observation's 30 s window starts here, after the bridge is open.
-            const joined = await run(signRuntimeRelease(attestation, witness));
-            await beforePromotion();
-            return { action: "promote", intent, proof: joined.envelope };
-          }, true);
+          reply = await prepared(
+            async () => {
+              // The provider observation's 30 s window starts here, after the bridge is open.
+              const joined = await run(signRuntimeRelease(attestation, witness));
+              return { action: "promote", intent, proof: joined.envelope };
+            },
+            true,
+            undefined,
+            () => {
+              dispatched = true;
+            },
+          );
         } catch (error) {
-          // A non-200 is the controller's answer, so a fresh attempt may follow. A lost reply stays unknown.
-          if (error instanceof BarrierRefusal && error.reason === "runtime-handoff-response-refused")
+          // Unsent, or answered with a non-200, so a fresh attempt may follow; a lost reply stays unknown.
+          // An answer that raced a receipt is still safe: the gate reads receipts before this flag.
+          if (
+            !dispatched ||
+            (error instanceof BarrierRefusal && error.reason === "runtime-handoff-response-refused")
+          )
             await promotionRefused();
           throw error;
         }

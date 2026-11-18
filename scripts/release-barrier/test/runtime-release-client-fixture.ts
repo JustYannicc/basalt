@@ -47,8 +47,8 @@ export async function runtimeReleaseClientFixture(
     healthReplyMs: number;
     healthReply?: (result: { identity: SlotIdentity; leaseMs: number }) => unknown;
     onConnect?: () => Promise<void>;
+    beforeForward?: (action: string) => Promise<void>;
   } = { setupMs: 0, closeMs: 0, healthReplyMs: 0 };
-  const journal: { onWrite?: (next: ReleasePromotionAttempt) => Promise<void> } = {};
   let closes = 0;
   let promotion: ReleasePromotionAttempt | undefined;
   const attempts: ReleasePromotionAttempt[] = [];
@@ -128,11 +128,12 @@ export async function runtimeReleaseClientFixture(
       writer,
       promotion: {
         read: async () => promotion,
-        write: async (next) => {
-          promotion = structuredClone(next);
-          attempts.push(structuredClone(next));
-          await journal.onWrite?.(next);
-        },
+        // Like the release journal, every write takes the writer queue.
+        write: (next) =>
+          writer.exclusive(async () => {
+            promotion = structuredClone(next);
+            attempts.push(structuredClone(next));
+          }),
       },
       desiredConfiguration: runtimeConfiguration(f.candidate.env),
       target: {
@@ -171,6 +172,7 @@ export async function runtimeReleaseClientFixture(
                       if (++health === 2) throw new SlotRefused("unhealthy");
                     };
                   }
+                  await bridge.beforeForward?.(command.action);
                   const response = await root.runtimeHandoff(request);
                   if (fail === command.action) {
                     fail = undefined;
@@ -204,7 +206,6 @@ export async function runtimeReleaseClientFixture(
     client,
     commands,
     bridge,
-    journal,
     attempts,
     closes: () => closes,
     reconstructRoot: () => {

@@ -333,7 +333,7 @@ test(
 );
 
 test(
-  "an attestation that went stale before its send still refuses, and the refusal leaves a retryable attempt",
+  "an attestation that went stale in transit still refuses, and the refusal leaves a retryable attempt",
   { timeout: 30_000 },
   async (context) => {
     const clock = { now: Date.now() };
@@ -341,9 +341,9 @@ test(
     const f = await fixture();
     context.after(() => f.cleanup());
     let staled = 0;
-    // promotionSent is journaled after signing, so time spent here ages the signed observation.
-    f.journal.onWrite = async (next) => {
-      if (!next.promotionSent || staled++) return;
+    // Time between the send and the controller ages the signed observation.
+    f.bridge.beforeForward = async (action) => {
+      if (action !== "promote" || staled++) return;
       await passAttestationWindow(f, clock);
     };
     await assert.rejects(
