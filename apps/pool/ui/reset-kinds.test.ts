@@ -95,3 +95,64 @@ test("a line's control spends only its own kind, from the bar it sits on", () =>
   assert.equal(text.spendsKind(line("banked"), { kind: "weekly", scope: account }, windows), false);
   assert.equal(text.spendsKind(line("banked"), fable, windows), false);
 });
+
+test("unclassified resets are one banked line on the longest window; a kind without its window has no line", () => {
+  const codexWindows = [window("five_hour", 18_000), window("seven_day", 604_800)];
+  const unknown = (
+    id: string,
+    available: number,
+    scope: "account" | "unknown",
+    expiresAt?: string,
+  ) => ({
+    id,
+    label: "Resets with unknown scope",
+    unit: "resets",
+    available,
+    observedAt: "2026-11-18T20:26:00Z",
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    reset: { kind: "unknown" as const },
+    scope: { kind: scope },
+  });
+  const codex = {
+    offering: "subscription" as const,
+    windows: codexWindows,
+    balances: [
+      // The pool reports Codex credits with an unknown kind and scope.
+      unknown("codex", 2, "unknown", "2026-11-30T18:48:00Z"),
+      unknown("account", 1, "account"),
+      // No Fable window is reported, so its resets have no line; Details still lists them.
+      balance("fable", "Fable resets", 1, "2026-11-21T13:30:00Z", "model", "fable"),
+    ],
+  };
+  const kinds = text.bankedResetKinds(codex, codexWindows, now, format);
+  assert.deepEqual(
+    kinds.map((kind) => [kind.window, kind.text, kind.expiry]),
+    [["seven_day", "3 banked", "next expires 30.11.2026 19:48"]],
+  );
+  const [banked] = kinds;
+  assert.ok(banked);
+  // Codex's spend catalog names its credits the account's; Claude's unclassified grants have no
+  // place, so a banked line never spends them.
+  assert.equal(
+    text.spendsKind(banked, { kind: "unknown", scope: { kind: "account" } }, codexWindows),
+    true,
+  );
+  assert.equal(
+    text.spendsKind(banked, { kind: "unknown", scope: { kind: "unknown" } }, codexWindows),
+    false,
+  );
+});
+
+test("pool counts spell the 5-hour kind as the rows do", () => {
+  const session = {
+    label: "5-hour resets",
+    scope: { kind: "account" as const },
+    reset: { kind: "session" as const },
+  };
+  assert.equal(text.resetCountText(session, 2), "2 five-hour resets");
+  assert.equal(text.resetCountText(session, 1), "1 five-hour reset");
+  assert.equal(
+    text.resetCountText({ label: "Fable resets", scope: { kind: "model", id: "fable" } }, 3),
+    "3 Fable resets",
+  );
+});

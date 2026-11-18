@@ -1,5 +1,5 @@
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index 68fc32c50..87fe6a4a3 100644
+index 68fc32c50..de79591db 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
 @@ -362,6 +362,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
@@ -26,7 +26,19 @@ index 68fc32c50..87fe6a4a3 100644
          expect(spareCells[0]?.buttons).toBe(0);
          yield* browser.use("Open Spare Details", (page) =>
            openRowDetails(page, accountRow(page, "Spare"), "Spare").then(() =>
-@@ -623,36 +629,36 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -527,8 +533,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+           ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
+         }
+ 
+-        // A model's own weekly limit and scoped resets: the count stays on the account's Weekly,
+-        // the model window sits right after it, and Details say what each kind gives back.
++        // A model's own weekly limit and scoped resets: each kind's count sits on the window it
++        // refills, the model window sits right after the account window, and Details say what
++        // each kind gives back.
+         const scopedReset = (
+           id: string,
+           label: string,
+@@ -623,36 +630,36 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
                group
                  .locator("[data-reading]")
                  .evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-reading"))),
@@ -81,7 +93,7 @@ index 68fc32c50..87fe6a4a3 100644
            // A row's first cell is its name; notes and values follow on later lines or cells.
            const name = (text: string) => text.split(/[\t\n]/u)[0]?.trim();
            const row = (label: string) => rows.find((text) => name(text) === label) ?? "";
-@@ -928,7 +934,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -928,7 +935,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
                ),
            );
            expect(shown, "the reading's banked resets are the one-click control").toEqual([
@@ -90,7 +102,7 @@ index 68fc32c50..87fe6a4a3 100644
              "2",
            ]);
            // Opening only reads the pool; Cancel spends nothing.
-@@ -953,7 +959,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -953,7 +960,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
              "image/png",
              yield* browser.use("Capture the confirm step", (page) => page.screenshot()),
            );
@@ -220,10 +232,29 @@ index 0e85fc4c1..c357c3752 100644
      </div>
    );
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-index 14ab77a7b..65a095196 100644
+index 14ab77a7b..7e8f8fdb3 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-@@ -318,6 +318,122 @@ export function bankedResets(observation: Observation, now: number) {
+@@ -281,8 +281,16 @@ export function balanceView(balance: Balance, now: number, format: DisplayFormat
+ }
+ 
+ /** "1 weekly reset", "3 Fable resets": a model's name keeps its capital. */
+-export const resetCountText = (balance: Pick<Balance, "label" | "scope">, count: number) => {
+-  const text = count === 1 ? balance.label.replace(/\b([Rr])esets\b/u, "$1eset") : balance.label;
++export const resetCountText = (
++  balance: Pick<Balance, "label" | "scope" | "reset">,
++  count: number,
++) => {
++  // Counts spell the 5-hour kind as the rows do, so two numerals never touch ("2 5-hour").
++  const label =
++    balance.scope?.kind === "account" && balance.reset?.kind === "session"
++      ? `${resetNouns.session} resets`
++      : balance.label;
++  const text = count === 1 ? label.replace(/\b([Rr])esets\b/u, "$1eset") : label;
+   return `${count} ${balance.scope?.kind === "model" ? text : text.charAt(0).toLowerCase() + text.slice(1)}`;
+ };
+ 
+@@ -318,6 +326,122 @@ export function bankedResets(observation: Observation, now: number) {
    return { count, title };
  }
  
@@ -235,6 +266,9 @@ index 14ab77a7b..65a095196 100644
 +};
 +const kindRank = ["session", "weekly", "full", "model"];
 +const known = (scope: Balance["scope"]) => scope?.kind === "account" || scope?.kind === "model";
++/** A kind the row names; anything else is one "banked" line on its window. */
++const named = (balance: Balance) =>
++  known(balance.scope) && kindRank.includes(balance.reset?.kind ?? "");
 +
 +/** One kind of banked reset on the window it refills, as its row line says it. */
 +export interface BankedResetKind {
@@ -270,12 +304,12 @@ index 14ab77a7b..65a095196 100644
 +      resetPlacement({ kind: balance.reset?.kind, scope: balance.scope }, windows) ??
 +      (known(balance.scope) ? undefined : resetWindow(windows));
 +    if (window === undefined) continue;
-+    const key = JSON.stringify([
-+      window,
-+      balance.scope?.kind,
-+      balance.scope?.id,
-+      balance.reset?.kind,
-+    ]);
++    // Unclassified resets share one "banked" line; named kinds never add together.
++    const key = JSON.stringify(
++      named(balance)
++        ? [window, balance.scope?.kind, balance.scope?.id, balance.reset?.kind]
++        : [window, "banked"],
++    );
 +    const entry = kinds.get(key);
 +    const next =
 +      balance.expiresAt === undefined ||
@@ -290,18 +324,15 @@ index 14ab77a7b..65a095196 100644
 +    });
 +  }
 +  const order = windows.map((entry) => entry.id);
-+  const rank = (balance: Balance) => {
-+    const at = known(balance.scope) ? kindRank.indexOf(balance.reset?.kind ?? "") : -1;
-+    return at === -1 ? kindRank.length : at;
-+  };
++  const rank = (balance: Balance) =>
++    named(balance) ? kindRank.indexOf(balance.reset?.kind ?? "") : kindRank.length;
 +  return [...kinds.entries()]
 +    .map(([key, kind]) => {
-+      const noun =
-+        kind.balance.scope?.kind === "model"
++      const noun = !named(kind.balance)
++        ? "banked"
++        : kind.balance.reset?.kind === "model"
 +          ? kind.balance.label.replace(/\s*\bresets?\b\s*/iu, " ").trim() || "model"
-+          : known(kind.balance.scope)
-+            ? (resetNouns[kind.balance.reset?.kind ?? ""] ?? "banked")
-+            : "banked";
++          : (resetNouns[kind.balance.reset?.kind ?? ""] ?? "banked");
 +      return {
 +        key,
 +        window: kind.window,
@@ -335,7 +366,7 @@ index 14ab77a7b..65a095196 100644
 +): boolean {
 +  if (resetPlacement(credit, windows) !== kind.window) return false;
 +  const { scope, reset } = kind.balance;
-+  if (!known(scope)) return credit.kind === undefined || credit.kind === "unknown";
++  if (!named(kind.balance)) return credit.kind === undefined || credit.kind === "unknown";
 +  return (
 +    credit.kind === reset?.kind &&
 +    credit.scope?.kind === scope?.kind &&
@@ -347,7 +378,7 @@ index 14ab77a7b..65a095196 100644
  
  /**
 diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
-index 53d294f92..47bc1eb02 100644
+index 53d294f92..3849f306a 100644
 --- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 @@ -1,15 +1,15 @@
@@ -417,7 +448,7 @@ index 53d294f92..47bc1eb02 100644
    stale,
    label,
    reading,
-@@ -246,16 +258,14 @@ export function useResetControl({
+@@ -246,19 +258,23 @@ export function useResetControl({
    format,
  }: {
    readonly actions: AccountResetActions;
@@ -435,9 +466,19 @@ index 53d294f92..47bc1eb02 100644
 -}): { readonly control: ReactNode; readonly note: ReactNode } {
 +}): { readonly controls: ReadonlyMap<string, ReactNode>; readonly note: ReactNode } {
    const [stored, setState] = useState<State>({ kind: "idle" });
++  // A confirmed reset waits for a newer reading; a confirm or check whose kind has left the row,
++  // such as a reset that expired while it was open, ends rather than holding every control.
    const state: State =
-     stored.kind === "confirmed" && stored.reading !== reading ? { kind: "idle" } : stored;
-@@ -359,8 +369,8 @@ export function useResetControl({
+-    stored.kind === "confirmed" && stored.reading !== reading ? { kind: "idle" } : stored;
++    (stored.kind === "confirmed" && stored.reading !== reading) ||
++    ((stored.kind === "confirm" || stored.kind === "checking") &&
++      !kinds.some((kind) => kind.key === stored.key))
++      ? { kind: "idle" }
++      : stored;
+   const { key, attempt: readAttempt } = actions;
+   const apply = (next: State) => {
+     memory.keep(key, next);
+@@ -359,8 +375,8 @@ export function useResetControl({
    };
  
    // Clicking only reads. Anything unresolved shows its state instead of offering a new spend.
@@ -448,7 +489,7 @@ index 53d294f92..47bc1eb02 100644
      const remembered = memory.read(key);
      void Promise.all([actions.attempt(), actions.credits()]).then(([attempt, catalog]) => {
        const spend =
-@@ -372,10 +382,10 @@ export function useResetControl({
+@@ -372,10 +388,10 @@ export function useResetControl({
        }
        if (!attempt.ok) return setState({ kind: "refused", message: attempt.message });
        if (!catalog.ok) return setState({ kind: "refused", message: catalog.message });
@@ -462,7 +503,7 @@ index 53d294f92..47bc1eb02 100644
        );
        const offered = here.filter((credit) => credit.usableNow !== false);
        const [credit] = offered;
-@@ -384,11 +394,12 @@ export function useResetControl({
+@@ -384,11 +400,12 @@ export function useResetControl({
            kind: "refused",
            message:
              here.length === 0
@@ -477,7 +518,7 @@ index 53d294f92..47bc1eb02 100644
          provider: catalog.value.provider,
          credit,
          usable: offered.reduce((total, entry) => total + entry.remaining, 0),
-@@ -408,38 +419,41 @@ export function useResetControl({
+@@ -408,38 +425,41 @@ export function useResetControl({
              : replayable(state, now)
                ? "The last reset request has no answer yet. Retry it below; a new one can't start."
                : "The last reset request never got an answer and its retry window ended, so no new reset can start.";
@@ -548,12 +589,12 @@ index 53d294f92..47bc1eb02 100644
          }}
          onCancel={() => setState({ kind: "idle" })}
          onConfirm={() => {
-@@ -455,14 +469,18 @@ export function useResetControl({
+@@ -455,14 +475,18 @@ export function useResetControl({
                false,
              );
          }}
 -        title="Use a banked reset?"
-+        title={`Use a ${kind.noun} reset?`}
++        title={`Use ${/^[aeiou]/iu.test(kind.noun) ? "an" : "a"} ${kind.noun} reset?`}
          action="Use reset"
          trigger={button}
        >
@@ -570,7 +611,7 @@ index 53d294f92..47bc1eb02 100644
                {state.credit.expiresAt === null ? (
                  "the one that doesn't expire"
                ) : (
-@@ -471,10 +489,13 @@ export function useResetControl({
+@@ -471,10 +495,13 @@ export function useResetControl({
                    <b className="font-medium text-foreground">
                      {moment(state.credit.expiresAt, format)}
                    </b>
@@ -584,7 +625,7 @@ index 53d294f92..47bc1eb02 100644
              <p data-reset-applies>
                {state.credit.usableNow === true
                  ? `${providers[state.provider]} says it applies now.`
-@@ -484,6 +505,8 @@ export function useResetControl({
+@@ -484,6 +511,8 @@ export function useResetControl({
          )}
        </Confirm>
      );
@@ -593,7 +634,7 @@ index 53d294f92..47bc1eb02 100644
    const note =
      state.kind === "pending" ? (
        <p role="status" className={noteLine} data-reset-note="pending">
-@@ -516,7 +539,7 @@ export function useResetControl({
+@@ -516,7 +545,7 @@ export function useResetControl({
          </Button>
        </div>
      ) : null;

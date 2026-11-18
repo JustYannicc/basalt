@@ -1,7 +1,7 @@
 {
   "identity": "basalt-reset-kinds-per-bar",
   "file": "0684-reset-kinds-per-bar.patch",
-  "content_sha256": "9eb19bd20a4a76f548d8f59638731b0238ebfe88b25819554da4842dacdaa4c5",
+  "content_sha256": "4c3f256180a0882ee0187710f3802ff94d2681434de8b94bf14216bd09f5be8b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
