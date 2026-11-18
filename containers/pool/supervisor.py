@@ -18,12 +18,14 @@ from .home_peer import HomePeers
 from .child_signals import (
     NativePolicyFuseParser,
     NativePolicyProbeParser,
+    home_message,
     safe_child_output_line,
 )
 from .child_signals import (
     privacy_audit_line as privacy_audit_line,
 )
-from . import db_distance
+from . import db_distance, db_signals
+from .db_signals import DatabasePoolPoll
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
 from .policy_monitor import PolicyHealthMonitor
 from .pool_contract import (
@@ -71,8 +73,10 @@ class Child:
         cwd: pathlib.Path,
         on_policy_fused: Callable[[], None] | None = None,
         on_policy_probe: Callable[[str], None] | None = None,
+        on_slow_statement: Callable[[int], None] | None = None,
     ) -> None:
         self.name = name
+        self._on_slow_statement = on_slow_statement
         self.diagnostics = HomeCrashTail() if name == "home" else None
         self._on_policy_fused = on_policy_fused
         self._on_policy_probe = on_policy_probe
@@ -116,6 +120,12 @@ class Child:
             if probe_nonce is not None:
                 if self._on_policy_probe is not None:
                     self._on_policy_probe(probe_nonce)
+                continue
+            slow = db_signals.slow_statement(home_message(self.name, line))
+            if slow is not None:
+                print(db_signals.slow_statement_line(*slow), flush=True)
+                if self._on_slow_statement is not None:
+                    self._on_slow_statement(slow[0])
                 continue
             # Provider errors can contain full responses. Do not forward them.
             safe = safe_child_output_line(self.name, line)
@@ -304,6 +314,7 @@ def main(stop: threading.Event | None = None) -> int:
                     lambda nonce, generation=generation: readiness.note_policy_probe(
                         nonce, generation
                     ),
+                    readiness.note_slow_statement,
                 )
                 children.append(home_child)
                 readiness.enable_policy_observations()
@@ -333,6 +344,7 @@ def main(stop: threading.Event | None = None) -> int:
                         lambda nonce, generation=generation: (
                             readiness.note_policy_probe(nonce, generation)
                         ),
+                        readiness.note_slow_statement,
                     )
                     children[-1] = home_child
                     readiness.enable_policy_observations()
@@ -402,8 +414,10 @@ def main(stop: threading.Event | None = None) -> int:
         health = ServiceHealth(management_key, node_id)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
+        pool_poll = DatabasePoolPoll(management_key, readiness)
         while not stop.wait(2):
             observed_at = time.monotonic()
+            pool_poll.maybe_poll(observed_at)
             failed = [(child, child.process.poll()) for child in children]
             failed = [(child, code) for child, code in failed if code is not None]
             if failed:

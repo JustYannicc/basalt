@@ -107,6 +107,10 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def home_message(name: str, line: str) -> str | None:
+    return _extract_home_message(name, line)
+
+
 def _extract_home_message(name: str, line: str) -> str | None:
     if name != "home":
         return None

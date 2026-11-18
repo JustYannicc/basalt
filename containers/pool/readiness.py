@@ -66,6 +66,9 @@ class Readiness:
         self._policy_observations_enabled = True
         self._location = location
         self._database_distance: dict[str, object] = {"db_rtt_state": "pending"}
+        self._slow_statements = 0
+        self._slow_statement_max_ms = 0
+        self._database_pool: dict[str, int] | None = None
         self._policy_healthy = False
         self._policy_deadline_ns = 0
         self._policy_instance_id: str | None = None
@@ -219,6 +222,24 @@ class Readiness:
         with self._lock:
             self._database_distance = distance.fields()
 
+    def note_slow_statement(self, elapsed_ms: int) -> None:
+        with self._lock:
+            self._slow_statements += 1
+            self._slow_statement_max_ms = max(self._slow_statement_max_ms, elapsed_ms)
+
+    def set_database_pool(self, counters: dict[str, int]) -> None:
+        with self._lock:
+            self._database_pool = dict(counters)
+
+    def _database_diagnostics(self) -> dict[str, object]:
+        diagnostics: dict[str, object] = {}
+        if self._slow_statements:
+            diagnostics["db_slow_count"] = self._slow_statements
+            diagnostics["db_slow_max_ms"] = self._slow_statement_max_ms
+        if self._database_pool is not None:
+            diagnostics["db_pool"] = dict(self._database_pool)
+        return diagnostics
+
     def snapshot(self) -> tuple[bool, dict[str, object]]:
         ready, payload, _ = self.readiness_response()
         return ready, payload
@@ -241,6 +262,7 @@ class Readiness:
                     "started_at": self.started_at,
                     **self._database_distance,
                     **({"location": self._location} if self._location else {}),
+                    **self._database_diagnostics(),
                 },
                 lease_ms,
             )
