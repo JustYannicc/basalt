@@ -1,7 +1,7 @@
 diff --git a/e2e/support/pool-source-query-proof.ts b/e2e/support/pool-source-query-proof.ts
 --- a/e2e/support/pool-source-query-proof.ts
 +++ b/e2e/support/pool-source-query-proof.ts
-@@ -17,10 +17,26 @@
+@@ -17,7 +17,10 @@
      content: `import { json } from "apps";
  import { createAppClient, queryReference } from "apps/client";
  const client = createAppClient();
@@ -13,38 +13,31 @@ diff --git a/e2e/support/pool-source-query-proof.ts b/e2e/support/pool-source-qu
    },
  ];
  
-+/**
-+ * Each account's native read through the app page `sourceQueryProof` opened. A refused query is
-+ * kept as its error, so the caller compares every account with the same read through tools/call.
-+ */
-+export const sourceInspections = (name: string, accounts: readonly string[]) =>
-+  Effect.flatMap(Browser, (browser) =>
-+    browser.use(
-+      `Run three concurrent ${name} native reads through the app page`,
-+      (page): Promise<unknown> =>
+@@ -34,7 +37,13 @@
+     yield* browser.use("The source-query page is ready", (page) =>
+       page.getByRole("status").filter({ hasText: "Source queries ready" }).waitFor(),
+     );
+-    return (name: string, accounts: readonly string[]) =>
++    // The page is open and signed in from here on, so a failed query is kept as its error and
++    // the caller compares every account with the same read through tools/call.
++    const inspect = (name: string, accounts: readonly string[]) =>
++      browser.use(`Read each account's ${name} native view through the app page`, (page) =>
 +        page.evaluate(`globalThis.sourceInspections(${JSON.stringify(accounts)})`),
-+    ),
-+  );
-+
- /** Observe each real query's own SQL trace without retaining statements or bind values. */
- export const sourceQueryProof = (actor: Session, appPath: string) =>
-   Effect.gen(function* () {
++      );
++    const resolve = (name: string, accounts: readonly string[]) =>
+       Effect.gen(function* () {
+         const start = yield* Clock.currentTimeNanos;
+         const responses = yield* browser.use(
+@@ -110,4 +119,5 @@
+         ).toEqual([]);
+         return responses.replies;
+       });
++    return { resolve, inspect };
+   });
 diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-account-source-bindings.spec.ts
 --- a/e2e/tests/pool-account-source-bindings.spec.ts
 +++ b/e2e/tests/pool-account-source-bindings.spec.ts
-@@ -1,6 +1,10 @@
- import { expect, layer } from "@effect/vitest";
- import { Effect, Schema } from "effect";
--import { sourceQueryFiles, sourceQueryProof } from "../support/pool-source-query-proof.ts";
-+import {
-+  sourceInspections,
-+  sourceQueryFiles,
-+  sourceQueryProof,
-+} from "../support/pool-source-query-proof.ts";
- import { Actors } from "../support/actors.ts";
- import { Api, body, type Session } from "../support/api.ts";
- import { appsManifest } from "../support/apps-release.ts";
-@@ -39,6 +43,10 @@
+@@ -39,6 +39,10 @@
  ]);
  const Resolution = Schema.Struct({ selected: Schema.Array(Schema.String), account: Schema.String });
  const Inspection = Schema.Struct({ selected: Schema.Array(Schema.String), native: Native });
@@ -55,15 +48,32 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
  const View = Schema.Struct({
    selected: Schema.Array(Schema.String),
    native: Native,
-@@ -345,6 +353,20 @@
+@@ -321,14 +325,14 @@
+         expect(yield* nativeIds()).toEqual(membership);
+         expect(yield* catalog.mirrors).toEqual(mirrors);
+ 
+-        const querySources = yield* sourceQueryProof(actors.member, `${poolPath}/ui`);
++        const pageQueries = yield* sourceQueryProof(actors.member, `${poolPath}/ui`);
+         const concurrentViews = (name: string, denied: boolean, expectedAmbiguous = first) =>
+           Effect.gen(function* () {
+             const selected = (yield* view(b)).selected;
+             expect([...selected].sort()).toEqual([...firstView.selected].sort());
+             const inputs = [a, b, ambiguous];
+             const resolutions = yield* Schema.decodeUnknownEffect(Schema.Array(Resolution))(
+-              yield* querySources(name, inputs),
++              yield* pageQueries.resolve(name, inputs),
+             );
+             for (const [index, resolution] of resolutions.entries()) {
+               expect(resolution.selected).toEqual(selected);
+@@ -345,6 +349,23 @@
                state: "available",
                sourceConnection: { target: expectedAmbiguous, account: ambiguous },
              });
 +            // The app page and tools/call are two routes to one member and one saved selection.
 +            // Each account's native read must agree: a usable account is never denied on the
-+            // page, and a revoked selection is refused on both.
++            // page, and a revoked selection is denied on both.
 +            const pages = yield* Schema.decodeUnknownEffect(Schema.Array(PageInspection))(
-+              yield* sourceInspections(name, inputs),
++              yield* pageQueries.inspect(name, inputs),
 +            );
 +            expect
 +              .soft(
@@ -72,7 +82,10 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
 +              )
 +              .toEqual(replies.map((reply) => reply.native));
 +            for (const page of pages)
-+              if ("value" in page) expect.soft(page.value.selected).toEqual(selected);
++              if ("value" in page)
++                expect
++                  .soft(page.value.selected, `${name}: the app page reads the same selection`)
++                  .toEqual(selected);
            });
  
          yield* concurrentViews("disabled", true, second);
