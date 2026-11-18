@@ -107,6 +107,10 @@ test("outside hosts, SDKs and service bindings have caller relationships", () =>
     }
   }
   expect(dependencies.filter((d) => !relationships.has(`${d.source}->${d.target}`))).toEqual([]);
+  const declaredAddresses = services().flatMap((service) => service.addressEnvs);
+  expect(declaredAddresses.length, "an address variable is declared by one service").toBe(
+    new Set(declaredAddresses).size,
+  );
 });
 
 test("every owned package and module has code and all cross-module imports have relationships", () => {

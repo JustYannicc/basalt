@@ -320,12 +320,17 @@ test("a TCP dial to the host parsed from a declared address variable maps to tha
     sdks: [],
     addressEnvs: ["POOL_DATABASE_URL"],
   };
-  const dial = (host: string, extra = "") =>
-    scan(
-      `import os\nimport socket\nimport urllib.parse\n${extra}def probe():\n    return socket.create_connection((${host}, 6432), timeout=1)\n`,
-      [database],
+  const source = (body: string) =>
+    `import os\nimport socket\nimport urllib.parse\nimport urllib.request\nimport http.client\n${body}\n`;
+  const run = (body: string, services = [database]) =>
+    pythonDependencies(
+      fixture({ "src/app.py": source(body) }),
+      [module("app", "src/app.py", ["socket", "http.client"])],
+      services,
     );
   const declared = 'urllib.parse.urlsplit(os.environ["POOL_DATABASE_URL"]).hostname';
+  const dial = (host: string, before = "") =>
+    run(`${before}def probe():\n    return socket.create_connection((${host}, 6432), timeout=1)`);
 
   const allowed = dial(declared);
   expect(allowed.errors).toEqual([]);
@@ -335,8 +340,8 @@ test("a TCP dial to the host parsed from a declared address variable maps to tha
   expect(dial("HOST", `HOST = ${declared}\n`).errors).toEqual([]);
   expect(dial('urllib.parse.urlparse(os.getenv("POOL_DATABASE_URL")).hostname').errors).toEqual([]);
 
-  const refused = (result: ReturnType<typeof scan>, message: string) => {
-    expect(result.dependencies).toEqual([]);
+  const refused = (result: ReturnType<typeof run>, message: string) => {
+    expect(result.dependencies.filter((d) => d.target === "database")).toEqual([]);
     expect(result.errors.join("\n")).toContain(message);
   };
   // Another variable, even one holding a database URL, is not declared.
@@ -359,31 +364,47 @@ test("a TCP dial to the host parsed from a declared address variable maps to tha
   expect(dial(`${declared} if os.environ else "second.invalid"`).errors.join("\n")).toContain(
     "Unmodelled outside host: second.invalid",
   );
+  // The variable must be what the deployment set: writes to the environment are refused.
+  for (const write of [
+    'os.environ.setdefault("POOL_DATABASE_URL", "postgresql://second.invalid/x")',
+    'os.environ["POOL_DATABASE_URL"] = "postgresql://" + os.environ["OTHER_HOST"] + "/x"',
+    'env = os.environ\nenv["POOL_DATABASE_URL"] = "postgresql://second.invalid/x"',
+    'os.environ.update(POOL_DATABASE_URL="postgresql://second.invalid/x")',
+    'os.environ |= {"POOL_DATABASE_URL": "postgresql://second.invalid/x"}',
+    'setattr(os, "environ", {})',
+    "urllib.parse.urlsplit = None",
+  ])
+    expect(dial(declared, `${write}\n`).errors.join("\n")).toContain(
+      "Unsupported Python environment or URL parser mutation",
+    );
   // The raw variable is a URL, not a host, and the declaration grants no other kind of connection.
   refused(dial('os.environ["POOL_DATABASE_URL"]'), "dynamic or unsupported host");
   refused(
-    scan(
-      `import os\nimport urllib.request\nurllib.request.urlopen(os.environ["POOL_DATABASE_URL"])\n`,
-      [database],
-    ),
+    run('urllib.request.urlopen(os.environ["POOL_DATABASE_URL"])'),
     "dynamic or unsupported host",
   );
+  refused(run(`urllib.request.Request(${declared})`), "dynamic or unsupported host");
+  refused(run(`http.client.HTTPConnection(${declared})`), "Unsupported Python network call");
   refused(
-    scan(
-      `import os\nimport socket\nimport urllib.parse\nsocket.create_server((${declared}, 0))\n`,
-      [database],
-    ),
+    run(`socket.create_server((${declared}, 0))`),
     "Python TCP listeners require a proven loopback host",
   );
+  // Source text cannot imitate a value the scanner derived from the environment.
+  refused(run('urllib.request.urlopen("env://POOL_DATABASE_URL")'), "dynamic or unsupported host");
+  refused(dial('"<address>:POOL_DATABASE_URL"'), "dynamic or unsupported host");
+  refused(
+    dial('urllib.parse.urlsplit("<en" + "v>:POOL_DATABASE_URL").hostname'),
+    "dynamic or unsupported host",
+  );
+  // An environment part in a composed URL leaves its constant host checked as before.
+  expect(
+    run("urllib.request.urlopen(f\"https://second.invalid/{os.environ['TOKEN']}\")").errors.join(
+      "\n",
+    ),
+  ).toContain("Unmodelled outside host: second.invalid");
   // One variable is the address of one service.
   refused(
-    pythonDependencies(
-      fixture({
-        "src/app.py": `import os\nimport socket\nimport urllib.parse\nsocket.create_connection((${declared}, 6432))\n`,
-      }),
-      [module("app", "src/app.py")],
-      [database, { ...database, id: "copy" }],
-    ),
+    run(`socket.create_connection((${declared}, 6432))`, [database, { ...database, id: "copy" }]),
     "Several services declare the address POOL_DATABASE_URL",
   );
 });
