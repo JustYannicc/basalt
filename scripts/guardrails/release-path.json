@@ -1,0 +1,24 @@
+{
+  "about": "Globs for the files that decide how a production release is made. A change here needs a rehearsal, ships alone and counts against the release tooling budget. Entries for the Alchemy release path match nothing until it lands.",
+  "paths": [
+    "alchemy.run.ts",
+    "release-declarations.json",
+    "patches/*alchemy*",
+    "scripts/release/**",
+    "scripts/release-barrier/**",
+    "scripts/release-phases/**",
+    "scripts/release-merge/**",
+    "scripts/deploy-safety/**",
+    "scripts/deploy-main/**",
+    "scripts/deploy.ts",
+    "scripts/guardrails/**",
+    ".github/workflows/release.yml",
+    ".github/workflows/pool-fleet.yml",
+    ".github/workflows/deploy.yml",
+    ".github/workflows/release-main.yml",
+    ".github/workflows/release-manual.yml",
+    ".github/workflows/release-rollback.yml",
+    ".github/workflows/pool-runtime-provision.yml",
+    ".github/workflows/guardrails.yml"
+  ]
+}
