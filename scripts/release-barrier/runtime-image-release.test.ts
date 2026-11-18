@@ -210,11 +210,12 @@ async function firstScaleOutRelease(
     isolateReceipt?: boolean;
     beforeImageCheck?: (w: World) => void;
     world?: WorldOptions;
+    sourceController?: { candidate: string; workerInput: string };
   } = {},
 ) {
   const w = createWorld(options.world);
   installWorld(w);
-  standin.resetJournal();
+  standin.resetJournal(options.sourceController);
   const scratch = mkdtempSync(join(tmpdir(), "runtime-image-release-"));
   const network = globalThis.fetch;
   globalThis.fetch = async (input) => {
@@ -404,6 +405,13 @@ test("a first scale-out release runs every phase, retires the root runtime and i
     explain(result),
   );
   assert.deepEqual(result.marks, ["success"]);
+});
+
+test("a release after a settled or aborted prior candidate freezes that candidate's live controller", async () => {
+  const sourceController = { candidate: "4".repeat(40), workerInput: "3".repeat(64) };
+  const result = await firstScaleOutRelease({ sourceController });
+  assert.equal(result.journal?.complete, true, explain(result));
+  assert.deepEqual(result.journal?.baselineController?.code, sourceController);
 });
 
 test("the post-deploy image check accepts the fleet a completed release leaves behind", async () => {

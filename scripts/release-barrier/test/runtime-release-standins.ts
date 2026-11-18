@@ -15,6 +15,7 @@ import type { RuntimeColor } from "../../../src/pool/image-release-plan.ts";
 import { BarrierRefusal } from "../refusal.ts";
 import type { RuntimeCommandAction } from "../runtime-command-rpc.ts";
 import type { RuntimeReleaseRecord } from "../runtime-release-journal.ts";
+import type { BaselineController } from "../baseline-controller.ts";
 import { RuntimeReleaseState } from "../runtime-release-state.ts";
 import {
   runtimeReleaseClient as liveClient,
@@ -24,7 +25,7 @@ import {
   decodeRuntimeHandoffCommand,
   runtimeHandoffCommandPrefix,
 } from "../../../src/pool/runtime-slots/handoff-command.ts";
-import type { ControllerCode } from "../../../src/pool/runtime-slots/contract.ts";
+import type { ControllerCode as SlotControllerCode } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
 import { SlotRefused } from "../../../src/pool/runtime-slots/contract.ts";
 import { runtimeErrorResponse } from "../../../src/pool/runtime-slots/request-error.ts";
@@ -93,11 +94,16 @@ export const runtimeReleaseDesired = (_stack: CompiledStack) =>
   Effect.succeed({ imageInput: candidateInput, configuration: desiredConfiguration });
 
 let journal: RuntimeReleaseRecord | undefined;
-export const resetJournal = () => {
+type ControllerCode = BaselineController["code"];
+let sourceController: ControllerCode | undefined;
+/** `source` is the live-proven controller code a settled or aborted prior candidate left. */
+export const resetJournal = (source?: ControllerCode) => {
   journal = undefined;
+  sourceController = source;
 };
 export const runtimeReleaseJournal = (_stack: CompiledStack, _writer: unknown, _key: string) =>
   Effect.succeed({
+    head: async () => (journal ? { record: structuredClone(journal) } : { sourceController }),
     read: async () => (journal ? structuredClone(journal) : undefined),
     write: async (next: RuntimeReleaseRecord) => {
       journal = structuredClone(next);
@@ -120,7 +126,8 @@ const baseline = {
   workerDigest: "6".repeat(64),
   readinessDigest: "5".repeat(64),
 };
-export const readBaselineController = (_stack: CompiledStack) => Effect.succeed(baseline);
+export const readBaselineController = (_stack: CompiledStack, source?: ControllerCode) =>
+  Effect.succeed(source ? { ...baseline, code: source } : baseline);
 export const readBaselineControllerKey = (_stack: CompiledStack) => Effect.succeed(deploymentKey);
 export const baselineControllerHealth = async () => ({
   instanceId: "instance-root",
@@ -232,7 +239,7 @@ const _standInsListed: Same<
 /** The real controller client over the fake bridge, with adopt and promote on the world. */
 export const runtimeReleaseClient = (input: {
   state: RuntimeReleaseState;
-  code: typeof ControllerCode.Type;
+  code: typeof SlotControllerCode.Type;
   desiredConfiguration?: RuntimeConfiguration;
   promotion: Parameters<typeof liveClient>[0]["promotion"];
 }) =>

@@ -179,5 +179,9 @@ export async function releasePromotionGate(input: {
       attempt = { ...attempt!, promotionSent: true };
       await input.journal.write(attempt);
     },
+    promotionRefused: async () => {
+      attempt = { ...attempt!, promotionSent: false };
+      await input.journal.write(attempt);
+    },
   };
 }
