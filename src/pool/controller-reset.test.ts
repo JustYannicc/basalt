@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import {
+  modelCallReplayable,
+  upstreamOutcomeUnknown,
+} from "../../clients/contracts/model-error.ts";
+import {
   controllerHoldBytes,
   controllerInstanceEnded,
   controllerReplayDelayMs,
@@ -229,6 +233,89 @@ test("a replay the new instance refuses is not counted as saved", async (context
   assert.deepEqual(
     lines.map((line) => [line.outcome, line.saved]),
     [["replayed", false]],
+  );
+});
+
+test("only allow-listed model routes are replayable; a new route is not until it is added", () => {
+  for (const path of [
+    "/v1/messages",
+    "/v1/responses",
+    "/v1/responses/compact",
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/embeddings",
+    "/v1/models",
+    "/v1beta/models/gemini-pro:streamGenerateContent",
+  ])
+    assert.equal(modelCallReplayable(path), true, path);
+  for (const path of [
+    "/v1/images/generations",
+    "/v1/images/edits",
+    "/v1/videos",
+    "/v1/videos/generations",
+    "/v1/videos/edits",
+    "/v1/audio/speech",
+    "/v1/tts",
+    "/v1/audio/transcriptions",
+    "/v1/systemone",
+    "/v1/a-route-added-later",
+  ])
+    assert.equal(modelCallReplayable(path), false, path);
+});
+
+test("the unknown-outcome answer is cautious unless its route is replayable", async () => {
+  for (const [pathname, retry] of [
+    [undefined, false],
+    ["/v1/videos", false],
+    ["/v1/messages", true],
+  ] as const) {
+    const response = upstreamOutcomeUnknown("00000000-0000-4000-8000-000000000000", pathname);
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("x-should-retry"), retry ? null : "false");
+    assert.equal(response.headers.get("retry-after"), retry ? "1" : null);
+    const body = await response.json();
+    assert.equal(body.error.retryable, retry);
+    assert.match(body.error.message, retry ? /Retry it/ : /Do not retry automatically/);
+  }
+});
+
+test("a call that starts a paid job is never sent twice and gets the cautious answer", async (context) => {
+  const observed = observe(context);
+  for (const path of [
+    "/v1/images/generations",
+    "/v1/videos",
+    "/v1/videos/generations",
+    "/v1/audio/speech",
+  ]) {
+    const h = controllerHop([fails(reset)], observed.deferred);
+    const response = await fetchController(
+      new Request(`https://pool.example${path}`, { method: "POST", body: "{}" }),
+      h.hop,
+    );
+    assert.equal(h.resolved, 1, path);
+    assert.equal(response.status, 502, path);
+    assert.equal(response.headers.get("x-should-retry"), "false", path);
+    const body = await response.json();
+    assert.equal(body.error.retryable, false, path);
+    assert.match(body.error.message, /outcome is unknown/, path);
+  }
+  const poll = controllerHop([fails(reset)], observed.deferred);
+  const status = await fetchController(
+    new Request("https://pool.example/v1/videos/video_1"),
+    poll.hop,
+  );
+  assert.equal(poll.resolved, 1);
+  assert.equal(status.status, 503);
+  const { lines } = await observed.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved, line.reason]),
+    [
+      ["outcome_unknown", false, "not_replayable"],
+      ["outcome_unknown", false, "not_replayable"],
+      ["outcome_unknown", false, "not_replayable"],
+      ["outcome_unknown", false, "not_replayable"],
+      ["retry_advised", false, "not_replayable"],
+    ],
   );
 });
 

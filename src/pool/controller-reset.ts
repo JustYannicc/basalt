@@ -1,3 +1,7 @@
+import {
+  modelCallReplayable,
+  upstreamOutcomeUnknown,
+} from "../../clients/contracts/model-error.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import { pageTemplate } from "../telemetry/privacy.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -43,6 +47,7 @@ type Outcome =
   | "replay_failed"
   | "retry_advised"
   | "surfaced"
+  | "outcome_unknown"
   | "client_left"
   | "stream_ended";
 type Reason = "body_too_large" | "body_unreadable" | "not_replayable" | "too_late";
@@ -56,20 +61,20 @@ function safeRead(request: Request): boolean {
   );
 }
 
-/** A model call costs only tokens when sent twice; the pool records each attempt separately. */
-function modelCall(request: Request): boolean {
+/** Only an allow-listed model call costs no more than one response's tokens when sent twice. */
+function replayableCall(request: Request): boolean {
   return (
     request.method === "POST" &&
     !request.headers.has("upgrade") &&
-    isPublicModelPath(new URL(request.url).pathname)
+    modelCallReplayable(new URL(request.url).pathname)
   );
 }
 
-type Held = { body: Blob } | { refused: "body_too_large" | "body_unreadable" };
+type Held = { body: Uint8Array<ArrayBuffer> } | { refused: "body_too_large" | "body_unreadable" };
 
 /** Reads a tee of the body beside the real send, and gives up past the bound. */
 function hold(body: ReadableStream<Uint8Array> | null) {
-  if (!body) return { held: Promise.resolve<Held>({ body: new Blob() }), release() {} };
+  if (!body) return { held: Promise.resolve<Held>({ body: new Uint8Array() }), release() {} };
   const reader = body.getReader();
   const release = () => void reader.cancel().catch(() => {});
   const held = (async (): Promise<Held> => {
@@ -89,7 +94,14 @@ function hold(body: ReadableStream<Uint8Array> | null) {
     } catch {
       return { refused: "body_unreadable" };
     }
-    return { body: new Blob(chunks) };
+    // The chunks are dropped once joined, so the copy is brief and bounded by the hold.
+    const joined = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { body: joined };
   })();
   return { held, release };
 }
@@ -138,13 +150,14 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
   awaitProbe(() => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)), signal);
 
 /**
- * Surviving a controller replacement. Before the first response byte, a safe read or a model call
- * is sent once more to a new instance; a model call whose body was too large to hold, or that
- * fails again, gets the native retry advice its client follows. A started stream is never replayed:
- * it ends with the native retry terminal. A control write keeps today's unknown-outcome failure.
+ * Surviving a controller replacement. Before the first response byte, a safe read or an
+ * allow-listed model call is sent once more to a new instance; one whose body was too large to
+ * hold, or that fails again, gets the native retry advice its client follows. A call that starts a
+ * job is never sent twice. A started stream is never replayed: it ends with the native retry
+ * terminal. A control write keeps today's unknown-outcome failure.
  */
 export async function fetchController(request: Request, hop: ControllerHop): Promise<Response> {
-  const model = modelCall(request);
+  const model = replayableCall(request);
   const copy = hold(model && request.body ? request.clone().body : null);
   const now = hop.now ?? Date.now;
   const requestId = crypto.randomUUID();
@@ -179,17 +192,19 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
       throw error;
     }
     if (!model && !safeRead(request)) {
-      // A model socket has no body to hold; a control write's callers keep today's failure.
-      const modelRoute = isPublicModelPath(new URL(request.url).pathname);
-      report(
-        hop,
-        request,
-        requestId,
-        modelRoute ? "retry_advised" : "surfaced",
-        error,
-        "not_replayable",
-      );
-      if (!modelRoute) throw error;
+      const pathname = new URL(request.url).pathname;
+      if (!isPublicModelPath(pathname)) {
+        // A control write's callers may not assume it was not applied, so they keep its failure.
+        report(hop, request, requestId, "surfaced", error, "not_replayable");
+        throw error;
+      }
+      if (request.method === "POST" && !request.headers.has("upgrade")) {
+        // A job the provider may have accepted is never started twice; its client decides.
+        report(hop, request, requestId, "outcome_unknown", error, "not_replayable");
+        return upstreamOutcomeUnknown(requestId, pathname);
+      }
+      // A model socket or a job status read starts nothing, so its client retries it.
+      report(hop, request, requestId, "retry_advised", error, "not_replayable");
       return retryAdvice(request, requestId);
     }
     const held = await copy.held;

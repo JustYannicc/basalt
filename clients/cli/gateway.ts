@@ -161,7 +161,10 @@ export async function startGateway(options: GatewayOptions) {
               },
         );
       } else if (capability === "models") {
-        const failure = upstreamOutcomeUnknown();
+        const failure = upstreamOutcomeUnknown(
+          undefined,
+          new URL(request.url ?? "/", "http://127.0.0.1").pathname,
+        );
         failure.headers.forEach((value, name) => response.setHeader(name, value));
         response.writeHead(failure.status);
         response.end(await failure.text());
