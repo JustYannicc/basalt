@@ -16,7 +16,14 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stageEnvironment } from "../environment.ts";
-import { deployStage, destroyStage, planStage, verifyStageAbsent } from "../preview/lifecycle.ts";
+import {
+  deployStage,
+  destroyStage,
+  planStage,
+  redeployStage,
+  verifyStageAbsent,
+  withStageBuild,
+} from "../preview/lifecycle.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { describeError, redactor } from "./redact.ts";
 import { manifestPath } from "./checkpoint.ts";
@@ -183,7 +190,17 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
   if (mode === "baseline") {
-    await deployStage(root, subject, { ...source, ...declaration.baseline });
+    const env = { ...source, ...declaration.baseline };
+    try {
+      await deployStage(root, subject, env);
+    } catch (error) {
+      // A standing stage that already has state (a partial or earlier baseline) is deployed again
+      // the ordinary way; Alchemy resumes from its state.
+      if (!(error instanceof Error && /existing remote state/u.test(error.message))) throw error;
+      await withStageBuild(root, subject, env, async () => {});
+      await redeployStage(root, subject, env, declaration.baseline);
+      result.redeployed = true;
+    }
     const read = await hooks.readBack("baseline");
     requireBaselineShape(read);
     result.readBack = read;
