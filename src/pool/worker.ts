@@ -108,7 +108,7 @@ import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
-import { captureError } from "../telemetry/sentry.ts";
+import { captureAllowanceExpiry, captureError } from "../telemetry/sentry.ts";
 import { brand } from "../../brand.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { importRemovalPath } from "./import-removal/contract.ts";
@@ -664,7 +664,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     );
     await trace.run("control", () => this.control.expire());
     this.ctx.waitUntil(
-      this.allowances.refresh().catch(() => console.error("POOL_PLAN_ALLOWANCE_REFRESH_PENDING")),
+      this.allowances
+        .refresh()
+        .catch(() => console.error("POOL_PLAN_ALLOWANCE_REFRESH_PENDING"))
+        .then(() => this.allowances.expiringToday())
+        .then((rows) => (rows.length ? captureAllowanceExpiry(this.env, rows) : undefined))
+        .catch(() => console.error("POOL_PLAN_ALLOWANCE_EXPIRY_ALERT_FAILED")),
     );
     await trace.run("prices", () => this.prices.run());
     await trace.run("overview_prices", () => this.overviewPrices.refresh());

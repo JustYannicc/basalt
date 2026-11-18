@@ -209,3 +209,48 @@ test("rejected source rows do not contradict fresh fallback before their origina
     }
   }
 });
+
+test("plans whose last usable row expires within a week are named once per day", async () => {
+  let clock = Date.parse("2026-11-20T06:00:00Z");
+  const row = (
+    plan: string,
+    expiresAt: number,
+    verification: "verified" | "unknown" = "verified",
+  ) => ({
+    vendor: "anthropic",
+    plan,
+    windowSeconds: 604_800,
+    full: verification === "unknown" ? null : 5,
+    unit: { id: "claude-pro-equivalent", label: "Pro-eq" },
+    kind: "vendor" as const,
+    verification,
+    sources: ["https://example.test/allowances.json"],
+    checkedAt: expiresAt - 14 * 86_400_000,
+    fetchedAt: expiresAt - 14 * 86_400_000,
+    expiresAt,
+    revision: plan,
+  });
+  const registry = new PlanAllowances(new Memory(), {
+    now: () => clock,
+    seed: {
+      entries: [
+        row("max_20x", Date.parse("2026-11-27T00:00:00Z")),
+        row("max_5x", Date.parse("2026-11-27T00:00:00Z")),
+        row("max_5x", Date.parse("2026-12-04T00:00:00Z")),
+        row("ultra", Date.parse("2026-11-22T00:00:00Z"), "unknown"),
+      ],
+    },
+  });
+  assert.deepEqual(await registry.expiringToday(), [
+    {
+      vendor: "anthropic",
+      plan: "max_20x",
+      windowSeconds: 604_800,
+      expiresAt: Date.parse("2026-11-27T00:00:00Z"),
+    },
+  ]);
+  clock += 12 * 3_600_000;
+  assert.deepEqual(await registry.expiringToday(), []);
+  clock += 12 * 3_600_000;
+  assert.equal((await registry.expiringToday()).length, 1);
+});

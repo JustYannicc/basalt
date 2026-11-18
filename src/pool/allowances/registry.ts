@@ -6,6 +6,14 @@ import { datasetAllowances } from "./dataset.ts";
 import { vendorAllowances, vendorSources, type VendorSourceId } from "./vendors.ts";
 
 const stateKey = "pool-plan-allowances-v1";
+const expiryAlertKey = "pool-plan-allowances-expiry-alert-v1";
+export const expiryAlertLead = 7 * dayMs;
+export interface ExpiringAllowance {
+  vendor: string;
+  plan: string;
+  windowSeconds: number;
+  expiresAt: number;
+}
 const retryMs = 30 * 60_000;
 interface SourceState {
   at: number;
@@ -202,6 +210,30 @@ export class PlanAllowances {
         conflicts.has(allowanceKey(entry)) ? { ...entry, contradicted: true } : entry,
       ),
     };
+  }
+  /**
+   * Plans whose last usable row expires within the lead, at most once per UTC day, so a source
+   * that stopped re-checking is fixed before its value goes stale.
+   */
+  async expiringToday(lead = expiryAlertLead): Promise<ExpiringAllowance[]> {
+    const now = this.now();
+    const day = Math.floor(now / dayMs);
+    if ((await this.storage.get<number>(expiryAlertKey)) === day) return [];
+    const latest = new Map<string, PlanAllowance>();
+    for (const entry of (await this.read()).entries) {
+      if (entry.verification === "unknown" || entry.expiresAt === null) continue;
+      const known = latest.get(allowanceKey(entry));
+      if (!known || entry.expiresAt > known.expiresAt!) latest.set(allowanceKey(entry), entry);
+    }
+    await this.storage.put(expiryAlertKey, day);
+    return [...latest.values()]
+      .filter((entry) => entry.expiresAt! - now <= lead)
+      .map(({ vendor, plan, windowSeconds, expiresAt }) => ({
+        vendor,
+        plan,
+        windowSeconds,
+        expiresAt: expiresAt!,
+      }));
   }
   async status(): Promise<State | undefined> {
     return this.storage.get<State>(stateKey);
