@@ -134,7 +134,7 @@ test("a Cloudflare account connected under the first catalog definition links to
       // explicit adoption of the refs it leaves behind before new apps can share those accounts.
       assert.equal(
         ids.family,
-        "prv_pending",
+        "prv_723ba6038ee84547f30e619eae5d182081e413ff4088bf26c8d567c45facfa47",
         "the Cloudflare family's provider ref changed; ship an adoption for the previous ref",
       );
       assert.deepEqual(yield* linkable("app_tool", "acc_cloudflare"), { link: true, listed: true });
