@@ -6,6 +6,7 @@
  * here; ../production-pool-worker-shape.test.ts fails if one drifts.
  */
 import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import { transform } from "esbuild";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as HttpClient from "effect/http/HttpClient";
 
@@ -134,6 +135,30 @@ export function productionSettingsBody(
   if (Object.keys(settings).join() !== productionSettingsKeys.join())
     throw new Error("production settings stand-in drifted from the observed key set");
   return settings;
+}
+
+/** Cloudflare compiles every uploaded module and refuses the upload when one does not parse. */
+export async function productionModuleRefusal(
+  modules: readonly { name: string; type: string; bytes: Uint8Array }[],
+) {
+  for (const module of modules) {
+    if (module.type !== "application/javascript+module") continue;
+    try {
+      await transform(new TextDecoder().decode(module.bytes), {
+        format: "esm",
+        loader: "js",
+        logLevel: "silent",
+      });
+    } catch (error) {
+      const [first] = (error as { errors?: { text: string }[] }).errors ?? [];
+      return cloudflareFailure(
+        `Uncaught SyntaxError in ${module.name}: ${first?.text ?? "unparseable"}`,
+        400,
+        10021,
+      );
+    }
+  }
+  return undefined;
 }
 
 export const productionScriptVersionBody = (input: {

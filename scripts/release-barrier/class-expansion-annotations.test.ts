@@ -11,7 +11,7 @@ import { assertClone, cloneRequest } from "./class-clone.ts";
 import { classAnnotations } from "./class-settings.ts";
 import type { ClassRecord } from "./class-history.ts";
 import type { SqliteClassDeclaration } from "./declared-change-schema.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { BarrierRefusal, canonical } from "./manifest.ts";
 import {
   productionDeploymentsBody,
   productionProfileBody,
@@ -212,7 +212,14 @@ test("an annotation the rule does not know refuses with a named code, from the r
     (error: unknown) =>
       error instanceof BarrierRefusal &&
       error.reason === "declared-class-annotation-unrecognised" &&
-      error.delta?.changed[0]?.new === "workers/future_key",
+      canonical(error.delta?.changed) ===
+        canonical([
+          {
+            path: "settings.annotations",
+            old: "caller-owned-or-provider-managed",
+            new: "workers/future_key",
+          },
+        ]),
   );
   assert.deepEqual(
     classAnnotations({ workersTriggeredBy: "anything", workersTag: null }, entry.fqn, "settings"),

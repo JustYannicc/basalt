@@ -3,7 +3,8 @@
  * Worker with no migration tag, PoolContainer as its only container class, and the account's DO
  * namespaces. It answers the reviewed class path's own SDK and fetch calls (read, content, the
  * additive script PUT and the inactive clone) and the bootstrap's namespace read, and it refuses
- * what Cloudflare refuses: a migration tag on an untagged script, or re-creating an existing class.
+ * what Cloudflare refuses: a migration tag on an untagged script, re-creating an existing class, a
+ * module that does not parse, or an upload that copies Cloudflare's own triggered_by annotation.
  * An upload that omits container links drops them, as a full-script PUT would. Every version and
  * settings read-back is built by production-pool-worker-shape.ts, the same source as the GET-only
  * stand-in; the inactive clone's read-back echoes the posted body.
@@ -16,6 +17,7 @@ import {
   cloudflareResult,
   productionDeploymentsBody,
   productionNamespaceResponse,
+  productionModuleRefusal,
   productionNamespaceRow,
   productionProfileBody,
   productionScriptVersionBody,
@@ -166,6 +168,23 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
         log.refusals.push("provider-managed-annotation");
         return failure("annotations: workers/triggered_by is read-only");
       }
+      const files = await Promise.all(
+        [...form.entries()]
+          .filter(([name]) => name !== "metadata")
+          .map(async ([, item]) => {
+            const file = item as File;
+            return {
+              name: file.name,
+              type: file.type,
+              bytes: new Uint8Array(await file.arrayBuffer()),
+            };
+          }),
+      );
+      const unparsed = await productionModuleRefusal(files);
+      if (unparsed) {
+        log.refusals.push("module-syntax-error");
+        return unparsed;
+      }
       const migration = metadata.migrations ?? {};
       if (migration.old_tag || migration.new_tag) {
         log.refusals.push("migration-tag-on-untagged-script");
@@ -185,20 +204,11 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
             ? doBinding(String(binding.class_name))
             : binding,
       );
-      const files = [...form.entries()]
-        .filter(([name]) => name !== "metadata")
-        .map(([, file]) => file as File);
       deploy({
         id: `expanded-${++serial}`,
         bindings,
         containers: (metadata.containers ?? []).map((container) => container.class_name),
-        files: await Promise.all(
-          files.map(async (file) => ({
-            name: file.name,
-            type: file.type,
-            bytes: new Uint8Array(await file.arrayBuffer()),
-          })),
-        ),
+        files,
         mainModule: metadata.main_module,
         annotations: { ...metadata.annotations, [providerTriggeredBy]: "upload" },
       });
@@ -212,6 +222,19 @@ export function productionPoolWorker(input: { accountId: string; scriptName: str
       if (clone.annotations?.[providerTriggeredBy] !== undefined) {
         log.refusals.push("provider-managed-annotation");
         return failure("annotations: workers/triggered_by is read-only");
+      }
+      const unparsed = await productionModuleRefusal(
+        (
+          (clone.modules ?? []) as { name: string; content_type: string; content_base64: string }[]
+        ).map((module) => ({
+          name: module.name,
+          type: module.content_type,
+          bytes: new Uint8Array(Buffer.from(module.content_base64, "base64")),
+        })),
+      );
+      if (unparsed) {
+        log.refusals.push("module-syntax-error");
+        return unparsed;
       }
       const id = `clone-${++serial}`;
       latest = id;
