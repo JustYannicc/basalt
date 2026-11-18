@@ -45,6 +45,23 @@ test("a reset whose window or scope is unknown has no place, so no window can sp
   );
 });
 
+test("an account reset never sits on a model window or a window it doesn't refill", () => {
+  const modelOnly = [window("fable", 604_800, "fable")];
+  assert.equal(resetPlacement({ kind: "weekly", scope: account }, modelOnly), undefined);
+  assert.equal(resetPlacement({ kind: "unknown", scope: account }, modelOnly), undefined);
+  const fiveHourOnly = [window("five_hour", 18_000)];
+  assert.equal(resetPlacement({ kind: "weekly", scope: account }, fiveHourOnly), undefined);
+  assert.equal(resetPlacement({ kind: "full", scope: account }, fiveHourOnly), undefined);
+});
+
+test("a reporter that names no periods keeps the longest-window rule for weekly resets", () => {
+  const unnamed = [
+    { id: "weekly", label: "Weekly", observedAt: "2026-11-18T20:00:00Z", measure: { unit: "%" } },
+  ];
+  assert.equal(resetPlacement({ kind: "weekly", scope: account }, unnamed), "weekly");
+  assert.equal(resetPlacement({ kind: "session", scope: account }, unnamed), undefined);
+});
+
 test("a source that predates kinds keeps today's place on the longest window", () => {
   assert.equal(resetPlacement({}, claude), "seven_day");
 });

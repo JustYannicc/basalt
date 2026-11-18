@@ -13,8 +13,9 @@ export interface ResetCredit {
   /** Null for Codex, which decides which limited windows the reset clears. */
   readonly clears: readonly ResetWindow[] | null;
   /**
-   * What the credit refills, by the rule the pool's Home applies to its reset observations, so a
-   * spend and the count it was shown from always agree on the kind.
+   * What the credit refills. Claude grants follow the rule the pool's Home applies to its reset
+   * observations (CLIProxyAPI carry 0526); a Codex credit is the account's, since Codex picks which
+   * of the account's limits it clears.
    */
   readonly kind: ResetMetadata["kind"];
   readonly scope: ResetScope;

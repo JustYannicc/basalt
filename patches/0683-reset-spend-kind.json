@@ -1,7 +1,7 @@
 {
   "identity": "basalt-reset-spend-kind",
   "file": "0683-reset-spend-kind.patch",
-  "content_sha256": "f7a9cca61f8215d394377f7dcd7f46edb120aee01121b5ecb7361ba6667b3f96",
+  "content_sha256": "d0ad5ae2c69a5af0091d58c4773336969635d232db5ed7c9c46758200f4a01ae",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -439,6 +439,50 @@ const kindGrants: readonly Json[] = [
     use_requires_limit: false,
     clears: ["seven_day_spark"],
   },
+  // The rest of the Home's table: an unknown type, a typed grant with no windows, a model with
+  // the account week, a grant naming nothing, and a model id longer than a hosted read takes.
+  {
+    id: "monthly",
+    type: "monthly",
+    resets_left: 1,
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["seven_day"],
+  },
+  {
+    id: "typed",
+    type: "session",
+    resets_left: 1,
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: [],
+  },
+  {
+    id: "mixed",
+    resets_left: 1,
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: ["seven_day", "seven_day_fable"],
+  },
+  {
+    id: "bare",
+    resets_left: 1,
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: [],
+  },
+  {
+    id: "long",
+    resets_left: 1,
+    paused: false,
+    usable_now: true,
+    use_requires_limit: false,
+    clears: [`seven_day_${"m".repeat(65)}`],
+  },
 ];
 
 test("the spend catalog names each grant's kind and scope by the Home's rule, so a model reset never reads as weekly", async (t) => {
@@ -453,6 +497,11 @@ test("the spend catalog names each grant's kind and scope by the Home's rule, so
     session: ["session", { kind: "account" }],
     full: ["full", { kind: "account" }],
     spark: ["model", { kind: "model", id: "spark" }],
+    monthly: ["unknown", { kind: "unknown" }],
+    typed: ["session", { kind: "account" }],
+    mixed: ["unknown", { kind: "unknown" }],
+    bare: ["unknown", { kind: "unknown" }],
+    long: ["unknown", { kind: "unknown" }],
   });
   const codex = await fixture(t);
   const credits = (await (await codex.call("resets")).json()) as ResetCredits;
@@ -509,9 +558,9 @@ test("two spends on one account run one after the other: the second reads grants
     }),
     f.call("resets/use", {
       requestId: secondId,
-      creditId: "full",
-      kind: "full",
-      scope: { kind: "account" },
+      creditId: "fable",
+      kind: "model",
+      scope: { kind: "model", id: "fable" },
     }),
   ]);
   assert.deepEqual([first.status, second.status], [200, 200]);

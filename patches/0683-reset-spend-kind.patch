@@ -120,7 +120,7 @@ index fccc25e97..db5bcf2a7 100644
    span,
    windowView,
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
-index 5d98df232..a452e620a 100644
+index 5d98df232..0e85fc4c1 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 @@ -1,7 +1,12 @@
@@ -142,24 +142,25 @@ index 5d98df232..a452e620a 100644
      <ResetCells
        actions={resetActions}
 +      // The count sits on the longest window; its control spends only resets that refill it.
-+      accepts={(credit) => resetPlacement(credit, windows) === target}
++      accepts={(credit) => target !== undefined && resetPlacement(credit, windows) === target}
        count={resets.count}
        title={resets.title}
        stale={stale}
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-index 963e52fa2..9c957802e 100644
+index 963e52fa2..2ef355842 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-@@ -458,6 +458,29 @@ export const resetWindow = (windows: readonly Window[]) =>
+@@ -458,6 +458,36 @@ export const resetWindow = (windows: readonly Window[]) =>
      undefined,
    )?.id;
  
 +/**
 + * The window a banked reset refills, which is where it is counted and spent: a model's reset on
-+ * that model's own window, a 5-hour reset on the account's 5-hour window, and weekly, full and
-+ * other account resets on the account's longest window. A reset whose window wasn't reported, or
-+ * whose scope is unknown, has no place, so it is never spent from a window it doesn't refill. A
-+ * source that predates kinds names neither, and its resets keep the longest window.
++ * that model's own window, a 5-hour reset on the account's 5-hour window, weekly and full resets
++ * on its 7-day window, and an account reset of no named kind on its longest window. A reset whose
++ * window wasn't reported, or whose scope is unknown, has no place, so it is never spent from a
++ * window it doesn't refill. A source that predates kinds names neither and keeps the longest
++ * window.
 + */
 +export function resetPlacement(
 +  reset: Pick<Balance, "scope"> & { readonly kind?: string | undefined },
@@ -171,17 +172,23 @@ index 963e52fa2..9c957802e 100644
 +      windows.filter((entry) => isModelWindow(entry) && entry.scope?.id === reset.scope?.id),
 +    );
 +  if (reset.scope?.kind !== "account") return undefined;
-+  if (reset.kind === "session")
-+    return windows.find((entry) => !isModelWindow(entry) && periodSeconds(entry.period) === 18_000)
-+      ?.id;
-+  return resetWindow(windows);
++  const own = windows.filter((entry) => !isModelWindow(entry));
++  const lasting = (seconds: number) =>
++    own.find((entry) => periodSeconds(entry.period) === seconds)?.id;
++  if (reset.kind === "session") return lasting(18_000);
++  // A reporter that names no periods keeps the longest-window rule it had before kinds.
++  if (reset.kind === "weekly" || reset.kind === "full")
++    return own.some((entry) => periodSeconds(entry.period) > 0)
++      ? lasting(604_800)
++      : resetWindow(own);
++  return resetWindow(own);
 +}
 +
  const offerings = {
    subscription: "Subscription",
    metered_api: "Metered API",
 diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
-index 7f151bec9..eec6dc3c7 100644
+index 7f151bec9..a9d917032 100644
 --- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 @@ -33,6 +33,9 @@ export interface ResetCreditView {
@@ -256,28 +263,33 @@ index 7f151bec9..eec6dc3c7 100644
    readonly count: number;
    readonly title: string;
    readonly stale: boolean;
-@@ -339,13 +372,17 @@ export function useResetControl({
+@@ -339,13 +372,21 @@ export function useResetControl({
        }
        if (!attempt.ok) return setState({ kind: "refused", message: attempt.message });
        if (!catalog.ok) return setState({ kind: "refused", message: catalog.message });
 -      // The catalog's total counts unusable grants too; only these may be offered.
+-      const offered = catalog.value.credits.filter(
+-        (credit) => credit.usableNow !== false && credit.remaining > 0,
 +      // The catalog's total counts unusable grants and other windows' resets too; only these may
 +      // be offered, so a press here never spends a reset that refills a different limit.
-       const offered = catalog.value.credits.filter(
--        (credit) => credit.usableNow !== false && credit.remaining > 0,
-+        (credit) => credit.usableNow !== false && credit.remaining > 0 && accepts(credit),
++      const here = catalog.value.credits.filter(
++        (credit) => credit.remaining > 0 && accepts(credit),
        );
++      const offered = here.filter((credit) => credit.usableNow !== false);
        const [credit] = offered;
        if (credit === undefined)
 -        return setState({ kind: "refused", message: "No banked reset can be used right now" });
 +        return setState({
 +          kind: "refused",
-+          message: "No banked reset for this limit can be used right now",
++          message:
++            here.length === 0
++              ? "None of this account's banked resets refills this limit"
++              : "No banked reset for this limit can be used right now",
 +        });
        setState({
          kind: "confirm",
          provider: catalog.value.provider,
-@@ -403,7 +440,16 @@ export function useResetControl({
+@@ -403,7 +444,16 @@ export function useResetControl({
          onCancel={() => setState({ kind: "idle" })}
          onConfirm={() => {
            if (state.kind === "confirm")

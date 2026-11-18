@@ -48,7 +48,8 @@ function grantKind(
     else if (window === "seven_day" || window === "seven_day_overage_included") weekly = true;
     else if (window.startsWith("seven_day_")) {
       const id = slug(window.slice("seven_day_".length));
-      if (!id || (model !== undefined && model !== id)) return unclassified;
+      // Hosted reads cap a scope id at 64 characters, like the Home's observations do.
+      if (!id || id.length > 64 || (model !== undefined && model !== id)) return unclassified;
       model = id;
     } else return unclassified;
   }
