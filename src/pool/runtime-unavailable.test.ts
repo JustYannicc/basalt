@@ -99,3 +99,40 @@ test("transport failure after a delivered native completion cannot introduce ano
   source.error(new Error("transport failed after completion"));
   assert.equal((await reader.read()).done, true);
 });
+
+test("an event that never ends is passed through byte for byte once it passes the parse bound", async () => {
+  const encoder = new TextEncoder();
+  // 3 MiB with no blank line, and a two-byte character split across the last two reads.
+  const parts = [
+    ...Array.from({ length: 48 }, () => encoder.encode("x".repeat(64 * 1024))),
+    new Uint8Array([0x61, 0xc3]),
+    new Uint8Array([0xa9, 0x62]),
+  ];
+  const expected = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    expected.set(part, offset);
+    offset += part.byteLength;
+  }
+  let sent = 0;
+  const interrupted: unknown[] = [];
+  const response = nativeRuntimeStream(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const part = parts[sent++];
+          if (part) controller.enqueue(part);
+          else controller.close();
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    ),
+    new Request("http://pool/v1/messages"),
+    (error) => interrupted.push(error),
+  );
+  const received = new Uint8Array(await response.arrayBuffer());
+  assert.equal(received.byteLength, expected.byteLength);
+  assert.deepEqual(received.subarray(-4), expected.subarray(-4));
+  assert.equal(Buffer.compare(received, expected), 0);
+  assert.deepEqual(interrupted, []);
+});
