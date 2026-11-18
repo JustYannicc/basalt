@@ -14,6 +14,8 @@ const replayablePaths = new Set([
   "/v1/embeddings",
   "/v1/models",
   "/typesafe/v1/models",
+  "/v1/systemone",
+  "/typesafe/v1/systemone",
   "/messages",
   "/chat/completions",
   "/completions",

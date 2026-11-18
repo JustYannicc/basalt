@@ -246,6 +246,8 @@ test("only allow-listed model routes are replayable; a new route is not until it
     "/v1/completions",
     "/v1/embeddings",
     "/v1/models",
+    "/v1/systemone",
+    "/typesafe/v1/systemone",
     "/v1beta/models/gemini-pro:streamGenerateContent",
   ])
     assert.equal(modelCallReplayable(path), true, path);
@@ -258,7 +260,6 @@ test("only allow-listed model routes are replayable; a new route is not until it
     "/v1/audio/speech",
     "/v1/tts",
     "/v1/audio/transcriptions",
-    "/v1/systemone",
     "/v1/a-route-added-later",
   ])
     assert.equal(modelCallReplayable(path), false, path);
