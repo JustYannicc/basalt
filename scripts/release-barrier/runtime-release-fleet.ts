@@ -55,20 +55,8 @@ export async function configureReleaseFleet(
     });
   }
   const frozen = configuration;
-  await waitReleaseObservation(
-    () => client.fleet(),
-    (value) =>
-      frozen.applications.every((app) =>
-        value.bindings.some(
-          (binding) =>
-            binding.color === app.color &&
-            binding.applicationId === app.applicationId &&
-            binding.imageInput === app.imageInput,
-        ),
-      ),
-    "PoolWorker.runtime-bindings",
-    330_000,
-  );
+  // A rerun reads the retained copy before any binding wait: once a later phase rebinds an
+  // application's image, live bindings can never match this configuration's pins again.
   const retained = (await client.fleet(operationId)).permission;
   if (retained) {
     sameProvisioningValue(
@@ -83,6 +71,20 @@ export async function configureReleaseFleet(
     );
     return retained;
   }
+  await waitReleaseObservation(
+    () => client.fleet(),
+    (value) =>
+      frozen.applications.every((app) =>
+        value.bindings.some(
+          (binding) =>
+            binding.color === app.color &&
+            binding.applicationId === app.applicationId &&
+            binding.imageInput === app.imageInput,
+        ),
+      ),
+    "PoolWorker.runtime-bindings",
+    330_000,
+  );
   const response = Schema.decodeUnknownSync(
     Schema.Struct({
       result: Schema.Struct({
