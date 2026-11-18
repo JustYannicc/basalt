@@ -11,7 +11,7 @@ if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname
   throw new Error("POOL_TEST_ADMIN_URL must point to an isolated local test Postgres cluster");
 }
 
-const startupPhaseNames = ["home_boot", "bootstrap_import", "config_apply", "node_launch", "initial_health"] as const;
+const startupPhaseNames = ["db_distance", "home_boot", "bootstrap_import", "config_apply", "node_launch", "initial_health"] as const;
 const maxStartupPhaseMs = 86_400_000;
 
 function docker(args: string[]): string {
@@ -74,8 +74,8 @@ function assertStartupPhaseLogs(logs: string): void {
     phases.push(phase);
   }
 
-  const withoutBootstrap = ["home_boot", "config_apply", "node_launch", "initial_health"];
-  const withBootstrap = ["home_boot", "bootstrap_import", "home_boot", "config_apply", "node_launch", "initial_health"];
+  const withoutBootstrap = ["db_distance", "home_boot", "config_apply", "node_launch", "initial_health"];
+  const withBootstrap = ["db_distance", "home_boot", "bootstrap_import", "home_boot", "config_apply", "node_launch", "initial_health"];
   assert.ok(phases.join(",") === withoutBootstrap.join(",") || phases.join(",") === withBootstrap.join(","),
     "real image startup phases were missing or out of order");
 }
@@ -140,8 +140,9 @@ test("pinned Home/node stream, stick, spread, fail over at quota and retain keys
           headers: { Authorization: "Bearer fixture-management-key" }, signal: AbortSignal.timeout(3_000),
         });
         if (!response.ok) return;
-        const status = await response.json() as { boot_id: string; started_at: string };
-        assert.deepEqual(Object.keys(status).sort(), ["boot_id", "started_at"]);
+        const status = await response.json() as { boot_id: string; started_at: string; db_rtt_state: string };
+        assert.deepEqual(Object.keys(status).sort(), ["boot_id", "db_rtt_max_ms", "db_rtt_ms", "db_rtt_samples", "db_rtt_state", "started_at"]);
+        assert.equal(status.db_rtt_state, "measured");
         return status;
       });
     }

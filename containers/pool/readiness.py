@@ -15,6 +15,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
+from .db_distance import Distance
 from .pool_contract import native_policy_request
 from .policy_diagnostic import policy_failure
 from .runtime_signals import FailureCategory, report_failure
@@ -34,6 +35,7 @@ class Readiness:
         *,
         launch_generation: str | None = None,
         launch_token: str | None = None,
+        location: str | None = None,
     ) -> None:
         self._launch_headers: dict[str, str] = {}
         if launch_generation is not None or launch_token is not None:
@@ -62,6 +64,8 @@ class Readiness:
         self._services_ready = False
         self._service_audit_revision = 0
         self._policy_observations_enabled = True
+        self._location = location
+        self._database_distance: dict[str, object] = {"db_rtt_state": "pending"}
         self._policy_healthy = False
         self._policy_deadline_ns = 0
         self._policy_instance_id: str | None = None
@@ -211,11 +215,15 @@ class Readiness:
             self._observed_policy_probes.clear()
             self._probe_condition.notify_all()
 
-    def snapshot(self) -> tuple[bool, dict[str, str]]:
+    def set_database_distance(self, distance: Distance) -> None:
+        with self._lock:
+            self._database_distance = distance.fields()
+
+    def snapshot(self) -> tuple[bool, dict[str, object]]:
         ready, payload, _ = self.readiness_response()
         return ready, payload
 
-    def readiness_response(self) -> tuple[bool, dict[str, str], int]:
+    def readiness_response(self) -> tuple[bool, dict[str, object], int]:
         with self._lock:
             self._expire_policy_lease()
             remaining_ns = self._policy_deadline_ns - self._monotonic_ns()
@@ -228,7 +236,12 @@ class Readiness:
             lease_ms = max(0, min(1500, remaining_ns // 1_000_000)) if ready else 0
             return (
                 ready,
-                {"boot_id": self.boot_id, "started_at": self.started_at},
+                {
+                    "boot_id": self.boot_id,
+                    "started_at": self.started_at,
+                    **self._database_distance,
+                    **({"location": self._location} if self._location else {}),
+                },
                 lease_ms,
             )
 

@@ -23,6 +23,7 @@ from .child_signals import (
 from .child_signals import (
     privacy_audit_line as privacy_audit_line,
 )
+from . import db_distance
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
 from .policy_monitor import PolicyHealthMonitor
 from .pool_contract import (
@@ -250,6 +251,7 @@ def main(stop: threading.Event | None = None) -> int:
             management_key,
             launch_generation=os.environ.get("POOL_LAUNCH_GENERATION"),
             launch_token=os.environ.get("POOL_LAUNCH_TOKEN"),
+            location=db_distance.location(os.environ),
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
@@ -265,6 +267,15 @@ def main(stop: threading.Event | None = None) -> int:
 
         for signum in (signal.SIGTERM, signal.SIGINT):
             original_signals[signum] = signal.signal(signum, request_stop)
+
+        with startup_phase(StartupPhase.DB_DISTANCE, supervisor_started_ns):
+            distance = db_distance.measure_database(database_url, os.environ)
+        readiness.set_database_distance(distance)
+        db_distance.report(distance, db_distance.location(os.environ))
+        if distance.state == "held":
+            # The controller asked for a redraw if this start landed far; Home never runs here.
+            stop.wait()
+            raise RecoveryCancelled()
 
         atomic_write(
             ROOT / "cluster.yaml",
