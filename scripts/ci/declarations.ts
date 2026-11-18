@@ -220,7 +220,7 @@ export function patternForConfig(file: string, root = repository) {
 /** Every (group, file) pair a declared matrix job runs, keyed by that job. */
 export function declaredRuns(
   selected: readonly string[] | null = null,
-  declarations: ReturnType<typeof readDeclarations> = readDeclarations(),
+  declarations = readDeclarations(),
 ) {
   const { groups, files } = declarations;
   return Object.fromEntries(

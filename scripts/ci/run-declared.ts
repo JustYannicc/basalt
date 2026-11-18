@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,8 @@ export type Options = Omit<Bounds, "log"> & {
   log?: Bounds["log"];
   /** The step summary, which gets each file's row as soon as that file finishes. */
   summary?: string;
+  /** Set only where this run owns the whole Docker daemon, so leftover e2e databases may go. */
+  ownsDocker?: boolean;
 };
 
 export type DeclaredResult = DeclaredRun & {
@@ -68,8 +71,8 @@ export const evidenceDirectory = (run: DeclaredRun) =>
   run.file + "-" + run.group.replaceAll(":", "-");
 
 /**
- * Run one declared (group, file) with the invocation a one-file job used, stop everything it
- * started before the next file, and collect only the evidence its runs left.
+ * Run one declared (group, file) as its own `e2e:<target>` process, stop everything it started
+ * before the next file, and collect only the evidence its runs left.
  */
 export async function runDeclaredFile(run: Resolved, options: Options): Promise<DeclaredResult> {
   const log = options.log ?? console.log;
@@ -112,12 +115,23 @@ export async function runDeclaredFile(run: Resolved, options: Options): Promise<
   try {
     await collectNewE2eEvidence(roots, before, destination);
   } catch (error) {
-    // A failed collection step failed the one-file job; it still fails the file, not the shard.
+    // Missing evidence fails the file, so a pass always comes with its record.
     log(`::error::Could not collect evidence for ${runKey(run)}: ${String(error)}`);
     if (result.outcome === "passed") result.outcome = "failed";
   }
+  // A file stopped at its deadline can leave its database containers to the harness's own
+  // five-minute sweep; the next file starts without them.
+  if (result.outcome !== "passed" && options.ownsDocker) removeLeftoverDatabases(log);
   record(result);
   return result;
+}
+
+function removeLeftoverDatabases(log: (line: string) => void) {
+  const filter = ["--filter", "label=executor.e2e.role=cloud-postgres"];
+  const listed = spawnSync("docker", ["ps", "--all", "--quiet", ...filter], { encoding: "utf8" });
+  const ids = listed.status === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : [];
+  if (ids.length && spawnSync("docker", ["rm", "--force", ...ids]).status !== 0)
+    log("::warning::Could not remove leftover e2e database containers");
 }
 
 const duration = (seconds: number) =>
@@ -168,6 +182,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     graceMs: 30_000,
     signal: controller.signal,
     ...(process.env.GITHUB_STEP_SUMMARY ? { summary: process.env.GITHUB_STEP_SUMMARY } : {}),
+    ownsDocker: process.env.GITHUB_ACTIONS === "true",
   });
   process.exitCode = results.every((result) => result.outcome === "passed") ? 0 : 1;
 }

@@ -45,7 +45,7 @@ test("declared shards pay setup once, then run their planned files within the pl
     assert.equal(upload.with.name, "${{ matrix.shard }}", id);
     const shards = matrices[id]!.include;
     assert.ok(shards.length > 0, id);
-    // Each shard replaces several one-file jobs that each had ten minutes.
+    // A shard's budget covers setup, its planned files and one file running to its own deadline.
     for (const shard of shards) {
       assert.ok(shard.shard.startsWith(id + "-"), shard.shard);
       assert.ok(shard.timeout > 10 + fileDeadlineMinutes && shard.timeout <= 30, shard.shard);

@@ -38,7 +38,9 @@ test("shards are planned near eight minutes and each job budget covers its shard
     const seconds = runs.map(estimate);
     const total = seconds.reduce((sum, value) => sum + value, 0);
     const shards = declaredMatrices()[job]!.include;
-    assert.equal(shards.length, Math.max(1, Math.ceil(total / shardSeconds)), job);
+    // As few shards as keep the average at or under the target.
+    assert.ok(total / shards.length <= shardSeconds, job);
+    assert.ok(shards.length === 1 || total / (shards.length - 1) > shardSeconds, job);
     const loads = shards.map((shard) =>
       shardRuns(shard.runs).reduce((sum, run) => sum + estimate(run), 0),
     );
@@ -96,7 +98,9 @@ test("an affected selection plans only its files, in at least one shard per sele
   const estimate = estimator(readDeclaredDurations());
   for (const [job, runs] of Object.entries(declaredRuns(files))) {
     const total = runs.map(estimate).reduce((sum, value) => sum + value, 0);
-    assert.equal(subset[job]!.include.length, runs.length ? Math.ceil(total / shardSeconds) : 0);
+    const count = subset[job]!.include.length;
+    assert.ok(runs.length ? count > 0 && total / count <= shardSeconds : count === 0, job);
+    assert.ok(count <= 1 || total / (count - 1) > shardSeconds, job);
     assert.deepEqual(pairs(job, subset).sort(), runs.map(runKey).sort(), job);
   }
   assert.deepEqual(declaredMatrices([]), {

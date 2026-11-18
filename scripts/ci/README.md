@@ -18,6 +18,10 @@ This command runs the complete ordinary PR fast lane; it does not establish full
 
 After changing `upstream.json`, fetch its exact commit into `.upstream` and run `node scripts/ci/snapshot-upstream-inputs.ts` to regenerate the input file inventory. The command reads that commit's Git tree; prepared or untracked files do not enter the snapshot. The coverage gate independently checks the snapshot against the pin.
 
+## Declared e2e shards
+
+`select` plans the declared e2e files into shards of about eight minutes, using `scripts/ci/declared-durations.json`. That file holds the mean measured seconds per `<group> <file>`, taken from recent full Checks. A file it doesn't list costs only balance, never coverage. To refresh it, read the per-file seconds from the `declared-run.json` records in a full Check's declared shard artifacts and write the means back. The planner tests check the result.
+
 ## Keep e2e coverage explicit
 
 `bun scripts/ci/check-e2e-coverage.ts` runs in the fast lane after preparation. It names test calls and standalone checks that no declared runner or workflow reaches. Wire each omission into a CI group or job, or add a reviewed entry to `scripts/ci/e2e-exceptions.json` with a reason and the exact fingerprint from `.generated/ci/e2e-coverage.json`. The fingerprint includes the prepared spec and its plan. Changed fingerprints require renewed review, and selected or deleted entries must be removed. Exceptions never expand automatically to new tests in the same file.

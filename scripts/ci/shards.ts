@@ -7,7 +7,7 @@ const repository = fileURLToPath(new URL("../../", import.meta.url));
 
 /** About eight minutes of test per shard keeps setup a small share of each job. */
 export const shardSeconds = 480;
-/** A file's own bound in run-declared: about what a ten-minute one-file job left after setup. */
+/** A file's own bound in run-declared, above the slowest measured file (about 7 minutes). */
 export const fileDeadlineMinutes = 8;
 /** Checkout, toolchain, prepare:upstream, e2e:prepare and the browser measure about 2.65 minutes; doubled for cold caches. */
 const setupMinutes = 5;
@@ -19,7 +19,7 @@ export type DeclaredRun = { group: string; file: string };
 export const runKey = (run: DeclaredRun) => run.group + " " + run.file;
 
 /** Measured test seconds per "<group> <file>"; a missing file only costs balance, never coverage. */
-export function readDeclaredDurations(root = repository): Record<string, number> {
+export function readDeclaredDurations(root = repository) {
   const path = join(root, "scripts/ci/declared-durations.json");
   if (!existsSync(path)) return {};
   const source: unknown = JSON.parse(readFileSync(path, "utf8"));
