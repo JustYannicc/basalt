@@ -10,8 +10,10 @@ export const failureCodec = Schema.Struct({
   provider: Schema.optional(
     Schema.Struct({
       type: Schema.String,
+      message: Schema.optional(Schema.String),
       reason: Schema.optional(Schema.String),
       status: Schema.optional(Schema.Number),
+      code: Schema.optional(Schema.String),
       exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
       migration: Schema.optional(
         Schema.Struct({
@@ -25,6 +27,16 @@ export const failureCodec = Schema.Struct({
         }),
       ),
       codes: Schema.optional(Schema.Array(Schema.Number)),
+      request: Schema.optional(Schema.Struct({ method: Schema.String, path: Schema.String })),
+      cause: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            type: Schema.String,
+            code: Schema.optional(Schema.String),
+            message: Schema.optional(Schema.String),
+          }),
+        ),
+      ),
     }),
   ),
   delta: Schema.optional(
