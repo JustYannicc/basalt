@@ -20,10 +20,11 @@ const recorded = JSON.parse(await readFile(join(fixtures, "github-responses.json
 const framework = join(root, ".upstream/packages/apps/src");
 const load = (path) => import(pathToFileURL(path).href);
 // The REST router keeps GitHub's compiled description in the host's app cache. This is the cache
-// a Durable Object gives apps, on an in-memory database.
+// a Durable Object gives apps, on an in-memory database, behind the same isolated boundary.
 const appCache = join(root, ".upstream/packages/app-cache/src");
 const { sqliteCache } = await load(join(appCache, "sqlite.ts"));
 const { Effect } = await load(createRequire(join(appCache, "sqlite.ts")).resolve("effect"));
+const { isolatedCacheSession } = await load(join(framework, "implementation/cache-session.ts"));
 const database = new Database(":memory:");
 const cached = sqliteCache({
   sql: {
@@ -34,10 +35,10 @@ const cached = sqliteCache({
   },
   transactionSync: (work) => database.transaction(work)(),
 });
-const cache = {
-  transport: (command) => cached("github", command).pipe(Effect.map(({ reply }) => reply)),
-  background: (task) => Effect.ignore(task),
-};
+const session = isolatedCacheSession(async (command) => ({
+  ok: true,
+  value: (await Effect.runPromise(cached("github", command))).reply,
+}));
 const directory = await mkdtemp(join(tmpdir(), "github-runtime-"));
 // Only import resolution changes. Destinations, declarations and handlers stay exactly as served.
 const publicExports = {
@@ -117,7 +118,7 @@ try {
   const request = async (command, accounts) => {
     const response = await handler(
       new Request("https://fixture.invalid", { method: "POST", body: JSON.stringify(command) }),
-      { ...host.hostContext(accounts), cache },
+      { ...host.hostContext(accounts), cache: session.cache },
     );
     return await response.json();
   };
@@ -156,6 +157,7 @@ try {
     }),
   );
 } finally {
+  await session.cancel();
   globalThis.fetch = originalFetch;
   database.close();
   await rm(directory, { recursive: true, force: true });
