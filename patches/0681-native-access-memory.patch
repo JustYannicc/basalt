@@ -2,7 +2,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-access-memory.ts b/pack
 new file mode 100644
 --- /dev/null
 +++ b/packages/mcp-auth/src/implementation/native-access-memory.ts
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,50 @@
 +import { Effect } from "effect";
 +import { authCall } from "./auth-call.ts";
 +
@@ -14,6 +14,10 @@ new file mode 100644
 + */
 +const memoryMs = 3_000;
 +const capacity = 1_000;
++
++/** Whether an answer whose rows were read at `readAt` may still be served at `now`. */
++export const servable = (now: number, deadline: number, readAt: number) =>
++  now < Math.min(deadline, readAt + memoryMs);
 +
 +/** Allowed answers by bearer digest. An entry never outlives its own deadline. */
 +export const recentAnswers = <V>() => {
@@ -29,9 +33,8 @@ new file mode 100644
 +    /** `readAt` is when the answer's rows were read, before any slow step that followed. */
 +    set: (key: string, value: V, deadline: number, readAt: number) => {
 +      entries.delete(key);
-+      const until = Math.min(deadline, readAt + memoryMs);
-+      if (until <= Date.now()) return;
-+      entries.set(key, { value, until });
++      if (!servable(Date.now(), deadline, readAt)) return;
++      entries.set(key, { value, until: Math.min(deadline, readAt + memoryMs) });
 +      for (const oldest of entries.keys()) {
 +        if (entries.size <= capacity) break;
 +        entries.delete(oldest);
@@ -63,7 +66,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
  import type { NativeGrantDisplay } from "../contracts/native-display.ts";
  import { authCall, parse, runAuth } from "./auth-call.ts";
  import { deviceDecisionStep } from "./device-decision-step.ts";
-+import { bearerDigest, recentAnswers } from "./native-access-memory.ts";
++import { bearerDigest, recentAnswers, servable } from "./native-access-memory.ts";
  
  /** Kept outside GrantPolicy so an older server cannot interpret a device as API authority. */
  export const NativeGrantPolicy = Schema.Struct({
@@ -80,20 +83,24 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
    ) => Effect.Effect<void | NativeGrantDisplay, APIError>;
    readonly revoke: (
      context: GenericEndpointContext,
-@@ -73,6 +78,12 @@
+@@ -71,8 +76,16 @@
+ export const isNativeGrant = (id: string) => id.startsWith("native:");
+ const invalid = () => new APIError("UNAUTHORIZED");
  
++interface Answer {
++  readonly access: NativeGrantAccess;
++  readonly expiresAt: number;
++  readonly readAt: number;
++  readonly facts: object;
++}
++
  /** Better Auth owns tokens; native authority lives in the existing revocable grant record. */
  export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope[]>) => {
-+  const remembered = recentAnswers<{
-+    readonly access: NativeGrantAccess;
-+    readonly expiresAt: number;
-+    readonly readAt: number;
-+    readonly facts: object;
-+  }>();
++  const remembered = recentAnswers<Answer>();
    const stored = (ctx: GenericEndpointContext, id: GrantId) =>
      Effect.gen(function* () {
        if (!isNativeGrant(id)) return yield* Effect.fail(invalid());
-@@ -86,7 +97,7 @@
+@@ -86,7 +99,7 @@
          access: NativeGrantAccess.make({ id, userId: row.userId, clientId: row.clientId, policy }),
        };
      });
@@ -102,7 +109,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
      Effect.gen(function* () {
        const { row, access } = yield* stored(ctx, id);
        if (row.revoked) return yield* Effect.fail(invalid());
-@@ -107,9 +118,47 @@
+@@ -107,9 +120,47 @@
          consent.scopes.some((scope) => scope !== "native" && scope !== "offline_access")
        )
          return yield* Effect.fail(invalid());
@@ -153,7 +160,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
    const checkIssue = (
      ctx: GenericEndpointContext,
      id: string | undefined,
-@@ -183,28 +232,37 @@
+@@ -183,28 +234,46 @@
          );
          return yield* parse(Stored, row);
        }),
@@ -174,14 +181,23 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
 -        const payload = yield* authCall(() =>
 -          Promise.resolve(getOAuthProviderApi(ctx, provider).requireActiveAccessToken(token)),
 +        const key = options?.remember === true ? yield* bearerDigest(token) : undefined;
++        const answer = (known: Answer | undefined) =>
++          Effect.gen(function* () {
++            const resolved = known ?? (yield* resolve(ctx, token));
++            const access = yield* confirm(ctx, resolved.access, {
++              display: options?.display === true,
++              ...(key === undefined ? {} : { facts: resolved.facts }),
++            });
++            return { resolved, access };
++          });
 +        return yield* Effect.gen(function* () {
 +          const known = key === undefined ? undefined : remembered.get(key);
-+          const resolved = known ?? (yield* resolve(ctx, token));
-+          const access = yield* confirm(ctx, resolved.access, {
-+            display: options?.display === true,
-+            ...(key === undefined ? {} : { facts: resolved.facts }),
-+          });
-+          if (key !== undefined && known === undefined)
++          let { resolved, access } = yield* answer(known);
++          // A remembered answer can age past its bound while the pool answers; read it again.
++          const now = yield* Clock.currentTimeMillis;
++          if (known !== undefined && !servable(now, known.expiresAt, known.readAt))
++            ({ resolved, access } = yield* answer(undefined));
++          if (key !== undefined && resolved !== known)
 +            remembered.set(key, resolved, resolved.expiresAt, resolved.readAt);
 +          return { ...access, expiresAt: resolved.expiresAt, checkedAt: resolved.readAt };
 +        }).pipe(
