@@ -179,3 +179,29 @@ jobs:
         run: npm run prepare:upstream
       - name: Restore each encrypted checkpoint, destroy, and verify absence
         run: node scripts/release-preview/rehearsal-cleanup.ts
+
+  # Lists, deletes and verifies the managed registry's rehearsal images (`basalt-rehearsal-*`), which
+  # a failed teardown can leave. Started by labelling a pull request; it deploys nothing.
+  registry-cleanup:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'release-rehearsal-registry-cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: List, delete and verify rehearsal registry images
+        run: |
+          node scripts/release-preview/rehearsal-registry-cleanup.ts list
+          node scripts/release-preview/rehearsal-registry-cleanup.ts delete
