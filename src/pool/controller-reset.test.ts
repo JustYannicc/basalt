@@ -4,6 +4,7 @@ import {
   controllerHoldBytes,
   controllerInstanceEnded,
   controllerReplayDelayMs,
+  controllerReplayWindowMs,
   fetchController,
   type ControllerHop,
 } from "./controller-reset.ts";
@@ -190,6 +191,44 @@ test("a model body too large to hold is sent once and gets native retry advice",
   assert.deepEqual(
     lines.map((line) => [line.outcome, line.saved, line.reason]),
     [["retry_advised", false, "body_too_large"]],
+  );
+});
+
+test("a call cut after the device assertion's window gets retry advice instead of a stale replay", async (context) => {
+  let clock = 0;
+  const h = harness(context, [
+    async () => {
+      clock = controllerReplayWindowMs + 1;
+      throw reset();
+    },
+  ]);
+  h.hop.now = () => clock;
+  const response = await fetchController(
+    new Request("https://pool.example/v1/responses/compact", { method: "POST", body: "{}" }),
+    h.hop,
+  );
+  assert.equal(h.resolved, 1);
+  assert.equal(response.status, 503);
+  const { lines, calls } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved, line.reason]),
+    [["retry_advised", false, "too_late"]],
+  );
+  assert.equal(calls[0].requestId, lines[0].requestId);
+  assert.equal(calls[0].elapsedMs, controllerReplayWindowMs + 1);
+});
+
+test("a replay the new instance refuses is not counted as saved", async (context) => {
+  const h = harness(context, [fails(reset), async () => new Response(null, { status: 503 })]);
+  const response = await fetchController(
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
+    h.hop,
+  );
+  assert.equal(response.status, 503);
+  const { lines } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved]),
+    [["replayed", false]],
   );
 });
 

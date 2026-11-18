@@ -12,6 +12,8 @@ import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavail
 export const controllerReplayDelayMs = 1_000;
 /** A model call's body is held, up to this size, only until the controller answers. */
 export const controllerHoldBytes = 4 * 1024 * 1024;
+/** A device call's signed assertion lives 25 s (token.ts); a later replay would be refused as stale. */
+export const controllerReplayWindowMs = 20_000;
 
 // The platform may end the controller instance at any time; this is its "reconnect or retry" error.
 const instanceEnded = /\bDurable Object instance is no longer active\b/i;
@@ -33,10 +35,17 @@ export interface ControllerHop {
   env: SentryEnv;
   defer(work: Promise<unknown>): void;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  now?: () => number;
 }
 
-type Outcome = "replayed" | "replay_failed" | "retry_advised" | "surfaced" | "stream_ended";
-type Reason = "body_too_large" | "not_replayable";
+type Outcome =
+  | "replayed"
+  | "replay_failed"
+  | "retry_advised"
+  | "surfaced"
+  | "client_left"
+  | "stream_ended";
+type Reason = "body_too_large" | "body_unreadable" | "not_replayable" | "too_late";
 
 /** These reads write no request record, choose no account and reserve no usage in the controller. */
 function safeRead(request: Request): boolean {
@@ -56,12 +65,14 @@ function modelCall(request: Request): boolean {
   );
 }
 
+type Held = { body: Blob } | { refused: "body_too_large" | "body_unreadable" };
+
 /** Reads a tee of the body beside the real send, and gives up past the bound. */
 function hold(body: ReadableStream<Uint8Array> | null) {
-  if (!body) return { bytes: Promise.resolve(new Uint8Array()), release() {} };
+  if (!body) return { held: Promise.resolve<Held>({ body: new Blob() }), release() {} };
   const reader = body.getReader();
   const release = () => void reader.cancel().catch(() => {});
-  const bytes = (async () => {
+  const held = (async (): Promise<Held> => {
     const chunks: Uint8Array[] = [];
     let size = 0;
     try {
@@ -71,23 +82,22 @@ function hold(body: ReadableStream<Uint8Array> | null) {
         size += value.byteLength;
         if (size > controllerHoldBytes) {
           release();
-          return undefined;
+          return { refused: "body_too_large" };
         }
         chunks.push(value);
       }
     } catch {
-      return undefined;
+      return { refused: "body_unreadable" };
     }
-    const joined = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      joined.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return joined;
+    return { body: new Blob(chunks) };
   })();
-  return { bytes, release };
+  return { held, release };
 }
+
+const endpointOf = (request: Request) => {
+  const pathname = new URL(request.url).pathname;
+  return endpointMetadata(pathname).endpoint ?? pageTemplate(pathname);
+};
 
 function report(
   hop: ControllerHop,
@@ -96,6 +106,7 @@ function report(
   outcome: Outcome,
   error: unknown,
   reason?: Reason,
+  saved = false,
 ) {
   const pathname = new URL(request.url).pathname;
   console.error(
@@ -104,11 +115,11 @@ function report(
       count: 1,
       requestId,
       outcome,
-      saved: outcome === "replayed",
+      saved,
       ...(reason ? { reason } : {}),
       cause: resetCause(error) ?? "transport",
       method: ["GET", "HEAD", "POST"].includes(request.method) ? request.method : "other",
-      endpoint: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
+      endpoint: endpointOf(request),
     }),
   );
   hop.defer(captureError(hop.env, "pool_controller_interrupted", pathname, undefined, requestId));
@@ -134,10 +145,13 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
  */
 export async function fetchController(request: Request, hop: ControllerHop): Promise<Response> {
   const model = modelCall(request);
-  const held = hold(model && request.body ? request.clone().body : null);
+  const copy = hold(model && request.body ? request.clone().body : null);
+  const now = hop.now ?? Date.now;
+  const requestId = crypto.randomUUID();
+  const begun = now();
   let attempt = 0;
   const send = async (outgoing: Request) => {
-    const started = Date.now();
+    const started = now();
     attempt++;
     try {
       return await hop.controller().fetch(outgoing);
@@ -145,9 +159,11 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
       console.error(
         "POOL_CONTROLLER_CALL_FAILED",
         JSON.stringify({
-          at: Date.now(),
+          at: now(),
+          requestId,
+          endpoint: endpointOf(request),
           attempt,
-          elapsedMs: Date.now() - started,
+          elapsedMs: now() - started,
           ...shape(error),
         }),
       );
@@ -159,10 +175,9 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
     response = await send(request);
   } catch (error) {
     if (!controllerInstanceEnded(error) || request.signal.aborted) {
-      held.release();
+      copy.release();
       throw error;
     }
-    const requestId = crypto.randomUUID();
     if (!model && !safeRead(request)) {
       // A model socket has no body to hold; a control write's callers keep today's failure.
       const modelRoute = isPublicModelPath(new URL(request.url).pathname);
@@ -177,9 +192,13 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
       if (!modelRoute) throw error;
       return retryAdvice(request, requestId);
     }
-    const body = await held.bytes;
-    if (!body) {
-      report(hop, request, requestId, "retry_advised", error, "body_too_large");
+    const held = await copy.held;
+    if ("refused" in held) {
+      report(hop, request, requestId, "retry_advised", error, held.refused);
+      return retryAdvice(request, requestId);
+    }
+    if (now() - begun > controllerReplayWindowMs) {
+      report(hop, request, requestId, "retry_advised", error, "too_late");
       return retryAdvice(request, requestId);
     }
     try {
@@ -189,20 +208,25 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
           ? new Request(request.url, {
               method: request.method,
               headers: request.headers,
-              body,
+              body: held.body,
+              redirect: request.redirect,
               signal: request.signal,
             })
           : request,
       );
     } catch (replayError) {
+      if (request.signal.aborted) {
+        report(hop, request, requestId, "client_left", error);
+        throw replayError;
+      }
       report(hop, request, requestId, "replay_failed", replayError);
-      if (request.signal.aborted || !controllerInstanceEnded(replayError)) throw replayError;
+      if (!controllerInstanceEnded(replayError)) throw replayError;
       return retryAdvice(request, requestId);
     }
-    report(hop, request, requestId, "replayed", error);
+    report(hop, request, requestId, "replayed", error, undefined, response.ok);
   }
   // The answer has started, so the held copy can never be sent again.
-  held.release();
+  copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
   return nativeRuntimeStream(response, request, (error) =>
     report(
