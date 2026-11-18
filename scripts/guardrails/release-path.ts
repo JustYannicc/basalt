@@ -14,7 +14,7 @@ export function onReleasePath(file: string, paths = releasePaths): boolean {
 
 // -z keeps unusual file names unquoted, so every release-path file is matched.
 const gitRecords = (root: string, args: string[]) =>
-  execFileSync("git", ["-c", "core.quotePath=false", ...args, "-z"], {
+  execFileSync("git", ["-c", "core.quotePath=false", args[0]!, "-z", ...args.slice(1)], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 256 << 20,
@@ -23,7 +23,12 @@ const gitRecords = (root: string, args: string[]) =>
 // Covers path, mode and blob of every release-path file, so two commits share the hash
 // exactly when their release path is byte-identical, whatever else changed.
 export function releasePathHash(root: string, commit: string, paths = releasePaths): string {
-  const entries = gitRecords(root, ["ls-tree", "-r", "--full-tree", commit])
+  // Narrow the listing to each glob's literal directory or file; the glob itself still decides.
+  const prefixes = paths.map((pattern) =>
+    pattern.includes("*") ? pattern.slice(0, pattern.indexOf("*")).replace(/[^/]*$/, "") : pattern,
+  );
+  const pathspecs = prefixes.includes("") ? [] : ["--", ...new Set(prefixes)];
+  const entries = gitRecords(root, ["ls-tree", "-r", "--full-tree", commit, ...pathspecs])
     .filter((line) => line && onReleasePath(line.slice(line.indexOf("\t") + 1), paths))
     .sort();
   return createHash("sha256").update(entries.join("\n")).digest("hex");
