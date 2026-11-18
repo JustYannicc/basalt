@@ -33,8 +33,8 @@ import {
 /**
  * `controllerActive` is the source after its controller phase: every Worker activated, nothing
  * adopted. `adopted` is that source after its adopt committed, as the production observe found it.
- * `staleReadiness` is an abandoned source whose image record froze the live controller while the
- * deferred readiness row still names an older one.
+ * `staleReadiness` is an abandoned source whose release froze the controller an earlier settlement
+ * proved live, while the deferred readiness row still names the one before it.
  */
 export async function releaseSettlementFixture(
   context: TestContext,

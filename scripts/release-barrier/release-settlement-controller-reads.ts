@@ -5,6 +5,9 @@ import {
   ControllerCode,
   SlotIdentity,
   SlotSelection,
+  sameControllerCode,
+  sameIdentity,
+  sameTarget,
 } from "../../src/pool/runtime-slots/contract.ts";
 import { bounded } from "../database-budget-readiness.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
@@ -17,7 +20,6 @@ import {
 } from "./baseline-controller.ts";
 import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
-import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import type { RuntimeReleaseState } from "./runtime-release-state.ts";
 
 /** The live controller's handoff answers a witness read for a slot it never recorded with this closed reason. */
@@ -147,32 +149,38 @@ export function readAdoptedController(input: {
         record: input.record,
         dispatched,
       });
-    const inspect = async (refused: string) => {
+    // The live handoff refuses a command signed for another controller code as slot_identity.
+    const inspect = async () => {
       const response = await send({ action: "inspect" });
       if (response.status !== 200) {
         await response.body?.cancel();
-        throw refuse(refused);
+        throw refuse(
+          response.status === 409 &&
+            runtimeResponseDiagnostic(response)?.runtimeReason === missingWitnessReason
+            ? "release-settlement-controller-identity-refused"
+            : "release-settlement-controller-read-refused",
+        );
       }
       const value = Schema.decodeUnknownSync(Schema.Struct({ result: Inspection }))(
         await bounded(response.json(), signal),
       ).result;
-      sameProvisioningValue("release-settlement.controller-code", code, value.controllerCode);
+      if (!sameControllerCode(code, value.controllerCode))
+        throw refuse("release-settlement-controller-identity-refused");
       return value.selection;
     };
-    const selection = await inspect("release-settlement-controller-identity-refused");
+    const selection = await inspect();
     if (!selection) throw selectionRefusal("absent");
     if (selection.epoch !== 1) throw selectionRefusal("epoch");
     const { active } = selection;
     if (
-      !input.instances.some(
-        (instanceId) =>
-          canonical(legacyAdoptionTarget(input.root, instanceId)) === canonical(active.target),
+      !input.instances.some((instanceId) =>
+        sameTarget(legacyAdoptionTarget(input.root, instanceId), active.target),
       )
     )
       throw selectionRefusal("target");
     if (
       !active.identity ||
-      canonical(active.identity) !== canonical({ ...active.target, bootId: active.identity.bootId })
+      !sameIdentity(active.identity, { ...active.target, bootId: active.identity.bootId })
     )
       throw selectionRefusal("identity");
     if (active.fenced) throw selectionRefusal("fenced");
@@ -189,7 +197,7 @@ export function readAdoptedController(input: {
     const elapsed = performance.now() - sentAt;
     const health = Schema.decodeUnknownSync(ActiveHealth)(await readResult(healthResponse, signal));
     if (health.leaseMs <= elapsed) throw refuse("release-settlement-active-health-expired");
-    if (canonical(health.identity) !== canonical(identity))
+    if (!sameIdentity(health.identity, identity))
       throw refuse("release-settlement-active-health-identity");
     const fleetDigest = await readEmptyFleet(await send({ action: "fleet-inspect" }), signal);
     const witnessed = await send({ action: "witness", target: active.target });
@@ -202,9 +210,9 @@ export function readAdoptedController(input: {
     const witness = Schema.decodeUnknownSync(UnattestedAdoptionReadback)(raw);
     if (witness.operationId !== `adopt-${input.sourceCandidate}`)
       throw witnessRefusal("operationId");
-    if (canonical(witness.identity) !== canonical(identity)) throw witnessRefusal("identity");
-    sameProvisioningValue("release-settlement.witness-code", code, witness.controllerCode);
-    const final = await inspect("release-settlement-controller-read-refused");
+    if (!sameIdentity(witness.identity, identity)) throw witnessRefusal("identity");
+    if (!sameControllerCode(code, witness.controllerCode)) throw witnessRefusal("controllerCode");
+    const final = await inspect();
     if (canonical(final) !== canonical(selection))
       throw refuse("release-settlement-selection-changed");
     return {

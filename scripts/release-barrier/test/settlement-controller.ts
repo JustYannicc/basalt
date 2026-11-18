@@ -136,9 +136,10 @@ export function settlementController(input: {
     bootId: string;
     fleet: Record<string, unknown>;
     fleetResponse?: () => Response;
+    firstInspect?: (live: () => Promise<Response>) => Response | Promise<Response>;
     finalInspect?: (live: () => Promise<Response>) => Response | Promise<Response>;
     activeHealth?: (live: () => Promise<Response>) => Response | Promise<Response>;
-    witness?: () => Response;
+    witness?: (live: () => Promise<Response>) => Response | Promise<Response>;
   } = { bootId: "baseline-boot", fleet: { resources: [], bindings: [] } };
   return Object.assign(knobs, {
     storage,
@@ -232,10 +233,11 @@ export function settlementController(input: {
       if (canonical(command.controllerCode) !== canonical(input.code)) return live(forwarded);
       if (command.action === "fleet-inspect")
         return knobs.fleetResponse?.() ?? Response.json({ result: knobs.fleet });
-      if (command.action === "witness") return knobs.witness?.() ?? live(forwarded);
       const real = () => live(forwarded);
+      if (command.action === "witness") return knobs.witness?.(real) ?? real();
       if (command.action === "active-health") return knobs.activeHealth?.(real) ?? real();
       inspections++;
+      if (inspections === 1 && knobs.firstInspect) return knobs.firstInspect(real);
       if (inspections > 1 && knobs.finalInspect) return knobs.finalInspect(real);
       if (knobs.realReads) return real();
       const selected =

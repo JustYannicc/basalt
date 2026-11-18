@@ -41,6 +41,17 @@ const healthJson = async (live: () => Promise<Response>) => {
     Schema.Struct({ result: Schema.Struct({ identity: Schema.Unknown, leaseMs: Schema.Number }) }),
   )(await response.json()).result;
 };
+const rewritten = async (
+  live: () => Promise<Response>,
+  change: (result: Record<string, unknown>) => Record<string, unknown>,
+) => {
+  const response = await live();
+  assert.equal(response.status, 200);
+  const { result } = Schema.decodeUnknownSync(
+    Schema.Struct({ result: Schema.Record(Schema.String, Schema.Unknown) }),
+  )(await response.json());
+  return Response.json({ result: change(result) });
+};
 const countBridges = (f: SettlementFixture) => {
   const connect = f.io.connect!;
   let opened = 0;
@@ -142,16 +153,16 @@ test("a slow bridge open or read record does not count against the active runtim
   const f = await controllerAdoptedFixture(context);
   const connect = f.io.connect!;
   f.io.connect = async (...args) => {
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
     return connect(...args);
   };
   const recordRead = f.io.runtimeRead!;
   f.io.runtimeRead = async (call) => {
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     return recordRead(call);
   };
   f.controller.activeHealth = async (live) =>
-    Response.json({ result: { ...(await healthJson(live)), leaseMs: 100 } });
+    Response.json({ result: { ...(await healthJson(live)), leaseMs: 1_000 } });
   assert.equal(
     (await planSettlement(f, "controller-active-adopted")).proof.disposition,
     "controller-active-adopted",
@@ -196,6 +207,68 @@ const refusals: [string, RegExp, (f: SettlementFixture) => unknown][] = [
     (f) => {
       f.sourceController = { ...f.code, workerInput: "9".repeat(64) };
     },
+  ],
+  [
+    "a refused first inspect",
+    /release-settlement-controller-read-refused \(PoolWorker\)/,
+    (f) => (f.controller.firstInspect = () => new Response(null, { status: 503 })),
+  ],
+  [
+    "an inspect answered under another controller code",
+    /release-settlement-controller-identity-refused \(PoolWorker\)/,
+    (f) =>
+      (f.controller.firstInspect = (live) =>
+        rewritten(live, (result) => ({
+          ...result,
+          controllerCode: { ...f.code, workerInput: "9".repeat(64) },
+        }))),
+  ],
+  [
+    "an active identity that is not its target and boot",
+    /release-settlement-adopted-selection-unexpected \(selection\.identity\)/,
+    (f) =>
+      (f.controller.firstInspect = (live) =>
+        rewritten(live, (result) => ({
+          ...result,
+          selection: {
+            ...selected,
+            active: { ...selected.active, identity: { ...identity, applicationVersion: "2" } },
+          },
+        }))),
+  ],
+  [
+    "a retiring active slot",
+    /release-settlement-adopted-selection-unexpected \(selection\.retirement\)/,
+    (f) =>
+      select(f, {
+        ...selected,
+        active: { ...selected.active, retirement: { operationId: "retire", status: "started" } },
+      }),
+  ],
+  [
+    "a witness for another boot",
+    /release-settlement-adoption-witness-unexpected \(witness\.identity\)/,
+    (f) =>
+      (f.controller.witness = (live) =>
+        rewritten(live, (result) => ({
+          ...result,
+          identity: { ...identity, bootId: "other-boot" },
+        }))),
+  ],
+  [
+    "a witness under another controller code",
+    /release-settlement-adoption-witness-unexpected \(witness\.controllerCode\)/,
+    (f) =>
+      (f.controller.witness = (live) =>
+        rewritten(live, (result) => ({
+          ...result,
+          controllerCode: { ...f.code, workerInput: "9".repeat(64) },
+        }))),
+  ],
+  [
+    "a refused final inspect",
+    /release-settlement-controller-read-refused \(PoolWorker\)/,
+    (f) => (f.controller.finalInspect = () => new Response(null, { status: 503 })),
   ],
   [
     "no selection",
@@ -265,7 +338,7 @@ const refusals: [string, RegExp, (f: SettlementFixture) => unknown][] = [
   ],
   [
     "a fleet permission",
-    /release-settlement-fleet-present/,
+    /release-settlement-fleet-present \(PoolWorker\)/,
     (f) =>
       (f.controller.fleet = {
         ...f.controller.fleet,
@@ -274,7 +347,7 @@ const refusals: [string, RegExp, (f: SettlementFixture) => unknown][] = [
   ],
   [
     "fleet rows",
-    /release-settlement-fleet-present/,
+    /release-settlement-fleet-present \(PoolWorker\)/,
     (f) =>
       (f.controller.fleet = {
         ...f.controller.fleet,

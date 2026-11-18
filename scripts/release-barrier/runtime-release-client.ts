@@ -33,7 +33,7 @@ import { readFirstHandoffAdoption } from "./first-handoff-runtime.ts";
 import { runtimeApplicationPins, type runtimeReleaseState } from "./runtime-release-state.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { verifyContainerHealth } from "./container-health.ts";
-import { legacyAdoptionTarget } from "./legacy-adoption-target.ts";
+import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { awaitRuntimeStartup } from "./runtime-startup-client.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
@@ -219,9 +219,8 @@ export const runtimeReleaseClient = (input: {
           return false;
         // The adopted root is never a release's settled primary: its unattested witness cannot
         // prove readiness and its readback is bound to the adopting controller's code, so the
-        // release always promotes a fleet primary instead of asking.
-        const active = snapshot.selection!.active.target;
-        if (active.slotId === "legacy" && active.instanceId === active.controllerId) return false;
+        // release always promotes a fleet primary instead of reading its witness.
+        if (isLegacyAdoptionTarget(snapshot.selection!.active.target)) return false;
         const witness = result(
           Schema.Struct({
             configurationFingerprint: Schema.optional(Schema.String),

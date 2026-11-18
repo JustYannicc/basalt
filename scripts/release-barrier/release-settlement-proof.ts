@@ -101,7 +101,9 @@ export const collectReleaseSettlementProof = (
     // Scale-out code phases defer the readiness command, so its record still names the controller
     // that ran before the source. The signed reads below prove the source code live instead.
     // An abandoned source never activated its own controller, so the live one is the controller its
-    // image record froze; after an earlier settlement the deferred readiness row can be older still.
+    // image record froze. Today that is frozen from the same readiness row, so the codes agree; a
+    // release that instead freezes the code a settlement archive proved live can leave the deferred
+    // readiness row older, and then only the frozen code matches the live controller.
     const baseline = {
       ...recorded,
       code: sourceController ?? record.baselineController?.code ?? recorded.code,
