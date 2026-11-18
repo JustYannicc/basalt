@@ -296,6 +296,11 @@ export class NativeMemberships {
     if (!(await this.run(async (state) => state[pool]?.native))) return;
     await this.authority(pool);
   }
+  /** A recovered runtime may also have lost Home state, so the next pass reads and repairs every pool. */
+  readAll(): Promise<void> {
+    this.readAt.clear();
+    return this.tick();
+  }
   tick(): Promise<void> {
     if (this.ticking) return this.ticking;
     const work = this.tickOnce().finally(() => {
@@ -385,6 +390,8 @@ export class NativeMemberships {
     try {
       await this.install(policy);
     } catch (error) {
+      // A reservation that landed first makes the runtime refuse this older lease; read it now.
+      if (!(await this.current(policy))) return false;
       // The next pass reads the host instead of renewing again.
       this.failures.set(
         pool,

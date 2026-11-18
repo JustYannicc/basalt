@@ -225,7 +225,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
                 },
                 AbortSignal.timeout(2_000),
               );
-            await this.memberships.tick();
+            await this.memberships.readAll();
           },
         },
         beforeStage: (target, transaction) => this.fleet.stagePrimary(target, transaction),

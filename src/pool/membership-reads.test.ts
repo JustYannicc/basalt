@@ -13,7 +13,7 @@ import { signEnvelope } from "./token.ts";
 const key = "5c".repeat(32);
 const hourMs = 60 * 60_000;
 
-/** Counts every host read and Home call. Its runtime keeps the native install rules. */
+/** Counts every host read and Home call. Its runtime refuses older revisions and shorter same-revision leases. */
 function fixture(accounts: Record<string, string[] | "not-native">) {
   let now = 1_000_000;
   const host = new Map(Object.entries(accounts));
@@ -49,7 +49,7 @@ function fixture(accounts: Record<string, string[] | "not-native">) {
           driver: "basalt-home",
           driverRevision: "1",
           bindingRevision: "1",
-          homeReference: id,
+          homeReference: id.startsWith("unbound-") ? null : id,
         })),
       };
     },
@@ -231,4 +231,15 @@ test("a restarted controller reads every pool on its first pass", async () => {
   f.advance(membershipRefreshMs);
   await f.memberships.tick();
   assert.equal(f.calls.reads.length, 2);
+});
+
+test("a native pool still dirty after its read keeps reading on every pass", async () => {
+  // An account without a Home binding leaves the selection unusable until the host completes it.
+  const f = await setUp({ pool: ["unbound-account"] });
+  assert.deepEqual(await f.usable("pool"), []);
+  for (let pass = 1; pass <= 3; pass++) {
+    f.advance(membershipRefreshMs);
+    await f.memberships.tick();
+    assert.equal(f.calls.reads.length, pass);
+  }
 });
