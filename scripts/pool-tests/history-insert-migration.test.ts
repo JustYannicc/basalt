@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import {
+  beforeRowInvalidation,
   historyInsertFixture,
   insertAudit,
   insertPools,
@@ -192,7 +193,7 @@ test("v11 refuses non-UTF8 hashing atomically and preserves retained legacy hist
     await db.query(
       "CREATE TABLE basalt_model_history_migrations(name text PRIMARY KEY,completed_at timestamptz DEFAULT CURRENT_TIMESTAMP)",
     );
-    for (const migration of historySchemaMigrations.filter((item) => item.name !== rowVersion)) {
+    for (const migration of historySchemaMigrations.filter(beforeRowInvalidation)) {
       for (const sql of migration.statements) await db.query(sql);
       await db.query("INSERT INTO basalt_model_history_migrations(name) VALUES($1)", [
         migration.name,
