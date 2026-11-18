@@ -88,6 +88,42 @@ export class PlanAllowances {
           ] as [string, readonly string[], (bodies: readonly string[]) => PlanAllowance[]],
       ),
     ];
+    // Mirrors the shared resolver's source order (account evidence first, then dataset, vendor,
+    // policy, reference). A refreshed value another source already decides with keeps that
+    // source's revision, so the plan's revision survives when one source ages out and another
+    // takes over with the same value.
+    const rank = {
+      "account-absolute": 0,
+      "account-calibration": 1,
+      dataset: 2,
+      vendor: 3,
+      policy: 4,
+      reference: 5,
+      unknown: 6,
+    };
+    const deciding = Object.entries(state.sources).flatMap(([source, value]) =>
+      value.entries
+        .filter(
+          (entry) =>
+            entry.verification !== "unknown" &&
+            entry.checkedAt !== null &&
+            entry.checkedAt <= now &&
+            entry.expiresAt !== null &&
+            entry.expiresAt > now,
+        )
+        .map((entry) => ({ ...entry, sourceId: source })),
+    );
+    const sameValue = (a: PlanAllowance, b: PlanAllowance) =>
+      allowanceKey(a) === allowanceKey(b) &&
+      a.full === b.full &&
+      a.unit.id === b.unit.id &&
+      a.verification === b.verification &&
+      Boolean(a.unlimited) === Boolean(b.unlimited);
+    const decidedBy = (id: string, entry: PlanAllowance) =>
+      deciding
+        .filter((value) => value.sourceId !== id && sameValue(value, entry))
+        .filter((value) => rank[value.kind] < rank[entry.kind])
+        .sort((a, b) => rank[a.kind] - rank[b.kind])[0]?.revision;
     await Promise.all(
       jobs.map(async ([id, urls, parse]) => {
         const previous = state.sources[id];
@@ -122,14 +158,8 @@ export class PlanAllowances {
               ...entry,
               sourceId: id,
               revision:
-                old.find(
-                  (value) =>
-                    allowanceKey(value) === allowanceKey(entry) &&
-                    value.full === entry.full &&
-                    value.unit.id === entry.unit.id &&
-                    value.verification === entry.verification &&
-                    Boolean(value.unlimited) === Boolean(entry.unlimited),
-                )?.revision ??
+                decidedBy(id, entry) ??
+                old.find((value) => sameValue(value, entry))?.revision ??
                 `allowance-v1:${await digest(
                   JSON.stringify([
                     entry.vendor,

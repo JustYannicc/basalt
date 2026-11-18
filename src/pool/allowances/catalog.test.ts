@@ -160,3 +160,48 @@ test("a freshly maintained specific Max row resolves its generic display label",
   assert.equal(value.full, 5);
   assert.equal(value.kind, "dataset");
 });
+
+test("a vendor row taking over from an aged-out dataset row keeps the plan's revision", async () => {
+  const bodies: Record<string, string> = JSON.parse(
+    readFileSync(new URL("./fixtures/vendor-sources.json", import.meta.url), "utf8"),
+  );
+  const dataset = JSON.parse(fixture);
+  for (const row of dataset.options)
+    if (row.id === "claude-max-5x") {
+      row.status_class = "ok";
+      row.checked = "2026-11-13";
+    }
+  let clock = now;
+  const values = new Map<string, unknown>();
+  const registry = new PlanAllowances(
+    {
+      async get<T>(key: string) {
+        return structuredClone(values.get(key)) as T | undefined;
+      },
+      async put(key, value) {
+        values.set(key, structuredClone(value));
+      },
+    },
+    {
+      now: () => clock,
+      fetch: async (input) => {
+        const url = String(input);
+        if (url.includes("planyield")) return Response.json({ ...dataset, as_of: "2026-11-13" });
+        if (url.includes("max-plan")) return new Response(bodies["claude-max"]);
+        return new Response(null, { status: 503 });
+      },
+    },
+  );
+  await registry.refresh();
+  clock += 86_400_000;
+  await registry.refresh();
+  const before = planAllowance(await registry.read(), "claude", "Max 5x", 604_800, clock);
+  assert.equal(before.kind, "dataset");
+  // The dataset's check date passes its maximum age; the vendor page is re-checked daily.
+  clock = Date.parse("2026-11-27T12:00:00Z");
+  await registry.refresh();
+  const after = planAllowance(await registry.read(), "claude", "Max 5x", 604_800, clock);
+  assert.equal(after.kind, "vendor");
+  assert.equal(after.full, before.full);
+  assert.equal(after.revision, before.revision);
+});
