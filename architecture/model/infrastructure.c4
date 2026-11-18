@@ -275,6 +275,7 @@ model {
   basalt.deployment -[sync]-> releaseSource "download CI actions"
   basalt.build -[sync]-> containerRegistry "pull pinned images"
   basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
+  basalt.releaseUpdates -[sync]-> containerRegistry "delete disposable rehearsal images"
   basalt.build -[sync]-> packageSource "install build packages"
   basalt.deployment -[sync]-> packageSource "install deployment packages"
   basalt.modelGateway -[sync]-> deploymentProvider "read application settings and named runtime images with an account-scoped observation credential"
