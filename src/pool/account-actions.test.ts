@@ -535,6 +535,20 @@ test("a spend confirmed as a weekly reset never consumes a model reset's grant",
   assert.equal(f.counts().consumes, 2);
 });
 
+test("a partial or unknown confirmation is refused, never read as any kind", async (t) => {
+  const f = await fixture(t, "claude", [], kindGrants);
+  for (const confirmation of [
+    { kind: "weekly" },
+    { scope: { kind: "account" } },
+    { kind: "monthly", scope: { kind: "account" } },
+    { kind: "weekly", scope: { kind: "team" } },
+  ]) {
+    const response = await f.call("resets/use", { requestId, creditId: "weekly", ...confirmation });
+    assert.equal(response.status, 400, JSON.stringify(confirmation));
+  }
+  assert.equal(f.counts().consumes, 0);
+});
+
 test("two spends on one account run one after the other: the second reads grants only after the first claim answered", async (t) => {
   const f = await fixture(t, "claude", [], kindGrants);
   const grantReads = () =>

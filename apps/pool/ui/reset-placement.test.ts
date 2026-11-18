@@ -1,4 +1,4 @@
-// Where a banked reset is counted and spent: only on the window it refills, so a press on one
+// Where a banked reset may be spent from: only the window it refills, so a press on one
 // limit never spends a reset that refills another.
 import assert from "node:assert/strict";
 import { test } from "node:test";

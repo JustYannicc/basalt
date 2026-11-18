@@ -147,7 +147,7 @@ index 5d98df232..0e85fc4c1 100644
        title={resets.title}
        stale={stale}
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-index 963e52fa2..2ef355842 100644
+index 963e52fa2..368a890ff 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
 @@ -458,6 +458,36 @@ export const resetWindow = (windows: readonly Window[]) =>
@@ -155,15 +155,15 @@ index 963e52fa2..2ef355842 100644
    )?.id;
  
 +/**
-+ * The window a banked reset refills, which is where it is counted and spent: a model's reset on
-+ * that model's own window, a 5-hour reset on the account's 5-hour window, weekly and full resets
++ * The window a banked reset refills, which is the only one it may be spent from: a model's reset
++ * on that model's own window, a 5-hour reset on the account's 5-hour window, weekly and full resets
 + * on its 7-day window, and an account reset of no named kind on its longest window. A reset whose
 + * window wasn't reported, or whose scope is unknown, has no place, so it is never spent from a
 + * window it doesn't refill. A source that predates kinds names neither and keeps the longest
 + * window.
 + */
 +export function resetPlacement(
-+  reset: Pick<Balance, "scope"> & { readonly kind?: string | undefined },
++  reset: { readonly kind?: string | undefined; readonly scope?: Balance["scope"] | undefined },
 +  windows: readonly Window[],
 +): string | undefined {
 +  if (reset.kind === undefined && reset.scope === undefined) return resetWindow(windows);

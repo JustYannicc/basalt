@@ -1,5 +1,5 @@
 model {
-  extend basalt.toolsGateway.accountReadings {
+  extend basalt.pool {
     metadata {
       constraint "A banked reset control spends only credits that refill the window it sits on: a model's reset on that model's window, a 5-hour reset on the account's 5-hour window, weekly and full resets on its 7-day window, and an account reset of no named kind (Codex) on its longest account window. An account reset never sits on a model window. The control sends the confirmed kind and scope with the spend, and the pool refuses, unspent, a credit of any other kind. A reset whose window or scope is unknown is never spent from a row. Credits from a pool that predates kinds keep the longest window."
     }

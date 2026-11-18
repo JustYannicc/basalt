@@ -203,7 +203,8 @@ export class ProviderResets {
             continue;
           if (!Array.isArray(row.clears) || row.clears.some((value) => typeof value !== "string"))
             return unavailable();
-          if (row.gives_back_weekly !== undefined && typeof row.gives_back_weekly !== "boolean")
+          // Like the Home's decoder, a missing or null flag reads as false.
+          if (row.gives_back_weekly != null && typeof row.gives_back_weekly !== "boolean")
             return unavailable();
           const clears = windows.filter((window) => (row.clears as string[]).includes(window));
           credits.push({
