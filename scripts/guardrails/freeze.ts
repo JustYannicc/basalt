@@ -4,9 +4,11 @@ import { shipAlone } from "./ship-alone.ts";
 
 // When merged work has waited 12 hours for a release, main takes only what unblocks the release:
 // release-path changes, or a pull request labelled release-unblock (the label event names who).
+// Model gateway updates keep shipping too: every CLIProxyAPI release ships, frozen or not.
 // The verdict is a commit status, so the scheduled run can also turn open pull requests red.
 export const context = "release-freshness";
 export const unblockLabel = "release-unblock";
+const alwaysShips = /^cpa-updates\//u;
 
 export type FreezeVerdict = { pass: boolean; description: string };
 
@@ -14,8 +16,11 @@ export function freezeVerdict(
   health: Pick<Health, "freeze" | "waitingHours" | "hoursSinceLastGood">,
   files: string[],
   labels: string[],
+  headRef = "",
 ): FreezeVerdict {
   if (!health.freeze) return { pass: true, description: "Production releases are current." };
+  if (alwaysShips.test(headRef))
+    return { pass: true, description: "Frozen, but model gateway updates always ship." };
   const { releasePath, other } = shipAlone(files);
   if (releasePath.length > 0 && other.length === 0)
     return { pass: true, description: "Frozen, but this changes only the release path." };
@@ -44,6 +49,7 @@ function judge(repository: string, health: Health, number: number) {
     health,
     files,
     pr.labels.map((label: { name: string }) => label.name),
+    pr.head.ref,
   );
   gh([
     "api",
