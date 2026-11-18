@@ -3,7 +3,6 @@ import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { redactor } from "../release-preview/redact.ts";
-import { alchemyArgs } from "../alchemy.ts";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
 import {
@@ -184,7 +183,7 @@ function defaultStateCommand(
   const path = join(directory, "stdout.json");
   const fd = openSync(path, "w", 0o600);
   try {
-    const result = spawnSync("bun", alchemyArgs(...args), {
+    const result = spawnSync("bun", ["run", "alchemy", ...args], {
       cwd,
       env,
       encoding: "utf8",

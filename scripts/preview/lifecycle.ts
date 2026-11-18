@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { alchemyArgs } from "../alchemy.ts";
 import { describeError, redactor } from "../release-preview/redact.ts";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -525,7 +524,7 @@ export async function planStageVariant(
       output = await new Promise<string>((resolvePlan, rejectPlan) => {
         const child = spawn(
           "bun",
-          alchemyArgs("plan", mainConfig, "--stage", config.stage, "--no-input"),
+          ["run", "alchemy", "plan", mainConfig, "--stage", config.stage, "--no-input"],
           {
             cwd: cloudDirectory,
             env: {
