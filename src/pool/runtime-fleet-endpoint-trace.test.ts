@@ -350,3 +350,56 @@ test("a retained refusal re-emits its cause at the next runtime boundary", () =>
   );
   assert.equal(plain.headers.get("X-Signalbox-Runtime-Failure-Cause"), null);
 });
+
+test("each send records its own elapsed time, and a send the caller abandoned reports its wait so far", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  let now = 1_000;
+  context.mock.method(performance, "now", () => now);
+  const trace = new EndpointTrace(
+    new Request("http://runtime/install", { method: "POST" }),
+    "legacy",
+    "cell",
+  );
+  const refused = runtimeErrorResponse(
+    new PoolDependencyFailure("membership", new Error("private-dependency")),
+    "endpoint",
+  );
+  await trace.send(1, async () => {
+    now += 325;
+    return refused;
+  });
+  void trace.send(2, () => new Promise<Response>(() => {}));
+  now += 2_000;
+  trace.finish(new DOMException("private-deadline", "TimeoutError"));
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.deepEqual(fields.attempts, [
+    {
+      attempt: 1,
+      stub: 1,
+      outcome: "response",
+      status: 409,
+      elapsedMs: 325,
+      refusal: { code: "runtime_endpoint_route_transport", cause: "dependency_membership" },
+    },
+    { attempt: 2, stub: 2, outcome: "pending", elapsedMs: 2_000 },
+  ]);
+
+  const defect = new EndpointTrace(
+    new Request("http://runtime/health", { method: "POST" }),
+    "legacy",
+    "cell",
+  );
+  const response = await defect.send(
+    1,
+    async () =>
+      new Response(null, {
+        status: 500,
+        headers: {
+          "X-Signalbox-Runtime-Failure-Step": "endpoint_route",
+          "X-Signalbox-Runtime-Failure-Reason": "transport",
+        },
+      }),
+  );
+  defect.finish(response);
+  assert.equal(JSON.parse(log.mock.calls[1]!.arguments[1]).attempts[0].refusal, undefined);
+});

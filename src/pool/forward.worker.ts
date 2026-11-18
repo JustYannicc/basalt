@@ -1,6 +1,7 @@
 import {
   refuseRuntime,
   runtimeRouteDiagnostic,
+  runtimeResponseCause,
   runtimeResponseDiagnostic,
   stripRuntimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
@@ -205,6 +206,7 @@ export async function forwardPoolRequest(
       : await legacy(outbound);
     guard = "upstream_response";
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    const runtimeCause = runtimeResponseCause(upstream);
     const runtimeRequestId = endpointRequestId(upstream) ?? requestId;
     if (runtimeRefusal)
       console.error("POOL_RUNTIME_ROUTE_FAILURE", {
@@ -212,6 +214,7 @@ export async function forwardPoolRequest(
         code: "runtime-refused",
         status: upstream.status,
         ...runtimeRefusal,
+        ...(runtimeCause ? { runtimeCause } : {}),
         homeDatabasePool: databasePool(),
       });
     logDispatchTiming(upstream.headers.get(dispatchTimingHeader));

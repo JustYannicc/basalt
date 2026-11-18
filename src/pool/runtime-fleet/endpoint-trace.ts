@@ -111,6 +111,7 @@ export function failEndpointResponse(response: Response, error: unknown) {
 /** One bounded record preserves both attempts without copying exception text or request data. */
 export class EndpointTrace {
   private attempts: Attempt[] = [];
+  private started: number[] = [];
   private request: Request;
   private slotId: string;
   private cellId: string;
@@ -151,9 +152,11 @@ export class EndpointTrace {
     const attempt = this.attempts.length + 1;
     this.attempts.push({ attempt, stub, outcome: "pending" });
     const started = performance.now();
+    this.started[attempt - 1] = started;
     try {
       const response = await work();
-      const refusal = runtimeResponseRefusal(response);
+      // A 500 defect also carries step and reason headers; only a 409 is a refusal.
+      const refusal = response.status === 409 ? runtimeResponseRefusal(response) : undefined;
       this.attempts[attempt - 1] = {
         attempt,
         stub,
@@ -227,7 +230,12 @@ export class EndpointTrace {
         reconnectOutcome: this.reconnectOutcome(),
         terminalError: result instanceof Response ? null : shape(result),
         signalAborted: this.request.signal.aborted,
-        attempts: this.attempts,
+        // A send still pending when the caller gave up reports how long it had waited so far.
+        attempts: this.attempts.map((attempt, index) =>
+          attempt.outcome === "pending"
+            ? { ...attempt, elapsedMs: elapsed(this.started[index] ?? performance.now()) }
+            : attempt,
+        ),
       }),
     );
   }

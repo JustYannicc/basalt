@@ -145,14 +145,14 @@ export function runtimeResponseDiagnostic(response: Response) {
   const runtimeReason = reasons.find((value) => value === response.headers.get(reasonHeader));
   return runtimeStep && runtimeReason ? { runtimeStep, runtimeReason } : undefined;
 }
-function responseCause(response: Response) {
+export function runtimeResponseCause(response: Response) {
   return causes.find((value) => value === response.headers.get(causeHeader));
 }
 /** One closed log field: the refusal code and, when known, the failed dependency or deadline. */
 export function runtimeResponseRefusal(response: Response) {
   const diagnostic = runtimeResponseDiagnostic(response);
   if (!diagnostic) return undefined;
-  const failureCause = responseCause(response);
+  const failureCause = runtimeResponseCause(response);
   return { code: runtimeFailureCode(diagnostic), ...(failureCause ? { cause: failureCause } : {}) };
 }
 export function stripRuntimeFailureHeaders(headers: Headers) {
@@ -164,7 +164,7 @@ export function retainRuntimeFailure(response: Response, error: object) {
   retainEndpointRequestId(response, error);
   const diagnostic = runtimeResponseDiagnostic(response);
   if (diagnostic) observed.set(error, diagnostic);
-  const failureCause = responseCause(response);
+  const failureCause = runtimeResponseCause(response);
   if (diagnostic && failureCause) observedCauses.set(error, failureCause);
   return error;
 }

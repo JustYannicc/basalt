@@ -5,6 +5,7 @@ import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
+import { PoolDependencyFailure } from "./dependency-failure.ts";
 
 // Home `GET /capabilities` with carry 0284: every connection taken and callers queued behind them.
 const saturated = {
@@ -142,7 +143,10 @@ test("a refused request logs Home's last pool counters and asks for one fresh re
   route = async () =>
     new Response(null, {
       status: 503,
-      headers: runtimeFailureHeaders(new PoolRuntimeUnhealthy(), "fleet_forward"),
+      headers: runtimeFailureHeaders(
+        new PoolDependencyFailure("membership", new Error("private-dependency")),
+        "fleet_forward",
+      ),
     });
   const relayed = await forwardPoolRequest(
     new Request("https://pool.example/v8/management/usage"),
@@ -152,6 +156,9 @@ test("a refused request logs Home's last pool counters and asks for one fresh re
   assert.equal(relayed.status, 503);
   const routed = log.mock.calls.find((call) => call.arguments[0] === "POOL_RUNTIME_ROUTE_FAILURE");
   assert.deepEqual(routed?.arguments[1].homeDatabasePool, observation);
+  assert.equal(routed?.arguments[1].runtimeCause, "dependency_membership");
+  for (const header of ["Step", "Reason", "Cause"])
+    assert.equal(relayed.headers.get(`X-Signalbox-Runtime-Failure-${header}`), null);
   await Promise.all(deferred);
   assert.equal(refreshes, 2);
 });

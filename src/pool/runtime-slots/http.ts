@@ -7,7 +7,7 @@ import {
 import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
 import { runtimeErrorResponse } from "./request-error.ts";
-import { runtimeResponseDiagnostic } from "../runtime-route-diagnostic.ts";
+import { runtimeResponseCause, runtimeResponseDiagnostic } from "../runtime-route-diagnostic.ts";
 import { openEnvelope } from "../token.ts";
 import {
   sameControllerCode,
@@ -228,6 +228,7 @@ interface RefusedCommand {
 /** One closed-vocabulary line per refused command, so a refusal is diagnosable from Workers logs. */
 export function logRuntimeCommandRefusal(response: Response, command: RefusedCommand | undefined) {
   const diagnostic = runtimeResponseDiagnostic(response);
+  const runtimeCause = runtimeResponseCause(response);
   const cause = response.headers.get(providerObservationFailureHeader);
   console.warn(
     "POOL_RUNTIME_COMMAND_REFUSED " +
@@ -237,6 +238,7 @@ export function logRuntimeCommandRefusal(response: Response, command: RefusedCom
         operationId: command?.operationId ?? null,
         step: diagnostic?.runtimeStep ?? null,
         reason: diagnostic?.runtimeReason ?? null,
+        ...(runtimeCause ? { runtimeCause } : {}),
         ...(cause === "provider_observation_refused" || cause === "provider_fetch_failed"
           ? { cause }
           : {}),
