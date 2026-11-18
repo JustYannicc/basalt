@@ -314,7 +314,11 @@ jobs:
         if: env.MODE == 'apply' && steps.apply.outcome == 'success'
         continue-on-error: true
         # Every request must succeed; the runtimes that served are recorded (a code update may restart the root).
-        run: bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance.json
+        # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
+        # release may change the hosted app's Workers too.
+        run: |
+          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance.json
+          node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
         env: *release-secrets

@@ -205,3 +205,9 @@ test("production secrets reach only the steps that run the entry", () => {
     assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
   assert.equal(secretSteps.length, 10);
 });
+
+test("acceptance covers the public app as well as the pool", () => {
+  const accept = step("Accept the release through the live pool");
+  const [pool, app] = [accept.indexOf("deploy.ts accept"), accept.indexOf("node scripts/smoke.ts")];
+  assert.ok(pool >= 0 && app > pool);
+});

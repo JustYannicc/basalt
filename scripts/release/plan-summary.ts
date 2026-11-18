@@ -71,3 +71,30 @@ export const readinessCommand = "PoolBackendBudgetRuntimeReady";
 export const updatesWorkerWithoutReadiness = (snapshot: Snapshot, poolWorker: string) =>
   snapshot.resources.some((row) => row.fqn === poolWorker && row.action !== "noop") &&
   !snapshot.resources.some((row) => row.fqn === readinessCommand && row.action !== "noop");
+
+// The attributes providers record as a resource's own name or id (not ids it merely refers to).
+const IDENTITY = [
+  "workerName",
+  "scriptName",
+  "applicationId",
+  "applicationName",
+  "id",
+  "name",
+  "databaseId",
+  "databaseName",
+  "bucketName",
+  "namespaceId",
+  "configId",
+  "queueId",
+  "indexName",
+] as const;
+
+/** The names and ids of every resource a destroy plan deletes, read from their recorded rows. */
+export const destroyTargets = (plan: AlchemyPlan.Plan) =>
+  [...Object.values(plan.resources), ...Object.values(plan.deletions)].flatMap((node) => {
+    if (!node || (node.action !== "delete" && node.action !== "orphaned")) return [];
+    const attr = (node.state as { attr?: Record<string, unknown> } | undefined)?.attr ?? {};
+    return IDENTITY.map((key) => attr[key]).filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+  });
