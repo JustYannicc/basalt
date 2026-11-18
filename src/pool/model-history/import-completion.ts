@@ -9,19 +9,37 @@ import {
   type CompletionDifference,
 } from "./import-completion-contract.ts";
 
-/** Prefix groups bound each ordered aggregate; no source IDs or request rows leave the database. */
+const hex = "0123456789abcdef";
+// Every ID matches ^[0-9a-f]{64}$ (schema check), so [prefix, next prefix) ranges ending at "g"
+// cover each row exactly once in any collation.
+const bounds = [...[...hex].flatMap((first) => [...hex].map((second) => first + second)), "g"];
+const rangeBuckets = `SELECT left(id,2) AS bucket, count(*)::bigint AS rows,
+    min(timestamp_exact) AS first_at, max(timestamp_exact) AS last_at,
+    encode(sha256(convert_to(string_agg(id::text,E'\\n' ORDER BY id),'UTF8')),'hex') AS digest
+  FROM basalt_model_requests WHERE pool=$1 AND source=$2 AND id >= $3 AND id < $4 GROUP BY left(id,2)`;
+
+/**
+ * One statement per two-character ID prefix keeps every ordered aggregate inside the operation's
+ * statement timeout as a source grows: one statement over a 2.26M-row source took 5.5 s against
+ * the 5 s bound, and 16 wider ranges would not fit on the smallest primary. Each range still groups
+ * by prefix, so the result equals the single-statement digest. The caller's REPEATABLE READ
+ * transaction gives every range one snapshot. No IDs or rows leave the database.
+ */
 async function reconciled(db: HistoryDatabase, scope: { pool: string; source: string }) {
+  const buckets: Record<string, unknown>[] = [];
+  for (let index = 0; index + 1 < bounds.length; index++)
+    buckets.push(
+      ...(
+        await db.query(rangeBuckets, [scope.pool, scope.source, bounds[index], bounds[index + 1]])
+      ).rows,
+    );
+  // Combining in SQL keeps the database's own ordering and min/max semantics.
   const result = await db.query(
-    `WITH buckets AS (
-    SELECT left(id,2) AS bucket, count(*) AS rows,
-      min(timestamp_exact) AS first_at, max(timestamp_exact) AS last_at,
-      encode(sha256(convert_to(string_agg(id::text,E'\\n' ORDER BY id),'UTF8')),'hex') AS digest
-    FROM basalt_model_requests WHERE pool=$1 AND source=$2 GROUP BY left(id,2)
-  ) SELECT COALESCE(sum(rows),0)::text AS rows,min(first_at) AS "frozenFrom",
+    `SELECT COALESCE(sum(rows),0)::text AS rows,min(first_at) AS "frozenFrom",
     max(last_at) AS "frozenTo",
     encode(sha256(convert_to(COALESCE(string_agg(bucket||':'||digest,E'\\n' ORDER BY bucket),''),'UTF8')),'hex') AS "idsDigest"
-    FROM buckets`,
-    [scope.pool, scope.source],
+    FROM jsonb_to_recordset($1::jsonb) AS b(bucket text, rows bigint, first_at varchar(30), last_at varchar(30), digest text)`,
+    [JSON.stringify(buckets)],
   );
   return result.rows[0]!;
 }
