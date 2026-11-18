@@ -24,17 +24,19 @@ Existing findings are recorded with an exact count per rule and file, so only ne
 - A count above the record fails and lists the file's findings. A count below it fails until
   `--write-baseline` lowers it.
 - With `BASE_SHA` set (CI and batch-preflight), a committed count may not rise above the base
-  commit's. A renamed file may carry its findings; the rule's total may not rise. A rule
+  commit's, and a new file carries no baseline; a renamed file keeps its old count. A rule
   enforced at the base may not be switched off.
 - `allowlist.json` records a reasoned exception for `no-direct-cloudflare-api` and
   `no-strict-provider-decode` as `{ "count": <findings>, "reason": "<why>" }` per file. You
-  write these entries by hand; `--write-baseline` leaves them alone. With `BASE_SHA`, the check lists new or raised
-  entries for review.
+  write these entries by hand; `--write-baseline` leaves them alone. With `BASE_SHA`, the
+  check lists new or raised entries for review. No entry covers a decode the rule recognises
+  as a provider response.
 
 To add or tighten a rule, change `plugin/` with a case in `rules.test.ts` and run
-`--write-baseline`. While the rules or their pins differ from the base, a count that rises is
-listed for review instead of failing, and `rules.test.ts` guards the change. The
-configuration takes no `overrides`.
+`--write-baseline`. While the rules or their pins differ from the base, a count that rises in
+a file this change does not touch is listed for review instead of failing, and
+`rules.test.ts` guards the change. The configuration loads exactly the pinned plugins and
+takes no `extends`, `overrides` or other keys.
 
 ## Basalt rules
 

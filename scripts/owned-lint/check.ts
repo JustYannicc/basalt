@@ -154,20 +154,34 @@ function baseState(base: string) {
     });
     return result.status === 0 ? JSON.parse(result.stdout) : undefined;
   };
+  const git = (args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).split(
+      "\0",
+    );
   const tracked = new Set(
-    execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"], {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-    }).split("\0"),
+    git(["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"]),
   );
+  // The working tree against the base, with renames: a renamed file keeps its old count.
+  const renamed = new Map<string, string>();
+  const changed = new Set<string>();
+  const entries = git(["diff", "-z", "--name-status", "-M", base, "--", "scripts", "src"]);
+  for (let index = 0; index < entries.length - 1;) {
+    const status = entries[index++]!;
+    if (status.startsWith("R")) {
+      const from = entries[index++]!;
+      const to = entries[index++]!;
+      renamed.set(to, from);
+      changed.add(to);
+    } else changed.add(entries[index++]!);
+  }
   const lintChanged =
     spawnSync("git", ["diff", "--quiet", base, "--", ...LINT_INPUTS], { cwd: root }).status !== 0;
   return {
     baseline: show(baselinePath) as Counts | undefined,
     config: show(configPath) as Config | undefined,
     allowlist: (show(allowlistPath) ?? {}) as Allowlist,
-    existed: (file: string) => tracked.has(file),
+    basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
+    changed: (file: string) => changed.has(file) || !tracked.has(file),
     lintChanged,
   } satisfies BaseState;
 }

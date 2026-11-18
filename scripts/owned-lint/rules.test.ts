@@ -283,6 +283,21 @@ export const handle = async (request: Request, user: object) => {
 const settings = { id: "x" };
 export const listed = () => Response.json({ success: true, errors: [], result: settings }); // expect: basalt/no-handwritten-provider-response
 `,
+  "scripts/evasions/extracted.ts": `
+import * as Workers from "@distilled.cloud/cloudflare/workers";
+export const put = (settings: { annotations: object }) => {
+  const annotations = { ...settings.annotations, workersMessage: "marker" }; // expect: basalt/no-spread-into-provider-request
+  return Workers.putScript({ accountId: "a", scriptName: "s", metadata: { annotations } }); // expect: basalt/no-direct-cloudflare-api
+};
+`,
+  // landmines loads from the pinned configuration too.
+  "src/pool/sleep.test.ts": `
+import { test } from "node:test";
+import { setTimeout } from "node:timers/promises";
+test("waits", async () => {
+  await setTimeout(100);
+});
+`,
   "src/pool/aliased.test.ts": `
 import { mock as m, test } from "node:test";
 test("aliased", (t) => {
@@ -308,15 +323,16 @@ test("runs", { skip: false }, () => {});
 `,
 };
 
-const root = mkdtempSync(join(tmpdir(), "owned-lint-"));
-after(() => rmSync(root, { recursive: true, force: true }));
+// A checkout directory named like a test path must not change which rules apply.
+const scratch = mkdtempSync(join(tmpdir(), "owned-lint-"));
+const root = join(scratch, "fix-pool-tests");
+after(() => rmSync(scratch, { recursive: true, force: true }));
 for (const [file, source] of Object.entries(cases)) {
   mkdirSync(dirname(join(root, file)), { recursive: true });
   writeFileSync(join(root, file), source.trimStart());
 }
-const findings = lint(Object.keys(cases), undefined, root).filter(({ rule }) =>
-  rule.startsWith("basalt/"),
-);
+const all = lint(Object.keys(cases), undefined, root);
+const findings = all.filter(({ rule }) => rule.startsWith("basalt/"));
 
 for (const [file, source] of Object.entries(cases))
   test(`basalt rules on ${file}`, () => {
@@ -339,4 +355,13 @@ for (const [file, source] of Object.entries(cases))
 test("every basalt rule says what to do instead", () => {
   for (const finding of findings)
     assert.match(finding.message, /\. [A-Z][^.]*(?:\.|$)/u, finding.rule);
+});
+
+test("landmines rules load from the pinned configuration", () => {
+  assert.ok(
+    all.some(
+      ({ rule, file }) =>
+        rule === "landmines-testing/no-fixed-sleep" && file === "src/pool/sleep.test.ts",
+    ),
+  );
 });
