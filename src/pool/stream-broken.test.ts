@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { nativeResponse } from "./native-response.worker.ts";
-import { NativeStreams } from "./native-streams.ts";
+import { NativeStreams, type NativeStreamLease } from "./native-streams.ts";
 import { reportStreamBroken } from "./stream-broken.ts";
+
+// Keep Workers platform types in tsconfig.worker.json, like model-auth.worker.test.ts.
+const nativeModule = "./native-response.worker.ts";
+const {
+  nativeResponse,
+}: { nativeResponse(response: Response, lease: NativeStreamLease): Response } = await import(
+  nativeModule
+);
 
 test("a replacement that breaks every stream at once writes at most three closed lines a second", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: 1_000_500 });
