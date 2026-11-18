@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "A refreshed allowance the same size as the row deciding its plan keeps that row's revision, so a source aging out, taking over or returning never restarts the plan's demand cohort. A size change gets a new revision."
+    }
+  }
+}
