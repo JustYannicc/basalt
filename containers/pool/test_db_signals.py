@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import io
 import json
+import pathlib
+import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import Mock
 
-from . import db_signals
+from . import db_signals, supervisor
 from .child_signals import home_message
 from .readiness import Readiness
 
@@ -51,6 +54,34 @@ class SlowStatementTests(unittest.TestCase):
             db_signals.statement_fingerprint("SELECT * FROM users WHERE id = 1"),
             db_signals.statement_fingerprint("SELECT * FROM usage WHERE id = 1"),
         )
+
+    def test_multi_row_writes_share_a_fingerprint_whatever_the_batch_size(self) -> None:
+        self.assertEqual(
+            db_signals.statement_fingerprint("INSERT INTO log (a,b) VALUES ($1,$2),($3,$4)"),
+            db_signals.statement_fingerprint("INSERT INTO log (a,b) VALUES ($1,$2),($3,$4),($5,$6)"),
+        )
+
+    def test_child_reader_reports_slow_statements_including_oversized_lines(self) -> None:
+        big = "INSERT INTO log (line) VALUES " + ",".join(["('" + SECRET + "')"] * 600)
+        script = (
+            "import sys\n"
+            f"sys.stdout.write({slow_line('250.5', 'SELECT 1 FROM t WHERE a = ' + repr(SECRET))!r})\n"
+            f"sys.stdout.write({slow_line('9000', big)!r})\n"
+        )
+        noted: list[int] = []
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as root, redirect_stdout(stdout):
+            child = supervisor.Child(
+                "home", [sys.executable, "-c", script], {}, pathlib.Path(root),
+                on_slow_statement=noted.append,
+            )
+            child.process.wait(timeout=10)
+            child._reader.join(timeout=10)
+            child.process.stdout.close()
+        self.assertEqual(noted, [251, 9000])
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual([line.split(" ", 1)[0] for line in lines], ["POOL_HOME_SLOW_SQL"] * 2)
+        self.assertNotIn(SECRET, stdout.getvalue())
 
     def test_other_lines_are_not_slow_statements(self) -> None:
         for message in (

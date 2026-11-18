@@ -12,9 +12,11 @@ import re
 import socket
 import statistics
 import sys
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping
+from typing import Any
 from dataclasses import dataclass
 
 ATTEMPTS = 7
@@ -66,6 +68,22 @@ def _milliseconds(nanoseconds: int) -> int:
     return min(MAX_RTT_MS, max(1, math.ceil(nanoseconds / 1_000_000)))
 
 
+def _within(work: Callable[[], Any], timeout_s: float) -> Any:
+    """Run a blocking call with a deadline; None on error or timeout (the thread is abandoned)."""
+    result: list[Any] = []
+
+    def run() -> None:
+        try:
+            result.append(work())
+        except (OSError, IndexError, ValueError):
+            pass
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    return result[0] if result else None
+
+
 def measure(
     host: str,
     port: int,
@@ -78,11 +96,11 @@ def measure(
     ),
 ) -> Distance:
     deadline = clock() + TOTAL_BUDGET_NS
-    try:
-        # One lookup up front keeps DNS out of every sample.
-        family, _, _, _, address = resolve(host, port, type=socket.SOCK_STREAM)[0]
-    except (OSError, IndexError, ValueError):
+    # One lookup up front keeps DNS out of every sample; it shares the overall budget.
+    resolved = _within(lambda: resolve(host, port, type=socket.SOCK_STREAM)[0], TOTAL_BUDGET_NS / 1e9)
+    if resolved is None:
         return Distance("failed", None, None, 0)
+    family, _, _, _, address = resolved
     samples: list[int] = []
     for _ in range(ATTEMPTS):
         remaining = deadline - clock()

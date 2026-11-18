@@ -104,6 +104,9 @@ class Child:
         oversized = False
         while line := stream.readline(MAX_INPUT_CHARS):
             if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
+                if not oversized:
+                    # Big multi-row writes are often the slowest; their first chunk names the shape.
+                    self._report_slow_statement(line)
                 oversized = not line.endswith("\n")
                 continue
             if self.diagnostics is not None:
@@ -121,16 +124,21 @@ class Child:
                 if self._on_policy_probe is not None:
                     self._on_policy_probe(probe_nonce)
                 continue
-            slow = db_signals.slow_statement(home_message(self.name, line))
-            if slow is not None:
-                print(db_signals.slow_statement_line(*slow), flush=True)
-                if self._on_slow_statement is not None:
-                    self._on_slow_statement(slow[0])
+            if self._report_slow_statement(line):
                 continue
             # Provider errors can contain full responses. Do not forward them.
             safe = safe_child_output_line(self.name, line)
             if safe is not None:
                 print(safe, flush=True)
+
+    def _report_slow_statement(self, line: str) -> bool:
+        slow = db_signals.slow_statement(home_message(self.name, line))
+        if slow is None:
+            return False
+        print(db_signals.slow_statement_line(*slow), flush=True)
+        if self._on_slow_statement is not None:
+            self._on_slow_statement(slow[0])
+        return True
 
 
 def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:
@@ -285,6 +293,7 @@ def main(stop: threading.Event | None = None) -> int:
         if distance.state == "held":
             # The controller asked for a redraw if this start landed far; Home never runs here.
             stop.wait()
+        if stop.is_set():
             raise RecoveryCancelled()
 
         atomic_write(
@@ -415,9 +424,9 @@ def main(stop: threading.Event | None = None) -> int:
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         pool_poll = DatabasePoolPoll(management_key, readiness)
+        pool_poll.start(stop)
         while not stop.wait(2):
             observed_at = time.monotonic()
-            pool_poll.maybe_poll(observed_at)
             failed = [(child, child.process.poll()) for child in children]
             failed = [(child, code) for child, code in failed if code is not None]
             if failed:

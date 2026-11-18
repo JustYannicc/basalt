@@ -101,6 +101,21 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(distance.samples, 7)
         self.assertGreaterEqual(distance.rtt_ms, 1)
 
+    def test_pooler_endpoint_forms(self) -> None:
+        self.assertEqual(
+            db_distance.pooler_endpoint("postgresql://u:p@db.example.invalid:6432/x?sslmode=verify-full"),
+            ("db.example.invalid", 6432),
+        )
+        self.assertEqual(db_distance.pooler_endpoint("postgresql://u:p@[2001:db8::1]:6432/x"), ("2001:db8::1", 6432))
+        self.assertEqual(db_distance.pooler_endpoint("postgresql://u:p@db.example.invalid/x"), ("db.example.invalid", 5432))
+
+    def test_hold_bound_comes_from_the_start_environment(self) -> None:
+        with patch.object(db_distance, "measure", return_value=Distance("held", 42, 47, 7)) as measure:
+            db_distance.measure_database("postgresql://u:p@db.example.invalid:6432/x", {db_distance.HOLD_ENV: "20"})
+            db_distance.measure_database("postgresql://u:p@db.example.invalid:6432/x", {})
+        self.assertEqual([call.args for call in measure.call_args_list],
+                         [("db.example.invalid", 6432, 20), ("db.example.invalid", 6432, None)])
+
     def test_unparseable_url_is_unknown(self) -> None:
         self.assertEqual(
             db_distance.measure_database("not a url", {}), Distance("failed", None, None, 0)
@@ -157,6 +172,31 @@ class ReadinessFieldTests(unittest.TestCase):
         self.assertEqual(payload["db_rtt_samples"], 2)
         self.assertNotIn("db_rtt_ms", payload)
         self.assertNotIn("location", payload)
+
+
+class StopDuringMeasurementTests(unittest.TestCase):
+    def test_stop_during_measurement_never_launches_home(self) -> None:
+        stop = threading.Event()
+        child = Mock()
+
+        def measured(*_args) -> Distance:
+            stop.set()
+            return Distance("measured", 5, 6, 7)
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(supervisor, "ROOT", pathlib.Path(root)),
+            patch.object(supervisor, "env_required", return_value="postgresql://pooler.invalid:6432/db"),
+            patch.object(supervisor, "require_tmpfs"),
+            patch.object(supervisor, "start_ready_server", return_value=Mock()),
+            patch.object(supervisor, "PolicyHealthMonitor"),
+            patch.object(supervisor.db_distance, "measure_database", side_effect=measured),
+            patch.object(supervisor, "Child", child),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(supervisor.main(stop), 0)
+        child.assert_not_called()
 
 
 class HeldStartTests(unittest.TestCase):

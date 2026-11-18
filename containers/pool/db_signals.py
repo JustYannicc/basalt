@@ -10,6 +10,8 @@ import hashlib
 import json
 import math
 import re
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -25,6 +27,7 @@ _QUOTED = re.compile(r"'(?:[^']|'')*'")
 _NUMBER = re.compile(r"(?<![a-z_])[0-9]+(?:\.[0-9]+)?")
 _PLACEHOLDER = re.compile(r"\$[0-9]+|\?")
 _LIST = re.compile(r"\(\s*\?(?:\s*,\s*\?)*\s*\)")
+_ROWS = re.compile(r"\(\?\)(?:\s*,\s*\(\?\))+")
 _SPACE = re.compile(r"\s+")
 POOL_FIELDS = {
     "max_open_connections": "max_open",
@@ -39,6 +42,7 @@ def statement_fingerprint(sql: str) -> str:
     shape = _QUOTED.sub("?", sql.lower())
     shape = _NUMBER.sub("?", _PLACEHOLDER.sub("?", shape))
     shape = _LIST.sub("(?)", _SPACE.sub(" ", shape).strip())
+    shape = _ROWS.sub("(?)", shape)
     return hashlib.sha256(shape.encode("utf-8")).hexdigest()[:16]
 
 
@@ -94,7 +98,11 @@ def database_pool_line(counters: dict[str, int]) -> str:
 
 
 class DatabasePoolPoll:
-    """Reads Home's pool counters on the supervisor loop: every 15 s, logged on waits or every 5 min."""
+    """Reads Home's pool counters every 15 s on its own thread; logged when waits change or every 5 min.
+
+    The pinned Home answers this read only after one database query of its own, so the counters go
+    stale while the pool is saturated. Slow-statement counts still show such an episode.
+    """
 
     INTERVAL_SECONDS = 15.0
     QUIET_REPORT_SECONDS = 300.0
@@ -111,6 +119,14 @@ class DatabasePoolPoll:
         self._next_poll = 0.0
         self._reported_wait_count: int | None = None
         self._reported_at = -math.inf
+
+    def start(self, stop: threading.Event) -> None:
+        threading.Thread(target=self._run, args=(stop,), daemon=True).start()
+
+    def _run(self, stop: threading.Event) -> None:
+        while not stop.is_set():
+            self.maybe_poll(time.monotonic())
+            stop.wait(self.INTERVAL_SECONDS)
 
     def maybe_poll(self, now: float) -> None:
         if now < self._next_poll:

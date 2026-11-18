@@ -188,6 +188,7 @@ class SupervisorTests(unittest.TestCase):
                 "create_node_jwt": enroll,
                 "check_services": health,
                 "ServiceHealth": make_service_health,
+                "DatabasePoolPoll": Mock(),
                 "PolicyHealthMonitor": Mock(
                     return_value=SimpleNamespace(run=lambda _: None)
                 ),

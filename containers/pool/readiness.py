@@ -216,6 +216,8 @@ class Readiness:
             self._policy_healthy = False
             self._policy_deadline_ns = 0
             self._observed_policy_probes.clear()
+            # Counters belong to one Home process; the next read starts them again from zero.
+            self._database_pool = None
             self._probe_condition.notify_all()
 
     def set_database_distance(self, distance: Distance) -> None:
