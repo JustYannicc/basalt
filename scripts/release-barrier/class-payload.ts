@@ -149,7 +149,8 @@ export function expansionRequest(
         newSqliteClasses: [...entry.newSqliteClasses],
       },
       tags: [...tags],
-      annotations: { ...settings.annotations, workersMessage: marker },
+      // Cloudflare owns workers/triggered_by; the settings read returns it and an upload must not carry it.
+      annotations: { ...settings.annotations, workersTriggeredBy: undefined, workersMessage: marker },
       observability: settings.observability ?? undefined,
       limits: settings.limits ?? undefined,
       placement: settings.placement ?? undefined,
