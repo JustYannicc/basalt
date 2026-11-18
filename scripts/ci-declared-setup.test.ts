@@ -6,16 +6,20 @@ import { heavyJobs } from "./ci/areas.ts";
 import { readDeclarations } from "./ci/declarations.ts";
 import { gateErrors } from "./ci/gate.ts";
 import { selectPaths } from "./ci/affected.ts";
+import { declaredMatrices, fileDeadlineMinutes } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
 );
 
-test("declared matrices use the bounded browser setup within their existing deadlines", () => {
+test("declared shards pay setup once, then run their planned files within the planned deadline", () => {
+  const matrices = declaredMatrices();
   for (const id of ["declared-self-host", "declared-local", "declared-cloud"]) {
     const job = workflow.jobs[id];
-    assert.equal(job["timeout-minutes"], 10, id);
+    assert.equal(job["timeout-minutes"], "${{ matrix.timeout }}", id);
+    assert.equal(job.name, "${{ matrix.shard }}", id);
+    assert.equal(job.strategy["fail-fast"], false, id);
     // The long single jobs, queued with the browser installer, take the first runners.
     assert.deepEqual(job.needs, ["select", "browser-install"], id);
     assert.deepEqual(
@@ -29,13 +33,26 @@ test("declared matrices use the bounded browser setup within their existing dead
         },
         { name: "Install the scenarios' browser engine", uses: "./.github/actions/setup-browser" },
         {
-          name: "Run this file's declared scenarios",
-          run: 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"',
+          name: "Run this shard's declared files, each in its own process",
+          run: 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"',
         },
       ],
       id,
     );
+    const upload = job.steps.find((step: { uses?: string }) =>
+      step.uses?.startsWith("actions/upload-artifact@"),
+    );
+    assert.equal(upload.with.name, "${{ matrix.shard }}", id);
+    const shards = matrices[id]!.include;
+    assert.ok(shards.length > 0, id);
+    // Each shard replaces several one-file jobs that each had ten minutes.
+    for (const shard of shards) {
+      assert.ok(shard.shard.startsWith(id + "-"), shard.shard);
+      assert.ok(shard.timeout > 10 + fileDeadlineMinutes && shard.timeout <= 30, shard.shard);
+    }
   }
+  const shards = Object.values(matrices).flatMap((matrix) => matrix.include);
+  assert.ok(shards.length <= 24, String(shards.length));
 });
 
 test("sign-in jobs prepare the runtime before bounded browser setup and run independently", () => {
