@@ -29,12 +29,12 @@ const Access = Schema.Struct({
   }),
 });
 const readAccess = Schema.decodeUnknownSync(Access);
-/** `checkedAt` is the earliest time this answer can describe, so reuse never extends it. */
 export type TunnelAccess = typeof Access.Type;
 export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
   const authorization = request.headers.get("authorization");
   if (!authorization || !/^Bearer [^\s]+$/iu.test(authorization))
     return new Response(null, { status: 401 });
+  // The earlier of this call's start and the tools gateway's own read, so reuse never extends it.
   const checkedAt = Date.now();
   const response = await readNativeAuthorization(request, env);
   if (!response.ok) {

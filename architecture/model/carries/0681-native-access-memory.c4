@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "A native access check remembers an allowed answer in its isolate until 3 seconds after its rows were read, and never past its token's expiry. The key is a SHA-256 digest of the bearer, never the bearer. A remembered answer skips the token, grant, consent, team membership, current teams and account reads. The pool's device check and the device budget still run on every check. Any failed check forgets the answer; a budget refusal, which follows the check, keeps it. The answer's checkedAt reports when its rows were read, so a caller's own reuse is measured from that time. A revoked device, grant or pool access is refused on the next check; revoked tokens and team or account changes apply within 3 seconds."
+      constraint "A native access check remembers an allowed answer in its isolate until 3 seconds after its rows were read, and never past its token's expiry. The key is a SHA-256 digest of the bearer, never the bearer. A remembered answer skips the token, grant, consent, team membership, current teams and account reads. The pool's device check and the device budget still run on every check. Any failed check forgets the answer. The answer's checkedAt reports when its rows were read, so a caller's own reuse is measured from that time. A revoked device, grant or pool access is refused on the next check; revoked tokens and team or account changes apply within 3 seconds."
     }
   }
 }

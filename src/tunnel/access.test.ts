@@ -166,7 +166,7 @@ for (const operation of ["tunnel", "model"] as const)
       const { checkedAt, ...answer } = admitted;
       assert.deepEqual(answer, access);
       assert.ok(
-        checkedAt !== undefined && checkedAt <= times[0]!,
+        checkedAt !== undefined && checkedAt <= times[0],
         "reuse is measured from before the check",
       );
       assert.equal(forwarded, 0);

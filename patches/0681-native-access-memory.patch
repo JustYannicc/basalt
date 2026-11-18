@@ -53,7 +53,13 @@ new file mode 100644
 diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
 --- a/packages/mcp-auth/src/implementation/native-grants.ts
 +++ b/packages/mcp-auth/src/implementation/native-grants.ts
-@@ -11,6 +11,7 @@
+@@ -6,11 +6,12 @@
+   type Scope,
+ } from "@better-auth/oauth-provider";
+ import { APIError } from "better-auth/api";
+-import { Effect, Schema } from "effect";
++import { Clock, Effect, Schema } from "effect";
+ import { GrantId } from "../contracts/grant.ts";
  import type { NativeGrantDisplay } from "../contracts/native-display.ts";
  import { authCall, parse, runAuth } from "./auth-call.ts";
  import { deviceDecisionStep } from "./device-decision-step.ts";
@@ -68,8 +74,8 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
 -    options?: { display?: boolean },
 +    options?: {
 +      display?: boolean;
-+      /** Set while a bearer's answer is remembered; facts read for it may be reused. */
-+      remembered?: object;
++      /** Present when the answer may be remembered; facts read under it are kept with it. */
++      facts?: object;
 +    },
    ) => Effect.Effect<void | NativeGrantDisplay, APIError>;
    readonly revoke: (
@@ -108,7 +114,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
 +  const confirm = (
 +    ctx: GenericEndpointContext,
 +    access: NativeGrantAccess,
-+    options: { display: boolean; remembered?: object },
++    options: { display: boolean; facts?: object },
 +  ) =>
 +    host.check(ctx, access, options).pipe(
 +      Effect.map((display) => ({
@@ -116,15 +122,15 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
 +        ...(typeof display === "object" ? { display } : {}),
 +      })),
 +    );
-+  const read = (ctx: GenericEndpointContext, id: GrantId, includeDisplay = false) =>
++  const read = (ctx: GenericEndpointContext, id: GrantId) =>
 +    grant(ctx, id).pipe(
-+      Effect.flatMap((access) => confirm(ctx, access, { display: includeDisplay })),
++      Effect.flatMap((access) => confirm(ctx, access, { display: false })),
 +      Effect.mapError((error) => (error.statusCode === 503 ? error : invalid())),
 +    );
 +  /** The bearer's token, grant and consent rows; the host's own checks follow separately. */
 +  const resolve = (ctx: GenericEndpointContext, token: string) =>
 +    Effect.gen(function* () {
-+      const readAt = Date.now();
++      const readAt = yield* Clock.currentTimeMillis;
 +      const payload = yield* authCall(() =>
 +        Promise.resolve(getOAuthProviderApi(ctx, provider).requireActiveAccessToken(token)),
 +      );
@@ -173,7 +179,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
 +          const resolved = known ?? (yield* resolve(ctx, token));
 +          const access = yield* confirm(ctx, resolved.access, {
 +            display: options?.display === true,
-+            ...(key === undefined ? {} : { remembered: resolved.facts }),
++            ...(key === undefined ? {} : { facts: resolved.facts }),
 +          });
 +          if (key !== undefined && known === undefined)
 +            remembered.set(key, resolved, resolved.expiresAt, resolved.readAt);
@@ -295,11 +301,11 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
    if (Option.isNone(key)) return undefined;
    const secret = key.value;
 -  const check = (ctx: GenericEndpointContext, access: NativeGrantAccess, display = false) =>
-+  const remembered = new WeakMap<object, Facts>();
++  const known = new WeakMap<object, Facts>();
 +  const factsFor = (answer: object | undefined) => {
 +    if (answer === undefined) return undefined;
-+    const facts = remembered.get(answer) ?? {};
-+    remembered.set(answer, facts);
++    const facts = known.get(answer) ?? {};
++    known.set(answer, facts);
 +    return facts;
 +  };
 +  // The pool's check below always runs: it alone answers for the device and its pool.
@@ -332,7 +338,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
        Effect.gen(function* () {
 -        const display = yield* check(ctx, access, options?.display === true);
 -        if (options?.display) return yield* nativeGrantDisplay(ctx, access, display);
-+        const facts = factsFor(options?.remembered);
++        const facts = factsFor(options?.facts);
 +        const display = yield* check(ctx, access, options?.display === true, facts);
 +        if (!options?.display) return;
 +        const account = facts?.account;
