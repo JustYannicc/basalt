@@ -27,16 +27,18 @@ export function readinessDistance(body: unknown): RuntimeDistance | undefined {
     return undefined;
   const rtt = field(body, "db_rtt_ms");
   const location = field(body, "location");
-  const candidate = {
+  const decoded = Schema.decodeUnknownOption(RuntimeDistance)({
     state,
     ...(typeof rtt === "number" ? { rttMs: rtt } : {}),
-    ...(typeof location === "string" ? { location } : {}),
-  };
-  const decoded = Schema.decodeUnknownOption(RuntimeDistance)(candidate);
+  });
   if (decoded._tag === "None") return undefined;
   // A measured or held state without its number carries no distance.
-  return (state === "measured" || state === "held") && decoded.value.rttMs === undefined
-    ? undefined
+  if ((state === "measured" || state === "held") && decoded.value.rttMs === undefined)
+    return undefined;
+  // The location is decoded on its own, so a malformed code never discards a valid distance.
+  const place = Schema.decodeUnknownOption(RuntimeDistance)({ state, location });
+  return place._tag === "Some" && typeof location === "string"
+    ? { ...decoded.value, location }
     : decoded.value;
 }
 

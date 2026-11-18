@@ -28,6 +28,10 @@ const Row = Schema.Struct({
   drainAcknowledged: Schema.optional(Schema.Boolean),
   lastUsedAt: Count,
   database: Schema.optional(RuntimeDistance),
+  // Reserved against quarantine demand; a planned replacement carries `replaces` instead.
+  replacement: Schema.optional(Schema.Boolean),
+  // Sent to draining by a far-placement redraw, never by load or retirement.
+  redrawn: Schema.optional(Schema.Boolean),
 });
 type Row = typeof Row.Type;
 const Ledger = Schema.Array(Row);
@@ -159,6 +163,7 @@ export class RuntimeFleetState {
         active: 0,
         lastUsedAt: this.now(),
         ...(options.previous ? { replaces: options.previous } : {}),
+        ...(options.replacement ? { replacement: true } : {}),
       });
     });
   }
@@ -182,14 +187,21 @@ export class RuntimeFleetState {
       rows[rows.indexOf(row)] = { ...row, phase: "uncertain" };
     });
   }
-  /** A started cell that landed far goes straight to draining, so no request is ever routed to it. */
+  /**
+   * A started cell that landed far goes straight to draining, so no request is ever routed to it.
+   * Returns false when this boot was already redrawn; replacements are never redrawn.
+   */
   redraw(value: SlotIdentity, database: RuntimeDistance | undefined) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
     return this.change((rows) => {
       const row = this.row(rows, identity);
+      if (row.phase === "draining" && row.redrawn && sameIdentity(row.identity, identity))
+        return false;
       if (
         !["warming", "uncertain"].includes(row.phase) ||
         row.active !== 0 ||
+        row.replaces !== undefined ||
+        row.replacement === true ||
         (row.identity && !sameIdentity(row.identity, identity))
       )
         throw new FleetRefused("uncertain");
@@ -197,9 +209,29 @@ export class RuntimeFleetState {
         ...row,
         phase: "draining",
         identity,
+        redrawn: true,
         lastUsedAt: this.now(),
         ...(database ? { database } : {}),
       };
+      return true;
+    });
+  }
+  /** A redrawn cell nobody used comes back when the runtime that justified the redraw stopped. */
+  restoreRedrawn(value: SlotIdentity) {
+    const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
+    return this.change((rows) => {
+      const row = this.row(rows, identity);
+      if (
+        row.phase !== "draining" ||
+        !row.redrawn ||
+        row.active !== 0 ||
+        row.drainAcknowledged === true ||
+        !sameIdentity(row.identity, identity)
+      )
+        return false;
+      const { redrawn: _redrawn, ...rest } = row;
+      rows[rows.indexOf(row)] = { ...rest, phase: "ready" };
+      return true;
     });
   }
   /** Records a ready runtime's reported distance; an unchanged value writes nothing. */
@@ -214,7 +246,7 @@ export class RuntimeFleetState {
       rows[rows.indexOf(row)] = database ? { ...rest, database } : rest;
     });
   }
-  ready(value: SlotIdentity) {
+  ready(value: SlotIdentity, database?: RuntimeDistance) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
     return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
@@ -234,6 +266,7 @@ export class RuntimeFleetState {
             : "ready",
         identity,
         lastUsedAt: row.phase === "ready" ? row.lastUsedAt : this.now(),
+        ...(database ? { database } : {}),
       };
     });
   }

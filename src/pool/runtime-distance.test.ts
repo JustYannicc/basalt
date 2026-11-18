@@ -46,9 +46,13 @@ test("readiness distance follows the contract and anything else is unknown", () 
     { ...frankfurt, db_rtt_ms: 3_501 },
     { ...frankfurt, db_rtt_ms: 4.5 },
     { ...frankfurt, db_rtt_ms: "5" },
-    { ...frankfurt, location: "Frankfurt" },
   ])
     assert.equal(readinessDistance(malformed), undefined);
+  assert.deepEqual(
+    readinessDistance({ ...frankfurt, location: "Frankfurt" }),
+    { state: "measured", rttMs: 5 },
+    "a malformed location keeps the valid distance",
+  );
 });
 
 async function fleet() {
@@ -157,7 +161,8 @@ test("fleet upkeep records each cell's reported distance where the operator read
   assert.deepEqual(row?.database, { state: "measured", rttMs: 44, location: "ath01" });
 });
 
-function redrawFleet(draws: object[], rootServing: boolean) {
+function redrawFleet(draws: object[], serving: boolean) {
+  let rootServing = serving;
   const state = new RuntimeFleetState(new SlotMemory(), 4, () => 100);
   const placements: Record<string, unknown>[] = [];
   const retired: string[] = [];
@@ -188,6 +193,10 @@ function redrawFleet(draws: object[], rootServing: boolean) {
     placements,
     retired,
     reserveNext,
+    distances,
+    stopRoot: () => {
+      rootServing = false;
+    },
     build: async () => {
       const { RuntimeFleet } = await import("./runtime-fleet/controller.ts");
       return new RuntimeFleet({
@@ -300,4 +309,103 @@ test("a lone far cell serves, a near draw is admitted, and the fourth far draw s
     ["redraw", 3],
     ["admit_after_limit", 4],
   ]);
+});
+
+test("without distances the order is today's on both sides of the growth target", async () => {
+  const picks = async (withPlacement: boolean) => {
+    const f = await fleet();
+    await f.add(undefined);
+    await f.add(undefined);
+    const order: string[] = [];
+    for (let request = 0; request < 7; request++) {
+      const reservation = await f.state.acquire(
+        Number.MAX_SAFE_INTEGER,
+        true,
+        withPlacement ? placement("unknown") : undefined,
+      );
+      order.push(reservation.kind === "primary" ? "root" : reservation.identity.slotId);
+    }
+    return order;
+  };
+  assert.deepEqual(await picks(true), await picks(false));
+});
+
+test("a redraw is recorded once per boot and never applies to a replacement", async () => {
+  const f = await fleet();
+  const target = {
+    format: "pool-runtime-slot-v1" as const,
+    controllerId: "controller",
+    slotId: "slot-replacement",
+    applicationId: "blue",
+    applicationVersion: "1",
+    instanceId: "instance-replacement",
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    imageInput: "image",
+    homePeerOrdinal: 9,
+  };
+  const far = { ...target, slotId: "slot-far", instanceId: "instance-far", homePeerOrdinal: 8 };
+  await f.state.reserve(far);
+  await f.state.dispatch(far);
+  const boot = { ...far, bootId: "boot-far" };
+  assert.equal(await f.state.redraw(boot, readinessDistance(athens)), true);
+  assert.equal(await f.state.redraw(boot, readinessDistance(athens)), false);
+  const previous = { ...target, slotId: "slot-old", bootId: "boot-old" };
+  await f.state.reserve(target, undefined, { previous });
+  await f.state.dispatch(target);
+  await assert.rejects(
+    f.state.redraw({ ...target, bootId: "boot-replacement" }, readinessDistance(athens)),
+    /uncertain/,
+  );
+});
+
+test("a far cell is kept if the runtime that justified its redraw stops before it is retired", async (context) => {
+  context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens], true);
+  const runtime = await f.build();
+  await f.reserveNext();
+  await runtime.upkeep();
+  assert.equal((await f.state.inspect())[0]?.phase, "draining");
+  f.stopRoot();
+  await runtime.upkeep();
+  assert.equal((await f.state.inspect())[0]?.phase, "ready", "the only runtime is never stopped");
+  assert.deepEqual(f.retired, []);
+});
+
+test("with the root down, another ready near cell still justifies a redraw", async (context) => {
+  context.mock.method(console, "info", () => {});
+  const f = redrawFleet([frankfurt, athens], false);
+  const runtime = await f.build();
+  await f.reserveNext();
+  await runtime.upkeep();
+  await f.reserveNext();
+  await runtime.upkeep();
+  const rows = await f.state.inspect();
+  assert.equal(rows.find((row) => row.target.slotId === "slot-1")?.phase, "ready");
+  assert.equal(rows.find((row) => row.target.slotId === "slot-2")?.redrawn, true);
+});
+
+test("a far replacement serves wherever it landed", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([], true);
+  const runtime = await f.build();
+  const target = {
+    format: "pool-runtime-slot-v1" as const,
+    controllerId: "controller",
+    slotId: "slot-7",
+    applicationId: "blue",
+    applicationVersion: "1",
+    instanceId: "instance-7",
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    imageInput: "image",
+    homePeerOrdinal: 7,
+  };
+  f.distances.set("slot-7", athens);
+  await f.state.reserve(target, undefined, {
+    previous: { ...target, slotId: "slot-gone", bootId: "b" },
+  });
+  await runtime.upkeep();
+  assert.equal((await f.state.inspect())[0]?.phase, "ready");
+  const decision = log.mock.calls.find((call) => call.arguments[0] === "POOL_RUNTIME_PLACEMENT")
+    ?.arguments[1].decision;
+  assert.equal(decision, "admit_replacement");
 });

@@ -15,7 +15,13 @@ import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runt
 
 /** A far cell is started again at most this many times before it serves from its last draw. */
 export const placementDraws = 4;
-type PlacementDecision = "admit" | "admit_unknown" | "admit_alone" | "admit_after_limit" | "redraw";
+type PlacementDecision =
+  | "admit"
+  | "admit_unknown"
+  | "admit_alone"
+  | "admit_after_limit"
+  | "admit_replacement"
+  | "redraw";
 
 /** One closed line per admission decision, so where each runtime landed is visible. */
 function logPlacement(
@@ -83,8 +89,11 @@ export class RuntimeFleet {
   private atCapacity = false;
   private primaryFailed = false;
   private primaryPlace: DistanceClass = "unknown";
-  // Draws since the last admitted cell; in memory, so an isolate restart allows at most one more round.
+  // Far draws since the last admitted cell, any admission resetting it; in memory, so an isolate
+  // restart allows at most one more round.
   private draws = 0;
+  // Only this controller's own latest health read of the root counts as the root serving.
+  private primaryServing = false;
   private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
@@ -189,36 +198,49 @@ export class RuntimeFleet {
    * and the ordinary drain and retirement stop it gracefully once it has no activity.
    */
   private async admit(cell: FleetCell, identity: SlotIdentity) {
+    const row = (await this.deps.state.inspect()).find(
+      (value) => value.target.slotId === identity.slotId,
+    );
+    // Growth and upkeep can both observe one start; only the first admits it.
+    if (
+      !row ||
+      !["warming", "uncertain"].includes(row.phase) ||
+      (row.identity && !sameIdentity(row.identity, identity))
+    )
+      return;
     const database = await cell
       .healthy?.(identity)
       .then((value) => value ?? undefined)
       .catch(() => undefined);
     const draw = this.draws + 1;
     const place = distanceClass(database);
+    // A replacement keeps the demand that reserved it, so it serves wherever it landed.
+    const replacing = row.replaces !== undefined || row.replacement === true;
     const decision: PlacementDecision =
       place === "near"
         ? "admit"
         : place === "unknown"
           ? "admit_unknown"
-          : draw >= placementDraws
-            ? "admit_after_limit"
-            : !(await this.othersServing(identity))
-              ? "admit_alone"
-              : "redraw";
+          : replacing
+            ? "admit_replacement"
+            : draw >= placementDraws
+              ? "admit_after_limit"
+              : !(await this.othersServing(identity))
+                ? "admit_alone"
+                : "redraw";
     if (decision === "redraw") {
+      if (!(await this.deps.state.redraw(identity, database))) return;
       this.draws = draw;
-      await this.deps.state.redraw(identity, database);
       logPlacement(identity, database, decision, draw);
-      this.nextGrowthCheck = 0;
       return;
     }
+    await this.deps.state.ready(identity, database);
     this.draws = 0;
-    await this.deps.state.ready(identity);
-    await this.deps.state.observeDistance(identity, database);
     logPlacement(identity, database, decision, draw);
   }
   private async othersServing(identity: SlotIdentity) {
-    if (this.deps.primaryAvailable?.() !== false && !this.primaryFailed) return true;
+    if (this.primaryServing && this.deps.primaryAvailable?.() !== false && !this.primaryFailed)
+      return true;
     const rows = await this.deps.state.inspect();
     return rows.some(
       (row) => row.phase === "ready" && row.identity && !sameIdentity(row.identity, identity),
@@ -348,20 +370,34 @@ export class RuntimeFleet {
   async upkeep() {
     const trace = new PoolUpkeepTrace("fleet");
     return trace.run("upkeep", async () => {
-      this.primaryPlace = distanceClass(await this.deps.primaryDistance?.().catch(() => undefined));
+      // The root's read runs beside the cells' reads; a failed one means "not proven serving".
+      const primary = this.deps.primaryDistance
+        ? this.deps.primaryDistance().then(
+            (database) => ({ serving: true, database }),
+            () => ({ serving: false, database: undefined }),
+          )
+        : Promise.resolve({ serving: true, database: undefined });
       const rows = await trace.run("snapshot", () => this.deps.state.inspect());
       await Promise.all(
         rows
           .filter((row) => row.phase === "ready" && row.identity)
           .map(async (row) => {
+            let database;
             try {
-              const database = await this.cell(row.target).healthy?.(row.identity!);
-              await this.deps.state.observeDistance(row.identity!, database ?? undefined);
+              database = await this.cell(row.target).healthy?.(row.identity!);
             } catch (error) {
               await this.failures.failed(row.identity!, error, new AbortController().signal);
+              return;
             }
+            // A failed distance write is not a failed runtime.
+            await this.deps.state
+              .observeDistance(row.identity!, database ?? undefined)
+              .catch(() => {});
           }),
       );
+      const root = await primary;
+      this.primaryServing = root.serving;
+      this.primaryPlace = distanceClass(root.database);
       const surviving = await this.deps.state.inspect();
       for (const row of surviving) {
         await trace.run(
@@ -400,6 +436,15 @@ export class RuntimeFleet {
                 this.deps.now() - row.lastUsedAt >= this.deps.idleMilliseconds)
             ) {
               await this.drain(row.identity);
+            } else if (
+              row.phase === "draining" &&
+              row.identity &&
+              row.redrawn === true &&
+              !(await this.othersServing(row.identity))
+            ) {
+              // The runtime that justified the redraw stopped serving: keep the far one instead.
+              if (await this.deps.state.restoreRedrawn(row.identity))
+                logPlacement(row.identity, row.database, "admit_alone", this.draws);
             } else if (row.phase === "draining" && row.identity) {
               const actual = await this.drain(row.identity);
               if (row.active !== 0 || actual.active !== 0 || !actual.known) return;
