@@ -327,7 +327,6 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             homeDatabasePool: this.homeDatabasePool.observation(),
           },
         );
-        ctx.waitUntil(this.homeDatabasePool.refresh());
         ctx.waitUntil(captureError(env, "pool_failure", "/v1"));
       },
     });

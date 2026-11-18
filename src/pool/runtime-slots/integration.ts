@@ -136,6 +136,7 @@ export class RuntimeHandoff {
       clock: slotClock,
       defer: (work) => this.ctx.waitUntil(work),
       wrap: this.options.wrap,
+      ...(this.options.databasePool ? { databasePool: this.options.databasePool } : {}),
     }));
   }
   async selected() {
@@ -193,6 +194,9 @@ export class RuntimeHandoff {
       started_at: "selected-runtime",
       policyLeaseUntil: health.policyLeaseUntil,
     };
+  }
+  databasePool() {
+    return this.options.databasePool?.() ?? null;
   }
   async activeHealth() {
     const identity = await this.selected();

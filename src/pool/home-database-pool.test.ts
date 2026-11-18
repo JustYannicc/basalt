@@ -43,7 +43,7 @@ test("Home's pool counters are read from server_info and anything else is absent
     assert.equal(homeDatabasePool(value), undefined);
 });
 
-test("the monitor shares one bounded read, keeps the last value on failure and reports each minute", async () => {
+test("the monitor reads Home once a minute, keeps the last value on failure and never wedges", async () => {
   let now = 1_000_000;
   let reads = 0;
   let answer: () => Promise<unknown> = async () => saturated;
@@ -54,50 +54,48 @@ test("the monitor shares one bounded read, keeps the last value on failure and r
     },
     () => now,
   );
-  assert.equal(monitor.observation(), null);
-  await Promise.all([monitor.refresh(), monitor.refresh(), monitor.refresh()]);
-  assert.equal(reads, 1);
-  now += 1_500;
-  assert.deepEqual(monitor.observation(), {
-    inUse: 6,
-    waitCount: 1_843,
-    waitDurationNs: 912_000_000_000,
-    ageMs: 1_500,
-  });
-  await monitor.refresh();
-  assert.equal(reads, 1, "a refusal storm re-reads Home at most once per interval");
-  now += 5_000;
-  answer = async () => {
-    throw new Error("refused while the lease is lapsed");
-  };
-  await monitor.refresh();
-  assert.equal(reads, 2);
-  assert.equal(monitor.observation()?.ageMs, 6_500, "a failed read keeps the last counters");
-
   const reports: unknown[] = [];
+  const record = (observation: unknown) => reports.push(observation);
+  assert.equal(monitor.observation(), null);
+  now += 59_999;
+  await monitor.report(record);
+  assert.equal(reads, 0, "a fresh controller does not read Home before one full interval");
+  now += 1;
+  await Promise.all([monitor.report(record), monitor.report(record)]);
+  assert.equal(reads, 1);
+  assert.deepEqual(reports, [
+    { inUse: 6, waitCount: 1_843, waitDurationNs: 912_000_000_000, ageMs: 0 },
+  ]);
+  now += 1_500;
+  assert.equal(monitor.observation()?.ageMs, 1_500);
+
+  answer = async () => {
+    throw new Error("refused while readiness is degraded");
+  };
+  now += 60_000;
+  await monitor.report(record);
+  assert.equal(reads, 2);
+  assert.equal(monitor.observation()?.ageMs, 61_500, "a failed read keeps the last counters");
+
+  // A read that ignores its signal still settles at the two-second bound.
+  answer = () => new Promise(() => {});
+  now += 60_000;
+  const started = performance.now();
+  await monitor.report(record);
+  assert.ok(performance.now() - started < 2_500);
   answer = async () => saturated;
   now += 60_000;
-  await monitor.report((observation) => reports.push(observation));
-  await monitor.report((observation) => reports.push(observation));
-  assert.equal(reports.length, 1);
-  assert.deepEqual(reports[0], {
-    inUse: 6,
-    waitCount: 1_843,
-    waitDurationNs: 912_000_000_000,
-    ageMs: 0,
-  });
-  now += 60_000;
-  await monitor.report((observation) => reports.push(observation));
-  assert.equal(reports.length, 2);
+  await monitor.report(record);
+  assert.equal(reads, 4, "the stuck read did not block the next minute's read");
+  assert.equal(monitor.observation()?.ageMs, 0);
 });
 
-test("a refused request logs Home's last pool counters and asks for one fresh read", async (context) => {
+test("a refused request logs Home's last pool counters without reading Home", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const streams = new NativeStreams();
   const never = async (): Promise<never> => {
     throw new Error("Unexpected operation");
   };
-  let refreshes = 0;
   const observation = { inUse: 6, waitCount: 1_843, waitDurationNs: 912_000_000_000, ageMs: 400 };
   const deferred: Promise<unknown>[] = [];
   let route: () => Promise<Response> = async () => {
@@ -114,12 +112,7 @@ test("a refused request logs Home's last pool counters and asks for one fresh re
       defer: () => {},
       unavailable: () => {},
     }),
-    databasePool: {
-      observation: () => observation,
-      refresh: async () => {
-        refreshes++;
-      },
-    },
+    databasePool: { observation: () => observation },
     route: () => route(),
     fetch: never,
     defer: (work: Promise<unknown>) => deferred.push(work),
@@ -160,5 +153,4 @@ test("a refused request logs Home's last pool counters and asks for one fresh re
   for (const header of ["Step", "Reason", "Cause"])
     assert.equal(relayed.headers.get(`X-Signalbox-Runtime-Failure-${header}`), null);
   await Promise.all(deferred);
-  assert.equal(refreshes, 2);
 });

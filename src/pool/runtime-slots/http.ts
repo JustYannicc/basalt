@@ -23,6 +23,7 @@ import type {
 } from "../runtime-fleet/configuration.ts";
 import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/image-update.ts";
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
+import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 
 export interface HandoffFleet {
   crash?(command: RuntimeCrashCommand): Promise<unknown>;
@@ -208,7 +209,8 @@ export async function handleRuntimeHandoff(
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const response = runtimeErrorResponse(error, "handoff");
-    if (response.status === 409) logRuntimeCommandRefusal(response, command);
+    if (response.status === 409)
+      logRuntimeCommandRefusal(response, command, handoff.databasePool());
     return response;
   }
 }
@@ -220,7 +222,11 @@ interface RefusedCommand {
 }
 
 /** One closed-vocabulary line per refused command, so a refusal is diagnosable from Workers logs. */
-export function logRuntimeCommandRefusal(response: Response, command: RefusedCommand | undefined) {
+export function logRuntimeCommandRefusal(
+  response: Response,
+  command: RefusedCommand | undefined,
+  homeDatabasePool?: HomeDatabasePoolObservation | null,
+) {
   const diagnostic = runtimeResponseDiagnostic(response);
   const runtimeCause = runtimeResponseCause(response);
   const cause = response.headers.get(providerObservationFailureHeader);
@@ -233,6 +239,7 @@ export function logRuntimeCommandRefusal(response: Response, command: RefusedCom
         step: diagnostic?.runtimeStep ?? null,
         reason: diagnostic?.runtimeReason ?? null,
         ...(runtimeCause ? { runtimeCause } : {}),
+        ...(homeDatabasePool ? { homeDatabasePool } : {}),
         ...(cause === "provider_observation_refused" || cause === "provider_fetch_failed"
           ? { cause }
           : {}),

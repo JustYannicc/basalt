@@ -9,7 +9,6 @@ export interface HomeDatabasePoolObservation extends HomeDatabasePool {
 }
 
 export const homeDatabasePoolReportMs = 60_000;
-const refreshMs = 5_000;
 const readMs = 2_000;
 
 const field = (value: unknown, key: string): unknown =>
@@ -28,14 +27,14 @@ export function homeDatabasePool(capabilities: unknown): HomeDatabasePool | unde
 }
 
 /**
- * Keeps the last counters Home reported, so refusal lines can carry them without a read on the
- * refusal path. Home answers from `database/sql` statistics, so a read never takes a connection.
+ * Keeps the last counters Home reported, read once a minute, so refusal lines carry them without a
+ * read on the refusal path. Home's `/capabilities` also runs one indexed `LIMIT 1` query, so a read
+ * queues behind a saturated pool: it is bounded, and a late read leaves the last value and its age.
  */
 export class HomeDatabasePoolMonitor {
   private read: (signal: AbortSignal) => Promise<unknown>;
   private now: () => number;
   private latest?: { pool: HomeDatabasePool; at: number };
-  private attemptedAt = Number.NEGATIVE_INFINITY;
   private reportedAt: number;
   private pending?: Promise<void>;
   constructor(read: (signal: AbortSignal) => Promise<unknown>, now: () => number = Date.now) {
@@ -51,13 +50,14 @@ export class HomeDatabasePoolMonitor {
       : null;
   }
 
-  /** At most one read per interval; a refused, slow or malformed read keeps the previous value. */
-  refresh(): Promise<void> {
+  /** One read at a time, always settled within its bound even if the read ignores the signal. */
+  private refresh(): Promise<void> {
     if (this.pending) return this.pending;
-    if (this.now() - this.attemptedAt < refreshMs) return Promise.resolve();
-    this.attemptedAt = this.now();
-    const work = Promise.resolve()
-      .then(() => this.read(AbortSignal.timeout(readMs)))
+    const signal = AbortSignal.timeout(readMs);
+    const late = new Promise<never>((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+    );
+    const work = Promise.race([Promise.resolve().then(() => this.read(signal)), late])
       .then((capabilities) => {
         const pool = homeDatabasePool(capabilities);
         if (pool) this.latest = { pool, at: this.now() };
@@ -70,7 +70,7 @@ export class HomeDatabasePoolMonitor {
     return work;
   }
 
-  /** Once per report interval, refresh and hand the result to the upkeep record. */
+  /** Once per report interval, read Home and hand the result to the upkeep record. */
   async report(record: (observation: HomeDatabasePoolObservation | null) => void) {
     if (this.now() - this.reportedAt < homeDatabasePoolReportMs) return;
     this.reportedAt = this.now();
