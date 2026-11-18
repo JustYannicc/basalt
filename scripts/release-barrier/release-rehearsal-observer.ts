@@ -43,15 +43,6 @@ export function stopAt(point: RehearsalStop, env: NodeJS.ProcessEnv = process.en
 }
 
 /**
- * Ends a rehearsal's release right after its class step commits ready, before any bootstrap, so
- * recorded-version recovery can be rehearsed against a class expansion nothing else touched.
- */
-export function stopAfterClasses(env: NodeJS.ProcessEnv = process.env) {
-  if (rehearsalStop(env) === "after-classes")
-    throw new BarrierRefusal("release-rehearsal-stopped-after-classes", "PoolWorker");
-}
-
-/**
  * Ends a rehearsal's release once the candidate startup is journaled and staged, before the
  * promotion gate: the one point where the runtime abort can still act on the staged candidate.
  */

@@ -34,8 +34,9 @@ jobs:
       group: release-rehearsal-${{ github.event.pull_request.number || github.ref }}-${{ matrix.scenario }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    # Two image builds and up to four release passes; a cancel mid-phase leaves only disposable resources.
-    timeout-minutes: 300
+    # Up to two image builds and six release passes. Any cancel, timeout or failure is torn down by the
+    # cleanup job below.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -138,3 +139,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Runs even after a cancel or timeout, from this run's own code, so a rehearsal never depends on the
+  # default branch already carrying its cleanup. A passed stage is skipped by its own teardown receipt.
+  cleanup:
+    needs: rehearsal
+    if: always() && needs.rehearsal.result != 'success' && needs.rehearsal.result != 'skipped'
+    # The same group release-cleanup uses for this run, so the two never destroy one stage at once.
+    concurrency:
+      group: release-rehearsal-cleanup-${{ github.run_id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the stack definition
+        run: npm run prepare:upstream
+      - name: Restore each encrypted checkpoint, destroy, and verify absence
+        run: node scripts/release-preview/rehearsal-cleanup.ts

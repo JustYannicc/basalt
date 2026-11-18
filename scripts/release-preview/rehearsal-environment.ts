@@ -11,6 +11,7 @@ const releaseInputs = [
   "GITHUB_SHA",
   "BASALT_REHEARSAL_STOP",
   "BASALT_REHEARSAL_DRAIN_CAP_MS",
+  "BASALT_RECOVERY_DATABASE_COMPATIBLE",
   "POOL_AVAILABILITY_TARGET",
   // The stage's sign-in seed re-runs on every deploy and writes a fresh output each time.
   "PREVIEW_AUTH_SEED_OUTPUT",

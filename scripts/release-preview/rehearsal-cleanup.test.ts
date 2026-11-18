@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { provenTeardown, rehearsalCheckpoints, rehearsalCleanupRun } from "./rehearsal-cleanup.ts";
+import { ownRehearsalRun, provenTeardown, rehearsalCheckpoints, rehearsalCleanupRun } from "./rehearsal-cleanup.ts";
 
 const repository = "owner/basalt";
 const event = (run: Record<string, unknown>) => ({
@@ -60,4 +60,11 @@ test("only a receipt for exactly that stage with verified teardown skips its cle
     { version: 2, stage: "test-rehearsal-8121", teardown: true },
   ])
     assert.equal(provenTeardown(receipt, subject), false);
+});
+
+test("the rehearsal's own cleanup job cleans only its own run", () => {
+  const env = { GITHUB_JOB: "cleanup", GITHUB_RUN_ID: "99", GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/release-rehearsal.yml@refs/pull/7/merge` };
+  assert.equal(ownRehearsalRun(env, repository), 99);
+  for (const change of [{ GITHUB_JOB: "rehearsal" }, { GITHUB_RUN_ID: "0" }, { GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/deploy.yml@refs/heads/main` }])
+    assert.throws(() => ownRehearsalRun({ ...env, ...change }, repository), /Invalid rehearsal cleanup event/);
 });

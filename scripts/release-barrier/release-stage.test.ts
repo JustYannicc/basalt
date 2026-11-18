@@ -221,7 +221,7 @@ test("only a rehearsal stage admits its stage's sign-in seed and pool budget com
 });
 
 test("every rehearsal stop point refuses on production and fires only at its own point", async () => {
-  const { stopAt, stopAfterClasses, stopBeforePromotionGate } = await import("./release-rehearsal-observer.ts");
+  const { stopAt, stopBeforePromotionGate } = await import("./release-rehearsal-observer.ts");
   const { rehearsalStops } = await import("./release-stage.ts");
   for (const point of rehearsalStops) {
     assert.throws(
@@ -233,7 +233,6 @@ test("every rehearsal stop point refuses on production and fires only at its own
       assert.doesNotThrow(() => stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: other }));
     assert.doesNotThrow(() => stopAt(point, { ALCHEMY_STAGE: "production" }));
   }
-  assert.throws(() => stopAfterClasses({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "after-classes" }), refusal("release-rehearsal-stopped-after-classes"));
   assert.throws(
     () => stopBeforePromotionGate({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "before-promotion-gate" }),
     refusal("release-rehearsal-stopped-before-promotion-gate"),

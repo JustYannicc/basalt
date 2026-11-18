@@ -69,12 +69,12 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
  * The preflight's runtime-bootstrap step must plan both colors' classes through alchemy's own
  * class step (`source: "declared"`) on a PoolWorker it reads as untagged, as production is.
  */
-export function requireRuntimeBootstrap(report: unknown) {
+/** A preflight that tried to write, or ended fatally, proves nothing however its steps read. */
+export function requireReadOnlyPreflight(report: unknown) {
   const value = report as {
     fatal?: unknown;
     mutations?: { deniedStateWrites?: unknown; blockedHttpMutations?: unknown; refusedBridgeRequests?: unknown };
   } | null;
-  // A preflight that tried to write, or ended fatally, proves nothing however one step reads.
   if (value?.fatal !== undefined) throw new Error(`The release preflight ended fatally: ${String(value.fatal)}`);
   const mutations = value?.mutations;
   if (
@@ -84,6 +84,10 @@ export function requireRuntimeBootstrap(report: unknown) {
     Object.keys((mutations.refusedBridgeRequests as object | undefined) ?? {}).length !== 0
   )
     throw new Error("The release preflight attempted a write or a refused bridge request");
+}
+
+export function requireRuntimeBootstrap(report: unknown) {
+  requireReadOnlyPreflight(report);
   const steps = (report as { steps?: unknown } | null)?.steps;
   const step = Array.isArray(steps)
     ? (steps as { step?: unknown; status?: unknown; summary?: unknown }[]).find((entry) => entry.step === "runtime-bootstrap")

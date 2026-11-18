@@ -1,6 +1,7 @@
 import type { RehearsalStop } from "../release-barrier/release-stage.ts";
 import type { ReleaseOutcome } from "./rehearsal-plan.ts";
 import type { ShapePhase } from "./rehearsal-worker-shape.ts";
+import { requireReadOnlyPreflight } from "./rehearsal-single-writer.ts";
 
 /**
  * Recovery from every point a single-writer release can stop at. A stop after bootstrap or bind
@@ -17,8 +18,8 @@ export interface RecoveryHooks {
   abort(): Promise<{ status?: unknown }>;
   /** A new candidate commit on top of the stopped one, prepared and built. */
   nextCandidate(): Promise<string>;
-  /** Recorded-version recovery with this run's own manifest and receipt; returns its outcome. */
-  recover(): Promise<ReleaseOutcome>;
+  /** Recorded-version recovery with this run's own last manifest and receipt; returns its outcome. */
+  recover(input: { databaseCompatible: boolean }): Promise<ReleaseOutcome>;
   serve(): Promise<unknown>;
 }
 
@@ -53,7 +54,9 @@ type Step = (name: string, run: () => Promise<unknown>) => Promise<void>;
 
 export function resumeSteps(hooks: RecoveryHooks) {
   return recoverySteps("single-writer-resume", hooks, async (step, cleanPool) => {
-    for (const point of ["after-bootstrap-blue", "after-bind-blue", "after-bind-green"] as const) {
+    // A re-dispatch skips a color it already bootstrapped, so one run reaches one point per color;
+    // the rollback stage covers the other ordering.
+    for (const point of ["after-bootstrap-blue", "after-bind-green"] as const) {
       await step(`4-stop-${point}`, async () => stopped(await hooks.release({ cleanPool, stop: point }), point));
       // The same candidate again from here: same classes, no second application, same selection.
       await step(`4-shape-${point}`, () => hooks.shape("classes", point, true));
@@ -84,16 +87,22 @@ export function resumeSteps(hooks: RecoveryHooks) {
 
 export function rollbackSteps(hooks: RecoveryHooks) {
   return recoverySteps("single-writer-rollback", hooks, async (step, cleanPool) => {
-    await step("4-stop-after-classes", async () => stopped(await hooks.release({ cleanPool, stop: "after-classes" }), "after-classes"));
+    // After its controller phase the expanding release has committed its classes and written its pair.
+    await step("4-stop-after-controller", async () => stopped(await hooks.release({ cleanPool, stop: "after-controller" }), "after-controller"));
     await step("4-shape-after-classes", () => hooks.shape("classes", "after-classes", false));
-    // The expanding release's own pair names the pre-expansion PoolWorker: refused before any write.
+    // That pair names the pre-expansion PoolWorker: refused before any write.
     await step("4-recover-to-pre-expansion-refuses", async () => {
-      const outcome = await hooks.recover();
+      const outcome = await hooks.recover({ databaseCompatible: false });
       if (outcome.ok || !/^declared-class-(?:recovery-export-missing|pre-migration-rollback-refused)$/u.test(outcome.reason))
         throw new Error(`Recovery to the pre-expansion version was not refused: ${outcome.ok ? "accepted" : outcome.reason}`);
     });
     // Cloudflare never deletes a class without a migration, and nothing sends one.
     await step("4-shape-after-refused-recovery", () => hooks.shape("classes", "after-refused-recovery", false));
+    // The other bind ordering, re-dispatching the same candidate from each point.
+    for (const point of ["after-bind-blue", "after-bootstrap-green"] as const) {
+      await step(`4-stop-${point}`, async () => stopped(await hooks.release({ cleanPool, stop: point }), point));
+      await step(`4-shape-${point}`, () => hooks.shape("classes", point, true));
+    }
     await step("4-expanding-release-completes", async () => {
       const outcome = await hooks.release({ cleanPool });
       if (!outcome.ok) throw new Error(`The expanding release did not complete on re-dispatch: ${outcome.reason}`);
@@ -104,7 +113,8 @@ export function rollbackSteps(hooks: RecoveryHooks) {
       stopped(await hooks.release({ cleanPool, stop: "after-controller", commit: next }), "after-controller"),
     );
     await step("4-recover-to-post-expansion", async () => {
-      const outcome = await hooks.recover();
+      // The next candidate is an empty commit: the same tree, so the same database.
+      const outcome = await hooks.recover({ databaseCompatible: true });
       if (!outcome.ok) throw new Error(`Recovery to the post-expansion version refused: ${outcome.reason}`);
     });
     await step("4-shape-after-recovery", () => hooks.shape("classes", "after-recovery", false));
@@ -114,6 +124,7 @@ export function rollbackSteps(hooks: RecoveryHooks) {
 
 /** The candidate after an abort reads the aborted prior as settled, through the journal's source. */
 export function requireAbortedPrior(report: unknown) {
+  requireReadOnlyPreflight(report);
   const text = JSON.stringify(report ?? null);
   if (!text.includes("prior-settled-or-aborted")) throw new Error("The preflight did not read the aborted prior as settled");
   if (!text.includes("journal-source")) throw new Error("The preflight did not take its baseline from the journal");

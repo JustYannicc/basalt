@@ -103,19 +103,25 @@ export function singleWriterHooks(context: SingleWriterContext) {
     preflight,
     release: ({ cleanPool, stop, commit }) => hooks.release({ candidate: "candidate", cleanPool, stop, commit }),
     abort: async () => {
-      // The documented abort: plan, then apply exactly the planned digest.
-      await entry("abort-plan", ["--abort-runtime", "plan"]);
-      const planned = JSON.parse(await readFile(join(receipts(root), "runtime-abort.json"), "utf8")) as { fingerprint?: unknown };
+      // The documented abort: plan, then apply exactly the planned digest. Each call writes a fresh receipt.
+      const receipt = join(receipts(root), "runtime-abort.json");
+      await rm(receipt, { force: true });
+      if (!(await entry("abort-plan", ["--abort-runtime", "plan"]))) throw new Error("The runtime abort plan failed");
+      const planned = JSON.parse(await readFile(receipt, "utf8")) as { fingerprint?: unknown; candidate?: unknown };
+      if (planned.candidate !== context.current()) throw new Error("The runtime abort plan names another candidate");
       if (typeof planned.fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(planned.fingerprint))
         throw new Error("The runtime abort plan has no digest");
       await keep(root, "runtime-abort-plan.json", JSON.stringify(planned));
+      await rm(receipt, { force: true });
       await entry("abort-apply", ["--abort-runtime", planned.fingerprint]);
-      const applied = await readFile(join(receipts(root), "runtime-abort.json"), "utf8");
+      const applied = await readFile(receipt, "utf8");
       await keep(root, "runtime-abort-apply.json", applied);
       return JSON.parse(applied) as { status?: unknown };
     },
     nextCandidate: async () => {
       // A new, empty rehearsal commit: a different candidate with the same tree.
+      if (execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" }).trim())
+        throw new Error("The candidate checkout has changes; the next candidate must have the same tree");
       execFileSync("git", ["-c", "user.name=Release rehearsal", "-c", "user.email=release-rehearsal@users.noreply.github.com",
         "commit", "-q", "--allow-empty", "--no-verify", "-m", "rehearsal: next candidate"], { cwd: root });
       const next = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
@@ -123,7 +129,7 @@ export function singleWriterHooks(context: SingleWriterContext) {
       context.advance(next);
       return next;
     },
-    recover: async () => {
+    recover: async ({ databaseCompatible }) => {
       // Recorded-version recovery with this run's own last pair, the way production's deploy runs it.
       const directory = receipts(root);
       for (const name of ["manifest.json", "receipt.json"])
@@ -135,6 +141,8 @@ export function singleWriterHooks(context: SingleWriterContext) {
       await withStageBuild(root, subject, deployEnvironment, async () => {
         await operation("recover", root, "scripts/deploy.ts", ["--recover", join(directory, "manifest.json"), join(directory, "receipt.json")], {
           ...candidateEnvironment(),
+          // Stated, not inferred: true only when the recovered and current trees share a database.
+          BASALT_RECOVERY_DATABASE_COMPATIBLE: String(databaseCompatible),
           PREVIEW_AUTH_SEED_OUTPUT: join(privateRoot, `seed-recover-${Date.now()}.json`),
         }, 60).catch(() => { exited = false; });
       }, undefined, { build: false });

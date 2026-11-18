@@ -45,9 +45,9 @@ export function dispatchSingleWriter(
     run("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], scratch);
     const body = join(scratch, ".rehearsal-body.md");
     writeFileSync(body, `Rehearsal only, never merge: \`${change}\` on the release rehearsal at \`${onto}\`.\n`);
-    // A draft, so the rehearsal vehicle, which carries the whole rehearsal branch, can't be merged.
-    const url = run("gh", ["pr", "create", "--draft", "--base", "main", "--head", branch, "--title",
-      `DO NOT MERGE rehearse: ${change.slice(0, 12)}`, "--body-file", body, "--label", label]);
+    // Only a rehearsal vehicle: it never joins a batch, so nothing merges it, and verify closes it.
+    const url = run("gh", ["pr", "create", "--base", "main", "--head", branch, "--title",
+      `DO NOT MERGE — rehearsal ${change}`, "--body-file", body, "--label", label]);
     return { dryRun: false, onto, change, head, branch, url };
   } finally {
     run("git", ["worktree", "remove", "--force", scratch], root);

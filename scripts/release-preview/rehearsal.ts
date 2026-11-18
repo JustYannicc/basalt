@@ -272,7 +272,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
     });
     const receipt =
       "steps" in steps.record
-        ? { version: 1, candidate, baseline, stage, ...steps.record, serving: true, teardown: outcome.teardown }
+        ? { version: 1, candidate, finalCandidate: current, baseline, stage, ...steps.record, serving: true, teardown: outcome.teardown }
         : rehearsalReceipt(steps.record, { candidate, previous, stage }, outcome.teardown);
     await writeFile(join(root, "rehearsal-receipt.json"), `${JSON.stringify(receipt)}\n`, { flag: "wx", mode: 0o600 });
     console.log("Release rehearsal and remote teardown passed");

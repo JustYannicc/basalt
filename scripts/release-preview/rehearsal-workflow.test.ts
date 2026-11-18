@@ -61,3 +61,10 @@ test("rehearsal cleanup runs for every unfinished rehearsal and never for a skip
   assert.match(job, /run: node scripts\/release-preview\/rehearsal-cleanup\.ts/);
   assert.ok(cleanup.slice(0, cleanup.indexOf("\n  rehearsal-cleanup:\n")).includes("github.event.workflow_run.name == 'Release preview'"));
 });
+
+test("a cancelled, timed-out or failed rehearsal is torn down by its own run", () => {
+  const job = rehearsal.slice(rehearsal.indexOf("\n  cleanup:\n"));
+  assert.match(job, /\n    needs: rehearsal\n    if: always\(\) && needs\.rehearsal\.result != 'success' && needs\.rehearsal\.result != 'skipped'\n/);
+  assert.match(job, /run: node scripts\/release-preview\/rehearsal-cleanup\.ts/);
+  assert.match(rehearsal, /\n    timeout-minutes: 360\n/);
+});

@@ -36,6 +36,22 @@ export function rehearsalCleanupRun(
   return run.id;
 }
 
+/**
+ * The rehearsal's own cleanup job, which runs even when the run was cancelled or timed out, and so
+ * covers runs whose rehearsal code is not yet on the default branch.
+ */
+export function ownRehearsalRun(env: NodeJS.ProcessEnv, repository: string): number {
+  const runId = Number(env.GITHUB_RUN_ID);
+  if (
+    env.GITHUB_JOB !== "cleanup" ||
+    !env.GITHUB_WORKFLOW_REF?.startsWith(`${repository}/.github/workflows/release-rehearsal.yml@`) ||
+    !Number.isSafeInteger(runId) ||
+    runId < 1
+  )
+    throw new Error("Invalid rehearsal cleanup event");
+  return runId;
+}
+
 /** A passed scenario proved its own teardown; its receipt names the stage it tore down. */
 export function provenTeardown(receipt: unknown, subject: StageSubject): boolean {
   const value = receipt as { version?: unknown; stage?: unknown; teardown?: unknown } | null;
@@ -62,7 +78,10 @@ async function main(): Promise<void> {
   const repository = process.env.GITHUB_REPOSITORY;
   if (process.env.GITHUB_ACTIONS !== "true" || !process.env.GITHUB_EVENT_PATH || !repository)
     throw new Error("Rehearsal cleanup runs only from a trusted Actions event");
-  const runId = rehearsalCleanupRun(JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8")), repository);
+  const runId =
+    process.env.GITHUB_EVENT_NAME === "workflow_run"
+      ? rehearsalCleanupRun(JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8")), repository)
+      : ownRehearsalRun(process.env, repository);
   const { artifacts } = JSON.parse(gh(`repos/${repository}/actions/runs/${runId}/artifacts?per_page=100`).toString());
   const root = process.cwd();
   const privateRoot = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "basalt-rehearsal-cleanup-"));

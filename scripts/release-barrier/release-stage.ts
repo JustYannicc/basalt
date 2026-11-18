@@ -60,7 +60,6 @@ export const releaseScope = () => {
  */
 export const rehearsalStops = [
   "after-adopt",
-  "after-classes",
   "after-controller",
   "after-bootstrap-blue",
   "after-bind-blue",
