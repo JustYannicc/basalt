@@ -8,6 +8,8 @@ import {
 } from "../deploy-safety/http.ts";
 import type { ClassTarget } from "./declared-class-contract.ts";
 import { classConstraint, classSchemaRefusal } from "./class-refusal.ts";
+import { digest } from "./manifest.ts";
+import { callerAnnotations } from "./worker-annotations.ts";
 
 const fromWire = (value: unknown, path: readonly string[] = []): unknown => {
   // These SDK fields contain caller data, not Cloudflare wire property names.
@@ -90,3 +92,19 @@ export const readClassSettings = (target: ClassTarget, fetcher: Fetcher = fetch)
       catch: (error) => error,
     });
   }).pipe(Effect.timeout("15 seconds"));
+
+/** What a class request may carry, or compare, from a read's annotations (worker-annotations.ts). */
+export const classAnnotations = <T extends object>(
+  annotations: T | null | undefined,
+  fqn: string | undefined,
+  path: string,
+) =>
+  callerAnnotations(annotations, (wire) => {
+    throw classConstraint(
+      "declared-class-annotation-unrecognised",
+      fqn,
+      `${path}.annotations`,
+      "caller-owned-or-provider-managed",
+      /^[a-z0-9_/]{1,64}$/u.test(wire) ? wire : `sha256:${digest(wire)}`,
+    );
+  });

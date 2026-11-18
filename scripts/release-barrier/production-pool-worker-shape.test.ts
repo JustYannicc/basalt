@@ -4,9 +4,11 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { Effect, Schema } from "effect";
 import { deployClassExpansion } from "./class-cloudflare.ts";
 import {
+  productionSettingsKeys,
   productionTagPrefixes,
   productionTags,
   productionVersionKeys,
+  providerTriggeredBy,
 } from "./test/production-pool-worker-shape.ts";
 import { productionPoolWorker } from "./test/production-pool-worker.ts";
 import { productionWorker, productionWorkerResponse } from "./test/production-worker-api.ts";
@@ -28,7 +30,12 @@ async function assertProductionShape(read: Read, accountId: string, scriptName: 
   const active = deployments.deployments[0]!.versions[0]!.version_id;
   const version = await result(`${base}/workers/${scriptName}/versions/${active}`);
   assert.deepEqual(Object.keys(version), [...productionVersionKeys]);
-  const settings = (await result(`${base}/scripts/${scriptName}/settings`)) as { tags: string[] };
+  const settings = (await result(`${base}/scripts/${scriptName}/settings`)) as {
+    tags: string[];
+    annotations: Record<string, string>;
+  };
+  assert.deepEqual(Object.keys(settings), [...productionSettingsKeys]);
+  assert.equal(typeof settings.annotations[providerTriggeredBy], "string");
   assert.deepEqual(
     settings.tags.map((tag) => productionTagPrefixes.find((prefix) => tag.startsWith(prefix))),
     [...productionTagPrefixes],

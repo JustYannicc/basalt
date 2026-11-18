@@ -90,18 +90,51 @@ export function productionVersionBody(input: {
   return version;
 }
 
-export const productionSettingsBody = (
+/** The exact top-level keys of production's PoolWorker settings read (read-only capture, 2026-11-18). */
+export const productionSettingsKeys = [
+  "placement",
+  "compatibility_date",
+  "compatibility_flags",
+  "usage_model",
+  "tags",
+  "tail_consumers",
+  "logpush",
+  "observability",
+  "annotations",
+  "bindings",
+] as const;
+/** Cloudflare stamps this on every version and returns it from reads; uploads that carry it are refused. */
+export const providerTriggeredBy = "workers/triggered_by";
+/** Values follow PoolWorker's declaration (no placement, telemetry's workerObservability); keys are production's. */
+export const productionObservability = {
+  enabled: true,
+  head_sampling_rate: 1,
+  logs: { enabled: true, head_sampling_rate: 1, invocation_logs: true, persist: true },
+  redact_query_string: true,
+};
+
+export function productionSettingsBody(
   bindings: readonly unknown[],
   tags: readonly string[],
-  annotations?: Readonly<Record<string, string>>,
-) => ({
-  bindings,
-  tags,
-  compatibility_date: compatibilityDate,
-  compatibility_flags: compatibilityFlags,
-  usage_model: "standard",
-  ...(annotations && Object.keys(annotations).length ? { annotations } : {}),
-});
+  annotations: Readonly<Record<string, string>> = {},
+) {
+  const settings = {
+    placement: {},
+    compatibility_date: compatibilityDate,
+    compatibility_flags: compatibilityFlags,
+    usage_model: "standard",
+    tags,
+    tail_consumers: [],
+    logpush: false,
+    observability: productionObservability,
+    // Production's settings read returned "version_upload"; a stamp is never matched by value.
+    annotations: { [providerTriggeredBy]: "version_upload", ...annotations },
+    bindings,
+  };
+  if (Object.keys(settings).join() !== productionSettingsKeys.join())
+    throw new Error("production settings stand-in drifted from the observed key set");
+  return settings;
+}
 
 export const productionScriptVersionBody = (input: {
   id: string;

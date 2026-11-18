@@ -1,22 +1,16 @@
 import { UpgradeRefusal } from "./refusal.ts";
 import type { Candidate, Observation } from "./plan.ts";
+import {
+  callerOwnedAnnotations,
+  providerManagedAnnotations,
+} from "../release-barrier/worker-annotations.ts";
 
-const writableAnnotations = new Set([
-  "workers/alias",
-  "workers/commit_sha",
-  "workers/message",
-  "workers/pull_request_number",
-  "workers/pull_request_title",
-  "workers/pull_request_url",
-  "workers/repository_url",
-  "workers/tag",
-]);
 export function comparableSettings(settings: Record<string, unknown>) {
   const { annotations, ...rest } = settings;
   if (annotations === null || typeof annotations !== "object" || Array.isArray(annotations))
     return settings;
   const writable = Object.fromEntries(
-    Object.entries(annotations).filter(([key]) => key !== "workers/triggered_by"),
+    Object.entries(annotations).filter(([key]) => !providerManagedAnnotations.has(key)),
   );
   return { ...rest, annotations: writable };
 }
@@ -38,7 +32,9 @@ export function uploadMetadata(observed: Observation, candidate: Candidate) {
       throw new UpgradeRefusal("alchemy-state-store", "annotations", "object", "invalid");
     const entries = Object.entries(annotations);
     if (
-      entries.some(([name, value]) => !writableAnnotations.has(name) || typeof value !== "string")
+      entries.some(
+        ([name, value]) => !callerOwnedAnnotations.has(name) || typeof value !== "string",
+      )
     )
       throw new UpgradeRefusal(
         "alchemy-state-store",
