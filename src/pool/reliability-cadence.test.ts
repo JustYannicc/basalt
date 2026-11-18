@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type {
-  PoolReliability,
-  PoolReliabilitySlo,
-} from "../../apps/pool/reliability-contract.ts";
-import { capturedReliability, recordReliability, reliabilityFreshMs } from "./reliability-cadence.ts";
+import type { PoolReliability, PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import {
+  capturedReliability,
+  recordReliability,
+  reliabilityFreshMs,
+} from "./reliability-cadence.ts";
 import { reportingCadence } from "./reporting.ts";
 
 const minute = 60_000;
@@ -22,7 +23,13 @@ function fixture() {
   const computedAt: number[] = [];
   const compute = async (now: number): Promise<PoolReliabilitySlo> => {
     computedAt.push(now);
-    return { target: 99, state: "no_traffic", captureAt: null, hour: window(now), day: window(now) };
+    return {
+      target: 99,
+      state: "no_traffic",
+      captureAt: null,
+      hour: window(now),
+      day: window(now),
+    };
   };
   const storage = {
     get: async <T>(name: string) => structuredClone(values.get(name)) as T | undefined,
@@ -42,7 +49,11 @@ test("the minute check-in reuses each capture's figure: 12 computations an hour 
       await recordReliability(f.storage, "pool", f.compute, start + at + 4_000);
     const figure = await capturedReliability(f.storage, "pool", f.compute, start + at + 30_000);
     const capturedAt = start + Math.floor(at / reportingCadence) * reportingCadence + 4_000;
-    assert.equal(figure.hour.to, new Date(capturedAt).toISOString(), "the latest capture's windows");
+    assert.equal(
+      figure.hour.to,
+      new Date(capturedAt).toISOString(),
+      "the latest capture's windows",
+    );
   }
   assert.equal(f.computedAt.length, 12);
 });

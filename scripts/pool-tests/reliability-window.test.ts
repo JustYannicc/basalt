@@ -169,10 +169,12 @@ test(
       for (const [table, count] of read)
         if (table.startsWith("cte "))
           assert.ok(count < 5 * dayRows, `${table} rows scanned: ${count}`);
+      // Terminal evidence may be hashed whole, but never rescanned per partition or per row: the old
+      // shape read every start once per request partition, over 360,000 rows here.
       for (const table of ["basalt_model_terminal_starts", "basalt_model_terminal_finishes"])
         assert.ok(
-          (read.get(table) ?? 0) < 5 * dayRows,
-          `${table} rows examined: ${read.get(table)} of ${dayRows + oldTerminals}`,
+          (read.get(table) ?? 0) <= 4 * (dayRows + oldTerminals + 1),
+          `${table} rows examined: ${read.get(table)} of ${dayRows + oldTerminals + 1}`,
         );
     } finally {
       await database.close();

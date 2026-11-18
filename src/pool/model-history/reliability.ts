@@ -158,10 +158,8 @@ export async function readPoolReliabilityWindows(
       WHERE s.pool=$1
         AND ${finishedTimeRange}
         AND f.outcome <> 'unavailable'
-        AND NOT EXISTS (
-          SELECT 1 FROM basalt_model_requests h
-          WHERE h.pool=s.pool AND h.source=$3 AND h.request_id=s.request_id::text
-        )`
+        -- recent_home holds every Home attempt of a request that finished in the window.
+        AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)`
           : ""
       }
     )
