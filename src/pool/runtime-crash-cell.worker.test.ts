@@ -18,8 +18,12 @@ import { signEnvelope } from "./token.ts";
 type Fleet = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 
 /** One ready cell beside the primary. The cell's Home answers its topology read with `topology`. */
-async function ready(context: TestContext, topology: () => Response = () => Response.json(null)) {
-  const f = await fleetWorkerFixture();
+async function ready(
+  context: TestContext,
+  topology: () => Response = () => Response.json(null),
+  runtimeBindings?: Readonly<Record<string, string>>,
+) {
+  const f = await fleetWorkerFixture(runtimeBindings ? { runtimeBindings } : {});
   context.after(f.cleanup);
   const events: string[] = [];
   f.onRuntimeCreated(async (runtime) => {
@@ -356,7 +360,7 @@ test(
     }
     assert.deepEqual(reasons(), ["master", "master", "master", "master"]);
     assert.deepEqual(f.old.calls.signals, []);
-    // A disposable stage: src/pool/deployment.ts binds exactly this value there.
+    // A disposable stage that binds exactly this value (the declarations bind it on test-* stages).
     f.advanceCurrentBindings({ POOL_ALLOW_MASTER_CRASH: "true" });
     const response = await f.command("runtime-crash", primaryOf(f, command));
     assert.equal(response.status, 200, await response.clone().text());
@@ -371,9 +375,10 @@ test(
   "the stage binding does not let a cell on a master Home be killed",
   { timeout: 15_000 },
   async (context) => {
-    const { f, cell, command } = await ready(context, () => Response.json(documentedTopology));
-    // The cell's own runtime decides, and it shares the Worker's bindings.
-    cell.env.POOL_ALLOW_MASTER_CRASH = "true";
+    // The cell's own runtime decides, and it starts with the Worker's bindings, this one included.
+    const { f, cell, command } = await ready(context, () => Response.json(documentedTopology), {
+      POOL_ALLOW_MASTER_CRASH: "true",
+    });
     const reasons = refusals(context);
     assert.equal((await crash(f, command)).status, 409);
     assert.deepEqual(reasons(), ["master"]);
