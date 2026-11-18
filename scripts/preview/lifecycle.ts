@@ -491,13 +491,16 @@ export async function planStageVariant(
   root: string,
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
-  edit: { path: string; from: string; to: string },
+  edit: { path: string; from: string; to: string } | undefined,
+  extra: NodeJS.ProcessEnv = {},
 ): Promise<string> {
   if (subject.kind !== "rehearsal") throw new Error("Only a rehearsal stage plans variants");
   const config = stageEnvironment(subject, source);
-  const path = join(root, edit.path);
+  // Without an edit the plan is the checkout as it is, with `extra` deploy inputs.
+  const target = edit ?? { path: "alchemy.run.ts", from: "", to: "" };
+  const path = join(root, target.path);
   const original = await readFile(path, "utf8");
-  if (original.split(edit.from).length !== 2)
+  if (edit && original.split(edit.from).length !== 2)
     throw new Error("The negative control's source seam changed");
   const seedFile = join(
     root,
@@ -507,7 +510,7 @@ export async function planStageVariant(
   );
   let output = "";
   await materializePreviewBrand(root, config, async () => {
-    await writeFile(path, original.replace(edit.from, edit.to));
+    if (edit) await writeFile(path, original.replace(edit.from, edit.to));
     try {
       output = await new Promise<string>((resolvePlan, rejectPlan) => {
         const child = spawn(
@@ -515,7 +518,13 @@ export async function planStageVariant(
           alchemyArgs("plan", mainConfig, "--stage", config.stage, "--no-input"),
           {
             cwd: cloudDirectory,
-            env: { ...config.deploy, ...config.seed, PREVIEW_AUTH_SEED_OUTPUT: seedFile },
+            env: {
+              ...safeEnvironment(process.env),
+              ...config.deploy,
+              ...config.seed,
+              ...extra,
+              PREVIEW_AUTH_SEED_OUTPUT: seedFile,
+            },
             stdio: ["ignore", "pipe", "pipe"],
           },
         );
@@ -531,11 +540,15 @@ export async function planStageVariant(
         child.once("close", (code) =>
           code === 0
             ? resolvePlan(Buffer.concat(chunks).toString("utf8"))
-            : rejectPlan(new Error(`The variant plan failed with exit ${code}`)),
+            : rejectPlan(
+                new Error(
+                  `The variant plan failed with exit ${code}:\n${redactor(config.deploy, process.env)(Buffer.concat(chunks).toString("utf8").split(/\r?\n/u).slice(-80).join("\n"))}`,
+                ),
+              ),
         );
       });
     } finally {
-      await writeFile(path, original);
+      if (edit) await writeFile(path, original);
     }
   });
   if ((await readFile(path, "utf8")) !== original)

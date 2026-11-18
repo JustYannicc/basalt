@@ -6,6 +6,8 @@ export const rehearsalScenarios = [
   "single-writer",
   "single-writer-resume",
   "single-writer-rollback",
+  // The native Alchemy cutover from a production-shaped stage; appended so earlier stage numbers hold.
+  "single-writer-native",
 ] as const;
 export type RehearsalScenario = (typeof rehearsalScenarios)[number];
 

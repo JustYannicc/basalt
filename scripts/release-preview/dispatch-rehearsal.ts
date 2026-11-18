@@ -12,6 +12,7 @@ const run = (command: string, args: string[], cwd?: string) =>
 const labels = {
   forward: "release-rehearsal-single-writer",
   recovery: "release-rehearsal-single-writer-step4",
+  native: "release-rehearsal-native",
 } as const;
 const infraOnlyLabel = "release-rehearsal-infra-only";
 
@@ -66,9 +67,16 @@ function requireRehearsalInputs(root: string, infraOnly: boolean) {
 export function dispatchSingleWriter(
   root: string,
   change: string,
-  options: { base?: string; dryRun?: boolean; recovery?: boolean; infraOnly?: boolean } = {},
+  options: {
+    base?: string;
+    dryRun?: boolean;
+    recovery?: boolean;
+    native?: boolean;
+    infraOnly?: boolean;
+  } = {},
 ) {
-  const label = options.recovery ? labels.recovery : labels.forward;
+  const scenario = options.native ? "native" : options.recovery ? "recovery" : "forward";
+  const label = labels[scenario];
   if (!/^[a-f0-9]{40}$/u.test(change))
     throw new Error("Name the change by its exact 40-character head commit");
   const base = options.base ?? "origin/feat/release-rehearsal";
@@ -112,7 +120,7 @@ export function dispatchSingleWriter(
     )
       throw new Error("The rehearsal candidate is not the rehearsal branch plus the change");
     // The scenario is in the name: two dispatches of one change in the same second share a merge commit.
-    const branch = `rehearse/${options.recovery ? "step4" : "forward"}${options.infraOnly ? "-infra" : ""}-${head.slice(0, 12)}`;
+    const branch = `rehearse/${scenario === "recovery" ? "step4" : scenario}${options.infraOnly ? "-infra" : ""}-${head.slice(0, 12)}`;
     if (options.dryRun)
       return {
         dryRun: true,
@@ -228,6 +236,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         dispatchSingleWriter(process.cwd(), value, {
           dryRun: process.argv.includes("--dry-run"),
           recovery: process.argv.includes("--step4"),
+          native: process.argv.includes("--native"),
           infraOnly: process.argv.includes("--infra-only"),
           base: process.argv.includes("--local") ? "HEAD" : undefined,
         }),
@@ -237,6 +246,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(JSON.stringify(verifyTeardown(repository, Number(value))));
   else
     throw new Error(
-      "Usage: dispatch-rehearsal.ts dispatch <change-head-sha> [--step4] [--infra-only] [--dry-run] [--local] | verify <pull-request>",
+      "Usage: dispatch-rehearsal.ts dispatch <change-head-sha> [--step4|--native] [--infra-only] [--dry-run] [--local] | verify <pull-request>",
     );
 }

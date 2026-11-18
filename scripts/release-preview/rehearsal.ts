@@ -45,6 +45,8 @@ import { applyRehearsalFixture, withStageBuild } from "../preview/lifecycle.ts";
 import { singleWriterSteps } from "./rehearsal-single-writer.ts";
 import { singleWriterHooks } from "./rehearsal-single-writer-hooks.ts";
 import { resumeSteps, rollbackSteps } from "./rehearsal-recovery.ts";
+import { nativeSteps } from "./rehearsal-native.ts";
+import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { PreviewClient } from "../pool-acceptance/preview-client.ts";
 import { previewConfigFromEnvironment } from "../pool-acceptance/preview-config.ts";
 
@@ -455,13 +457,30 @@ export async function executeRehearsal(
       },
     });
     const steps =
-      scenario === "single-writer"
-        ? singleWriterSteps(singleWriter.forward)
-        : scenario === "single-writer-resume"
-          ? resumeSteps(singleWriter.recovery)
-          : scenario === "single-writer-rollback"
-            ? rollbackSteps(singleWriter.recovery)
-            : rehearsalSteps(scenario, hooks);
+      scenario === "single-writer-native"
+        ? nativeSteps(
+            nativeHooks({
+              root,
+              previousRoot,
+              subject,
+              deployEnvironment,
+              deployBaseline: hooks.deployBaseline,
+              build: async () => {
+                await withStageBuild(root, subject, deployEnvironment, async () => {}, undefined, {
+                  build: !built.has(root),
+                });
+                built.add(root);
+              },
+              serve: hooks.serve,
+            }),
+          )
+        : scenario === "single-writer"
+          ? singleWriterSteps(singleWriter.forward)
+          : scenario === "single-writer-resume"
+            ? resumeSteps(singleWriter.recovery)
+            : scenario === "single-writer-rollback"
+              ? rollbackSteps(singleWriter.recovery)
+              : rehearsalSteps(scenario, hooks);
     const outcome = await runPreview({
       prepare: async () => {
         await readFile(manifestPath(root, subject));

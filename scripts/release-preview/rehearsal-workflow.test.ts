@@ -20,7 +20,11 @@ test("a busy main never cancels a running rehearsal, and only the rehearsal labe
   );
   assert.match(
     rehearsal,
-    /github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'release-rehearsal' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer-step4'/,
+    /github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'release-rehearsal' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer-step4' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-native'/,
+  );
+  assert.match(
+    rehearsal,
+    /contains\(github\.event\.pull_request\.labels\.\*\.name, 'release-rehearsal-native'\) && '\["single-writer-native"\]'/,
   );
   assert.match(
     rehearsal,
