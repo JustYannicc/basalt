@@ -46,9 +46,17 @@ async function devices(t: TestContext) {
     { organizations: true },
   );
   t.after(() => f[Symbol.dispose]());
-  const created = await f.request("/organization/create", { name: "Tools", slug: "tools" });
-  assert.equal(created.status, 200, await created.clone().text());
-  team = (await created.json()).id;
+  // Hosts create teams through their own explicit-target endpoints; the rows are what checks read.
+  team = (
+    await f.adapter.create<{ id: string }>({
+      model: "organization",
+      data: { name: "Tools", slug: "tools", createdAt: new Date() },
+    })
+  ).id;
+  await f.adapter.create({
+    model: "member",
+    data: { organizationId: team, userId: f.userId, role: "owner", createdAt: new Date() },
+  });
   const approve = async (code: { user_code: string; device_code: string }) => {
     const approved = await f.request(
       "/device/decide",
