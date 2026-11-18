@@ -16,7 +16,6 @@ import { signEnvelope } from "./token.ts";
 import { deploymentReadinessPrefix } from "./deployment-readiness.ts";
 import { runtimeFixtureCode } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeHandoff } from "./runtime-slots/integration.ts";
-import { answerTopology, followerTopology } from "./test/home-topology.ts";
 
 async function ready(context: { after(fn: () => Promise<void>): void }) {
   const f = await fleetWorkerFixture();
@@ -31,8 +30,6 @@ async function ready(context: { after(fn: () => Promise<void>): void }) {
   await f.settle();
   const [sibling] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
   assert.ok(sibling?.identity);
-  // Production shape: the primary is killed only once its own Home proves it is a follower.
-  answerTopology(f.old.home, () => Response.json(followerTopology()));
   const at = Date.now();
   const command = {
     identity: f.old.identity(),
