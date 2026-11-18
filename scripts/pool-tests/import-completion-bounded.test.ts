@@ -1,7 +1,9 @@
+import { performance } from "node:perf_hooks";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { planImportCompletion } from "../../src/pool/model-history/import-completion.ts";
+import { reconcileStep } from "../../src/pool/model-history/import-reconcile.ts";
 import { importCompletionScope } from "../../src/pool/model-history/import-completion-contract.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 
@@ -12,7 +14,7 @@ const rows = 200_000;
 // One ordered aggregate over every source row overran the production operation's statement
 // bound at 2.26M rows. The fixture scales the same ratio down: one statement over 200k rows
 // cannot finish inside 150 ms, while one prefix range (~800 rows) takes a few milliseconds.
-const bound = "150ms";
+const bound = 150;
 
 test("import completion reconciles a large source inside the statement bound and keeps the exact digest", async () => {
   await seriesFixture(async ({ db, client, insert }) => {
@@ -29,7 +31,7 @@ test("import completion reconciles a large source inside the statement bound and
       [template!.id, rows],
     );
     await client.query("RESET session_replication_role");
-    await client.query("ANALYZE basalt_model_requests");
+    await client.query("VACUUM ANALYZE basalt_model_requests");
     const ids = (
       await db.query("SELECT id FROM basalt_model_requests WHERE source=$1", [scope.source])
     ).rows.map((row) => String(row.id));
@@ -60,10 +62,25 @@ test("import completion reconciles a large source inside the statement bound and
       idsDigest,
       verifiedRows: String(rows),
     };
+    // Every reconciliation statement, the per-range digests and the source fence, fits the bound.
+    const durations: number[] = [];
+    const timed = {
+      query: async (text: string, values?: unknown[]) => {
+        const started = performance.now();
+        try {
+          return await db.query(text, values);
+        } finally {
+          if (!/^\s*(?:BEGIN|COMMIT|ROLLBACK)/.test(text))
+            durations.push(performance.now() - started);
+        }
+      },
+    };
+    const step = await reconcileStep(timed, scope, Number.POSITIVE_INFINITY);
+    assert.equal(step.complete, true);
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     try {
-      await db.query(`SET LOCAL statement_timeout = '${bound}'`);
-      const plan = await planImportCompletion(db, selection);
+      const plan = await planImportCompletion(timed, selection);
+      assert.ok(Math.max(...durations) < bound, `slowest statement ${Math.max(...durations)} ms`);
       assert.equal(plan.reconciled, true, JSON.stringify(plan.differences));
       assert.equal(plan.contiguous, true);
     } finally {
