@@ -28,7 +28,24 @@ for (const journal of [false, true])
         await instrumentTriggers();
         const after = await run();
         assert.deepEqual(after.keys, before.keys);
-        assert.deepEqual(after, before);
+        // Every row still fires and resolves at its own trigger snapshot.
+        assert.deepEqual(after.triggers, before.triggers);
+        if (!journal) {
+          // Before activation each call is a revision, so every legacy call remains.
+          assert.deepEqual(after, before);
+          return;
+        }
+        // With the journal one transaction key is one row; repeats were no-op inserts.
+        assert.equal(after.calls, after.keys.length);
+        assert.deepEqual(
+          after.writes,
+          after.keys.length
+            ? ["basalt_pool_change_batches", "basalt_pool_change_dirty"].map((name) => ({
+                name,
+                calls: after.keys.length,
+              }))
+            : [],
+        );
       }, journal);
     });
   }
@@ -59,7 +76,8 @@ test("multiple history statements coalesce transaction keys and become visible o
     assert.equal(await revision(insertPools[1]!), "0");
     const audit = await insertAudit(a);
     assert.deepEqual(audit.keys, before.keys);
-    assert.equal(audit.calls, 3);
+    // The second statement's pool-a row already bumped pool a in this transaction.
+    assert.equal(audit.calls, 2);
     assert.equal((await a.query("SELECT * FROM basalt_pool_change_dirty")).rows.length, 2);
     assert.equal((await a.query("SELECT * FROM basalt_pool_change_batches")).rows.length, 1);
     await a.query("COMMIT");
