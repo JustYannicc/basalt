@@ -1,21 +1,31 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
-import {
-  parseCheckRecord,
-  parseNoticeMessage,
-  rankRetries,
-  type RunRetries,
-} from "./retry-records.ts";
+import { transientStatuses } from "../releases/github-retry.ts";
+import { isCheckJob, rankRetries, shardJob, type RunRetries } from "./retry-history.ts";
+import { filesNamed, object, parseCheckRecord, parseNoticeMessage } from "./retry-records.ts";
 
 const repository = "JustYannicc/basalt";
 const exec = promisify(execFile);
 
-const transient = (error: unknown) =>
-  /HTTP 5\d\d|HTTP 429|ECONNRESET|ETIMEDOUT/.test(String((error as { stderr?: unknown }).stderr));
+/**
+ * github-retry.ts retries these statuses on fetch responses; `gh` reports them only in its error
+ * output, so the reader matches them there instead of wrapping a fetch.
+ */
+function transient(error: unknown) {
+  const output =
+    typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr) : "";
+  const status = Number(/HTTP (\d{3})/.exec(output)?.[1]);
+  return (
+    transientStatuses.has(status) ||
+    status === 429 ||
+    /rate limit|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(output)
+  );
+}
 
 /** GitHub's API returns the odd 5xx under load; a run's read is retried rather than lost. */
 async function gh(args: string[]) {
@@ -35,8 +45,6 @@ const values = async (path: string, jq: string) =>
     .filter(Boolean)
     .map((line): unknown => JSON.parse(line));
 
-const object = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 type Job = { id: number; name: string; conclusion: string | null };
 const job = (value: unknown): value is Job =>
   object(value) &&
@@ -44,21 +52,18 @@ const job = (value: unknown): value is Job =>
   typeof value.name === "string" &&
   (value.conclusion === null || typeof value.conclusion === "string");
 
+/** Every attempt's check job uploads its own record; the newest is the union of them all. */
 async function downloadRecord(run: number) {
   const directory = await mkdtemp(join(tmpdir(), "basalt-check-retries-"));
   try {
-    await gh([
-      "run",
-      "download",
-      String(run),
-      "-R",
-      repository,
-      "-n",
-      "check-e2e-retries",
-      "-D",
-      directory,
-    ]);
-    return parseCheckRecord(JSON.parse(await readFile(join(directory, "retries.json"), "utf8")));
+    const pattern = "check-e2e-retries-*";
+    await gh(["run", "download", String(run), "-R", repository, "-p", pattern, "-D", directory]);
+    const paths = filesNamed(directory, "retries.json");
+    const records = paths
+      .map((path) => parseCheckRecord(JSON.parse(readFileSync(path, "utf8"))))
+      .filter((record) => record !== undefined);
+    if (records.length !== paths.length) return undefined;
+    return records.sort((a, b) => b.run_attempt - a.run_attempt)[0];
   } catch {
     // Runs from before the record existed, or past its retention, have none.
     return undefined;
@@ -81,11 +86,11 @@ async function lookup(run: number, suite: number): Promise<Lookup> {
   ).filter(job);
   const declared = new Set<string>();
   for (const { name, conclusion } of jobs) {
-    const shard = /^(declared-[a-z-]+)-\d+$/.exec(name);
-    if (shard && (conclusion === "success" || conclusion === "failure")) declared.add(shard[1]!);
+    const owner = shardJob(name);
+    if (owner && (conclusion === "success" || conclusion === "failure")) declared.add(owner);
   }
   if (!declared.size) return { kind: "none" };
-  const check = jobs.find(({ name }) => /^check(?: \(fast-only\))?$/.test(name));
+  const check = jobs.find(({ name }) => isCheckJob(name));
   const notices = check
     ? await values(
         `repos/${repository}/check-runs/${check.id}/annotations?per_page=100`,
@@ -95,11 +100,18 @@ async function lookup(run: number, suite: number): Promise<Lookup> {
   const totals = notices
     .map((notice) => (object(notice) ? parseNoticeMessage(String(notice.message)) : undefined))
     .find(Boolean);
-  if (totals && totals.passed + totals.failed === 0)
-    return { kind: "recorded", run: { run_id: run, jobs: [...declared], files: [] } };
+  const jobsRan = [...declared];
+  if (totals?.retried === 0)
+    return {
+      kind: "recorded",
+      run: { run_id: run, complete: totals.complete, jobs: jobsRan, files: [] },
+    };
   const record = await downloadRecord(run);
   return record
-    ? { kind: "recorded", run: { run_id: run, jobs: [...declared], files: record.files } }
+    ? {
+        kind: "recorded",
+        run: { run_id: run, complete: record.complete, jobs: jobsRan, files: record.files },
+      }
     : { kind: "unrecorded" };
 }
 
@@ -123,11 +135,21 @@ const day = (value: string | undefined, name: string) => {
 };
 
 function table(rows: ReturnType<typeof rankRetries>) {
-  const header = ["retries", "passed on retry", "failed twice", "runs", "share", "group", "file"];
+  const header = [
+    "retries",
+    "passed on retry",
+    "failed twice",
+    "failed then stopped",
+    "runs",
+    "share",
+    "group",
+    "file",
+  ];
   const lines = rows.map((row) => [
     String(row.retries),
     String(row.passed_on_retry),
     String(row.failed_twice),
+    String(row.failed_then_stopped),
     String(row.ran),
     `${Math.round(row.share * 100)}%`,
     row.group,
@@ -167,9 +189,11 @@ async function main() {
   const lookups = await pool(runs, 6, (run) => lookup(run.id, run.check_suite_id));
   const recorded = lookups.flatMap((item) => (item.kind === "recorded" ? [item.run] : []));
   const unrecorded = lookups.filter((item) => item.kind === "unrecorded").length;
+  const incomplete = recorded.filter((run) => !run.complete).length;
   console.log(
     `Check runs ${since}..${until}: ${runs.length} finished, ` +
-      `${recorded.length + unrecorded} ran declared e2e, ${unrecorded} of those without a retry record.`,
+      `${recorded.length + unrecorded} ran declared e2e, ${unrecorded} of those without a retry record, ` +
+      `${incomplete} with missing shard records (counted only for the files they retried).`,
   );
   const rows = rankRetries(recorded);
   console.log(rows.length ? table(rows) : "No declared e2e file was retried.");

@@ -4,8 +4,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBounded, type Bounds } from "./bounded-process.ts";
 import { collectNewE2eEvidence, runNames } from "./collect-e2e-evidence.mjs";
+import {
+  annotation,
+  conclusion,
+  duration,
+  overflowAnnotation,
+  retryAnnotations,
+  row,
+} from "./declared-report.ts";
 import { patternForGroup, readDeclarations } from "./declarations.ts";
-import { failedTitles, shardRecord, type RetriedFile } from "./retry-records.ts";
+import {
+  failedTitles,
+  retryCounts,
+  shardRecord,
+  type Outcome,
+  type RetriedFile,
+} from "./retry-records.ts";
 import { fileDeadlineMinutes, runKey, shardRuns, type DeclaredRun } from "./shards.ts";
 
 const flags: Record<string, string[]> = {
@@ -24,16 +38,16 @@ export type Options = Omit<Bounds, "log"> & {
   log?: Bounds["log"];
   /** The step summary, which gets each file's row as soon as that file finishes. */
   summary?: string;
-  /** Name the shard's retry record; the workflow passes its job id and matrix shard. */
+  /** Name the shard's retry record; the workflow passes its job id, matrix shard and run attempt. */
   job?: string;
   shard?: string;
+  runAttempt?: number;
   /** Set only where this run owns the whole Docker daemon, so leftover e2e databases may go. */
   ownsDocker?: boolean;
 };
 
-type Outcome = "passed" | "failed" | "timed-out" | "cancelled";
 export type Attempt = { attempt: number; outcome: Outcome; seconds: number; code: number | null };
-/** The file's outcome, time and exit code are its last attempt's; time is the sum. */
+/** Outcome and exit code are the last attempt's; `seconds` sums every attempt. */
 export type DeclaredResult = DeclaredRun & {
   outcome: Outcome;
   seconds: number;
@@ -47,9 +61,6 @@ export type DeclaredResult = DeclaredRun & {
  * spending another deadline, and a cancelled shard has no time left for one.
  */
 const retryable = (attempt: Attempt) => attempt.attempt === 1 && attempt.outcome === "failed";
-
-const duration = (seconds: number) =>
-  `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 
 /** Resolve every pair before anything runs, so a bad row fails without a partial shard. */
 export function resolveRuns(runs: readonly DeclaredRun[], root: string) {
@@ -191,30 +202,6 @@ function removeLeftoverDatabases(log: (line: string) => void) {
     log("::warning::Could not remove leftover e2e database containers");
 }
 
-const conclusion = (result: DeclaredResult) => {
-  if (result.attempts.length < 2) return result.outcome;
-  if (result.outcome === "passed") return "passed on retry";
-  return result.outcome === "failed" ? "failed twice" : "failed, then " + result.outcome;
-};
-
-const row = (result: DeclaredResult) =>
-  `| ${result.file} | ${result.group} | ${conclusion(result)} | ${duration(result.seconds)} |\n`;
-
-function annotation(result: DeclaredResult) {
-  const key = runKey(result);
-  const retried = result.attempts.length > 1;
-  if (retried && result.outcome === "passed")
-    return `::warning title=e2e retry::${key} passed on retry`;
-  if (result.outcome === "passed") return undefined;
-  return (
-    (retried ? "::error title=e2e retry::" : `::error title=Declared E2E ${result.outcome}::`) +
-    `${key} ${conclusion(result)}` +
-    (result.outcome === "timed-out" ? " at its per-file deadline" : "") +
-    (result.code === null ? "" : ` (exit ${result.code})`) +
-    ` after ${duration(result.seconds)}`
-  );
-}
-
 /**
  * Every file runs even after one fails; the shard fails if any file did not pass. Retried files
  * also land in the shard's retries.json, rewritten after each one so an interrupted shard keeps it.
@@ -226,7 +213,7 @@ export async function runDeclaredShard(runs: readonly DeclaredRun[], options: Op
   const retried: RetriedFile[] = [];
   const saveRetries = () => {
     mkdirSync(options.evidence, { recursive: true, mode: 0o700 });
-    const record = shardRecord(job, options.shard ?? job, retried);
+    const record = shardRecord(job, options.shard ?? job, options.runAttempt ?? 1, retried);
     writeFileSync(join(options.evidence, "retries.json"), JSON.stringify(record) + "\n");
   };
   saveRetries();
@@ -236,28 +223,30 @@ export async function runDeclaredShard(runs: readonly DeclaredRun[], options: Op
       "### Declared E2E files\n\n| File | Group | Result | Time |\n| --- | --- | --- | ---: |\n",
     );
   const results: DeclaredResult[] = [];
+  const unannotated: DeclaredResult[] = [];
   for (const run of resolved) {
     const result = await runDeclaredFile(run, options);
     log(`${runKey(run)}: ${conclusion(result)} after ${duration(result.seconds)}`);
     const line = annotation(result);
-    if (line) log(line);
     if (result.attempts.length > 1) {
       retried.push({
         group: result.group,
         file: result.file,
         attempts: result.attempts.length,
         conclusion: result.outcome === "passed" ? "passed" : "failed",
+        retry_outcome: result.outcome,
         first_failure: result.first_failure,
       });
       saveRetries();
-    }
+      if (retried.length > retryAnnotations) unannotated.push(result);
+      else log(line!);
+    } else if (line) log(line);
     if (options.summary) appendFileSync(options.summary, row(result));
     results.push(result);
   }
-  const passed = retried.filter((file) => file.conclusion === "passed").length;
-  const counts = `${passed} passed on retry, ${retried.length - passed} failed twice`;
-  log(`Retries: ${counts}`);
-  if (options.summary) appendFileSync(options.summary, `\nRetries: ${counts}.\n`);
+  if (unannotated.length) log(overflowAnnotation(unannotated));
+  log(`Retries: ${retryCounts(retried)}`);
+  if (options.summary) appendFileSync(options.summary, `\nRetries: ${retryCounts(retried)}.\n`);
   return results;
 }
 
@@ -276,6 +265,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     signal: controller.signal,
     ...(process.env.GITHUB_JOB ? { job: process.env.GITHUB_JOB } : {}),
     ...(process.env.BASALT_E2E_SHARD ? { shard: process.env.BASALT_E2E_SHARD } : {}),
+    runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT ?? 1),
     ...(process.env.GITHUB_STEP_SUMMARY ? { summary: process.env.GITHUB_STEP_SUMMARY } : {}),
     ownsDocker: process.env.GITHUB_ACTIONS === "true",
   });

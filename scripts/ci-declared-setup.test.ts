@@ -52,25 +52,26 @@ test("declared shards pay setup once, then run their planned files within the pl
     );
     // The check job downloads only these, by the pattern its download step uses.
     assert.equal(retries.if, "always()", id);
-    assert.deepEqual(
-      retries.with,
-      {
-        name: "e2e-retries-${{ matrix.shard }}",
-        path: "${{ runner.temp }}/basalt-e2e-evidence/retries.json",
-        "if-no-files-found": "ignore",
-      },
+    // A failed upload leaves the count incomplete; it must never fail the shard.
+    assert.equal(retries["continue-on-error"], true, id);
+    // One per run attempt, so a rerun cannot replace what the first attempt retried.
+    assert.equal(
+      retries.with.name,
+      "e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}",
       id,
     );
+    assert.equal(retries.with.path, "${{ runner.temp }}/basalt-e2e-evidence/retries.json", id);
     const download = workflow.jobs.check.steps.find((step: { uses?: string }) =>
       step.uses?.startsWith("actions/download-artifact@"),
     );
     assert.equal(download.with.pattern, "e2e-retries-*", id);
     const shards = matrices[id]!.include;
     assert.ok(shards.length > 0, id);
-    // A shard's budget covers setup, its planned files and one file running to its own deadline.
+    // A shard's budget covers setup, its planned files and one file running to its own deadline
+    // on both its attempts.
     for (const shard of shards) {
       assert.ok(shard.shard.startsWith(id + "-"), shard.shard);
-      assert.ok(shard.timeout > 10 + fileDeadlineMinutes && shard.timeout <= 30, shard.shard);
+      assert.ok(shard.timeout > 10 + 2 * fileDeadlineMinutes && shard.timeout <= 40, shard.shard);
     }
   }
   const shards = Object.values(matrices).flatMap((matrix) => matrix.include);

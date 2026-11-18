@@ -2233,7 +2233,8 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    # Planned per shard: its files' measured time plus setup, with room for one file's deadline
+    # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -2274,10 +2275,12 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
       # The check job counts retries from these alone instead of downloading every shard's evidence.
+      # Each run attempt keeps its own, and a failed upload only makes the count incomplete.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
-          name: e2e-retries-${{ matrix.shard }}
+          name: e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   declared-local:
@@ -2287,7 +2290,8 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    # Planned per shard: its files' measured time plus setup, with room for one file's deadline
+    # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -2328,10 +2332,12 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
       # The check job counts retries from these alone instead of downloading every shard's evidence.
+      # Each run attempt keeps its own, and a failed upload only makes the count incomplete.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
-          name: e2e-retries-${{ matrix.shard }}
+          name: e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   declared-cloud:
@@ -2341,7 +2347,8 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    # Planned per shard: its files' measured time plus setup, with room for one file's deadline
+    # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -2382,10 +2389,12 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
       # The check job counts retries from these alone instead of downloading every shard's evidence.
+      # Each run attempt keeps its own, and a failed upload only makes the count incomplete.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
-          name: e2e-retries-${{ matrix.shard }}
+          name: e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   workerd-assets:
@@ -2978,6 +2987,7 @@ jobs:
       - name: Download each declared shard's retry record
         if: always() && needs.reuse.outputs.reused != 'true'
         continue-on-error: true
+        timeout-minutes: 5
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-retries-*
@@ -2985,14 +2995,19 @@ jobs:
       - name: Count declared E2E files that passed only on retry
         if: always() && needs.reuse.outputs.reused != 'true'
         continue-on-error: true
+        timeout-minutes: 5
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The planned shards, so a missing record makes the count incomplete rather than zero.
+          CI_MATRICES: ${{ needs.select.outputs.matrices }}
+          CI_JOBS: ${{ needs.select.outputs.jobs }}
         run: node scripts/ci/aggregate-retries.ts "$RUNNER_TEMP/e2e-retries" "$RUNNER_TEMP/check-e2e-retries/retries.json"
       - uses: actions/upload-artifact@v4
         if: always() && needs.reuse.outputs.reused != 'true'
         continue-on-error: true
+        timeout-minutes: 5
         with:
-          name: check-e2e-retries
+          name: check-e2e-retries-${{ github.run_attempt }}
           path: ${{ runner.temp }}/check-e2e-retries/retries.json
           if-no-files-found: warn
           retention-days: 90
