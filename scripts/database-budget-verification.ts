@@ -12,6 +12,7 @@ import {
   type BackendCount,
   type BudgetReceipt,
   type BudgetStage,
+  rehearsalDiagnostic,
   safeDatabaseError,
 } from "./database-budget-receipt.ts";
 import type { RuntimeReady } from "../src/pool/deployment-readiness.ts";
@@ -120,7 +121,10 @@ export async function verifyDatabaseBudget(options: {
     throw new DatabaseBudgetFailure(receipt);
   } catch (error) {
     if (error instanceof DatabaseBudgetFailure) receipt.outcome = error.receipt.outcome;
-    else Object.assign(receipt, safeDatabaseError(error, stage));
+    else {
+      rehearsalDiagnostic(error, stage);
+      Object.assign(receipt, safeDatabaseError(error, stage));
+    }
     publish();
     throw new DatabaseBudgetFailure(receipt);
   }

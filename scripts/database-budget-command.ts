@@ -13,6 +13,7 @@ import {
 import { decodeRuntimeReady } from "../src/pool/deployment-readiness.ts";
 import {
   DatabaseBudgetFailure,
+  rehearsalDiagnostic,
   safeDatabaseError,
   type BudgetReceipt,
 } from "./database-budget-receipt.ts";
@@ -174,29 +175,7 @@ export async function runDatabaseBudgetCommand(
   } catch (error) {
     if (error instanceof DatabaseBudgetFailure) receipt = error.receipt;
     else {
-      // Rehearsal stages only: the receipt's closed vocabulary hides which call failed; say it,
-      // with credential-shaped text removed, so a stage failure is diagnosable from its log.
-      if (/^test-rehearsal-[1-9][0-9]*$/u.test(source.ALCHEMY_STAGE ?? "")) {
-        const chain: string[] = [];
-        for (
-          let at: unknown = error, depth = 0;
-          at instanceof Error && depth < 4;
-          at = at.cause, depth += 1
-        ) {
-          const fields = Object.fromEntries(Object.entries(at));
-          chain.push(
-            `${at.name}${["code", "status", "outcome", "stage"]
-              .filter((key) => fields[key] !== undefined)
-              .map((key) => ` ${key}=${String(fields[key])}`)
-              .join("")}: ${at.message}`
-              .replace(/Bearer\s+\S+/gu, "Bearer [redacted]")
-              .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/gu, "[redacted-jwt]")
-              .replace(/[A-Za-z0-9+/_=-]{32,}/gu, "[redacted]")
-              .slice(0, 300),
-          );
-        }
-        console.error(`readiness failure (rehearsal stage): ${chain.join(" <- ")}`);
-      }
+      rehearsalDiagnostic(error, "readiness", source);
       receipt = {
         ...receipt,
         ...safeDatabaseError(error, "readiness"),
