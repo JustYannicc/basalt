@@ -16,7 +16,7 @@ export type BudgetOutcome =
   | "invalid-observation"
   | "incomplete-visibility"
   | "teardown-error";
-/** One refused runtime readiness call, and what the identity-only check said right after it. */
+/** One refused runtime readiness call, and what the identity-only check last said. */
 export interface ReadinessRefusal {
   status: number;
   outcome?: string;

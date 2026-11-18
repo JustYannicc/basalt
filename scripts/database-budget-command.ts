@@ -171,7 +171,10 @@ export async function runDatabaseBudgetCommand(
         runtime: ready,
         elapsedMs: now() - startedAt,
       };
-      await within(save(path, { startedAt, readyReceivedAt: now(), ready }), "receipt");
+      await within(
+        save(path, { startedAt, readyReceivedAt: now(), ready, ...(refusals ? { refusals } : {}) }),
+        "receipt",
+      );
     } else {
       await check({
         adminUrl: source.DATABASE_BUDGET_ADMIN_URL ?? "",

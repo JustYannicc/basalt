@@ -28,6 +28,9 @@ function scheduler(start = 0) {
   return {
     state,
     now: () => state.clock,
+    expire: () => {
+      for (const command of commands) command.controller.abort();
+    },
     deadline: (milliseconds: number, phase: string) => {
       const controller = new AbortController();
       if (phase === "command") commands.push({ at: state.clock + milliseconds, controller });
@@ -113,7 +116,9 @@ test("readiness waits while the controller object still runs the previous releas
       adopted: false,
       candidateMatches: false,
     });
-    assert.deepEqual(JSON.parse(await readFile(path, "utf8")).ready, runtime);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    assert.deepEqual(saved.ready, runtime);
+    assert.equal(saved.refusals.count, 2, "the saved receipt keeps the wait on record");
   });
 });
 
@@ -127,8 +132,9 @@ test("readiness refused until its deadline fails with the last refusal", async (
       deadline: time.deadline,
       open: async () => ({
         ready: async () => {
-          // The first answer comes from an entrypoint still on the previous version.
-          throw ++calls === 1 ? new ReadinessResponseError(409) : refusal();
+          // First an entrypoint still on the previous version, then the platform mid-swap.
+          if (++calls < 3) throw new ReadinessResponseError(calls === 1 ? 409 : 500);
+          throw refusal();
         },
         close: async () => {
           closed++;
@@ -158,7 +164,46 @@ test("readiness refused until its deadline fails with the last refusal", async (
   });
 });
 
-for (const status of [401, 404, 500])
+test("a deadline during the identity check keeps its last answer on the receipt", async () => {
+  await workspace(async (path) => {
+    const time = scheduler();
+    let probes = 0;
+    const run = runDatabaseBudgetCommand(source(path), ["--ready"], {
+      now: time.now,
+      deadline: time.deadline,
+      open: async () => ({
+        ready: async () => {
+          throw refusal();
+        },
+        adoption: async (signal) => {
+          if (++probes === 2) time.expire();
+          signal.throwIfAborted();
+          return {
+            adopted: false as const,
+            observed: { ...target, candidate: "0".repeat(40), instanceId },
+          };
+        },
+        close: async () => {},
+      }),
+    });
+    await assert.rejects(run, (error) => {
+      assert.ok(error instanceof DatabaseBudgetFailure);
+      assert.equal(error.receipt.outcome, "readiness-error");
+      assert.deepEqual(error.receipt.refusals, {
+        count: 2,
+        status: 503,
+        outcome: "readiness-error",
+        stage: "readiness",
+        adopted: false,
+        candidateMatches: false,
+      });
+      return true;
+    });
+    assert.equal(probes, 2);
+  });
+});
+
+for (const status of [401, 404])
   test(`readiness refused with HTTP ${status} fails at once`, async () => {
     await workspace(async (path) => {
       const time = scheduler();
