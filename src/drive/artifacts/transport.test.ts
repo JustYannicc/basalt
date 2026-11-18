@@ -413,6 +413,38 @@ test("fatal side band, unpack failure, missing statuses, and corrupt fetch packs
   await assert.rejects(remote.fetchObjects({ wants: [first.oid] }), /Pack checksum mismatch/);
 });
 
+test("the status word decides a push and a refusal's reason comes back bounded", async (t) => {
+  const { remote, control } = await fixture(t),
+    first = await commit("refusals");
+  await remote.push({ updates: [{ ref, old: null, next: first.oid }], objects: first.objects });
+  const refused = (reason: string) => {
+    const report = pkt(
+      Buffer.concat([
+        Buffer.from([1]),
+        pkt("unpack ok\n"),
+        pkt(`ng ${ref} ${reason}\n`),
+        Buffer.from("0000"),
+      ]),
+    );
+    control.transform = (path, body) =>
+      path.endsWith("git-receive-pack") ? Buffer.concat([report, Buffer.from("0000")]) : body;
+    return remote.push({ updates: [{ ref, old: first.oid, next: first.oid }], objects: [] });
+  };
+  // A refusal whose text reads "ok" is still a refusal.
+  assert.deepEqual(await refused("ok"), { applied: false, results: { [ref]: "ok" } });
+  const long = await refused(
+    `limit\x00reached\x1b for vault/notes/x.md by someone@example.invalid ${"c0ffee".repeat(8)} ${"more ".repeat(60)}`,
+  );
+  assert.equal(long.applied, false);
+  const reason = long.results[ref]!;
+  assert.equal(reason.length, 120, reason);
+  assert.match(reason, /^limit reached for \[redacted\] by \[redacted\] \[redacted\] more more /);
+  assert.match(reason, /\.\.\.$/);
+  assert.doesNotMatch(reason, /[^\x20-\x7e]|notes|example|c0ffee/);
+  assert.equal((await refused("\x01\x02")).results[ref], "unspecified");
+  assert.equal((await refused("failed to update ref")).results[ref], "failed to update ref");
+});
+
 test("a reply too large to decode in memory is refused by name before decoding", async () => {
   let streamed = 0;
   const remote = createGitRemote({

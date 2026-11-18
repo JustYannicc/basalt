@@ -2,7 +2,7 @@
 // `git http-backend` over a bare repository, with `git cat-file` as the binding's readBlob.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { backend, git } from "./test/backend.ts";
+import { backend, git, pkt } from "./test/backend.ts";
 import { device, remoteMain, repository, type Backend } from "./test/vault.ts";
 import { storageFixture } from "../fixture.ts";
 import { openVault } from "../vault.ts";
@@ -23,14 +23,18 @@ const refuseNextPush = (server: Backend, reason: string, times = 1) => {
     `#!/bin/sh\nleft=$(cat "${counter}")\n[ "$left" -le 0 ] && exit 0\necho $((left - 1)) > "${counter}"\nexit 1\n`,
     { mode: 0o755 },
   );
+  // The hook really refused main, so only the reason differs from the server's own report.
+  const report = pkt(
+    Buffer.concat([
+      Buffer.from([1]),
+      pkt("unpack ok\n"),
+      pkt(`ng refs/heads/main ${reason}\n`),
+      Buffer.from("0000"),
+    ]),
+  );
   server.control.transform = (path, body) =>
-    path.endsWith("git-receive-pack")
-      ? Buffer.from(
-          body
-            .toString("latin1")
-            .replace(/ng refs\/heads\/main [^\n]*/, `ng refs/heads/main ${reason}`),
-          "latin1",
-        )
+    path.endsWith("git-receive-pack") && body.includes("ng refs/heads/main ")
+      ? Buffer.concat([report, Buffer.from("0000")])
       : body;
   return () => {
     writeFileSync(counter, "0");
@@ -103,7 +107,6 @@ test("a refusal in a wording never seen before still counts as a lost race", asy
   const seen: string[] = [];
   const vault = await device(server, seen);
   try {
-    // Same length as git's own "pre-receive hook declined", so the report still parses.
     refuseNextPush(server, "artifacts_unknown_reason!");
     const landed = await vault.service.apply({
       base: vault.root,
@@ -144,6 +147,51 @@ test("a push refused every time keeps the work on its branch and never forces ma
     assert.equal(git(server.bare, "show", "main:note.md").toString(), "must survive");
     // The retry resumed the saved writer commit rather than writing the edit again.
     assert.equal(git(server.bare, "rev-list", "--count", "main").toString().trim(), "2");
+  } finally {
+    vault.close();
+    await server.close();
+  }
+});
+
+test("a refused push logs and returns its reason, bounded and without paths or tokens", async (t) => {
+  const server = await backend();
+  const vault = await device(server);
+  const warn = t.mock.method(console, "warn", () => {});
+  try {
+    const before = remoteMain(server);
+    const allow = refuseNextPush(
+      server,
+      `storage\x00limit\x1b reached\tfor notes/private/diagnosis.md ${"a1".repeat(30)} ${"padding ".repeat(80)}`,
+      100,
+    );
+    const error: unknown = await vault.service
+      .apply({
+        base: vault.root,
+        operation: "bounded-refusal",
+        edits: [{ path: "note.md", content: "kept" }],
+      })
+      .then(
+        () => assert.fail("a push refused every time cannot land"),
+        (failure: unknown) => failure,
+      );
+    allow();
+    assert.equal(remoteMain(server), before);
+    const lines = warn.mock.calls
+      .map((call) => String(call.arguments[0]))
+      .filter((line) => line.startsWith("VAULT_PUSH_REFUSED "));
+    assert.ok(lines.length > 0, "every refusal is logged");
+    const logged = JSON.parse(lines.at(-1)!.slice("VAULT_PUSH_REFUSED ".length));
+    assert.equal(logged.ref, "main");
+    const reason = String(logged.reason);
+    assert.equal(reason.length, 120, reason);
+    assert.match(reason, /^storage limit reached for \[redacted\] \[redacted\] padding padding /);
+    assert.match(reason, /\.\.\.$/);
+    assert.doesNotMatch(reason, /[^\x20-\x7e]|notes|diagnosis|a1a1/);
+    // The caller still sees a lost race, now with the repository's reason.
+    assert.ok(error instanceof Error, String(error));
+    assert.equal((error as Error & { code?: string }).code, "contended");
+    assert.match(error.message, /Main kept advancing/);
+    assert.ok(error.message.includes(reason), error.message);
   } finally {
     vault.close();
     await server.close();
