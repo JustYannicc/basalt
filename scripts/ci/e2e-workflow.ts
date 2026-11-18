@@ -12,24 +12,28 @@ export type Workflow = {
       if?: string | boolean;
       "continue-on-error"?: boolean;
       steps?: Step[];
-      strategy?: { matrix?: Matrix };
+      strategy?: { matrix?: Matrix | string };
     }
   >;
 };
 
 // A step gated on a matrix value runs in every shard whose row carries that value.
-const matrixCanRun = (expression: string, matrix: Matrix | undefined) => {
+const matrixCanRun = (expression: string, matrix: Matrix | string | undefined) => {
   const match =
     /^contains\(matrix\.(\w+), '([\w-]+)'\)$/.exec(expression) ??
     /^matrix\.(\w+) == '?([\w-]+)'?$/.exec(expression);
-  if (!match || !matrix) return false;
+  if (!match || typeof matrix !== "object") return false;
   const [, key = "", value] = match;
   return [matrix[key], ...(matrix.include ?? []).map((row) => row[key])]
     .flat()
     .some((candidate) => String(candidate) === value);
 };
 
-const conditionCanRun = (condition: string | boolean | undefined, job = false, matrix?: Matrix) => {
+const conditionCanRun = (
+  condition: string | boolean | undefined,
+  job = false,
+  matrix?: Matrix | string,
+) => {
   if (condition === undefined || condition === true) return true;
   if (typeof condition !== "string") return false;
   const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");
