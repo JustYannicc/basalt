@@ -1,3 +1,4 @@
+// Regression: asset-upload-token-reuse (a re-upload re-sent a consumed asset completion token, 400/100312)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";

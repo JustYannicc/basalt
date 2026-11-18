@@ -6,6 +6,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
 import { placementRepairTargets } from "../pending-placement.ts";
 import { readScriptSettings } from "../cloudflare.ts";
+import { productionHttpClient } from "./production-http.ts";
 
 export function placementRepairFixture(
   events: string[],
@@ -30,7 +31,7 @@ export function placementRepairFixture(
     tailConsumers: [{ service: "fixture-tail" }],
     observability: { enabled: true },
   };
-  const client = HttpClient.make((request, url) =>
+  const client = productionHttpClient((request, url) =>
     Effect.sync(() => {
       assert.ok(url.pathname.includes(`/${target.scriptName}/`));
       let result: unknown;

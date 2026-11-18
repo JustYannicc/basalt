@@ -1,3 +1,4 @@
+// Regression: preparation-or-provider-failed (a preparation failure reported without its operation)
 import { CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
 import assert from "node:assert/strict";
 import { test } from "node:test";

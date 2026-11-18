@@ -1,3 +1,4 @@
+// Regression: retirement-projection (Api and AppPages retirement State read with an implicit upgrade)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { discoverCandidateSettings } from "../architecture/native-stack.ts";

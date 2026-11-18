@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import type { ClassProvider, ClassObservation } from "../declared-class-contract.ts";
 import { attributes } from "../fixture.ts";
 import { Effect, Schema } from "effect";
-import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
+import { productionHttpClient } from "./production-http.ts";
 
 export interface ClassApiOptions {
   loseReply?: boolean;
@@ -23,7 +23,7 @@ export interface ClassApiOptions {
 
 export function classRecoveryClient(events: string[]) {
   let active = "accepted";
-  return HttpClient.make((request, url) =>
+  return productionHttpClient((request, url) =>
     Effect.sync(() => {
       let result: unknown;
       if (request.method === "POST") {

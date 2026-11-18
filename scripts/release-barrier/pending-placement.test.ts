@@ -1,3 +1,4 @@
+// Regression: script-settings-drift (Api limits.subrequests null to 50000)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { refusalTable } from "./refusal-report.ts";

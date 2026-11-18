@@ -11,6 +11,7 @@ import { Stack, evalStack } from "alchemy/Stack";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
+import { productionFetch, productionHttpClient } from "./production-http.ts";
 import { containerPublication } from "./container-fixture.ts";
 import { readForwardPacket } from "../forward-model.ts";
 import { writeForwardJournal } from "../forward-journal.ts";
@@ -47,9 +48,13 @@ export async function releaseSettlementFixture(
     staleReadiness?: boolean;
   } = {},
 ) {
-  context.mock.method(globalThis, "fetch", async () => {
-    throw new Error("No network in the offline settlement proof");
-  });
+  context.mock.method(
+    globalThis,
+    "fetch",
+    productionFetch(async () => {
+      throw new Error("No network in the offline settlement proof");
+    }),
+  );
   const directory = await mkdtemp(join(tmpdir(), "release-settlement-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const scope = { name: "basalt", stage: "production" };
@@ -193,7 +198,7 @@ export async function releaseSettlementFixture(
         : worker.baseline,
     ]),
   );
-  const client = HttpClient.make((request, url) => {
+  const client = productionHttpClient((request, url) => {
     assert.equal(request.method, "GET");
     calls.push("GET deployment");
     const worker = url.pathname.split("/").at(-2)!;

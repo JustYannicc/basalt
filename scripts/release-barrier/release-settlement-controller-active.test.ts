@@ -1,3 +1,4 @@
+// Regression: settlement-complete-false and settlement-lagging-state-row (a complete forward head and a State row still naming the previous controller)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Schema } from "effect";

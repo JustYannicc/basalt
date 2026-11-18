@@ -1,3 +1,4 @@
+// Regression: container-empty-delta (a provider update refused with changed: [] and no reason)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";

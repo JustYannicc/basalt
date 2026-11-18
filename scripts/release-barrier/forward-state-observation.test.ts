@@ -1,3 +1,4 @@
+// Regression: journal-format (a completed v2 runtime-provisioning journal head refused by a v1-only forward probe reader)
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PersistedState } from "alchemy/State/State";
