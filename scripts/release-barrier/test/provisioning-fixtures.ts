@@ -142,3 +142,58 @@ export function provisioningFixture(name: RuntimeResourceName = "PoolRuntime") {
   };
   return { baseline, request, manifest: complete, enable, namespaceId };
 }
+
+/**
+ * Cloudflare's answer to a basic-instance create, keyed as a real readback of a brand-new
+ * application (2026-11-18): the preset resolves into its resources, plus defaults, runtime, health
+ * and network that the request never set.
+ */
+export function resolvedApplication(
+  id: string,
+  accountId: string,
+  request: Record<string, unknown>,
+) {
+  const { instance_type: instanceType, ...configuration } = request.configuration as Record<
+    string,
+    unknown
+  >;
+  if (instanceType !== "basic") throw new Error("Only the basic preset has a recorded readback");
+  return {
+    id,
+    account_id: accountId,
+    created_at: "2026-11-09T00:00:00Z",
+    updated_at: "2026-11-09T00:00:00Z",
+    version: 1,
+    ...request,
+    configuration: {
+      image: configuration.image,
+      vcpu: 0.25,
+      memory: "1GiB",
+      memory_mib: 1024,
+      disk: { size_mb: 4000, size: "4GB" },
+      ...configuration,
+      network: { assign_ipv4: "none", assign_ipv6: "none", mode: "private" },
+      command: [],
+      entrypoint: [],
+      runtime: "firecracker",
+    },
+    health: {
+      errors: [],
+      instances: {
+        active: 0,
+        assigned: 0,
+        healthy: 0,
+        stopped: 0,
+        failed: 0,
+        scheduling: 0,
+        starting: 0,
+      },
+    },
+    network: { bandwidth_limit_mbps: 250 },
+    // Cloudflare's own key order.
+    constraints: {
+      regions: (request.constraints as { regions: unknown }).regions,
+      jurisdiction: (request.constraints as { jurisdiction: unknown }).jurisdiction,
+    },
+  };
+}

@@ -17,7 +17,7 @@ import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { runtimeProvisioningProvider } from "../provisioning-cloudflare.ts";
 import { provisionRuntime } from "../runtime-provisioning.ts";
 import { provisioningManifestDigest } from "../provisioning-contract.ts";
-import { provisioningFixture } from "./provisioning-fixtures.ts";
+import { provisioningFixture, resolvedApplication } from "./provisioning-fixtures.ts";
 const tree = process.argv[2];
 const resource = process.argv[3] ?? "PoolRuntime";
 const sourceDrift = process.argv[4] === "source-drift";
@@ -161,13 +161,7 @@ const client = HttpClient.make((request, url) =>
     else if (request.method === "POST" && url.pathname === `${base}/containers/applications`) {
       assert.equal(body.durable_objects.namespace_id, f.namespaceId);
       assert.equal(application, undefined);
-      application = {
-        id: "new-application",
-        account_id: account,
-        created_at: "2026-11-09T00:00:00Z",
-        version: 1,
-        ...body,
-      };
+      application = resolvedApplication("new-application", account, body);
       result = application;
     } else if (
       request.method === "GET" &&

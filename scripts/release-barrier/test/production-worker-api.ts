@@ -58,8 +58,9 @@ const bindingsOf = (worker: ProductionWorker) => [
   foreign,
 ];
 
-export const productionVersion = (worker: ProductionWorker) =>
-  productionVersionBody({
+/** Cloudflare returns module bodies only for include=modules; without it the key is absent. */
+export const productionVersion = (worker: ProductionWorker, modules = true) => {
+  const body = productionVersionBody({
     id: worker.versionId,
     mainModule: "worker.js",
     modules: [
@@ -72,6 +73,10 @@ export const productionVersion = (worker: ProductionWorker) =>
     bindings: bindingsOf(worker),
     containers: worker.containers,
   });
+  if (modules) return body;
+  const { modules: _bodies, ...version } = body;
+  return version;
+};
 
 /** The production GETs a namespace and class reader makes; undefined for any other route. */
 export function productionWorkerResponse(
@@ -84,7 +89,7 @@ export function productionWorkerResponse(
     [`${base}/scripts/${worker.scriptName}/deployments`]: () =>
       cloudflareResult(productionDeploymentsBody(worker.versionId)),
     [`${base}/workers/${worker.scriptName}/versions/${worker.versionId}`]: () =>
-      cloudflareResult(productionVersion(worker)),
+      cloudflareResult(productionVersion(worker, url.searchParams.get("include") === "modules")),
     [`${base}/durable_objects/namespaces`]: () =>
       productionNamespaceResponse(url, [
         ...Object.entries(worker.classes).map(([className, id]) =>

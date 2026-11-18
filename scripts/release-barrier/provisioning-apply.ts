@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { configurationCodec, attachmentCodec } from "./container-schema.ts";
+import { recoverableConfiguration } from "./container-configuration.ts";
 import {
   assertProvisioningEnable,
   type ProvisioningEnable,
@@ -39,10 +40,28 @@ export const CreatedRuntimeApplication = Schema.Struct({
   ),
   dev: Schema.optionalKey(Schema.Unknown),
 });
-export const decodeCreatedRuntime = decodeProvisioningInput(
+const parseCreatedRuntime = decodeProvisioningInput(
   CreatedRuntimeApplication,
   "provisioning.application",
 );
+// Cloudflare adds runtime to every readback and the pinned SDK passes it through; only its
+// validated default is dropped, so any other runtime still refuses.
+export const decodeCreatedRuntime = (value: unknown) =>
+  parseCreatedRuntime(
+    value !== null &&
+      typeof value === "object" &&
+      "configuration" in value &&
+      value.configuration !== null &&
+      typeof value.configuration === "object" &&
+      "image" in value.configuration
+      ? {
+          ...value,
+          configuration: recoverableConfiguration(
+            value.configuration as Parameters<typeof recoverableConfiguration>[0],
+          ),
+        }
+      : value,
+  );
 export type CreatedRuntimeApplication = typeof CreatedRuntimeApplication.Type;
 
 export function runtimeCreatePlan(
