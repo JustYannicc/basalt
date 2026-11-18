@@ -1,32 +1,42 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  NATIVE_ALLOWLIST,
+  basePolicy,
+  compare,
+  configProblems,
+  directiveProblems,
+  recordable,
+  severity,
+  total,
+  type Allowlist,
+  type BaseState,
+  type Config,
+  type Counts,
+  type Diagnostic,
+} from "./baseline.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "../..");
 const configPath = join(here, ".oxlintrc.json");
 const baselinePath = join(here, "baseline.json");
 const allowlistPath = join(here, "allowlist.json");
-const oxlint = join(here, "node_modules/.bin/oxlint");
-const regenerate = "npm run lint:owned -- --write-baseline";
+const oxlint = join(here, "node_modules/oxlint/bin/oxlint");
 
 // Basalt-owned code. The release layer under scripts/release-barrier is being replaced by
 // Alchemy and is not gated; everything else in scripts/ and src/ is, including new files.
 const SCOPE = /^(?:scripts|src)\/.+\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const OUTSIDE = /^scripts\/release-barrier\/|(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
-// landmines keeps these counts itself, in the rule's options, and reports a stale count.
-const NATIVE_ALLOWLIST = new Set([
-  "landmines-testing/no-fixed-sleep",
-  "landmines-testing/no-flake-masking",
-  "landmines-testing/strict-msw",
-  "landmines-testing/no-unsignaled-poll",
-]);
-
-type Counts = Record<string, Record<string, number>>;
-type Allowlist = Record<string, Record<string, string>>;
-type Diagnostic = { rule: string; file: string; line: number; message: string };
-
+// Changing these may change what the rules find, so a rise against the base is listed for
+// review instead of failing; the rule cases in rules.test.ts guard the change.
+const LINT_INPUTS = [
+  "scripts/owned-lint/plugin",
+  "scripts/owned-lint/package.json",
+  "scripts/owned-lint/bun.lock",
+];
 const readJson = <T>(path: string, fallback: T) => {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -35,17 +45,8 @@ const readJson = <T>(path: string, fallback: T) => {
     throw error;
   }
 };
-const sorted = (counts: Counts) =>
-  Object.fromEntries(
-    Object.keys(counts)
-      .sort()
-      .map((rule) => [
-        rule,
-        Object.fromEntries(Object.entries(counts[rule]).sort(([a], [b]) => a.localeCompare(b))),
-      ]),
-  ) satisfies Counts;
-const ruleId = (code: string) => code.replace(/^([\w-]+)\((.+)\)$/u, "$1/$2");
-
+const writeJson = (path: string, value: unknown) =>
+  writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 export function scopedFiles(cwd = root) {
   return execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
     cwd,
@@ -53,20 +54,27 @@ export function scopedFiles(cwd = root) {
     maxBuffer: 32 * 1024 * 1024,
   })
     .split("\0")
-    .filter((file) => SCOPE.test(file) && !OUTSIDE.test(file))
+    .filter((file) => SCOPE.test(file) && !OUTSIDE.test(file) && existsSync(join(cwd, file)))
     .sort();
 }
 
 export function lint(files: readonly string[], config = configPath, cwd = root) {
-  const result = spawnSync(oxlint, ["-c", config, "-f", "json", ...files], {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  });
+  if (!existsSync(oxlint))
+    throw new Error("scripts/owned-lint is not installed. Run npm run prepare:upstream.");
+  const result = spawnSync(
+    process.execPath,
+    [oxlint, "-c", config, "--no-ignore", "-f", "json", ...files],
+    {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: 120_000,
+    },
+  );
   if (result.error) throw result.error;
   let report: {
     diagnostics: {
-      code: string;
+      code?: string;
       filename: string;
       message: string;
       labels?: { span: { line: number } }[];
@@ -83,12 +91,15 @@ export function lint(files: readonly string[], config = configPath, cwd = root) 
   // A path oxlint ignores reports nothing, which looks the same as clean.
   if (report.number_of_files !== files.length)
     throw new Error(
-      `oxlint checked ${report.number_of_files} of ${files.length} files; a path is ignored. Run it outside ignored directories.`,
+      `oxlint checked ${report.number_of_files} of ${files.length} files: a path is being ignored.`,
     );
   return report.diagnostics.map(
     (diagnostic) =>
       ({
-        rule: ruleId(diagnostic.code),
+        // A file oxlint cannot parse reports a diagnostic without a rule.
+        rule: diagnostic.code
+          ? diagnostic.code.replace(/^([\w-]+)\((.+)\)$/u, "$1/$2")
+          : "oxlint/parse",
         file: relative(cwd, join(cwd, diagnostic.filename)),
         line: diagnostic.labels?.[0]?.span.line ?? 0,
         message: diagnostic.message,
@@ -96,124 +107,75 @@ export function lint(files: readonly string[], config = configPath, cwd = root) 
   );
 }
 
-export function count(diagnostics: readonly Diagnostic[]) {
-  const counts: Counts = {};
-  for (const { rule, file } of diagnostics) {
-    counts[rule] ??= {};
-    counts[rule][file] = (counts[rule][file] ?? 0) + 1;
-  }
-  return sorted(counts);
-}
-
-/** Every way the current findings disagree with the recorded baseline and allowlist. */
-export function compare(
-  diagnostics: readonly Diagnostic[],
-  baseline: Counts,
-  allowlist: Allowlist,
-) {
-  const problems: string[] = [];
-  const allowed = (rule: string, file: string) => Boolean(allowlist[rule]?.[file]);
-  const kept = diagnostics.filter(({ rule, file }) => !allowed(rule, file));
-  for (const [rule, files] of Object.entries(allowlist))
-    for (const file of Object.keys(files))
-      if (!diagnostics.some((diagnostic) => diagnostic.rule === rule && diagnostic.file === file))
-        problems.push(
-          `${file}: ${rule} has an allowlist entry but no findings; remove it from scripts/owned-lint/allowlist.json.`,
-        );
-  for (const diagnostic of kept.filter(({ rule }) => NATIVE_ALLOWLIST.has(rule)))
-    problems.push(
-      `${diagnostic.file}:${diagnostic.line} ${diagnostic.rule}: ${diagnostic.message}`,
-    );
-  const actual = count(kept.filter(({ rule }) => !NATIVE_ALLOWLIST.has(rule)));
-  const rules = new Set([...Object.keys(actual), ...Object.keys(baseline)]);
-  for (const rule of [...rules].sort()) {
-    const files = new Set([
-      ...Object.keys(actual[rule] ?? {}),
-      ...Object.keys(baseline[rule] ?? {}),
-    ]);
-    for (const file of [...files].sort()) {
-      const found = actual[rule]?.[file] ?? 0;
-      const recorded = baseline[rule]?.[file] ?? 0;
-      if (found > recorded) {
-        const lines = kept.filter(
-          (diagnostic) => diagnostic.rule === rule && diagnostic.file === file,
-        );
-        problems.push(
-          `${file}: ${rule} found ${found}, baseline allows ${recorded}. Fix the new one${found - recorded > 1 ? "s" : ""}:\n` +
-            lines
-              .map((diagnostic) => `  ${diagnostic.file}:${diagnostic.line} ${diagnostic.message}`)
-              .join("\n"),
-        );
-      } else if (found < recorded)
-        problems.push(
-          `${file}: ${rule} is down to ${found} from ${recorded}. Lower the baseline: ${regenerate}`,
-        );
-    }
-  }
-  return problems;
-}
-
-/** With a base commit, a committed baseline or allowance may only shrink against the base's. */
-export function ratchet(current: Counts, base: Counts, existedAtBase: (file: string) => boolean) {
-  const problems: string[] = [];
-  for (const [rule, files] of Object.entries(current)) {
-    const total = (counts: Record<string, number> = {}) =>
-      Object.values(counts).reduce((sum, value) => sum + value, 0);
-    for (const [file, value] of Object.entries(files))
-      if (existedAtBase(file) && value > (base[rule]?.[file] ?? 0))
-        problems.push(
-          `${file}: ${rule} baseline rose from ${base[rule]?.[file] ?? 0} to ${value}; baselines only shrink. Fix the code instead.`,
-        );
-    // A renamed file keeps its findings under a new path: only the rule's total may not rise.
-    if (total(files) > total(base[rule]))
-      problems.push(
-        `${rule}: baseline total rose from ${total(base[rule])} to ${total(files)}; baselines only shrink.`,
-      );
-  }
-  return problems;
-}
-
-const nativeCounts = (config: { rules: Record<string, unknown> }) =>
-  Object.fromEntries(
-    [...NATIVE_ALLOWLIST].map((rule) => {
-      const setting = config.rules[rule];
-      const options = Array.isArray(setting)
-        ? (setting[1] as { allow?: Record<string, number> } | undefined)
-        : undefined;
-      return [rule, options?.allow ?? {}];
-    }),
-  ) satisfies Counts;
-const atBase = (base: string, path: string) => {
-  const result = spawnSync("git", ["show", `${base}:${relative(root, path)}`], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  return result.status === 0 ? result.stdout : undefined;
-};
-
 function writeBaseline(files: readonly string[]) {
-  const config = readJson<{ rules: Record<string, unknown> }>(configPath, { rules: {} });
-  for (const rule of NATIVE_ALLOWLIST) config.rules[rule] = "error";
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-  const allowlist = readJson<Allowlist>(allowlistPath, {});
-  const kept = lint(files).filter(({ rule, file }) => !allowlist[rule]?.[file]);
-  const native = count(kept.filter(({ rule }) => NATIVE_ALLOWLIST.has(rule)));
+  const config = readJson<Config>(configPath, { rules: {} });
+  const unlimited = { ...config, rules: { ...config.rules } };
   for (const rule of NATIVE_ALLOWLIST)
-    config.rules[rule] = native[rule] ? ["error", { allow: native[rule] }] : "error";
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-  const baseline = count(kept.filter(({ rule }) => !NATIVE_ALLOWLIST.has(rule)));
-  writeFileSync(baselinePath, JSON.stringify(baseline, null, 2) + "\n");
-  const total = (counts: Counts) =>
-    Object.values(counts).reduce(
-      (sum, files) => sum + Object.values(files).reduce((a, b) => a + b, 0),
-      0,
+    if (severity(config.rules[rule]) === "error") unlimited.rules[rule] = "error";
+  // Lint with a sibling copy so a failed run leaves the committed configuration untouched.
+  const scratch = join(here, ".oxlintrc.baseline.json");
+  writeJson(scratch, unlimited);
+  let diagnostics: Diagnostic[];
+  try {
+    diagnostics = lint(files, scratch);
+  } finally {
+    rmSync(scratch, { force: true });
+  }
+  const { native, baseline, unparsed } = recordable(
+    diagnostics,
+    readJson<Allowlist>(allowlistPath, {}),
+  );
+  if (unparsed.length)
+    throw new Error(
+      `oxlint could not parse:\n${unparsed.map((diagnostic) => `  ${diagnostic.file}:${diagnostic.line} ${diagnostic.message}`).join("\n")}`,
     );
+  for (const rule of NATIVE_ALLOWLIST)
+    if (severity(config.rules[rule]) === "error")
+      config.rules[rule] = native[rule] ? ["error", { allow: native[rule] }] : "error";
+  writeJson(configPath, config);
+  writeJson(baselinePath, baseline);
+  const sum = (counts: Counts) =>
+    Object.values(counts).reduce((all, files) => all + total(files), 0);
   console.log(
-    `Owned lint baseline written: ${total(baseline)} findings in baseline.json, ${total(native)} in landmines allowlists.`,
+    `Owned lint baseline written: ${sum(baseline)} findings in baseline.json, ${sum(native)} in landmines allowlists.`,
   );
 }
 
+function baseState(base: string) {
+  if (
+    !/^[0-9a-f]{40}$/u.test(base) ||
+    spawnSync("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: root }).status !== 0
+  )
+    throw new Error(`BASE_SHA ${base} is not a commit in this repository.`);
+  const show = (path: string) => {
+    const result = spawnSync("git", ["show", `${base}:${relative(root, path)}`], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    return result.status === 0 ? JSON.parse(result.stdout) : undefined;
+  };
+  const tracked = new Set(
+    execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    }).split("\0"),
+  );
+  const lintChanged =
+    spawnSync("git", ["diff", "--quiet", base, "--", ...LINT_INPUTS], { cwd: root }).status !== 0;
+  return {
+    baseline: show(baselinePath) as Counts | undefined,
+    config: show(configPath) as Config | undefined,
+    allowlist: (show(allowlistPath) ?? {}) as Allowlist,
+    existed: (file: string) => tracked.has(file),
+    lintChanged,
+  } satisfies BaseState;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const unknown = process.argv.slice(2).filter((argument) => argument !== "--write-baseline");
+  if (unknown.length)
+    throw new Error(`Unknown argument ${unknown.join(" ")}; the only option is --write-baseline.`);
   const files = scopedFiles();
   if (process.argv.includes("--write-baseline")) {
     writeBaseline(files);
@@ -221,28 +183,31 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   const started = Date.now();
   const diagnostics = lint(files);
+  const config = readJson<Config>(configPath, { rules: {} });
   const baseline = readJson<Counts>(baselinePath, {});
   const allowlist = readJson<Allowlist>(allowlistPath, {});
-  const problems = compare(diagnostics, baseline, allowlist);
-  const base = process.env.BASE_SHA;
-  if (base) {
-    const baseBaseline = atBase(base, baselinePath);
-    const baseConfig = atBase(base, configPath);
-    const existed = (file: string) =>
-      spawnSync("git", ["cat-file", "-e", `${base}:${file}`], { cwd: root }).status === 0;
-    if (baseBaseline) problems.push(...ratchet(baseline, JSON.parse(baseBaseline), existed));
-    if (baseConfig)
-      problems.push(
-        ...ratchet(
-          nativeCounts(readJson(configPath, { rules: {} })),
-          nativeCounts(JSON.parse(baseConfig)),
-          existed,
-        ),
-      );
-  }
+  const problems = [
+    ...files.flatMap((file) => directiveProblems(file, readFileSync(join(root, file), "utf8"))),
+    ...compare(diagnostics, baseline, allowlist),
+  ];
+  const notices: string[] = [];
+  if (process.env.BASE_SHA) {
+    const policy = basePolicy({ config, baseline, allowlist }, baseState(process.env.BASE_SHA));
+    problems.push(...policy.problems);
+    notices.push(...policy.notices);
+  } else problems.push(...configProblems(config, undefined));
   console.log(
     `Owned lint: ${files.length} files, ${diagnostics.length} findings (baselined or allowlisted unless listed below), ${Date.now() - started} ms.`,
   );
+  if (notices.length) {
+    console.log(notices.join("\n"));
+    if (process.env.GITHUB_STEP_SUMMARY)
+      writeFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `### Owned lint\n\n${notices.map((line) => `- ${line}`).join("\n")}\n`,
+        { flag: "a" },
+      );
+  }
   if (problems.length) {
     console.error(problems.join("\n"));
     console.error(

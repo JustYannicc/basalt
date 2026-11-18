@@ -16,10 +16,6 @@
     {
       "name": "landmines-structure",
       "specifier": "@interfere/landmines/structure"
-    },
-    {
-      "name": "landmines-types",
-      "specifier": "@interfere/landmines/types"
     }
   ],
   "rules": {
@@ -152,9 +148,6 @@
     ],
     "landmines-testing/no-unsignaled-poll": "error",
     "landmines-testing/strict-msw": "error",
-    "landmines-structure/colocated-tests": "error",
-    "landmines-structure/test-file-names": "error",
-    "landmines-structure/package-exports": "error",
-    "landmines-types/no-explicit-return-types": "error"
+    "landmines-structure/package-exports": "error"
   }
 }

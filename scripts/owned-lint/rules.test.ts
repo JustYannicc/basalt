@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { lint } from "../check.ts";
+import { lint } from "./check.ts";
 
 // Each case is linted by the real oxlint with the real configuration. A line ending in
 // `// expect: <rule>` must report exactly that basalt rule; every other line must report none.
@@ -127,6 +127,20 @@ import { recordedClone } from "./clone-shapes.ts";
 import { cloneEquivalent } from "./clone-equivalence.ts";
 export const proven = cloneEquivalent({ mainModule: "worker.js" }, recordedClone);
 `,
+  "scripts/release/clone-shapes.ts": `
+export const recordedClone = { id: "version", mainModule: "worker.js", annotations: { "workers/triggered_by": "version_upload" } };
+`,
+  // A comment naming a shapes module, or an import of one that does not exist, is not a proof.
+  "scripts/release/settings-equivalence.ts": `// expect: basalt/no-exact-readback-compare
+export function settingsEquivalent(sent: string, readBack: string) {
+  return fetch(sent) !== undefined && JSON.stringify(sent) === JSON.stringify(readBack);
+}
+`,
+  "scripts/release/settings-equivalence.test.ts": `
+// from "./clone-shapes.ts"
+import { recordedSettings } from "./missing-shapes.ts";
+export const used = recordedSettings;
+`,
   "scripts/release/unproven-equivalence.ts": `// expect: basalt/no-exact-readback-compare
 export function settingsEquivalent(sent: string, readBack: string) {
   return fetch(sent) !== undefined && JSON.stringify(sent) === JSON.stringify(readBack);
@@ -212,6 +226,69 @@ export function validate(sourceRoot: string) {
   execFileSync("git", ["fetch", "--no-tags", "origin", "main"], { stdio: "ignore" }); // expect: basalt/no-discarded-child-output
   return validation.status === 0 && known;
 }
+`,
+  // One-line rewrites that keep each bug must stay red.
+  "scripts/evasions/requests.ts": `
+import * as Workers from "@distilled.cloud/cloudflare/workers";
+import { sameProvisioningValue as same } from "./provisioning-refusal.ts";
+const W = Workers;
+const { getScript } = Workers;
+export const read = (target: { accountId: string; scriptName: string }, settings: { annotations: object }, versionId: string) => [
+  Workers.getScriptVersion({ ...target, versionId } as Workers.GetScriptVersionRequest), // expect: basalt/no-direct-cloudflare-api, basalt/no-spread-into-provider-request
+  W.getScript({ ...target }), // expect: basalt/no-direct-cloudflare-api, basalt/no-spread-into-provider-request
+  getScript({ accountId: target.accountId, scriptName: target.scriptName, annotations: Object.assign({}, settings.annotations) }), // expect: basalt/no-direct-cloudflare-api, basalt/no-spread-into-provider-request
+];
+declare function digest(value: unknown): string;
+declare function stableJson(value: unknown): string;
+export const compare = async (provider: { read(): Promise<unknown> }, sent: unknown) => {
+  const readBack = await provider.read();
+  return [
+    digest(sent) !== digest(readBack), // expect: basalt/no-exact-readback-compare
+    stableJson(sent) === stableJson(readBack), // expect: basalt/no-exact-readback-compare
+    same("application", sent, readBack), // expect: basalt/no-exact-readback-compare
+    digest(sent) === "stored-digest",
+  ];
+};
+`,
+  "scripts/evasions/processes.ts": `
+import { execSync, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import Cloudflare from "cloudflare";
+const quiet = { stdio: "ignore" as const };
+export const run = () => [
+  spawnSync("node", ["check.ts"], { ...quiet }), // expect: basalt/no-discarded-child-output
+  spawnSync("sh", ["-c", "deploy 2>/dev/null"]), // expect: basalt/no-discarded-child-output
+  execSync("npx wrangler deploy"), // expect: basalt/no-direct-cloudflare-api
+  createRequire(import.meta.url)("wrangler"), // expect: basalt/no-direct-cloudflare-api
+  new Cloudflare(), // expect: basalt/no-direct-cloudflare-api
+];
+export const bun = (spawn: (command: string[], options: object) => void) => spawn(["deploy"], { stdout: "pipe", stderr: "ignore" }); // expect: basalt/no-discarded-child-output
+`,
+  "scripts/evasions/test/stand-in.ts": `
+declare function readBody(request: unknown): Promise<string>;
+const users: unknown[] = [];
+const requests: unknown[] = [];
+let latest: unknown;
+export const handle = async (request: Request, user: object) => {
+  const body = JSON.parse(await readBody(request));
+  const payload = body;
+  users.push(payload); // expect: basalt/no-echo-stub
+  requests.push(body);
+  Object.assign(user, body); // expect: basalt/no-echo-stub
+  latest = structuredClone(body); // expect: basalt/no-echo-stub
+  const { delay = 0 } = body;
+  const forwarded = await fetch("https://upstream.test", { method: "POST", body: request.body });
+  return [forwarded, delay, latest];
+};
+const settings = { id: "x" };
+export const listed = () => Response.json({ success: true, errors: [], result: settings }); // expect: basalt/no-handwritten-provider-response
+`,
+  "src/pool/aliased.test.ts": `
+import { mock as m, test } from "node:test";
+test("aliased", (t) => {
+  m.method(globalThis, "fetch", async () => new Response("{}")); // expect: basalt/no-node-test-doubles
+  t.before(() => {}, { timeout: 1_000 }); // expect: basalt/no-node-test-flake-masking
+});
 `,
   // node:test forms of landmines' no-test-doubles and no-flake-masking.
   "src/pool/doubles.test.ts": `
