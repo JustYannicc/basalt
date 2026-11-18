@@ -264,12 +264,11 @@ the family's canonical ref, so those apps cannot link the older accounts.
 versions that name the retained ref onto the family ref:
 
 ```json
-{"organization":"<organization-id>","from":"<retained-provider-ref>","to":"<family-provider-ref>","accounts":[{"account":"<account-id>","generation":<credential-generation>}],"apps":[{"app":"<app-id>","version":"<active-version-id>"}]}
+{"organization":"<organization-id>","from":"<retained-provider-ref>","to":"<family-provider-ref>","accounts":[{"account":"<account-id>","generation":<credential-generation>}]}
 ```
 
-List every account still under `from` with the `accounts` inventory, and every
-app whose active version names it with `app-links`. The selection must be
-exact. Take `to` from the requirement of an app that already declares the
+List every account still under `from` with the `accounts` inventory. The
+selection must be exact. Take `to` from the requirement of an app that already declares the
 current Cloudflare provider. The runtime derives the family ref from the host's
 Cloudflare declaration, refuses a `to` that differs, and refuses a `from` whose
 stored definition is a different provider. An organization with several
@@ -278,8 +277,9 @@ during the GO window: a version deployed from requirements read before the
 adoption commits would name `from` again, and verification would fail. It also
 refuses a sign-in still in progress, an acquisition outside the selection and an
 OAuth client saved under the retained ref. The dry run lists each account,
-version and connection with its before and after hashes, the links it keeps and
-the apps already on `to` that start offering the moved accounts.
+version and connection with its before and after hashes, the apps whose versions
+move, the links it keeps and the apps already on `to` that start offering the
+moved accounts. Review those app IDs before the GO.
 Account IDs, credentials, generations and links never change; provider rows are
 only read. Apply with the standard saved-plan GO. Verification checks that
 nothing still names `from` and that every kept link resolves to the family ref.

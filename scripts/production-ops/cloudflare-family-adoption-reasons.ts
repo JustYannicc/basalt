@@ -5,7 +5,6 @@ export const cloudflareFamilyAdoptionReasons = [
   "retained-provider-not-family",
   "account-set-changed",
   "account-method-outside-family",
-  "app-set-changed",
   "connection-in-progress",
   "acquisition-outside-selection",
   "provider-keyed-oauth-client",

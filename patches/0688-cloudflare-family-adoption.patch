@@ -41,7 +41,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/clou
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,333 @@
 +import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 +import { familyProviderIdentity } from "@executor-js/hosted-server/provider-account-definitions";
 +import { identifyProvider } from "@executor-js/sdk/core";
@@ -70,7 +70,6 @@ new file mode 100644
 +  "retained-provider-not-family",
 +  "account-set-changed",
 +  "account-method-outside-family",
-+  "app-set-changed",
 +  "connection-in-progress",
 +  "acquisition-outside-selection",
 +  "provider-keyed-oauth-client",
@@ -95,7 +94,6 @@ new file mode 100644
 +  /** The ref the consuming apps already name; it must equal the host's family identity. */
 +  to: ProviderRef,
 +  accounts: Schema.Array(Schema.Struct({ account: Id, generation: Schema.Int })),
-+  apps: Schema.Array(Schema.Struct({ app: Id, version: Id })),
 +});
 +type Request = typeof Request.Type;
 +const Link = Schema.Struct({
@@ -173,15 +171,6 @@ new file mode 100644
 +            sql`select to_jsonb(a) as row from executor_apps a where a.owner = ${owner} and ${sql.in("a.active_deployment", versions)}`,
 +          ),
 +    );
-+    const expected = [...input.apps].sort((a, b) => (a.app < b.app ? -1 : 1));
-+    if (
-+      apps.length !== expected.length ||
-+      apps.some(
-+        (row, index) =>
-+          row.id !== expected[index]!.app || row.active_deployment !== expected[index]!.version,
-+      )
-+    )
-+      return yield* refuse("app-set-changed");
 +
 +    // A sign-in still in progress would finish under the ref this adoption retires.
 +    const live = yield* sql`select id from executor_account_connections where owner = ${owner}
