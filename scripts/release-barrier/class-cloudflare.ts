@@ -4,7 +4,7 @@ import { Config, Effect, Redacted } from "effect";
 import type { ClassTarget, ClassContent } from "./declared-class-contract.ts";
 import { classConstraint, classRefusal } from "./class-refusal.ts";
 import { digest, canonical } from "./manifest.ts";
-import { classTag } from "./declared-class-contract.ts";
+import { classTag, classUntagged } from "./declared-class-contract.ts";
 import { readBaseline } from "./cloudflare.ts";
 import { encodePathSegment, withBearer, type Fetcher } from "../deploy-safety/http.ts";
 import { readClassSettings } from "./class-settings.ts";
@@ -98,6 +98,11 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
     const versionId = versions[0]!.versionId;
     const version = yield* Workers.getScriptVersion({ ...target, versionId }).pipe(Retry.none);
     const settings = yield* readClassSettings(target, fetcher);
+    const linked = yield* Workers.getBetaWorkerVersion({
+      accountId: target.accountId,
+      workerId: target.scriptName,
+      versionId,
+    }).pipe(Retry.none);
     const profile = yield* Workers.getBetaWorker({
       accountId: target.accountId,
       workerId: target.scriptName,
@@ -111,13 +116,18 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
         "unavailable",
       );
     const confirmed = yield* readBaseline(target);
+    const runtimeTag = version.resources.scriptRuntime?.migrationTag ?? undefined;
     if (
       version.id !== versionId ||
+      linked.id !== versionId ||
       confirmed.length !== 1 ||
       confirmed[0]!.versionId !== versionId ||
       confirmed[0]!.percentage !== 100 ||
-      !version.resources.scriptRuntime?.migrationTag ||
-      classTag(settings.tags ?? []) !== version.resources.scriptRuntime.migrationTag
+      !version.resources.scriptRuntime ||
+      // Tagged: alchemy's one tag names the runtime tag. Untagged: neither exists.
+      (runtimeTag
+        ? classTag(settings.tags ?? []) !== runtimeTag
+        : !classUntagged(settings.tags ?? []))
     )
       throw classRefusal("declared-class-live-baseline-drift", undefined, [
         {
@@ -133,9 +143,7 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
         {
           path: "baseline.migrationTagHash",
           old: classTag(settings.tags ?? []) ? digest(classTag(settings.tags ?? [])!) : null,
-          new: version.resources.scriptRuntime?.migrationTag
-            ? digest(version.resources.scriptRuntime.migrationTag)
-            : null,
+          new: runtimeTag ? digest(runtimeTag) : null,
         },
       ]);
     return {
@@ -143,9 +151,12 @@ export const readDeclaredClass = (target: ClassTarget, fetcher: Fetcher = fetch)
       accountId: target.accountId,
       scriptName: target.scriptName,
       versionId,
-      migrationTag: version.resources.scriptRuntime.migrationTag,
+      ...(runtimeTag ? { migrationTag: runtimeTag } : {}),
       settings,
       previewUrlsEnabled: profile.subdomain.previewsEnabled,
+      containers: (linked.containers ?? []).map((container) => ({
+        className: container.className,
+      })),
     };
   }).pipe(Effect.timeout("15 seconds"));
 
