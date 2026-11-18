@@ -280,6 +280,7 @@ export class RuntimeEndpoint {
     return {
       identity: { ...record.authorization.target, bootId: status.boot_id },
       leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
+      ...(status.database ? { database: status.database } : {}),
     };
   }
   private async complete(target: SlotTarget, signal: AbortSignal) {

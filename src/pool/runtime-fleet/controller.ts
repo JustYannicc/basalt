@@ -11,12 +11,26 @@ import { FleetRefused, RuntimeFleetState } from "./state.ts";
 import { FleetDispatches } from "./dispatches.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
+import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
+
+/** One closed line per admission decision, so where each runtime landed is visible. */
+function logPlacement(identity: SlotIdentity, database: RuntimeDistance | undefined) {
+  const place = distanceClass(database);
+  console.info("POOL_RUNTIME_PLACEMENT", {
+    slot: identity.slotId,
+    decision: place === "near" ? "admit" : place === "far" ? "admit_far" : "admit_unknown",
+    class: place,
+    state: database?.state ?? null,
+    location: database?.location ?? null,
+    dbRttMs: database?.rttMs ?? null,
+  });
+}
 
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
   observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
   selected(): Promise<SlotIdentity | undefined>;
-  healthy?(identity: SlotIdentity): Promise<void>;
+  healthy?(identity: SlotIdentity): Promise<RuntimeDistance | undefined | void>;
   forward(
     request: Request,
     port: 8317,
@@ -48,6 +62,7 @@ interface Dependencies {
   balancePrimary?: boolean;
   recentDemandUntil?(): Promise<number>;
   primaryAvailable?(): boolean;
+  primaryDistance?(): Promise<RuntimeDistance | undefined>;
   recoverPrimary?(): Promise<void>;
   demandAt?(at: number): void;
 }
@@ -58,6 +73,7 @@ export class RuntimeFleet {
   private growing?: Promise<void>;
   private atCapacity = false;
   private primaryFailed = false;
+  private primaryPlace: DistanceClass = "unknown";
   private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
@@ -149,12 +165,23 @@ export class RuntimeFleet {
   private async start(target: SlotTarget) {
     await this.deps.state.dispatch(target);
     try {
-      const identity = await this.cell(target).start(target);
+      const cell = this.cell(target);
+      const identity = await cell.start(target);
+      // Read the new runtime's distance before it takes its first request.
+      const database = await cell
+        .healthy?.(identity)
+        .then((value) => value ?? undefined)
+        .catch(() => undefined);
       await this.deps.state.ready(identity);
+      await this.deps.state.observeDistance(identity, database);
+      logPlacement(identity, database);
     } catch (error) {
       await this.deps.state.uncertain(target);
       throw error;
     }
+  }
+  private placement() {
+    return { comfortable: this.deps.targetActive, primary: this.primaryPlace };
   }
   async recoverPrimary() {
     const failure = this.primaryFailure;
@@ -171,8 +198,8 @@ export class RuntimeFleet {
     try {
       acquired = await this.dispatches.acquire(() =>
         this.deps.balancePrimary && !this.primaryFailed && this.deps.primaryAvailable?.() !== false
-          ? this.deps.state.acquire(Number.MAX_SAFE_INTEGER, true)
-          : this.deps.state.acquire(Number.MAX_SAFE_INTEGER),
+          ? this.deps.state.acquire(Number.MAX_SAFE_INTEGER, true, this.placement())
+          : this.deps.state.acquire(Number.MAX_SAFE_INTEGER, false, this.placement()),
       );
     } catch (error) {
       if (!(error instanceof FleetRefused) || error.reason !== "capacity")
@@ -277,13 +304,15 @@ export class RuntimeFleet {
   async upkeep() {
     const trace = new PoolUpkeepTrace("fleet");
     return trace.run("upkeep", async () => {
+      this.primaryPlace = distanceClass(await this.deps.primaryDistance?.().catch(() => undefined));
       const rows = await trace.run("snapshot", () => this.deps.state.inspect());
       await Promise.all(
         rows
           .filter((row) => row.phase === "ready" && row.identity)
           .map(async (row) => {
             try {
-              await this.cell(row.target).healthy?.(row.identity!);
+              const database = await this.cell(row.target).healthy?.(row.identity!);
+              await this.deps.state.observeDistance(row.identity!, database ?? undefined);
             } catch (error) {
               await this.failures.failed(row.identity!, error, new AbortController().signal);
             }

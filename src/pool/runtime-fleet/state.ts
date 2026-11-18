@@ -4,6 +4,7 @@ import type { SlotStorage, TransactionStorage } from "../runtime-slots/storage.t
 import { physicalPrimaryTargets, sameGeneration, selectedPrimary } from "./physical.ts";
 import { slotFirstStartKey } from "../runtime-slots/storage.ts";
 import { runtimeCellKey } from "./cell-state.ts";
+import { RuntimeDistance, distanceClass, type DistanceClass } from "../runtime-distance.ts";
 
 const Count = Schema.Number.check(
   Schema.isInt(),
@@ -26,6 +27,7 @@ const Row = Schema.Struct({
   active: Count,
   drainAcknowledged: Schema.optional(Schema.Boolean),
   lastUsedAt: Count,
+  database: Schema.optional(RuntimeDistance),
 });
 type Row = typeof Row.Type;
 const Ledger = Schema.Array(Row);
@@ -42,6 +44,19 @@ interface PrimaryReservation {
   kind: "primary";
   release(): Promise<void>;
 }
+/** Where runtimes sit relative to the database. Without it, routing is unchanged. */
+export interface FleetPlacement {
+  // The growth target: near runtimes under it come first, then everything else under it.
+  comfortable: number;
+  primary: DistanceClass;
+}
+const tier = (placement: FleetPlacement | undefined, place: DistanceClass, active: number) => {
+  if (!placement) return 0;
+  const near = place === "near";
+  if (active < placement.comfortable) return near ? 0 : 1;
+  return near ? 2 : 3;
+};
+
 export class FleetRefused extends Error {
   readonly reason: "capacity" | "identity" | "uncertain" | "draining";
   constructor(reason: FleetRefused["reason"]) {
@@ -167,6 +182,18 @@ export class RuntimeFleetState {
       rows[rows.indexOf(row)] = { ...row, phase: "uncertain" };
     });
   }
+  /** Records a ready runtime's reported distance; an unchanged value writes nothing. */
+  async observeDistance(value: SlotIdentity, database: RuntimeDistance | undefined) {
+    const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
+    const current = (await this.inspect()).find((row) => sameIdentity(row.identity, identity));
+    if (!current || JSON.stringify(current.database) === JSON.stringify(database)) return;
+    await this.change((rows) => {
+      const row = rows.find((row) => sameIdentity(row.identity, identity));
+      if (!row) return;
+      const { database: _previous, ...rest } = row;
+      rows[rows.indexOf(row)] = database ? { ...rest, database } : rest;
+    });
+  }
   ready(value: SlotIdentity) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
     return this.change(async (rows, transaction) => {
@@ -222,24 +249,45 @@ export class RuntimeFleetState {
   async primaryActive() {
     return Schema.decodeUnknownSync(Count)((await this.storage.get(primaryKey)) ?? 0);
   }
-  acquire(capacity: number): Promise<RuntimeReservation>;
-  acquire(capacity: number, includePrimary: true): Promise<RuntimeReservation | PrimaryReservation>;
+  acquire(
+    capacity: number,
+    includePrimary?: false,
+    placement?: FleetPlacement,
+  ): Promise<RuntimeReservation>;
+  acquire(
+    capacity: number,
+    includePrimary: true,
+    placement?: FleetPlacement,
+  ): Promise<RuntimeReservation | PrimaryReservation>;
   async acquire(
     capacity: number,
     includePrimary = false,
+    placement?: FleetPlacement,
   ): Promise<RuntimeReservation | PrimaryReservation> {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
       throw new Error("Invalid measured runtime capacity");
     const selected = await this.change<
       { kind: "runtime"; identity: SlotIdentity } | { kind: "primary" }
     >(async (rows, transaction) => {
+      const rank = (row: Row) => tier(placement, distanceClass(row.database), row.active);
       const available = rows
         .filter((row) => row.phase === "ready" && row.active < capacity)
-        .sort((left, right) => left.active - right.active || left.lastUsedAt - right.lastUsedAt);
+        .sort(
+          (left, right) =>
+            rank(left) - rank(right) ||
+            left.active - right.active ||
+            left.lastUsedAt - right.lastUsedAt,
+        );
       const row = available[0];
       if (includePrimary) {
         const primary = Schema.decodeUnknownSync(Count)((await transaction.get(primaryKey)) ?? 0);
-        if (!row || primary <= row.active) {
+        // Within a tier the root keeps its tie preference, so "the root stays primary" still holds.
+        const primaryRank = tier(placement, placement?.primary ?? "unknown", primary);
+        if (
+          !row ||
+          primaryRank < rank(row) ||
+          (primaryRank === rank(row) && primary <= row.active)
+        ) {
           if (!Number.isSafeInteger(primary + 1)) throw new FleetRefused("uncertain");
           await transaction.put(primaryKey, primary + 1);
           return { kind: "primary" };

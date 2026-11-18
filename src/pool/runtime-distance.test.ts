@@ -1,0 +1,158 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
+import type { SlotIdentity } from "./runtime-slots/contract.ts";
+import { distanceClass, readinessDistance } from "./runtime-distance.ts";
+import { RuntimeFleetState } from "./runtime-fleet/state.ts";
+
+// Placement trial, 2026-11-18: TCP connect from each draw to the database region.
+const frankfurt = {
+  boot_id: "b",
+  started_at: "s",
+  db_rtt_state: "measured",
+  db_rtt_ms: 5,
+  db_rtt_max_ms: 6,
+  db_rtt_samples: 7,
+  location: "fra07",
+};
+const amsterdam = { ...frankfurt, db_rtt_ms: 14, db_rtt_max_ms: 18, location: "ams08" };
+const athens = { ...frankfurt, db_rtt_ms: 44, db_rtt_max_ms: 48, location: "ath01" };
+const lisbon = { ...frankfurt, db_rtt_ms: 40, db_rtt_max_ms: 47, location: "lis01" };
+
+test("readiness distance follows the contract and anything else is unknown", () => {
+  assert.deepEqual(readinessDistance(frankfurt), {
+    state: "measured",
+    rttMs: 5,
+    location: "fra07",
+  });
+  assert.equal(distanceClass(readinessDistance(frankfurt)), "near");
+  assert.equal(distanceClass(readinessDistance(amsterdam)), "near");
+  assert.equal(distanceClass(readinessDistance(athens)), "far");
+  assert.equal(distanceClass(readinessDistance(lisbon)), "far");
+  assert.equal(
+    distanceClass(readinessDistance({ ...athens, db_rtt_state: "held" })),
+    "far",
+    "a held draw never started Home",
+  );
+  for (const unknown of [
+    { boot_id: "b", started_at: "s" },
+    { ...frankfurt, db_rtt_state: "failed", db_rtt_ms: undefined, db_rtt_samples: 1 },
+    { ...frankfurt, db_rtt_state: "pending" },
+    { ...frankfurt, db_rtt_state: "measuring" },
+  ])
+    assert.equal(distanceClass(readinessDistance(unknown)), "unknown");
+  for (const malformed of [
+    { ...frankfurt, db_rtt_ms: 0 },
+    { ...frankfurt, db_rtt_ms: 3_501 },
+    { ...frankfurt, db_rtt_ms: 4.5 },
+    { ...frankfurt, db_rtt_ms: "5" },
+    { ...frankfurt, location: "Frankfurt" },
+  ])
+    assert.equal(readinessDistance(malformed), undefined);
+});
+
+async function fleet() {
+  const state = new RuntimeFleetState(new SlotMemory(), 4, () => 100);
+  let index = 0;
+  const add = async (body: object | undefined) => {
+    index++;
+    const target = {
+      format: "pool-runtime-slot-v1" as const,
+      controllerId: "controller",
+      slotId: `slot-${index}`,
+      applicationId: "blue",
+      applicationVersion: "1",
+      instanceId: `instance-${index}`,
+      imageDigest: `sha256:${"a".repeat(64)}`,
+      imageInput: "image",
+      homePeerOrdinal: index,
+    };
+    const identity: SlotIdentity = { ...target, bootId: `boot-${index}` };
+    await state.reserve(target);
+    await state.dispatch(target);
+    await state.ready(identity);
+    await state.observeDistance(identity, body ? readinessDistance(body) : undefined);
+    return identity;
+  };
+  return { state, add };
+}
+const placement = (primary: "near" | "far" | "unknown") => ({ comfortable: 2, primary });
+
+test("near runtimes take requests first, far and unknown ones take the overflow", async () => {
+  const f = await fleet();
+  const far = await f.add(athens);
+  const near = await f.add(frankfurt);
+  const picks: string[] = [];
+  for (let request = 0; request < 4; request++) {
+    const reservation = await f.state.acquire(Number.MAX_SAFE_INTEGER, true, placement("unknown"));
+    picks.push(reservation.kind === "primary" ? "root" : reservation.identity.slotId);
+  }
+  // The near cell fills to the growth target, then the far cell and the old-image root share it.
+  assert.deepEqual(picks, [near.slotId, near.slotId, "root", far.slotId]);
+});
+
+test("the root keeps its tie preference among equals, and nothing changes without distances", async () => {
+  const near = await fleet();
+  await near.add(amsterdam);
+  const first = await near.state.acquire(Number.MAX_SAFE_INTEGER, true, placement("near"));
+  assert.equal(first.kind, "primary", "a near root wins the tie against a near cell");
+
+  const old = await fleet();
+  const cell = await old.add(undefined);
+  const picks: string[] = [];
+  for (let request = 0; request < 3; request++) {
+    const reservation = await old.state.acquire(
+      Number.MAX_SAFE_INTEGER,
+      true,
+      placement("unknown"),
+    );
+    picks.push(reservation.kind === "primary" ? "root" : reservation.identity.slotId);
+  }
+  // Today's order: the root on ties, the cell when the root is busier.
+  assert.deepEqual(picks, ["root", cell.slotId, "root"]);
+});
+
+test("a lone far runtime still serves", async () => {
+  const f = await fleet();
+  const far = await f.add(lisbon);
+  const reservation = await f.state.acquire(Number.MAX_SAFE_INTEGER, false, placement("unknown"));
+  assert.equal(reservation.kind === "runtime" && reservation.identity.slotId, far.slotId);
+});
+
+test("fleet upkeep records each cell's reported distance where the operator reads the fleet", async () => {
+  const { RuntimeFleet } = await import("./runtime-fleet/controller.ts");
+  const f = await fleet();
+  const cell = await f.add(undefined);
+  const never = async (): Promise<never> => {
+    throw new Error("unexpected");
+  };
+  const runtime = new RuntimeFleet({
+    state: f.state,
+    target: never,
+    cell: () => ({
+      start: never,
+      observe: async () => cell,
+      selected: async () => cell,
+      healthy: async () => readinessDistance(athens),
+      forward: never,
+      install: async () => {},
+      abortPool: () => {},
+      drain: async () => ({ active: 0, known: true }),
+      retire: never,
+      retired: async () => false,
+      failed: async () => false,
+    }),
+    legacyActive: async () => 0,
+    currentRequests: () => 0,
+    targetActive: 2,
+    idleMilliseconds: 3_600_000,
+    maximum: 4,
+    defer: () => {},
+    wrap: (response) => response,
+    now: () => 100,
+    primaryDistance: async () => readinessDistance(lisbon),
+  });
+  await runtime.upkeep();
+  const [row] = await f.state.inspect();
+  assert.deepEqual(row?.database, { state: "measured", rttMs: 44, location: "ath01" });
+});

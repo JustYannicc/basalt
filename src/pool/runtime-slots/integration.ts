@@ -189,13 +189,18 @@ export class RuntimeHandoff {
       boot_id: identity.bootId,
       started_at: "selected-runtime",
       policyLeaseUntil: health.policyLeaseUntil,
+      ...(health.database ? { database: health.database } : {}),
     };
   }
   async activeHealth() {
     const identity = await this.selected();
     if (!identity) throw new SlotRefused("selection");
     const health = await this.driver.health(identity, AbortSignal.timeout(2_000));
-    return { identity, leaseMs: Math.floor(health.policyLeaseUntil - performance.now()) };
+    return {
+      identity,
+      leaseMs: Math.floor(health.policyLeaseUntil - performance.now()),
+      ...(health.database ? { database: health.database } : {}),
+    };
   }
   private async choose<T>(
     legacy: (prepared: () => void) => Promise<T>,

@@ -267,6 +267,7 @@ export class PoolRuntimeFleet {
       balancePrimary: true,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
+      primaryDistance: async () => (await this.deps.handoff.status())?.database,
       recoverPrimary: () => this.deps.handoff.supervise(),
       demandAt: (at) => {
         if (this.deps.schedule) this.deps.ctx.waitUntil(this.deps.schedule(at));
