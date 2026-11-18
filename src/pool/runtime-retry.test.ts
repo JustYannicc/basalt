@@ -84,16 +84,17 @@ test("capacity refusal closes both retained upload branches", async () => {
   await cancelled.promise;
 });
 
-for (const [path, status, retry] of [
-  ["/v1/messages", 503, true],
-  ["/v1/responses", 503, true],
-  ["/v1/images/generations", 502, false],
-  ["/v1/videos", 502, false],
+for (const [method, path, status, retry] of [
+  ["POST", "/v1/messages", 503, true],
+  ["POST", "/v1/responses", 503, true],
+  ["GET", "/v1/videos/video_1", 503, true],
+  ["POST", "/v1/images/generations", 502, false],
+  ["POST", "/v1/videos", 502, false],
 ] as const)
-  test(`a runtime crash after ${path} was accepted ${retry ? "asks for a retry" : "keeps the cautious answer"}`, async () => {
+  test(`a runtime crash after ${method} ${path} was accepted ${retry ? "asks for a retry" : "keeps the cautious answer"}`, async () => {
     let sends = 0;
     const response = await forwardRecoverably(
-      new Request(`http://pool${path}`, { method: "POST", body: "{}" }),
+      new Request(`http://pool${path}`, { method, ...(method === "POST" ? { body: "{}" } : {}) }),
       async (_request, dispatch) => {
         sends++;
         dispatch();
@@ -104,6 +105,10 @@ for (const [path, status, retry] of [
     assert.equal(sends, 1);
     assert.equal(response.status, status);
     assert.equal(response.headers.get("x-should-retry"), retry ? null : "false");
+    assert.equal(response.headers.get("retry-after"), retry ? "1" : null);
+    // The step and reason join the client's request id to the endpoint trace either way.
+    assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), "fleet_forward");
+    assert.ok(response.headers.get("X-Signalbox-Runtime-Failure-Reason"));
     const body = await response.json();
     if (!retry) {
       assert.equal(body.error.retryable, false);

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { RemoteRuntimeDefect } from "../runtime-slots/request-error.ts";
-import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { runtimeFailureDiagnostic, runtimeFailureHeaders } from "../runtime-route-diagnostic.ts";
 import { awaitProbe } from "../availability.ts";
 import { FleetRefused } from "./state.ts";
 import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
@@ -28,14 +28,18 @@ function recoverable(error: unknown) {
 }
 
 /**
- * A runtime that crashed after accepting a call leaves its outcome unknown. Only an allow-listed
- * model call, which costs at most one response's tokens to repeat, is told to retry; a call that
- * may have started a paid job keeps the cautious answer so its client decides.
+ * A runtime that crashed after accepting a call leaves its outcome unknown. A POST off the shared
+ * allow-list may have started a paid job, so it keeps the cautious answer and its client decides;
+ * everything else, including a job status read, is told to retry. Both keep the step and reason
+ * that join the client's request id to the endpoint trace.
  */
 function acceptedCrash(request: Request, error: unknown) {
   const pathname = new URL(request.url).pathname;
-  if (modelCallReplayable(pathname)) return nativeRuntimeUnavailable(request, error);
+  if (request.method !== "POST" || request.headers.has("upgrade") || modelCallReplayable(pathname))
+    return nativeRuntimeUnavailable(request, error);
   const response = upstreamOutcomeUnknown(undefined, pathname);
+  for (const [name, value] of Object.entries(runtimeFailureHeaders(error, "fleet_forward")))
+    response.headers.set(name, value);
   if (error instanceof Error) retainEndpointRequestId(error, response);
   return response;
 }
