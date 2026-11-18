@@ -18,8 +18,11 @@ export async function requestJson(
   let response: Response;
   try {
     response = await fetcher(url, { redirect: "error", ...init });
-  } catch {
-    throw new SafetyGateError(`${provider} request failed before a response`);
+  } catch (cause) {
+    // The message stays fixed; the cause says which failure it was.
+    throw Object.assign(new SafetyGateError(`${provider} request failed before a response`), {
+      cause,
+    });
   }
 
   const raw = await response.text();
@@ -36,9 +39,13 @@ export async function requestJson(
   return { status: response.status, headers: response.headers, body };
 }
 
-export function cloudflareResult(value: unknown, operation: string): { result: unknown; resultInfo: unknown } {
+export function cloudflareResult(
+  value: unknown,
+  operation: string,
+): { result: unknown; resultInfo: unknown } {
   const response = record(value, `Cloudflare ${operation} response`);
-  if (response.success !== true) throw new SafetyGateError(`Cloudflare ${operation} was not successful`);
+  if (response.success !== true)
+    throw new SafetyGateError(`Cloudflare ${operation} was not successful`);
   if (!Array.isArray(response.errors) || response.errors.length > 0)
     throw new SafetyGateError(`Cloudflare ${operation} returned an error`);
   return { result: response.result, resultInfo: response.result_info };
@@ -65,7 +72,10 @@ export function encodePathSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
-export function withBearer(token: string, headers: Record<string, string> = {}): Record<string, string> {
+export function withBearer(
+  token: string,
+  headers: Record<string, string> = {},
+): Record<string, string> {
   if (!token.trim()) throw new SafetyGateError("Provider credential is missing");
   return { Authorization: `Bearer ${token}`, ...headers };
 }
@@ -75,6 +85,7 @@ export function withPlanetScaleServiceToken(
   token: string,
   headers: Record<string, string> = {},
 ): Record<string, string> {
-  if (!tokenId.trim() || !token.trim()) throw new SafetyGateError("PlanetScale service token credentials are missing");
+  if (!tokenId.trim() || !token.trim())
+    throw new SafetyGateError("PlanetScale service token credentials are missing");
   return { Authorization: `${tokenId}:${token}`, ...headers };
 }
