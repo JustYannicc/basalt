@@ -42,7 +42,7 @@ async function readEmptyFleet(listed: Response, signal: AbortSignal) {
   return digest(canonical(fleet));
 }
 
-async function readResult(response: Response, signal: AbortSignal) {
+export async function readResult(response: Response, signal: AbortSignal) {
   if (response.status !== 200) {
     await response.body?.cancel();
     throw refuse("release-settlement-controller-read-refused");
@@ -127,7 +127,7 @@ const witnessRefusal = (guard: string, values?: Record<string, unknown>) =>
   );
 const identifier = /^[a-zA-Z0-9-]{1,128}$/u;
 /** Names non-secret drift in the message; the location stays a path and other values stay out. */
-function observed(refusal: BarrierRefusal, values: Record<string, unknown> = {}) {
+export function observed(refusal: BarrierRefusal, values: Record<string, unknown> = {}) {
   const shown = Object.entries(values).flatMap(([name, value]) =>
     (typeof value === "string" || typeof value === "number") && identifier.test(String(value))
       ? [`${name}=${value}`]
@@ -178,22 +178,35 @@ function recoveredRestart(
   if (!restartOperation.test(witness.operationId)) throw witnessRefusal("operationId");
 }
 
-/** Names what the final inspect moved to, so a restart during the plan explains itself. */
+/**
+ * Names what the selection moved to since `first`, so a restart during the plan, or between the plan
+ * and its apply, explains itself.
+ */
 function selectionChanged(
-  first: typeof SlotSelection.Type,
-  final: typeof SlotSelection.Type | undefined,
+  first: { epoch: number; bootId: string | undefined },
+  final: { epoch: number; bootId: string | undefined } | undefined,
 ) {
   const refusal = (location: string) =>
     new BarrierRefusal("release-settlement-selection-changed", location);
   if (!final) return refusal("selection.absent");
-  const boot = final.active.identity?.bootId;
-  return final.epoch !== first.epoch || boot !== first.active.identity?.bootId
+  const boot = final.bootId;
+  return final.epoch !== first.epoch || boot !== first.bootId
     ? observed(refusal("selection.epoch"), {
         expected: first.epoch,
         observed: final.epoch,
         observedBoot: boot,
       })
     : refusal("PoolWorker");
+}
+
+type ProvenSelection = { epoch: number; identity: SlotIdentity };
+/** Apply refuses a selection other than the one its reviewed plan recorded, naming where it moved. */
+export function assertSelectionUnchanged(planned: ProvenSelection, live: ProvenSelection) {
+  if (live.epoch !== planned.epoch || !sameIdentity(live.identity, planned.identity))
+    throw selectionChanged(
+      { epoch: planned.epoch, bootId: planned.identity.bootId },
+      { epoch: live.epoch, bootId: live.identity.bootId },
+    );
 }
 
 /**
@@ -203,7 +216,12 @@ function selectionChanged(
  * commit with its unattested witness; a later epoch is the controller's own recovery of that root,
  * witnessed by the restart that launched its active boot.
  */
-export function readAdoptedController(input: {
+export const readAdoptedController = (input: AdoptedInput) =>
+  readSelectedController(input, async (response, signal) => ({
+    digest: await readEmptyFleet(response, signal),
+  }));
+
+type AdoptedInput = {
   controller: BaselineController;
   key: string;
   sourceCandidate: string;
@@ -212,7 +230,20 @@ export function readAdoptedController(input: {
   instances: readonly string[];
   target?: PoolOperationsTarget;
   record?(call: BaselineRead): Promise<void>;
-}) {
+};
+
+/**
+ * `readAdoptedController`'s reads with `fleet` proving the fleet-inspect answer against the
+ * selection. Its whole verdict comes back as `fleet`; only its digest is recorded.
+ */
+export function readSelectedController<Fleet extends { digest: string }>(
+  input: AdoptedInput,
+  fleet: (
+    response: Response,
+    signal: AbortSignal,
+    selection: typeof SlotSelection.Type,
+  ) => Promise<Fleet>,
+) {
   const { code } = input.controller;
   return withPoolOperations(input.target ?? input.controller.target, async (bridge, signal) => {
     const send = (action: Parameters<typeof handoffRead>[0]["action"], dispatched?: () => void) =>
@@ -275,7 +306,8 @@ export function readAdoptedController(input: {
     if (health.leaseMs <= elapsed) throw refuse("release-settlement-active-health-expired");
     if (!sameIdentity(health.identity, identity))
       throw refuse("release-settlement-active-health-identity");
-    const fleetDigest = await readEmptyFleet(await send({ action: "fleet-inspect" }), signal);
+    const fleetVerdict = await fleet(await send({ action: "fleet-inspect" }), signal, selection);
+    const fleetDigest = fleetVerdict.digest;
     const witnessed = await send({ action: "witness", target: active.target });
     if (witnessed.status !== 200) throw await witnessUnproven(witnessed);
     const raw = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }))(
@@ -287,10 +319,14 @@ export function readAdoptedController(input: {
     else recoveredRestart(raw, { code, identity });
     const final = await inspect();
     if (!final || canonical(final) !== canonical(selection))
-      throw selectionChanged(selection, final);
+      throw selectionChanged(
+        { epoch: selection.epoch, bootId: identity.bootId },
+        final && { epoch: final.epoch, bootId: final.active.identity?.bootId },
+      );
     return {
       instanceId: identity.instanceId,
       bootId: identity.bootId,
+      fleet: fleetVerdict,
       reads: adopted
         ? {
             fleetDigest,
