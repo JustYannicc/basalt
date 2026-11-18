@@ -5,12 +5,21 @@ import { isRehearsalStage, rehearsalStack } from "../release-barrier/release-sta
  * destroy leaves behind. Repositories are named for their stack and stage, so only this stage's
  * repositories under the rehearsal stack are ever selected.
  */
+/**
+ * Whether a provider resource name belongs to this rehearsal stage: alchemy's physical names under
+ * the rehearsal stack, or the fleet's `basalt-<stage>-` names. The stage must match whole.
+ */
+export function ownedByStage(name: string, stage: string): boolean {
+  if (!isRehearsalStage(stage)) throw new Error("Only rehearsal stages own disposable resources");
+  const stageToken = new RegExp(`(?:^|-)${stage.replace(/[^a-z0-9-]/gu, "")}(?:-|$)`, "u");
+  return name.startsWith(`basalt-${stage}-`) || (name.startsWith(`${rehearsalStack}-`) && stageToken.test(name));
+}
+
 export function stageRepositories(catalog: readonly string[], accountId: string, stage: string): string[] {
   if (!isRehearsalStage(stage)) throw new Error("Registry images are removed only for rehearsal stages");
-  const stageToken = new RegExp(`(?:^|-)${stage.replace(/[^a-z0-9-]/gu, "")}(?:-|$)`, "u");
   return catalog.filter((repository) => {
     const [account, name, ...rest] = repository.split("/");
-    return account === accountId && !!name && rest.length === 0 && name.startsWith(`${rehearsalStack}-`) && stageToken.test(name);
+    return account === accountId && !!name && rest.length === 0 && ownedByStage(name, stage);
   });
 }
 
@@ -47,7 +56,7 @@ export async function stageImages(
   const registry = await registryCredentials(input.accountId, input.token, fetcher);
   const auth = `Basic ${Buffer.from(`${registry.username}:${registry.password}`).toString("base64")}`;
   const call = (path: string, init: RequestInit = {}) =>
-    fetcher(`https://registry.cloudflare.com/v2/${path}`, { ...init, headers: { Authorization: auth, ...(init.headers ?? {}) } });
+    fetcher(`https://registry.cloudflare.com/v2/${path}`, { ...init, headers: { Authorization: auth, ...init.headers } });
   const catalog = await call("_catalog?n=10000");
   if (!catalog.ok) throw new Error(`Registry catalog read failed with HTTP ${catalog.status}`);
   const repositories = stageRepositories(

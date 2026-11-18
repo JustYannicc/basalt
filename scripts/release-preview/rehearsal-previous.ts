@@ -66,7 +66,7 @@ export function checkoutChangeBaseline(root: string, destination: string): strin
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const destination = process.argv[2];
   if (!destination) throw new Error("Usage: rehearsal-previous.ts DESTINATION [scenario]");
-  if (process.argv[3] === "single-writer") {
+  if (process.argv[3]?.startsWith("single-writer")) {
     process.stdout.write(`baseline=${checkoutChangeBaseline(process.cwd(), resolve(destination))}\nsha=\n`);
   } else {
     const { baseline, previous } = commitPreviousCandidate(process.cwd(), resolve(destination));

@@ -11,7 +11,7 @@ type FleetReader = {
   inspect(): Promise<{ selection?: { active: { target: { applicationId: string } } } }>;
 };
 import { BarrierRefusal } from "./refusal.ts";
-import { rehearsalStop, releaseTarget } from "./release-stage.ts";
+import { rehearsalStop, releaseTarget, type RehearsalStop } from "./release-stage.ts";
 
 /**
  * Ends a rehearsal's first release right after adopt, leaving the state a failed release left. The
@@ -31,6 +31,33 @@ export async function stopAfterAdopt(
     { mode: 0o600 },
   );
   throw new BarrierRefusal("release-rehearsal-stopped-after-adopt", "PoolWorker");
+}
+
+/**
+ * Ends a rehearsal's release at a bootstrap or bind point, which no abort or settlement accepts:
+ * the rehearsal re-dispatches the same candidate from there, as production would have to.
+ */
+export function stopAt(point: RehearsalStop, env: NodeJS.ProcessEnv = process.env) {
+  if (rehearsalStop(env) === point)
+    throw new BarrierRefusal(`release-rehearsal-stopped-${point}`, "PoolWorker");
+}
+
+/**
+ * Ends a rehearsal's release right after its class step commits ready, before any bootstrap, so
+ * recorded-version recovery can be rehearsed against a class expansion nothing else touched.
+ */
+export function stopAfterClasses(env: NodeJS.ProcessEnv = process.env) {
+  if (rehearsalStop(env) === "after-classes")
+    throw new BarrierRefusal("release-rehearsal-stopped-after-classes", "PoolWorker");
+}
+
+/**
+ * Ends a rehearsal's release once the candidate startup is journaled and staged, before the
+ * promotion gate: the one point where the runtime abort can still act on the staged candidate.
+ */
+export function stopBeforePromotionGate(env: NodeJS.ProcessEnv = process.env) {
+  if (rehearsalStop(env) === "before-promotion-gate")
+    throw new BarrierRefusal("release-rehearsal-stopped-before-promotion-gate", "PoolWorker");
 }
 
 /** After promote, the fleet permission names the color the selection now serves from. */

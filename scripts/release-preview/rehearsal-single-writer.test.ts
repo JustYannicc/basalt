@@ -8,6 +8,7 @@ function hooks(overrides: Partial<SingleWriterHooks> = {}) {
     deployBaseline: async () => void events.push("baseline"),
     shape: async (phase, label) => void events.push(`shape:${phase}:${label}`),
     preflight: async () => (events.push("preflight"), {
+      mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} },
       steps: [{ step: "runtime-bootstrap", status: "pass", summary: { colors: [{ color: "blue", source: "declared" }, { color: "green", source: "declared" }], migrationTag: "untagged" } }],
     }),
     seedPools: async () => (events.push("seed"), { cleanPool: "clean" }),
@@ -65,7 +66,11 @@ test("a refused release or a shape change stops the rehearsal at that step", asy
 test("the preflight must pass runtime-bootstrap with both colors declared on an untagged PoolWorker", async () => {
   const { requireRuntimeBootstrap } = await import("./rehearsal-single-writer.ts");
   const declared = [{ color: "blue", source: "declared" }, { color: "green", source: "declared" }];
-  const step = (status: string, summary: unknown) => ({ steps: [{ step: "runtime-bootstrap", status, summary }] });
+  const step = (status: string, summary: unknown, extra: object = {}) => ({
+    mutations: { deniedStateWrites: 0, blockedHttpMutations: 0, refusedBridgeRequests: {} },
+    steps: [{ step: "runtime-bootstrap", status, summary }],
+    ...extra,
+  });
   requireRuntimeBootstrap(step("pass", { colors: declared, migrationTag: "untagged" }));
   for (const report of [
     {},
@@ -74,6 +79,8 @@ test("the preflight must pass runtime-bootstrap with both colors declared on an 
     step("pass", { colors: declared, migrationTag: "not-needed" }),
     step("pass", { colors: [declared[0], { color: "green", source: "existing" }], migrationTag: "untagged" }),
     step("pass", { colors: [declared[0]], migrationTag: "untagged" }),
+    step("pass", { colors: declared, migrationTag: "untagged" }, { fatal: "release-preflight-untrusted-context" }),
+    step("pass", { colors: declared, migrationTag: "untagged" }, { mutations: { deniedStateWrites: 1, blockedHttpMutations: 0, refusedBridgeRequests: {} } }),
   ])
     assert.throws(() => requireRuntimeBootstrap(report));
 });

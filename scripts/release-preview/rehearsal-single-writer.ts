@@ -70,6 +70,20 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
  * class step (`source: "declared"`) on a PoolWorker it reads as untagged, as production is.
  */
 export function requireRuntimeBootstrap(report: unknown) {
+  const value = report as {
+    fatal?: unknown;
+    mutations?: { deniedStateWrites?: unknown; blockedHttpMutations?: unknown; refusedBridgeRequests?: unknown };
+  } | null;
+  // A preflight that tried to write, or ended fatally, proves nothing however one step reads.
+  if (value?.fatal !== undefined) throw new Error(`The release preflight ended fatally: ${String(value.fatal)}`);
+  const mutations = value?.mutations;
+  if (
+    !mutations ||
+    mutations.deniedStateWrites !== 0 ||
+    mutations.blockedHttpMutations !== 0 ||
+    Object.keys((mutations.refusedBridgeRequests as object | undefined) ?? {}).length !== 0
+  )
+    throw new Error("The release preflight attempted a write or a refused bridge request");
   const steps = (report as { steps?: unknown } | null)?.steps;
   const step = Array.isArray(steps)
     ? (steps as { step?: unknown; status?: unknown; summary?: unknown }[]).find((entry) => entry.step === "runtime-bootstrap")

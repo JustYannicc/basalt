@@ -15,6 +15,7 @@ import { withOperation } from "./operation-failure.ts";
 import { prepareClassClone, removeClassClone } from "./class-clone.ts";
 import { classRecoveryRequest as recoveryRequest, recordClassProgress } from "./class-recovery.ts";
 import { prepareDeclaredClasses } from "./class-preparation.ts";
+import { stopAfterClasses } from "./release-rehearsal-observer.ts";
 
 /** A migration is an explicit live expansion before candidate admission. Every resume first observes attribution; no branch repeats a PUT. */
 export const expandDeclaredClasses = (
@@ -130,5 +131,6 @@ export const expandDeclaredClasses = (
       }
       yield* progress(entry.fqn, saved, "ready");
     }
+    if (changed) stopAfterClasses();
     return changed;
   });

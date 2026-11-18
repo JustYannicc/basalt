@@ -8,14 +8,19 @@ import { parseSubjectArgument } from "../preview/subject.ts";
 
 const run = (command: string, args: string[], cwd?: string) =>
   execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-const label = "release-rehearsal-single-writer";
+const labels = { forward: "release-rehearsal-single-writer", recovery: "release-rehearsal-single-writer-step4" } as const;
 
 /**
  * Starts one paid single-change rehearsal: this branch with the change's exact commit merged on
  * top, as its own pull request carrying the rehearsal label. Nothing is deployed until that
  * label's run starts. `dryRun` merges in a scratch checkout and reports, without pushing.
  */
-export function dispatchSingleWriter(root: string, change: string, options: { base?: string; dryRun?: boolean } = {}) {
+export function dispatchSingleWriter(
+  root: string,
+  change: string,
+  options: { base?: string; dryRun?: boolean; recovery?: boolean } = {},
+) {
+  const label = options.recovery ? labels.recovery : labels.forward;
   if (!/^[a-f0-9]{40}$/u.test(change)) throw new Error("Name the change by its exact 40-character head commit");
   const base = options.base ?? "origin/feat/release-rehearsal";
   if (!options.dryRun) run("git", ["fetch", "-q", "origin", "feat/release-rehearsal"], root);
@@ -40,8 +45,9 @@ export function dispatchSingleWriter(root: string, change: string, options: { ba
     run("git", ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], scratch);
     const body = join(scratch, ".rehearsal-body.md");
     writeFileSync(body, `Rehearsal only, never merge: \`${change}\` on the release rehearsal at \`${onto}\`.\n`);
-    const url = run("gh", ["pr", "create", "--base", "main", "--head", branch, "--title",
-      `rehearse: ${change.slice(0, 12)}`, "--body-file", body, "--label", label]);
+    // A draft, so the rehearsal vehicle, which carries the whole rehearsal branch, can't be merged.
+    const url = run("gh", ["pr", "create", "--draft", "--base", "main", "--head", branch, "--title",
+      `DO NOT MERGE rehearse: ${change.slice(0, 12)}`, "--body-file", body, "--label", label]);
     return { dryRun: false, onto, change, head, branch, url };
   } finally {
     run("git", ["worktree", "remove", "--force", scratch], root);
@@ -74,7 +80,11 @@ export function verifyTeardown(repository: string, pullRequest: number) {
         return true;
       }
     });
-    if (!unproven.length) return { run: latest.id, stages: checkpoints, proven: "each stage's receipt verified its teardown" };
+    if (!unproven.length) {
+      // Proven teardown retires the rehearsal vehicle: its pull request and branch exist only for the run.
+      run("gh", ["pr", "close", String(pullRequest), "--repo", repository, "--delete-branch"]);
+      return { run: latest.id, stages: checkpoints, proven: "each stage's receipt verified its teardown; pull request closed" };
+    }
     // An unsuccessful run's stages are destroyed by release-cleanup; its verify step is the proof.
     throw new Error(
       `Teardown is not proven by run ${latest.id} for ${unproven.join(", ")}: confirm its release-cleanup run destroyed and verified them`,
@@ -90,8 +100,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (mode === "dispatch" && value)
     console.log(JSON.stringify(dispatchSingleWriter(process.cwd(), value, {
       dryRun: process.argv.includes("--dry-run"),
+      recovery: process.argv.includes("--step4"),
       base: process.argv.includes("--local") ? "HEAD" : undefined,
     })));
   else if (mode === "verify" && /^[1-9][0-9]*$/u.test(value ?? "")) console.log(JSON.stringify(verifyTeardown(repository, Number(value))));
-  else throw new Error("Usage: dispatch-rehearsal.ts dispatch <change-head-sha> [--dry-run] [--local] | verify <pull-request>");
+  else throw new Error("Usage: dispatch-rehearsal.ts dispatch <change-head-sha> [--step4] [--dry-run] [--local] | verify <pull-request>");
 }

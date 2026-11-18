@@ -22,8 +22,10 @@ import { requireSettlementApplied, settlementPacket, settlementPlanRequest } fro
 import { poolWorkerRevision } from "../pool-worker-revision.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
-import { applyRehearsalFixture, planStageVariant, redeployStage, withStageBuild } from "../preview/lifecycle.ts";
+import { applyRehearsalFixture, withStageBuild } from "../preview/lifecycle.ts";
 import { singleWriterSteps } from "./rehearsal-single-writer.ts";
+import { singleWriterHooks } from "./rehearsal-single-writer-hooks.ts";
+import { resumeSteps, rollbackSteps } from "./rehearsal-recovery.ts";
 import { PreviewClient } from "../pool-acceptance/preview-client.ts";
 import { previewConfigFromEnvironment } from "../pool-acceptance/preview-config.ts";
 
@@ -45,6 +47,8 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   const scenario = rehearsalScenario(source.REHEARSAL_SCENARIO);
   const previousRoot = resolve(source.REHEARSAL_PREVIOUS_ROOT ?? "");
   const candidate = head(root);
+  // A step-4 rehearsal releases later commits in the same checkout; every operation follows it.
+  let current = candidate;
   const parent = (commit: string) =>
     execFileSync("git", ["rev-parse", `${commit}^`], { cwd: previousRoot, encoding: "utf8" }).trim();
   // Three commits as production has them: an older baseline, the previous candidate on it, this one.
@@ -54,7 +58,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   const firstParent = execFileSync("git", ["rev-parse", `${candidate}^1`], { cwd: root, encoding: "utf8" }).trim();
   if (
     baseline !== source.REHEARSAL_BASELINE_SHA ||
-    (scenario === "single-writer"
+    (scenario.startsWith("single-writer")
       ? baseline !== firstParent || previous !== ""
       : parent(baseline) !== candidate || !/^[a-f0-9]{40}$/u.test(previous) || parent(previous) !== baseline)
   )
@@ -78,7 +82,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
   let access: RehearsalPoolAccess | undefined;
   /** The stage's own keys and the rehearsal writer's identity, for operations on the candidate. */
   const candidateEnvironment = () => {
-    const writer: NodeJS.ProcessEnv = { ...deployEnvironment, ALCHEMY_STAGE: stage, BASALT_RELEASE_CANDIDATE: candidate };
+    const writer: NodeJS.ProcessEnv = { ...deployEnvironment, ALCHEMY_STAGE: stage, BASALT_RELEASE_CANDIDATE: current };
     for (const name of writerInputs) if (source[name]) writer[name] = source[name];
     return rehearsalReleaseEnvironment(writer);
   };
@@ -95,7 +99,7 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
       runner[name] = materialized[name];
     const release = async (request: ReleaseRequest) => {
       const which = request.candidate === "previous" ? previousRoot : root;
-      const commit = request.candidate === "previous" ? previous : candidate;
+      const commit = request.candidate === "previous" ? previous : (request.commit ?? current);
       const imageReceipt = join(privateRoot, `pool-image-${sequence + 1}.json`);
       const environment: NodeJS.ProcessEnv = {
         ...deployEnvironment,
@@ -233,43 +237,22 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
         return JSON.parse(await readFile(resultPath, "utf8")) as unknown;
       },
     };
-    const shapeRecord = join(privateRoot, "worker-shape.json");
+    const singleWriter = singleWriterHooks({
+      root, subject, privateRoot, operation, deployEnvironment, candidateEnvironment, hooks,
+      current: () => current,
+      advance: (commit) => {
+        current = commit;
+        built.delete(root);
+      },
+    });
     const steps =
       scenario === "single-writer"
-        ? singleWriterSteps({
-            deployBaseline: hooks.deployBaseline,
-            seedPools: hooks.seedPools,
-            release: hooks.release,
-            serve: hooks.serve,
-            shape: async (phase, label) => {
-              await operation(`shape-${label}`, root, "scripts/release-preview/rehearsal-worker-shape.ts", [phase, shapeRecord], candidateEnvironment(), 5, "bun");
-              await mkdir(join(root, ".local", "release-barrier"), { recursive: true });
-              await copyFile(shapeRecord, join(root, ".local", "release-barrier", `worker-shape-${label}.json`));
-            },
-            preflight: async () => {
-              // Read-only against the seeded stage, from the pull request context the preflight trusts.
-              await operation("preflight", root, "scripts/release-barrier/release-preflight-entry.ts", [], {
-                ...candidateEnvironment(),
-                GITHUB_EVENT_NAME: source.GITHUB_EVENT_NAME,
-                GITHUB_EVENT_PATH: source.GITHUB_EVENT_PATH,
-                GITHUB_SHA: candidate,
-              }, 10, "bun").catch(() => {});
-              const report = await readFile(join(root, ".local", "release-preflight", "report.json"), "utf8");
-              await mkdir(join(root, ".local", "release-barrier"), { recursive: true });
-              await writeFile(join(root, ".local", "release-barrier", "preflight-report.json"), report, { mode: 0o600 });
-              return JSON.parse(report) as unknown;
-            },
-            // The single-writer change binds both fleet classes always; dropping that must show the hazard.
-            planWithoutFleetBindings: () =>
-              planStageVariant(root, subject, deployEnvironment, {
-                path: "src/pool/deployment.ts",
-                from: "...fleetBindings(fleet),",
-                to: "...fleet,",
-              }),
-            redeploy: (change) =>
-              redeployStage(root, subject, deployEnvironment, change ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
-          })
-        : rehearsalSteps(scenario, hooks);
+        ? singleWriterSteps(singleWriter.forward)
+        : scenario === "single-writer-resume"
+          ? resumeSteps(singleWriter.recovery)
+          : scenario === "single-writer-rollback"
+            ? rollbackSteps(singleWriter.recovery)
+            : rehearsalSteps(scenario, hooks);
     const outcome = await runPreview({
       prepare: async () => {
         await readFile(manifestPath(root, subject));

@@ -58,15 +58,25 @@ export const releaseScope = () => {
  * Rehearsal-only stop points reproduce a release that ended part way. A production process that
  * sees one refuses instead of ignoring it, so the variable can never shape a production release.
  */
-export type RehearsalStop = "after-adopt";
+export const rehearsalStops = [
+  "after-adopt",
+  "after-classes",
+  "after-controller",
+  "after-bootstrap-blue",
+  "after-bind-blue",
+  "after-bootstrap-green",
+  "after-bind-green",
+  "before-promotion-gate",
+] as const;
+export type RehearsalStop = (typeof rehearsalStops)[number];
 export function rehearsalStop(env: NodeJS.ProcessEnv = process.env): RehearsalStop | undefined {
   const value = env.BASALT_REHEARSAL_STOP;
   if (value === undefined || value === "") return undefined;
   if (!releaseTarget(env).rehearsal)
     throw new BarrierRefusal("release-rehearsal-stop-on-production", "BASALT_REHEARSAL_STOP");
-  if (value !== "after-adopt")
+  if (!(rehearsalStops as readonly string[]).includes(value))
     throw new BarrierRefusal("release-rehearsal-stop-unknown", "BASALT_REHEARSAL_STOP");
-  return value;
+  return value as RehearsalStop;
 }
 
 /** A rehearsal can shorten the old-generation drain to reproduce its deadline; production refuses. */

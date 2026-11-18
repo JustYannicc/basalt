@@ -219,3 +219,42 @@ test("only a rehearsal stage admits its stage's sign-in seed and pool budget com
   assert.throws(() => commandPhase("PreviewAuthSeed", { command: "node other.ts" }), refusal("unsupported-command"));
   assert.equal(commandPhase("Migrations", { command: "node src/migrate.ts" }), "database");
 });
+
+test("every rehearsal stop point refuses on production and fires only at its own point", async () => {
+  const { stopAt, stopAfterClasses, stopBeforePromotionGate } = await import("./release-rehearsal-observer.ts");
+  const { rehearsalStops } = await import("./release-stage.ts");
+  for (const point of rehearsalStops) {
+    assert.throws(
+      () => stopAt(point, { ALCHEMY_STAGE: "production", BASALT_REHEARSAL_STOP: point }),
+      refusal("release-rehearsal-stop-on-production"),
+    );
+    assert.throws(() => stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: point }), refusal(`release-rehearsal-stopped-${point}`));
+    for (const other of rehearsalStops.filter((candidate) => candidate !== point))
+      assert.doesNotThrow(() => stopAt(point, { ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: other }));
+    assert.doesNotThrow(() => stopAt(point, { ALCHEMY_STAGE: "production" }));
+  }
+  assert.throws(() => stopAfterClasses({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "after-classes" }), refusal("release-rehearsal-stopped-after-classes"));
+  assert.throws(
+    () => stopBeforePromotionGate({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "before-promotion-gate" }),
+    refusal("release-rehearsal-stopped-before-promotion-gate"),
+  );
+  assert.throws(() => rehearsalStop({ ALCHEMY_STAGE: rehearsal, BASALT_REHEARSAL_STOP: "after-bind-red" }), refusal("release-rehearsal-stop-unknown"));
+});
+
+test("the preflight trusts a rehearsal only from the rehearsal job, for the checked-out candidate", async () => {
+  const { assertPreflightContext } = await import("./release-preflight.ts");
+  const { execFileSync } = await import("node:child_process");
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const env = {
+    ALCHEMY_STAGE: rehearsal,
+    GITHUB_ACTIONS: "true",
+    GITHUB_REPOSITORY: "JustYannicc/basalt",
+    GITHUB_JOB: "rehearsal",
+    BASALT_RELEASE_CANDIDATE: head,
+  };
+  assert.deepEqual(assertPreflightContext(env, undefined, process.cwd()), { candidate: head, mode: "check" });
+  for (const change of [{ GITHUB_JOB: "deploy" }, { BASALT_RELEASE_CANDIDATE: "a".repeat(40) }, { GITHUB_REPOSITORY: "fork/basalt" }, { GITHUB_ACTIONS: "false" }])
+    assert.throws(() => assertPreflightContext({ ...env, ...change }, undefined, process.cwd()), refusal("release-preflight-untrusted-context"));
+  // Production's own contexts are untouched: without a stage it still demands the trusted main dispatch.
+  assert.throws(() => assertPreflightContext({ ...env, ALCHEMY_STAGE: undefined }, undefined, process.cwd()), refusal("release-preflight-untrusted-context"));
+});

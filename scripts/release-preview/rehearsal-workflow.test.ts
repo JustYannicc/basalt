@@ -14,7 +14,8 @@ test("a busy main never cancels a running rehearsal, and only the rehearsal labe
     rehearsal,
     /\n    concurrency:\n      group: release-rehearsal-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}-\$\{\{ matrix\.scenario \}\}\n      cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/,
   );
-  assert.match(rehearsal, /github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'release-rehearsal' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer'/);
+  assert.match(rehearsal, /github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'release-rehearsal' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer' \|\|\n\s+github\.event\.label\.name == 'release-rehearsal-single-writer-step4'/);
+  assert.match(rehearsal, /'release-rehearsal-single-writer-step4'\) && '\["single-writer-resume","single-writer-rollback"\]'/);
   assert.match(rehearsal, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'release-rehearsal-single-writer'\) && '\["single-writer"\]'/);
   assert.match(rehearsal, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
 });

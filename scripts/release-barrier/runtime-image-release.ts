@@ -36,6 +36,7 @@ import { rehearsalDrainCap, releaseTarget } from "./release-stage.ts";
 import {
   assertRehearsalFleetActive,
   stopAfterAdopt,
+  stopAt,
   timeRehearsalWait,
 } from "./release-rehearsal-observer.ts";
 import {
@@ -228,6 +229,7 @@ export const releaseRuntimeImage = <A, StackError>(
         }),
       );
     let client = yield* codePhase("controller");
+    stopAt("after-controller");
     yield* Effect.promise(() =>
       verifyBoundProviderObservation({
         state: record.baseline,
@@ -261,7 +263,9 @@ export const releaseRuntimeImage = <A, StackError>(
       ).pipe(Effect.provideService(RuntimeImageReleasePlan, createPlan));
       const native = yield* evaluate(createPlan, (compiled) => runtimeReleaseState(compiled));
       yield* Effect.promise(() => save({ ...record, baseline: native }));
+      stopAt(`after-bootstrap-${color}`);
       client = yield* codePhase(`bind-${color}`);
+      stopAt(`after-bind-${color}`);
     }
     yield* Effect.promise(() =>
       waitReleaseObservation(

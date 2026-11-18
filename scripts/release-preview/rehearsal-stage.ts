@@ -1,6 +1,12 @@
 import { fileURLToPath } from "node:url";
 
-export const rehearsalScenarios = ["straight", "drain-resume", "single-writer"] as const;
+export const rehearsalScenarios = [
+  "straight",
+  "drain-resume",
+  "single-writer",
+  "single-writer-resume",
+  "single-writer-rollback",
+] as const;
 export type RehearsalScenario = (typeof rehearsalScenarios)[number];
 
 export function rehearsalScenario(value: string | undefined): RehearsalScenario {

@@ -50,6 +50,7 @@ import {
   configurationDigest,
   type RuntimeConfiguration,
 } from "../../src/pool/runtime-slots/configuration.ts";
+import { stopBeforePromotionGate } from "./release-rehearsal-observer.ts";
 
 const Policy = Schema.Struct({
   pool: Schema.String,
@@ -347,6 +348,7 @@ export const runtimeReleaseClient = (input: {
           operationId,
           ...(grant ? { proof: grant.envelope } : {}),
         });
+        stopBeforePromotionGate();
         const {
           gate,
           operationId: promotionOperationId,

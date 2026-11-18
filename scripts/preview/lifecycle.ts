@@ -77,6 +77,12 @@ export interface LifecycleServices {
     inventory: PreviewInventory,
     environment: NodeJS.ProcessEnv,
   ) => Promise<void>;
+  /** Retained fleet applications a rehearsal's stack destroy leaves behind, found by name. */
+  readonly stageApplications: (
+    mode: "delete" | "verify",
+    identity: PreviewIdentity,
+    environment: NodeJS.ProcessEnv,
+  ) => Promise<void>;
   /** A rehearsal's pool builds push registry images its stack destroy leaves behind. */
   readonly stageImages: (
     mode: "delete" | "verify",
@@ -295,6 +301,14 @@ function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
     },
     verifyProviders: (identity, inventory, environment) =>
       verifyPreviewProvidersAbsent(identity, inventory, providerReadbacks(environment)),
+    stageApplications: async (mode, identity, environment) => {
+      const { stageApplications } = await import("./stage-applications.ts");
+      await stageApplications(mode, {
+        accountId: environment.CLOUDFLARE_ACCOUNT_ID ?? "",
+        token: environment.CLOUDFLARE_API_TOKEN ?? "",
+        stage: identity.stage,
+      });
+    },
     stageImages: async (mode, identity, environment) => {
       const { stageImages } = await import("./stage-images.ts");
       await stageImages(mode, {
@@ -533,7 +547,10 @@ export async function destroyStage(
       : []),
     ["basalt", () => services.destroyStack("basalt", config, config.providers)],
     ...(subject.kind === "rehearsal"
-      ? ([["images", () => services.stageImages("delete", config, config.providers)]] as const)
+      ? ([
+          ["applications", () => services.stageApplications("delete", config, config.providers)],
+          ["images", () => services.stageImages("delete", config, config.providers)],
+        ] as const)
       : []),
     ["database", () => services.destroyStack("database", config, config.providers)],
     ["artifacts", () => services.deleteArtifacts(config.sourceNamespace, config.providers)],
@@ -578,6 +595,7 @@ export async function verifyStageAbsent(
     throw new Error("Preview Alchemy stage state is still present");
   await services.verifyProviders(config, inventory, config.providers);
   if (subject.kind === "rehearsal") {
+    await services.stageApplications("verify", config, config.providers);
     await services.stageImages("verify", config, config.providers);
     await services.stageOutputs("verify", config, config.providers);
   }

@@ -1,10 +1,13 @@
 import type { RehearsalScenario } from "./rehearsal-stage.ts";
+import type { RehearsalStop } from "../release-barrier/release-stage.ts";
 import type { RestartResult } from "./rehearsal-restart-plan.ts";
 
 export type ReleaseOutcome = { ok: true } | { ok: false; reason: string; worker?: string };
 export type ReleaseRequest = {
   candidate: "previous" | "candidate";
-  stop?: "after-adopt";
+  stop?: RehearsalStop;
+  /** A later candidate commit in the candidate checkout, for releases after the first. */
+  commit?: string;
   drainCapMs?: number;
   cleanPool: string;
 };
