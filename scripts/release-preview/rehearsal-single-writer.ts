@@ -17,9 +17,16 @@ export interface SingleWriterHooks {
   /** A plain alchemy deploy of the candidate, with one PoolWorker variable flipped when asked. */
   redeploy(change: boolean): Promise<void>;
   serve(): Promise<unknown>;
+  /** A read-only plan of the candidate without its fleet bindings; returns the plan text. */
+  planWithoutFleetBindings(): Promise<string>;
 }
 
-export type SingleWriterRecord = { scenario: "single-writer"; steps: string[]; release?: ReleaseOutcome };
+export type SingleWriterRecord = {
+  scenario: "single-writer";
+  steps: string[];
+  release?: ReleaseOutcome;
+  negativeControl?: string[];
+};
 
 export function singleWriterSteps(hooks: SingleWriterHooks) {
   const record: SingleWriterRecord = { scenario: "single-writer", steps: [] };
@@ -50,6 +57,9 @@ export function singleWriterSteps(hooks: SingleWriterHooks) {
       await step("3-shape-unchanged", () => hooks.shape("classes", "redeployed"));
       await step("3-plain-redeploy-changed-env", () => hooks.redeploy(true));
       await step("3-shape-unchanged-after-env", () => hooks.shape("classes", "redeployed-env"));
+      await step("3-negative-control", async () => {
+        record.negativeControl = requireDeletedFleetClasses(await hooks.planWithoutFleetBindings());
+      });
       return hooks.serve();
     },
   };
@@ -72,4 +82,19 @@ export function requireRuntimeBootstrap(report: unknown) {
   for (const color of ["blue", "green"])
     if (!colors.some((entry) => entry.color === color && entry.source === "declared"))
       throw new Error(`The release preflight did not plan ${color} through the declared class step`);
+}
+
+/**
+ * Dropping the fleet bindings is the hazard the binding comment guards: alchemy would delete both
+ * classes its tags still name. The plan must say so; only the lines that show it are kept.
+ */
+export function requireDeletedFleetClasses(plan: string): string[] {
+  const lines = plan.split("\n").map((line) => line.trim()).filter(Boolean);
+  const deletion = (line: string) => /deleted_classes|deletedClasses|\bdelet/iu.test(line) || line.startsWith("-");
+  const shown = ["PoolRuntimeBlue", "PoolRuntimeGreen"].map((name) => {
+    const evidence = lines.filter((line) => line.includes(name) && (deletion(line) || lines.some((other) => /deleted_classes|deletedClasses/u.test(other))));
+    if (!evidence.length) throw new Error(`The negative control's plan does not delete ${name}`);
+    return evidence[0]!.slice(0, 240);
+  });
+  return shown;
 }

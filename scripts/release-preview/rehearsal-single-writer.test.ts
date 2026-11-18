@@ -14,6 +14,7 @@ function hooks(overrides: Partial<SingleWriterHooks> = {}) {
     release: async (request) => (events.push(`release:${request.candidate}:${request.cleanPool}`), { ok: true }),
     redeploy: async (change) => void events.push(`redeploy:${change}`),
     serve: async () => (events.push("serve"), "served"),
+    planWithoutFleetBindings: async () => (events.push("negative"), "~ PoolWorker\n  migrations.deleted_classes: [PoolRuntimeBlue, PoolRuntimeGreen]"),
     ...overrides,
   };
   return { events, value };
@@ -36,9 +37,11 @@ test("the plan's steps run in order: untagged seed, release, then two plain depl
     "shape:classes:redeployed",
     "redeploy:true",
     "shape:classes:redeployed-env",
+    "negative",
     "serve",
   ]);
-  assert.equal(steps.record.steps.length, 10);
+  assert.equal(steps.record.steps.length, 11);
+  assert.equal(steps.record.negativeControl?.length, 2);
 });
 
 test("a refused release or a shape change stops the rehearsal at that step", async () => {
@@ -73,4 +76,14 @@ test("the preflight must pass runtime-bootstrap with both colors declared on an 
     step("pass", { colors: [declared[0]], migrationTag: "untagged" }),
   ])
     assert.throws(() => requireRuntimeBootstrap(report));
+});
+
+test("the negative control refuses a plan that does not delete both fleet classes", async () => {
+  const { requireDeletedFleetClasses } = await import("./rehearsal-single-writer.ts");
+  assert.deepEqual(
+    requireDeletedFleetClasses("- PoolRuntimeBlue (Cloudflare.DurableObject) delete\n- PoolRuntimeGreen (Cloudflare.DurableObject) delete"),
+    ["- PoolRuntimeBlue (Cloudflare.DurableObject) delete", "- PoolRuntimeGreen (Cloudflare.DurableObject) delete"],
+  );
+  for (const plan of ["~ PoolWorker update", "- PoolRuntimeBlue delete", "PoolRuntimeBlue PoolRuntimeGreen unchanged"])
+    assert.throws(() => requireDeletedFleetClasses(plan), /does not delete/);
 });

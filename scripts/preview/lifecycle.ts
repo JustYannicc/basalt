@@ -433,6 +433,59 @@ export async function redeployStage(
 }
 
 /**
+ * A read-only alchemy plan of the checkout with one exact source edit in place, restored after.
+ * Rehearsals use it for negative controls: a change that must make the plan show a hazard.
+ */
+export async function planStageVariant(
+  root: string,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  edit: { path: string; from: string; to: string },
+): Promise<string> {
+  if (subject.kind !== "rehearsal") throw new Error("Only a rehearsal stage plans variants");
+  const config = stageEnvironment(subject, source);
+  const path = join(root, edit.path);
+  const original = await readFile(path, "utf8");
+  if (original.split(edit.from).length !== 2) throw new Error("The negative control's source seam changed");
+  const seedFile = join(root, ".local", "previews", `seed-${stageNames(subject).slug}-${randomUUID()}.json`);
+  let output = "";
+  await materializePreviewBrand(root, config, async () => {
+    await writeFile(path, original.replace(edit.from, edit.to));
+    try {
+      output = await new Promise<string>((resolvePlan, rejectPlan) => {
+        const child = spawn(
+          "bun",
+          ["exec", "alchemy", "plan", mainConfig, "--stage", config.stage, "--no-input"],
+          {
+            cwd: cloudDirectory,
+            env: { ...config.deploy, ...config.seed, PREVIEW_AUTH_SEED_OUTPUT: seedFile },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        const chunks: Buffer[] = [];
+        let size = 0;
+        const keep = (chunk: Buffer) => {
+          size += chunk.length;
+          if (size <= 8 * 1024 * 1024) chunks.push(chunk);
+        };
+        child.stdout.on("data", keep);
+        child.stderr.on("data", keep);
+        child.once("error", () => rejectPlan(new Error("The variant plan could not start")));
+        child.once("close", (code) =>
+          code === 0
+            ? resolvePlan(Buffer.concat(chunks).toString("utf8"))
+            : rejectPlan(new Error(`The variant plan failed with exit ${code}`)),
+        );
+      });
+    } finally {
+      await writeFile(path, original);
+    }
+  });
+  if ((await readFile(path, "utf8")) !== original) throw new Error("The negative control's source was not restored");
+  return output;
+}
+
+/**
  * Run the rehearsal's one-shot seed fixture, then destroy its stack and role whatever happened.
  * Its stack is in the stage inventory, so a cancelled run's cleanup removes it as well.
  */

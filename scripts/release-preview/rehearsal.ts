@@ -22,7 +22,7 @@ import { requireSettlementApplied, settlementPacket, settlementPlanRequest } fro
 import { poolWorkerRevision } from "../pool-worker-revision.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
-import { applyRehearsalFixture, redeployStage, withStageBuild } from "../preview/lifecycle.ts";
+import { applyRehearsalFixture, planStageVariant, redeployStage, withStageBuild } from "../preview/lifecycle.ts";
 import { singleWriterSteps } from "./rehearsal-single-writer.ts";
 import { PreviewClient } from "../pool-acceptance/preview-client.ts";
 import { previewConfigFromEnvironment } from "../pool-acceptance/preview-config.ts";
@@ -259,6 +259,13 @@ export async function executeRehearsal(root: string, subject: StageSubject, sour
               await writeFile(join(root, ".local", "release-barrier", "preflight-report.json"), report, { mode: 0o600 });
               return JSON.parse(report) as unknown;
             },
+            // The single-writer change binds both fleet classes always; dropping that must show the hazard.
+            planWithoutFleetBindings: () =>
+              planStageVariant(root, subject, deployEnvironment, {
+                path: "src/pool/deployment.ts",
+                from: "...fleetBindings(fleet),",
+                to: "...fleet,",
+              }),
             redeploy: (change) =>
               redeployStage(root, subject, deployEnvironment, change ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
           })
