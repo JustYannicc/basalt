@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Max 20x policy rows are re-confirmed by the daily vendor refresh while the vendor names Max 20x as the plan that became Ultra, with fetch-dated expiry. The refresh revokes them when that statement goes, and a later revocation also hides seed rows for the same plan. A plan a source never stated takes the seed's revision for the same value."
+    }
+  }
+}
