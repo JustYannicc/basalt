@@ -25,6 +25,9 @@ export interface Diagnostic {
 export interface Program {
   diagnostics: Diagnostic[];
   files: string[];
+  // Whether the config's extends chain reaches tsconfig.effect.json without replacing its plugin
+  // or skipping checks; only such programs cover the files they read.
+  gated: boolean;
 }
 interface EffectRecord {
   fingerprint: string;
@@ -50,13 +53,11 @@ const header = /^(?:(.+?)\((\d+),(\d+)\): )?(error|warning|suggestion|message) T
 // counted anywhere; code that names one builds it from parts.
 const hidingDirective =
   /@(?:effect-diagnostics|effect-leakable-service|effect-expect-leaking|ts-nocheck)\b/g;
-const importsEffect =
-  /\bfrom\s*["']effect(?:\/[^"']*)?["']|\b(?:require|import)\(\s*["']effect(?:\/[^"']*)?["']/;
+// Any module specifier naming effect, or a call on an Effect namespace however it was imported.
+const usesEffect = /["'`]effect(?:\/[^"'`]*)?["'`]|\bEffect\.[A-Za-z]+\(/;
 
 const owned = (file: string) =>
-  /^(?:scripts|src)\//.test(file) &&
-  !file.startsWith("scripts/release-barrier/") &&
-  !file.includes("/node_modules/");
+  /^(?:scripts|src)\//.test(file) && !file.startsWith("scripts/release-barrier/");
 export const inScope = (file: string) =>
   owned(file) && /\.[cm]?tsx?$/.test(file) && !/\.d\.[cm]?ts$/.test(file);
 const isJavaScript = (file: string) => owned(file) && /\.[cm]?jsx?$/.test(file);
@@ -114,7 +115,27 @@ export function compile(compiler: string, config: string): Program {
   if (printed.length) process.stdout.write(printed.join("\n") + "\n");
   if (result.status !== 0)
     throw new Error(`${compiler} -p ${config} failed with exit ${result.status}`);
-  return parsed;
+  return { ...parsed, gated: carriesPlugin(config) };
+}
+
+function carriesPlugin(config: string) {
+  const effect = resolve(root, configPath);
+  const seen = new Set<string>();
+  for (let file = resolve(root, config); !seen.has(file);) {
+    seen.add(file);
+    if (file === effect) return true;
+    let parsed: { extends?: unknown; compilerOptions?: { plugins?: unknown; noCheck?: unknown } };
+    try {
+      parsed = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return false;
+    }
+    if (parsed.compilerOptions?.plugins !== undefined || parsed.compilerOptions?.noCheck)
+      return false;
+    if (typeof parsed.extends !== "string" || !/^[./]/.test(parsed.extends)) return false;
+    file = resolve(dirname(file), parsed.extends);
+  }
+  return false;
 }
 
 function sourceFiles() {
@@ -157,7 +178,9 @@ export function recordEffectDiagnostics(programs: readonly Program[]) {
   const files = sources.filter(inScope);
   // Generated and ignored sources are neither fingerprinted nor counted.
   const scope = new Set(files);
-  const read = new Set(programs.flatMap((program) => program.files));
+  const read = new Set(
+    programs.filter((program) => program.gated).flatMap((program) => program.files),
+  );
   const seen = new Set<string>();
   const diagnostics: Diagnostic[] = [];
   const counts: Counts = {};
@@ -172,9 +195,11 @@ export function recordEffectDiagnostics(programs: readonly Program[]) {
   }
   for (const file of sources) {
     if (!owned(file)) continue;
-    const text = readFileSync(join(root, file), "utf8");
+    const bytes = readFileSync(join(root, file));
+    // UTF-16 sources still compile, so their tags are read the way the compiler reads them.
+    const text = bytes.includes(0) ? bytes.toString("utf16le") : bytes.toString("utf8");
     if (isJavaScript(file)) {
-      if (importsEffect.test(text)) add(counts, effectInJavaScript, file);
+      if (usesEffect.test(text)) add(counts, effectInJavaScript, file);
       continue;
     }
     if (!inScope(file)) continue;

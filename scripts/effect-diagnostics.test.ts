@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { baseProblems, baselineProblems, gatedRules } from "./effect-diagnostics.ts";
+import { baseProblems, baselineProblems } from "./effect-diagnostics.ts";
+import { effectPolicy, gatedRules, pluginConfig } from "./effect-diagnostics-config.ts";
 import {
   inScope,
   parseCompilerOutput,
@@ -37,33 +38,72 @@ test("a rise fails, a fall fails until the baseline is lowered, and deleted file
 test("the committed baseline may only shrink against the base commit; counts move only with code", () => {
   const base = { schemaSync: { "src/a.ts": 2, "src/b.ts": 1 } };
   const baseFiles = new Set(["src/a.ts", "src/b.ts"]);
-  assert.deepEqual(baseProblems({ schemaSync: { "src/a.ts": 1 } }, base, baseFiles), []);
-  // A split takes the counts its git copy source lost.
-  const split = new Map([["src/a-part.ts", ["src/a.ts"]]]);
-  assert.deepEqual(
-    baseProblems({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 1 } }, base, baseFiles, split),
-    [],
-  );
+  const check = (
+    head: Record<string, Record<string, number>>,
+    sources = new Map<string, string[]>(),
+  ) =>
+    baseProblems(head, base, baseFiles, new Set(Object.keys(head.schemaSync ?? {})), sources).join(
+      "\n",
+    );
+  assert.equal(check({ schemaSync: { "src/a.ts": 1 } }), "");
+  // A split takes the counts its git copy source lost, and that credit is spent only once.
+  const split = new Map([
+    ["src/a-part.ts", ["src/a.ts"]],
+    ["src/a-copy.ts", ["src/a.ts"]],
+  ]);
+  assert.equal(check({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 1 } }, split), "");
   assert.match(
-    baseProblems(
-      { schemaSync: { "src/a.ts": 1, "src/a-part.ts": 2 } },
-      base,
-      baseFiles,
-      split,
-    ).join("\n"),
-    /raises src\/a-part\.ts schemaSync from 1 to 2/,
+    check({ schemaSync: { "src/a.ts": 1, "src/a-part.ts": 1, "src/a-copy.ts": 1 } }, split),
+    /raises src\/a-part\.ts schemaSync from 0 to 1/,
   );
   // Fixing a site does not pay for a new one elsewhere.
-  const traded = baseProblems(
-    { schemaSync: { "src/a.ts": 1, "src/b.ts": 1, "src/new.ts": 1 } },
-    base,
-    baseFiles,
+  assert.match(
+    check({ schemaSync: { "src/a.ts": 1, "src/b.ts": 1, "src/new.ts": 1 } }),
+    /raises src\/new\.ts schemaSync from 0 to 1/,
   );
-  assert.match(traded.join("\n"), /raises src\/new\.ts schemaSync from 0 to 1/);
-  const raised = baseProblems({ schemaSync: { "src/a.ts": 1, "src/b.ts": 2 } }, base, baseFiles);
-  assert.match(raised.join("\n"), /raises src\/b\.ts schemaSync from 1 to 2/);
-  const grown = baseProblems({ schemaSync: { "src/a.ts": 3, "src/b.ts": 1 } }, base, baseFiles);
-  assert.match(grown.join("\n"), /raises the schemaSync total from 3 to 4/);
+  assert.match(
+    check({ schemaSync: { "src/a.ts": 1, "src/b.ts": 2 } }),
+    /raises src\/b\.ts schemaSync from 1 to 2/,
+  );
+  assert.match(
+    check({ schemaSync: { "src/a.ts": 3, "src/b.ts": 1 } }),
+    /raises the schemaSync total from 3 to 4/,
+  );
+  // A file deleted earlier without regenerating leaves an entry neither side has; it is ignored.
+  const stale = { schemaSync: { ...base.schemaSync, "src/gone.ts": 1 } };
+  assert.deepEqual(baseProblems(stale, stale, baseFiles, baseFiles), []);
+  // A rule the base did not gate starts from the counts its change records.
+  assert.deepEqual(
+    baseProblems(
+      { processEnv: { "src/a.ts": 5 } },
+      base,
+      baseFiles,
+      baseFiles,
+      new Map(),
+      new Set(["processEnv"]),
+    ),
+    [],
+  );
+});
+
+test("the policy is read from the config file itself, so loosening it in code is visible", () => {
+  const generated = effectPolicy(pluginConfig(), "generated");
+  assert.deepEqual(generated.problems, []);
+  assert.deepEqual([...generated.gated].sort(), [...gatedRules].sort());
+  const loosened = JSON.parse(pluginConfig());
+  const plugin = loosened.compilerOptions.plugins[0];
+  plugin.diagnosticSeverity.schemaSync = "warning";
+  plugin.overrides.push({ include: ["src/**/*"], options: { diagnosticSeverity: {} } });
+  plugin.diagnostics = false;
+  const policy = effectPolicy(JSON.stringify(loosened), "loosened");
+  assert.ok(!policy.gated.has("schemaSync"));
+  assert.ok(policy.quiet.has("src/**/*"));
+  assert.match(policy.problems.join("\n"), /sets diagnostics/);
+  loosened.compilerOptions.plugins.unshift({ name: "other" });
+  assert.match(
+    effectPolicy(JSON.stringify(loosened), "two").problems.join("\n"),
+    /exactly one plugin/,
+  );
 });
 
 test("compiler output keeps multi-line messages, rule names and the program's files apart", () => {
@@ -96,7 +136,7 @@ test("the gate covers Basalt's own code by path, not by a list", () => {
     "scripts/release-barrier/x.ts",
     "e2e/x.ts",
     "src/setup/files.d.mts",
-    "src/drive/shared/node_modules/effect/x.ts",
+    "src/pool/plain.mjs",
   ])
     assert.ok(!inScope(file), file);
 });
