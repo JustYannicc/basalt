@@ -59,10 +59,15 @@ export interface WireGuardConfig {
    */
   readonly rootApplications?: ReadonlyArray<string>;
   /**
+   * The root application's recorded name. Alchemy finds an application by name when the recorded id
+   * is stale, so an application read that answers with this name adds its id to the held set.
+   */
+  readonly rootApplicationNames?: ReadonlyArray<string>;
+  /**
    * Destroy of a disposable stage only: the names and ids its destroy plan records for the
    * resources it deletes. A delete of exactly one of them is admitted; every other stays refused.
    */
-  readonly deletable?: ReadonlyArray<string>;
+  readonly deletable?: ReadonlyArray<{ readonly kind: string; readonly id: string }>;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -138,6 +143,9 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
   // The Artifacts API (scripts/ensure-artifacts.ts): a namespace holds every repo and its history.
   [/^\/accounts\/[^/]+\/artifacts\/namespaces\/([^/]+)/, "Artifacts namespace"],
   [/^\/organizations\/[^/]+\/databases\/([^/]+)/, "PlanetScale database"],
+  // Deleting a token breaks whatever authenticates with it (the provider observation, for one).
+  [/^\/accounts\/[^/]+\/tokens\/([^/]+)/, "API token"],
+  [/^\/user\/tokens\/([^/]+)/, "API token"],
 ];
 // Deletes that the API spells as a POST: they drop stored keys, vectors or messages.
 const DATA_DELETE: ReadonlyArray<readonly [RegExp, string]> = [
@@ -179,6 +187,14 @@ const Step = Schema.Struct({
   renamed_classes: List,
   transferred_classes: List,
 });
+const STEP_KEYS = new Set([
+  "new_classes",
+  "new_sqlite_classes",
+  "deleted_classes",
+  "renamed_classes",
+  "transferred_classes",
+]);
+const MIGRATION_KEYS = new Set([...STEP_KEYS, "old_tag", "new_tag", "steps"]);
 const Export = Schema.Struct({ state: Schema.optional(Schema.String) });
 const Module = Schema.Struct({
   name: Schema.String,
@@ -229,6 +245,21 @@ const checkUpload = (config: WireGuardConfig, request: Request, at: At, script: 
     const meta = yield* Schema.decodeUnknownEffect(Metadata)(body.json).pipe(
       Effect.mapError((cause) => refuse(at, "malformed", "metadata", "malformed", cause)),
     );
+    // A key this guard does not know could be a class change it cannot see: fail closed.
+    const raw = (body.json as { migrations?: unknown } | null)?.migrations;
+    for (const [step, value] of [
+      ["migrations", raw] as const,
+      ...(Array.isArray((raw as { steps?: unknown } | null)?.steps)
+        ? ((raw as { steps: unknown[] }).steps.map((item, i) => [
+            `migrations.steps[${i}]`,
+            item,
+          ]) as [string, unknown][])
+        : []),
+    ])
+      if (value && typeof value === "object")
+        for (const key of Object.keys(value))
+          if (!(step === "migrations" ? MIGRATION_KEYS : STEP_KEYS).has(key))
+            return yield* refuse(at, "malformed", `${step}.${key}`, "unknown migration key");
     const { migrations } = meta;
     const steps = migrations
       ? [
@@ -343,6 +374,7 @@ const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: A
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
+  held: ReadonlySet<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   path: string,
@@ -378,7 +410,7 @@ const check = (
       application !== undefined &&
       method !== "GET" &&
       method !== "HEAD" &&
-      config.rootApplications?.includes(application)
+      (config.rootApplications?.includes(application) || held.has(application))
     )
       return yield* refuse(at("container application", application), "root", "method", method);
     const script = name(UPLOAD);
@@ -390,9 +422,13 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
-    for (const [pattern] of [[APPLICATION], ...PROTECTED] as const) {
+    for (const [pattern, kind] of [[APPLICATION, "container application"], ...PROTECTED] as const) {
       const id = name(pattern);
-      if (id !== undefined && config.deletable?.includes(id)) return;
+      if (
+        id !== undefined &&
+        config.deletable?.some((entry) => entry.kind === kind && entry.id === id)
+      )
+        return;
     }
     if (application !== undefined && !created.has(application))
       return yield* checkUnattached(inner, request, at("container application", application));
@@ -408,13 +444,15 @@ export const install = (config: WireGuardConfig = {}) =>
     const inner = globalThis.fetch;
     const journal: Array<JournalEntry> = [];
     const created = new Set<string>();
+    // Ids an application read named as the root's, whatever id State recorded.
+    const held = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       const path = apiPath(url.pathname);
       journal.push({ method: request.method, host: url.host, path: template(path) });
-      const exit = await Effect.runPromiseExit(check(config, created, inner, request, path));
+      const exit = await Effect.runPromiseExit(check(config, created, held, inner, request, path));
       if (Exit.isFailure(exit)) {
         const error = Cause.squash(exit.cause);
         // The self-test's own probe is refused on purpose and must not end the run.
@@ -432,6 +470,25 @@ export const install = (config: WireGuardConfig = {}) =>
             .catch(() => null),
         );
         if (Exit.isSuccess(decoded)) created.add(decoded.value.result.id);
+      }
+      if (
+        request.method === "GET" &&
+        response.ok &&
+        config.rootApplicationNames?.length &&
+        APPLICATION.test(path)
+      ) {
+        const body = (await response
+          .clone()
+          .json()
+          .catch(() => null)) as { result?: unknown } | null;
+        for (const item of [body?.result].flat())
+          if (
+            item &&
+            typeof item === "object" &&
+            typeof (item as { id?: unknown }).id === "string" &&
+            config.rootApplicationNames.includes(String((item as { name?: unknown }).name))
+          )
+            held.add((item as { id: string }).id);
       }
       return response;
     };

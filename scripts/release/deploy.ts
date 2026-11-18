@@ -22,7 +22,7 @@ import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
-import { failureReport } from "./public-report.ts";
+import { failureReport, progressTracker } from "./public-report.ts";
 import { safeJson } from "./safe-json.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -119,82 +119,108 @@ const output = async (path: string, value: unknown) => {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${safeJson(value, 2)}\n`);
 };
+// What the run was doing when it stopped, by the names in our own source.
+const tracker = progressTracker();
+tracker.setPhase(command || "start");
+/** Every stop says where and what in public; names, ids and raw messages stay private. */
+const stop = async (error: unknown) => {
+  const report = failureReport(error, tracker.context());
+  console.error(report.publicText);
+  await summary(report.publicText);
+  await keepPrivate("failure", report.detail);
+  process.exitCode = 1;
+};
 
 if (command === "compare") {
-  const { Effect, Schema } = await import("effect");
-  const { compareSnapshots, DatabaseSnapshot } = await import("./database-safety.ts");
-  const read = async (path: string | undefined) =>
-    Schema.decodeUnknownSync(DatabaseSnapshot)(
-      JSON.parse(await readFile(resolve(path ?? ""), "utf8")),
-    );
-  await Effect.runPromise(compareSnapshots(await read(values.before), await read(values.after)));
-  await summary("Database counts: unchanged or grown; Home's schema version unchanged.");
-  process.exit(0);
+  try {
+    const { Effect, Schema } = await import("effect");
+    const { compareSnapshots, DatabaseSnapshot } = await import("./database-safety.ts");
+    const read = async (path: string | undefined) =>
+      Schema.decodeUnknownSync(DatabaseSnapshot)(
+        JSON.parse(await readFile(resolve(path ?? ""), "utf8")),
+      );
+    await Effect.runPromise(compareSnapshots(await read(values.before), await read(values.after)));
+    await summary("Database counts: unchanged or grown; Home's schema version unchanged.");
+    process.exit(0);
+  } catch (error) {
+    await stop(error);
+    process.exit(1);
+  }
 }
 
 if (command === "boot" || command === "accept") {
-  // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
-  const { Schema } = await import("effect");
-  const { runAcceptance, servingBoot } = await import("./acceptance.ts");
-  const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
-  const client = process.env.POOL_ACCEPTANCE_ORIGIN
-    ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
-    : new PoolAcceptanceClient();
-  if (command === "boot") {
-    // Read before the apply: the root serves alone until a fleet is enabled.
-    const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client);
-    await output(resolve(values.out ?? ""), { boot });
-    await summary("The root's boot is recorded before the apply.");
-    process.exit(0);
+  try {
+    // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
+    const { Schema } = await import("effect");
+    const { runAcceptance, servingBoot } = await import("./acceptance.ts");
+    const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
+    const client = process.env.POOL_ACCEPTANCE_ORIGIN
+      ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
+      : new PoolAcceptanceClient();
+    if (command === "boot") {
+      // Read before the apply: the root serves alone until a fleet is enabled.
+      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client);
+      await output(resolve(values.out ?? ""), { boot });
+      await summary("The root's boot is recorded before the apply.");
+      process.exit(0);
+    }
+    const rootBoot = values["root-boot"]
+      ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
+          JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
+        ).boot
+      : undefined;
+    const expect = values.expect ?? "same-boot";
+    if (!["same-boot", "two-runtimes", "any"].includes(expect))
+      throw new Error(`Unknown --expect ${expect}`);
+    const result = await runAcceptance({
+      apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+      ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
+      expect: expect as "same-boot",
+      ...(rootBoot ? { rootBoot } : {}),
+      client,
+    });
+    // Failure messages can name hosts; the public record keeps counts and timings only.
+    const view = {
+      passed: result.passed,
+      requests: result.requests,
+      failed: result.failures.length,
+      runtimes: result.boots.length,
+      firstByteMs: result.firstByteMs,
+    };
+    if (values.out) await output(resolve(values.out), view);
+    await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);
+    if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
+    process.exit(result.passed ? 0 : 1);
+  } catch (error) {
+    await stop(error);
+    process.exit(1);
   }
-  const rootBoot = values["root-boot"]
-    ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
-        JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
-      ).boot
-    : undefined;
-  const expect = values.expect ?? "same-boot";
-  if (!["same-boot", "two-runtimes", "any"].includes(expect))
-    throw new Error(`Unknown --expect ${expect}`);
-  const result = await runAcceptance({
-    apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
-    ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
-    expect: expect as "same-boot",
-    ...(rootBoot ? { rootBoot } : {}),
-    client,
-  });
-  // Failure messages can name hosts; the public record keeps counts and timings only.
-  const view = {
-    passed: result.passed,
-    requests: result.requests,
-    failed: result.failures.length,
-    runtimes: result.boots.length,
-    firstByteMs: result.firstByteMs,
-  };
-  if (values.out) await output(resolve(values.out), view);
-  await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);
-  if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
-  process.exit(result.passed ? 0 : 1);
 }
 
 if (command === "db-load") {
-  const { Effect, Redacted } = await import("effect");
-  const { FetchHttpClient } = await import("effect/http");
-  const { assertPrimaryCpuBelow } = await import("./database-safety.ts");
-  const reading = await Effect.runPromise(
-    assertPrimaryCpuBelow({
-      organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
-      tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
-      token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
-      database: "basalt",
-      branch: "main",
-      ceiling: 60,
-      now: Date.now(),
-    }).pipe(Effect.provide(FetchHttpClient.layer)),
-  );
-  await summary(
-    `Pool database primary CPU ${reading.cpuPercent.toFixed(1)}% at ${reading.at}: under 60%.`,
-  );
-  process.exit(0);
+  try {
+    const { Effect, Redacted } = await import("effect");
+    const { FetchHttpClient } = await import("effect/http");
+    const { assertPrimaryCpuBelow } = await import("./database-safety.ts");
+    const reading = await Effect.runPromise(
+      assertPrimaryCpuBelow({
+        organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
+        tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
+        token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
+        database: "basalt",
+        branch: "main",
+        ceiling: 60,
+        now: Date.now(),
+      }).pipe(Effect.provide(FetchHttpClient.layer)),
+    );
+    await summary(
+      `Pool database primary CPU ${reading.cpuPercent.toFixed(1)}% at ${reading.at}: under 60%.`,
+    );
+    process.exit(0);
+  } catch (error) {
+    await stop(error);
+    process.exit(1);
+  }
 }
 
 // The PoolDatabase command re-runs per attempt, so plan and apply share one attempt id.
@@ -256,6 +282,7 @@ const keep = [
 ];
 const reporter = (event: unknown) =>
   Effect.sync(() => {
+    tracker.track(event);
     const line = safeJson(
       Object.fromEntries(
         Object.entries(event as Record<string, unknown>)
@@ -274,7 +301,7 @@ const reporter = (event: unknown) =>
 
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
 // Filled by a destroy from its own plan, before anything is deleted.
-const deletable: string[] = [];
+const deletable: { kind: string; id: string }[] = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   Effect.runPromise(
     Effect.scoped(
@@ -288,6 +315,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
+          rootApplicationNames: [] as string[],
           deletable,
         };
         const guard = yield* WireGuard.install(wire);
@@ -309,9 +337,11 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           }
           // Every reviewed release leaves the root application as recorded; previews roll it freely.
           if (policy?.check) {
-            const root = yield* applicationId(policy.check.poolContainer.fqn);
-            if (root) wire.rootApplications.push(root);
-            else if (stage === "production")
+            const root = yield* recordedApplication(policy.check.poolContainer.fqn);
+            if (root) {
+              wire.rootApplications.push(root.id);
+              if (root.name) wire.rootApplicationNames.push(root.name);
+            } else if (stage === "production")
               return yield* Effect.die(new Error("No root application recorded on production"));
           }
           // A refused request fails the run at once instead of after the SDK's retries.
@@ -350,17 +380,20 @@ const scriptName = (fqn: string) =>
   });
 
 /** The container application a State row records, if the row exists yet. */
-const applicationId = (fqn: string) =>
+const recordedApplication = (fqn: string) =>
   Effect.gen(function* () {
     const state = yield* Alchemist.State.store({
       backend: "configured",
       ...target,
     } as never) as unknown as Fx.Effect<StateService, unknown, never>;
     const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
-      | { attr?: { applicationId?: unknown } }
+      | { attr?: { applicationId?: unknown; applicationName?: unknown } }
       | undefined;
     const id = row?.attr?.applicationId;
-    return typeof id === "string" && id ? id : undefined;
+    const name = row?.attr?.applicationName;
+    return typeof id === "string" && id
+      ? { id, name: typeof name === "string" && name ? name : undefined }
+      : undefined;
   });
 
 const planOf = (operation: "deploy" | "destroy") =>
@@ -395,6 +428,7 @@ try {
           return yield* Effect.die(
             new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
           );
+        tracker.setPhase("plan");
         const snapshot = yield* planOf("deploy");
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
@@ -413,7 +447,9 @@ try {
             ),
           );
         const planned = changedRows(snapshot);
+        tracker.setPhase("apply");
         yield* Alchemist.Stack.apply(snapshot as never);
+        tracker.setPhase("read-back");
         const after = yield* planOf("deploy");
         if (remainingRows(after).length > 0)
           return yield* Effect.die(
@@ -580,11 +616,7 @@ try {
     throw new Error(`Unknown command ${command || "(none)"}`);
   }
 } catch (error) {
-  // Public: the tagged reason in our own vocabulary. Names, ids and raw messages stay private.
-  const report = failureReport(error);
-  console.error(report.publicText);
-  await summary(report.publicText);
-  await keepPrivate("failure", report.detail);
+  await stop(error);
   process.exitCode = 1;
 } finally {
   if (events.length) await mkdir(resolve(root, ".local/release"), { recursive: true });

@@ -112,21 +112,33 @@ test("a PoolWorker update must carry the readiness command that waits for adopti
   );
 });
 
-test("a destroy plan's targets are the names and ids its deleted rows record", () => {
-  const deleted = (attr: Record<string, unknown>) => ({ action: "delete", state: { attr } });
+test("a destroy plan's targets are the kinds, names and ids its deleted rows record", () => {
+  const deleted = (resourceType: string, attr: Record<string, unknown>) => ({
+    action: "delete",
+    state: { resourceType, attr },
+  });
   const plan = {
     resources: {
-      Worker: deleted({
+      Worker: deleted("Cloudflare.Worker", {
         workerName: "basalt-test-pr-7-poolworker",
         bindings: [{ id: "shared-db" }],
       }),
-      Kept: { action: "noop", state: { attr: { workerName: "basalt-test-pr-7-router" } } },
+      Kept: {
+        action: "noop",
+        state: {
+          resourceType: "Cloudflare.Worker",
+          attr: { workerName: "basalt-test-pr-7-router" },
+        },
+      },
+      Odd: deleted("Cloudflare.SomethingNew", { name: "unknown-kind" }),
     },
-    deletions: { Bucket: deleted({ name: "vault-test-pr-7", jurisdiction: "eu" }) },
+    deletions: {
+      Bucket: deleted("Cloudflare.R2.Bucket", { name: "vault-test-pr-7", jurisdiction: "eu" }),
+    },
   };
-  // Ids a row only refers to (a binding's target) are not targets.
+  // Ids a row only refers to (a binding's target) are not targets, and an unknown type yields none.
   assert.deepEqual(destroyTargets(plan as never), [
-    "basalt-test-pr-7-poolworker",
-    "vault-test-pr-7",
+    { kind: "Worker", id: "basalt-test-pr-7-poolworker" },
+    { kind: "R2 bucket", id: "vault-test-pr-7" },
   ]);
 });
