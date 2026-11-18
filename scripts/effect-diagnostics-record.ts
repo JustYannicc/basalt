@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 
 // Records what the type checker reports on Effect code for the gate in effect-diagnostics.ts.
 
-// Counted like rules: a file no type-check program reads, and a comment that hides diagnostics.
+// Counted like rules: a file no type-check program reads, a directive that hides diagnostics, and
+// JavaScript that imports Effect, which no program checks.
 export const notTypeChecked = "notTypeChecked";
 export const suppressionComment = "suppressionComment";
+export const effectInJavaScript = "effectInJavaScript";
 
 export type Counts = Record<string, Record<string, number>>;
 export interface Diagnostic {
@@ -42,16 +44,22 @@ export const inheritingConfigs = [
   "tsconfig.recipes.json",
 ];
 const effectCode = /^377\d{3}$/;
-const header = /^(.+?)\((\d+),(\d+)\): (error|warning|suggestion|message) TS(\d+): /;
-// Needs a comment opener before the directive; code that spells one out builds it from parts.
-const hidingDirective = /(?:\/\/|\/\*)[^\n]*@(?:effect-diagnostics|ts-nocheck)\b/g;
+// Configuration diagnostics, such as an unknown rule name, carry no location.
+const header = /^(?:(.+?)\((\d+),(\d+)\): )?(error|warning|suggestion|message) TS(\d+): /;
+// The compiler honours these tags anywhere in a file, comments and strings alike, so they are
+// counted anywhere; code that names one builds it from parts.
+const hidingDirective =
+  /@(?:effect-diagnostics|effect-leakable-service|effect-expect-leaking|ts-nocheck)\b/g;
+const importsEffect =
+  /\bfrom\s*["']effect(?:\/[^"']*)?["']|\b(?:require|import)\(\s*["']effect(?:\/[^"']*)?["']/;
 
-export const inScope = (file: string) =>
+const owned = (file: string) =>
   /^(?:scripts|src)\//.test(file) &&
   !file.startsWith("scripts/release-barrier/") &&
-  !file.includes("/node_modules/") &&
-  /\.[cm]?tsx?$/.test(file) &&
-  !/\.d\.[cm]?ts$/.test(file);
+  !file.includes("/node_modules/");
+export const inScope = (file: string) =>
+  owned(file) && /\.[cm]?tsx?$/.test(file) && !/\.d\.[cm]?ts$/.test(file);
+const isJavaScript = (file: string) => owned(file) && /\.[cm]?jsx?$/.test(file);
 
 export function parseCompilerOutput(text: string, cwd: string) {
   const diagnostics: Diagnostic[] = [];
@@ -62,11 +70,10 @@ export function parseCompilerOutput(text: string, cwd: string) {
     const match = header.exec(line);
     if (match) {
       const [, file, row, column, severity, code] = match;
-      const path = relative(root, resolve(cwd, file!)).replaceAll("\\", "/");
       current = {
-        file: path,
-        line: Number(row),
-        column: Number(column),
+        file: file ? relative(root, resolve(cwd, file)).replaceAll("\\", "/") : "",
+        line: Number(row ?? 0),
+        column: Number(column ?? 0),
         severity: severity!,
         code: Number(code),
         rule: "",
@@ -89,7 +96,8 @@ export function parseCompilerOutput(text: string, cwd: string) {
 
 const isEffect = (diagnostic: Diagnostic) => effectCode.test(String(diagnostic.code));
 export const render = (d: Diagnostic) =>
-  `${d.file}(${d.line},${d.column}): ${d.severity} TS${d.code}: ${d.message}`;
+  `${d.file ? `${d.file}(${d.line},${d.column}): ` : ""}${d.severity}` +
+  `${d.code ? ` TS${d.code}` : ""}: ${d.message}`;
 
 // Runs one program; prints everything except Effect diagnostics, which the gate reports.
 export function compile(compiler: string, config: string): Program {
@@ -109,17 +117,20 @@ export function compile(compiler: string, config: string): Program {
   return parsed;
 }
 
-export function scopeFiles() {
+function sourceFiles() {
   const listed = execFileSync(
     "git",
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "scripts", "src"],
     { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 },
   );
   return [...new Set(listed.split("\0"))]
-    .filter((file) => inScope(file) && existsSync(join(root, file)))
+    .filter((file) => /\.[cm]?[jt]sx?$/.test(file) && existsSync(join(root, file)))
     .sort();
 }
 
+export const scopeFiles = () => sourceFiles().filter(inScope);
+
+// Declarations and JavaScript change what the compiler reports, so they count towards freshness.
 function fingerprint(files: readonly string[]) {
   const hash = createHash("sha256");
   const configs = [configPath, ...pluginConfigs, ...inheritingConfigs].filter((file) =>
@@ -130,8 +141,10 @@ function fingerprint(files: readonly string[]) {
   return hash.digest("hex");
 }
 
-export function countSuppressions(text: string) {
-  return text.match(hidingDirective)?.length ?? 0;
+export function suppressionLines(text: string) {
+  return [...text.matchAll(hidingDirective)].map(
+    (match) => text.slice(0, match.index).split("\n").length,
+  );
 }
 
 const add = (counts: Counts, rule: string, file: string, by = 1) => {
@@ -140,7 +153,8 @@ const add = (counts: Counts, rule: string, file: string, by = 1) => {
 };
 
 export function recordEffectDiagnostics(programs: readonly Program[]) {
-  const files = scopeFiles();
+  const sources = sourceFiles();
+  const files = sources.filter(inScope);
   // Generated and ignored sources are neither fingerprinted nor counted.
   const scope = new Set(files);
   const read = new Set(programs.flatMap((program) => program.files));
@@ -156,17 +170,39 @@ export function recordEffectDiagnostics(programs: readonly Program[]) {
     diagnostics.push(diagnostic);
     add(counts, diagnostic.rule, diagnostic.file);
   }
-  for (const file of files) {
+  for (const file of sources) {
+    if (!owned(file)) continue;
+    const text = readFileSync(join(root, file), "utf8");
+    if (isJavaScript(file)) {
+      if (importsEffect.test(text)) add(counts, effectInJavaScript, file);
+      continue;
+    }
+    if (!inScope(file)) continue;
     if (!read.has(file)) add(counts, notTypeChecked, file);
-    const hidden = countSuppressions(readFileSync(join(root, file), "utf8"));
-    if (hidden) add(counts, suppressionComment, file, hidden);
+    for (const line of suppressionLines(text)) {
+      add(counts, suppressionComment, file);
+      diagnostics.push({
+        file,
+        line,
+        column: 0,
+        severity: "error",
+        code: 0,
+        rule: suppressionComment,
+        message: "A tag here hides Effect diagnostics from the gate.",
+      });
+    }
   }
   // A misspelt rule name would otherwise leave that rule at its default severity.
-  const misconfigured = programs
-    .flatMap((program) => program.diagnostics)
-    .filter((d) => d.rule === "unknownRuleName");
+  const misconfigured = [
+    ...new Map(
+      programs
+        .flatMap((program) => program.diagnostics)
+        .filter((d) => d.rule === "unknownRuleName")
+        .map((d) => [d.message, d]),
+    ).values(),
+  ];
   const record: EffectRecord = {
-    fingerprint: fingerprint(files),
+    fingerprint: fingerprint(sources),
     counts,
     diagnostics,
     misconfigured,
@@ -179,7 +215,7 @@ export function readRecord(): EffectRecord {
   if (!existsSync(join(root, recordPath)))
     throw new Error(`${recordPath} is missing. Run node scripts/typecheck.ts first.`);
   const record: EffectRecord = JSON.parse(readFileSync(join(root, recordPath), "utf8"));
-  if (record.fingerprint !== fingerprint(scopeFiles()))
+  if (record.fingerprint !== fingerprint(sourceFiles()))
     throw new Error(
       `${recordPath} was recorded for other sources. Run node scripts/typecheck.ts again.`,
     );

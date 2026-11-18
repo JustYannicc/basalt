@@ -47,6 +47,33 @@
     "scripts/upstream-tests/workflow-instance-id.test.ts": 1,
     "src/drive/shared/strata/serial.ts": 1
   },
+  "effectInJavaScript": {
+    "scripts/app-lint/conventions.test.mjs": 1,
+    "scripts/app-lint/proof.mjs": 1,
+    "scripts/architecture/native-stack-worker.mjs": 1,
+    "scripts/atlassian-tests/drift-proof.mjs": 1,
+    "scripts/atlassian-tests/hosted-proof.mjs": 1,
+    "scripts/atlassian-tests/runtime.mjs": 1,
+    "scripts/connectors-tests/gitlab.mjs": 1,
+    "scripts/connectors-tests/google-admin-scenario.mjs": 1,
+    "scripts/connectors-tests/google-admin.mjs": 1,
+    "scripts/connectors-tests/notion-health.mjs": 1,
+    "scripts/connectors-tests/providers.mjs": 1,
+    "scripts/connectors-tests/runtime.mjs": 1,
+    "scripts/connectors-tests/spotify-health.mjs": 1,
+    "scripts/connectors-tests/zendesk-tenant-runtime.mjs": 1,
+    "scripts/pool-association-repair.test.mjs": 1,
+    "scripts/pool-tests/provider-product.mjs": 1,
+    "scripts/release-phases/proof.mjs": 1,
+    "scripts/state-store-upgrade/bundle.mjs": 1,
+    "scripts/upstream-tests/app-directory-renderer.mjs": 1,
+    "scripts/upstream-tests/fixtures/container-drift-api.mjs": 1,
+    "scripts/upstream-tests/fixtures/container-image-drift.mjs": 1,
+    "scripts/upstream-tests/fixtures/container-publication-cycle.mjs": 1,
+    "scripts/upstream-tests/fixtures/oauth-setup-copy.mjs": 1,
+    "scripts/upstream-tests/self-host-committed-changes.test.mjs": 1,
+    "scripts/upstream-tests/shell-migration-order-worker.mjs": 1
+  },
   "effectSucceedWithVoid": {
     "scripts/upstream-tests/pool-account-facts.test.ts": 1,
     "scripts/upstream-tests/pool-personal-org-fixture.ts": 1

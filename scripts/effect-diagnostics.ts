@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "./process.ts";
 import {
   configPath,
+  effectInJavaScript,
   inheritingConfigs,
   notTypeChecked,
   pluginConfigs,
@@ -123,6 +124,18 @@ export const quietPaths = [
   "*.ts",
 ] as const;
 
+// What each inheriting config extends; pointing one elsewhere could drop the plugin.
+const parents: Record<(typeof inheritingConfigs)[number], string> = {
+  "tsconfig.stack.json": "./tsconfig.json",
+  "tsconfig.obsidian.json": "./tsconfig.pool.json",
+  "tsconfig.recipes.json": "./tsconfig.pool.json",
+};
+const advice: Record<string, string> = {
+  [notTypeChecked]: "No program in scripts/typecheck.ts reads this file; include it in one.",
+  [effectInJavaScript]: "No program checks JavaScript; write Effect code in TypeScript.",
+  [suppressionComment]: "Remove the tag; it hides diagnostics:",
+};
+
 export const baselinePath = "scripts/effect-diagnostics.baseline.json";
 export const writeCommand = "node scripts/effect-diagnostics.ts --write";
 
@@ -170,12 +183,8 @@ export function baselineProblems(
       if (found > limit) {
         const sites = diagnostics.filter((d) => d.file === file && d.rule === rule);
         problems.push(
-          `${file}: ${rule} rose from ${limit} to ${found}. ` +
-            (rule === notTypeChecked
-              ? "No program in scripts/typecheck.ts reads this file; include it in one."
-              : rule === suppressionComment
-                ? "Remove the ts-nocheck or effect-diagnostics comment; it hides diagnostics."
-                : "Fix the new sites:\n" + sites.map((d) => "  " + render(d)).join("\n")),
+          `${file}: ${rule} rose from ${limit} to ${found}. ${advice[rule] ?? "Fix the new sites:"}` +
+            sites.map((d) => "\n  " + render(d)).join(""),
         );
       } else if (found < limit && exists(file))
         problems.push(
@@ -188,14 +197,17 @@ export function baselineProblems(
 
 // The committed baseline never grows against the base commit. A new path may only carry what
 // git's rename or copy sources for it lost, so moved code keeps its counts and new code has none.
+// A rule the base did not gate starts from whatever its adopting change records.
 export function baseProblems(
   head: Counts,
   base: Counts,
   baseFiles: ReadonlySet<string>,
   sources: ReadonlyMap<string, readonly string[]> = new Map(),
+  adopted: ReadonlySet<string> = new Set(),
 ) {
   const problems: string[] = [];
   for (const rule of rulesOf(head, base)) {
+    if (adopted.has(rule)) continue;
     const now = head[rule] ?? {};
     const before = base[rule] ?? {};
     for (const [file, count] of Object.entries(now)) {
@@ -209,10 +221,12 @@ export function baseProblems(
           `${baselinePath} raises ${file} ${rule} from ${allowed} to ${count} over the base commit.`,
         );
     }
-    if (total(now) > total(before))
+    if (total(now) > total(before)) {
+      const grown = Object.keys(now).filter((file) => now[file]! > (before[file] ?? 0));
       problems.push(
-        `${baselinePath} raises the ${rule} total from ${total(before)} to ${total(now)} over the base commit.`,
+        `${baselinePath} raises the ${rule} total from ${total(before)} to ${total(now)} over the base commit, in ${grown.join(", ")}.`,
       );
+    }
   }
   return problems;
 }
@@ -226,6 +240,9 @@ function configProblems() {
     );
   const scope = scopeFiles();
   for (const glob of quietPaths) {
+    // The compiler also honours forms matchesGlob does not read, such as ./dir or dir/.
+    if (glob !== "*.ts" && (!glob.endsWith("/**/*") || /^\.\.?\//.test(glob)))
+      problems.push(`quietPaths ${glob} must be *.ts or a dir/**/* glob without ./ or ../.`);
     const silenced = scope.filter((file) => matchesGlob(file, glob));
     if (silenced.length)
       problems.push(
@@ -235,12 +252,39 @@ function configProblems() {
   for (const file of pluginConfigs)
     if (read(file).extends !== `./${configPath}`)
       problems.push(`${file} must extend ./${configPath}.`);
-  for (const file of [...pluginConfigs, ...inheritingConfigs])
-    if (existsSync(join(root, file)) && read(file).compilerOptions?.plugins !== undefined)
+  for (const file of inheritingConfigs)
+    if (existsSync(join(root, file)) && read(file).extends !== parents[file])
+      problems.push(`${file} must extend ${parents[file]}.`);
+  for (const file of [...pluginConfigs, ...inheritingConfigs]) {
+    if (!existsSync(join(root, file))) continue;
+    const options = read(file).compilerOptions ?? {};
+    if (options.plugins !== undefined)
       problems.push(
         `${file} sets compilerOptions.plugins, which replaces the Effect diagnostics. Keep them in ${configPath}.`,
       );
+    if (options.noCheck) problems.push(`${file} sets noCheck, which skips the Effect diagnostics.`);
+  }
   return problems;
+}
+
+// The gate only tightens: no rule the base commit gated may go, and no quiet path may be added.
+function baseConfigProblems(effect: string, adopted: Set<string>) {
+  const plugin = JSON.parse(effect).compilerOptions?.plugins?.[0] ?? {};
+  const gated = new Set(
+    Object.entries(plugin.diagnosticSeverity ?? {}).flatMap(([rule, level]) =>
+      level === "error" ? [rule] : [],
+    ),
+  );
+  const quiet = new Set<string>(plugin.overrides?.[0]?.include ?? []);
+  for (const rule of gatedRules) if (!gated.has(rule)) adopted.add(rule);
+  return [
+    ...[...gated]
+      .filter((rule) => !(gatedRules as readonly string[]).includes(rule))
+      .map((rule) => `${configPath} stops gating ${rule}, which the base commit gates.`),
+    ...quietPaths
+      .filter((glob) => !quiet.has(glob))
+      .map((glob) => `${configPath} adds quiet path ${glob}, which the base commit does not have.`),
+  ];
 }
 
 function baseCommitProblems(head: Counts) {
@@ -260,6 +304,11 @@ function baseCommitProblems(head: Counts) {
   const committed = git("show", `${base}:${baselinePath}`);
   if (committed.status !== 0)
     return [`git show ${base}:${baselinePath} failed: ${committed.stderr.trim()}`];
+  const effect = git("show", `${base}:${configPath}`);
+  if (effect.status !== 0)
+    return [`git show ${base}:${configPath} failed: ${effect.stderr.trim()}`];
+  const adopted = new Set<string>();
+  const loosened = baseConfigProblems(effect.stdout, adopted);
   const diff = git("diff", "-z", "--name-status", "-M30%", "-C30%", base, "--", "scripts", "src");
   if (diff.status !== 0) return [`git diff ${base} failed: ${diff.stderr.trim()}`];
   const sources = new Map<string, string[]>();
@@ -270,12 +319,16 @@ function baseCommitProblems(head: Counts) {
       sources.set(target, [...(sources.get(target) ?? []), source]);
       index += 2;
     } else index += 1;
-  return baseProblems(
-    head,
-    readCounts(committed.stdout, `${base}:${baselinePath}`),
-    baseFiles,
-    sources,
-  );
+  return [
+    ...loosened,
+    ...baseProblems(
+      head,
+      readCounts(committed.stdout, `${base}:${baselinePath}`),
+      baseFiles,
+      sources,
+      adopted,
+    ),
+  ];
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { baseProblems, baselineProblems, gatedRules } from "./effect-diagnostics.ts";
 import {
-  countSuppressions,
   inScope,
   parseCompilerOutput,
   root,
+  suppressionLines,
 } from "./effect-diagnostics-record.ts";
 
 test("a rise fails, a fall fails until the baseline is lowered, and deleted files never fail", () => {
@@ -101,14 +101,20 @@ test("the gate covers Basalt's own code by path, not by a list", () => {
     assert.ok(!inScope(file), file);
 });
 
-test("comments that hide diagnostics are counted", () => {
-  const nocheck = "// @ts-" + "nocheck";
-  const directive = "/* @effect-" + "diagnostics floatingEffect:off */";
-  const nextLine = "// @effect-" + "diagnostics-next-line *:off";
-  assert.equal(
-    countSuppressions([nocheck, directive, nextLine, "const at = '@ts-ignore';"].join("\n")),
-    3,
-  );
+test("tags that hide diagnostics are found on their line wherever the compiler reads them", () => {
+  const tag = (name: string) => "@" + name;
+  const text = [
+    "// " + tag("ts-nocheck"),
+    "/**",
+    " * Header.",
+    " * " + tag("effect-diagnostics") + " floatingEffect:off",
+    " */",
+    "const at = '" + tag("ts-ignore") + "';",
+    "const hidden = '" + tag("effect-diagnostics-next-line") + " *:off';",
+    "/** " + tag("effect-leakable-service") + " */",
+    "/** " + tag("effect-expect-leaking") + " Dep */",
+  ].join("\n");
+  assert.deepEqual(suppressionLines(text), [1, 4, 7, 8, 9]);
 });
 
 test("the pinned compiler raises every seeded gated rule through tsconfig.effect.json", () => {
