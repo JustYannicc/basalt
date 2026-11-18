@@ -667,8 +667,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.allowances
         .refresh()
         .catch(() => console.error("POOL_PLAN_ALLOWANCE_REFRESH_PENDING"))
-        .then(() => this.allowances.expiringToday())
-        .then((rows) => (rows.length ? captureAllowanceExpiry(this.env, rows) : undefined))
+        .then(() =>
+          this.allowances.reportExpiring((rows) => captureAllowanceExpiry(this.env, rows)),
+        )
         .catch(() => console.error("POOL_PLAN_ALLOWANCE_EXPIRY_ALERT_FAILED")),
     );
     await trace.run("prices", () => this.prices.run());

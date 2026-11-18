@@ -125,30 +125,34 @@ export async function captureError(
   await sendEnvelope(env, { id, type: "event", payload });
 }
 
-/** Names public plan identities only; they carry no account or person. */
+/**
+ * One issue per plan, so a second plan expiring later still opens its own alert. Names public
+ * plan identities only; they carry no account or person.
+ */
 export async function captureAllowanceExpiry(
   env: SentryEnv,
   rows: readonly { vendor: string; plan: string; windowSeconds: number; expiresAt: number }[],
-): Promise<void> {
-  const id = eventId();
+): Promise<boolean> {
   const code = "pool_allowance_expiring";
-  await sendEnvelope(env, {
-    id,
-    type: "event",
-    payload: {
-      event_id: id,
-      timestamp: new Date().toISOString(),
-      platform: "javascript",
-      level: "warning",
-      logger: "pool-allowances",
-      message: `${code} ${rows
-        .map(
-          (row) =>
-            `${row.vendor}/${row.plan}/${row.windowSeconds}s@${new Date(row.expiresAt).toISOString().slice(0, 10)}`,
-        )
-        .join(" ")}`,
-      fingerprint: ["basalt", code],
-      tags: { error_code: code },
-    },
-  });
+  const sent = await Promise.all(
+    rows.map((row) => {
+      const id = eventId();
+      const plan = `${row.vendor}/${row.plan}/${row.windowSeconds}s`;
+      return sendEnvelope(env, {
+        id,
+        type: "event",
+        payload: {
+          event_id: id,
+          timestamp: new Date().toISOString(),
+          platform: "javascript",
+          level: "error",
+          logger: "pool-allowances",
+          message: `${code} ${plan} expires ${new Date(row.expiresAt).toISOString().slice(0, 10)}`,
+          fingerprint: ["basalt", code, plan],
+          tags: { error_code: code, allowance_plan: plan },
+        },
+      });
+    }),
+  );
+  return sent.every(Boolean);
 }
