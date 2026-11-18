@@ -193,6 +193,7 @@ export class RuntimeHandoff {
       boot_id: identity.bootId,
       started_at: "selected-runtime",
       policyLeaseUntil: health.policyLeaseUntil,
+      ...(health.database ? { database: health.database } : {}),
     };
   }
   databasePool() {
@@ -206,6 +207,7 @@ export class RuntimeHandoff {
       identity,
       leaseMs: Math.floor(health.policyLeaseUntil - performance.now()),
       ...(this.options.databasePool ? { homeDatabasePool: this.options.databasePool() } : {}),
+      ...(health.database ? { database: health.database } : {}),
     };
   }
   private async choose<T>(
