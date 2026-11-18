@@ -22,6 +22,7 @@ import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-rele
 import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { bootstrapReleaseApplication } from "./runtime-release-bootstrap.ts";
+import { bootstrapImagePlan, releaseImagePlan } from "./runtime-release-plan.ts";
 import { configureReleaseFleet } from "./runtime-release-fleet.ts";
 import { assertReleaseImageCapacity, runtimeReleaseImage } from "./runtime-release-image.ts";
 import {
@@ -131,30 +132,7 @@ export const releaseRuntimeImage = <A, StackError>(
       await initial.journal.write(next);
       record = next;
     };
-    const plan = (): ImageReleasePlan => ({
-      ...(record.baseline.applications.legacy
-        ? {
-            legacy: {
-              image: record.baseline.applications.legacy.image.image,
-              props: record.baseline.applications.legacy.props,
-            },
-          }
-        : {}),
-      images: Object.fromEntries(
-        (["blue", "green"] as const).flatMap((color) => {
-          const application = record.baseline.applications[color];
-          return application ? [[color, application.image.image]] : [];
-        }),
-      ),
-      ...(record.update
-        ? {
-            candidateConfiguration: {
-              applicationId: record.update.baseline.applicationId,
-              configuration: record.desiredConfiguration,
-            },
-          }
-        : {}),
-    });
+    const plan = () => releaseImagePlan(record);
     const clientFor = () =>
       runtimeReleaseClient({
         state: record.baseline,
@@ -258,10 +236,7 @@ export const releaseRuntimeImage = <A, StackError>(
 
     for (const color of ["blue", "green"] as const) {
       if (record.baseline.applications[color]) continue;
-      const createPlan = {
-        ...plan(),
-        images: { ...plan().images, [color]: record.baseline.applications.root.image.image },
-      };
+      const createPlan = bootstrapImagePlan(record, color);
       yield* evalStack(
         provisioningStack,
         (compiled) =>
