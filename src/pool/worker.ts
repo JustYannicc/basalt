@@ -226,7 +226,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
                 },
                 AbortSignal.timeout(2_000),
               );
-            await this.memberships.tick();
+            await this.memberships.readAll();
           },
         },
         beforeStage: (target, transaction) => this.fleet.stagePrimary(target, transaction),
@@ -393,6 +393,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
     this.computers = new Computers({
       retirePool: (pool, at) => this.memberships.retire(pool, at),
+      personDeleted: () => this.memberships.due(),
       storage: ctx.storage,
       home: new ComputerHome(
         new HomeClient(home, Date.now, () => this.control.invalidateViews()),
