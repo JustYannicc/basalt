@@ -95,7 +95,9 @@ export const historyChangeOnceStatements = [
     LANGUAGE plpgsql IMMUTABLE STRICT AS $$
       BEGIN RETURN left(encode(sha256(textsend(value)),'hex'),16); END
     $$`,
+  // A Home column named like one of these variables must not make Home's own writes ambiguous.
   `CREATE OR REPLACE FUNCTION basalt_pool_record_change() RETURNS trigger LANGUAGE plpgsql AS $$
+    #variable_conflict use_variable
     DECLARE before_row jsonb := '{}'::jsonb; after_row jsonb := '{}'::jsonb;
       mode text := TG_ARGV[0]; change_topic text := TG_ARGV[2]; field text; changed boolean := false;
       journal boolean := false; memo text := ''; own text; item text; hashes text[]; pending text[] := '{}';

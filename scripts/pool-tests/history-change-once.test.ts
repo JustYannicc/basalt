@@ -142,7 +142,12 @@ async function run(client: pg.Client, statement: Statement) {
   return insertHistory(client, statement as ModelRequest[]);
 }
 
-async function replay(version: Version, journal: boolean, script: readonly Step[], home = true) {
+async function replay(
+  version: Version,
+  journal: boolean,
+  script: readonly Step[],
+  options: { home?: boolean; clash?: boolean } = {},
+) {
   return homeChangeFixture(
     version,
     journal,
@@ -157,7 +162,7 @@ async function replay(version: Version, journal: boolean, script: readonly Step[
       }
       return observed;
     },
-    home,
+    options,
   );
 }
 
@@ -169,6 +174,8 @@ for (const journal of [true, false])
     const legacy = await replay("v11", journal, script);
     const current = await replay("v12", journal, script);
     assert.deepEqual(current, legacy);
+    // Home columns named like the watcher's variables leave Home's writes and their entries intact.
+    assert.deepEqual(await replay("v12", journal, script, { clash: true }), legacy);
     // Not vacuous: the request, capture and savepoint retry each produce entries.
     const keys = (index: number) =>
       journal ? legacy[index]!.inside.dirty : legacy[index]!.inside.heads;
@@ -208,8 +215,8 @@ for (const journal of [true, false])
       },
       { name: "rolled back", statements: [await historyRows([pools[0]])], end: "ROLLBACK" },
     ];
-    const legacy = await replay("v11", journal, script, false);
-    assert.deepEqual(await replay("v12", journal, script, false), legacy);
+    const legacy = await replay("v11", journal, script, { home: false });
+    assert.deepEqual(await replay("v12", journal, script, { home: false }), legacy);
     if (journal)
       assert.deepEqual(legacy[0]!.inside.dirty, [
         { pool: pools[0], topic: "pool-usage" },

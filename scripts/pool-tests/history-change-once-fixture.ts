@@ -37,12 +37,15 @@ const homeTables = `CREATE TABLE channel_group(id bigint PRIMARY KEY,channel_nam
   CREATE TABLE basalt_model_history_migrations(name text PRIMARY KEY,
     completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`;
 
+/** Every PL/pgSQL variable the v12 watcher's queries reference, as a future Home column could name it. */
+const triggerVariables = ["mode", "before_row", "after_row", "change_topic", "memo", "pending", "targets"];
+
 /** One fresh schema at production's v11 state, or after the real v12 apply on top of it. */
 export async function homeChangeFixture<T>(
   version: Version,
   journal: boolean,
   work: (clients: { a: pg.Client; b: pg.Client; owner: pg.Client }) => Promise<T>,
-  home = true,
+  { home = true, clash = false } = {},
 ) {
   const url = process.env.POOL_TEST_ADMIN_URL;
   assert.ok(url && ["127.0.0.1", "localhost"].includes(new URL(url).hostname));
@@ -59,6 +62,11 @@ export async function homeChangeFixture<T>(
         ? homeTables
         : homeTables.slice(homeTables.indexOf("CREATE TABLE basalt_model_history_migrations")),
     );
+    if (clash)
+      for (const table of ["channel_group", "channel_group_detail", '"user"'])
+        await owner!.query(
+          `ALTER TABLE ${table} ${triggerVariables.map((name) => `ADD COLUMN ${name} text`).join(",")}`,
+        );
     for (const migration of historySchemaMigrations) {
       if (migration.name === historyChangeOnceVersion) continue;
       for (const statement of migration.statements) await owner!.query(statement);
