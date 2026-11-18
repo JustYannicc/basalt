@@ -209,8 +209,13 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
-const { changedRows, readinessCommand, remainingRows, updatesWorkerWithoutReadiness } =
-  await import("./plan-summary.ts");
+const {
+  changedRows,
+  destroyTargets,
+  readinessCommand,
+  remainingRows,
+  updatesWorkerWithoutReadiness,
+} = await import("./plan-summary.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -251,6 +256,8 @@ const reporter = (event: unknown) =>
   });
 
 let journal: ReadonlyArray<{ method: string; host: string; path: string }> = [];
+// Filled by a destroy from its own plan, before anything is deleted.
+const deletable: string[] = [];
 const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   Effect.runPromise(
     Effect.scoped(
@@ -264,6 +271,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
+          deletable,
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
@@ -415,7 +423,9 @@ try {
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {
-        yield* Alchemist.Stack.apply((yield* planOf("destroy")) as never);
+        const plan = yield* planOf("destroy");
+        deletable.push(...destroyTargets(plan.native));
+        yield* Alchemist.Stack.apply(plan as never);
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
