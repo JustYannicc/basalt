@@ -1,5 +1,5 @@
 import { canonical, digest } from "../manifest.ts";
-import { runtimeNamespaceRequest } from "../provisioning-namespace.ts";
+import { runtimeNamespaceAttachment } from "../provisioning-namespace.ts";
 import {
   decodeProvisioningManifest,
   provisioningManifestDigest,
@@ -38,7 +38,15 @@ export const runtimeDeclaration = (name: RuntimeResourceName = "PoolRuntime") =>
     removalPolicy: "retain",
     retention: { data: true, nativeStateRow: true, recoveryDescriptor: true },
   });
-export const namespaceBaseline = () =>
+const runtimeClasses = ["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"] as const;
+export const runtimeNamespaceId = (name: string) => `${name.toLowerCase()}-namespace`;
+
+/**
+ * The production PoolWorker shape: an alchemy, migrations-based version whose read-back has no
+ * `exports` key. The runtime classes exist as plain SQLite classes the deploy created; only
+ * PoolContainer is container-backed.
+ */
+export const namespaceBaseline = (classes: readonly string[] = runtimeClasses) =>
   decodeNamespaceBaseline({
     accountId: "1".repeat(32),
     scriptName: "synthetic-worker",
@@ -56,22 +64,8 @@ export const namespaceBaseline = () =>
             "export class PoolContainer {}\nexport default {};\n",
           ).toString("base64"),
         },
-        {
-          name: "helper.txt",
-          contentType: "text/plain",
-          contentBase64: Buffer.from("keep exact bytes").toString("base64"),
-        },
       ],
       containers: [{ className: "PoolContainer" }],
-      exports: {
-        default: { type: "worker", cache: { enabled: true } },
-        PoolContainer: {
-          type: "durable-object",
-          storage: "sqlite",
-          container: "PoolContainer",
-          state: "created",
-        },
-      },
       bindings: [
         {
           name: "PoolContainer",
@@ -79,14 +73,17 @@ export const namespaceBaseline = () =>
           namespaceId: "legacy-namespace",
           className: "PoolContainer",
         },
+        ...classes.map((name) => ({
+          name,
+          type: "durable_object_namespace" as const,
+          namespaceId: runtimeNamespaceId(name),
+          className: name,
+        })),
         { name: "KEEP", type: "plain_text", text: "synthetic-private-setting" },
       ],
-      cacheOptions: { enabled: true },
       compatibilityDate: "2026-06-01",
       compatibilityFlags: ["nodejs_compat"],
       usageModel: "standard",
-      limits: { cpuMs: 30_000 },
-      placement: { mode: "smart" },
     },
     containers: [{ className: "PoolContainer" }],
     namespaces: [
@@ -96,13 +93,19 @@ export const namespaceBaseline = () =>
         binding: "PoolContainer",
         storage: "sqlite",
       },
-    ],
+      ...classes.map((name) => ({
+        id: runtimeNamespaceId(name),
+        className: name,
+        binding: name,
+        storage: "sqlite" as const,
+      })),
+    ].sort((left, right) => left.className.localeCompare(right.className)),
   });
 
 export function provisioningFixture(name: RuntimeResourceName = "PoolRuntime") {
   const baseline = namespaceBaseline();
   const declaration = runtimeDeclaration(name);
-  const request = runtimeNamespaceRequest(baseline, declaration, "synthetic-operation");
+  const request = runtimeNamespaceAttachment(baseline, declaration);
   const manifest = decodeProvisioningManifest({
     schemaVersion: 3,
     disposition: "provision-only",
@@ -123,7 +126,7 @@ export function provisioningFixture(name: RuntimeResourceName = "PoolRuntime") {
       selectionEpoch: 0,
     },
   });
-  const namespaceId = "new-namespace";
+  const namespaceId = request.namespaceId;
   const complete = {
     ...manifest,
     applicationTemplateDigest: applicationTemplateDigest(

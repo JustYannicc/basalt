@@ -12,7 +12,7 @@ import {
   provisioningManifestDigest,
 } from "./provisioning-contract.ts";
 import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
-import { runtimeNamespaceRequest } from "./provisioning-namespace.ts";
+import { runtimeNamespaceAttachment } from "./provisioning-namespace.ts";
 import { provisionDeclaredRuntime } from "./provisioning-declarations.ts";
 import { stateProvisioningStore } from "./provisioning-state.ts";
 import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
@@ -22,6 +22,7 @@ import type { RuntimeReleaseRecord } from "./runtime-release-journal.ts";
 import { runtimeApplicationPins } from "./runtime-release-state.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 import { applicationTemplateDigest, expectedApplicationRequest } from "./provisioning-wire.ts";
+import { fleetClassName } from "../../src/pool/fleet-deployment.ts";
 
 /** The reviewed create declaration for one fleet color, from its compiled props and the root image. */
 export const bootstrapDeclaration = (input: {
@@ -64,7 +65,7 @@ export const bootstrapDeclaration = (input: {
     });
   });
 
-/** Create one source-declared idle application through the existing namespace-first, one-send journal. */
+/** Create one source-declared idle application on the class the alchemy deploy already created, through the one-send journal. */
 export const bootstrapReleaseApplication = (
   stack: CompiledStack,
   input: {
@@ -78,7 +79,7 @@ export const bootstrapReleaseApplication = (
 ) =>
   Effect.gen(function* () {
     const { color, record, writer, client } = input;
-    const name = color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
+    const name = fleetClassName(color);
     const state = yield* yield* State;
     let manifest = record.bootstrap[color];
     if (!manifest) {
@@ -106,7 +107,7 @@ export const bootstrapReleaseApplication = (
       );
       const baseline = yield* Effect.promise(() => namespace.baseline());
       const operationId = `bootstrap-${color}-${writer.candidate}`;
-      const request = runtimeNamespaceRequest(baseline, declaration, operationId);
+      const attachment = runtimeNamespaceAttachment(baseline, declaration);
       const snapshot = yield* Effect.promise(() => client.inspect());
       const active = snapshot.selection?.active.identity;
       if (!active) throw new BarrierRefusal("runtime-release-bootstrap-active-missing", name);
@@ -124,7 +125,7 @@ export const bootstrapReleaseApplication = (
         operationId,
         declaration,
         namespaceBaselineDigest: digest(canonical(baseline)),
-        namespaceRequestDigest: digest(canonical(request)),
+        namespaceRequestDigest: digest(canonical(attachment)),
         applicationTemplateDigest: digest(canonical(declaration.props)),
         active: {
           applicationId: active.applicationId,
