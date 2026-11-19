@@ -28,7 +28,8 @@ async function root(context: TestContext) {
             .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
             .join(" "),
         )
-        .slice(-12)
+        .filter((line) => !line.startsWith("POOL_RUNTIME_ENDPOINT_FAILURE"))
+        .slice(-16)
         .join("\n"),
   };
 }
