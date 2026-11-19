@@ -3,7 +3,8 @@
  * tooling: nothing it builds ships. The released `@executor-js/emulate` 0.14.2 lacks Autumn routes
  * Cloud calls, so this builds one pinned commit of the same repository that package is published
  * from, with that repository's own frozen lockfile and package manager. A cache keyed by the commit
- * holds the result, so only a cache miss downloads anything.
+ * holds the result, so only a cache miss downloads anything. Once a release contains those routes,
+ * the jobs install it from a lockfile instead (#1508).
  */
 import {
   appendFileSync,
