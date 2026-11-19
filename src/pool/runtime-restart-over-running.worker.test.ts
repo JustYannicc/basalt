@@ -56,7 +56,8 @@ async function assertStuck(f: Fixture, previous: { bootId: string }, epoch: numb
   assert.equal(selection.active.identity.bootId, previous.bootId);
   const model = await f.model();
   assert.equal(model.status, 503);
-  await model.body?.cancel();
+  // Production's steady refusal: recovery joins the admitted restart and its start refuses identity.
+  assert.match(await model.text(), /runtime_endpoint_route_slot_identity/u);
 }
 
 async function assertHealed(f: Fixture, previous: { bootId: string }, epoch: number) {
@@ -87,10 +88,15 @@ for (const stop of ["graceful", "hard"] as const)
     async (context) => {
       const f = await fleetWorkerFixture();
       context.after(f.cleanup);
-      context.mock.method(console, "info", () => {});
+      const logs = context.mock.method(console, "info", () => {});
       context.mock.method(console, "error", () => {});
       const { previous, epoch } = await stuckOverRunningContainer(f);
       await assertStuck(f, previous, epoch);
+      const phases = logs.mock.calls
+        .filter((call) => call.arguments[0] === "POOL_SELECTED_RECOVERY")
+        .map((call) => (call.arguments[1] as { phase: string }).phase);
+      assert.equal(phases.filter((phase) => phase === "authorizing").length, 2);
+      assert.ok(phases.slice(-3).includes("starting"), "every stuck pass joins the restart");
       if (stop === "graceful") f.old.ctx.container.signal(15);
       else await f.old.ctx.container.destroy();
       await assertHealed(f, previous, epoch);
