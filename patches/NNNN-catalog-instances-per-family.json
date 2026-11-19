@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-catalog-instances-per-family",
+  "file": "NNNN-catalog-instances-per-family.patch",
+  "content_sha256": "d3f9dff3b655bb7bf41532f2d2e9f662d7ae6ea03e105fe5e5a394f859785f9f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

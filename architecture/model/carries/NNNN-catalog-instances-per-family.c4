@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Catalog instance proofs run as one case per service family: tracker, pool and mail. Each case acquires only the fixtures its family uses and keeps every assertion of the former combined journey. Only the pool case declares legacy storage and runs the pool product, and its verified-owner write shares the pool product's restart. Rendered-state reads that do not wait follow a wait on a rendered installed-row element, and the mail case renames another service's app for the committed revision its stale-inventory read needs. Test-body, hook and job deadlines are unchanged."
+    }
+  }
+}
