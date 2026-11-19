@@ -186,3 +186,23 @@ test("no module refuses", async () => {
     server.close();
   }
 });
+
+test("the entrypoint names the main module whatever its part's media type, among several modules", async () => {
+  // As an Alchemy upload reads back: chunks beside the main module, no "+module" media type.
+  const parts: Part[] = [
+    { name: "chunk-1.js", type: "application/javascript", body: "export const a = 1;\n" },
+    { name: "worker.js", type: "application/javascript", body: module },
+    { name: "worker.js.map", type: "application/source-map", body: sourceMap },
+  ];
+  const server = await api({
+    serving: "v240",
+    versions: { v240: parts },
+    latest: parts,
+    entrypoint: "worker.js",
+  });
+  try {
+    assert.equal(await Effect.runPromise(read(server.origin)), sha256(module));
+  } finally {
+    server.close();
+  }
+});
