@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-embedded-app-direct-entry-start",
+  "file": "NNNN-embedded-app-direct-entry-start.patch",
+  "content_sha256": "4715b241e4fe05de7f01f2d2f01b90a3d4c96de28e3b988f37689024dee083fe",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

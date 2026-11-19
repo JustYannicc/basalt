@@ -1,0 +1,35 @@
+diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
+--- a/e2e/tests/embedded-app-navigation.spec.ts
++++ b/e2e/tests/embedded-app-navigation.spec.ts
+@@ -10,7 +10,7 @@
+ import { App } from "../support/contracts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { waitForAppUrl } from "../support/app-pages.ts";
+-import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
+ 
+ const screenFiles = [
+   {
+@@ -119,7 +119,9 @@
+         );
+         yield* browser.login(actors.owner);
+         // A document load renders the app's access on the server, so the page is opened in the
+-        // browser from a page that never read the Apps list.
++        // browser from a page that never read the Apps list. Connect starts the list on the server
++        // without waiting for it, so its document carries the list whenever the list answers
++        // first. Settings starts no list on the server, and the browser's list read waits here.
+         const access = yield* browser.use("Hold the app's access", (page) =>
+           hold(
+             page,
+@@ -132,7 +134,10 @@
+         yield* Effect.addFinalizer(() =>
+           browser.use("Release the access hold", () => access.release()).pipe(Effect.orDie),
+         );
+-        yield* openThroughBrowser("Open the app without the Apps list", screen.detail);
++        yield* browser.use("Start from Settings, which never reads the Apps list", (page) =>
++          page.goto(`/org/${actors.organization.slug}/organization`),
++        );
++        yield* openInApp("Open the app without the Apps list", screen.detail);
+         yield* browser.use("Wait for the app's access read", () => access.requested);
+         // Until access answers, the tab keeps its place, nothing is selected and no frame loads.
+         expect(

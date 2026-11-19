@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The embedded app direct-entry scenario opens the app from the organization's Settings page, whose server render starts no Apps list read, so the document never carries the list the scenario holds. Connect starts that read on the server without waiting for it and carries the list whenever it answers before the render ends."
+    }
+  }
+}
