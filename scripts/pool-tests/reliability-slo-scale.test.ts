@@ -138,8 +138,9 @@ test(
       const [root] = explain["QUERY PLAN"] as { Plan: PlanNode }[];
       assert.ok(root);
       const read = rowsRead(root.Plan);
-      // The day window holds 3,200 of the pool's 104,000 Home rows; reading the rest is a history scan.
-      assert.ok(read.home < 5 * requests, `Home rows read: ${read.home}`);
+      // The day window holds 3,200 of the pool's 104,000 Home rows. Reading the rest is a history scan,
+      // and looking up each one's latest attempt reads them again.
+      assert.ok(read.home < 1.5 * slo.day.real.requests, `Home rows read: ${read.home}`);
       // Comparing each Home row's id as text against every start read about 6.4 million rows here.
       assert.ok(read.terminal < 5 * requests, `terminal evidence rows read: ${read.terminal}`);
 

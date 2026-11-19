@@ -205,8 +205,8 @@ const straddling =
   async (db: HistoryDatabase, ids: { pool: string; home: string; person: string }) => {
     await db.query(
       `INSERT INTO basalt_model_terminal_starts (request_id,pool,person,client_key,endpoint,started_at)
-      VALUES (md5('straddle')::uuid,$1,$2,$2,'/v1/responses',$3::timestamptz - interval '61 minutes')`,
-      [ids.pool, ids.person, at],
+      VALUES (md5('straddle')::uuid,$1,$2,$2,'/v1/responses',$3::timestamptz - $4::float8 * interval '1 minute')`,
+      [ids.pool, ids.person, at, Math.max(finishMinutesAgo, homeMinutesAgo) + 0.5],
     );
     await db.query(
       `INSERT INTO basalt_model_terminal_finishes (request_id,outcome,status,bytes,finished_at)
@@ -231,6 +231,21 @@ test("an unknown request is weighed in the window that counts its latest Home at
   const inside = await pool(straddling(60.5, 59.5, false), 120);
   assert.equal(inside.state, "unavailable");
   assert.deepEqual(inside.hour.unknown, {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 0,
+    couldFail: 1,
+  });
+});
+
+test("a request that finished unavailable before the day is weighed where its Home attempt is", async () => {
+  // 28 of the day's 2,881 requests failed: one more possible failure leaves it undecided.
+  const slo = await pool(straddling(25 * 60, 23 * 60, false), 102);
+  assert.equal(slo.state, "unavailable");
+  assert.deepEqual([slo.day.real.requests, slo.day.real.failed], [2881, 28]);
+  assert.deepEqual(slo.day.unknown, {
     requests: 1,
     pending: 0,
     unavailable: 1,
