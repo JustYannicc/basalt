@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "The OAuth fitness check retries each published source and metadata read on a network error, timeout, 5xx or 429, then reports a source it still cannot fetch as unavailable, apart from one fetched and changed from its reviewed pin. A changed source always fails. An unavailable one fails every full-suite Check and only warns on a pull request's fast lane."
+    }
+  }
+}
