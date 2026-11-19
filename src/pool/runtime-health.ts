@@ -1,5 +1,6 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "./runtime-read-trace.ts";
 import { PoolRuntimeUnhealthy, type PoolStatus } from "./lifecycle.ts";
+import { readinessDistance } from "./runtime-distance.ts";
 
 export const policyHealthLeaseMs = 1_500;
 export const policyHealthRefreshMs = 500;
@@ -31,6 +32,7 @@ export async function readRuntimeHealth(
   const milliseconds = remaining !== null && /^[1-9]\d*$/.test(remaining) ? Number(remaining) : 0;
   const generation = response.headers.get(launchGenerationHeader);
   const tokenHash = response.headers.get(launchTokenHashHeader);
+  const database = readinessDistance(status);
   return {
     boot_id: status.boot_id,
     started_at: status.started_at,
@@ -44,6 +46,7 @@ export async function readRuntimeHealth(
     ...(milliseconds > 0 && milliseconds <= policyHealthLeaseMs
       ? { policyLeaseUntil: requestedAt + milliseconds }
       : {}),
+    ...(database ? { database } : {}),
   };
 }
 

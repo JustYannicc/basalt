@@ -97,7 +97,7 @@ export function serveTunnel(
         );
         operations.set(frame.id, operation);
         operation.begin();
-        keepAlive(operation.run(request, env));
+        keepAlive(operation.run(request, env, access));
         return;
       }
       const operation = operations.get(frame.id);
