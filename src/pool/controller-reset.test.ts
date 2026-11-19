@@ -735,3 +735,54 @@ test("a client cannot choose the attempt id, and a mark on any other answer chan
     [[attempt, "replayed"]],
   );
 });
+
+test("an unsent call whose replay fails keeps cause unsent and the native retry advice", async (context) => {
+  const observed = observe(context);
+  const overloaded = () =>
+    Object.assign(new Error("Network connection lost."), { retryable: true, overloaded: true });
+  for (const failure of [reset, overloaded]) {
+    const attempt = crypto.randomUUID();
+    const h = controllerHop([async () => unsent(attempt), fails(failure)], observed.deferred);
+    const response = await fetchController(post("/v1/messages"), h.hop);
+    assert.equal(h.resolved, 2);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Retry-After"), "1");
+    assert.equal(response.headers.get("X-Request-Id"), attempt);
+  }
+  const { lines, sentry } = await observed.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved, line.cause]),
+    Array(2).fill(["replay_failed", false, "unsent"]),
+  );
+  assert.equal(sentry.length, 2);
+});
+
+test("an unsent answer past the replay window is not sent again, and its body is let go", async (context) => {
+  let clock = 0;
+  let cancelled = false;
+  const attempt = crypto.randomUUID();
+  const h = harness(context, [
+    async () => {
+      clock = controllerReplayWindowMs + 1;
+      return new Response(
+        new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { status: 503, headers: { [controllerUnsentHeader]: attempt } },
+      );
+    },
+  ]);
+  h.hop.now = () => clock;
+  const response = await fetchController(post("/v1/messages"), h.hop);
+  assert.equal(h.resolved, 1);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("X-Request-Id"), attempt);
+  assert.equal(cancelled, true);
+  const { lines } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.reason, line.cause]),
+    [["retry_advised", "too_late", "unsent"]],
+  );
+});

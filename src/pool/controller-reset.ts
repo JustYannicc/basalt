@@ -15,7 +15,7 @@ import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavail
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
-/** A model call's body is held, up to this size, only until the controller answers. */
+/** A model call's body is held, up to this size, only until the controller's final answer. */
 export const controllerHoldBytes = 4 * 1024 * 1024;
 /** A device call's signed assertion lives 25 s (token.ts); a later replay would be refused as stale. */
 export const controllerReplayWindowMs = 20_000;
@@ -221,7 +221,7 @@ function withoutAttemptId(request: Request): Request {
   return new Request(request, { headers });
 }
 
-/** The controller's mark is private. A socket answer cannot be rebuilt and never carries it. */
+/** The controller's mark is private. It strips the mark from a socket answer, which passes as it is. */
 function withoutUnsentMark(response: Response): Response {
   if (!response.headers.has(controllerUnsentHeader) || response.status === 101) return response;
   const headers = new Headers(response.headers);
@@ -302,13 +302,10 @@ async function forwardHeld(
     }
   };
   /** At most one replay per call, whichever answer triggered it; a replay is never checked again. */
-  const replay = async (
-    cause: unknown,
-    id: string,
-  ): Promise<{ response: Response } | { advice: Response }> => {
+  const replay = async (cause: unknown, id: string): Promise<Response> => {
     const advise = (reason: Reason) => {
       report(hop, request, id, "retry_advised", cause, reason);
-      return { advice: retryAdvice(request, id) };
+      return retryAdvice(request, id);
     };
     await copy.ready;
     const held = copy.take();
@@ -332,15 +329,17 @@ async function forwardHeld(
         ),
       );
       report(hop, request, id, "replayed", cause, undefined, response.ok);
-      return { response };
+      return response;
     } catch (replayError) {
       if (request.signal.aborted) {
         report(hop, request, id, "client_left", cause);
         throw replayError;
       }
-      report(hop, request, id, "replay_failed", replayError);
-      if (!controllerInstanceEnded(replayError)) throw replayError;
-      return { advice: retryAdvice(request, id) };
+      const unsent = cause instanceof ControllerUnsent;
+      report(hop, request, id, "replay_failed", unsent ? cause : replayError);
+      // A reset leaves no answer to fall back on; an unsent call already had the native advice.
+      if (!unsent && !controllerInstanceEnded(replayError)) throw replayError;
+      return retryAdvice(request, id);
     }
   };
   const finish = (response: Response) => {
@@ -379,19 +378,17 @@ async function forwardHeld(
       report(hop, request, requestId, "retry_advised", error, "not_replayable");
       return retryAdvice(request, requestId);
     }
-    const replayed = await replay(error, requestId);
-    return "advice" in replayed ? replayed.advice : finish(replayed.response);
+    return finish(await replay(error, requestId));
   }
   const attemptId =
     first.status === 503 ? unsentAttempt(first.headers.get(controllerUnsentHeader)) : undefined;
   if (attemptId === undefined) return finish(withoutUnsentMark(first));
   const cause = new ControllerUnsent(attemptId);
   if (!model) {
-    // A socket or a read is not held here, so the controller's own advice goes on.
+    // Only an allow-listed call is held, so a socket, a read or a job keeps the controller's answer.
     report(hop, request, attemptId, "retry_advised", cause, "not_replayable");
     return finish(withoutUnsentMark(first));
   }
   void first.body?.cancel().catch(() => {});
-  const replayed = await replay(cause, attemptId);
-  return "advice" in replayed ? replayed.advice : finish(replayed.response);
+  return finish(await replay(cause, attemptId));
 }
