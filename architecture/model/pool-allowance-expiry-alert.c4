@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Once a UTC day after the allowance refresh, the pool reports each plan whose last usable row expires within 7 days as its own error event on the existing monitoring path, naming only public plan identities. A day counts only after delivery."
+    }
+  }
+}
