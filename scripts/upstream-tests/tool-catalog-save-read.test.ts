@@ -45,7 +45,7 @@ globals.document = {
   removeEventListener() {},
 };
 const returnToPage = () => {
-  for (const listener of [...pageListeners]) listener();
+  for (const listener of Array.from(pageListeners)) listener();
 };
 
 // Resolved from the contract's directory, so the test and the contract share one copy of effect.
