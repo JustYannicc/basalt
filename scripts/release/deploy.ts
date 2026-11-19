@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
@@ -202,13 +202,22 @@ if (command === "db-load") {
     const { Effect, Redacted } = await import("effect");
     const { FetchHttpClient } = await import("effect/http");
     const { assertPrimaryCpuBelow } = await import("./database-safety.ts");
+    const { previewPoolDatabaseBranch } = await import("../../src/pool/database-settings.ts");
+    // The database the stage's own declaration names: production's, or a test stage's branch.
+    const where =
+      stage === "production"
+        ? { database: process.env.PLANETSCALE_DATABASE_NAME || "basalt", branch: "main" }
+        : {
+            database: process.env.TEST_STAGE_DATABASE ?? "",
+            branch: previewPoolDatabaseBranch(stage),
+          };
+    if (!where.database) throw new Error("db-load on a test stage needs TEST_STAGE_DATABASE");
     const reading = await Effect.runPromise(
       assertPrimaryCpuBelow({
         organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
         tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
         token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
-        database: "basalt",
-        branch: "main",
+        ...where,
         ceiling: 60,
         now: Date.now(),
       }).pipe(Effect.provide(FetchHttpClient.layer)),
@@ -364,6 +373,23 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
   );
 
 const target = { entrypoint: scaleStack ? config : resolve(root, config), stage };
+let loadedStackName: string | undefined;
+/**
+ * The stack's own name, as its module declares it: production deploys `basalt`, a rehearsal stage
+ * deploys under its own stack name. Every State read keys on it.
+ */
+const stackName = () =>
+  Effect.promise(async () => {
+    if (loadedStackName) return loadedStackName;
+    const loaded = (await import(pathToFileURL(target.entrypoint).href)) as {
+      default?: { stackName?: unknown };
+    };
+    const name = loaded.default?.stackName;
+    if (typeof name !== "string" || !name)
+      throw new Error(`${relative(root, target.entrypoint)} declares no stack name`);
+    loadedStackName = name;
+    return name;
+  });
 /** A Worker's live script name, from its State row (names carry the stage, policies name FQNs). */
 const scriptName = (fqn: string) =>
   Effect.gen(function* () {
@@ -371,7 +397,7 @@ const scriptName = (fqn: string) =>
       backend: "configured",
       ...target,
     } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-    const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
+    const row = (yield* state.get({ stack: yield* stackName(), stage, fqn })) as
       | { attr?: { workerName?: unknown } }
       | undefined;
     const script = row?.attr?.workerName;
@@ -387,7 +413,7 @@ const recordedApplication = (fqn: string) =>
       backend: "configured",
       ...target,
     } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-    const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
+    const row = (yield* state.get({ stack: yield* stackName(), stage, fqn })) as
       | { attr?: { applicationId?: unknown; applicationName?: unknown } }
       | undefined;
     const id = row?.attr?.applicationId;
@@ -509,23 +535,25 @@ try {
           return yield* Effect.die(
             new Error(`State store version ${version}, expected 8: upgrade deliberately first`),
           );
-        const rows = yield* legacy.stateRows(state, stage);
+        const stack = yield* stackName();
+        const rows = yield* legacy.stateRows(state, stack, stage);
         const key = process.env.EXECUTOR_ENCRYPTION_KEY ?? "";
         const exported = yield* legacy.exportLegacyRecords(
           state,
+          stack,
           stage,
           resolve(root, ".local/release/legacy"),
           key,
           (process.env.BASALT_LEGACY_ARCHIVE_STACKS ?? "").split(",").filter(Boolean),
         );
         yield* legacy
-          .assertNoUnresolvedHome(stage, key)
+          .assertNoUnresolvedHome(stack, stage, key)
           .pipe(Effect.provideService(legacy.State, Effect.succeed(state)));
         const pin = process.env.POOL_ROOT_IMAGE
           ? JSON.parse(process.env.POOL_ROOT_IMAGE)
           : undefined;
         const rootRow = (yield* state.get({
-          stack: "basalt",
+          stack: yield* stackName(),
           stage,
           fqn: "PoolContainer",
         }) as Fx.Effect<unknown, unknown, never>) as
@@ -534,7 +562,7 @@ try {
         // The input is the identity the controller knows the root by: PoolWorker's POOL_IMAGE_HASH.
         // Once the root is pinned, PoolContainer's own hash.image names the reference, not the build.
         const workerRow = (yield* state.get({
-          stack: "basalt",
+          stack: yield* stackName(),
           stage,
           fqn: "PoolWorker",
         }) as Fx.Effect<unknown, unknown, never>) as
@@ -613,7 +641,7 @@ try {
           backend: "configured",
           ...target,
         } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-        const url = yield* database.poolDatabaseUrl(state, { name: "basalt", stage });
+        const url = yield* database.poolDatabaseUrl(state, { name: yield* stackName(), stage });
         const session = yield* database.connect(url);
         return yield* database.readSnapshot(session, { history: !values.light });
       }),
