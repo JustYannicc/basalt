@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A confirmed change written into a dashboard query shows at once and never settles that query while its source still has a read in flight: the query stays waiting with the confirmed value, and that read's answer then replaces it. The refresh after a confirmed save restarts a read already in flight without changing the source's waiting value, so the write itself carries the waiting state. Views derived from the query therefore keep treating the read as pending, and a mutation that reads into the query waits for it to settle. A node test drives the hosted tool-availability setting through a save confirmed during a return to the page and during a manager's reload."
+    }
+  }
+}

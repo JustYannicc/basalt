@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-acknowledged-write-keeps-waiting",
+  "file": "NNNN-acknowledged-write-keeps-waiting.patch",
+  "content_sha256": "c0d32815f1abd81ad66f5581af05f4e984b02c4887cf424914a5c4ce40bcb9a2",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
