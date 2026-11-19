@@ -259,6 +259,8 @@ try {
   http.assertAllowed();
   if (Exit.isFailure(exit)) {
     const diagnostic = Cause.pretty(exit.cause);
+    if (settlesProof && process.env.NATIVE_STACK_PROOF_DETAIL === "1")
+      emit(`${JSON.stringify({ detail: diagnostic.slice(0, 1500) })}\n`);
     const labels = [
       "Invalid native declaration name",
       "Invalid native declaration metadata",
@@ -276,7 +278,10 @@ try {
   }
   emit(JSON.stringify(exit.value));
 } catch (error) {
-  // Never forward exception messages, causes, file paths, config, or request details.
+  // Never forward exception messages, causes, file paths, config, or request details. A maintainer
+  // debugging the plan proof locally may opt in; no workflow sets this.
+  if (process.env.NATIVE_STACK_SETTLES_PROOF && process.env.NATIVE_STACK_PROOF_DETAIL === "1")
+    emit(`${JSON.stringify({ detail: String(error?.stack ?? error).slice(0, 1500) })}\n`);
   const labels = [
     "Invalid native declaration name",
     "Invalid native declaration metadata",

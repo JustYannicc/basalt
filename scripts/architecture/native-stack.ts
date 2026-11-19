@@ -150,9 +150,12 @@ function evaluate(
           result.stdout ?? "",
         );
       throw new Error(
-        failure
+        (failure
           ? `Native stack inventory ${failure[1]} failed (${failure[2]}); check installed source dependencies and declaration fixtures`
-          : "Native stack inventory sandbox failed or timed out; OS network denial and Bun are required",
+          : "Native stack inventory sandbox failed or timed out; OS network denial and Bun are required") +
+          (env.NATIVE_STACK_PROOF_DETAIL === "1"
+            ? `\n${(result.stdout ?? "").slice(0, 3200)}`
+            : ""),
       );
     }
     try {
