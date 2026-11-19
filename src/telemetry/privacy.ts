@@ -43,6 +43,7 @@ const codes = new Set([
   "pool_failure",
   "pool_terminal_failure",
   "pool_terminal_collection_unavailable",
+  "pool_controller_interrupted",
 ]);
 export function errorCode(value: unknown): string | undefined {
   return typeof value === "string" && (codes.has(value) || /^http_5\d\d$/.test(value))
