@@ -368,7 +368,6 @@ export function stageEnvironment(value: StageSubject, source = process.env): Pre
     "POOL_FLEET_CLASSES",
     "POOL_FLEET_BUILD",
     "POOL_FLEET_IMAGES",
-    "POOL_WORKER_VERSION_TRAFFIC",
     "POOL_ROOT_IMAGE",
     ...requiredPreviewSecrets,
   ]) {
