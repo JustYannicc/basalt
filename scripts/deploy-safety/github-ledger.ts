@@ -850,7 +850,7 @@ type LatestStatuses = {
 };
 
 /**
- * The latest record's statuses, newest first. A record left unfinished by a run attempt that
+ * A record's statuses, newest first. A record left unfinished by a run attempt that
  * completed at least `KILLED_RUN_GRACE_MS` ago, after a successful deployment, reads as failed:
  * the job was killed before it could say so. Only the run the record names counts, and only when
  * the Actions API confirms it has completed. Nothing is written back to GitHub.
@@ -960,9 +960,16 @@ async function supersedeFailedRelease(
     } catch {
       return refuse("has unreadable ledger metadata");
     }
-    const { statuses, why } = mixedCommits
-      ? { statuses: await listStatuses(environment, failed.id, fetcher), why: undefined }
-      : await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
+    // Not only the latest: rolling forward over a killed record writes nothing back, so it stays
+    // unfinished under every later attempt, of its own commit or another.
+    const { statuses, why } = await statusesOfLatest(
+      failed,
+      payload,
+      deployments,
+      environment,
+      fetcher,
+      now,
+    );
     const status = statuses[0]?.state ?? "missing";
     if (!endedWithoutSuccess(statuses))
       return refuse(

@@ -2003,12 +2003,16 @@ jobs:
             .generated/pool-reset-ui/**/report.json
             .generated/pool-reset-ui/**/failure.json
             .generated/pool-reset-ui/**/*.png
+            .generated/pool-reset-ui/**/runtime-diagnostics.json
             .generated/scoped-change-consumers/**/report.json
             .generated/scoped-change-consumers/**/failure.json
             .generated/scoped-change-consumers/**/*.png
+            .generated/scoped-change-consumers/**/runtime-diagnostics.json
             .generated/pool-overview-ui/**/report.json
             .generated/pool-overview-ui/**/failure.json
             .generated/pool-overview-ui/**/*.png
+            .generated/pool-overview-ui/**/runtime-diagnostics.json
+            .upstream/.local/testing/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
