@@ -1,6 +1,6 @@
 {
   "identity": "basalt-local-workflow-diagram-pairing",
-  "file": "NNNN-local-workflow-diagram-pairing.patch",
+  "file": "0697-local-workflow-diagram-pairing.patch",
   "content_sha256": "2f4c35e56f7c16009805942cc9b2eead0d38c5ebaa6a0e25cee84b1160e9e023",
   "kind": "overlay",
   "upstream_pull_request": null,
