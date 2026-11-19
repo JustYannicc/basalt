@@ -215,6 +215,24 @@ test(
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, count);
         });
+      // A paid job may have started, so its client is never told to send it again.
+      await context.test("dispatched job call keeps the cautious answer", async () => {
+        const calls = async () =>
+          (await (await mf.dispatchFetch("http://fixture/calls?fault=model-port-dispatch")).json())
+            .calls as number;
+        const before = await calls();
+        const response = await mf.dispatchFetch(
+          "http://fixture/v1/images/generations?fault=model-port-dispatch",
+          { method: "POST", body: "{}" },
+        );
+        assert.equal(response.status, 502);
+        assert.equal(response.headers.get("x-should-retry"), "false");
+        assert.equal(response.headers.get("Retry-After"), null);
+        const value = await response.json();
+        assert.equal(value.error.code, "upstream_outcome_unknown");
+        assert.equal(value.error.retryable, false);
+        assert.equal(await calls(), before + 1);
+      });
       await context.test(
         "native socket lifetime crosses the runtime endpoint and holds drain until completion",
         async () => {
