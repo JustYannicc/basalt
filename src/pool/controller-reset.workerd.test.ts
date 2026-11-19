@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
+import { controllerReplayWindowMs } from "./controller-reset.ts";
 
 // The first send reads part of a streamed body and fails as a replaced instance does; the replay
 // must reach a real object with the whole body, through workerd's own clone and tee.
@@ -45,7 +46,7 @@ export default {
         env: {},
         defer: (work) => ctx.waitUntil(work),
         wait: async () => {},
-      });
+      }).catch((error) => new Response(String(error), { status: 500 }));
     return fetchController(request, {
       controller: () =>
         ++attempt === 1
@@ -146,13 +147,20 @@ test(
     assert.equal((await advised.json()).error.type, "api_error");
     // The copy gives up past 4 MiB, midway through 64 KiB reads; the real send keeps every byte.
     const whole = streamed(5 * 1024 * 1024);
+    const started = performance.now();
     const sent = await mf.dispatchFetch("http://pool/v1/messages", {
       method: "POST",
       headers: { "x-send-first": "1" },
       body: whole.body,
       duplex: "half",
     });
-    assert.equal(sent.status, 200);
-    assert.deepEqual(await sent.json(), { size: 5 * 1024 * 1024, digest: whole.digest });
+    const text = await sent.text();
+    assert.equal(sent.status, 200, text);
+    // The copy's own replay window also empties the hold; only a give-up inside it proves the cut.
+    assert.ok(
+      performance.now() - started < controllerReplayWindowMs,
+      "the copy outlived its window",
+    );
+    assert.deepEqual(JSON.parse(text), { size: 5 * 1024 * 1024, digest: whole.digest });
   },
 );
