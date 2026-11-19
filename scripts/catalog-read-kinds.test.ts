@@ -36,7 +36,14 @@ const reclassifies = (code: readonly string[]) =>
  * Packages that reclassify reads without pins, and why. The pins guard a live document that can
  * change under a reviewed read; every other package that reclassifies needs pins.
  */
-const unpinned: Readonly<Record<string, string>> = {};
+const unpinned: Readonly<Record<string, string>> = {
+  atlassian: "Its loader compiles a specification only when its reviewed sha256 matches.",
+  google:
+    "Photos compiles a bundled document. Sheets compiles a live document; its reads are not pinned yet.",
+  "google-maps": "It compiles only documents bundled in the package.",
+  notion: "Its document URL is pinned to a commit.",
+  plaid: "It compiles a live document; its reads are not pinned yet.",
+};
 
 test("every catalog package that reclassifies operations as reads is pinned or has a reason", () => {
   const found = catalogPackages()

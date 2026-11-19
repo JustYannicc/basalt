@@ -11,8 +11,9 @@
  
 --- /dev/null
 +++ b/approvals.ts
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,49 @@
 +import { always } from "apps/operations/approval";
++import { options } from "./openapi.js";
 +
 +// Browser actions that only read the page. Any other action (click, write, press,
 +// executeJavascript) can act on the target site, for example as a signed-in user.
@@ -38,6 +39,7 @@
 +};
 +
 +const sideEffectReads = new Set(["scrapeAndExtractFromUrl", "searchAndScrape"]);
++const reads = Object.keys(options.kinds);
 +
 +/**
 + * Mutations always ask. Scrape and search are reads, but ask when their options can act on a
@@ -45,7 +47,13 @@
 + */
 +export const approvalFor = (tool: { readonly kind: "query" | "mutation" }, name: string) => {
 +  if (tool.kind === "mutation") return always();
-+  if (!sideEffectReads.has(name.slice(name.lastIndexOf(".") + 1))) return undefined;
++  const leaf = name.slice(name.lastIndexOf(".") + 1);
++  // Kinds are keyed by operationId and the framework lengthens colliding tool names, so a copy of
++  // a reviewed read's operationId on another path is a query named like
++  // scrapeAndExtractFromUrlExecute, as is a reviewed read renamed beside a new operation. Neither
++  // was reviewed under that name, so each asks like a mutation.
++  if (reads.some((read) => leaf !== read && leaf.startsWith(read))) return always();
++  if (!sideEffectReads.has(leaf)) return undefined;
 +  return ({ toolInput }: { readonly toolInput: unknown }) => {
 +    const body = record(record(toolInput)?.body);
 +    return actsOrPersists(body) || actsOrPersists(body?.scrapeOptions)

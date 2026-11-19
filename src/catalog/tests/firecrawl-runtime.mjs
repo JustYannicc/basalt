@@ -115,7 +115,10 @@ try {
     // its name and its input guard.
     const copied = JSON.parse(document);
     copied.paths["/scrape/execute"] = { post: copied.paths["/scrape"].post };
-    const { tools: withCopy } = await openapiToolNames({ ...options, source: { document: copied } });
+    const { tools: withCopy } = await openapiToolNames({
+      ...options,
+      source: { document: copied },
+    });
     const at = (path) => withCopy.find((tool) => tool.path === path);
     const plain = { body: { url: "https://example.com" } };
     assert.equal(at("/scrape/execute").name, "scraping.scrapeAndExtractFromUrlExecute");

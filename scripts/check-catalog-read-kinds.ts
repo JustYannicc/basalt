@@ -40,7 +40,8 @@ for (const [app, pin] of Object.entries(pins)) {
     const operations = Object.fromEntries(
       Object.keys(pin.operations).map((operationId) => {
         const found = findOperation(document, operationId);
-        if (found === undefined) throw new Error(`${app}/${operationId} is no longer declared`);
+        if (found === undefined)
+          throw new Error(`${app}/${operationId} is not declared by exactly one operation`);
         const { method, path } = found;
         return [operationId, { method, path, inputSha256: operationInputSha256(document, found) }];
       }),

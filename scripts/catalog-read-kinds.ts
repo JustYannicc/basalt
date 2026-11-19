@@ -25,7 +25,7 @@ export type ReadKindPins = Readonly<
 type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 type JsonObject = { readonly [key: string]: Json };
 
-const methods = ["get", "put", "post", "delete", "options", "head", "patch", "trace", "query"];
+const methods = ["get", "post", "put", "patch", "delete", "head", "options", "query", "trace"];
 // Wording and samples change often and never change what a request can do.
 const documentation = new Set([
   "description",
@@ -79,18 +79,53 @@ const surface = (
   return Object.fromEntries(entries);
 };
 
-/** The operation with this operationId, with its path item, or undefined. */
-export const findOperation = (document: JsonObject, operationId: string) => {
-  const paths = isObject(document.paths) ? document.paths : {};
-  for (const [path, item] of Object.entries(paths)) {
-    if (!isObject(item)) continue;
-    for (const method of methods) {
-      const operation = item[method];
-      if (isObject(operation) && operation.operationId === operationId)
-        return { method, path, item, operation };
-    }
+/** Follow local references, as the framework does; it refuses any other reference itself. */
+const resolved = (document: JsonObject, value: Json | undefined) => {
+  const seen = new Set<string>();
+  while (isObject(value) && typeof value.$ref === "string" && !seen.has(value.$ref)) {
+    seen.add(value.$ref);
+    value = pointer(document, value.$ref);
   }
-  return undefined;
+  return value;
+};
+
+/**
+ * Every operation the document declares, as the framework enumerates them: path items and
+ * operations behind references, and OpenAPI 3.2's `additionalOperations`.
+ */
+const declaredOperations = (document: JsonObject) => {
+  const paths = isObject(document.paths) ? document.paths : {};
+  return Object.entries(paths).flatMap(([path, source]) => {
+    const item = resolved(document, source);
+    if (!isObject(item)) return [];
+    const additional = isObject(item.additionalOperations)
+      ? Object.entries(item.additionalOperations)
+      : [];
+    return [...methods.map((method) => [method, item[method]] as const), ...additional].flatMap(
+      ([method, value]) => {
+        const operation = resolved(document, value);
+        return isObject(operation) ? [{ method: method.toLowerCase(), path, item, operation }] : [];
+      },
+    );
+  });
+};
+type Declared = ReturnType<typeof declaredOperations>[number];
+const where = (found: Declared) => `${found.method} ${found.path}`;
+// YAML writes an empty `operationId:` as null, which the framework reads as absent.
+const malformedId = (found: Declared) =>
+  found.operation.operationId !== undefined &&
+  found.operation.operationId !== null &&
+  typeof found.operation.operationId !== "string";
+
+/**
+ * The one operation with this operationId, with its path item. Kinds are keyed by operationId, so
+ * an id that several operations declare names none of them: each would share the read kind.
+ */
+export const findOperation = (document: JsonObject, operationId: string) => {
+  const found = declaredOperations(document).filter(
+    ({ operation }) => operation.operationId === operationId,
+  );
+  return found.length === 1 ? found[0] : undefined;
 };
 
 /** A hash of everything a caller can send: parameters, request body and servers. */
@@ -110,16 +145,27 @@ export const operationInputSha256 = (
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
 };
 
-/** Every way a vendor document no longer matches the reviewed reads, named for the reviewer. */
-export const readKindDrift = (
+const pinDrift = (
   app: string,
   pins: ReadKindPins[string],
   document: JsonObject,
-): string[] =>
+  declared: readonly Declared[],
+) =>
   Object.entries(pins.operations).flatMap(([operationId, pin]) => {
-    const found = findOperation(document, operationId);
     const at = `${app}/${operationId}`;
-    if (found === undefined) return [`${at}: the document no longer declares this operation`];
+    const claims = declared.filter(({ operation }) => operation.operationId === operationId);
+    if (claims.length > 1)
+      return [
+        `${at}: ${claims.length} operations declare this operationId (${claims.map(where).join(", ")}), so its read kind would cover each of them`,
+      ];
+    const found = claims[0];
+    if (found === undefined) {
+      const there = declared.find(({ method, path }) => method === pin.method && path === pin.path);
+      if (there === undefined) return [`${at}: the document no longer declares this operation`];
+      return there.operation.operationId === undefined || there.operation.operationId === null
+        ? [`${at}: ${where(there)} no longer declares an operationId`]
+        : [`${at}: ${where(there)} no longer declares this operationId`];
+    }
     const problems: string[] = [];
     if (found.method !== pin.method) problems.push(`${at}: method ${pin.method} → ${found.method}`);
     if (found.path !== pin.path) problems.push(`${at}: path ${pin.path} → ${found.path}`);
@@ -128,3 +174,20 @@ export const readKindDrift = (
       problems.push(`${at}: input sha256 ${pin.inputSha256} → ${inputSha256}`);
     return problems;
   });
+
+/** Every way a vendor document no longer matches the reviewed reads, named for the reviewer. */
+export const readKindDrift = (
+  app: string,
+  pins: ReadKindPins[string],
+  document: JsonObject,
+): string[] => {
+  const declared = declaredOperations(document);
+  // The framework refuses a non-string operationId; a reviewed read never depends on that.
+  const malformed = declared
+    .filter(malformedId)
+    .map(
+      (found) =>
+        `${app}: ${where(found)} declares a non-string operationId, ${JSON.stringify(found.operation.operationId)}`,
+    );
+  return [...malformed, ...pinDrift(app, pins, document, declared)];
+};
