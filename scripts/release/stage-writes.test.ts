@@ -11,6 +11,7 @@ const scope: StageScope = {
   stack: "basalt-rehearsal",
   stage: "test-rehearsal-2",
   label: "rehearsal-2",
+  domain: "example.dev",
   databases: ["basalt-preview-rehearsal-2"],
   owned: ["basalt-rehearsal-api-test-rehearsal-2-x1", "app-stage-1", "dns-stage-1", "hd-stage-1"],
 };
@@ -119,8 +120,14 @@ test("the shared Secrets Store and any write the module cannot place are refused
   assert.equal(verdict("POST", `${CF}/secrets_store/stores/app-stage-1/secrets`), "refuse");
   assert.equal(verdict("POST", `${CF}/unknown-api`), "refuse");
   assert.equal(verdict("PATCH", `${ZONE}/settings/ssl`), "refuse");
-  // Hosts other than the providers' APIs and the State store are not production's resources.
-  assert.equal(verdict("POST", "https://emulator.example/billing/seed"), "allow");
+  // Any other host: only the stage's own hosts and the known stage-only services.
+  assert.equal(verdict("POST", "https://emulators.dev/billing/x/_emulate/seed"), "allow");
+  assert.equal(verdict("POST", "https://app.rehearsal-2.example.dev/api/seed"), "allow");
+  assert.equal(
+    verdict("DELETE", "https://console.neon.tech/api/v2/projects/p/branches/b"),
+    "refuse",
+  );
+  assert.equal(verdict("POST", "https://app.example.dev/api/anything"), "refuse");
 });
 
 test("own identities come from each row's own attributes, never from shared references", () => {
@@ -152,4 +159,19 @@ test("own identities come from each row's own attributes, never from shared refe
     createdIdentities({ result: { id: "new-id", created_on: "t" } }, { name: "new-name" }),
     ["new-id", "new-name"],
   );
+});
+
+test("a stage outside the disposable shapes, or without a stage domain, owns no hostname", () => {
+  const named = (label: string, domain?: string) =>
+    stageWriteVerdict(
+      { ...scope, label, ...(domain ? { domain } : { domain: undefined }) },
+      owned,
+      "PUT",
+      new URL(`${CF}/workers/domains`),
+      { hostname: `${label}.example.dev`, service: "basalt-rehearsal-api-test-rehearsal-2-x1" },
+    ).kind;
+  // `test-app` must never reach `app.<production zone>`.
+  assert.equal(named("app", "example.dev"), "refuse");
+  assert.equal(named("rehearsal-2"), "refuse");
+  assert.equal(named("rehearsal-2", "example.dev"), "allow");
 });
