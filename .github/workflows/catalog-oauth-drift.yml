@@ -1,0 +1,95 @@
+name: Catalog OAuth drift
+
+# Publishers change their OAuth metadata on their own schedule. Checks on a commit read only the
+# committed snapshots; this job reads what is published today and turns a change into a review.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog-oauth-drift
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    if: github.repository == 'JustYannicc/basalt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      entries: ${{ steps.drift.outputs.entries }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Compare published OAuth metadata with the reviewed snapshots
+        id: drift
+        continue-on-error: true
+        run: node scripts/catalog-oauth-drift.ts --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT"
+      - name: Alert when sign-in already behaves differently or a document is unreadable
+        if: steps.drift.outcome == 'failure'
+        run: |
+          echo "::error::Published OAuth metadata changed a value sign-in reads, or could not be read. See the job summary."
+          exit 1
+
+  repin:
+    needs: metadata
+    if: ${{ !cancelled() && needs.metadata.outputs.entries != '' && needs.metadata.outputs.entries != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.metadata.outputs.entries) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Re-pin today's published document
+        env:
+          ENTRY: ${{ matrix.entry }}
+        run: node scripts/catalog-oauth-drift.ts --repin "$ENTRY" --body "$RUNNER_TEMP/catalog-oauth-drift.md"
+      - name: Open or update the re-pin for review
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_UPDATE_TOKEN }}
+          branch: catalog-oauth-drift/${{ matrix.entry }}
+          title: "chore(catalog): re-pin ${{ matrix.entry }} OAuth metadata"
+          commit-message: "chore(catalog): re-pin ${{ matrix.entry }} OAuth metadata"
+          body-path: ${{ runner.temp }}/catalog-oauth-drift.md
+          draft: false
+          add-paths: |
+            src/catalog/${{ matrix.entry }}.oauth-metadata.json
+            src/catalog/oauth-reviews.json
+
+  catalog:
+    if: github.repository == 'JustYannicc/basalt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Check the published catalog against the reviewed OAuth decisions
+        run: node scripts/check-catalog-oauth.ts --live

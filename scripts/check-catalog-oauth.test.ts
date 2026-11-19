@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { catalogDocumentSha256 } from "./catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "./catalog-oauth-metadata.ts";
 import { oauthReviews } from "../src/catalog/oauth-policy.ts";
 import reviewData from "../src/catalog/oauth-reviews.json" with { type: "json" };
 
@@ -71,7 +78,9 @@ test("a tampered committed metadata snapshot fails without a network request", (
     ...JSON.parse(readFileSync(join(catalog, file), "utf8")),
     issuer: "https://unreviewed.example",
   };
-  const directory = catalogCopy((root) => writeFileSync(join(root, file), JSON.stringify(tampered)));
+  const directory = catalogCopy((root) =>
+    writeFileSync(join(root, file), JSON.stringify(tampered)),
+  );
   try {
     assert.deepEqual(check("--catalog", directory), {
       status: 1,

@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-metadata.ts";
 import { onServedFramework } from "./framework.ts";
 import { oauthFitness, oauthReviews, withOAuthDeferrals } from "./oauth-policy.ts";
 import reviews from "./oauth-reviews.json" with { type: "json" };
