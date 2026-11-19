@@ -26,7 +26,8 @@ test("restart authority is main-only, serialized with releases and unavailable t
   const job = workflow.jobs.recover;
   assert.equal(job.if, "github.ref == 'refs/heads/main'");
   assert.equal(job.environment.name, "production-release");
-  assert.equal(workflow.concurrency.group, release.concurrency.group);
+  // The release holds its production lock on the release job, so a skipped run never takes it.
+  assert.equal(workflow.concurrency.group, release.jobs.release.concurrency.group);
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   const steps = job.steps;
   const dry = steps.findIndex((s: { run?: string }) => s.run?.endsWith("entry.ts dry-run"));
