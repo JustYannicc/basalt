@@ -54,6 +54,7 @@ const { positionals, values } = parseArgs({
     to: { type: "string" },
     "root-boot": { type: "string" },
     within: { type: "string" },
+    serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
   },
 });
@@ -155,7 +156,7 @@ if (command === "boot" || command === "accept") {
   try {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
-    const { awaitRootRestart, NOT_SERVING, runAcceptance, servingBoot } =
+    const { awaitRecoveryReady, NOT_SERVING, runAcceptance, servingBoot } =
       await import("./acceptance.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
@@ -195,13 +196,50 @@ if (command === "boot" || command === "accept") {
       // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
       // controller's recovery starts a new one inside its own startup budget.
       const within = Number(values.within);
-      if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot)
-        throw new Error("--expect restart needs --root-boot and --within <60..900 seconds>");
-      const healed = await awaitRootRestart({
-        apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+      if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot || !values.serving)
+        throw new Error(
+          "--expect restart needs --root-boot, --serving <serving.json> and --within <60..900 seconds>",
+        );
+      // `/v1/models` answers while model calls are still refused; the controller's recovery `ready`
+      // is the signal. The new controller answers a signed read-only `inspect` once it has adopted
+      // its code; until then it refuses on identity, which reads as not ready yet.
+      const { observeSender } = await import("../pool-crash-dispatch.ts");
+      const generated = async (path: string, name: string) => {
+        const value = new RegExp(`export const ${name} = "([0-9a-f]+)"`, "u").exec(
+          await readFile(resolve(root, path), "utf8"),
+        )?.[1];
+        if (!value) throw new Error(`${name} is missing from the prepared tree`);
+        return value;
+      };
+      // The identity the deployed Worker embeds (src/pool/worker.ts), from the same generated files.
+      const controllerCode = {
+        candidate: await generated(
+          ".upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts",
+          "productionOpsRelease",
+        ),
+        workerInput: await generated(
+          ".upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts",
+          "poolWorkerRevision",
+        ),
+      };
+      const serving = JSON.parse(await readFile(resolve(values.serving), "utf8")) as {
+        workers?: { fqn: string; script?: string }[];
+      };
+      const worker = serving.workers?.find((entry) => entry.fqn === "PoolWorker")?.script;
+      if (!worker) throw new Error("The serving record names no PoolWorker script");
+      const observe = observeSender();
+      const healed = await awaitRecoveryReady({
+        inspect: async () =>
+          (
+            (await observe(
+              "inspect",
+              controllerCode,
+              { accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "", worker },
+              process.env.POOL_APP_SIGNING_KEY ?? "",
+            )) as { result?: unknown } | undefined
+          )?.result,
         before: rootBoot,
         withinMs: within * 1000,
-        client,
       });
       rootBoot = healed.boot;
       restart = { waitedMs: healed.waitedMs, reads: healed.reads };
@@ -687,9 +725,11 @@ try {
           script,
         });
         if (command === "serving") {
-          const workers: { fqn: string; version: string }[] = [];
-          for (const fqn of fqns)
-            workers.push({ fqn, version: yield* servingVersion(at(yield* scriptName(fqn))) });
+          const workers: { fqn: string; version: string; script: string }[] = [];
+          for (const fqn of fqns) {
+            const script = yield* scriptName(fqn);
+            workers.push({ fqn, version: yield* servingVersion(at(script)), script });
+          }
           return { workers };
         }
         const targets =
@@ -712,7 +752,13 @@ try {
       }),
     );
     if (values.out) await output(resolve(values.out), result);
-    await summary(`${command === "serving" ? "Serving" : "Rolled back to"}: ${safeJson(result)}`);
+    // Script names carry the stage; the public summary keeps the FQNs and versions only.
+    await summary(
+      `${command === "serving" ? "Serving" : "Rolled back to"}: ${safeJson({
+        ...result,
+        workers: result.workers.map(({ fqn, version }) => ({ fqn, version })),
+      })}`,
+    );
   } else if (command === "snapshot") {
     const snapshot = await run(
       Effect.gen(function* () {

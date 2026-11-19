@@ -32,56 +32,81 @@ export class RootRestartFailed extends Data.TaggedError("RootRestartFailed")<{
   readonly exit: string;
 }> {}
 
+/** What the controller's signed read-only `inspect` says about the active runtime and its recovery. */
+export function recoveryState(result: unknown) {
+  const record = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null;
+  const selection = record(result) && record(result.selection) ? result.selection : undefined;
+  const active = selection && record(selection.active) ? selection.active : undefined;
+  const identity = active && record(active.identity) ? active.identity : undefined;
+  const recovery = record(result) && record(result.recovery) ? result.recovery : undefined;
+  const needsPerson = recovery?.needsPerson;
+  return {
+    bootId: typeof identity?.bootId === "string" ? identity.bootId : undefined,
+    // The forced stop sets it, and recovery clears it when it reports `ready`.
+    restarting: recovery?.restartedAt !== undefined && recovery.restartedAt !== null,
+    needsPerson:
+      needsPerson === undefined || needsPerson === null
+        ? undefined
+        : typeof needsPerson === "string" && /^[a-z0-9_-]{1,64}$/u.test(needsPerson)
+          ? needsPerson
+          : "present",
+  };
+}
+
 /**
- * A release that declares a root restart, because the pool's own code restarts a runtime that runs
- * but refuses: wait, bounded, until the public pool answers on a boot other than the one read
- * before the apply, twice in a row. Nothing else is loosened. The acceptance that follows still
- * requires every request to succeed, and every one on that new boot.
+ * A healing release: wait, bounded, until the controller's recovery reports `ready` on a boot other
+ * than the stuck one. `/v1/models` is no signal: it answers while model calls are still refused,
+ * until a membership pass renews the pool's policy. Ready is all three of: a new active boot, no
+ * `recovery.restartedAt`, no `recovery.needsPerson`. A recovery that needs a person fails at once.
  */
-export async function awaitRootRestart(options: {
-  readonly apiKey: string;
-  /** The boot read before the apply, or NOT_SERVING. */
+export async function awaitRecoveryReady(options: {
+  readonly inspect: () => Promise<unknown>;
+  /** The active boot read before the apply, or NOT_SERVING. */
   readonly before: string;
   readonly withinMs: number;
-  readonly client?: PoolAcceptanceClient;
   readonly intervalMs?: number;
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }): Promise<{ readonly boot: string; readonly waitedMs: number; readonly reads: number }> {
-  const client = options.client ?? new PoolAcceptanceClient();
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ??
     ((milliseconds: number) => new Promise((done) => setTimeout(done, milliseconds)));
-  const interval = options.intervalMs ?? 10_000;
+  const interval = options.intervalMs ?? 5_000;
   const started = now();
-  let seen: string | undefined;
   let last = "no read";
   let reads = 0;
   while (now() - started <= options.withinMs) {
     reads++;
     try {
-      const { boot } = await client.modelCatalog(options.apiKey);
-      if (boot === options.before) {
-        seen = undefined;
-        last = "the boot from before the apply";
-      } else if (boot === seen) return { boot, waitedMs: now() - started, reads };
-      else {
-        seen = boot;
-        last = "a new boot, read once";
-      }
+      const state = recoveryState(await options.inspect());
+      if (state.needsPerson)
+        throw new RootRestartFailed({
+          check: "root-restart",
+          why: `The controller's recovery needs a person (${state.needsPerson}); it will not finish by itself.`,
+          fix: "Read the controller's recovery state and decide by hand; do not release over it again.",
+          exit: "needs a person",
+        });
+      if (state.bootId && state.bootId !== options.before && !state.restarting)
+        return { boot: state.bootId, waitedMs: now() - started, reads };
+      last = !state.bootId
+        ? "no active boot"
+        : state.bootId === options.before
+          ? "still the stuck boot"
+          : "a new boot, recovery not ready";
     } catch (error) {
-      seen = undefined;
-      // Messages can name hosts; the public record keeps the class only.
-      last = `no answer (${error instanceof Error ? error.name : "unknown"})`;
+      if (error instanceof RootRestartFailed) throw error;
+      // A refusal or a dropped read while the runtime restarts; messages can name hosts.
+      last = `no answer (${error instanceof Error ? ((error as { reason?: string }).reason ?? error.name) : "unknown"})`;
     }
     await sleep(interval);
   }
   throw new RootRestartFailed({
     check: "root-restart",
-    why: `The pool did not serve on a new root boot within ${Math.round(options.withinMs / 1000)} s of the apply; last read: ${last}.`,
+    why: `The controller's recovery did not report ready on a new boot within ${Math.round(options.withinMs / 1000)} s of the apply; last read: ${last}.`,
     fix: "Read the controller's recovery state before anything else; do not release over it again until it reports ready.",
-    exit: `no new boot after ${reads} reads`,
+    exit: `not ready after ${reads} reads`,
   });
 }
 

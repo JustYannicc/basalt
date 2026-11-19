@@ -15,7 +15,7 @@ export const ReleasePolicy = Schema.Struct({
     poolContainer: Schema.Struct({
       fqn: poolContainer.fields.fqn,
       image: Schema.Literal(""),
-      noop: poolContainer.fields.noop,
+      imageRelease: poolContainer.fields.imageRelease,
     }),
   }),
   include: Schema.optional(Schema.Array(Schema.String)),
