@@ -31,13 +31,13 @@ const credentials = {
     Effect.succeed(bytes(Redacted.value(fields))),
   decrypt: (_identity: unknown, stored: Redacted.Redacted<Uint8Array>) =>
     Effect.succeed(
-      Redacted.make(
-        JSON.parse(new TextDecoder().decode(Redacted.value(stored))) as sdk.JsonObject,
-      ),
+      Redacted.make(JSON.parse(new TextDecoder().decode(Redacted.value(stored))) as sdk.JsonObject),
     ),
   fingerprint: (purpose: string, value: Redacted.Redacted<string>) =>
     Effect.succeed(
-      createHash("sha256").update(`${purpose}\0${Redacted.value(value)}`).digest("hex"),
+      createHash("sha256")
+        .update(`${purpose}\0${Redacted.value(value)}`)
+        .digest("hex"),
     ),
 };
 
