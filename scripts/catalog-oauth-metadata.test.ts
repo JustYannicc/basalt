@@ -5,6 +5,7 @@ import {
   catalogDocumentSha256,
   committedOAuthMetadata,
   liveOAuthMetadata,
+  type CatalogFetch,
 } from "./catalog-oauth-metadata.ts";
 import { oauthPinProblems, oauthReviews } from "../src/catalog/oauth-policy.ts";
 import reviewData from "../src/catalog/oauth-reviews.json" with { type: "json" };
@@ -14,10 +15,10 @@ const review = oauthReviews(reviewData).find((item) => item.entry === "elevenlab
 const method = review.methods.oauth!;
 if (method.kind !== "automatic") throw new Error("Expected automatic ElevenLabs metadata");
 const metadataUrl = method.metadata;
-const problems = async () =>
+const problems = async (fetcher: CatalogFetch) =>
   oauthPinProblems([review], {
     hostedClients: new Set(),
-    ...(await liveOAuthMetadata([metadataUrl])),
+    ...(await liveOAuthMetadata([metadataUrl], fetcher)),
   });
 
 for (const failure of [
@@ -29,8 +30,8 @@ for (const failure of [
   "invalid JSON",
   "incomplete body",
 ]) {
-  test(`unavailable metadata fails closed without claiming drift: ${failure}`, async (t) => {
-    t.mock.method(globalThis, "fetch", async (url: string) => {
+  test(`unavailable metadata fails closed without claiming drift: ${failure}`, async () => {
+    const fetcher: CatalogFetch = async (url) => {
       assert.equal(url, metadataUrl);
       if (failure === "timeout") throw new DOMException("fixture", "TimeoutError");
       if (failure === "network") throw new TypeError("fixture transport failure");
@@ -44,8 +45,8 @@ for (const failure of [
           }),
         );
       return new Response(null, { status: Number(failure.slice(5)) });
-    });
-    const found = await problems();
+    };
+    const found = await problems(fetcher);
     assert.equal(found.length, 1);
     assert.match(found[0]!, /elevenlabs\/oauth: automatic client metadata is unavailable/);
     assert.ok(found[0]!.includes(metadataUrl));
@@ -56,16 +57,16 @@ for (const failure of [
   });
 }
 
-test("a fetched metadata change fails without accepting a later matching response", async (t) => {
+test("a fetched metadata change fails without accepting a later matching response", async () => {
   const changed = { ...metadata, issuer: "https://unreviewed.example" };
   let reads = 0;
-  t.mock.method(globalThis, "fetch", async (url: string) => {
+  const fetcher: CatalogFetch = async (url) => {
     assert.equal(url, metadataUrl);
     return Response.json(reads++ === 0 ? changed : metadata);
-  });
+  };
   const found = oauthPinProblems([review], {
     hostedClients: new Set(),
-    ...(await liveOAuthMetadata([metadataUrl, metadataUrl])),
+    ...(await liveOAuthMetadata([metadataUrl, metadataUrl], fetcher)),
   });
   assert.equal(reads, 1);
   assert.deepEqual(found, [
@@ -73,12 +74,12 @@ test("a fetched metadata change fails without accepting a later matching respons
   ]);
 });
 
-test("a complete matching published document verifies against the reviewed pin", async (t) => {
-  t.mock.method(globalThis, "fetch", async (url: string) => {
+test("a complete matching published document verifies against the reviewed pin", async () => {
+  const fetcher: CatalogFetch = async (url) => {
     assert.equal(url, metadataUrl);
     return Response.json(metadata);
-  });
-  assert.deepEqual(await problems(), []);
+  };
+  assert.deepEqual(await problems(fetcher), []);
 });
 
 test("a snapshot is read only for a document exactly one entry owns", () => {
