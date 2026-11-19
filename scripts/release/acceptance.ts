@@ -1,3 +1,4 @@
+import { Data } from "effect";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 
 /**
@@ -19,6 +20,69 @@ export interface AcceptanceOptions {
 /** The boot of the runtime serving the pool now: the root while no fleet cell serves. */
 export async function servingBoot(apiKey: string, client = new PoolAcceptanceClient()) {
   return (await client.modelCatalog(apiKey)).boot;
+}
+
+/** Recorded before the apply of a release that declares a root restart, when the pool did not answer. */
+export const NOT_SERVING = "not-serving";
+
+export class RootRestartFailed extends Data.TaggedError("RootRestartFailed")<{
+  readonly check: "root-restart";
+  readonly why: string;
+  readonly fix: string;
+  readonly exit: string;
+}> {}
+
+/**
+ * A release that declares a root restart, because the pool's own code restarts a runtime that runs
+ * but refuses: wait, bounded, until the public pool answers on a boot other than the one read
+ * before the apply, twice in a row. Nothing else is loosened. The acceptance that follows still
+ * requires every request to succeed, and every one on that new boot.
+ */
+export async function awaitRootRestart(options: {
+  readonly apiKey: string;
+  /** The boot read before the apply, or NOT_SERVING. */
+  readonly before: string;
+  readonly withinMs: number;
+  readonly client?: PoolAcceptanceClient;
+  readonly intervalMs?: number;
+  readonly now?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<{ readonly boot: string; readonly waitedMs: number; readonly reads: number }> {
+  const client = options.client ?? new PoolAcceptanceClient();
+  const now = options.now ?? Date.now;
+  const sleep =
+    options.sleep ??
+    ((milliseconds: number) => new Promise((done) => setTimeout(done, milliseconds)));
+  const interval = options.intervalMs ?? 10_000;
+  const started = now();
+  let seen: string | undefined;
+  let last = "no read";
+  let reads = 0;
+  while (now() - started <= options.withinMs) {
+    reads++;
+    try {
+      const { boot } = await client.modelCatalog(options.apiKey);
+      if (boot === options.before) {
+        seen = undefined;
+        last = "the boot from before the apply";
+      } else if (boot === seen) return { boot, waitedMs: now() - started, reads };
+      else {
+        seen = boot;
+        last = "a new boot, read once";
+      }
+    } catch (error) {
+      seen = undefined;
+      // Messages can name hosts; the public record keeps the class only.
+      last = `no answer (${error instanceof Error ? error.name : "unknown"})`;
+    }
+    await sleep(interval);
+  }
+  throw new RootRestartFailed({
+    check: "root-restart",
+    why: `The pool did not serve on a new root boot within ${Math.round(options.withinMs / 1000)} s of the apply; last read: ${last}.`,
+    fix: "Read the controller's recovery state before anything else; do not release over it again until it reports ready.",
+    exit: `no new boot after ${reads} reads`,
+  });
 }
 
 export interface AcceptanceResult {

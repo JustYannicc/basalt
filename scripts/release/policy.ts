@@ -19,6 +19,16 @@ export const ReleasePolicy = Schema.Struct({
     sqliteClasses: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     expectLiveModule: Schema.optional(Schema.Array(Schema.String)),
   }),
+  /**
+   * A release that declares the root will restart, because its own code restarts a runtime that
+   * runs but refuses. Acceptance waits for the new boot within this bound, then requires every
+   * request on it; a failure is not rolled back to code that could not heal the pool.
+   */
+  acceptance: Schema.optional(
+    Schema.Struct({
+      rootRestart: Schema.Struct({ withinSeconds: Schema.Number, why: Schema.String }),
+    }),
+  ),
   // Only the cutover's declaration switches; a policy never supplies other configuration.
   env: Schema.Struct({
     POOL_FLEET_BUILD: Schema.optional(Schema.Literal("true")),
