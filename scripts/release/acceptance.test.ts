@@ -213,3 +213,19 @@ test("the stuck boot is never ready, and the wait is bounded", async () => {
       controller.reads() === 13,
   );
 });
+
+test("while the stop waits for in-flight streams the wait says so, and a timeout names the last read", async () => {
+  const controller = replies(inspected("boot-stuck", { activeStreams: 3, streamsWaitingSince: 1 }));
+  await assert.rejects(
+    awaitRecoveryReady({
+      inspect: controller.inspect,
+      before: "boot-stuck",
+      withinMs: 20_000,
+      ...clock(),
+    }),
+    (error: unknown) =>
+      error instanceof RootRestartFailed &&
+      /in-flight streams to stand still/u.test(error.why) &&
+      /recovery fields: activeStreams, streamsWaitingSince/u.test(error.why),
+  );
+});

@@ -1,5 +1,5 @@
 {
-  "description": "The code-only release that heals a pool whose runtime runs but refuses: exactly the code policy, plus a stated root restart. The new controller code stops that runtime gracefully and its recovery starts a new one, so acceptance waits for the new boot and then requires every request on it. A failure is not rolled back: the code before it could not restart the pool.",
+  "description": "The code-only release that heals a pool whose runtime runs but refuses: exactly the code policy, plus a stated root restart. The new controller code stops that runtime gracefully and its recovery starts a new one, so acceptance waits for the new boot and then requires every request on it. A failure is not rolled back: the code before it could not restart the pool. Its database rows are exactly what a release from main applies today: the named commands, and the two connections only while their origin waits on those commands. The last three commands exist on test stages only, so stage-heal runs this same policy.",
   "check": {
     "mode": "code-only",
     "protected": {
@@ -29,7 +29,32 @@
     },
     "poolWorker": "PoolWorker",
     "artifactsCredentials": "ArtifactsCredentials",
-    "allow": []
+    "allow": [
+      {
+        "fqn": "DatabaseConnection",
+        "action": "update",
+        "unresolvedOnly": true
+      },
+      {
+        "fqn": "PoolModelDatabaseConnection",
+        "action": "update",
+        "unresolvedOnly": true
+      }
+    ],
+    "commands": [
+      "Site",
+      "Migrations",
+      "PoolDatabase",
+      "RuntimeDatabaseBudget",
+      "AppSourceNamespace",
+      "PoolBackendBudgetRuntimeReady",
+      "PoolBackendBudget",
+      "ToolsBackendBudget",
+      "PoolImagePublicationReceipt",
+      "PoolDatabaseBudget",
+      "PreviewPoolSize",
+      "PreviewAuthSeed"
+    ]
   },
   "wire": {
     "sqliteClasses": {}
