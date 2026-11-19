@@ -148,7 +148,7 @@ test("account usage has its own required budget without changing its approved pr
   assert.equal(declarations.groups[id]!.job, "account-usage");
   const job = workflow.jobs["account-usage"];
   assert.equal(job["timeout-minutes"], 20);
-  assert.equal(workflow.jobs["account-acquisition"]["timeout-minutes"], 20);
+  assert.equal(workflow.jobs["account-acquisition"]["timeout-minutes"], 30);
   assert.ok(heavyJobs.includes("account-usage"));
   assert.ok(workflow.jobs.check.needs.includes("account-usage"));
   assert.ok(
