@@ -195,6 +195,8 @@ if (command === "boot" || command === "accept") {
     if (expect === "restart") {
       // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
       // controller's recovery starts a new one inside its own startup budget.
+      // The policy's 420 s is a stated bound, not derived: acceptable only because no production
+      // release runs before the release-bounds PR derives it from the pool's named constants.
       const within = Number(values.within);
       if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot || !values.serving)
         throw new Error(
