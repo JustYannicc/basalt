@@ -31,14 +31,18 @@ try {
   const previewStack = previewConnection || settlesProof === "preview";
   const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
-  if (settlesProof && process.env.NATIVE_STACK_PROOF_DETAIL === "1") {
+  if (settlesProof) {
     globalThis.proofRequests = [];
+    // A test stage seeds its private billing instance while its declaration is resolved. The plan
+    // proof answers that one request; every other request still meets the declaration fixtures.
     globalThis.fetch = (input, init) => {
       const request = input instanceof Request ? input : undefined;
-      globalThis.proofRequests.push(
-        `${init?.method ?? request?.method ?? "GET"} ${String(request?.url ?? input).slice(0, 160)}`,
-      );
-      return http.fetch(input, init);
+      const method = init?.method ?? request?.method ?? "GET";
+      const target = String(request?.url ?? input);
+      globalThis.proofRequests.push(`${method} ${target.slice(0, 160)}`);
+      return method === "POST" && /^https:\/\/emulators\.dev\/[^?#]+\/_emulate\/seed$/.test(target)
+        ? Promise.resolve(Response.json({}))
+        : http.fetch(input, init);
     };
   }
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
