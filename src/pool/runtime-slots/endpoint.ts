@@ -27,6 +27,7 @@ import {
 } from "./admission-proof.ts";
 import { RuntimeWitnessStore, type WitnessRecord } from "./witness-store.ts";
 import { RuntimeChannel } from "./channel.ts";
+import { RuntimeAdmissionLeases } from "./admission-lease.ts";
 import {
   configurationDigest,
   runtimeConfiguration,
@@ -65,6 +66,7 @@ export class RuntimeEndpoint {
   private code: ControllerCode;
   private store: RuntimeWitnessStore;
   private channel: RuntimeChannel;
+  private leases = new RuntimeAdmissionLeases();
   private activity: RuntimeActivity;
   private wrap: (response: Response, lease: NativeStreamLease) => Response;
   private queue: Promise<unknown> = Promise.resolve();
@@ -309,10 +311,33 @@ export class RuntimeEndpoint {
       );
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       const status = await this.channel.health(configuration, signal, trace);
-      return trace
+      const proof = trace
         ? await trace.run("health_identity", async () => this.checked(record, status))
         : this.checked(record, status);
+      this.leases.prove(identity, proof.leaseMs);
+      return proof;
     } catch (error) {
+      refuseRuntime("endpoint_identity", error);
+    }
+  }
+  /**
+   * A model dispatch rides this endpoint's own still-current proof for the boot, the one its answer
+   * to the controller's health read just granted, so a late or flipping second read cannot refuse a
+   * request the runtime is serving. Identity and a running container are still checked every time;
+   * a spent lease reads readiness again.
+   */
+  private async dispatchable(identity: SlotIdentity, signal: AbortSignal) {
+    if (!this.leases.current(identity)) {
+      await this.health(identity, signal);
+      return;
+    }
+    try {
+      this.bound(identity);
+      const { record } = await this.store.read(identity);
+      if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+      if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
+    } catch (error) {
+      this.leases.forget(identity);
       refuseRuntime("endpoint_identity", error);
     }
   }
@@ -415,7 +440,7 @@ export class RuntimeEndpoint {
     }
     const socketData = this.modelLifetimes.data(identity, request, async () => {
       const { configuration } = await this.store.read(identity);
-      await this.health(identity, request.signal);
+      await this.dispatchable(identity, request.signal);
       await this.channel.keepAlive();
       request.signal.throwIfAborted();
       return this.channel.fetch(configuration, request, port);
@@ -433,7 +458,7 @@ export class RuntimeEndpoint {
       return true;
     };
     try {
-      await this.health(identity, request.signal);
+      await this.dispatchable(identity, request.signal);
       await this.channel.keepAlive();
       request.signal.throwIfAborted();
       const response = await this.channel.fetch(configuration, request, port);

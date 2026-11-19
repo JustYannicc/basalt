@@ -20,6 +20,7 @@ import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { configurationDigest, runtimeConfiguration } from "./runtime-slots/configuration.ts";
 import { signEnvelope } from "./token.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
+import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 
 async function fixture(initial = false) {
   const target = {
@@ -378,4 +379,39 @@ test("the production runtime DO serves a health read after reconstruction withou
   assert.equal(f.calls.start, 1);
   assert.equal(f.calls.destroy, 0);
   assert.equal(writes, 0);
+});
+
+test("a request admitted on the endpoint's own lease is dispatched though a second readiness read would fail", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  // The controller's admission read: the endpoint answers its health with a current lease.
+  await f.endpoint.health(identity, AbortSignal.timeout(2_000));
+  const reads = f.calls.health;
+  // 20:47Z and the 22:0xZ shapes: readiness then fails or answers too late for a second read.
+  f.hooks.health = async () => {
+    throw new TypeError("readiness transport failed");
+  };
+  const response = await f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317);
+  assert.equal(response.status, 200);
+  assert.equal(f.calls.health, reads, "no second readiness read inside the endpoint's lease");
+  await response.body?.cancel();
+
+  // Once that lease is spent, dispatch reads readiness again, and a failed read is degraded
+  // readiness the caller can wait on, not a defect.
+  const now = performance.now();
+  context.mock.method(performance, "now", () => now + 1_600);
+  await assert.rejects(
+    f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
+    PoolRuntimeUnhealthy,
+  );
+  // A replaced boot never rides the old boot's proof.
+  await assert.rejects(
+    f.endpoint.fetch(
+      { ...identity, bootId: "replaced-boot" },
+      new Request("http://pool/v1/responses"),
+      8317,
+    ),
+    SlotRefused,
+  );
 });

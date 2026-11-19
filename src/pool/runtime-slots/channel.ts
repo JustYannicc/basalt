@@ -1,6 +1,6 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
-import { poolLifecycle } from "../lifecycle.ts";
+import { PoolRuntimeUnhealthy, poolLifecycle } from "../lifecycle.ts";
 import { SlotRefused } from "./contract.ts";
 import { runtimePolicyAssertion } from "./policy-assertion.ts";
 import type { RuntimeConfiguration, RuntimeEnvironment } from "./configuration.ts";
@@ -37,7 +37,19 @@ export class RuntimeChannel {
       signal,
       undefined,
       trace,
-    ).catch((error: unknown) => refuseRuntime("endpoint_health", error));
+    ).catch((error: unknown) =>
+      refuseRuntime(
+        "endpoint_health",
+        // A readiness read that failed in transport or returned an unparsable body is degraded
+        // readiness, not a defect of this code: it refuses like a 503 so the caller can wait.
+        error instanceof Error &&
+          !(error instanceof DOMException) &&
+          !(error instanceof SlotRefused) &&
+          !(error instanceof PoolRuntimeUnhealthy)
+          ? new PoolRuntimeUnhealthy()
+          : error,
+      ),
+    );
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new SlotRefused("unhealthy");
     return status;
