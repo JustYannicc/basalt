@@ -166,7 +166,7 @@ const hostPath = (vaultOf: (app: string) => ReturnType<typeof vaultObject>) =>
     });
     yield* sql`insert into member values ('member-person', ${organization}, ${person}, 'member')`;
     yield* sql`insert into hosted_app_access values (${app.id}, ${organization}, ${person}, 'everyone', 'revision-1')`;
-    const tool = (command: typeof DriveCommand.Type, kind: "query" | "mutation" = "query") => ({
+    const tool = (command: Schema.Json, kind: "query" | "mutation" = "query") => ({
       app: app.id,
       tool: ToolName.make("sync"),
       kind,
