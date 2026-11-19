@@ -2,19 +2,18 @@ import { shardJob } from "./retry-history.ts";
 import { estimator, readDeclaredDurations, setupMinutes, shardRuns } from "./shards.ts";
 
 // Check sends declared e2e shards to the self-hosted runners only on main and batch pushes, only
-// while the box's heartbeat is fresh and healthy, and only the part of the Check that would push
-// hosted runners past their cap. Every other job, and everything by default, runs hosted.
+// while the box's heartbeat is fresh and healthy, only into free box slots, and only the part of
+// the Check that would push hosted runners past their cap. Every other job, and everything by
+// default, runs hosted.
 //
 // Switch-back: deleting BASALT_CI_BOX_SLOTS, or setting it to 0, sends every job hosted on the
 // next Check. A shard already queued for the box can't move back to hosted; the 10-minute
-// heartbeat window and the per-Check budget bound how much work can be stuck there.
+// heartbeat window and the free-slot count bound how much work can be stuck there.
 
 /** Concurrent hosted jobs for this repository when BASALT_CI_HOSTED_CAP is unset. */
 export const defaultHostedCap = 40;
-/** Box minutes each budgeted slot may spend per Check. */
-export const slotMinutes = 20;
-/** Jobs ran at 1.45–1.98× their hosted time on a loaded box (1.06× idle); budgets assume the
- * slow end. */
+/** Jobs ran at 1.45–1.98× their hosted time on a loaded box (1.06× idle); the timeout check
+ * assumes the slow end. */
 export const boxSlowdown = 2.0;
 export const heartbeatMarker = "box-health:";
 const heartbeatWindow = 10 * 60_000;
@@ -33,11 +32,16 @@ export const matrixLegs: Record<string, number> = {
   "production-ops-identity": 8,
 };
 
-/** A declared shard row: its name in box_jobs and its planned hosted minutes. */
-export type BoxShard = { id: string; minutes: number };
-export type Matrices = Record<string, { include: readonly { shard: string; runs: string }[] }>;
+/** A declared shard row: its name in box_jobs, its planned hosted minutes and its job timeout. */
+export type BoxShard = { id: string; minutes: number; timeout: number };
+export type Matrices = Record<
+  string,
+  { include: readonly { shard: string; runs: string; timeout: number }[] }
+>;
 export type Heartbeat = { conclusion: unknown; completedAt: unknown; log: string };
-export type BoxObserver = { heartbeat(): Promise<Heartbeat>; hostedActive(): Promise<number> };
+/** Queued and running jobs outside this Check: on hosted runners, and on the box's label. */
+export type ActiveJobs = { hosted: number; box: number };
+export type BoxObserver = { heartbeat(): Promise<Heartbeat>; active(): Promise<ActiveJobs> };
 export type BoxInput = {
   event: string;
   ref: string;
@@ -70,6 +74,7 @@ export function checkPlan(
           id: row.shard,
           minutes:
             setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
+          timeout: row.timeout,
         }))
       : [],
   );
@@ -83,17 +88,16 @@ export function routedJob(id: string) {
   return job && declaredJobs.includes(job) ? job : undefined;
 }
 
-/** Longest first; a shard that would overrun the budget is skipped for a shorter one. */
-export function fillBox(shards: readonly BoxShard[], limit: number, budget: number) {
-  const jobs: string[] = [];
-  let minutes = 0;
-  for (const shard of [...shards].sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1))) {
-    if (jobs.length >= limit) break;
-    if (minutes + shard.minutes > budget) continue;
-    jobs.push(shard.id);
-    minutes += shard.minutes;
-  }
-  return { jobs, minutes };
+/** A shard goes to the box only if it would still finish inside its own timeout at the slow end. */
+export const fitsTimeout = (shard: BoxShard) => shard.minutes * boxSlowdown <= shard.timeout;
+
+/** Up to `limit` shards that fit their timeout on the box, longest first. */
+export function fillBox(shards: readonly BoxShard[], limit: number) {
+  return shards
+    .filter(fitsTimeout)
+    .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1))
+    .slice(0, Math.max(0, limit))
+    .map((shard) => shard.id);
 }
 
 export function boxSettings(
@@ -162,19 +166,21 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
     const own = input.fixedJobs + plan.jobs;
     const unhealthy = heartbeatProblem(await observe.heartbeat(), now());
     if (unhealthy) return none(unhealthy);
-    const active = await observe.hostedActive();
-    const load = `${active} hosted jobs are active and this Check adds ${own}, against a cap of ${settings.cap}`;
-    const excess = active + own - settings.cap;
+    const active = await observe.active();
+    const load = `${active.hosted} hosted jobs are active and this Check adds ${own}, against a cap of ${settings.cap}`;
+    const excess = active.hosted + own - settings.cap;
     if (excess <= 0) return none(load);
-    const budget = (settings.slots * slotMinutes) / boxSlowdown;
-    const fill = fillBox(plan.shards, excess, budget);
-    if (!fill.jobs.length) return none(`no declared shard fits the ${budget}-minute budget`);
+    const free = Math.max(0, settings.slots - active.box);
+    const slots = `${free} of ${settings.slots} slots free`;
+    if (!free) return none(`no box slot is free (${active.box} box jobs are active, ${slots})`);
+    const jobs = fillBox(plan.shards, Math.min(excess, free));
+    if (!jobs.length)
+      return none(`no declared shard fits its timeout at ${boxSlowdown}× its planned minutes`);
     return {
-      jobs: fill.jobs,
+      jobs,
       summary:
-        `Box routing: ${fill.jobs.length} declared shards (${Math.round(fill.minutes)} of ${budget} budgeted ` +
-        `hosted minutes) go to the self-hosted runners, because the box reported healthy and ` +
-        `${load}: ${fill.jobs.join(", ")}.`,
+        `Box routing: ${jobs.length} declared shards go to the self-hosted runners (${slots}) ` +
+        `because the box reported healthy and ${load}: ${jobs.join(", ")}.`,
     };
   } catch (error) {
     return none("the box state could not be read: " + (error as Error).message);
@@ -183,7 +189,7 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
-/** Reads the heartbeat and the repository's hosted load through the REST API. */
+/** Reads the heartbeat, the repository's hosted load and the box's busy slots through the REST API. */
 export function githubObserver(
   env: { api: string; repository: string; token: string; runId: string; label: string },
   fetcher: Fetch = fetch,
@@ -211,14 +217,18 @@ export function githubObserver(
     }
     throw new Error("more than 1000 active " + key);
   };
-  const box = new Set([env.label, ...sharedLabels].map((label) => label.toLowerCase()));
-  const hosted = (job: Record<string, unknown>) => {
+  const boxLabel = env.label.toLowerCase();
+  const selfHosted = new Set([boxLabel, ...sharedLabels]);
+  // A job on the box's label holds a CI slot; release-label jobs hold neither a slot nor hosted.
+  const runner = (job: Record<string, unknown>) => {
     if (!Array.isArray(job.labels)) throw new Error("GitHub listed a job without labels");
+    const labels = job.labels.map((label) => String(label).toLowerCase());
+    if (labels.includes(boxLabel)) return "box";
     const group = job.runner_group_name;
-    return (
-      !job.labels.some((label) => box.has(String(label).toLowerCase())) &&
+    return !labels.some((label) => selfHosted.has(label)) &&
       (group === undefined || group === null || group === "GitHub Actions")
-    );
+      ? "hosted"
+      : "other";
   };
   return {
     async heartbeat() {
@@ -233,7 +243,7 @@ export function githubObserver(
       const log = await (await get(`/actions/jobs/${Number(job.id)}/logs`)).text();
       return { conclusion: job.conclusion, completedAt: job.completed_at, log };
     },
-    async hostedActive() {
+    async active() {
       const listed = await Promise.all(
         ["in_progress", "queued"].map((status) =>
           list(`/actions/runs?status=${status}`, "workflow_runs"),
@@ -245,10 +255,14 @@ export function githubObserver(
       const jobs = await Promise.all(
         [...runs].map((id) => list(`/actions/runs/${id}/jobs?filter=latest`, "jobs")),
       );
-      return jobs
-        .flat()
-        .filter((job) => (job.status === "queued" || job.status === "in_progress") && hosted(job))
-        .length;
+      const counts = { hosted: 0, box: 0 };
+      for (const job of jobs.flat()) {
+        if (job.status !== "queued" && job.status !== "in_progress") continue;
+        const kind = runner(job);
+        if (kind === "box") counts.box++;
+        else if (kind === "hosted") counts.hosted++;
+      }
+      return counts;
     },
   };
 }

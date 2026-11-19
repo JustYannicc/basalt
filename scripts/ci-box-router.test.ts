@@ -10,14 +10,15 @@ import {
   checkPlan,
   declaredJobs,
   fillBox,
+  fitsTimeout,
   githubObserver,
   heartbeatMarker,
   matrixLegs,
   routeBox,
   routedJob,
-  slotMinutes,
   type BoxInput,
   type BoxObserver,
+  type Matrices,
 } from "./ci/box-router.ts";
 import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 import { declaredMatrices } from "./ci/shards.ts";
@@ -39,9 +40,15 @@ const healthyLog = [
   "2026-11-19T11:58:58.2000000Z " + statusLine(minutesAgo(1.5), true),
 ].join("\n");
 const observer = (
-  overrides: Partial<{ log: string; completedAt: string; conclusion: string; active: number }> = {},
+  overrides: Partial<{
+    log: string;
+    completedAt: string;
+    conclusion: string;
+    hosted: number;
+    box: number;
+  }> = {},
 ) => {
-  const calls = { heartbeat: 0, hosted: 0 };
+  const calls = { heartbeat: 0, active: 0 };
   const box: BoxObserver = {
     async heartbeat() {
       calls.heartbeat++;
@@ -51,9 +58,9 @@ const observer = (
         log: overrides.log ?? healthyLog,
       };
     },
-    async hostedActive() {
-      calls.hosted++;
-      return overrides.active ?? 60;
+    async active() {
+      calls.active++;
+      return { hosted: overrides.hosted ?? 60, box: overrides.box ?? 0 };
     },
   };
   return { box, calls };
@@ -66,20 +73,23 @@ const durations = {
   "declared:self-host d.spec.ts": 420,
   "declared:self-host e.spec.ts": 120,
 };
-const matrices = {
-  "declared-cloud": {
-    include: [
-      { shard: "declared-cloud-1", runs: "declared:cloud a.spec.ts" },
-      { shard: "declared-cloud-2", runs: "declared:cloud b.spec.ts" },
-      { shard: "declared-cloud-3", runs: "declared:cloud c.spec.ts" },
-    ],
-  },
-  "declared-self-host": {
-    include: [
-      { shard: "declared-self-host-1", runs: "declared:self-host d.spec.ts" },
-      { shard: "declared-self-host-2", runs: "declared:self-host e.spec.ts" },
-    ],
-  },
+const shardMatrices = (timeouts: Record<string, number> = {}): Matrices => {
+  const row = (shard: string, runs: string) => ({ shard, runs, timeout: timeouts[shard] ?? 32 });
+  return {
+    "declared-cloud": {
+      include: [
+        row("declared-cloud-1", "declared:cloud a.spec.ts"),
+        row("declared-cloud-2", "declared:cloud b.spec.ts"),
+        row("declared-cloud-3", "declared:cloud c.spec.ts"),
+      ],
+    },
+    "declared-self-host": {
+      include: [
+        row("declared-self-host-1", "declared:self-host d.spec.ts"),
+        row("declared-self-host-2", "declared:self-host e.spec.ts"),
+      ],
+    },
+  };
 };
 const selected = [
   "declared-cloud",
@@ -95,7 +105,7 @@ const input = (overrides: Partial<BoxInput> = {}): BoxInput => ({
   slots: "2",
   label: "basalt-box",
   selected,
-  matrices,
+  matrices: shardMatrices(),
   durations,
   fixedJobs: 4,
   ...overrides,
@@ -103,42 +113,83 @@ const input = (overrides: Partial<BoxInput> = {}): BoxInput => ({
 const route = (overrides: Partial<BoxInput> = {}, box = observer().box) =>
   routeBox(input(overrides), box, () => now);
 
-test("a healthy fresh heartbeat with hosted over its cap routes longest shards within the budget", async () => {
-  // Two slots give 20 hosted minutes: the 15-minute shard fits and every other one would overrun.
+test("a healthy box with hosted over its cap fills its free slots with the longest shards", async () => {
+  // 0 box jobs active and 35 jobs over the hosted cap: both slots take the two longest shards.
   const routed = await route();
-  assert.deepEqual(routed.jobs, ["declared-cloud-1"]);
-  assert.match(
-    routed.summary,
-    /^Box routing: 1 declared shards \(15 of 20 budgeted hosted minutes\)/,
-  );
+  assert.deepEqual(routed.jobs, ["declared-cloud-1", "declared-cloud-2"]);
   // 4 fast-lane jobs, 5 shards, pool-runtime's 2 legs, 2 single jobs and 2 desktop legs.
-  assert.match(
+  assert.equal(
     routed.summary,
-    /60 hosted jobs are active and this Check adds 15, against a cap of 40/,
+    "Box routing: 2 declared shards go to the self-hosted runners (2 of 2 slots free) because " +
+      "the box reported healthy and 60 hosted jobs are active and this Check adds 15, against a " +
+      "cap of 40: declared-cloud-1, declared-cloud-2.",
   );
   for (const ref of ["refs/heads/main", "refs/heads/batch/b122"])
-    assert.deepEqual((await route({ ref })).jobs, ["declared-cloud-1"], ref);
-  // Three slots give 30 minutes: 15 + 13 fit, and the 12-, 10- and 7-minute shards would overrun.
-  assert.deepEqual((await route({ slots: "3" })).jobs, ["declared-cloud-1", "declared-cloud-2"]);
+    assert.equal((await route({ ref })).jobs.length, 2, ref);
+  const one = await route({}, observer({ box: 1 }).box);
+  assert.deepEqual(one.jobs, ["declared-cloud-1"]);
+  assert.match(one.summary, /\(1 of 2 slots free\)/);
+  assert.deepEqual((await route({ slots: "5" })).jobs.length, 5);
+});
+
+test("a busy box routes nothing", async () => {
+  for (const box of [2, 3]) {
+    const { box: busy, calls } = observer({ box });
+    const routed = await route({}, busy);
+    assert.deepEqual(routed.jobs, [], String(box));
+    assert.match(
+      routed.summary,
+      new RegExp(`because no box slot is free \\(${box} box jobs are active, 0 of 2 slots free\\)`),
+    );
+    assert.deepEqual(calls, { heartbeat: 1, active: 1 });
+  }
 });
 
 test("routing never takes more shards than hosted is over its cap", async () => {
-  // 28 active plus 15 own is 3 over 40.
-  assert.deepEqual((await route({ slots: "100" }, observer({ active: 28 }).box)).jobs, [
+  // 28 hosted plus 15 own is 3 over 40.
+  assert.deepEqual((await route({ slots: "100" }, observer({ hosted: 28 }).box)).jobs, [
     "declared-cloud-1",
     "declared-cloud-2",
     "declared-self-host-1",
   ]);
-  assert.deepEqual(
-    (await route({ slots: "100", hostedCap: "42" }, observer({ active: 28 }).box)).jobs,
-    ["declared-cloud-1"],
+  // One over the cap with both slots free routes one.
+  assert.deepEqual((await route({ hostedCap: "42" }, observer({ hosted: 28 }).box)).jobs, [
+    "declared-cloud-1",
+  ]);
+});
+
+test("a shard that could pass its timeout at the slow end is skipped", async () => {
+  // 15 × 2.0 = 30 overruns 29, so the next two longest go instead; 30 itself still fits.
+  assert.deepEqual((await route({ matrices: shardMatrices({ "declared-cloud-1": 29 }) })).jobs, [
+    "declared-cloud-2",
+    "declared-self-host-1",
+  ]);
+  assert.deepEqual((await route({ matrices: shardMatrices({ "declared-cloud-1": 30 }) })).jobs, [
+    "declared-cloud-1",
+    "declared-cloud-2",
+  ]);
+  const tight = Object.fromEntries(
+    [
+      "declared-cloud-1",
+      "declared-cloud-2",
+      "declared-cloud-3",
+      "declared-self-host-1",
+      "declared-self-host-2",
+    ].map((id) => [id, 13]),
   );
+  const routed = await route({ matrices: shardMatrices(tight) });
+  assert.deepEqual(routed.jobs, []);
+  assert.match(
+    routed.summary,
+    /because no declared shard fits its timeout at 2× its planned minutes/,
+  );
+  assert.equal(fitsTimeout({ id: "a", minutes: 10, timeout: Number.NaN }), false);
 });
 
 test("hosted under its cap routes nothing", async () => {
-  for (const active of [0, 10, 25]) {
-    const routed = await route({}, observer({ active }).box);
-    assert.deepEqual(routed.jobs, [], String(active));
+  for (const hosted of [0, 10, 25]) {
+    const routed = await route({}, observer({ hosted }).box);
+    assert.deepEqual(routed.jobs, [], String(hosted));
     assert.match(routed.summary, /^Box routing: every job runs hosted, because \d+ hosted jobs/);
   }
 });
@@ -165,13 +216,13 @@ test("a stale, unhealthy, unmarked or unreadable heartbeat routes nothing", asyn
       "api error",
       {
         heartbeat: () => Promise.reject(new Error("GitHub returned 502")),
-        hostedActive: () => Promise.resolve(99),
+        active: () => Promise.resolve({ hosted: 99, box: 0 }),
       },
       /could not be read: GitHub returned 502/,
     ],
     [
       "load error",
-      { heartbeat: observer().box.heartbeat, hostedActive: () => Promise.reject(new Error("no")) },
+      { heartbeat: observer().box.heartbeat, active: () => Promise.reject(new Error("no")) },
       /could not be read/,
     ],
   ];
@@ -182,7 +233,7 @@ test("a stale, unhealthy, unmarked or unreadable heartbeat routes nothing", asyn
   }
   // Nine and a half minutes is still inside the window.
   const late = observer({ completedAt: minutesAgo(9.5), log: statusLine(minutesAgo(10), true) });
-  assert.deepEqual((await route({}, late.box)).jobs, ["declared-cloud-1"]);
+  assert.equal((await route({}, late.box)).jobs.length, 2);
   // The last marked line wins, so an older healthy sample can't vouch for a newer failure.
   const flipped = healthyLog + "\n" + statusLine(minutesAgo(1), false);
   assert.deepEqual((await route({}, observer({ log: flipped }).box)).jobs, []);
@@ -196,7 +247,7 @@ test("pull requests never route, whatever the variables and the box say", async 
     const routed = await route({ event: "pull_request", ref, slots: "100" }, box);
     assert.deepEqual(routed.jobs, []);
     assert.match(routed.summary, /pull requests never run on the self-hosted runners/);
-    assert.deepEqual(calls, { heartbeat: 0, hosted: 0 });
+    assert.deepEqual(calls, { heartbeat: 0, active: 0 });
   }
   for (const [event, ref] of [
     ["pull_request_target", "refs/heads/main"],
@@ -214,7 +265,7 @@ test("unset, zero or malformed variables route nothing", async () => {
     const routed = await route({ slots }, box);
     assert.deepEqual(routed.jobs, [], String(slots));
     assert.match(routed.summary, /BASALT_CI_BOX_SLOTS/);
-    assert.deepEqual(calls, { heartbeat: 0, hosted: 0 });
+    assert.deepEqual(calls, { heartbeat: 0, active: 0 });
   }
   for (const label of [undefined, "", "self-hosted", "basalt-release", "Basalt-Release", "a b"])
     assert.match((await route({ label })).summary, /BASALT_CI_BOX_LABEL/, String(label));
@@ -223,7 +274,7 @@ test("unset, zero or malformed variables route nothing", async () => {
   assert.equal(typeof boxSettings({ ...input(), hostedCap: "" }), "object");
 });
 
-test("only declared shard rows can route, and the budget is honoured", async () => {
+test("only declared shard rows can route, and free slots and timeouts bound the real plan", async () => {
   // Every job type ran slower on the box; shards need the fewest cores and fill its slots.
   for (const job of [...heavyJobs, ...fastJobs]) assert.equal(routedJob(job), undefined, job);
   const real = declaredMatrices();
@@ -241,35 +292,36 @@ test("only declared shard rows can route, and the budget is honoured", async () 
   );
   assert.deepEqual(none.jobs, []);
   assert.match(none.summary, /runs no declared e2e shards/);
-  assert.deepEqual(calls, { heartbeat: 0, hosted: 0 });
-  for (const slots of [1, 2, 3, 5, 8, 13]) {
-    const budget = (slots * slotMinutes) / boxSlowdown;
-    const routed = await routeBox(
-      input({ slots: String(slots), selected: heavyJobs, matrices: real, durations: undefined }),
-      observer({ active: 500 }).box,
-      () => now,
-    );
-    const minutes = (id: string) => plan.shards.find((shard) => shard.id === id)!.minutes;
-    const spent = routed.jobs.reduce((sum, id) => sum + minutes(id), 0);
-    assert.ok(spent <= budget, String(slots));
-    // Longest first: a shard left behind is no longer than every routed one, or didn't fit.
-    const shortest = Math.min(...routed.jobs.map(minutes));
-    for (const shard of plan.shards.filter((shard) => !routed.jobs.includes(shard.id)))
-      assert.ok(shard.minutes <= shortest || spent + shard.minutes > budget, shard.id);
-  }
+  assert.deepEqual(calls, { heartbeat: 0, active: 0 });
+  const fitting = plan.shards.filter(fitsTimeout).sort((a, b) => b.minutes - a.minutes);
+  for (const slots of [1, 2, 3, 5])
+    for (const busy of [0, 1, 2]) {
+      const routed = await routeBox(
+        input({ slots: String(slots), selected: heavyJobs, matrices: real, durations: undefined }),
+        observer({ hosted: 500, box: busy }).box,
+        () => now,
+      );
+      const free = Math.max(0, slots - busy);
+      assert.equal(routed.jobs.length, Math.min(free, fitting.length), `${slots}/${busy}`);
+      assert.deepEqual(
+        routed.jobs.map((id) => plan.shards.find((shard) => shard.id === id)!.minutes),
+        fitting.slice(0, routed.jobs.length).map((shard) => shard.minutes),
+        `${slots}/${busy}`,
+      );
+    }
   assert.equal(boxSlowdown, 2);
-  assert.deepEqual(fillBox([{ id: "a", minutes: 31 }], 5, 30).jobs, []);
+  assert.deepEqual(fillBox([{ id: "a", minutes: 31, timeout: 61 }], 5), []);
   assert.deepEqual(
     fillBox(
       [
-        { id: "a", minutes: 5 },
-        { id: "b", minutes: 4 },
+        { id: "a", minutes: 5, timeout: 30 },
+        { id: "b", minutes: 4, timeout: 30 },
       ],
       1,
-      30,
-    ).jobs,
+    ),
     ["a"],
   );
+  assert.deepEqual(fillBox([{ id: "a", minutes: 5, timeout: 30 }], 0), []);
 });
 
 test("shard rows carry their planned minutes; unknown files take their group's median", () => {
@@ -278,8 +330,12 @@ test("shard rows carry their planned minutes; unknown files take their group's m
     {
       "declared-cloud": {
         include: [
-          { shard: "declared-cloud-1", runs: "declared:cloud a.spec.ts declared:cloud b.spec.ts" },
-          { shard: "declared-cloud-2", runs: "declared:cloud new.spec.ts" },
+          {
+            shard: "declared-cloud-1",
+            runs: "declared:cloud a.spec.ts declared:cloud b.spec.ts",
+            timeout: 33,
+          },
+          { shard: "declared-cloud-2", runs: "declared:cloud new.spec.ts", timeout: 29 },
         ],
       },
     },
@@ -291,8 +347,8 @@ test("shard rows carry their planned minutes; unknown files take their group's m
   );
   assert.deepEqual(plan, {
     shards: [
-      { id: "declared-cloud-1", minutes: 13 },
-      { id: "declared-cloud-2", minutes: 8 },
+      { id: "declared-cloud-1", minutes: 13, timeout: 33 },
+      { id: "declared-cloud-2", minutes: 8, timeout: 29 },
     ],
     jobs: 8,
   });
@@ -302,7 +358,7 @@ test("shard rows carry their planned minutes; unknown files take their group's m
     assert.equal(routedJob(id), undefined, id);
 });
 
-test("the REST observer reads the newest heartbeat log and counts only hosted active jobs", async () => {
+test("the REST observer reads the newest heartbeat log and counts hosted and box jobs in one pass", async () => {
   const requests: { url: string; authorization: string }[] = [];
   const job = (status: string, labels: string[], group: string | null = null) => ({
     status,
@@ -327,13 +383,20 @@ test("the REST observer reads the newest heartbeat log and counts only hosted ac
         job("queued", ["ubuntu-latest"]),
         job("completed", ["ubuntu-latest"], "GitHub Actions"),
         job("in_progress", ["basalt-box"], "Default"),
-        job("queued", ["Basalt-Box"]),
+        job("completed", ["basalt-box"], "Default"),
         job("in_progress", ["ubuntu-latest"], "Default"),
+        // Release-label jobs hold neither a CI slot nor a hosted runner.
         job("queued", ["self-hosted", "basalt-release"]),
+        job("in_progress", ["basalt-release"], "Default"),
       ],
     },
     "/actions/runs/2/jobs?filter=latest&per_page=100&page=1": {
-      jobs: [job("queued", ["windows-latest"]), job("waiting", ["ubuntu-latest"])],
+      // A queued box job holds a slot just like a running one, whatever its label's case.
+      jobs: [
+        job("queued", ["windows-latest"]),
+        job("waiting", ["ubuntu-latest"]),
+        job("queued", ["Basalt-Box"]),
+      ],
     },
   };
   const fetcher = async (url: string, init: RequestInit) => {
@@ -356,16 +419,22 @@ test("the REST observer reads the newest heartbeat log and counts only hosted ac
     completedAt: minutesAgo(1),
     log: healthyLog,
   });
-  assert.equal(await box.hostedActive(), 3);
+  assert.deepEqual(await box.active(), { hosted: 3, box: 2 });
   assert.ok(requests.every((request) => request.authorization === "Bearer t"));
   // This Check's own run is counted from its selection, never from the API.
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/99/")));
   const routed = await routeBox(input(), box, () => now);
   assert.deepEqual(routed.jobs, []);
   assert.match(routed.summary, /3 hosted jobs are active/);
+  // Over a cap of 10, both slots are held by the two box jobs; a third slot takes one shard.
+  const busy = await routeBox(input({ hostedCap: "10" }), box, () => now);
+  assert.match(busy.summary, /no box slot is free \(2 box jobs are active, 0 of 2 slots free\)/);
+  assert.deepEqual((await routeBox(input({ hostedCap: "10", slots: "3" }), box, () => now)).jobs, [
+    "declared-cloud-1",
+  ]);
 
   delete routes["/actions/runs?status=queued&per_page=100&page=1"];
-  const failed = await routeBox(input(), githubObserver(env, fetcher), () => now);
+  const failed = await routeBox(input({ hostedCap: "0" }), githubObserver(env, fetcher), () => now);
   assert.deepEqual(failed.jobs, []);
   assert.match(failed.summary, /GitHub returned 404 for \/actions\/runs/);
   routes["/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed&per_page=1"] = {
