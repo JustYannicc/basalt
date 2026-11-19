@@ -66,6 +66,7 @@ class Readiness:
         self._location = location if re.fullmatch(r"[a-z]{3}[0-9]{2}", location) else None
         self._service_audit_revision = 0
         self._policy_observations_enabled = True
+        self._diagnostics: Callable[[int], dict[str, object]] | None = None
         self._policy_healthy = False
         self._policy_deadline_ns = 0
         self._policy_instance_id: str | None = None
@@ -224,6 +225,13 @@ class Readiness:
             self._observed_policy_probes.clear()
             self._probe_condition.notify_all()
 
+    def set_diagnostics(self, provider: Callable[[int], dict[str, object]]) -> None:
+        self._diagnostics = provider
+
+    def diagnostics(self, after: int) -> dict[str, object] | None:
+        provider = self._diagnostics
+        return None if provider is None else provider(after)
+
     def snapshot(self) -> tuple[bool, dict[str, object]]:
         ready, payload, _ = self.readiness_response()
         return ready, payload
@@ -267,6 +275,10 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
     readiness: Readiness | None = None
 
     def do_GET(self) -> None:
+        path, _, query = self.path.partition("?")
+        if path == "/diagnostics":
+            self._diagnostics(query)
+            return
         if self.path != "/ready":
             self._send(404, {"error": "not_found"})
             return
@@ -283,6 +295,24 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             else None
         )
         self._send(200 if ready else 503, payload, headers)
+
+    def _diagnostics(self, query: str) -> None:
+        readiness = self.readiness
+        if readiness is None or not readiness.authorized(self.headers.get("Authorization", "")):
+            self._send(401, {"error": "unauthorized"})
+            return
+        after = 0
+        if query:
+            match = re.fullmatch(r"after=(0|[1-9][0-9]{0,15})", query)
+            if match is None:
+                self._send(400, {"error": "invalid_query"})
+                return
+            after = int(match.group(1))
+        payload = readiness.diagnostics(after)
+        if payload is None:
+            self._send(503, {"error": "diagnostics_unavailable"})
+            return
+        self._send(200, payload)
 
     def do_POST(self) -> None:
         if self.path not in ("/native-policy", "/native-policy/check"):

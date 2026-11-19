@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import signal
@@ -23,6 +24,7 @@ from .child_signals import (
 from .child_signals import (
     privacy_audit_line as privacy_audit_line,
 )
+from .output import OUTPUT, emit
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
 from .policy_monitor import PolicyHealthMonitor
 from .pool_contract import (
@@ -60,6 +62,18 @@ HOME_BINARY = "/usr/local/bin/cliproxy-home"
 NODE_BINARY = "/usr/local/bin/cliproxy-node"
 BOOTSTRAP_MARKER = "database config is empty; run with -import first"
 STARTUP_TIMEOUT_SECONDS = 180
+# The Worker's forced-stop bound must stay longer than this grace plus the kill wait.
+CHILD_STOP_GRACE_SECONDS = 15
+# Processing one child line takes microseconds; this long inside one means the reader is stuck.
+READER_STALL_SECONDS = 10
+
+
+class ContainerEnding(StartupError):
+    """A selected runtime that cannot serve ends its container so the controller restarts it."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class Child:
@@ -79,6 +93,7 @@ class Child:
         self._fuse_parser = NativePolicyFuseParser()
         self._policy_probe_parser = NativePolicyProbeParser()
         self.config_empty = threading.Event()
+        self._processing_since: float | None = None
         self.process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -99,28 +114,104 @@ class Child:
             return
         oversized = False
         while line := stream.readline(MAX_INPUT_CHARS):
-            if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
-                oversized = not line.endswith("\n")
-                continue
-            if self.diagnostics is not None:
-                self.diagnostics.append(line)
-            if BOOTSTRAP_MARKER in line:
-                self.config_empty.set()
-            fused = self._fuse_parser.feed(self.name, line)
-            if fused is not None:
-                print(fused, flush=True)
-                if self._on_policy_fused is not None:
-                    self._on_policy_fused()
-                continue
-            probe_nonce = self._policy_probe_parser.feed(self.name, line)
-            if probe_nonce is not None:
-                if self._on_policy_probe is not None:
-                    self._on_policy_probe(probe_nonce)
-                continue
-            # Provider errors can contain full responses. Do not forward them.
-            safe = safe_child_output_line(self.name, line)
-            if safe is not None:
-                print(safe, flush=True)
+            self._processing_since = time.monotonic()
+            try:
+                oversized = self._handle_line(line, oversized)
+            finally:
+                self._processing_since = None
+
+    def _handle_line(self, line: str, oversized: bool) -> bool:
+        """Project one physical line; returns whether the next read continues an oversized line."""
+        if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
+            return not line.endswith("\n")
+        if self.diagnostics is not None:
+            self.diagnostics.append(line)
+        if BOOTSTRAP_MARKER in line:
+            self.config_empty.set()
+        fused = self._fuse_parser.feed(self.name, line)
+        if fused is not None:
+            emit(fused)
+            if self._on_policy_fused is not None:
+                self._on_policy_fused()
+            return False
+        probe_nonce = self._policy_probe_parser.feed(self.name, line)
+        if probe_nonce is not None:
+            if self._on_policy_probe is not None:
+                self._on_policy_probe(probe_nonce)
+            return False
+        # Provider errors can contain full responses. Do not forward them.
+        safe = safe_child_output_line(self.name, line)
+        if safe is not None:
+            emit(safe)
+        return False
+
+    def reader_failure(self, now: float) -> str | None:
+        """Why this child's output is no longer drained, if it is not."""
+        if self.process.poll() is not None:
+            return None
+        if not self._reader.is_alive():
+            return "reader_dead"
+        started = self._processing_since
+        if started is not None and now - started > READER_STALL_SECONDS:
+            return "reader_blocked"
+        return None
+
+    def status(self) -> dict[str, object]:
+        exit_code = self.process.poll()
+        return {
+            "name": self.name,
+            "state": "running" if exit_code is None else "exited",
+            **({} if exit_code is None else {"exit_code": exit_code}),
+        }
+
+
+SERVING_FAILURES = ("child_exit", "policy_fused", "monitor_dead", "reader_dead", "reader_blocked")
+
+
+def serving_failure(
+    children: list[Child],
+    monitor: threading.Thread | None,
+    readiness: Readiness,
+    now: float,
+) -> str | None:
+    """A child that is alive but can never serve again, in a fixed order of precedence."""
+    if readiness.policy_fused():
+        return "policy_fused"
+    if monitor is not None and not monitor.is_alive():
+        return "monitor_dead"
+    for child in children:
+        check = getattr(child, "reader_failure", None)
+        reason = check(now) if check is not None else None
+        if reason is not None:
+            return reason
+    return None
+
+
+def report_stop(reason: str) -> None:
+    if reason in SERVING_FAILURES:
+        emit("POOL_SUPERVISOR_STOP " + json.dumps({"reason": reason}, separators=(",", ":")), err=True)
+
+
+def diagnostics(
+    readiness: Readiness,
+    children: list[Child],
+    stop_state: dict[str, str],
+    after: int,
+) -> dict[str, object]:
+    """Closed state for one read before a stop destroys it; every line was already forwardable."""
+    home = next((child for child in children if child.name == "home"), None)
+    tail = home.diagnostics.snapshot() if home is not None and home.diagnostics is not None else []
+    return {
+        "boot_id": readiness.boot_id,
+        "children": [
+            child.status() if hasattr(child, "status") else {"name": child.name}
+            for child in children
+        ],
+        **({"stop_reason": stop_state["reason"]} if "reason" in stop_state else {}),
+        "crash_tail": tail,
+        "signals": [{"seq": seq, "line": line} for seq, line in OUTPUT.lines_after(after)],
+        "dropped": OUTPUT.dropped_total(),
+    }
 
 
 def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:
@@ -210,7 +301,9 @@ def terminate_children(children: list[Child]) -> None:
     for child in children:
         if child.process.poll() is None:
             child.process.terminate()
-    grace_until = time.monotonic() + remaining(14 if deadline else 15)
+    grace_until = time.monotonic() + remaining(
+        CHILD_STOP_GRACE_SECONDS - 1 if deadline else CHILD_STOP_GRACE_SECONDS
+    )
     for child in children:
         try:
             child.process.wait(
@@ -239,6 +332,7 @@ def main(stop: threading.Event | None = None) -> int:
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
     recovery_cleanup_done = False
+    stop_state: dict[str, str] = {}
     try:
         management_key = env_required("POOL_MANAGEMENT_KEY")
         database_url = env_required("POOL_DATABASE_URL")
@@ -251,6 +345,10 @@ def main(stop: threading.Event | None = None) -> int:
             management_key,
             launch_generation=os.environ.get("POOL_LAUNCH_GENERATION"),
             launch_token=os.environ.get("POOL_LAUNCH_TOKEN"),
+        )
+        selected = bool(readiness.launch_headers())
+        readiness.set_diagnostics(
+            lambda after: diagnostics(readiness, children, stop_state, after)
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
@@ -403,6 +501,9 @@ def main(stop: threading.Event | None = None) -> int:
                 readiness.set_ready(False)
                 for child, exit_code in failed:
                     report_exit(child, exit_code, category)
+                if selected:
+                    # A boot rotated in place is refused by the controller; a stopped one restarts.
+                    raise ContainerEnding("child_exit")
                 if len(failed) != 1 or failed[0][0].name != "home" or failed[0][1] != 1:
                     raise StartupError("Pool child exited unexpectedly")
 
@@ -449,6 +550,13 @@ def main(stop: threading.Event | None = None) -> int:
                                 ready_server.server_close()
                         raise
                 continue
+            if selected:
+                reason = serving_failure(
+                    children, policy_monitor_thread, readiness, observed_at
+                )
+                if reason is not None:
+                    readiness.set_ready(False)
+                    raise ContainerEnding(reason)
             current_revision = readiness.service_audit_revision()
             if current_revision != audit_revision:
                 health.invalidate()
@@ -457,6 +565,11 @@ def main(stop: threading.Event | None = None) -> int:
         return 0
     except RecoveryCancelled:
         return 0
+    except ContainerEnding as ending:
+        stop_state["reason"] = ending.reason
+        report_stop(ending.reason)
+        report_failure(category)
+        return 1
     except Exception:
         report_failure(category)
         return 1
@@ -481,4 +594,13 @@ def main(stop: threading.Event | None = None) -> int:
 
 if __name__ == "__main__":
     install_error_handlers()
-    sys.exit(main())
+    code = 1
+    try:
+        code = main()
+    except BaseException as error:
+        sys.excepthook(type(error), error, error.__traceback__)
+    finally:
+        # A blocked container stdout must not hold the exit: write what fits, then leave without
+        # the interpreter's final flush, which would wait on that stdout.
+        OUTPUT.drain(2)
+        os._exit(code)
