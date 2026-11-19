@@ -130,7 +130,13 @@ export const provePlanSettles = (stack, recompile) =>
         const nextAttempt = yield* recompile((next) =>
           run(Plan.make(whole(next)), next).pipe(Effect.map(rows(next))),
         );
-        return { resources: Object.keys(stack.resources).length, afterApply, nextAttempt };
+        return {
+          resources: Object.keys(stack.resources).length,
+          // File names only: what the declared pool database command is keyed on.
+          poolDatabaseKey: stack.resources.PoolDatabase?.Props?.memo,
+          afterApply,
+          nextAttempt,
+        };
       }),
     );
     if (Exit.isSuccess(exit)) return exit.value;
