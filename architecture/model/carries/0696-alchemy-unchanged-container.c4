@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "A release that changes nothing about a container leaves it alone. A Worker keeps the namespaces of the classes it hosts readable across an update even when it has also recorded a class that another Worker hosts, so a container attached to one of them does not plan as changed. Container reconciliation treats an empty command or entrypoint and the private network and default runtime the platform fills in on readback as not set, so an update with nothing to change sends neither a modify nor a rollout, while a changed image, resource, command, entrypoint, network or attachment still rolls out."
+      constraint "A release that changes nothing about a container leaves it alone. A Worker keeps its recorded class namespaces readable across an update while every class it binds now has a recorded namespace and was bound the same way before, even when one of them is a class another Worker hosts, so a container attached to a class it hosts does not plan as changed. A class it starts to host is new, also under a name it used to bind from another Worker. Another Worker's name is compared where the plan knows it; inside a dependency cycle it does not, and such an entry can be stale for one update when its binding moves to a different Worker. Container reconciliation treats an empty command or entrypoint and the private network and default runtime the platform fills in on readback as not set, so an update with nothing to change sends neither a modify nor a rollout, while a changed image, resource, command, entrypoint or network still rolls out and a changed attachment still replaces the application."
     }
   }
 }

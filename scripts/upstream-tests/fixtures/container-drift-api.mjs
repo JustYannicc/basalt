@@ -7,6 +7,8 @@ export const digest = (c) => `sha256:${c.repeat(64)}`;
 export const image = (d) => `registry.cloudflare.com/fixture/fixture-pool@${d}`;
 
 // The platform fills these in on readback. A declaration that leaves them out never sends them.
+// A modify or a rollout replaces the stored configuration here; whether the platform merges
+// instead was not checked against it.
 const stored = (configuration) => ({
   command: [],
   entrypoint: [],
