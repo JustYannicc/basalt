@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createRequire, registerHooks } from "node:module";
-import { test, type TestContext } from "node:test";
+import { after, test, type TestContext } from "node:test";
+import { clearTimeout, setTimeout } from "node:timers";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AtomRegistry as RegistryType } from "effect/reactivity";
 
-// The real hosted manager contract and atom registry; only the API client and the page are fakes.
+// The real hosted manager contract, atom registry and a real DOM; only the API client is a fake.
 const contractPath = fileURLToPath(
   new URL("../../.upstream/apps/hosted/web/src/contracts/tool-availability.ts", import.meta.url),
 );
@@ -28,28 +29,17 @@ const hooks = registerHooks({
   },
 });
 
-// One page: returning to it is the visibility event the dashboard's revalidated reads follow.
-const pageListeners = new Set<() => void>();
-const globals = globalThis as { window?: unknown; document?: unknown };
-globals.window = {
-  addEventListener: (type: string, listener: () => void) => {
-    if (type === "visibilitychange") pageListeners.add(listener);
-  },
-  removeEventListener: (type: string, listener: () => void) => {
-    if (type === "visibilitychange") pageListeners.delete(listener);
-  },
-};
-globals.document = {
-  visibilityState: "visible",
-  addEventListener() {},
-  removeEventListener() {},
-};
-const returnToPage = () => {
-  for (const listener of Array.from(pageListeners)) listener();
-};
-
 // Resolved from the contract's directory, so the test and the contract share one copy of effect.
 const require = createRequire(contractPath);
+
+// One page, in happy-dom, which the hosted web package already depends on: the dashboard's
+// revalidated reads listen for its visibility events. It is registered before those modules load.
+const { GlobalRegistrator } = await import(require.resolve("@happy-dom/global-registrator"));
+GlobalRegistrator.register();
+after(() => GlobalRegistrator.unregister());
+// The browser fires this at the visible document, and it bubbles to the window.
+const returnToPage = () => document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+
 const { Atom, AtomRegistry, AsyncResult } = await import(require.resolve("effect/reactivity"));
 const { Context, Effect } = await import(require.resolve("effect"));
 const { HostedClient } = await import(pathToFileURL(clientPath).href);
@@ -90,6 +80,10 @@ interface Held {
   readonly fail: (error: unknown) => void;
 }
 
+/** Every wait here is for an event that comes at once or never: it fails by name, not by hanging. */
+const deadline = (what: () => string, fail: (error: Error) => void) =>
+  setTimeout(() => fail(new Error(`waited 10 s for ${what()}`)), 10_000).unref();
+
 /** A host whose list reads and saves answer only when the test says so. */
 function host() {
   const reads: Held[] = [];
@@ -105,9 +99,17 @@ function host() {
       // A cleanup makes an interrupted read ignore a later answer.
       return Effect.void;
     });
-  const nth = (queue: Held[], index: number) =>
-    new Promise<Held>((resolve) => {
-      const check = () => (queue[index] ? resolve(queue[index]) : waiters.push(check));
+  const nth = (queue: Held[], index: number, what: string) =>
+    new Promise<Held>((resolve, reject) => {
+      const timer = deadline(() => `${what} #${index}; ${queue.length} arrived`, reject);
+      const check = () => {
+        if (!queue[index]) {
+          waiters.push(check);
+          return;
+        }
+        clearTimeout(timer);
+        resolve(queue[index]);
+      };
       check();
     });
   return {
@@ -115,8 +117,8 @@ function host() {
       toolAvailability: { list: held(reads), update: held(saves) },
       tools: { index: () => Effect.never },
     },
-    read: (index: number) => nth(reads, index),
-    save: (index: number) => nth(saves, index),
+    read: (index: number) => nth(reads, index, "list read"),
+    save: (index: number) => nth(saves, index, "save"),
     /** A refresh restarts a read still in flight; answering every held read reaches the live one. */
     answerReads: (value: unknown) => {
       for (const read of reads) read.answer(value);
@@ -130,11 +132,21 @@ const until = (
   atom: unknown,
   done: (value: Result) => boolean,
 ) =>
-  new Promise<Result>((resolve) => {
+  new Promise<Result>((resolve, reject) => {
+    let last: Result | undefined;
+    const timer = deadline(
+      () => `an accepted value; last ${last?._tag} [${last && names(last)}]`,
+      (error) => {
+        cancel();
+        reject(error);
+      },
+    );
     const cancel = registry.subscribe(
       atom as never,
       (value: Result) => {
+        last = value;
         if (!done(value)) return;
+        clearTimeout(timer);
         queueMicrotask(() => cancel());
         resolve(value);
       },
@@ -179,98 +191,74 @@ async function open(t: TestContext) {
   return { backend, registry, catalog, settings, saved };
 }
 
-test(
-  "the read a save starts keeps the catalog on screen and then shows the host's answer",
-  { timeout: 10_000 },
-  async (t) => {
-    const { registry, catalog, settings, saved } = await open(t);
-    const reconciling = await saved();
-    const held = registry.get(catalog) as Result;
-    assert.equal(held._tag, "Success", "the save's own catalog read must not unmount the browser");
-    assert.deepEqual(names(held), [READ.name, WRITE.name]);
-    // The host also reports a tool the page had not seen, so the acknowledged catalog cannot stick.
-    reconciling.answer(list(2, [READ, WRITE, REVIEW]));
-    await until(registry, catalog, shows(READ.name, WRITE.name, REVIEW.name));
-    const setting = registry.get(settings) as {
-      value: { revision: number; enabledTools: string[] };
-    };
-    assert.equal(setting.value.revision, 2);
-    assert.deepEqual(setting.value.enabledTools, [READ.name, WRITE.name, REVIEW.name]);
-  },
-);
+test("the read a save starts keeps the catalog on screen and then shows the host's answer", async (t) => {
+  const { registry, catalog, settings, saved } = await open(t);
+  const reconciling = await saved();
+  const held = registry.get(catalog) as Result;
+  assert.equal(held._tag, "Success", "the save's own catalog read must not unmount the browser");
+  assert.deepEqual(names(held), [READ.name, WRITE.name]);
+  // The host also reports a tool the page had not seen, so the acknowledged catalog cannot stick.
+  reconciling.answer(list(2, [READ, WRITE, REVIEW]));
+  await until(registry, catalog, shows(READ.name, WRITE.name, REVIEW.name));
+  const setting = registry.get(settings) as {
+    value: { revision: number; enabledTools: string[] };
+  };
+  assert.equal(setting.value.revision, 2);
+  assert.deepEqual(setting.value.enabledTools, [READ.name, WRITE.name, REVIEW.name]);
+});
 
-test(
-  "a return to the page shows no catalog until its read answers",
-  { timeout: 10_000 },
-  async (t) => {
-    const { backend, registry, catalog } = await open(t);
-    returnToPage();
-    const read = await backend.read(1);
-    assert.equal((registry.get(catalog) as Result)._tag, "Initial");
-    read.answer(list(1, [REVIEW]));
-    await until(registry, catalog, shows(REVIEW.name));
-  },
-);
+test("a return to the page shows no catalog until its read answers", async (t) => {
+  const { backend, registry, catalog } = await open(t);
+  returnToPage();
+  const read = await backend.read(1);
+  assert.equal((registry.get(catalog) as Result)._tag, "Initial");
+  read.answer(list(1, [REVIEW]));
+  await until(registry, catalog, shows(REVIEW.name));
+});
 
-test(
-  "a linked-account change shows no catalog until discovery answers",
-  { timeout: 10_000 },
-  async (t) => {
-    const { backend, registry, catalog } = await open(t);
-    refreshToolAvailabilityDiscovery({ registry } as never, KEY);
-    const read = await backend.read(1);
-    assert.equal((registry.get(catalog) as Result)._tag, "Initial");
-    read.answer(list(1, [REVIEW]));
-    await until(registry, catalog, shows(REVIEW.name));
-  },
-);
+test("a linked-account change shows no catalog until discovery answers", async (t) => {
+  const { backend, registry, catalog } = await open(t);
+  refreshToolAvailabilityDiscovery({ registry } as never, KEY);
+  const read = await backend.read(1);
+  assert.equal((registry.get(catalog) as Result)._tag, "Initial");
+  read.answer(list(1, [REVIEW]));
+  await until(registry, catalog, shows(REVIEW.name));
+});
 
-test(
-  "a linked-account change during the save's own read shows no catalog until discovery answers",
-  { timeout: 10_000 },
-  async (t) => {
-    const { backend, registry, catalog, saved } = await open(t);
-    await saved();
-    refreshToolAvailabilityDiscovery({ registry } as never, KEY);
-    assert.equal((registry.get(catalog) as Result)._tag, "Initial");
-    backend.answerReads(list(2, [REVIEW]));
-    await until(registry, catalog, shows(REVIEW.name));
-  },
-);
+test("a linked-account change during the save's own read shows no catalog until discovery answers", async (t) => {
+  const { backend, registry, catalog, saved } = await open(t);
+  await saved();
+  refreshToolAvailabilityDiscovery({ registry } as never, KEY);
+  assert.equal((registry.get(catalog) as Result)._tag, "Initial");
+  backend.answerReads(list(2, [REVIEW]));
+  await until(registry, catalog, shows(REVIEW.name));
+});
 
 for (const [view, ask] of [
   ["Retry or Refresh tools on the catalog", "catalog"],
   ["Reload on the setting", "settings"],
 ] as const)
-  test(
-    `${view} during the save's own read shows no catalog until the read answers`,
-    { timeout: 10_000 },
-    async (t) => {
-      const opened = await open(t);
-      const { backend, registry, catalog } = opened;
-      await opened.saved();
-      registry.refresh(opened[ask]);
-      assert.equal(
-        (registry.get(catalog) as Result)._tag,
-        "Initial",
-        "asking again must not keep the previous catalog",
-      );
-      backend.answerReads(list(2, [REVIEW]));
-      await until(registry, catalog, shows(REVIEW.name));
-    },
-  );
-
-test(
-  "a save whose own read fails shows the failure without the previous catalog",
-  { timeout: 10_000 },
-  async (t) => {
-    const { registry, catalog, saved } = await open(t);
-    (await saved()).fail({ _tag: "ToolAvailabilityUnavailable" });
-    const failed = await until(registry, catalog, (value) => value._tag === "Failure");
+  test(`${view} during the save's own read shows no catalog until the read answers`, async (t) => {
+    const opened = await open(t);
+    const { backend, registry, catalog } = opened;
+    await opened.saved();
+    registry.refresh(opened[ask]);
     assert.equal(
-      (AsyncResult.value(failed) as { _tag: string })._tag,
-      "None",
-      "a failed read keeps no earlier tools",
+      (registry.get(catalog) as Result)._tag,
+      "Initial",
+      "asking again must not keep the previous catalog",
     );
-  },
-);
+    backend.answerReads(list(2, [REVIEW]));
+    await until(registry, catalog, shows(REVIEW.name));
+  });
+
+test("a save whose own read fails shows the failure without the previous catalog", async (t) => {
+  const { registry, catalog, saved } = await open(t);
+  (await saved()).fail({ _tag: "ToolAvailabilityUnavailable" });
+  const failed = await until(registry, catalog, (value) => value._tag === "Failure");
+  assert.equal(
+    (AsyncResult.value(failed) as { _tag: string })._tag,
+    "None",
+    "a failed read keeps no earlier tools",
+  );
+});
