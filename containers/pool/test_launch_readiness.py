@@ -118,6 +118,31 @@ class ReadinessRefusalTests(unittest.TestCase):
         ready.note_policy_fused(ready.policy_observation_generation())
         self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
 
+    def test_a_fuse_before_the_first_lease_latches_onto_the_next_instance(self) -> None:
+        ready, _ = self.readiness()
+        ready.enable_policy_observations()
+        ready.note_policy_fused(ready.policy_observation_generation())
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        # The first instance seen after the fuse is the fused one: its probes cannot clear it.
+        self.assertFalse(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        self.assertFalse(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        # A newly loaded instance proves the veto again; services still need their audit.
+        self.assertTrue(ready.refresh_policy_lease("b" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "degraded")
+
+    def test_a_fused_instance_stays_fused_until_another_instance_loads(self) -> None:
+        ready, _ = self.readiness()
+        ready.enable_policy_observations()
+        self.assertTrue(ready.refresh_policy_lease("a" * 32))
+        ready.set_ready(True, audit_revision=ready.service_audit_revision())
+        ready.note_policy_fused(ready.policy_observation_generation())
+        self.assertFalse(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        self.assertTrue(ready.refresh_policy_lease("b" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "degraded")
+
     def test_an_expired_lease_is_unproven_even_with_healthy_services(self) -> None:
         ready, clock = self.readiness()
         ready.enable_policy_observations()

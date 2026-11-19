@@ -54,17 +54,19 @@ index d38011d..471a361 100644
  
  // RegisteredPlugins returns Home-loaded plugin metadata for management clients.
 diff --git a/internal/home/runtime.go b/internal/home/runtime.go
-index 6f8cd1c..f035026 100644
+index 6f8cd1c..bc675be 100644
 --- a/internal/home/runtime.go
 +++ b/internal/home/runtime.go
-@@ -49,6 +49,7 @@ type Runtime struct {
- 	accessManager           *access.Manager
- 	coreManager             *coreauth.Manager
- 	pluginHost              *sdkpluginhost.Host
-+	schedulerHost           schedulerHost
- 	pluginSyncMu            sync.Mutex
- 	pluginStoreSync         map[string]pluginStoreSyncState
- 	pluginStoreAuthResolver func(context.Context) ([]pluginstore.ResolvedAuthConfig, error)
+@@ -71,6 +71,9 @@ type Runtime struct {
+ 	cancel context.CancelFunc
+ 
+ 	fileWatcher interface{ Stop() error }
++
++	// schedulerHost replaces pluginHost's scheduling surface in tests.
++	schedulerHost schedulerHost
+ }
+ 
+ func (r *Runtime) SetPluginStoreAuthResolver(resolver func(context.Context) ([]pluginstore.ResolvedAuthConfig, error)) {
 diff --git a/internal/home/scheduler_required.go b/internal/home/scheduler_required.go
 new file mode 100644
 index 0000000..c575f0e
@@ -124,10 +126,10 @@ index 0000000..c575f0e
 +}
 diff --git a/internal/home/scheduler_required_test.go b/internal/home/scheduler_required_test.go
 new file mode 100644
-index 0000000..4172319
+index 0000000..8d802b3
 --- /dev/null
 +++ b/internal/home/scheduler_required_test.go
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,160 @@
 +package home
 +
 +import (
@@ -274,6 +276,15 @@ index 0000000..4172319
 +func TestSchedulerRequiredRefusesThroughTheRealHostWithNoSchedulerLoaded(t *testing.T) {
 +	_, manager := schedulerTestRuntime(t, true, nil, "policy-allowed")
 +	runtime := &Runtime{cfg: schedulerTestConfig(t, true), coreManager: manager, pluginHost: sdkpluginhost.New()}
++	manager.SetPluginScheduler(runtime)
++
++	auth, errDispatch := dispatchSchedulerTest(t, manager)
++	requireSchedulerUnavailable(t, auth, errDispatch)
++}
++
++func TestSchedulerRequiredRefusesWithoutAPluginHost(t *testing.T) {
++	_, manager := schedulerTestRuntime(t, true, nil, "policy-allowed")
++	runtime := &Runtime{cfg: schedulerTestConfig(t, true), coreManager: manager}
 +	manager.SetPluginScheduler(runtime)
 +
 +	auth, errDispatch := dispatchSchedulerTest(t, manager)
