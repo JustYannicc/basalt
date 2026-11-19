@@ -292,9 +292,9 @@ export class RuntimeEndpoint {
     });
   }
   /** Stops this runtime's container when it is running but refusing; see `RuntimeForcedStop`. */
-  stopRefusing(identity: SlotIdentity, force: boolean, signal: AbortSignal) {
+  stopRefusing(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
     this.bound(identity);
-    return this.serialize(() => this.forcedStop.stop(identity, force, signal));
+    return this.serialize(() => this.forcedStop.stop(identity, refusingSince, signal));
   }
   abortStartup(intent: StartupStopIntent, signal: AbortSignal) {
     this.bound(intent.target);

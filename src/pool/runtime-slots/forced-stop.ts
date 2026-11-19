@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { SlotRefused, executionKey, sameIdentity, type SlotIdentity } from "./contract.ts";
+import { SlotRefused, sameIdentity, type SlotIdentity } from "./contract.ts";
 import type { RuntimeWitnessStore, WitnessRecord } from "./witness-store.ts";
 import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
@@ -13,7 +13,10 @@ export const forcedStopsPerHour = 3;
 const hourMs = 3_600_000;
 /** A slow runtime that still answers within this is serving, and is never stopped. */
 export const servingReadMs = 10_000;
-/** Streams counted active only stop a forced stop until their count has stood still this long. */
+/**
+ * Streams counted active hold a forced stop until their count has stood still this long: one long
+ * live turn and a leaked count look alike, and this is the trade between the two.
+ */
 export const leakedStreamsMs = 300_000;
 /**
  * A restart's own start answers readiness, or meets its startup deadline, well within this of its
@@ -57,11 +60,11 @@ interface Dependencies {
  */
 export class RuntimeForcedStop {
   private deps: Dependencies;
-  private streams?: { boot: string; active: number; since: number };
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
-  async stop(identity: SlotIdentity, force: boolean, signal: AbortSignal) {
+  /** `refusingSince`: when the controller first saw this boot refuse while running. */
+  async stop(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
     const { ctx, store } = this.deps;
     const { record, configuration } = await store.read(identity);
     const container = ctx.container!;
@@ -69,8 +72,9 @@ export class RuntimeForcedStop {
       throw new SlotRefused("identity");
     if (!container.running) return { stopped: true, hard: false };
     if (await this.serving(identity, signal)) throw new SlotRefused("selection");
-    const active = await this.blockingStreams(identity, force);
-    if (active === undefined) throw new SlotRefused("draining");
+    const held = await this.heldBy(identity, refusingSince);
+    if (held && Date.now() - held.stillSince < leakedStreamsMs)
+      return { stopped: false, hard: false, waiting: held };
     if (await runtimeStopTiming.refreshInFlight()) throw new SlotRefused("draining");
     const now = Date.now();
     const recent = Schema.decodeUnknownSync(Stops)((await ctx.storage.get(stopsKey)) ?? []).filter(
@@ -81,7 +85,7 @@ export class RuntimeForcedStop {
     const path = await this.signal(container);
     console.error(
       "POOL_RUNTIME_FORCED_STOP",
-      JSON.stringify({ slot: identity.slotId, path, activeStreams: active, forced: force }),
+      JSON.stringify({ slot: identity.slotId, path, activeStreams: held?.active ?? 0 }),
     );
     return { stopped: !container.running, hard: path !== "graceful_exit" };
   }
@@ -121,19 +125,13 @@ export class RuntimeForcedStop {
       return Date.now() - authorization.at > restartStartBoundMs;
     }
   }
-  /** Active streams that may block the stop, or undefined while they still do. */
-  private async blockingStreams(identity: SlotIdentity, force: boolean) {
-    const active = (await this.deps.activity.inspect(identity))?.active ?? 0;
-    const boot = executionKey(identity);
-    const now = Date.now();
-    if (active === 0) {
-      this.streams = undefined;
-      return 0;
-    }
-    if (this.streams?.boot !== boot || this.streams.active !== active)
-      this.streams = { boot, active, since: now };
-    // Live traffic moves the count; a count that has stood still this long is leaked.
-    return force && now - this.streams.since >= leakedStreamsMs ? active : undefined;
+  /** The streams counted active on this boot and since when their count has stood still. */
+  private async heldBy(identity: SlotIdentity, refusingSince: number) {
+    const row = await this.deps.activity.inspect(identity);
+    if (!row?.active) return undefined;
+    // This code stamps every acquire and release, so an unstamped count has stood still at least
+    // since the controller, running this code, first saw the boot refuse.
+    return { active: row.active, stillSince: row.changedAt ?? refusingSince };
   }
   private async signal(container: NonNullable<ControllerState["container"]>): Promise<StopPath> {
     // Without SIGTERM the single root's Home, the elected master, would be killed mid-refresh.

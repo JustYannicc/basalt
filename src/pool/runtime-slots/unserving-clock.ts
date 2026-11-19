@@ -5,8 +5,6 @@ import type { RuntimeSlotStorage } from "./storage.ts";
 const clockKey = "runtime-slots-v1:unserving";
 /** A selected runtime that is running but refusing this long is stopped, so recovery replaces it. */
 export const unservingBoundMs = 60_000;
-/** Past this, a stop no longer waits for streams counted active; a leaked count can't block it. */
-export const unservingStreamCapMs = 300_000;
 /** A forced restart that hasn't produced a serving runtime by now has failed. */
 export const forcedRestartBudgetMs = 300_000;
 export const forcedRestartsPerHour = 3;
@@ -22,9 +20,11 @@ export const UnservingState = Schema.Struct({
   restartedAt: Schema.optional(Schema.Number),
   restarts: Schema.Array(Schema.Number),
   needsPerson: Schema.optional(NeedsPerson),
+  /** Streams counted active that hold the stop, and since when their count has stood still. */
+  streams: Schema.optional(Schema.Struct({ active: Schema.Number, stillSince: Schema.Number })),
 });
 export type UnservingState = typeof UnservingState.Type;
-type Decision = "wait" | "needs_person" | "restart_limit" | { force: boolean };
+type Decision = "wait" | "needs_person" | "restart_limit" | "stop";
 
 /** What the clock allows for this pass; pure, so the bounds are testable on their own. */
 export function unservingDecision(state: UnservingState, now: number): Decision {
@@ -32,7 +32,7 @@ export function unservingDecision(state: UnservingState, now: number): Decision 
   if (state.since === undefined || now - state.since < unservingBoundMs) return "wait";
   if (state.restarts.filter((at) => at > now - hourMs).length >= forcedRestartsPerHour)
     return "restart_limit";
-  return { force: now - state.since >= unservingStreamCapMs };
+  return "stop";
 }
 
 /**
@@ -60,7 +60,9 @@ export class UnservingClock {
   notRefusing() {
     if (this.clean) return Promise.resolve({ restarts: [] });
     return this.change((state) =>
-      state.since === undefined ? state : { ...state, since: undefined },
+      state.since === undefined && !state.streams
+        ? state
+        : { ...state, since: undefined, streams: undefined },
     );
   }
   /** A refusal of any kind: a forced restart that still hasn't served has failed. */
@@ -73,10 +75,19 @@ export class UnservingClock {
         : state,
     );
   }
+  /** The stop waits on streams; recorded so a person sees a wait, not a hang. */
+  waitingFor(streams: NonNullable<UnservingState["streams"]>) {
+    return this.change((state) =>
+      state.streams?.active === streams.active && state.streams.stillSince === streams.stillSince
+        ? state
+        : { ...state, streams },
+    );
+  }
   restarted(now: number) {
     return this.change((state) => ({
       ...state,
       since: undefined,
+      streams: undefined,
       restartedAt: now,
       restarts: [...state.restarts.filter((at) => at > now - hourMs), now],
     }));
@@ -90,7 +101,10 @@ export class UnservingClock {
   async serving() {
     if (this.clean) return;
     await this.change((state) =>
-      state.since === undefined && state.restartedAt === undefined && !state.needsPerson
+      state.since === undefined &&
+      state.restartedAt === undefined &&
+      !state.needsPerson &&
+      !state.streams
         ? state
         : { restarts: state.restarts },
     );

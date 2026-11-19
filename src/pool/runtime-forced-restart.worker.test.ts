@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
+import { leakedStreamsMs, runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import { unservingBoundMs } from "./runtime-slots/unserving-clock.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
@@ -322,5 +322,38 @@ test(
     advance(unservingBoundMs);
     await pass(f);
     assert.deepEqual(stopPaths(), ["stop_failed"], "no second stop after a failed one");
+  },
+);
+
+test(
+  "a stream count that stands still holds the stop for leakedStreamsMs from the first refusal, visibly",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance, stopPaths, phases } = await root(context);
+    // One stream that never ends: a live long turn and a leaked lease look the same.
+    f.onModel(async () => new Response(new ReadableStream<Uint8Array>({ start() {} })));
+    const open = await f.model(
+      new Request("http://pool/v1/responses", { method: "POST", body: "{}" }),
+    );
+    assert.equal(open.status, 200);
+    refuseCurrentBoot(f);
+    const firstRefusal = Date.now();
+    for (let elapsed = 0; elapsed < leakedStreamsMs; elapsed += 10_000) {
+      await pass(f);
+      advance(10_000);
+    }
+    assert.deepEqual(stopPaths(), [], "held while the count may still be live");
+    assert.ok(phases().includes("waiting_for_streams"));
+    const { recovery } = (await f.send("inspect")) as {
+      recovery: { streams?: { active: number; stillSince: number } };
+    };
+    assert.equal(recovery.streams?.active, 1);
+    assert.ok((recovery.streams?.stillSince ?? 0) <= firstRefusal);
+    advance(10_000);
+    await pass(f);
+    assert.deepEqual(stopPaths(), ["graceful_exit"]);
+    await open.body?.cancel().catch(() => {});
+    await pass(f);
+    assert.equal(await serves(f), true);
   },
 );

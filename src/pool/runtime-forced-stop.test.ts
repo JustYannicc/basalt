@@ -130,7 +130,7 @@ test("a restart's own boot is never stopped, while the old container under it is
   ];
   for (const [name, record, readiness, stops] of cases) {
     const { stop, signals } = stopper(context, record, readiness);
-    const result = stop.stop(selected, false, AbortSignal.timeout(5_000));
+    const result = stop.stop(selected, Date.now(), AbortSignal.timeout(5_000));
     if (stops) assert.deepEqual(await result, { stopped: true, hard: false }, name);
     else await assert.rejects(result, (error) => error instanceof SlotRefused, name);
     assert.deepEqual(signals, stops ? [15] : [], name);

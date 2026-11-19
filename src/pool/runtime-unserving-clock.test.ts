@@ -4,7 +4,6 @@ import {
   forcedRestartsPerHour,
   unservingBoundMs,
   unservingDecision,
-  unservingStreamCapMs,
 } from "./runtime-slots/unserving-clock.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 import { retainRuntimeFailure, runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
@@ -17,18 +16,13 @@ test("the clock stops a refusing runtime only after its bound, within its hourly
   assert.equal(unservingDecision({ restarts: [] }, since), "wait", "nothing refused yet");
   assert.equal(unservingDecision(state, since + 30_000), "wait", "a 30 s blip is never stopped");
   assert.equal(unservingDecision(state, since + unservingBoundMs - 1), "wait");
-  assert.deepEqual(unservingDecision(state, since + unservingBoundMs), { force: false });
-  assert.deepEqual(
-    unservingDecision(state, since + unservingStreamCapMs),
-    { force: true },
-    "past the stream cap a leaked stream count can't block the stop",
-  );
+  assert.equal(unservingDecision(state, since + unservingBoundMs), "stop");
   const now = since + unservingBoundMs;
   const restarts = Array.from({ length: forcedRestartsPerHour }, (_, index) => now - index * 1_000);
   assert.equal(unservingDecision({ since, restarts }, now), "restart_limit");
-  assert.deepEqual(
+  assert.equal(
     unservingDecision({ since, restarts }, now + 3_600_000),
-    { force: true },
+    "stop",
     "restarts older than an hour no longer count",
   );
   assert.equal(

@@ -68,9 +68,10 @@ export class RuntimeForcedRestart {
       return false;
     }
     const now = Date.now();
-    const decision = unservingDecision(await this.clock.refusing(pass.previous, now), now);
+    const state = await this.clock.refusing(pass.previous, now);
+    const decision = unservingDecision(state, now);
     if (decision === "restart_limit") this.report(await this.clock.needsPerson(decision, now), now);
-    if (typeof decision === "string") return false;
+    if (decision !== "stop") return false;
     // A fence, candidate or policy edit committed since the pass began must win over the stop.
     const unchanged = await this.storage.transact(async (latest) => {
       const selection = latest.selection;
@@ -89,15 +90,30 @@ export class RuntimeForcedRestart {
       phase: "stopping",
       at: now,
       slot: pass.previous.slotId,
-      force: decision.force,
       refusal: reason,
     });
-    let result: { stopped: boolean; limited?: boolean };
+    let result: Awaited<ReturnType<BoundSlotDriver["stopRefusing"]>>;
     try {
-      result = await this.driver.stopRefusing(pass.previous, decision.force, signal);
+      result = await this.driver.stopRefusing(pass.previous, state.since ?? now, signal);
     } catch {
       // The endpoint declined for now (streams, a refresh in flight, or it answers health), or
       // the call didn't land; a later pass asks again, and nothing here marks it failed.
+      return false;
+    }
+    if (result.waiting) {
+      const before = state.streams;
+      await this.clock.waitingFor(result.waiting);
+      if (
+        before?.active !== result.waiting.active ||
+        before.stillSince !== result.waiting.stillSince
+      )
+        console.info("POOL_SELECTED_RECOVERY", {
+          phase: "waiting_for_streams",
+          at: now,
+          slot: pass.previous.slotId,
+          activeStreams: result.waiting.active,
+          stillSince: result.waiting.stillSince,
+        });
       return false;
     }
     if (result.limited) this.report(await this.clock.needsPerson("restart_limit", now), now);

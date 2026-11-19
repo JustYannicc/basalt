@@ -149,13 +149,21 @@ export class BoundSlotDriver implements SlotDriver {
   async witness(target: SlotTarget) {
     return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
   }
-  async stopRefusing(identity: SlotIdentity, force: boolean, signal: AbortSignal) {
-    const response = await this.call(identity, "stop-refusing", { identity, force }, signal);
+  async stopRefusing(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
+    const response = await this.call(
+      identity,
+      "stop-refusing",
+      { identity, refusingSince },
+      signal,
+    );
     return Schema.decodeUnknownSync(
       Schema.Struct({
         stopped: Schema.Boolean,
         hard: Schema.Boolean,
         limited: Schema.optional(Schema.Boolean),
+        waiting: Schema.optional(
+          Schema.Struct({ active: Schema.Number, stillSince: Schema.Number }),
+        ),
       }),
     )(await response.json());
   }
@@ -341,12 +349,12 @@ export async function runtimeRequest(
       if (action === "/install") await endpoint.install(identity, policy, request.signal);
       else await endpoint.native(identity, policy, request.signal);
     } else if (action === "/stop-refusing") {
-      const { identity, force } = runtimeInput(() =>
-        Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity, force: Schema.Boolean }))(
-          value,
-        ),
+      const { identity, refusingSince } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({ identity: SlotIdentity, refusingSince: Schema.Number }),
+        )(value),
       );
-      return Response.json(await endpoint.stopRefusing(identity, force, request.signal));
+      return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
     } else if (action === "/drain") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
