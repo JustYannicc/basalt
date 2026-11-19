@@ -303,6 +303,50 @@ test("waits", async () => {
   await setTimeout(100);
 });
 `,
+  // An object made for one request may record a field of it; a store a later read serves may not,
+  // whatever it is named.
+  "scripts/evasions/test/records.ts": `
+declare function readBody(request: Request): Promise<string>;
+const calls: unknown[] = [];
+const messages: Record<string, unknown> = {};
+const catalog = { apps: [] as unknown[] };
+const history = { latest: undefined as unknown };
+const log = { policy: "" };
+export const notion = async (request: Request) => {
+  const call = { path: new URL(request.url).pathname, rpc: undefined as unknown };
+  calls.push(call);
+  const body = JSON.parse(await readBody(request));
+  call.rpc = body.method;
+  return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+};
+export const stores = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  messages[body.id] = body; // expect: basalt/no-echo-stub
+  catalog.apps = body.apps; // expect: basalt/no-echo-stub
+  history.latest = body; // expect: basalt/no-echo-stub
+  log.policy = body.policy; // expect: basalt/no-echo-stub
+  return Response.json(history.latest);
+};
+export const sameRequest = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const reply = { policy: "" };
+  reply.policy = body.policy; // expect: basalt/no-echo-stub
+  return Response.json(reply);
+};
+export const nodeAnswer = async (request: Request, res: { json(value: unknown): void }) => {
+  const body = JSON.parse(await readBody(request));
+  const out = { name: "" };
+  out.name = body.name; // expect: basalt/no-echo-stub
+  res.json({ ok: true, out });
+};
+export const wholeBody = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const call = { body: undefined as unknown };
+  call.body = body; // expect: basalt/no-echo-stub
+  calls.push(call);
+  return new Response("ok");
+};
+`,
   "src/pool/aliased.test.ts": `
 import { mock as m, test } from "node:test";
 test("aliased", (t) => {

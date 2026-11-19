@@ -31,7 +31,7 @@ const STORES = new Set(["push", "unshift", "set", "splice"]);
 const ANSWERS = new Set(["end", "write", "send", "json"]);
 // A request kept to assert on later is the honest pattern, not an echo.
 const RECORDER =
-  /(?:calls?|requests|writes|posted|posts|events|seen|received|captured|recorded|sent|logs?|history|bodies|payloads|updates|envelopes|messages)$/iu;
+  /(?:calls|requests|writes|posted|posts|events|seen|received|captured|recorded|sent|logs?|history|bodies|payloads|updates|envelopes|messages)$/iu;
 const RESPONDER = /^(?:res|response|reply)$/u;
 // A collection that keeps what it was sent: `users.push(...)`, not `requests.push(...)`.
 const store = (call) =>
@@ -95,6 +95,24 @@ const readsBody = (context, input) => {
 const asserted = (call) => ["assert", "expect"].includes(memberRoot(call.callee));
 const handler = (fn) =>
   fn.params.some((param) => param.type === "Identifier" && HANDLER_PARAMS.test(param.name));
+const enclosingFunction = (node) => {
+  let current = node.parent;
+  while (current && !/Function/u.test(current.type)) current = current.parent;
+  return current;
+};
+const within = (inner, outer) =>
+  inner.range[0] >= outer.range[0] && inner.range[1] <= outer.range[1];
+// Identifiers in a value, without the functions nested in it.
+const identifiers = (node, found = []) => {
+  if (!node || typeof node.type !== "string" || /Function/u.test(node.type)) return found;
+  if (node.type === "Identifier") found.push(node);
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "parent") continue;
+    if (Array.isArray(value)) value.forEach((child) => identifiers(child, found));
+    else if (value && typeof value === "object") identifiers(value, found);
+  }
+  return found;
+};
 
 export const noEchoStub = {
   meta: {
@@ -104,6 +122,15 @@ export const noEchoStub = {
   create(context) {
     if (!isTest(context)) return {};
     const bodies = new WeakSet();
+    // Per-request records (`call.rpc = body.method`) and the declarations a response reads.
+    const records = [];
+    const answered = new WeakSet();
+    const answer_ = (value) => {
+      for (const identifier of identifiers(value)) {
+        const declarator = variableInit(context, identifier);
+        if (declarator) answered.add(declarator);
+      }
+    };
     // The request body, or structuredClone of it, or a member of it.
     const bodyName = (input) => {
       let node = unwrap(input);
@@ -166,20 +193,38 @@ export const noEchoStub = {
       // `app = body` or `state.app.policy = body.policy`: what was sent is what a later read returns.
       AssignmentExpression(node) {
         if (node.left.type === "ObjectPattern" || !bodyName(node.right)) return;
-        // `call.rpc = body.method` records the request for an assertion, like `calls.push(body)`.
-        if (node.left.type === "MemberExpression" && RECORDER.test(memberRoot(node.left) ?? ""))
-          return;
+        // `call.rpc = body.method` records one field of this request on an object made for this
+        // request. It cannot be served to a later request, and it is an echo only if a response
+        // here reads it, which Program:exit decides once every response has been seen.
+        if (
+          node.left.type === "MemberExpression" &&
+          !node.left.computed &&
+          unwrap(node.right)?.type === "MemberExpression"
+        ) {
+          const root = memberRootNode(node.left);
+          const declarator = root?.type === "Identifier" ? variableInit(context, root) : undefined;
+          const fn = enclosingFunction(node);
+          if (unwrap(declarator?.init)?.type === "ObjectExpression" && fn && within(declarator, fn))
+            return void records.push([node, declarator]);
+        }
         if (node.left.type !== "Identifier" || !variableInit(context, node.left)?.init)
           context.report({ node, message });
       },
       ReturnStatement(node) {
         let fn = node.parent;
         while (fn && !/Function/u.test(fn.type)) fn = fn.parent;
+        if (fn && handler(fn)) answer_(node.argument);
         if (fn && handler(fn) && bodyName(node.argument)) context.report({ node, message });
+      },
+      "Program:exit"() {
+        for (const [node, declarator] of records)
+          if (answered.has(declarator)) context.report({ node, message });
       },
       CallExpression(node) {
         const name = propertyName(node.callee);
         const root = memberRoot(node.callee);
+        if (answer(node) || (root === "Response" && name === "json"))
+          node.arguments.forEach(answer_);
         // Object.assign(stored, body) and users.push(body) keep what was sent.
         if (
           root === "Object" &&
@@ -195,6 +240,7 @@ export const noEchoStub = {
           context.report({ node, message });
       },
       NewExpression(node) {
+        if (propertyName(node.callee) === "Response") answer_(node.arguments[0]);
         if (propertyName(node.callee) === "Response" && bodyName(node.arguments[0]))
           context.report({ node, message });
       },
