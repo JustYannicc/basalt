@@ -162,7 +162,7 @@ if (name === 'apt-get') {
   );
   const output = join(root, "output");
   const started = Date.now();
-  let result = spawnSync("true");
+  let result = spawnSync("true", { encoding: "utf8" });
   for (const id of ids) {
     const step = workflow.runs.steps.find(
       (candidate: { id?: string; name?: string }) => candidate.id === id || candidate.name === id,
