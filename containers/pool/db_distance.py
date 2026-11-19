@@ -12,13 +12,14 @@ import os
 import re
 import socket
 import statistics
-import sys
 import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping
-from typing import Any, Literal
 from dataclasses import dataclass
+from typing import Any, Literal
+
+from .output import emit
 
 ATTEMPTS = 7
 MIN_SAMPLES = 3
@@ -139,10 +140,6 @@ def report(distance: Distance, where: str | None) -> None:
         "location": where,
     }
     try:
-        print(
-            "POOL_DB_DISTANCE " + json.dumps(payload, separators=(",", ":")),
-            file=sys.stdout,
-            flush=True,
-        )
+        emit("POOL_DB_DISTANCE " + json.dumps(payload, separators=(",", ":")))
     except (OSError, ValueError):
         pass

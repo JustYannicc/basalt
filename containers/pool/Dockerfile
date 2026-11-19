@@ -13,7 +13,7 @@ COPY --from=source-fetch /source /source
 COPY native /source/node/internal/nativeapi
 COPY home_websocket_continuation_test.go.tmpl /source/node/sdk/api/handlers/openai/basalt_home_websocket_continuation_test.go
 COPY node_funding_retry_test.go.tmpl /source/node/sdk/api/handlers/openai/basalt_funding_retry_test.go
-RUN cd /source/home && go test -p=2 -mod=readonly ./internal/auth/xai ./internal/quota ./internal/cluster ./internal/cluster/management ./internal/logging ./internal/managementhttp ./internal/home ./internal/cliproxy/auth ./internal/respserver/pop/dynamic ./internal/respserver/push ./internal/respserver ./cmd/home ./internal/dispatchtiming -run 'TestDatabaseMigrate|TestClaudeModernScopedLimits|TestClaudeScopedReset|TestClaudeShapeDiagnostic|TestUsageCredit|TestQuotaFieldDiagnostic|TestQuotaCollectionSignal|TestHomeDBPoolSettings|TestHomeDBPoolConfigYAML|TestHomeDBPoolCapabilities|TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes|TestXAI|TestBasaltHomeDispatchTiming|TestDispatchExpiry|TestSchedulerRequired|TestSchedulerNotRequired' -count=1 && \
+RUN cd /source/home && go test -p=2 -mod=readonly ./internal/auth/xai ./internal/quota ./internal/cluster ./internal/cluster/management ./internal/logging ./internal/managementhttp ./internal/home ./internal/cliproxy/auth ./internal/respserver/pop/dynamic ./internal/respserver/push ./internal/respserver ./cmd/home ./internal/dispatchtiming -run 'TestDatabaseMigrate|TestClaudeModernScopedLimits|TestClaudeScopedReset|TestClaudeShapeDiagnostic|TestUsageCredit|TestQuotaFieldDiagnostic|TestQuotaCollectionSignal|TestHomeDBPoolSettings|TestHomeDBPoolConfigYAML|TestHomeDBPoolCapabilities|TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes|TestXAI|TestBasaltHomeDispatchTiming|TestDispatchExpiry|TestSchedulerRequired|TestSchedulerNotRequired|TestAClaimedRefresh|TestARefreshWaiting|TestARejectedRefresh|TestADrain|TestRefreshRejections|TestHealthRoute|TestRunDrains' -count=1 && \
     cd /source/node && go test -p=2 -mod=readonly ./internal/home ./sdk/cliproxy/auth ./sdk/httptransport ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/runtime/executor ./internal/logging ./sdk/api/handlers ./sdk/api/handlers/openai ./sdk/api/handlers/claude ./internal/dispatchtiming ./internal/api ./internal/nativeapi ./internal/pluginhost ./internal/wsrelay ./sdk/cliproxy/executor -run 'TestBasaltUsageCredit|MetadataOnly|TestBasaltHomeOnlyModelContinuation|TestBasaltNodeDispatchTiming|TestBasaltModelDrain|TestTerminalRequest|TestParseTerminalRequestID|TestUsageQueuePluginSeparatesTerminalAndExecutionIDs|TestCodexDuplexSuccessorsKeepTerminalAndExecutionIDsSeparate|TestGetContextWithCancelAcknowledgesTerminalRequestID|TestResponsesWebsocketInputTypeUsesFirstBoundedRootString|TestResponsesWebsocketTerminalProtocolIsAcknowledgedIn101|TestHTTPSubmission|TestSubmissionGuard|TestWriteClaudeError|TestFastCredential429RecordsResultAndCools|TestTerminalBootstrapRecordsCredentialCooldown|TestTypeSafeSubmission|^(TestHomeNonForceAliasSessionReuseAndTargetChangeReleasesAccountedModel|TestHomeAuthSelectionRouteRetainsRequestedResponseAliasAcrossWebsocketReuse|TestResponsesInterruptUsesHomeSessionAuth|TestResponsesWebsocketHomePinned429ReplaysWith1012WhenAuthenticatedAlternativeExists|TestResponsesWebsocketUsesObservedCompactionResponseForHomeRuntimeAuth)$|Test.*[Ww]ebsocket|TestWriteGeneration|TestSubmission|TestVertexSubmission|TestDecorator|TestInheritDecorator|TestAcceptedExecutorErrorClassification|TestProviderError|TestUsageReporterTrackHTTPClient|Test.*TransportDecorator|TestAntigravity.*Transport|Test.*CountTokens|TestCount|TestPluginSubmission|TestHostHTTPClient|TestDecodeHostHTTPRequest|TestExecutorAdapterExecute' -count=1
 RUN cd /source/node && go test -race -p=2 -mod=readonly ./internal/api -run '^TestBasaltModelLifetime' -count=1
 COPY home_log_framing.go.tmpl /source/home/cmd/basalt-log-framing/main.go
@@ -90,14 +90,14 @@ WORKDIR /opt/pool
 COPY __init__.py /opt/pool/__init__.py
 COPY supervisor.py /opt/pool/supervisor.py
 COPY recovery.py recovery_deadline.py recovery_http.py recovery_signals.py /opt/pool/
-COPY child_signals.py quota_signals.py dispatch_signals.py /opt/pool/
+COPY child_signals.py quota_signals.py dispatch_signals.py refresh_signals.py /opt/pool/
 COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY home_identity.py home_peer.py home_peer_wire.py /opt/pool/
 COPY billing_policy.py billing-settings.json /opt/pool/
 COPY readiness.py service_health.py policy_diagnostic.py /opt/pool/
-COPY db_distance.py db_signals.py /opt/pool/
+COPY db_distance.py db_signals.py output.py /opt/pool/
 COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY policy_check.py /opt/pool/policy_check.py
 COPY healthcheck.py /opt/pool/healthcheck.py

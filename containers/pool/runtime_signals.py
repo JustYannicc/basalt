@@ -10,7 +10,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import Enum, IntEnum
 from types import TracebackType
+
 from .crash_tail import HomeCrashTail
+from .output import emit
 
 
 STARTUP_PHASE_MARKER = "POOL_STARTUP_PHASE "
@@ -53,13 +55,12 @@ def report_child_exit(
     try:
         receipt = {"child": name, "exit_code": exit_code, "category": int(category)}
         tail = diagnostics.snapshot() if name == "home" and isinstance(diagnostics, HomeCrashTail) else []
-        print(
+        emit(
             "POOL_CHILD_EXIT " + json.dumps(
                 {**receipt, **({"output_tail": tail} if tail else {})},
                 separators=(",", ":"),
             ),
-            file=sys.stderr,
-            flush=True,
+            err=True,
         )
     except Exception:
         pass
@@ -108,11 +109,7 @@ def report_startup_phase(
         "duration_ms": end_ms - start_ms,
     }
     try:
-        print(
-            STARTUP_PHASE_MARKER + json.dumps(payload, separators=(",", ":")),
-            file=sys.stdout,
-            flush=True,
-        )
+        emit(STARTUP_PHASE_MARKER + json.dumps(payload, separators=(",", ":")))
     except Exception:
         # A diagnostic write must not change pool startup behavior.
         pass
@@ -135,11 +132,10 @@ def startup_phase(
 
 
 def report_failure(category: FailureCategory) -> None:
-    print(
+    emit(
         "POOL_RUNTIME_FAILURE "
         + json.dumps({"category": int(category), "count": 1}, separators=(",", ":")),
-        file=sys.stderr,
-        flush=True,
+        err=True,
     )
 
 

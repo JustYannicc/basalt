@@ -16,6 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .child_signals import MAX_HOME_SIGNAL_INTEGER
+from .output import emit
 from .pool_contract import HOME_URL, request_json
 
 SLOW_STATEMENT_MARKER = "POOL_HOME_SLOW_SQL "
@@ -141,4 +142,4 @@ class DatabasePoolPoll:
         ):
             self._reported_wait_count = counters["wait_count"]
             self._reported_at = now
-            print(database_pool_line(counters), flush=True)
+            emit(database_pool_line(counters))
