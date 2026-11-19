@@ -44,6 +44,9 @@ export function signInValues(document: unknown, protocol: "dcr" | "cimd"): Field
     token_endpoint: server.token_endpoint,
     registration_endpoint: server.registration_endpoint,
     client_id_metadata_document_supported: server.client_id_metadata_document_supported,
+    // The callback check requires `iss` exactly when the server advertises it.
+    authorization_response_iss_parameter_supported:
+      server.authorization_response_iss_parameter_supported,
     "token endpoint auth method":
       methods === undefined || methods.includes(method) ? method : `${method} (not offered)`,
     "S256 PKCE accepted": challenges === undefined || challenges.includes("S256"),

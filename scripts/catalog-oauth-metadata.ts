@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { OAuthEvidence, OAuthReview } from "../src/catalog/oauth-policy.ts";
+import type { OAuthReview } from "../src/catalog/oauth-policy.ts";
 
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)
@@ -53,7 +53,10 @@ export const automaticDecisions = (reviews: readonly OAuthReview[]) =>
     ),
   );
 
-type MetadataEvidence = Required<Pick<OAuthEvidence, "metadata" | "metadataFailures">>;
+type MetadataEvidence = {
+  metadata: Map<string, { sha256: string; document: unknown }>;
+  metadataFailures: Map<string, string>;
+};
 
 /** Exactly one entry owns each document, so a re-pin rewrites exactly one snapshot. */
 export function committedOAuthMetadata(

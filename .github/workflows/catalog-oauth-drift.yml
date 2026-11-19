@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   metadata:
+    name: Sign-in metadata
     if: github.repository == 'JustYannicc/basalt'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -40,6 +41,7 @@ jobs:
           exit 1
 
   repin:
+    name: Re-pin ${{ matrix.entry }}
     needs: metadata
     if: ${{ !cancelled() && needs.metadata.outputs.entries != '' && needs.metadata.outputs.entries != '[]' }}
     runs-on: ubuntu-latest
@@ -69,11 +71,13 @@ jobs:
           commit-message: "chore(catalog): re-pin ${{ matrix.entry }} OAuth metadata"
           body-path: ${{ runner.temp }}/catalog-oauth-drift.md
           draft: false
+          labels: oauth-metadata-drift
           add-paths: |
             src/catalog/${{ matrix.entry }}.oauth-metadata.json
             src/catalog/oauth-reviews.json
 
   catalog:
+    name: Published catalog coverage
     if: github.repository == 'JustYannicc/basalt'
     runs-on: ubuntu-latest
     timeout-minutes: 20
