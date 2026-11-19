@@ -41,20 +41,22 @@ const credentials = {
     ),
 };
 
-/** The operator's client, public when it runs the anonymous check, which only public ones may. */
-const operator = (id: string, clientId: string, checked = false) =>
-  Schema.decodeUnknownSync(FirstPartyOAuthClient)({
-    id,
-    label: `Fixture ${id}`,
-    server,
-    clientId,
-    ...(checked
-      ? { tokenEndpointAuthMethod: "none", checkAuthorization: true }
-      : { tokenEndpointAuthMethod: "client_secret_post", clientSecret: "different-secret" }),
-    setupInstructions: "Register {redirectUri} for the client {clientId}.",
-    defaultScopes: ["read"],
-    placement: { hosts: ["api.example.test"] },
-  });
+/**
+ * The operator's client as configuration supplies it, public when it runs the anonymous check,
+ * which only public ones may. `signIn` decodes it the way the host does.
+ */
+const operator = (id: string, clientId: string, checked = false): unknown => ({
+  id,
+  label: `Fixture ${id}`,
+  server,
+  clientId,
+  ...(checked
+    ? { tokenEndpointAuthMethod: "none", checkAuthorization: true }
+    : { tokenEndpointAuthMethod: "client_secret_post", clientSecret: "different-secret" }),
+  setupInstructions: "Register {redirectUri} for the client {clientId}.",
+  defaultScopes: ["read"],
+  placement: { hosts: ["api.example.test"] },
+});
 
 interface Flow {
   readonly executor: sdk.Executor;
@@ -66,7 +68,7 @@ interface Flow {
 /** One app requiring a fixture service, a pending connection for it and a recording transport. */
 const signIn = <A, E>(
   setup: {
-    readonly operators?: readonly FirstPartyOAuthClient[];
+    readonly operators?: readonly unknown[];
     /** The service registers clients and answers registration with this. */
     readonly registered?: Record<string, unknown>;
   },
@@ -76,6 +78,9 @@ const signIn = <A, E>(
     Effect.scoped(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        const operators = yield* Effect.forEach(setup.operators ?? [], (client) =>
+          Schema.decodeUnknownEffect(FirstPartyOAuthClient)(client),
+        ).pipe(Effect.orDie);
         const database = yield* sdk.makeExecutorStorage({ provider: "postgresql" });
         yield* database.migrate;
         const requests: string[] = [];
@@ -181,7 +186,7 @@ const signIn = <A, E>(
             clientName: "Executor",
             httpClient,
             urlPolicy: defaultUrlPolicy,
-            firstPartyClients: setup.operators ?? [],
+            firstPartyClients: operators,
           },
         });
         const connection = yield* executor.accountConnections.create({
