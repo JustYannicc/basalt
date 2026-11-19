@@ -12,15 +12,14 @@ import os
 import re
 import socket
 import statistics
-import sys
 import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from .output import emit
-from dataclasses import dataclass
 
 ATTEMPTS = 7
 MIN_SAMPLES = 3
