@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from types import SimpleNamespace
@@ -62,7 +63,15 @@ def fake_child(name: str, clock: Clock) -> supervisor.Child:
 
 class SelectedSupervisorTests(unittest.TestCase):
     def run_selected(
-        self, on_tick, *, monitor_dies: bool = False, environment=LAUNCH, on_startup_wait=None, services=True
+        self,
+        on_tick,
+        *,
+        monitor_dies: bool = False,
+        environment=LAUNCH,
+        on_startup_wait=None,
+        services=True,
+        boot=None,
+        prepare=None,
     ):
         clock = Clock()
         stop = Stop(clock)
@@ -83,6 +92,8 @@ class SelectedSupervisorTests(unittest.TestCase):
         def ready_server(ready: Readiness) -> Mock:
             readiness.append(ready)
             ready.refresh_policy_lease("b" * 32)
+            if prepare is not None:
+                prepare(ready, stop)
             servers.append(Mock())
             return servers[-1]
 
@@ -116,6 +127,7 @@ class SelectedSupervisorTests(unittest.TestCase):
 
         stop.on_wait = on_wait
         health = SimpleNamespace(check=lambda: True, invalidate=lambda: None)
+        self.service_health = Mock(return_value=health)
         stderr = io.StringIO()
         with ExitStack() as stack:
             root = stack.enter_context(tempfile.TemporaryDirectory())
@@ -126,11 +138,11 @@ class SelectedSupervisorTests(unittest.TestCase):
                 "child_environment": Mock(return_value={}),
                 "start_ready_server": ready_server,
                 "Child": make_child,
-                "wait_for_home": Mock(return_value="ready"),
+                "wait_for_home": boot or Mock(return_value="ready"),
                 "apply_pool_config": Mock(),
                 "create_node_jwt": Mock(return_value=("node", "jwt")),
                 "check_services": Mock(return_value=services),
-                "ServiceHealth": Mock(return_value=health),
+                "ServiceHealth": self.service_health,
                 "DatabasePoolPoll": Mock(),
                 "PolicyHealthMonitor": Monitor,
                 "terminate_children": Mock(side_effect=at_terminate),
@@ -225,6 +237,31 @@ class SelectedSupervisorTests(unittest.TestCase):
         result, launched, ready, stderr, ticks = self.run_selected(lambda *_args: None)
         self.assertEqual((result, ticks), (0, TICKS))
         self.assertNotIn("POOL_SUPERVISOR_STOP", stderr)
+        # The liveness check is what puts Home's refresh count on /ready.
+        self.assertEqual(self.service_health.call_args.kwargs.get("observe"), ready.note_refresh_in_flight)
+
+    def test_a_home_exit_during_boot_ends_the_container(self) -> None:
+        boot = Mock(side_effect=supervisor.HomeExited(1))
+        self.assert_ended(self.run_selected(lambda *_args: None, boot=boot), "child_exit")
+
+    def test_a_child_exit_during_initial_health_ends_the_container(self) -> None:
+        def exit_node(launched, _ready):
+            next(child for child in launched if child.name == "node").exit_code = 1
+
+        self.assert_ended(
+            self.run_selected(lambda *_args: None, on_startup_wait=exit_node, services=False), "child_exit"
+        )
+
+    def test_a_stop_that_ends_the_monitor_is_not_reported_as_its_death(self) -> None:
+        def sigterm_during_the_check(ready, stop):
+            # SIGTERM lands between the loop's stop check and the serving check.
+            ready.policy_fused = lambda: (stop.set(), False)[1]
+
+        result, _launched, _ready, stderr, _ticks = self.run_selected(
+            lambda *_args: None, monitor_dies=True, services=False, prepare=sigterm_during_the_check
+        )
+        self.assertEqual(result, 0)
+        self.assertNotIn("POOL_SUPERVISOR_STOP", stderr)
 
     def test_the_legacy_launch_keeps_its_in_place_replacement(self) -> None:
         def exit_home(tick, launched, _ready, _clock):
@@ -235,6 +272,47 @@ class SelectedSupervisorTests(unittest.TestCase):
         result, launched, _ready, stderr, _ticks = self.run_selected(exit_home, environment={})
         self.assertEqual([child.name for child in launched].count("home"), 2)
         self.assertNotIn("POOL_SUPERVISOR_STOP", stderr)
+
+
+class ServingFailureTests(unittest.TestCase):
+    def test_a_fuse_cleared_by_a_reloaded_instance_still_ends_the_container(self) -> None:
+        ready = Readiness("fixture", monotonic_ns=lambda: 1)
+        ready.enable_policy_observations()
+        self.assertTrue(ready.refresh_policy_lease("a" * 32))
+        ready.note_policy_fused(ready.policy_observation_generation())
+        self.assertTrue(ready.refresh_policy_lease("b" * 32))
+        self.assertFalse(ready.policy_fused())
+        self.assertEqual(supervisor.serving_failure([], None, ready, 0), "policy_fused")
+
+    def test_a_dead_reader_during_home_boot_ends_it_at_once(self) -> None:
+        child = fake_child("home", Clock())
+        stop = threading.Event()
+        with patch.object(supervisor, "management_ready", return_value=False):
+            with self.assertRaises(supervisor.ContainerEnding) as ending:
+                supervisor.wait_for_home(child, "fixture", stop, lambda: "reader_dead")
+        self.assertEqual(ending.exception.reason, "reader_dead")
+
+    def test_a_real_reader_stuck_on_one_line_is_blocked(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck(_name, _line):
+            entered.set()
+            release.wait(10)
+
+        with tempfile.TemporaryDirectory() as root, patch.object(supervisor, "safe_child_output_line", stuck):
+            child = supervisor.Child("home", [sys.executable, "-c", "import time; print('one line', flush=True); time.sleep(30)"], {}, pathlib.Path(root))
+            try:
+                self.assertTrue(entered.wait(10), "the reader never reached the line")
+                later = time.monotonic() + supervisor.READER_STALL_SECONDS + 1
+                self.assertEqual(child.reader_failure(later), "reader_blocked")
+                self.assertIsNone(child.reader_failure(time.monotonic()))
+            finally:
+                release.set()
+                child.process.kill()
+                child.process.wait(5)
+                child._reader.join(5)
+                child.process.stdout.close()
 
 
 class BlockingStream(io.TextIOBase):

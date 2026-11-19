@@ -62,7 +62,7 @@ HOME_BINARY = "/usr/local/bin/cliproxy-home"
 NODE_BINARY = "/usr/local/bin/cliproxy-node"
 BOOTSTRAP_MARKER = "database config is empty; run with -import first"
 STARTUP_TIMEOUT_SECONDS = 180
-# The Worker's forced-stop bound must stay longer than this grace plus the kill wait.
+# Whatever force-stops the container must wait longer than this grace plus the 1 s kill wait.
 # Home drains claimed credential refreshes on SIGTERM for up to 45 s (carry 0695) after a 5 s
 # HTTP shutdown; killing it sooner can lose a refresh token the provider has already rotated.
 CHILD_STOP_GRACE_SECONDS = 60
@@ -182,7 +182,8 @@ def serving_failure(
     now: float,
 ) -> str | None:
     """A child that is alive but can never serve again, in a fixed order of precedence."""
-    if readiness.policy_fused():
+    # Latched: the main loop polls every 2 s and a reloaded plugin instance clears the level.
+    if readiness.policy_fused() or readiness.fuse_seen():
         return "policy_fused"
     if monitor is not None and not monitor.is_alive():
         return "monitor_dead"
@@ -234,9 +235,13 @@ def wait_for_home(
     child: Child,
     management_key: str,
     stop: threading.Event,
+    failure: Callable[[], str | None] | None = None,
 ) -> str:
     deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
     while not stop.is_set() and time.monotonic() < deadline:
+        reason = failure() if failure is not None else None
+        if reason is not None:
+            raise ContainerEnding(reason)
         exit_code = child.process.poll()
         if exit_code is not None:
             try:
@@ -319,6 +324,8 @@ def terminate_children(children: list[Child]) -> None:
     # Kill every remaining owned child before waiting for any one of them.
     for child in children:
         if child.process.poll() is None:
+            # Home killed here may lose a refresh token its provider already rotated.
+            emit("POOL_CHILD_KILLED " + json.dumps({"child": child.name}, separators=(",", ":")), err=True)
             child.process.kill()
     for child in children:
         child.process.wait(timeout=remaining(1) if deadline else 1)
@@ -376,6 +383,22 @@ def main(stop: threading.Event | None = None) -> int:
             home_peers = HomePeers(home_identity.ordinal)
             home_peers.start()
 
+        def startup_failure() -> str | None:
+            if not selected:
+                return None
+            reason = serving_failure(children, policy_monitor_thread, readiness, time.monotonic())
+            # A stop in progress also ends the monitor; that is a stop, not a failure.
+            return None if stop.is_set() else reason
+
+        def boot_home(child: Child) -> str:
+            try:
+                return wait_for_home(child, management_key, stop, startup_failure)
+            except HomeExited:
+                if selected:
+                    # The controller refuses a boot it did not start; a stopped container restarts.
+                    raise ContainerEnding("child_exit") from None
+                raise
+
         def launch_generation(recovering: bool = False) -> tuple[str, int]:
             """Reuse boot, child capture and health gates; import only on first boot."""
             nonlocal category
@@ -398,7 +421,7 @@ def main(stop: threading.Event | None = None) -> int:
                 )
                 children.append(home_child)
                 readiness.enable_policy_observations()
-                home_state = wait_for_home(home_child, management_key, stop)
+                home_state = boot_home(home_child)
             if home_state == "stop":
                 raise RecoveryCancelled()
             if home_state == "empty" and recovering:
@@ -427,7 +450,7 @@ def main(stop: threading.Event | None = None) -> int:
                     )
                     children[-1] = home_child
                     readiness.enable_policy_observations()
-                    home_state = wait_for_home(home_child, management_key, stop)
+                    home_state = boot_home(home_child)
                 if home_state == "stop":
                     raise RecoveryCancelled()
                 if home_state != "ready":
@@ -471,17 +494,16 @@ def main(stop: threading.Event | None = None) -> int:
                     if failed:
                         for child, exit_code in failed:
                             report_exit(child, exit_code, category)
+                        if selected:
+                            raise ContainerEnding("child_exit")
                         if len(failed) == 1 and failed[0][0].name == "home":
                             raise HomeExited(failed[0][1])
                         raise StartupError("Pool child exited before initial health")
                     operation_timeout(STARTUP_TIMEOUT_SECONDS)
-                    if selected:
-                        # Waiting out the startup timeout would only delay the same ending.
-                        reason = serving_failure(
-                            children, policy_monitor_thread, readiness, time.monotonic()
-                        )
-                        if reason is not None:
-                            raise ContainerEnding(reason)
+                    # Waiting out the startup timeout would only delay the same ending.
+                    reason = startup_failure()
+                    if reason is not None:
+                        raise ContainerEnding(reason)
                     if recovering and readiness.policy_fused():
                         raise StartupError("Policy fused during recovery")
                     audit_revision = readiness.service_audit_revision()
@@ -564,7 +586,8 @@ def main(stop: threading.Event | None = None) -> int:
                 reason = serving_failure(
                     children, policy_monitor_thread, readiness, observed_at
                 )
-                if reason is not None:
+                # A SIGTERM landing here also ends the monitor; that is a stop, not a failure.
+                if reason is not None and not stop.is_set():
                     readiness.set_ready(False)
                     raise ContainerEnding(reason)
             current_revision = readiness.service_audit_revision()

@@ -37,6 +37,7 @@ class CleanupTests(unittest.TestCase):
 
             children.append(
                 SimpleNamespace(
+                    name=name,
                     process=SimpleNamespace(
                         poll=lambda state=state: -9 if state["killed"] else None,
                         terminate=lambda: None,

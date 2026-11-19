@@ -76,6 +76,7 @@ class Readiness:
         self._policy_instance_id: str | None = None
         self._fused_instance_id: str | None = None
         self._fused_instance_pending = False
+        self._fuse_seen = False
         self._lock = threading.RLock()
         self._probe_condition = threading.Condition(self._lock)
         self._observed_policy_probes: OrderedDict[str, None] = OrderedDict()
@@ -153,6 +154,7 @@ class Readiness:
                 return
             self._fused_instance_id = self._policy_instance_id
             self._fused_instance_pending = self._policy_instance_id is None
+            self._fuse_seen = True
             self._policy_healthy = False
             self._invalidate_service_audit()
             self._policy_deadline_ns = 0
@@ -204,6 +206,11 @@ class Readiness:
     def policy_fused(self) -> bool:
         with self._lock:
             return self._fused_instance_pending or self._fused_instance_id is not None
+
+    def fuse_seen(self) -> bool:
+        """Whether any fuse was reported for this Home process, even one a newer instance cleared."""
+        with self._lock:
+            return self._fuse_seen
 
     def begin_recovery(self) -> None:
         with self._lock:

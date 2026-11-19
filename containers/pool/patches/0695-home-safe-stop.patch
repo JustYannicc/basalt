@@ -26,8 +26,79 @@ index 306f693..5d09459 100644
  
  	baseListener, errListen := net.Listen("tcp", addr)
  	if errListen != nil {
+diff --git a/cmd/home/refresh_drain_wiring_test.go b/cmd/home/refresh_drain_wiring_test.go
+new file mode 100644
+index 0000000..586c318
+--- /dev/null
++++ b/cmd/home/refresh_drain_wiring_test.go
+@@ -0,0 +1,65 @@
++package main
++
++import (
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"testing"
++)
++
++// TestRunDrainsClaimedRefreshesBeforeItRetires holds the stop sequence: run must defer the
++// refresh drain after the incarnation retire, so the drain runs first and a claimed refresh
++// writes its rotated token back before Home stops.
++func TestRunDrainsClaimedRefreshesBeforeItRetires(t *testing.T) {
++	file, errParse := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
++	if errParse != nil {
++		t.Fatal(errParse)
++	}
++	calls := func(node ast.Node, pkg, name string) bool {
++		found := false
++		ast.Inspect(node, func(n ast.Node) bool {
++			call, ok := n.(*ast.CallExpr)
++			if !ok {
++				return true
++			}
++			selector, ok := call.Fun.(*ast.SelectorExpr)
++			if !ok || selector.Sel.Name != name {
++				return true
++			}
++			if ident, ok := selector.X.(*ast.Ident); ok && (pkg == "" || ident.Name == pkg) {
++				found = true
++			}
++			return true
++		})
++		return found
++	}
++	var run *ast.FuncDecl
++	for _, decl := range file.Decls {
++		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "run" {
++			run = fn
++		}
++	}
++	if run == nil {
++		t.Fatal("run not found")
++	}
++	retire, drain := token.NoPos, token.NoPos
++	ast.Inspect(run.Body, func(n ast.Node) bool {
++		deferred, ok := n.(*ast.DeferStmt)
++		if !ok {
++			return true
++		}
++		if calls(deferred, "", "RetireHomeIncarnation") {
++			retire = deferred.Pos()
++		}
++		if calls(deferred, "cluster", "DrainRefreshes") {
++			drain = deferred.Pos()
++		}
++		return true
++	})
++	if drain == token.NoPos {
++		t.Fatal("run does not defer cluster.DrainRefreshes")
++	}
++	if retire == token.NoPos || drain < retire {
++		t.Fatal("the refresh drain must be deferred after the incarnation retire, so it runs first")
++	}
++}
 diff --git a/internal/cluster/refresh.go b/internal/cluster/refresh.go
-index f602498..011f0f0 100644
+index f602498..dbc0d2c 100644
 --- a/internal/cluster/refresh.go
 +++ b/internal/cluster/refresh.go
 @@ -283,6 +283,11 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
@@ -42,7 +113,18 @@ index f602498..011f0f0 100644
  	refreshCtx, cancelRefresh := context.WithTimeout(ctx, credentialRefreshTimeout)
  	defer cancelRefresh()
  	core := c.runtime.CoreManager()
-@@ -360,7 +365,12 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+@@ -305,6 +310,10 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+ 		return nil, errLock
+ 	}
+ 	defer refreshLock.Unlock()
++	// A refresh that waited on this credential's lock while a drain began must not start one.
++	if refreshDraining.Load() {
++		return nil, errRefreshDraining
++	}
+ 
+ 	now := time.Now().UTC()
+ 	leaseID := newRefreshLeaseID()
+@@ -360,7 +369,12 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
  	}
  	updated := leased
  	if !skipRefresh && leaseClaimed {
@@ -56,7 +138,7 @@ index f602498..011f0f0 100644
  		refreshErr = errRefresh
  		if refreshed == nil {
  			refreshed = leased.Clone()
-@@ -370,7 +380,11 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+@@ -370,10 +384,15 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
  		finalized, finalizedLease, refreshSuperseded, disabledTarget, errFinalize := c.retryRefreshFinalize(finalizeCtx, targetUUID, leaseID, leased, beforeClaim, refreshed, refreshErr)
  		cancelFinalize()
  		if errFinalize != nil {
@@ -69,23 +151,28 @@ index f602498..011f0f0 100644
  			return nil, errFinalize
  		}
  		updated = finalized
-@@ -384,6 +398,10 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
- 			refreshErr = nil
- 		case !finalizedLease:
- 			refreshErr = coreauth.NewTransientRefreshError()
-+		case refreshErr != nil && updated != nil && (updated.Disabled || updated.Status == coreauth.StatusDisabled):
-+			// The provider rejected this refresh and the credential is now disabled: one closed line
-+			// an operator can act on, naming the credential only by an opaque reference.
-+			log.Warnf("credential refresh rejected credential=%s reason=%s", credentialReference(targetUUID), terminalRefreshReason(refreshErr))
- 		}
++		noteRefreshRejection(targetUUID, refreshErr, finalized, finalizedLease, refreshSuperseded, disabledTarget)
+ 		switch {
+ 		case disabledTarget:
+ 			refreshErr = newClusterUnauthorizedRefreshError()
+@@ -483,9 +502,10 @@ func (c *RefreshController) continueRefreshFinalize(targetUUID, leaseID string,
  	}
- 
+ 	for time.Now().UTC().Before(deadline) {
+ 		attemptCtx, cancelAttempt := context.WithTimeout(context.Background(), 5*time.Second)
+-		finalized, finalizedLease, _, _, errFinalize := c.finalizeRefreshLease(attemptCtx, targetUUID, leaseID, leased, beforeClaim, refreshed, errRefresh)
++		finalized, finalizedLease, superseded, disabledTarget, errFinalize := c.finalizeRefreshLease(attemptCtx, targetUUID, leaseID, leased, beforeClaim, refreshed, errRefresh)
+ 		cancelAttempt()
+ 		if errFinalize == nil {
++			noteRefreshRejection(targetUUID, errRefresh, finalized, finalizedLease, superseded, disabledTarget)
+ 			if finalizedLease && finalized != nil {
+ 				syncCtx, cancelSync := context.WithTimeout(context.Background(), refreshFinalizeTimeout)
+ 				if errSync := c.syncForwardedAuth(syncCtx, targetUUID); errSync != nil {
 diff --git a/internal/cluster/refresh_drain.go b/internal/cluster/refresh_drain.go
 new file mode 100644
-index 0000000..8540a18
+index 0000000..0d5c545
 --- /dev/null
 +++ b/internal/cluster/refresh_drain.go
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,123 @@
 +package cluster
 +
 +import (
@@ -100,6 +187,7 @@ index 0000000..8540a18
 +	"time"
 +
 +	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	log "github.com/sirupsen/logrus"
 +)
 +
 +// A provider may rotate a refresh token before Home writes the new one back. Stopping between
@@ -155,6 +243,18 @@ index 0000000..8540a18
 +	}
 +}
 +
++// noteRefreshRejection logs one closed line when this refresh's own provider rejection disabled
++// the credential, so an operator knows which account needs signing in again. A credential
++// disabled meanwhile by someone else, or a superseded refresh, logs nothing.
++func noteRefreshRejection(targetUUID string, errRefresh error, finalized *coreauth.Auth, finalizedLease, superseded, disabledTarget bool) {
++	if errRefresh == nil || finalized == nil || !finalizedLease || superseded || disabledTarget {
++		return
++	}
++	if finalized.Disabled || finalized.Status == coreauth.StatusDisabled {
++		log.Warnf("credential refresh rejected credential=%s reason=%s", credentialReference(targetUUID), terminalRefreshReason(errRefresh))
++	}
++}
++
 +// credentialReference names a credential without its identifying text: native UUIDs as they
 +// are, any other identifier only as its SHA-256.
 +func credentialReference(id string) string {
@@ -198,10 +298,10 @@ index 0000000..8540a18
 +}
 diff --git a/internal/cluster/refresh_drain_test.go b/internal/cluster/refresh_drain_test.go
 new file mode 100644
-index 0000000..8bacd2c
+index 0000000..2019e29
 --- /dev/null
 +++ b/internal/cluster/refresh_drain_test.go
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,189 @@
 +package cluster
 +
 +import (
@@ -332,6 +432,63 @@ index 0000000..8bacd2c
 +		if got := credentialReference(id); !accountRef.MatchString(got) || got == id {
 +			t.Errorf("credentialReference(%q) = %q, want an opaque reference", id, got)
 +		}
++	}
++}
++
++func TestARefreshWaitingOnItsLockStartsNoProviderCallOnceADrainBegan(t *testing.T) {
++	t.Cleanup(func() { refreshDraining.Store(false) })
++	const authID = "antigravity-lock-waiter"
++	ctx := context.Background()
++	repo := newRefreshTestRepository(t)
++	auth := newInvalidGrantRefreshAuth(authID)
++	if _, errUpsert := repo.UpsertAuth(ctx, auth, "register"); errUpsert != nil {
++		t.Fatalf("UpsertAuth() error = %v", errUpsert)
++	}
++	transport := &blockingRefreshRoundTripper{started: make(chan struct{}), release: make(chan struct{}), secondCall: make(chan struct{}, 1)}
++	runtime := newRefreshTestRuntime(t, repo, auth, transport)
++	coordinator := NewCoordinator(repo, NodeIdentity{IP: "127.0.0.1", Port: 9315, Secret: "master-secret"}, CoordinatorOptions{})
++	markRefreshTestMaster(t, repo, coordinator)
++	controller := NewRefreshController(coordinator, runtime, repo, nil)
++
++	first := make(chan error, 1)
++	go func() {
++		_, errRefresh := controller.RefreshNow(ctx, authID)
++		first <- errRefresh
++	}()
++	select {
++	case <-transport.started:
++	case <-time.After(5 * time.Second):
++		t.Fatal("provider refresh did not start")
++	}
++	second := make(chan error, 1)
++	go func() {
++		_, errRefresh := controller.RefreshNow(ctx, authID)
++		second <- errRefresh
++	}()
++	// The second refresh is counted (so it passed the entry check) and now waits on the lock.
++	for deadline := time.Now().Add(5 * time.Second); RefreshesInFlight() < 2; {
++		if time.Now().After(deadline) {
++			t.Fatal("second refresh never started")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	drained := make(chan bool, 1)
++	go func() { drained <- DrainRefreshes(5 * time.Second) }()
++	for !refreshDraining.Load() {
++		time.Sleep(time.Millisecond)
++	}
++	close(transport.release)
++	if errRefresh := <-first; errRefresh != nil {
++		t.Fatalf("first RefreshNow() error = %v", errRefresh)
++	}
++	if errRefresh := <-second; !errors.Is(errRefresh, errRefreshDraining) {
++		t.Fatalf("second RefreshNow() after the drain began = %v, want the draining refusal", errRefresh)
++	}
++	if !<-drained {
++		t.Fatal("drain timed out")
++	}
++	if got := transport.calls.Load(); got != 1 {
++		t.Fatalf("provider refresh calls = %d, want 1: the lock waiter started a call during the drain", got)
 +	}
 +}
 diff --git a/internal/cluster/refresh_stop_test.go b/internal/cluster/refresh_stop_test.go
