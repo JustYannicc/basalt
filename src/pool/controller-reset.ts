@@ -278,12 +278,14 @@ async function forwardHeld(
         report(hop, request, requestId, "surfaced", error, "not_replayable");
         throw error;
       }
-      if (request.method === "POST" && !request.headers.has("upgrade")) {
-        // A job the provider may have accepted is never started twice; its client decides.
+      if (request.method === "POST" && !modelCallReplayable(pathname)) {
+        // A job the provider may have accepted is never started twice, whatever its headers say
+        // (model sockets are GET); its client decides.
         report(hop, request, requestId, "outcome_unknown", error, "not_replayable");
         return upstreamOutcomeUnknown(requestId, pathname);
       }
-      // A model socket or a job status read starts nothing, so its client retries it.
+      // A model socket or a job status read starts nothing, and an allow-listed call it could not
+      // hold costs one response at most, so its client retries it.
       report(hop, request, requestId, "retry_advised", error, "not_replayable");
       return retryAdvice(request, requestId);
     }

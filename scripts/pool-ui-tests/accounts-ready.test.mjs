@@ -30,6 +30,12 @@ const { chromium } = require("playwright");
 const ready = { name: "basalt:pool-accounts-ready", version: 2, snapshot: false };
 const failed = { ok: false, error: "backend_unavailable", message: "Synthetic pool failure" };
 const empty = { isOwner: true, providers: [], accounts: [] };
+// "21.11.2026 14:30 UTC": the pool writes record times day-month-year on a 24-hour clock.
+const utcMoment = (value) => {
+  const at = new Date(value);
+  const two = (number) => String(number).padStart(2, "0");
+  return `${two(at.getUTCDate())}.${two(at.getUTCMonth() + 1)}.${at.getUTCFullYear()} ${two(at.getUTCHours())}:${two(at.getUTCMinutes())} UTC`;
+};
 const emptyUsage = {
   ok: true,
   value: {
@@ -2058,8 +2064,9 @@ test(
             }
             // Fourteen days of readings in a 90-day range: the chart names where they start.
             assert.ok(firstReading !== null);
-            const start = new Date(firstReading).toISOString().replace("T", " ").slice(0, 16);
-            await chart.getByText(`Readings since ${start} UTC`, { exact: true }).waitFor();
+            await chart
+              .getByText(`Readings since ${utcMoment(firstReading)}`, { exact: true })
+              .waitFor();
             assert.equal(
               await chart.locator("svg text", { hasText: "Not tracked yet" }).count(),
               1,
@@ -2175,8 +2182,7 @@ test(
               assert.match(panel, /Nominal 1\b/);
               assert.doesNotMatch(panel, /2 accounts|Nominal 2/);
               const chart = lab.getByRole("group", { name: /^xAI weekly\b[^.]* capacity\./ });
-              const since = new Date(at).toISOString().replace("T", " ").slice(0, 16);
-              assert.match(await chart.innerText(), new RegExp(`Readings since ${since} UTC`));
+              assert.ok((await chart.innerText()).includes(`Readings since ${utcMoment(at)}`));
               await chart.focus();
               const tip = await chart.getByRole("tooltip").innerText();
               assert.match(tip, /Weekly/);
@@ -2264,11 +2270,7 @@ test(
                   assert.match(body, /Nominal/);
                 } else {
                   assert.match(body, /No current 5-hour reading/);
-                  assert.ok(
-                    body.includes(
-                      `Last 5-hour reading: ${previous.slice(0, 16).replace("T", " ")} UTC.`,
-                    ),
-                  );
+                  assert.ok(body.includes(`Last 5-hour reading: ${utcMoment(previous)}.`));
                   assert.doesNotMatch(body, /\d+(?:\.\d+)?%|Nominal|idle|full allowance|out now/i);
                   assert.equal(
                     await panel
