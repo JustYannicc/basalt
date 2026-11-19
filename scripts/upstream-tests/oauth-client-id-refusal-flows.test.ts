@@ -233,7 +233,7 @@ const setupOf = (input: Flow) =>
 for (const [shape, checked] of [
   ["without an anonymous check", false],
   ["with an anonymous check", true],
-] as const)
+] as const) {
   test(`an operator client ${shape} whose ID is a secret is unavailable and never shown`, () =>
     signIn(
       {
@@ -255,7 +255,7 @@ for (const [shape, checked] of [
               ["opaque", true],
             ],
           );
-          // Automatic sign-in falls through to the next operator client.
+          // Automatic sign-in uses the next available operator client.
           const started = yield* input.executor.accountConnections.startOAuth({
             connection: input.connection,
             method: "oauth",
@@ -272,16 +272,19 @@ for (const [shape, checked] of [
         }),
     ));
 
-test("an operator's only client with a secret as its ID asks for a client instead", () =>
-  signIn({ operators: [operator("secret-shaped", `pscale_app_secret_${marker}`)] }, (input) =>
-    Effect.gen(function* () {
-      const setup = yield* setupOf(input);
-      assert.ok(!leaks(setup));
-      assert.equal(setup.firstParty, undefined);
-      assert.equal(setup.mode, "client-required");
-      yield* refusedStart(input);
-    }),
-  ));
+  test(`an operator's only client ${shape} with a secret as its ID asks for a client`, () =>
+    signIn(
+      { operators: [operator("secret-shaped", `pscale_app_secret_${marker}`, checked)] },
+      (input) =>
+        Effect.gen(function* () {
+          const setup = yield* setupOf(input);
+          assert.ok(!leaks(setup));
+          assert.equal(setup.firstParty, undefined);
+          assert.equal(setup.mode, "client-required");
+          yield* refusedStart(input);
+        }),
+    ));
+}
 
 test("an entered client ID that is a secret is refused as the client the service rejects", () =>
   signIn({}, (input) => refusedStart(input, { clientId: `GOCSPX-${marker}` })));
