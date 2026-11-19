@@ -65,9 +65,10 @@ async function routerWith(dirty: boolean, revision: number) {
   return { router, sent };
 }
 
-test("admission serves a boot only while its pool's current policy is installed", async () => {
-  // This is what makes the restart window safe: recovery commits a restarted boot after installing
-  // every current policy on it, and a newer revision stays dirty, refusing admission, until installed.
+test("admission refuses a pool whose policy is dirty and serves one whose policy is clean", async () => {
+  // Part of what makes the restart window safe: recovery commits a restarted boot after installing
+  // every current policy on it, and a dirty policy refuses admission. A newer clean revision is
+  // saved before it is installed; until then the boot's plugin refuses its revision assertion.
   const installed = await routerWith(false, 7);
   const response = await installed.router.forward(
     "pool",

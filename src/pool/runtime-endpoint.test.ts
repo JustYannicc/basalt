@@ -407,5 +407,6 @@ test("every model send reads readiness again, so a readiness refusal right after
     f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
     PoolRuntimeUnhealthy,
   );
+  assert.equal(f.calls.health, reads + 2, "the send read readiness again");
   assert.equal(f.calls.model, 0);
 });

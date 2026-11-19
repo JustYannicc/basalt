@@ -415,8 +415,9 @@ export class RuntimeEndpoint {
     }
     const socketData = this.modelLifetimes.data(identity, request, async () => {
       const { configuration } = await this.store.read(identity);
-      await this.health(identity, request.signal);
       await this.channel.keepAlive();
+      // Readiness is read last, so a slow keep-alive can't spend the lease that admits this send.
+      await this.health(identity, request.signal);
       request.signal.throwIfAborted();
       return this.channel.fetch(configuration, request, port);
     });
@@ -433,8 +434,8 @@ export class RuntimeEndpoint {
       return true;
     };
     try {
-      await this.health(identity, request.signal);
       await this.channel.keepAlive();
+      await this.health(identity, request.signal);
       request.signal.throwIfAborted();
       const response = await this.channel.fetch(configuration, request, port);
       if (isModelLifetimePath(new URL(request.url).pathname))

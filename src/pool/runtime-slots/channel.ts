@@ -38,14 +38,14 @@ export class RuntimeChannel {
       signal,
       undefined,
       trace,
-    ).catch((error: unknown) =>
-      refuseRuntime(
-        "endpoint_health",
-        // A readiness read that failed in transport or returned an unparsable body is degraded
-        // readiness: it refuses like a 503 so the caller can wait. Anything else stays a defect.
-        error instanceof ReadinessReadFailure ? new PoolRuntimeUnhealthy() : error,
-      ),
-    );
+    ).catch((error: unknown) => {
+      if (!(error instanceof ReadinessReadFailure)) refuseRuntime("endpoint_health", error);
+      // A readiness read that failed in transport or returned an unparsable body is degraded
+      // readiness: it refuses like a 503 so the caller can wait. Its refusal looks like any other
+      // 503, so this line is what tells a broken readiness port apart.
+      console.error("POOL_RUNTIME_READINESS_READ_FAILED " + JSON.stringify({ kind: error.kind }));
+      refuseRuntime("endpoint_health", new PoolRuntimeUnhealthy());
+    });
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new SlotRefused("unhealthy");
     return status;
