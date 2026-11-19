@@ -30,11 +30,12 @@ const elsewhere = {
   className: "Elsewhere",
   scriptName: "another-worker",
 };
+const bound = (bindings) => bindings && [{ sid: "fixture", data: { bindings } }];
 const program = Effect.gen(function* () {
   const provider = yield* Worker.Provider;
   // A changed schedule is an update the provider decides before it reads any source, so the
   // answer shows what it keeps readable for the resources that wait on this Worker.
-  const readable = (recorded, declared) =>
+  const readable = (recorded, declared, before = declared) =>
     provider
       .diff({
         id: "Fixture",
@@ -51,8 +52,8 @@ const program = Effect.gen(function* () {
           durableObjectNamespaces: recorded,
           hash: {},
         },
-        newBindings: declared && [{ sid: "fixture", data: { bindings: declared } }],
-        oldBindings: [],
+        newBindings: bound(declared),
+        oldBindings: bound(before) ?? [],
       })
       .pipe(
         Effect.map((diff) => {
@@ -60,6 +61,7 @@ const program = Effect.gen(function* () {
           return diff.stables.includes("durableObjectNamespaces");
         }),
       );
+  const both = { Hosted: "hosted-id", Elsewhere: "elsewhere-id" };
   assert.equal(
     yield* readable({ Hosted: "hosted-id" }, [hosted]),
     true,
@@ -68,35 +70,73 @@ const program = Effect.gen(function* () {
   // The platform returns a namespace id for a binding to another Worker's class as well, and the
   // provider records every binding that has one.
   assert.equal(
-    yield* readable({ Hosted: "hosted-id", Elsewhere: "elsewhere-id" }, [hosted, elsewhere]),
+    yield* readable(both, [hosted, elsewhere]),
     true,
     "a recorded class that another Worker hosts does not hide the Worker's own classes",
   );
   assert.equal(
-    yield* readable({ Hosted: "hosted-id", Elsewhere: "elsewhere-id" }, [
-      hosted,
+    yield* readable(
+      both,
       // Inside a dependency cycle the other Worker's name is not known when the plan is made.
-      { ...elsewhere, scriptName: {} },
-    ]),
+      [hosted, { ...elsewhere, scriptName: {} }],
+      [hosted, elsewhere],
+    ),
     true,
     "the other Worker's name does not have to be known",
   );
   assert.equal(
-    yield* readable({ Hosted: "hosted-id", Retired: "retired-id" }, [hosted]),
+    yield* readable(
+      { Hosted: "hosted-id", Retired: "retired-id" },
+      [hosted],
+      [hosted, { ...hosted, name: "Retired", className: "Retired" }],
+    ),
     true,
     "removing a class leaves the remaining classes readable",
   );
   assert.equal(
-    yield* readable({ Elsewhere: "elsewhere-id" }, [hosted, elsewhere]),
+    yield* readable({ Elsewhere: "elsewhere-id" }, [hosted, elsewhere], [elsewhere]),
     false,
     "a class the Worker starts to host has no recorded namespace yet",
   );
   assert.equal(
-    yield* readable({ Hosted: "hosted-id" }, undefined),
+    yield* readable(
+      both,
+      [hosted, { type: "durable_object_namespace", name: "Elsewhere", className: "Elsewhere" }],
+      [hosted, elsewhere],
+    ),
+    false,
+    "a class the Worker starts to host under a name it bound from another Worker is new",
+  );
+  assert.equal(
+    yield* readable(
+      both,
+      [hosted, { ...elsewhere, scriptName: "a-third-worker" }],
+      [hosted, elsewhere],
+    ),
+    false,
+    "a binding that moves to a different Worker has a different namespace",
+  );
+  assert.equal(
+    yield* readable(both, [hosted, elsewhere], [hosted]),
+    false,
+    "a recorded name is not proof that the class was bound before",
+  );
+  assert.equal(
+    yield* readable({ Hosted: "hosted-id" }, [hosted, elsewhere], [hosted, elsewhere]),
+    false,
+    "another Worker's class without a recorded namespace is not readable",
+  );
+  assert.equal(
+    yield* readable({ Hosted: "hosted-id" }, [hosted], []),
+    false,
+    "no recorded bindings promise nothing",
+  );
+  assert.equal(
+    yield* readable({ Hosted: "hosted-id" }, undefined, [hosted]),
     false,
     "bindings that are not known at all promise nothing",
   );
-  return { scenarios: 6 };
+  return { scenarios: 11 };
 }).pipe(
   Effect.provide(LiveWorkerProvider()),
   Effect.provideService(WorkerBundle, {}),
