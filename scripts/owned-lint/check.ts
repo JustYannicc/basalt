@@ -327,7 +327,10 @@ function checkAll(base: string | undefined): Checked {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const writers = { "--write-baseline": writeBaseline, "--write-vendor": writeVendor };
-  const named = process.argv.slice(2).filter((argument) => !Object.hasOwn(writers, argument));
+  // pnpm, unlike npm, passes the `--` of `npm run lint:owned -- <option>` through.
+  const named = process.argv
+    .slice(2)
+    .filter((argument) => argument !== "--" && !Object.hasOwn(writers, argument));
   const unknown = named.filter((argument) => argument.startsWith("-"));
   if (unknown.length)
     throw new Error(
