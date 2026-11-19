@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
+import { routedJob } from "./box-router.ts";
 import { checkedOutIdentity, retainReuseEvidence, validReuseEvidence } from "./reuse.ts";
 
 export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "browser-install"];
@@ -13,7 +14,7 @@ export const conditionalJobs = [
 export function gateErrors(
   needs: Record<string, { result: string }>,
   selected: readonly string[],
-  boat: readonly string[] = [],
+  box: readonly string[] = [],
   full?: boolean,
   baselineProbeRequired = false,
   restorePreparationRequired = false,
@@ -29,8 +30,9 @@ export function gateErrors(
     selected.some((job) => !heavyJobs.includes(job))
   )
     errors.push("Invalid heavy-job selection");
-  if (new Set(boat).size !== boat.length || boat.some((job) => !selected.includes(job)))
-    errors.push("Invalid Boat-job selection");
+  // A routed job still passes under its own name below; routing only picks its runner.
+  if (new Set(box).size !== box.length || box.some((id) => !selected.includes(routedJob(id) ?? "")))
+    errors.push("Invalid box-job selection");
   if (Object.keys(needs).sort().join("\n") !== [...expected].sort().join("\n"))
     errors.push("Aggregate gate dependencies differ from the declared CI jobs");
   for (const job of expected) {
@@ -99,7 +101,7 @@ export function runGateCli(env = process.env): void {
   const errors = gateErrors(
     suite,
     JSON.parse(env.CI_JOBS ?? "null"),
-    JSON.parse(env.CI_BOAT_JOBS ?? "null"),
+    JSON.parse(env.CI_BOX_JOBS ?? "null"),
     env.CI_FULL_SUITE === "true",
     env.CI_BASELINE_PROBE === "true",
     env.CI_RESTORE_PREPARATION_PROBE === "true",

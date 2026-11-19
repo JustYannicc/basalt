@@ -1,7 +1,9 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { changedInputs, jobRoutes, selectPaths } from "./affected.ts";
+import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
+import { githubObserver, routeBox } from "./box-router.ts";
+import { fastJobs } from "./gate.ts";
 import { declaredMatrices } from "./shards.ts";
 
 const root = process.cwd();
@@ -23,11 +25,28 @@ try {
 }
 const output = ".generated/ci/selection.json";
 const matrices = declaredMatrices(selection.full ? null : selection.declaredFiles);
-const routed = {
-  ...selection,
-  matrices,
-  ...jobRoutes(selection.jobs, process.env.BOAT_JOBS ?? ""),
-};
+const env = process.env;
+const box = await routeBox(
+  {
+    event: env.GITHUB_EVENT_NAME ?? "",
+    ref: env.GITHUB_REF ?? "",
+    slots: env.BOX_SLOTS,
+    label: env.BOX_LABEL,
+    hostedCap: env.HOSTED_CAP,
+    selected: selection.jobs,
+    matrices,
+    // The fast-lane jobs that run beside the heavy ones; select itself has finished by then.
+    fixedJobs: fastJobs.length - 1,
+  },
+  githubObserver({
+    api: env.GITHUB_API_URL ?? "https://api.github.com",
+    repository: env.GITHUB_REPOSITORY ?? "",
+    token: env.GITHUB_TOKEN ?? "",
+    runId: env.GITHUB_RUN_ID ?? "",
+    label: env.BOX_LABEL ?? "",
+  }),
+);
+const routed = { ...selection, matrices, boxJobs: box.jobs, boxRouting: box.summary };
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, JSON.stringify(routed, null, 2));
 if (process.env.GITHUB_OUTPUT)
@@ -39,11 +58,8 @@ if (process.env.GITHUB_OUTPUT)
       "jobs=" +
       JSON.stringify(routed.jobs) +
       "\n" +
-      "hosted_jobs=" +
-      JSON.stringify(routed.hostedJobs) +
-      "\n" +
-      "boat_jobs=" +
-      JSON.stringify(routed.boatJobs) +
+      "box_jobs=" +
+      JSON.stringify(routed.boxJobs) +
       "\n" +
       "matrices=" +
       JSON.stringify(matrices) +
@@ -73,6 +89,8 @@ if (process.env.GITHUB_STEP_SUMMARY)
               .join(", "),
         )
         .join("\n") +
+      "\n\n" +
+      box.summary +
       "\n",
   );
 console.log(JSON.stringify(routed, null, 2));

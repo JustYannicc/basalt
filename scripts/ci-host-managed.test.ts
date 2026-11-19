@@ -214,7 +214,7 @@ test("both halves prepare independently, retain evidence and keep the same limit
     assert.equal(job.needs, "select");
     assert.equal(
       job["runs-on"],
-      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${ids[index]}') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}`,
+      `\${{ contains(fromJSON(needs.select.outputs.box_jobs), '${ids[index]}') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}`,
     );
     assert.equal(job["timeout-minutes"], 30);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
