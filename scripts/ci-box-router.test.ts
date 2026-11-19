@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { heavyJobs } from "./ci/areas.ts";
 import {
@@ -13,6 +15,7 @@ import {
   fitsTimeout,
   githubObserver,
   heartbeatMarker,
+  heartbeatPath,
   matrixLegs,
   routeBox,
   routedJob,
@@ -31,9 +34,22 @@ const heartbeatWorkflow = parse(heartbeatSource);
 
 const now = Date.parse("2026-11-19T12:00:00Z");
 const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
-const statusLine = (at: string, healthy: unknown) =>
+// The box's status object, trimmed to the fields a test varies.
+const statusLine = (at: string, healthy: unknown, fields: Record<string, unknown> = {}) =>
   heartbeatMarker +
-  JSON.stringify({ at, load1: 3.1, ci_slots: 2, ci_busy: 1, release_busy: 0, healthy });
+  JSON.stringify({
+    at,
+    healthy,
+    ci_budget: 2,
+    ci_budget_reason: "release slot busy",
+    ci_busy: 0,
+    ci_slots: 2,
+    ci_online: 2,
+    release_busy: 1,
+    cpu_some_avg60: 15.41,
+    ...fields,
+  });
+const budgetLog = (fields: Record<string, unknown>) => statusLine(minutesAgo(1), true, fields);
 const healthyLog = [
   '2026-11-19T11:58:58.1000000Z ##[group]Run status="$(head -c 4096 /opt/basalt-health/status.json)"',
   "2026-11-19T11:58:58.1000000Z printf 'box-health:%s\\n' \"$status\"",
@@ -102,6 +118,7 @@ const selected = [
 const input = (overrides: Partial<BoxInput> = {}): BoxInput => ({
   event: "push",
   ref: "refs/heads/batch/b123",
+  attempt: "1",
   slots: "2",
   label: "basalt-box",
   selected,
@@ -118,18 +135,83 @@ test("a healthy box with hosted over its cap fills its free slots with the longe
   const routed = await route();
   assert.deepEqual(routed.jobs, ["declared-cloud-1", "declared-cloud-2"]);
   // 4 fast-lane jobs, 5 shards, pool-runtime's 2 legs, 2 single jobs and 2 desktop legs.
+  assert.equal(routed.label, "basalt-box");
   assert.equal(
     routed.summary,
     "Box routing: 2 declared shards go to the self-hosted runners (2 of 2 slots free) because " +
-      "the box reported healthy and 60 hosted jobs are active and this Check adds 15, against a " +
-      "cap of 40: declared-cloud-1, declared-cloud-2.",
+      "the box reported healthy with a CI budget of 2 (release slot busy) and 60 hosted jobs are " +
+      "active and this Check adds 15, against a cap of 40: declared-cloud-1, declared-cloud-2.",
   );
   for (const ref of ["refs/heads/main", "refs/heads/batch/b122"])
     assert.equal((await route({ ref })).jobs.length, 2, ref);
   const one = await route({}, observer({ box: 1 }).box);
   assert.deepEqual(one.jobs, ["declared-cloud-1"]);
   assert.match(one.summary, /\(1 of 2 slots free\)/);
-  assert.deepEqual((await route({ slots: "5" })).jobs.length, 5);
+  // The box's budget of 2 still bounds five configured slots.
+  assert.equal((await route({ slots: "5" })).jobs.length, 2);
+  assert.equal(
+    (await route({ slots: "5" }, observer({ log: budgetLog({ ci_budget: 6 }) }).box)).jobs.length,
+    5,
+  );
+});
+
+test("the box's CI budget and BASALT_CI_BOX_SLOTS each cap the free slots", async () => {
+  const cases: [string, string, Record<string, unknown>, number, RegExp][] = [
+    [
+      "budget below slots",
+      "2",
+      { ci_budget: 1 },
+      0,
+      /\(1 of 1 slots free\).*CI budget of 1 \(release slot busy\)/,
+    ],
+    [
+      "slots below budget",
+      "2",
+      { ci_budget: 6, ci_budget_reason: "measured" },
+      0,
+      /\(2 of 2 slots free\).*CI budget of 6 \(measured\)/,
+    ],
+    ["budget less busy", "6", { ci_budget: 4 }, 1, /\(3 of 4 slots free\)/],
+  ];
+  for (const [name, slots, fields, box, summary] of cases) {
+    const routed = await route({ slots }, observer({ log: budgetLog(fields), box }).box);
+    assert.equal(
+      routed.jobs.length,
+      Math.min(Number(slots), fields.ci_budget as number) - box,
+      name,
+    );
+    assert.match(routed.summary, summary, name);
+  }
+  const none: [string, Record<string, unknown>, RegExp][] = [
+    ["zero", { ci_budget: 0, ci_budget_reason: "cpu pressure" }, /CI budget is 0 \(cpu pressure\)/],
+    ["missing", { ci_budget: undefined }, /no whole-number CI budget/],
+    ["fraction", { ci_budget: 1.5 }, /no whole-number CI budget/],
+    ["string", { ci_budget: "2" }, /no whole-number CI budget/],
+    ["negative", { ci_budget: -1 }, /no whole-number CI budget/],
+    [
+      "unhealthy",
+      { healthy: false, ci_budget: 0, ci_budget_reason: "unhealthy" },
+      /reported unhealthy \(unhealthy\)/,
+    ],
+  ];
+  for (const [name, fields, why] of none) {
+    const { box, calls } = observer({ log: budgetLog(fields) });
+    const routed = await route({}, box);
+    assert.deepEqual(routed.jobs, [], name);
+    assert.equal(routed.label, "", name);
+    assert.match(routed.summary, why, name);
+    assert.deepEqual(calls, { heartbeat: 1, active: 0 }, name);
+  }
+  // The box's reason text reaches the summary as plain words only.
+  assert.match(
+    (
+      await route(
+        {},
+        observer({ log: budgetLog({ ci_budget: 0, ci_budget_reason: "load `high` <b>" }) }).box,
+      )
+    ).summary,
+    /CI budget is 0 \(load high b\)\.$/,
+  );
 });
 
 test("a busy box routes nothing", async () => {
@@ -139,15 +221,18 @@ test("a busy box routes nothing", async () => {
     assert.deepEqual(routed.jobs, [], String(box));
     assert.match(
       routed.summary,
-      new RegExp(`because no box slot is free \\(${box} box jobs are active, 0 of 2 slots free\\)`),
+      new RegExp(
+        `because no box slot is free \\(${box} box jobs are active, 0 of 2 slots free, a CI budget of 2`,
+      ),
     );
     assert.deepEqual(calls, { heartbeat: 1, active: 1 });
   }
 });
 
 test("routing never takes more shards than hosted is over its cap", async () => {
-  // 28 hosted plus 15 own is 3 over 40.
-  assert.deepEqual((await route({ slots: "100" }, observer({ hosted: 28 }).box)).jobs, [
+  // 28 hosted plus 15 own is 3 over 40, with slots and budget to spare.
+  const roomy = observer({ hosted: 28, log: budgetLog({ ci_budget: 100 }) }).box;
+  assert.deepEqual((await route({ slots: "100" }, roomy)).jobs, [
     "declared-cloud-1",
     "declared-cloud-2",
     "declared-self-host-1",
@@ -201,7 +286,11 @@ test("a stale, unhealthy, unmarked or unreadable heartbeat routes nothing", asyn
     ["no end", observer({ completedAt: "" }).box, /older than 10 minutes/],
     ["failed", observer({ conclusion: "failure" }).box, /heartbeat ended failure/],
     ["cancelled", observer({ conclusion: "cancelled" }).box, /heartbeat ended cancelled/],
-    ["unhealthy", observer({ log: statusLine(minutesAgo(1), false) }).box, /reported unhealthy/],
+    [
+      "unhealthy",
+      observer({ log: statusLine(minutesAgo(1), false, { ci_budget: 0 }) }).box,
+      /reported unhealthy/,
+    ],
     ["truthy", observer({ log: statusLine(minutesAgo(1), "true") }).box, /reported unhealthy/],
     [
       "no marker",
@@ -235,7 +324,7 @@ test("a stale, unhealthy, unmarked or unreadable heartbeat routes nothing", asyn
   const late = observer({ completedAt: minutesAgo(9.5), log: statusLine(minutesAgo(10), true) });
   assert.equal((await route({}, late.box)).jobs.length, 2);
   // The last marked line wins, so an older healthy sample can't vouch for a newer failure.
-  const flipped = healthyLog + "\n" + statusLine(minutesAgo(1), false);
+  const flipped = healthyLog + "\n" + statusLine(minutesAgo(1), false, { ci_budget: 0 });
   assert.deepEqual((await route({}, observer({ log: flipped }).box)).jobs, []);
 });
 
@@ -267,8 +356,26 @@ test("unset, zero or malformed variables route nothing", async () => {
     assert.match(routed.summary, /BASALT_CI_BOX_SLOTS/);
     assert.deepEqual(calls, { heartbeat: 0, active: 0 });
   }
-  for (const label of [undefined, "", "self-hosted", "basalt-release", "Basalt-Release", "a b"])
+  for (const label of [
+    undefined,
+    "",
+    "self-hosted",
+    "basalt-release",
+    "Basalt-Release",
+    "linux",
+    "X64",
+    "ARM64",
+    "a b",
+  ])
     assert.match((await route({ label })).summary, /BASALT_CI_BOX_LABEL/, String(label));
+  // "Re-run failed jobs" reuses select's outputs, so only a first attempt may route at all.
+  for (const attempt of [undefined, "", "2", "10"]) {
+    const { box, calls } = observer();
+    const routed = await route({ attempt }, box);
+    assert.deepEqual(routed.jobs, [], String(attempt));
+    assert.match(routed.summary, /a re-run always runs hosted/);
+    assert.deepEqual(calls, { heartbeat: 0, active: 0 });
+  }
   for (const hostedCap of ["-1", "x", "4.5"])
     assert.match((await route({ hostedCap })).summary, /BASALT_CI_HOSTED_CAP/, hostedCap);
   assert.equal(typeof boxSettings({ ...input(), hostedCap: "" }), "object");
@@ -298,10 +405,10 @@ test("only declared shard rows can route, and free slots and timeouts bound the 
     for (const busy of [0, 1, 2]) {
       const routed = await routeBox(
         input({ slots: String(slots), selected: heavyJobs, matrices: real, durations: undefined }),
-        observer({ hosted: 500, box: busy }).box,
+        observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box,
         () => now,
       );
-      const free = Math.max(0, slots - busy);
+      const free = Math.max(0, Math.min(slots, 3) - busy);
       assert.equal(routed.jobs.length, Math.min(free, fitting.length), `${slots}/${busy}`);
       assert.deepEqual(
         routed.jobs.map((id) => plan.shards.find((shard) => shard.id === id)!.minutes),
@@ -352,29 +459,53 @@ test("shard rows carry their planned minutes; unknown files take their group's m
     ],
     jobs: 8,
   });
+  // A selected image also starts workerd-assets.
+  assert.equal(checkPlan(["upstream-image", "production-build"], {}, {}).jobs, 3);
   for (const id of ["declared-cloud-1", "declared-self-host-12", "declared-local-1"])
     assert.ok(declaredJobs.includes(routedJob(id)!), id);
   for (const id of ["declared-cloud", "declared-cloud-x", "pool-runtime", "unknown"])
     assert.equal(routedJob(id), undefined, id);
 });
 
-test("the REST observer reads the newest heartbeat log and counts hosted and box jobs in one pass", async () => {
+test("the REST observer trusts only the box's own heartbeat and counts hosted and box jobs in one pass", async () => {
   const requests: { url: string; authorization: string }[] = [];
   const job = (status: string, labels: string[], group: string | null = null) => ({
     status,
     labels,
     runner_group_name: group,
   });
+  const own = { full_name: "owner/repo" };
+  const heartbeatRun = (id: number, event: string, repository = own) => ({
+    id,
+    event,
+    path: heartbeatPath,
+    head_repository: repository,
+    conclusion: "success",
+    updated_at: minutesAgo(1),
+  });
+  const heartbeatRuns =
+    "/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed&per_page=20";
+  const boxJob = (id: number, labels = ["basalt-box"]) => ({
+    jobs: [{ id, labels, conclusion: "success", completed_at: minutesAgo(1) }],
+  });
   const routes: Record<string, unknown> = {
-    "/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed&per_page=1": {
-      workflow_runs: [{ id: 7, conclusion: "success", updated_at: minutesAgo(1) }],
+    // Newest first: a pull-request run and a fork run of the same file, then a run whose job
+    // didn't run on the box, then the box's real heartbeat.
+    [heartbeatRuns]: {
+      workflow_runs: [
+        heartbeatRun(9, "pull_request"),
+        heartbeatRun(8, "schedule", { full_name: "fork/repo" }),
+        heartbeatRun(7, "workflow_dispatch"),
+        heartbeatRun(6, "schedule"),
+      ],
     },
-    "/actions/runs/7/jobs?filter=latest&per_page=100&page=1": {
-      jobs: [{ id: 70, conclusion: "success", completed_at: minutesAgo(1) }],
-    },
-    "/actions/jobs/70/logs": healthyLog,
+    "/actions/runs/9/jobs?filter=latest&per_page=100&page=1": boxJob(90),
+    "/actions/runs/8/jobs?filter=latest&per_page=100&page=1": boxJob(80),
+    "/actions/runs/7/jobs?filter=latest&per_page=100&page=1": boxJob(70, ["ubuntu-latest"]),
+    "/actions/runs/6/jobs?filter=latest&per_page=100&page=1": boxJob(60, ["Basalt-Box"]),
+    "/actions/jobs/60/logs": healthyLog,
     "/actions/runs?status=in_progress&per_page=100&page=1": {
-      workflow_runs: [{ id: 1 }, { id: 99 }],
+      workflow_runs: [{ id: 1 }, { id: 99 }, heartbeatRun(5, "schedule")],
     },
     "/actions/runs?status=queued&per_page=100&page=1": { workflow_runs: [{ id: 2 }] },
     "/actions/runs/1/jobs?filter=latest&per_page=100&page=1": {
@@ -398,6 +529,10 @@ test("the REST observer reads the newest heartbeat log and counts hosted and box
         job("queued", ["Basalt-Box"]),
       ],
     },
+    // The heartbeat's own job in flight doesn't hold a CI slot.
+    "/actions/runs/5/jobs?filter=latest&per_page=100&page=1": {
+      jobs: [job("in_progress", ["basalt-box"], "Default")],
+    },
   };
   const fetcher = async (url: string, init: RequestInit) => {
     const path = url.replace("https://api.test/repos/owner/repo", "");
@@ -419,16 +554,22 @@ test("the REST observer reads the newest heartbeat log and counts hosted and box
     completedAt: minutesAgo(1),
     log: healthyLog,
   });
+  // Untrusted runs are skipped before their jobs or logs are read.
+  for (const id of [9, 8])
+    assert.ok(!requests.some((r) => r.url.startsWith(`/actions/runs/${id}/`)));
+  assert.ok(!requests.some((r) => r.url === "/actions/jobs/70/logs"));
   assert.deepEqual(await box.active(), { hosted: 3, box: 2 });
   assert.ok(requests.every((request) => request.authorization === "Bearer t"));
   // This Check's own run is counted from its selection, never from the API.
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/99/")));
+  assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/5/")));
   const routed = await routeBox(input(), box, () => now);
   assert.deepEqual(routed.jobs, []);
   assert.match(routed.summary, /3 hosted jobs are active/);
-  // Over a cap of 10, both slots are held by the two box jobs; a third slot takes one shard.
-  const busy = await routeBox(input({ hostedCap: "10" }), box, () => now);
-  assert.match(busy.summary, /no box slot is free \(2 box jobs are active, 0 of 2 slots free\)/);
+  // Over a cap of 10, the box's budget of 2 is held by the two box jobs.
+  const busy = await routeBox(input({ hostedCap: "10", slots: "3" }), box, () => now);
+  assert.match(busy.summary, /no box slot is free \(2 box jobs are active, 0 of 2 slots free/);
+  routes["/actions/jobs/60/logs"] = "2026-11-19T11:59:00.0000000Z " + budgetLog({ ci_budget: 6 });
   assert.deepEqual((await routeBox(input({ hostedCap: "10", slots: "3" }), box, () => now)).jobs, [
     "declared-cloud-1",
   ]);
@@ -437,14 +578,28 @@ test("the REST observer reads the newest heartbeat log and counts hosted and box
   const failed = await routeBox(input({ hostedCap: "0" }), githubObserver(env, fetcher), () => now);
   assert.deepEqual(failed.jobs, []);
   assert.match(failed.summary, /GitHub returned 404 for \/actions\/runs/);
-  routes["/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed&per_page=1"] = {
-    workflow_runs: [],
-  };
-  await assert.rejects(githubObserver(env, fetcher).heartbeat(), /no completed heartbeat run/);
+  // With only untrusted or off-box runs left, nothing vouches for the box.
+  for (const runs of [
+    [heartbeatRun(9, "pull_request")],
+    [heartbeatRun(8, "schedule", { full_name: "fork/repo" })],
+    [heartbeatRun(7, "workflow_dispatch")],
+    [{ ...heartbeatRun(4, "schedule"), path: ".github/workflows/ci.yml" }],
+    [],
+  ]) {
+    routes[heartbeatRuns] = { workflow_runs: runs };
+    await assert.rejects(
+      githubObserver(env, fetcher).heartbeat(),
+      /no completed heartbeat run from the box/,
+    );
+    const none = await routeBox(input({ hostedCap: "0" }), githubObserver(env, fetcher), () => now);
+    assert.deepEqual(none.jobs, []);
+  }
 });
 
+// A re-run reuses select's outputs, so only the first attempt may use them; the label is the one
+// select validated, never the variable read again at job time.
 const shardExpression =
-  "${{ contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}";
+  "${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}";
 
 test("only declared shard jobs use the router expression; every other job runs hosted", () => {
   for (const id of declaredJobs) {
@@ -488,12 +643,17 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
   const select = workflow.jobs.select;
   assert.deepEqual(select.permissions, { contents: "read", actions: "read" });
   assert.equal(select.outputs.box_jobs, "${{ steps.jobs.outputs.box_jobs }}");
+  assert.equal(select.outputs.box_label, "${{ steps.jobs.outputs.box_label }}");
   assert.equal(select.outputs.hosted_jobs, undefined);
+  assert.equal(select.steps[0].uses, "actions/checkout@v4");
+  assert.deepEqual(select.steps[0].with, { "fetch-depth": 0, "persist-credentials": false });
+  for (const [id, job] of Object.entries<{ "runs-on": string }>(workflow.jobs))
+    assert.doesNotMatch(job["runs-on"], /vars\./, id);
   const step = select.steps.find((candidate: { id?: string }) => candidate.id === "jobs");
   assert.equal(step.env.BOX_SLOTS, "${{ vars.BASALT_CI_BOX_SLOTS }}");
   assert.equal(step.env.BOX_LABEL, "${{ vars.BASALT_CI_BOX_LABEL }}");
   assert.equal(step.env.HOSTED_CAP, "${{ vars.BASALT_CI_HOSTED_CAP }}");
-  assert.equal(step.env.GITHUB_TOKEN, "${{ github.token }}");
+  assert.equal(step.env.GITHUB_TOKEN, "${{ github.event_name == 'push' && github.token || '' }}");
   const gate = workflow.jobs.check.steps.find(
     (candidate: { id?: string }) => candidate.id === "gate",
   );
@@ -558,7 +718,10 @@ test("the heartbeat runs on the box with no checkout, no secrets and no permissi
   const run = steps[0]!.run!;
   assert.ok(run.includes(`printf '${heartbeatMarker}%s\\n' "$status"\n`));
   assert.ok(run.includes(`printf '${heartbeatMarker}%s\\n' "$status" >> "$GITHUB_STEP_SUMMARY"`));
-  assert.ok(run.includes("/opt/basalt-health/status.json"));
+  // The whole status object is printed on one line.
+  assert.ok(
+    run.includes(`status="$(head -c 4096 /opt/basalt-health/status.json | tr -d '\\r\\n')"`),
+  );
 });
 
 test("the real selector routes nothing outside a configured push and keeps the old routing gone", () => {
@@ -582,11 +745,24 @@ test("the real selector routes nothing outside a configured push and keeps the o
       BOX_LABEL: "basalt-box",
     },
   ]) {
+    const scratch = mkdtempSync(join(tmpdir(), "basalt-box-router-"));
+    const output = join(scratch, "output");
     const result = spawnSync(process.execPath, ["scripts/ci/select-jobs.ts", "--all"], {
       encoding: "utf8",
-      env: { ...process.env, ...env, GITHUB_TOKEN: "", GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "" },
+      env: {
+        ...process.env,
+        ...env,
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_TOKEN: "",
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: "",
+      },
     });
     assert.equal(result.status, 0, result.stderr);
+    // Nothing routed, so runs-on gets no label.
+    const lines = readFileSync(output, "utf8").split("\n");
+    rmSync(scratch, { recursive: true, force: true });
+    assert.ok(lines.includes("box_jobs=[]") && lines.includes("box_label="));
     const selected = JSON.parse(result.stdout);
     assert.deepEqual(selected.jobs, heavyJobs);
     assert.deepEqual(selected.boxJobs, []);

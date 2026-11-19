@@ -1,10 +1,10 @@
 import { shardJob } from "./retry-history.ts";
 import { estimator, readDeclaredDurations, setupMinutes, shardRuns } from "./shards.ts";
 
-// Check sends declared e2e shards to the self-hosted runners only on main and batch pushes, only
-// while the box's heartbeat is fresh and healthy, only into free box slots, and only the part of
-// the Check that would push hosted runners past their cap. Every other job, and everything by
-// default, runs hosted.
+// Check sends declared e2e shards to the self-hosted runners only on the first attempt of a main or
+// batch push, only while the box's own heartbeat is fresh, healthy and grants a CI budget, only
+// into free box slots, and only the part of the Check that would push hosted runners past their
+// cap. Every other job, and everything by default, runs hosted.
 //
 // Switch-back: deleting BASALT_CI_BOX_SLOTS, or setting it to 0, sends every job hosted on the
 // next Check. A shard already queued for the box can't move back to hosted; the 10-minute
@@ -16,10 +16,12 @@ export const defaultHostedCap = 40;
  * assumes the slow end. */
 export const boxSlowdown = 2.0;
 export const heartbeatMarker = "box-health:";
+export const heartbeatPath = ".github/workflows/box-heartbeat.yml";
 const heartbeatWindow = 10 * 60_000;
 const sampleSkew = 2 * 60_000;
 // The release runners are self-hosted too, so a broad label could hand CI work to them.
 const sharedLabels = ["self-hosted", "basalt-release"];
+const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
 
 /** Only declared e2e shard rows route. Every job type runs slower on the box, and a shard needs
  * only 1.0–1.4 cores, so shards alone keep its CI slots busy. */
@@ -45,6 +47,8 @@ export type BoxObserver = { heartbeat(): Promise<Heartbeat>; active(): Promise<A
 export type BoxInput = {
   event: string;
   ref: string;
+  /** GITHUB_RUN_ATTEMPT; only the first attempt routes. */
+  attempt?: string;
   slots?: string;
   label?: string;
   hostedCap?: string;
@@ -79,7 +83,12 @@ export function checkPlan(
       : [],
   );
   const others = selected.filter((job) => !declaredJobs.includes(job));
-  return { shards, jobs: others.reduce((sum, job) => sum + (matrixLegs[job] ?? 1), shards.length) };
+  // A selected image also starts its workerd-assets job.
+  const assets = selected.includes("upstream-image") ? 1 : 0;
+  return {
+    shards,
+    jobs: others.reduce((sum, job) => sum + (matrixLegs[job] ?? 1), shards.length + assets),
+  };
 }
 
 /** The declared job a box_jobs id belongs to, or undefined when it names no declared shard. */
@@ -101,7 +110,7 @@ export function fillBox(shards: readonly BoxShard[], limit: number) {
 }
 
 export function boxSettings(
-  input: Pick<BoxInput, "event" | "ref" | "slots" | "label" | "hostedCap">,
+  input: Pick<BoxInput, "event" | "ref" | "attempt" | "slots" | "label" | "hostedCap">,
 ) {
   // Pull requests never route, whatever the variables say. The box runs jobs in privileged
   // containers on a host that also runs release work, so unmerged pull-request code must not run
@@ -112,11 +121,13 @@ export function boxSettings(
     !(input.ref === "refs/heads/main" || input.ref.startsWith("refs/heads/batch/"))
   )
     return "only main and batch pushes can route";
+  // "Re-run failed jobs" reuses this run's outputs; a re-run must not trust an old box decision.
+  if (input.attempt !== "1") return "a re-run always runs hosted";
   if (!/^[1-9]\d{0,2}$/.test(input.slots ?? ""))
     return "BASALT_CI_BOX_SLOTS is unset, 0 or not a positive integer";
   const label = input.label ?? "";
-  if (!/^[\w.-]+$/.test(label) || sharedLabels.includes(label.toLowerCase()))
-    return "BASALT_CI_BOX_LABEL is unset or names a label the release runners share";
+  if (!/^[\w.-]+$/.test(label) || refusedLabels.includes(label.toLowerCase()))
+    return "BASALT_CI_BOX_LABEL is unset or names a label other runners share";
   const cap = input.hostedCap ? Number(input.hostedCap) : defaultHostedCap;
   if (!/^\d*$/.test(input.hostedCap ?? "") || !Number.isSafeInteger(cap))
     return "BASALT_CI_HOSTED_CAP is not a whole number";
@@ -132,14 +143,20 @@ export function heartbeatStatus(log: string) {
   if (line === undefined) return undefined;
   try {
     const status = record(JSON.parse(line.slice(heartbeatMarker.length)));
-    return typeof status.at === "string" ? { healthy: status.healthy, at: status.at } : undefined;
+    if (typeof status.at !== "string") return undefined;
+    return {
+      at: status.at,
+      healthy: status.healthy,
+      budget: status.ci_budget,
+      reason: typeof status.ci_budget_reason === "string" ? status.ci_budget_reason : "",
+    };
   } catch {
     return undefined;
   }
 }
 
-/** Why the newest heartbeat can't vouch for the box, or undefined when it can. */
-export function heartbeatProblem(heartbeat: Heartbeat, now: number) {
+/** The box's CI budget from its newest heartbeat, or why that heartbeat can't vouch for it. */
+export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   if (heartbeat.conclusion !== "success")
     return "the newest heartbeat ended " + String(heartbeat.conclusion ?? "without a conclusion");
   const end = Date.parse(String(heartbeat.completedAt));
@@ -149,13 +166,21 @@ export function heartbeatProblem(heartbeat: Heartbeat, now: number) {
   if (!status) return "the heartbeat log has no box status";
   if (!(Math.abs(Date.parse(status.at) - end) <= sampleSkew))
     return "the box status was not sampled within 2 minutes of its heartbeat";
-  if (status.healthy !== true) return "the box reported unhealthy";
-  return undefined;
+  // The reason is the box's own short text; keep it to plain words in the summary.
+  const reason = status.reason.replace(/[^\w .,:;%/()+-]/g, "").slice(0, 80);
+  const why = reason ? ` (${reason})` : "";
+  if (status.healthy !== true) return "the box reported unhealthy" + why;
+  const budget = status.budget;
+  if (typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 0)
+    return "the box reported no whole-number CI budget";
+  if (budget === 0) return "the box's CI budget is 0" + why;
+  return { budget, why };
 }
 
 export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date.now) {
   const none = (why: string) => ({
     jobs: [] as string[],
+    label: "",
     summary: `Box routing: every job runs hosted, because ${why}.`,
   });
   const settings = boxSettings(input);
@@ -164,23 +189,28 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
     const plan = checkPlan(input.selected, input.matrices, input.durations);
     if (!plan.shards.length) return none("this Check runs no declared e2e shards");
     const own = input.fixedJobs + plan.jobs;
-    const unhealthy = heartbeatProblem(await observe.heartbeat(), now());
-    if (unhealthy) return none(unhealthy);
+    const box = heartbeatBudget(await observe.heartbeat(), now());
+    if (typeof box === "string") return none(box);
     const active = await observe.active();
     const load = `${active.hosted} hosted jobs are active and this Check adds ${own}, against a cap of ${settings.cap}`;
     const excess = active.hosted + own - settings.cap;
     if (excess <= 0) return none(load);
-    const free = Math.max(0, settings.slots - active.box);
-    const slots = `${free} of ${settings.slots} slots free`;
-    if (!free) return none(`no box slot is free (${active.box} box jobs are active, ${slots})`);
+    // BASALT_CI_BOX_SLOTS caps what the box's own budget grants.
+    const limit = Math.min(settings.slots, box.budget);
+    const free = Math.max(0, limit - active.box);
+    const slots = `${free} of ${limit} slots free`;
+    const budget = `a CI budget of ${box.budget}${box.why}`;
+    if (!free)
+      return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
     const jobs = fillBox(plan.shards, Math.min(excess, free));
     if (!jobs.length)
       return none(`no declared shard fits its timeout at ${boxSlowdown}× its planned minutes`);
     return {
       jobs,
+      label: settings.label,
       summary:
         `Box routing: ${jobs.length} declared shards go to the self-hosted runners (${slots}) ` +
-        `because the box reported healthy and ${load}: ${jobs.join(", ")}.`,
+        `because the box reported healthy with ${budget} and ${load}: ${jobs.join(", ")}.`,
     };
   } catch (error) {
     return none("the box state could not be read: " + (error as Error).message);
@@ -219,11 +249,20 @@ export function githubObserver(
   };
   const boxLabel = env.label.toLowerCase();
   const selfHosted = new Set([boxLabel, ...sharedLabels]);
+  const onBox = (job: Record<string, unknown>) =>
+    Array.isArray(job.labels) &&
+    job.labels.some((label) => String(label).toLowerCase() === boxLabel);
+  // Only the box's own scheduled or dispatched runs of this repository can vouch for it; a fork or
+  // pull-request run of the same file could print anything.
+  const trustedHeartbeat = (run: Record<string, unknown>) =>
+    String(run.path).split("@")[0] === heartbeatPath &&
+    (run.event === "schedule" || run.event === "workflow_dispatch") &&
+    record(run.head_repository).full_name === env.repository;
   // A job on the box's label holds a CI slot; release-label jobs hold neither a slot nor hosted.
   const runner = (job: Record<string, unknown>) => {
     if (!Array.isArray(job.labels)) throw new Error("GitHub listed a job without labels");
+    if (onBox(job)) return "box";
     const labels = job.labels.map((label) => String(label).toLowerCase());
-    if (labels.includes(boxLabel)) return "box";
     const group = job.runner_group_name;
     return !labels.some((label) => selfHosted.has(label)) &&
       (group === undefined || group === null || group === "GitHub Actions")
@@ -233,15 +272,19 @@ export function githubObserver(
   return {
     async heartbeat() {
       const path = "/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed";
-      const runs = record(await (await get(path + "&per_page=1")).json()).workflow_runs;
-      const run = Array.isArray(runs) ? record(runs[0]) : {};
-      if (!run.id) throw new Error("no completed heartbeat run");
-      if (run.conclusion !== "success")
-        return { conclusion: run.conclusion, completedAt: run.updated_at, log: "" };
-      const [job] = await list(`/actions/runs/${Number(run.id)}/jobs?filter=latest`, "jobs");
-      if (!job) throw new Error("the heartbeat run has no job");
-      const log = await (await get(`/actions/jobs/${Number(job.id)}/logs`)).text();
-      return { conclusion: job.conclusion, completedAt: job.completed_at, log };
+      const runs = record(await (await get(path + "&per_page=20")).json()).workflow_runs;
+      if (!Array.isArray(runs)) throw new Error("GitHub listed no heartbeat runs");
+      for (const run of runs.map(record).filter(trustedHeartbeat)) {
+        if (run.conclusion !== "success")
+          return { conclusion: run.conclusion, completedAt: run.updated_at, log: "" };
+        // A heartbeat that didn't run on the box's label says nothing about the box.
+        const jobs = await list(`/actions/runs/${Number(run.id)}/jobs?filter=latest`, "jobs");
+        const job = jobs.find(onBox);
+        if (!job) continue;
+        const log = await (await get(`/actions/jobs/${Number(job.id)}/logs`)).text();
+        return { conclusion: job.conclusion, completedAt: job.completed_at, log };
+      }
+      throw new Error("no completed heartbeat run from the box");
     },
     async active() {
       const listed = await Promise.all(
@@ -249,8 +292,12 @@ export function githubObserver(
           list(`/actions/runs?status=${status}`, "workflow_runs"),
         ),
       );
+      // The heartbeat's own short job doesn't hold a CI slot.
       const runs = new Set(
-        listed.flat().flatMap((run) => (String(run.id) === env.runId ? [] : [Number(run.id)])),
+        listed
+          .flat()
+          .filter((run) => String(run.id) !== env.runId && !trustedHeartbeat(run))
+          .map((run) => Number(run.id)),
       );
       const jobs = await Promise.all(
         [...runs].map((id) => list(`/actions/runs/${id}/jobs?filter=latest`, "jobs")),

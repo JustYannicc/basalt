@@ -30,13 +30,14 @@ const box = await routeBox(
   {
     event: env.GITHUB_EVENT_NAME ?? "",
     ref: env.GITHUB_REF ?? "",
+    attempt: env.GITHUB_RUN_ATTEMPT,
     slots: env.BOX_SLOTS,
     label: env.BOX_LABEL,
     hostedCap: env.HOSTED_CAP,
     selected: selection.jobs,
     matrices,
-    // The fast-lane jobs that run beside the heavy ones; select itself has finished by then.
-    fixedJobs: fastJobs.length - 1,
+    // The fast-lane jobs other than this one, plus the aggregate check.
+    fixedJobs: fastJobs.length,
   },
   githubObserver({
     api: env.GITHUB_API_URL ?? "https://api.github.com",
@@ -60,6 +61,10 @@ if (process.env.GITHUB_OUTPUT)
       "\n" +
       "box_jobs=" +
       JSON.stringify(routed.boxJobs) +
+      "\n" +
+      // The label routing validated; runs-on reads it here, never the variable at job time.
+      "box_label=" +
+      box.label +
       "\n" +
       "matrices=" +
       JSON.stringify(matrices) +

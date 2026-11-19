@@ -21,7 +21,8 @@ jobs:
     steps:
       - name: Report the box status
         run: |
-          status="$(head -c 4096 /opt/basalt-health/status.json)"
+          # The whole status object on one line, so the router reads every field it needs.
+          status="$(head -c 4096 /opt/basalt-health/status.json | tr -d '\r\n')"
           [ -n "$status" ]
           printf 'box-health:%s\n' "$status"
           printf 'box-health:%s\n' "$status" >> "$GITHUB_STEP_SUMMARY"

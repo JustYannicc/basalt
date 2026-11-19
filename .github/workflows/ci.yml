@@ -54,6 +54,7 @@ jobs:
       full_suite: ${{ steps.jobs.outputs.full_suite }}
       jobs: ${{ steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.jobs.outputs.box_jobs }}
+      box_label: ${{ steps.jobs.outputs.box_label }}
       matrices: ${{ steps.jobs.outputs.matrices }}
       baseline_probe: ${{ steps.baseline.outputs.needed }}
       release_preflight: ${{ steps.baseline.outputs.preflight }}
@@ -61,6 +62,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
@@ -103,7 +105,7 @@ jobs:
           BOX_SLOTS: ${{ vars.BASALT_CI_BOX_SLOTS }}
           BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
           HOSTED_CAP: ${{ vars.BASALT_CI_HOSTED_CAP }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
@@ -2242,7 +2244,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2297,7 +2299,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2352,7 +2354,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
