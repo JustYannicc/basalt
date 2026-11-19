@@ -114,6 +114,8 @@ export class RuntimeSlotRecovery {
       await transaction.put(completionKey, null);
     });
     this.unavailable = false;
+    // The restart served: it is not a failed restart, whenever the next refusal comes.
+    await this.clock.serving();
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "ready",
       at: Date.now(),

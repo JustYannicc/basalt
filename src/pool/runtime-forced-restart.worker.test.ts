@@ -23,7 +23,11 @@ async function root(context: TestContext) {
       errors.mock.calls.filter((call) => call.arguments[0] === "POOL_RUNTIME_FORCED_STOP").length,
     lines: () =>
       errors.mock.calls
-        .map((call) => call.arguments.map(String).join(" "))
+        .map((call) =>
+          call.arguments
+            .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+            .join(" "),
+        )
         .slice(-12)
         .join("\n"),
   };
@@ -33,10 +37,10 @@ async function pass(f: Fixture) {
   await f.settle();
 }
 /** Reads the whole answer, so its stream lease is released before the next pass. */
-async function serves(f: Fixture) {
+async function serves(f: Fixture, lines = () => "") {
   const response = await f.model();
   const text = await response.text();
-  assert.equal(response.status, 200, text);
+  assert.equal(response.status, 200, `${text}\n${lines()}`);
   return true;
 }
 /** Readiness refuses for the current boot only, as a runtime that went bad and stays bad. */
@@ -70,7 +74,7 @@ test(
 );
 
 test("a 30-second readiness blip causes no restart", { timeout: 20_000 }, async (context) => {
-  const { f, advance, forcedStops } = await root(context);
+  const { f, advance, forcedStops, lines } = await root(context);
   refuseCurrentBoot(f);
   for (let elapsed = 0; elapsed <= 30_000; elapsed += 2_000) {
     await pass(f);
@@ -84,7 +88,7 @@ test("a 30-second readiness blip causes no restart", { timeout: 20_000 }, async 
   assert.deepEqual(f.old.calls.signals, []);
   assert.equal(forcedStops(), 0);
   assert.equal(f.old.calls.start, 0);
-  assert.equal(await serves(f), true);
+  assert.equal(await serves(f, lines), true);
 });
 
 test(
