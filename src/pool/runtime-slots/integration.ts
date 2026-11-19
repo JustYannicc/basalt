@@ -30,6 +30,7 @@ import { LegacyActivity } from "./legacy-activity.ts";
 import type { SlotStorage } from "./storage.ts";
 import type { PeerBootstrapInput } from "./peer-bootstrap.ts";
 import type { RetirementProvider } from "./retirement.ts";
+import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 
 export interface HandoffEnvironment extends EndpointEnvironment {
   POOL_DESIRED_IMAGE_INPUT?: string;
@@ -43,6 +44,8 @@ interface Options {
   retirementProvider?: RetirementProvider;
   startupAbsence?(record: StartupStopRecord): Promise<void>;
   selectedChanged?(): Promise<void>;
+  /** The last counters Home reported; active-health returns them without reading Home. */
+  databasePool?(): HomeDatabasePoolObservation | null;
   recovery?: {
     provider: RuntimeProviderReader;
     beforeCommit?(
@@ -134,6 +137,7 @@ export class RuntimeHandoff {
       clock: slotClock,
       defer: (work) => this.ctx.waitUntil(work),
       wrap: this.options.wrap,
+      ...(this.options.databasePool ? { databasePool: this.options.databasePool } : {}),
     }));
   }
   async selected() {
@@ -197,13 +201,22 @@ export class RuntimeHandoff {
       boot_id: identity.bootId,
       started_at: "selected-runtime",
       policyLeaseUntil: health.policyLeaseUntil,
+      ...(health.database ? { database: health.database } : {}),
     };
+  }
+  databasePool() {
+    return this.options.databasePool?.() ?? null;
   }
   async activeHealth() {
     const identity = await this.selected();
     if (!identity) throw new SlotRefused("selection");
     const health = await this.driver.health(identity, AbortSignal.timeout(2_000));
-    return { identity, leaseMs: Math.floor(health.policyLeaseUntil - performance.now()) };
+    return {
+      identity,
+      leaseMs: Math.floor(health.policyLeaseUntil - performance.now()),
+      ...(this.options.databasePool ? { homeDatabasePool: this.options.databasePool() } : {}),
+      ...(health.database ? { database: health.database } : {}),
+    };
   }
   private async choose<T>(
     legacy: (prepared: () => void) => Promise<T>,

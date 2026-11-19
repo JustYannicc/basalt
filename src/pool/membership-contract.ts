@@ -7,6 +7,10 @@ export const policyPrefix = "sbm-policy1";
 export const policyUsePrefix = "sbm-use1";
 export const policyHeader = "X-Signalbox-Native-Policy";
 export const membershipRefreshMs = 5_000;
+// The host reserves a pool before a link, account, app, member or audience change commits, and
+// the next pass reads it. This slower read catches what changes another way (acquisition-side
+// binding state, Home drift); the passes between reads renew the lease without host or Home calls.
+export const membershipReadMs = 60_000;
 // Leave clock-skew headroom below the native 15-second cap. Five-second upkeep
 // and two-second installs renew with three seconds left after completion rearm.
 export const membershipTtlMs = 12_000;

@@ -1,3 +1,4 @@
+import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
 import { RuntimeCrash } from "../runtime-crash.ts";
 import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
@@ -268,6 +269,7 @@ export class PoolRuntimeFleet {
       balancePrimary: true,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
+      primaryDistance: async () => (await this.deps.handoff.status())?.database,
       recoverPrimary: () => this.deps.handoff.supervise(),
       demandAt: (at) => {
         if (this.deps.schedule) this.deps.ctx.waitUntil(this.deps.schedule(at));
@@ -397,10 +399,17 @@ export class PoolRuntimeFleet {
   }
   async recoverAdmission(signal: AbortSignal) {
     if (!(await this.deps.handoff.selected())) return false;
+    // Advisory, as for model forwarding: the caller re-reads the membership authority next.
     await awaitProbe(
       () => (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()),
       signal,
-    );
+    ).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      console.warn(
+        "POOL_RUNTIME_RECOVERY_DECLINED",
+        runtimeFailureDiagnostic(error, "fleet_forward"),
+      );
+    });
     return true;
   }
   async install(policy: NativeMembershipPolicy) {

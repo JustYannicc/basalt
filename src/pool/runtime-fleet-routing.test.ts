@@ -11,7 +11,11 @@ const { nativeResponse } = (await import(responseModule)) as {
   nativeResponse(response: Response, lease: NativeStreamLease): Response;
 };
 
-function fixture(maximum = 4, targetActive = 1) {
+function fixture(
+  maximum = 4,
+  targetActive = 1,
+  primary: { balancePrimary?: boolean; primaryAvailable?(): boolean } = {},
+) {
   const state = new RuntimeFleetState(new SlotMemory(), maximum, () => 100);
   const pending: Promise<unknown>[] = [];
   const cells = new Map<string, FleetCell>();
@@ -93,6 +97,7 @@ function fixture(maximum = 4, targetActive = 1) {
     demandAt: (at) => {
       demandAlarms.push(at);
     },
+    ...primary,
   });
   const add = async () => {
     const value = target();
@@ -302,4 +307,29 @@ test("a pre-dispatch selection failure releases its reservation and lets planned
   assert.equal((await f.state.inspect())[0]?.active, 0);
   assert.equal(f.calls.dispatches, 0);
   assert.equal(f.calls.legacy, 0);
+});
+
+test("with no sibling, an unavailable primary still gets the request's own admission", async () => {
+  const f = fixture(4, 1, { balancePrimary: true, primaryAvailable: () => false });
+  const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await response.text(), "legacy");
+  assert.equal(f.calls.legacy, 1);
+  await f.settle();
+});
+
+test("with no sibling, a primary that just failed admission is asked again, not refused", async () => {
+  const f = fixture(4, 1, { balancePrimary: true, primaryAvailable: () => true });
+  let lapsed = true;
+  const primary = async () => {
+    if (lapsed) throw new Error("readiness unhealthy");
+    return f.legacy();
+  };
+  await assert.rejects(
+    f.fleet.forward(request(), "pool", primary, () => {}),
+    /readiness/,
+  );
+  lapsed = false;
+  const response = await f.fleet.forward(request(), "pool", primary, () => {});
+  assert.equal(await response.text(), "legacy");
+  await f.settle();
 });

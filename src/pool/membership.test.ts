@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { NativeMemberships } from "./membership.ts";
 import {
   membershipPrefix,
+  membershipReadMs,
+  membershipRefreshMs,
   membershipTtlMs,
   membershipGraceMs,
   type NativeMembershipPolicy,
@@ -147,11 +149,15 @@ test("failed local acknowledgement keeps authority dirty and rollback converges 
   assert.deepEqual(f.home.get("a"), ["auth-a"]);
 });
 
-test("level repair removes a late stale attach on every pass and after controller restart", async () => {
+test("level repair removes a late stale attach at the next host read and after controller restart", async () => {
   const f = fixture();
   let memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request());
   await memberships.tick();
+  f.home.set("a", ["auth-a", "revoked"]);
+  f.advance(membershipReadMs);
+  await memberships.tick();
+  assert.deepEqual(f.home.get("a"), ["auth-a"]);
   f.home.set("a", ["auth-a", "revoked"]);
   memberships = new NativeMemberships(f.deps);
   await memberships.tick();
@@ -188,9 +194,15 @@ test("overlapping ticks share one upkeep pass without postponing its alarm or st
   );
   assert.equal(reads, 1, "late callers must not queue another repair behind the active pass");
   assert.equal((await memberships.authority("a"))?.dirty, false);
+  const renewed = f.installed.get("a")!;
+  f.advance(membershipRefreshMs);
   await memberships.tick();
-  assert.equal(reads, 2, "a later alarm starts a fresh pass");
+  assert.equal(reads, 1, "a later alarm renews the clean lease without a host read");
+  assert.ok(f.installed.get("a")!.expiresAt > renewed.expiresAt);
   assert.equal(f.alarms.length, 4);
+  f.advance(membershipReadMs);
+  await memberships.tick();
+  assert.equal(reads, 2, "the read interval starts a fresh host read");
 });
 
 test("a rejected tick releases upkeep so the next alarm can repair membership", async () => {
@@ -271,6 +283,8 @@ test("a missing current Home binding fails closed while the other pool remains u
         }
       : result;
   };
+  // This host change arrives without a reservation, so only the next host read sees it.
+  f.advance(membershipReadMs);
   await memberships.tick();
   await assert.rejects(memberships.authority("a"), /refreshing/);
   assert.deepEqual((await memberships.authority("b"))?.accounts, ["auth-b"]);
@@ -430,10 +444,13 @@ test("retiring one pool preserves the other pool's five-second renewal", async (
   reads.length = 0;
   f.alarms.length = 0;
   await memberships.tick();
-  assert.deepEqual(reads, ["b"]);
+  assert.deepEqual(reads, [], "the clean pool renews without a host read");
   assert.deepEqual(f.alarms, [f.deps.now() + 5_000, f.deps.now() + 5_000]);
   assert.ok((await memberships.authority("b"))!.expiresAt > before);
   await assert.rejects(memberships.authority("a"), /refreshing/);
+  f.advance(membershipReadMs);
+  await memberships.tick();
+  assert.deepEqual(reads, ["b"], "the retired pool is never read again");
 });
 
 test("retirement acknowledges a blocked host read and completion does not rearm it", async () => {
@@ -449,6 +466,7 @@ test("retirement acknowledges a blocked host read and completion does not rearm 
     entered.resolve();
     return release.promise;
   };
+  f.advance(membershipReadMs);
   const ticking = memberships.tick();
   await entered.promise;
   await memberships.retire("a", f.deps.now());
