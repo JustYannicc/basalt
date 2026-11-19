@@ -266,6 +266,15 @@
             "mode": "manual",
             "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup, node liveness and the cluster TLS fingerprint check while the main pool is saturated, and passes the saturated-main-pool heartbeat and node-lookup regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-scheduler-fail-closed",
+          "file": "0694-home-scheduler-fail-closed.patch",
+          "sha256": "e19fe1df4bbbbaa13398f71090490dbfa8412e2a79e399d602c019c622833ef6",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0694 adds an opt-in fail-closed scheduler to Home; it is to be offered upstream. Retire when the pinned Home refuses auth picks with a closed code while an enabled plugin instance sets scheduler-required and no scheduler plugin is active, never falling back to the built-in selector, and passes the fused, fused-during-pick, never-loaded and unchanged-veto regressions."
+          }
         }
       ]
     },

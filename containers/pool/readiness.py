@@ -257,17 +257,20 @@ class Readiness:
             )
             ready = self._services_ready and policy_live
             lease_ms = max(0, min(1500, remaining_ns // 1_000_000)) if ready else 0
-            return (
-                ready,
-                {
-                    "boot_id": self.boot_id,
-                    "started_at": self.started_at,
-                    **self._database_distance,
-                    **({"location": self._location} if self._location else {}),
-                    **self._database_diagnostics(),
-                },
-                lease_ms,
-            )
+            payload: dict[str, object] = {
+                "boot_id": self.boot_id,
+                "started_at": self.started_at,
+                **self._database_distance,
+                **({"location": self._location} if self._location else {}),
+                **self._database_diagnostics(),
+            }
+            if not ready:
+                # Closed and ordered: a fused or unproven policy outranks unhealthy services.
+                fused = self._fused_instance_pending or self._fused_instance_id is not None
+                payload["refusal"] = (
+                    "policy_fused" if fused else "policy_unproven" if not policy_live else "degraded"
+                )
+            return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:
         prefix = "Bearer "

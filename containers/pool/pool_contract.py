@@ -145,6 +145,7 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "    basalt-native-policy:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
+        "      scheduler-required: true\n"
         "    typesafe:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
@@ -298,7 +299,8 @@ def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
             "dir": "/opt/pool/plugins",
             "configs": {
                 "gemini-cli": {"enabled": True, "load-in-home": True},
-                "basalt-native-policy": {"enabled": True, "load-in-home": True},
+                # The account veto lives in this scheduler: Home refuses picks while it is not active.
+                "basalt-native-policy": {"enabled": True, "load-in-home": True, "scheduler-required": True},
                 "typesafe": {"enabled": True, "load-in-home": True},
             },
         },
@@ -316,6 +318,15 @@ def apply_pool_config(management_key: str, allow_remote: bool) -> None:
     )
     if status != 200:
         raise StartupError(f"Home routing configuration failed (HTTP {status})")
+    # Without the key Home falls back to its built-in selector once the veto plugin fuses.
+    status, policy = request_json(
+        f"{HOME_URL}/v8/management/config/plugins/configs/basalt-native-policy",
+        "GET",
+        management_key,
+        timeout=10,
+    )
+    if status != 200 or not isinstance(policy, dict) or policy.get("scheduler-required") is not True:
+        raise StartupError(f"Home did not keep scheduler-required on the native-policy plugin (HTTP {status})")
     provision_billing_policy(
         lambda method, payload: request_json(
             f"{HOME_URL}/v8/management/billing/settings",

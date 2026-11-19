@@ -509,6 +509,15 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
         );
+      } else if (patch.identity === "cliproxy-home-scheduler-fail-closed") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0694-home-scheduler-fail-closed.patch");
+        assert.match(patch.retirement.requires, /scheduler-required/);
+        assert.match(patch.retirement.requires, /never falling back to the built-in selector/);
+        assert.match(
+          patch.retirement.requires,
+          /fused, fused-during-pick, never-loaded and unchanged-veto regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-coordination-pool") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0691-home-coordination-pool.patch");
