@@ -17,9 +17,10 @@ test("a plan right after an apply leaves the root container alone", { timeout: 4
     proof.recorded.some((name) => !proof.hosted.includes(name)),
     "the pool Worker records a class it does not host",
   );
-  assert.equal(
-    proof.readable,
-    true,
+  assert.ok(proof.readable.length > 0, "the installed Worker provider was asked");
+  assert.deepEqual(
+    proof.readable.filter((answer) => !answer),
+    [],
     "the installed Worker provider keeps the pool Worker's own namespaces readable",
   );
   // An update of this row modifies the container application and starts a rollout, which moves

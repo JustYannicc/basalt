@@ -296,8 +296,8 @@ export function discoverRootContainerPlanProof(root: string): {
   /** Classes the pool Worker hosts, and every class it has a recorded namespace for. */
   hosted: string[];
   recorded: string[];
-  /** Whether the provider keeps the recorded namespaces readable while the Worker updates. */
-  readable?: boolean;
+  /** Each answer the provider gave: whether the recorded namespaces stay readable. */
+  readable: boolean[];
   afterApply: { id: string; type: string; action: string }[];
 } {
   return evaluate(root, { rootContainerProof: true }) as ReturnType<

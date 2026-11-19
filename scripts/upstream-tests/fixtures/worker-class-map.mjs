@@ -31,17 +31,20 @@ const elsewhere = {
   scriptName: "another-worker",
 };
 const bound = (bindings) => bindings && [{ sid: "fixture", data: { bindings } }];
+// For a member of a dependency cycle the planner passes the bindings unresolved: another Worker's
+// name is an Output there, which is callable. The Worker's own settings arrive resolved.
+const unresolved = () => {};
 const program = Effect.gen(function* () {
   const provider = yield* Worker.Provider;
   // A changed schedule is an update the provider decides before it reads any source, so the
   // answer shows what it keeps readable for the resources that wait on this Worker.
-  const readable = (recorded, declared, before = declared) =>
+  const readable = (recorded, declared, before = declared, env = {}) =>
     provider
       .diff({
         id: "Fixture",
         fqn: "Fixture",
         olds: { name: "fixture-worker" },
-        news: { name: "fixture-worker", crons: ["* * * * *"] },
+        news: { name: "fixture-worker", crons: ["* * * * *"], env },
         output: {
           workerId: "0".repeat(32),
           workerName: "fixture-worker",
@@ -62,6 +65,7 @@ const program = Effect.gen(function* () {
         }),
       );
   const both = { Hosted: "hosted-id", Elsewhere: "elsewhere-id" };
+  const inCycle = [hosted, { ...elsewhere, scriptName: unresolved }];
   assert.equal(
     yield* readable({ Hosted: "hosted-id" }, [hosted]),
     true,
@@ -75,14 +79,23 @@ const program = Effect.gen(function* () {
     "a recorded class that another Worker hosts does not hide the Worker's own classes",
   );
   assert.equal(
-    yield* readable(
-      both,
-      // Inside a dependency cycle the other Worker's name is not known when the plan is made.
-      [hosted, { ...elsewhere, scriptName: {} }],
-      [hosted, elsewhere],
-    ),
+    yield* readable(both, inCycle, [hosted, elsewhere], {
+      Elsewhere: { className: "Elsewhere", scriptName: "another-worker" },
+    }),
     true,
-    "the other Worker's name does not have to be known",
+    "inside a cycle the other Worker's name comes from the Worker's resolved settings",
+  );
+  assert.equal(
+    yield* readable(both, inCycle, [hosted, elsewhere], {
+      Elsewhere: { className: "Elsewhere", scriptName: "a-third-worker" },
+    }),
+    false,
+    "inside a cycle a binding that moves to a different Worker is still seen",
+  );
+  assert.equal(
+    yield* readable(both, inCycle, [hosted, elsewhere]),
+    false,
+    "another Worker's name that cannot be known promises nothing",
   );
   assert.equal(
     yield* readable(
@@ -126,6 +139,18 @@ const program = Effect.gen(function* () {
     false,
     "another Worker's class without a recorded namespace is not readable",
   );
+  const twin = [hosted, { ...elsewhere, name: "Twin", className: "Hosted" }];
+  assert.equal(
+    yield* readable({ Hosted: "hosted-id" }, twin, twin),
+    false,
+    "one name for a hosted class and another Worker's class has one entry for two ids",
+  );
+  const inherited = [{ ...hosted, name: "Inherited", className: "toString" }];
+  assert.equal(
+    yield* readable({}, inherited, inherited),
+    false,
+    "a name every object inherits is not a recorded class",
+  );
   assert.equal(
     yield* readable({ Hosted: "hosted-id" }, [hosted], []),
     false,
@@ -136,7 +161,7 @@ const program = Effect.gen(function* () {
     false,
     "bindings that are not known at all promise nothing",
   );
-  return { scenarios: 11 };
+  return { scenarios: 15 };
 }).pipe(
   Effect.provide(LiveWorkerProvider()),
   Effect.provideService(WorkerBundle, {}),
