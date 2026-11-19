@@ -234,8 +234,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     } catch (error) {
       // An existing stage: deploy it again with the root pinned, as production's root is. No policy
       // here, so the root may roll once; every later policy run then sees the pinned form.
-      if (error instanceof Error && /existing remote state/u.test(error.message))
-        Object.assign(env, { POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) });
+      if (error instanceof Error && /existing remote state/u.test(error.message)) {
+        // A stage whose PoolWorker never deployed has no root identity yet: deploy it unpinned first.
+        const pin = await rootPin(hooks, subject, source).catch(() => undefined);
+        if (pin) Object.assign(env, { POOL_ROOT_IMAGE: pin });
+        result.rootPinned = Boolean(pin);
+      }
       // A standing stage that already has state (a partial or earlier baseline) is deployed again
       // the ordinary way; Alchemy resumes from its state.
       if (!(error instanceof Error && /existing remote state/u.test(error.message))) throw error;
