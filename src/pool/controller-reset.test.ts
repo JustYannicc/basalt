@@ -284,15 +284,16 @@ test("the unknown-outcome answer is cautious unless its route is replayable", as
 
 test("a call that starts a paid job is never sent twice and gets the cautious answer", async (context) => {
   const observed = observe(context);
-  for (const path of [
-    "/v1/images/generations",
-    "/v1/videos",
-    "/v1/videos/generations",
-    "/v1/audio/speech",
-  ]) {
+  for (const [path, headers] of [
+    ["/v1/images/generations", {}],
+    ["/v1/images/generations", { Upgrade: "websocket" }],
+    ["/v1/videos", {}],
+    ["/v1/videos/generations", {}],
+    ["/v1/audio/speech", {}],
+  ] as const) {
     const h = controllerHop([fails(reset)], observed.deferred);
     const response = await fetchController(
-      new Request(`https://pool.example${path}`, { method: "POST", body: "{}" }),
+      new Request(`https://pool.example${path}`, { method: "POST", headers, body: "{}" }),
       h.hop,
     );
     assert.equal(h.resolved, 1, path);
@@ -309,6 +310,17 @@ test("a call that starts a paid job is never sent twice and gets the cautious an
   );
   assert.equal(poll.resolved, 1);
   assert.equal(status.status, 503);
+  const socket = controllerHop([fails(reset)], observed.deferred);
+  const advised = await fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      headers: { Upgrade: "websocket" },
+      body: "{}",
+    }),
+    socket.hop,
+  );
+  assert.equal(socket.resolved, 1);
+  assert.equal(advised.status, 503);
   const { lines } = await observed.events();
   assert.deepEqual(
     lines.map((line) => [line.outcome, line.saved, line.reason]),
@@ -317,6 +329,8 @@ test("a call that starts a paid job is never sent twice and gets the cautious an
       ["outcome_unknown", false, "not_replayable"],
       ["outcome_unknown", false, "not_replayable"],
       ["outcome_unknown", false, "not_replayable"],
+      ["outcome_unknown", false, "not_replayable"],
+      ["retry_advised", false, "not_replayable"],
       ["retry_advised", false, "not_replayable"],
     ],
   );

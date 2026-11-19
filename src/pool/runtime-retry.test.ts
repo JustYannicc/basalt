@@ -84,17 +84,22 @@ test("capacity refusal closes both retained upload branches", async () => {
   await cancelled.promise;
 });
 
-for (const [method, path, status, retry] of [
-  ["POST", "/v1/messages", 503, true],
-  ["POST", "/v1/responses", 503, true],
-  ["GET", "/v1/videos/video_1", 503, true],
-  ["POST", "/v1/images/generations", 502, false],
-  ["POST", "/v1/videos", 502, false],
+for (const [method, path, status, retry, upgrade] of [
+  ["POST", "/v1/messages", 503, true, false],
+  ["POST", "/v1/responses", 503, true, false],
+  ["GET", "/v1/videos/video_1", 503, true, false],
+  ["POST", "/v1/images/generations", 502, false, false],
+  ["POST", "/v1/images/generations", 502, false, true],
+  ["POST", "/v1/videos", 502, false, false],
 ] as const)
-  test(`a runtime crash after ${method} ${path} was accepted ${retry ? "asks for a retry" : "keeps the cautious answer"}`, async () => {
+  test(`a runtime crash after ${method} ${path}${upgrade ? " with an upgrade header" : ""} was accepted ${retry ? "asks for a retry" : "keeps the cautious answer"}`, async () => {
     let sends = 0;
     const response = await forwardRecoverably(
-      new Request(`http://pool${path}`, { method, ...(method === "POST" ? { body: "{}" } : {}) }),
+      new Request(`http://pool${path}`, {
+        method,
+        ...(method === "POST" ? { body: "{}" } : {}),
+        ...(upgrade ? { headers: { Upgrade: "websocket" } } : {}),
+      }),
       async (_request, dispatch) => {
         sends++;
         dispatch();

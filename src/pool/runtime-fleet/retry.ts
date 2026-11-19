@@ -35,7 +35,8 @@ function recoverable(error: unknown) {
  */
 function acceptedCrash(request: Request, error: unknown) {
   const pathname = new URL(request.url).pathname;
-  if (request.method !== "POST" || request.headers.has("upgrade") || modelCallReplayable(pathname))
+  // Model sockets are GET; an upgrade header on a POST must not exempt a job from this answer.
+  if (request.method !== "POST" || modelCallReplayable(pathname))
     return nativeRuntimeUnavailable(request, error);
   const response = upstreamOutcomeUnknown(undefined, pathname);
   for (const [name, value] of Object.entries(runtimeFailureHeaders(error, "fleet_forward")))
