@@ -34,9 +34,13 @@ const require = createRequire(contractPath);
 
 // One page, in happy-dom, which the hosted web package already depends on: the dashboard's
 // revalidated reads listen for its visibility events. It is registered before those modules load,
-// at a dashboard origin, because the browser's auth client is addressed through the page's.
+// at a dashboard origin, because the browser's auth client is addressed through the page's. A
+// listener that throws fails the test instead of being logged, as happy-dom does by default.
 const { GlobalRegistrator } = await import(require.resolve("@happy-dom/global-registrator"));
-GlobalRegistrator.register({ url: "https://dashboard.invalid/" });
+GlobalRegistrator.register({
+  url: "https://dashboard.invalid/",
+  settings: { errorCapture: "disabled" },
+});
 after(() => GlobalRegistrator.unregister());
 // The browser fires this at the visible document, and it bubbles to the window.
 const returnToPage = () => document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
