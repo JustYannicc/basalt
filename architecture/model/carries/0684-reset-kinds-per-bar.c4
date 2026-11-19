@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountReadings {
+    metadata {
+      constraint "An account row counts banked resets per kind, never summed: each kind is one line under the bar it refills (the same placement its spend uses), with its count and the exact moment of its nearest expiry as visible text, as the approved rows mock shows them; the countdown for each credit is in Details. A 5-hour count is spelled five-hour so two numerals never touch. Each line's count is that kind's control and spends only credits of that kind; the account keeps one reset state, so a pending or unresolved spend of any kind holds every kind's control. The confirm names the kind and what it refills. Resets of no known scope keep the longest window; a kind whose window isn't reported has no line and stays in Details."
+    }
+  }
+}
