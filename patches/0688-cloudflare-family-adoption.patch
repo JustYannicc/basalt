@@ -58,7 +58,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/clou
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,336 @@
 +import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 +import { catalogAppSweepPending } from "@executor-js/hosted-server/catalog-app-upgrades";
 +import { familyProviderIdentity } from "@executor-js/hosted-server/provider-account-definitions";
@@ -66,20 +66,21 @@ new file mode 100644
 +import { Crypto, Data, Effect, Option, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type { Change, Json, MigrationPlan, ProductionMigration } from "../contracts.ts";
-+import { canonical, sha256 } from "../crypto.ts";
++import { canonical } from "../crypto.ts";
 +import { contention } from "../locking.ts";
 +import {
 +  cloudflareFamilyLinks,
 +  cloudflareFamilyRows,
 +  connectionWith,
++  object,
 +  versionsNamingProvider,
 +  slotsUsing,
 +  sorted,
 +  text,
 +  update,
 +  versionWith,
-+  writtenCloudflareRows,
 +} from "./cloudflare-family-rows.ts";
++import { familyVerification } from "./cloudflare-family-verification.ts";
 +
 +export const cloudflareFamilyAdoptionReasons = [
 +  "family-ref-changed",
@@ -92,6 +93,7 @@ new file mode 100644
 +  "acquisition-outside-selection",
 +  "provider-keyed-oauth-client",
 +  "link-unresolved",
++  "declaration-not-family",
 +  "release-in-flight",
 +  "deploy-in-flight",
 +  "reviewed-plan-changed",
@@ -196,6 +198,18 @@ new file mode 100644
 +      return yield* refuse("release-in-flight");
 +    if (apps.some((row) => Number(row.deploy_sequence) > Number(row.activated_sequence)))
 +      return yield* refuse("deploy-in-flight");
++    // A copy of an app that still declares the first definition, or that source deployed as a new
++    // app, would derive the retained ref again. Such apps move to the current declaration first.
++    for (const app of apps) {
++      const active = deployments.find((row) => row.id === app.active_deployment);
++      const accounts = object(active?.requirements) ? active.requirements.accounts : undefined;
++      for (const slot of active === undefined ? [] : slotsUsing(active, input.from)) {
++        const required = object(accounts) ? accounts[slot] : undefined;
++        const declared = yield* identityOf(object(required) ? required.definition : undefined);
++        if (Option.isNone(declared) || declared.value.identity !== to)
++          return yield* refuse("declaration-not-family");
++      }
++    }
 +
 +    // A sign-in still in progress would finish under the ref this adoption retires.
 +    const live = yield* sql`select id from executor_account_connections where owner = ${owner}
@@ -280,48 +294,13 @@ new file mode 100644
 +const inspect = (raw: Json) =>
 +  Schema.decodeUnknownEffect(Request)(raw).pipe(Effect.flatMap(snapshot));
 +
-+const verify = (raw: Json, plan: MigrationPlan) =>
++const verification = (raw: Json, plan: MigrationPlan, exact: boolean) =>
 +  Effect.gen(function* () {
 +    const input = yield* Schema.decodeUnknownEffect(Request)(raw);
 +    const data = yield* Schema.decodeUnknownEffect(PlanData)(plan.data);
-+    const sql = yield* SqlClient.SqlClient;
-+    const owner = `organization:${input.organization}`;
-+    const after = new Map(
-+      plan.changes.map((change) => [canonical([change.table, change.key]), change.afterSha256]),
-+    );
-+    const written = [
-+      ...(yield* writtenCloudflareRows(
-+        "executor_accounts",
-+        data.accounts.map((entry) => entry.account),
-+      )),
-+      ...(yield* writtenCloudflareRows(
-+        "executor_deployments",
-+        data.deployments.map((entry) => entry.version),
-+      )),
-+      ...(yield* writtenCloudflareRows("executor_account_connections", data.connections)),
-+      ...(yield* writtenCloudflareRows("executor_account_acquisitions", data.acquisitions)),
-+    ];
-+    const accountsLeft =
-+      yield* sql`select id from executor_accounts where owner = ${owner} and provider = ${data.from}`;
-+    const versionsLeft = yield* versionsNamingProvider(owner, data.from);
-+    const links = yield* cloudflareFamilyLinks(data.accounts.map((entry) => entry.account));
-+    const checks = {
-+      requestBound:
-+        input.organization === data.organization &&
-+        input.from === data.from &&
-+        input.to === data.to,
-+      exactRows:
-+        written.length === plan.changes.length &&
-+        written.every(({ key, row }) => after.get(canonical(key)) === sha256(canonical(row))),
-+      nothingLeftOnRetainedRef: accountsLeft.length === 0 && versionsLeft.length === 0,
-+      // People may link the moved accounts once they share the family ref; replay still verifies.
-+      linksKept: data.links.every((planned) =>
-+        links.some(({ link }) => canonical(link) === canonical(planned)),
-+      ),
-+      linksResolve: links.every((link) => link.provider === data.to),
-+    };
-+    return { ok: Object.values(checks).every(Boolean), checks };
++    return yield* familyVerification(input, data, plan.changes, exact);
 +  });
++const verify = (raw: Json, plan: MigrationPlan) => verification(raw, plan, false);
 +
 +/**
 + * Moves one organization's Cloudflare accounts from the provider ref their app lineage retained
@@ -349,8 +328,21 @@ new file mode 100644
 +      const sql = yield* SqlClient.SqlClient;
 +      // Link writers take the organization's access lock first; adoption keeps that order.
 +      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0))`;
++      // Deploys and activations lock the app row, so every app owning a moved version waits for
++      // the GO and then reads the moved rows.
++      const versions = data.deployments.map((entry) => entry.version);
++      const owning =
++        versions.length === 0
++          ? []
++          : yield* sql<{ readonly id: string }>`select distinct a.id from executor_apps a
++              join executor_deployments d on d.code = a.code
++              where a.owner = ${`organization:${input.organization}`} and ${sql.in("d.id", versions)}`;
 +      const apps = [
-+        ...new Set([...data.apps.map((entry) => entry.app), ...data.links.map((link) => link.app)]),
++        ...new Set([
++          ...data.apps.map((entry) => entry.app),
++          ...data.links.map((link) => link.app),
++          ...owning.map((row) => row.id),
++        ]),
 +      ].sort();
 +      for (const app of apps)
 +        yield* sql`select id from executor_apps where id = ${app} for update nowait`;
@@ -398,7 +390,8 @@ new file mode 100644
 +            and provider = ${from} and ${sql.in("account", acquisitions)} returning account`,
 +          acquisitions.length,
 +        );
-+      if (!(yield* verify(raw, plan)).ok) return yield* refuse("post-write-checks-failed");
++      if (!(yield* verification(raw, plan, true)).ok)
++        return yield* refuse("post-write-checks-failed");
 +    }),
 +  verify,
 +};
@@ -540,6 +533,102 @@ new file mode 100644
 +  beforeSha256: sha256(canonical(before)),
 +  afterSha256: sha256(canonical(after)),
 +});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-verification.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-verification.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-verification.ts
+@@ -0,0 +1,91 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import type { MigrationPlan } from "../contracts.ts";
++import { canonical, sha256 } from "../crypto.ts";
++import {
++  cloudflareFamilyLinks,
++  object,
++  text,
++  versionsNamingProvider,
++  writtenCloudflareRows,
++} from "./cloudflare-family-rows.ts";
++
++type Refs = { readonly organization: string; readonly from: string; readonly to: string };
++type Adopted = Refs & {
++  readonly accounts: ReadonlyArray<{ readonly account: string }>;
++  readonly deployments: ReadonlyArray<{
++    readonly version: string;
++    readonly slots: ReadonlyArray<string>;
++  }>;
++  readonly connections: ReadonlyArray<string>;
++  readonly acquisitions: ReadonlyArray<string>;
++  readonly links: ReadonlyArray<unknown>;
++};
++
++/**
++ * Inside the GO every written row must match its planned hash and every kept link must exist.
++ * After commit people renew, rename, refresh and unlink, so the post-commit check and replays only
++ * require that the moved refs still name the family ref and nothing names the retained one.
++ */
++export const familyVerification = (
++  input: Refs,
++  data: Adopted,
++  changes: MigrationPlan["changes"],
++  exact: boolean,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${input.organization}`;
++    const after = new Map(
++      changes.map((change) => [canonical([change.table, change.key]), change.afterSha256]),
++    );
++    const written = [
++      ...(yield* writtenCloudflareRows(
++        "executor_accounts",
++        data.accounts.map((entry) => entry.account),
++      )),
++      ...(yield* writtenCloudflareRows(
++        "executor_deployments",
++        data.deployments.map((entry) => entry.version),
++      )),
++      ...(yield* writtenCloudflareRows("executor_account_connections", data.connections)),
++      ...(yield* writtenCloudflareRows("executor_account_acquisitions", data.acquisitions)),
++    ];
++    const accountsLeft =
++      yield* sql`select id from executor_accounts where owner = ${owner} and provider = ${data.from}`;
++    const versionsLeft = yield* versionsNamingProvider(owner, data.from);
++    const links = yield* cloudflareFamilyLinks(data.accounts.map((entry) => entry.account));
++    const slots = new Map(data.deployments.map((entry) => [entry.version, entry.slots]));
++    const moved = ({ key, row }: (typeof written)[number]) => {
++      if (key[0] !== "executor_deployments") {
++        const state = object(row.state) ? row.state.account : undefined;
++        return row.provider === data.to && !(object(state) && state.provider === data.from);
++      }
++      const accounts = object(row.requirements) ? row.requirements.accounts : undefined;
++      return (slots.get(text(row.id)) ?? []).every((slot) => {
++        const required = object(accounts) ? accounts[slot] : undefined;
++        return object(required) && required.provider === data.to;
++      });
++    };
++    const checks = {
++      requestBound:
++        input.organization === data.organization &&
++        input.from === data.from &&
++        input.to === data.to,
++      movedRefs: written.every(moved),
++      nothingLeftOnRetainedRef: accountsLeft.length === 0 && versionsLeft.length === 0,
++      linksResolve: links.every((link) => link.provider === data.to),
++      ...(exact
++        ? {
++            exactRows:
++              written.length === changes.length &&
++              written.every(({ key, row }) => after.get(canonical(key)) === sha256(canonical(row))),
++            // People may link the moved accounts once they share the family ref.
++            linksKept: data.links.every((planned) =>
++              links.some(({ link }) => canonical(link) === canonical(planned)),
++            ),
++          }
++        : {}),
++    };
++    return { ok: Object.values(checks).every(Boolean), checks };
++  });
 diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
 --- a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
 +++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts

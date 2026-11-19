@@ -279,12 +279,26 @@ connection and acquisition with its before and after hashes, the apps whose
 versions move, the links it keeps and the apps already on `to` that start
 offering the moved accounts. Review those app IDs before the GO.
 Account IDs, credentials, generations and links never change; provider rows are
-only read. Apply with the standard saved-plan GO. Verification checks that
-nothing still names `from` and that every kept link resolves to the family ref.
+only read. Apply with the standard saved-plan GO. Inside the GO every written
+row must match its planned hash and every kept link must still exist. The check
+after commit and any replay only require that the moved rows still name the
+family ref, nothing in the organization names `from` and every link of the
+moved accounts resolves to the family ref, so renewals, renames and unlinks
+after the GO don't read as a failed migration.
+
+It refuses `declaration-not-family` while an app whose active version names
+`from` still declares the first Cloudflare definition: a copy of that app, or
+that source deployed as a new app, would derive `from` again. Update those apps
+to the current catalog version first (the update keeps `from`, so the GO still
+moves them), then dry-run again. A new app built later from a source that
+declares the first definition, for example a copy of a version rolled back to
+it, derives `from` again and needs another adoption.
 
 A deploy that read the app's active version before the GO commits could write
-`from` back. The dry run and the GO itself (the apply re-inspects inside its
-transaction) refuse while either of these is true, read from the same database:
+`from` back. Run the GO only once every server runs the release that carries
+this migration, so no deploy still runs the code from before it. The dry run
+and the GO itself (the apply re-inspects inside its transaction) refuse while
+either of these is true, read from the same database:
 
 - `release-in-flight`: a release's catalog app sweep for the organization is
   still `queued` or `running` (`hosted_provisioning`, ID prefix
@@ -293,10 +307,14 @@ transaction) refuse while either of these is true, read from the same database:
   deploy that has not activated (`executor_apps.deploy_sequence` is above
   `activated_sequence`). Wait for the deploy to finish, then dry-run again. A
   deploy that failed keeps reading this way until the app's next successful
-  deploy; update the app once, then dry-run again.
+  deploy; update the app once, then dry-run again. Activating a version also
+  clears it, without finishing the deploy.
 
-Deploys also choose provider refs again under their final app lock, so a deploy
-that overlaps the GO in any other way writes the family ref. The GO is done
+The GO also takes the row lock of every app that owns a version it moves, so
+deploys and activations of those apps wait for it and then read the moved
+versions. Deploys choose provider refs again under that lock, from the version
+they built on, so a deploy that read `from` before the GO writes the family ref
+after it. The GO is done
 only after two more dry runs with the same request and `"accounts": []`: one
 right after the GO, and one after the first deploy of the organization's
 Cloudflare apps that finishes later (the next release's catalog sweep, or an
