@@ -45,6 +45,7 @@ import type { BaselineNormalization, FrozenContainer } from "./container.ts";
 import { verifyServingContainer, type ServingContainer } from "./container-serving.ts";
 import { advanceContainer } from "./container-promotion.ts";
 import { freezeUpload } from "./version-request.ts";
+import { assetCompletionTokens } from "./asset-token.ts";
 import { recordDeclaredReadiness, type DeclaredReadiness } from "./declared-prerequisites.ts";
 import type { DeclaredChanges } from "./declared-change-schema.ts";
 import {
@@ -215,6 +216,12 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     const state = yield* yield* State;
     const io = options.io ?? { baseline: readBaseline, upload: uploadVersion };
+    const assetToken = assetCompletionTokens((worker) => {
+      const renew = prepared.captured.get(worker.id)?.renewAssets;
+      return (
+        renew && (() => run(renew().pipe(withOperation(worker.id, "renew-asset-upload-session"))))
+      );
+    });
     const releaseContainers = [...prepared.containers.entries()]
       .filter(
         ([id]) =>
@@ -370,7 +377,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                 ),
           provider: {
             async upload(worker) {
-              const exit = await run(Effect.exit(io.upload(worker)));
+              const exit = await run(Effect.exit(io.upload(worker, await assetToken(worker))));
               if (Exit.isFailure(exit)) throw uploadFailure(Cause.squash(exit.cause), worker.id);
               return exit.value;
             },

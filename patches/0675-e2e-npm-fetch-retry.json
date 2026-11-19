@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-e2e-npm-fetch-retry",
+  "file": "0675-e2e-npm-fetch-retry.patch",
+  "content_sha256": "929ffed31933574419c7e73d7456571f14ccfcb18bfa98f4c7a4e46ca0790e46",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

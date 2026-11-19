@@ -10,6 +10,7 @@ import {
 import { SafetyGateError } from "./contracts.ts";
 import { readDeploymentLedger, type LedgerEnvironment } from "./github-ledger.ts";
 import { record, requestJson, withBearer, type Fetcher } from "./http.ts";
+import { retryGitHubReads } from "../releases/github-retry.ts";
 import { recoveryArtifact } from "./recovery-artifact.ts";
 
 export interface RecordedRecoveryRequest {
@@ -191,7 +192,7 @@ async function readRun(io: RecordedRecoveryIo, run: number, attempt: number, pro
   const source = record(
     (
       await requestJson(
-        io.fetcher,
+        retryGitHubReads(io.fetcher),
         "GitHub",
         `https://api.github.com/repos/${io.environment.repository}/actions/runs/${run}`,
         {

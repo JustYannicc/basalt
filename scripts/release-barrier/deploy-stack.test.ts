@@ -39,7 +39,7 @@ for (const planFailure of ["read", "diff"] as const)
 test("real Alchemy graph refuses a late upload without activating, executing Commands or committing live state", async () => {
   const proof = fixture({ reject: true });
   await assert.rejects(Effect.runPromise(proof.effect), /upload-rejected-or-unconfirmed/);
-  assert.deepEqual(proof.events, ["validate:Api", "validate:Router"]);
+  assert.deepEqual(proof.events, ["validate:Api", "validate:Api", "validate:Router"]);
   assert.equal(proof.writes(), 0);
   assert.deepEqual(proof.receipts.at(-1)?.activated, []);
 });
@@ -49,6 +49,8 @@ test("real Alchemy graph activates accepted IDs before the Api.hash-dependent li
   await Effect.runPromise(proof.effect);
   assert.deepEqual(proof.events, [
     "validate:Api",
+    "validate:Api",
+    "validate:Router",
     "validate:Router",
     "command:node ensure-pool-database.ts",
     "activate:Api:accepted-Api",
@@ -104,7 +106,7 @@ for (const reject of [false, true]) {
     assert.equal(proof.seededStatus(), "updating");
     if (reject) {
       assert.equal(proof.writes(), 0);
-      assert.deepEqual(proof.events, ["validate:Api", "validate:Router"]);
+      assert.deepEqual(proof.events, ["validate:Api", "validate:Api", "validate:Router"]);
     } else assert.equal(proof.receipts.at(-1)?.phase, "complete");
   });
 }
@@ -160,7 +162,12 @@ test("an unsupported Command cannot be deferred through preparation", async () =
 test("database Commands outside the explicit database dependency plan cannot run after activation", async () => {
   const proof = fixture({ orphanedDatabaseCommand: true });
   await assert.rejects(Effect.runPromise(proof.effect), /unsafe-database-selection/);
-  assert.deepEqual(proof.events, ["validate:Api", "validate:Router"]);
+  assert.deepEqual(proof.events, [
+    "validate:Api",
+    "validate:Api",
+    "validate:Router",
+    "validate:Router",
+  ]);
   assert.equal(proof.writes(), 0);
 });
 

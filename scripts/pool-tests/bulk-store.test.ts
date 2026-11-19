@@ -208,8 +208,11 @@ for (const changed of [false, true]) {
         const started = new Promise<void>((resolve) => {
           insertionStarted = resolve;
         });
+        const comparisons: string[][] = [];
         const adapter: HistoryDatabase = {
           query: (text, values) => {
+            if (text.includes("AS conflict"))
+              comparisons.push(JSON.parse(String(values![0])).map((row: { id: string }) => row.id));
             const pending = other.query(text, values);
             if (text.startsWith("INSERT INTO basalt_model_requests")) insertionStarted();
             return pending;
@@ -230,6 +233,7 @@ for (const changed of [false, true]) {
         ]);
         await db.query("COMMIT");
         const outcome = await settled;
+        assert.deepEqual(comparisons, [[incoming.id, fresh.id], [incoming.id]]);
         if (changed) {
           assert.ok(outcome.error instanceof HistoryConflict);
           await other.query("ROLLBACK");

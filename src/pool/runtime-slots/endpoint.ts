@@ -1,3 +1,5 @@
+import { crashOwnedRuntime } from "../runtime-crash-owner.ts";
+import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
 import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
@@ -106,6 +108,40 @@ export class RuntimeEndpoint {
     const pending = this.queue.then(work);
     this.queue = pending.catch(() => {});
     return pending;
+  }
+  crash(envelope: string) {
+    return this.serialize(() =>
+      crashOwnedRuntime(
+        this.ctx,
+        this.env.POOL_DEPLOYMENT_KEY ?? "",
+        this.code,
+        envelope,
+        async (identity) => {
+          if ((await this.activity.inspect(identity))?.phase !== "open")
+            throw new SlotRefused("draining");
+          await this.health(identity, AbortSignal.timeout(1_000));
+        },
+      ),
+    );
+  }
+  async inspectCrash(identity: SlotIdentity, nonce: string) {
+    this.bound(identity);
+    const record = await this.store.retained(identity.slotId);
+    let leaseMs = 0;
+    if (sameIdentity(record?.identity, identity)) {
+      try {
+        const health = await this.health(identity, AbortSignal.timeout(2_000));
+        if ((await this.activity.inspect(identity))?.phase === "open") leaseMs = health.leaseMs;
+      } catch {
+        /* Inspection does not warm or repair an unavailable runtime. */
+      }
+    }
+    return {
+      audit: (await this.ctx.storage.get(crashAuditKey(nonce))) ?? null,
+      identity: record?.identity ?? null,
+      ready: leaseMs > 0,
+      leaseMs,
+    };
   }
   alarm() {
     return this.serialize(() => this.maintenance.alarm());

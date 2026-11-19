@@ -10,7 +10,10 @@ test("all image and Worker admissions precede database work and every activation
   assert.deepEqual(proof.events, [
     "image:verified",
     "admit:Api",
+    "admit:Api",
     "admit:PoolWorker",
+    "admit:PoolWorker",
+    "admit:Router",
     "admit:Router",
     "database",
     "image:verified",

@@ -18,22 +18,38 @@ const entry: FeedEntry = {
 };
 
 const replaceOnce = (source: string, before: string, after: string) => {
-  if (!source.includes(before)) throw new Error("The pinned Google Maps entry point no longer matches its overlay.");
+  if (!source.includes(before))
+    throw new Error("The pinned Google Maps entry point no longer matches its overlay.");
   return source.replace(before, after);
+};
+
+/**
+ * Only REQUEST_DENIED is Google's refusal of a key (including one without the Geocoding API).
+ * Quota and service errors leave the key unverified, so they never read as a rejection.
+ */
+export const healthWording = {
+  before: `    if (body.status !== "OK" && body.status !== "ZERO_RESULTS") {
+      throw new Error(\`Google Maps rejected the API key (\${body.status}). Enable the Geocoding API for it.\`);
+    }`,
+  after: `    if (body.status === "REQUEST_DENIED")
+      throw new Error("Google Maps rejected the API key (REQUEST_DENIED). Enable the Geocoding API for it.");
+    if (body.status !== "OK" && body.status !== "ZERO_RESULTS")
+      throw new Error(\`Google Maps answered the account check with \${body.status}.\`);`,
 };
 
 const renderSource = (origin: string) => {
   const originalIndex = official.files.find((file) => file.path === "index.ts");
   if (!originalIndex) throw new Error("The pinned Google Maps source is incomplete.");
 
-  let index = replaceOnce(
-    originalIndex.content,
+  let index = replaceOnce(originalIndex.content, healthWording.before, healthWording.after);
+  index = replaceOnce(
+    index,
     'import { icons } from "./icon.js";',
     'import { icons } from "./icon.js";\nimport { createHostedRoutesProvider, hostedRoutesTools } from "./hosted-routes.js";',
   );
   index = replaceOnce(
     index,
-    'export default defineApp(\n  { user: { accounts: { googleMaps: googleMaps.many() } }, icons },',
+    "export default defineApp(\n  { user: { accounts: { googleMaps: googleMaps.many() } }, icons },",
     `const hostedRoutes = createHostedRoutesProvider(${JSON.stringify(origin)});\n\nexport default defineApp(\n  { user: { accounts: { googleMaps: googleMaps.many(), hostedRoutes: hostedRoutes.many() } }, icons },`,
   );
   index = replaceOnce(
@@ -66,7 +82,10 @@ const renderSource = (origin: string) => {
       };
     return file;
   });
-  return { ...official, files: [...files, { path: hostedRoutes.path, content: hostedRoutes.content }] };
+  return {
+    ...official,
+    files: [...files, { path: hostedRoutes.path, content: hostedRoutes.content }],
+  };
 };
 
 export function googleMapsAddition(origin: string): Addition {

@@ -84,6 +84,7 @@ export async function handoffRuntime(
   const background: Promise<unknown>[] = [];
   const stops = new Set<() => void>();
   const calls = {
+    signals: [] as number[],
     start: 0,
     destroy: 0,
     keepAlive: 0,
@@ -118,6 +119,13 @@ export async function handoffRuntime(
       background.push(work);
     },
     container: {
+      signal(signal: number) {
+        assert.equal(signal, 9);
+        calls.signals.push(signal);
+        running = false;
+        for (const stop of stops) stop();
+        stops.clear();
+      },
       async interceptOutboundHttp(host: string, binding: { props: { source: HomePeerSource } }) {
         calls.interceptions.push({ host, source: binding.props.source });
       },

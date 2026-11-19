@@ -1,3 +1,4 @@
+import { RuntimeCrashCommand, RuntimeCrashInspectCommand } from "../runtime-crash-contract.ts";
 import { runtimeInput } from "./input.ts";
 import { Schema, Tuple } from "effect";
 import {
@@ -53,6 +54,8 @@ export const RuntimeFleetCommand = RuntimeFleetOperationPayload.mapMembers(
 export type RuntimeFleetCommand = typeof RuntimeFleetCommand.Type;
 
 export const RuntimeHandoffCommand = Schema.Union([
+  RuntimeCrashCommand,
+  RuntimeCrashInspectCommand,
   Schema.Struct({
     ...fields,
     action: Schema.Literal("provider-observe"),

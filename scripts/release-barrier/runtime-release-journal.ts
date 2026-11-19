@@ -12,12 +12,17 @@ import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { ReleasePromotionAttempt } from "./runtime-release-promotion.ts";
 import { StartupAbortReceipt } from "../../src/pool/runtime-slots/startup-abort-contract.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
+import { BaselineController } from "./baseline-controller.ts";
+import { authorizedReleaseSettlement } from "./release-settlement-archive.ts";
+import { releaseImageJournalKey } from "./release-settlement-contract.ts";
+import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 
 const Record = Schema.Struct({
   format: Schema.Literal("pool-image-release-v1"),
   candidate: Schema.String,
   complete: Schema.Boolean,
   baseline: RuntimeReleaseState,
+  baselineController: Schema.optional(BaselineController),
   desiredInput: Schema.String,
   desiredConfiguration: RuntimeConfiguration,
   bootstrap: Schema.Record(Schema.String, RuntimeProvisioningManifest),
@@ -34,6 +39,16 @@ const Header = Schema.Struct({
   sealed: Schema.Unknown,
 });
 
+export function decodeRuntimeReleaseHead(raw: unknown, encryptionKey: string) {
+  const header = Schema.decodeUnknownSync(Header)(raw);
+  const record = Schema.decodeUnknownSync(Record)(
+    openRecovery(header.sealed, encryptionKey, header.candidate, header.fingerprint),
+  );
+  if (record.candidate !== header.candidate || digest(canonical(record)) !== header.fingerprint)
+    throw new BarrierRefusal("runtime-release-journal-identity", "PoolWorker");
+  return { header, record };
+}
+
 /** Kept separately from each Alchemy phase's forward journal; secrets remain encrypted. */
 export const runtimeReleaseJournal = (
   stack: Pick<CompiledStack, "name" | "stage">,
@@ -42,24 +57,43 @@ export const runtimeReleaseJournal = (
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
-    const key = { stack: `${stack.name}-runtime-image-release`, stage: stack.stage };
-    const read = async () => {
+    const key = releaseImageJournalKey(stack);
+    /**
+     * After a controller-active settlement or an abort, the prior candidate's controller is live while
+     * the readiness row still names an older one; `sourceController` is the code that controller
+     * accepted. A complete record ran final settings, so its readiness row is current.
+     */
+    const head = async (): Promise<
+      | { record: RuntimeReleaseRecord; sourceController?: undefined }
+      | { record?: undefined; sourceController?: typeof ControllerCode.Type }
+    > => {
       const raw = await Effect.runPromise(state.getOutput(key));
-      if (raw === undefined) return undefined;
-      const header = Schema.decodeUnknownSync(Header)(raw);
-      const record = Schema.decodeUnknownSync(Record)(
-        openRecovery(header.sealed, encryptionKey, header.candidate, header.fingerprint),
-      );
-      if (record.candidate !== header.candidate || digest(canonical(record)) !== header.fingerprint)
-        throw new BarrierRefusal("runtime-release-journal-identity", "PoolWorker");
+      if (raw === undefined) return {};
+      const { record } = decodeRuntimeReleaseHead(raw, encryptionKey);
       if (record.candidate !== writer.candidate) {
-        if (record.complete || record.abort?.status === "aborted") return undefined;
+        if (record.complete) return {};
+        // An abort is signed with, and confirmed by, the controller this promotion installed.
+        if (record.abort?.status === "aborted")
+          return { sourceController: record.promotion?.startup.controllerCode };
+        const settlement = await Effect.runPromise(
+          authorizedReleaseSettlement(
+            state,
+            stack,
+            encryptionKey,
+            record.candidate,
+            writer.candidate,
+            raw,
+          ),
+        );
+        // Live-proven: the authorized settlement signed its controller reads with this code.
+        if (settlement) return { sourceController: settlement.proof.controller.code };
         throw new BarrierRefusal("runtime-release-prior-candidate-unsettled", "PoolWorker");
       }
-      return record;
+      return { record };
     };
     return {
-      read,
+      head,
+      read: async () => (await head()).record,
       write: (value: RuntimeReleaseRecord) =>
         writer.exclusive(async () => {
           const record = Schema.decodeUnknownSync(Record)(value);

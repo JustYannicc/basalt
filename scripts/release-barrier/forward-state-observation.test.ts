@@ -59,3 +59,50 @@ test("the forward probe reads exact native bytes and strips private State and jo
   });
   assert.doesNotMatch(JSON.stringify(result), /synthetic-secret|private-|props|configuration/);
 });
+
+test("the forward probe explicitly projects completed v2 provisioning headers and rejects unknown versions", async () => {
+  const fixture = containerRelease();
+  const saved: PersistedState = {
+    resourceType: "Cloudflare.Container",
+    namespace: undefined,
+    fqn: "PoolContainer",
+    logicalId: "PoolContainer",
+    instanceId: "instance",
+    providerVersion: 1,
+    status: "updated",
+    downstream: [],
+    bindings: [],
+    props: {},
+    attr: fixture.previous,
+  };
+  const read = (journal: unknown) =>
+    Effect.runPromise(
+      readForwardStateObservation(
+        {
+          getVersion: () => Effect.succeed(8),
+          get: () => Effect.succeed(saved),
+          getOutput: () => Effect.succeed(journal),
+        },
+        { name: "basalt", stage: "production" },
+      ),
+    );
+  const header = {
+    schemaVersion: 2,
+    kind: "runtime-provisioning",
+    candidate: "a".repeat(40),
+    manifest: "b".repeat(64),
+    complete: true,
+    sealed: "synthetic-private-payload",
+  };
+  const observed = await read(header);
+  assert.deepEqual(observed.journal, {
+    schemaVersion: 2,
+    kind: "runtime-provisioning",
+    candidate: header.candidate,
+    manifest: header.manifest,
+    complete: true,
+  });
+  assert.equal(JSON.stringify(observed).includes("private-payload"), false);
+  await assert.rejects(read({ ...header, schemaVersion: 3 }));
+  await assert.rejects(read({ ...header, kind: "unrecognized" }));
+});

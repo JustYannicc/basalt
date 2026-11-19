@@ -22,6 +22,7 @@ import { verifyContainerHealth } from "./container-health.ts";
 import { readServingObservation } from "./serving-observation.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
 import type { FrozenContainer, ContainerAttributes } from "./container.ts";
+import type { ForwardControllerObservation } from "./controller-forward-health.ts";
 
 export const resumeForwardRelease = (
   stack: CompiledStack,
@@ -31,6 +32,7 @@ export const resumeForwardRelease = (
     runtime?(
       container: FrozenContainer,
       observed: ContainerAttributes,
+      controller: ForwardControllerObservation,
     ): Promise<{ instanceId: string; bootId: string; checkedAt: number }>;
     io?: {
       baseline?: typeof readBaseline;
@@ -123,7 +125,13 @@ export const resumeForwardRelease = (
       if (container.id !== "PoolContainer" && placements.instances.length)
         throw new BarrierRefusal("forward-inactive-runtime-not-empty", container.id);
       input = { workerInputHash: adoption.receipt.inputHash, continuation: undefined };
-      health = yield* Effect.promise(() => options.runtime!(container, observed));
+      health = yield* Effect.promise(() =>
+        options.runtime!(container, observed, {
+          workerVersions: live.get("PoolWorker")?.versions ?? [],
+          instances: placements.instances,
+          digest: adoption.receipt.digest,
+        }),
+      );
     } else {
       if (container.id !== "PoolContainer")
         throw new BarrierRefusal("forward-runtime-release-proof-required", container.id);

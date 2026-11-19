@@ -6,9 +6,10 @@ import type { Feed } from "./feed.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
 import elevenlabsMetadata from "./elevenlabs.oauth-metadata.json" with { type: "json" };
 
-test("ElevenLabs's reviewed user and pronunciation-dictionary scopes still refuses metadata drift", () => {
-  // Only advertised read scopes changed; this does not request them in connector consent.
-  const added = ["user_read", "pronunciation_dictionaries_read"];
+test("ElevenLabs's reviewed pronunciation-dictionary write scope still refuses metadata drift", () => {
+  // Only an advertised scope was added. New sign-ins request the resource's full scope list,
+  // and the MCP tools it unlocks still require approval unless marked read-only.
+  const added = ["pronunciation_dictionaries_write"];
   for (const scope of added) assert.ok(elevenlabsMetadata.scopes_supported.includes(scope));
   const previous = {
     ...elevenlabsMetadata,
@@ -16,7 +17,7 @@ test("ElevenLabs's reviewed user and pronunciation-dictionary scopes still refus
   };
   assert.equal(
     catalogDocumentSha256(previous),
-    "4e5d8c43dca2881e16d2452a6463357c4e478b21b8b7fe6358748a59160c54a1",
+    "3a294ab3214ca03b5e93883492b3a6f24568258e2cef6295fb5bbc4f890714ea",
   );
   const review = oauthReviews(reviewData).find((item) => item.entry === "elevenlabs")!;
   const method = review.methods.oauth!;

@@ -41,8 +41,10 @@ test("the declared class Worker preserves numeric placement through expansion, r
   assert.deepEqual(proof.events, [
     "expand",
     "upload",
+    "upload",
     "create-bucket",
     "activate",
+    "upload",
     "upload",
     "activate",
   ]);

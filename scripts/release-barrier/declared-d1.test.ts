@@ -12,7 +12,14 @@ test("declared EU D1 creation follows candidate admission and retains native own
   assert.equal(row?.status, "created");
   assert.equal(row?.removalPolicy, "retain");
   assert.equal(row?.resourceType, "Cloudflare.D1Database");
-  assert.deepEqual(proof.events, ["preflight-d1", "upload", "admitted", "create-d1", "activate"]);
+  assert.deepEqual(proof.events, [
+    "preflight-d1",
+    "upload",
+    "upload",
+    "admitted",
+    "create-d1",
+    "activate",
+  ]);
   assert.equal(proof.readiness.at(-1)?.resources[0]?.ready, true);
 });
 

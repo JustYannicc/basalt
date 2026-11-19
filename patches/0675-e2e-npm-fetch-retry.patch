@@ -1,0 +1,206 @@
+diff --git a/scripts/e2e-npm-packages.ts b/scripts/e2e-npm-packages.ts
+--- a/scripts/e2e-npm-packages.ts
++++ b/scripts/e2e-npm-packages.ts
+@@ -16,6 +16,7 @@ import { createRequire } from "node:module";
+ import path from "node:path";
+ import apps from "../packages/apps/package.json" with { type: "json" };
+ import tailwind from "../packages/sdk/node_modules/tailwindcss/package.json" with { type: "json" };
++import { RegistryReadError, registryReader } from "./e2e-npm-fetch.ts";
+ 
+ type Root = { readonly name: string; readonly range: string; readonly transitive: boolean };
+ type Version = {
+@@ -60,7 +61,6 @@ const roots: ReadonlyArray<Root> = [
+ const lockFile = path.resolve("e2e/npm-packages.json");
+ const archives = path.resolve(".local/test-runtime/npm");
+ const upstream = "https://registry.npmjs.org";
+-const timeout = 60_000;
+ 
+ /** The archive file for one locked version; the loopback registry reads the same name. */
+ const archiveName = (name: string, version: string) => `${name.replace("/", "+")}-${version}.tgz`;
+@@ -70,14 +70,7 @@ const fail = (message: string): never => {
+   process.exit(1);
+ };
+ 
+-const get = async (url: string, accept?: string) => {
+-  const response = await fetch(url, {
+-    signal: AbortSignal.timeout(timeout),
+-    ...(accept === undefined ? {} : { headers: { Accept: accept } }),
+-  });
+-  if (!response.ok) fail(`${url} returned ${response.status}`);
+-  return response;
+-};
++const get = registryReader();
+ 
+ /**
+  * Resolve every root as the compiler's installer does (`@cloudflare/worker-bundler`): an exact
+@@ -106,8 +99,10 @@ const update = async () => {
+     const known = packuments.get(name);
+     if (known !== undefined) return known;
+     const url = `${upstream}/${name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : name}`;
+-    const loaded = get(url, "application/json").then(
++    const loaded = get(
++      url,
+       (response) => response.json() as Promise<Packument>,
++      "application/json",
+     );
+     packuments.set(name, loaded);
+     return loaded;
+@@ -196,7 +191,10 @@ const download = async () => {
+   await Promise.all(
+     Array.from({ length: 8 }, async () => {
+       for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+-        const bytes = new Uint8Array(await (await get(next.tarball)).arrayBuffer());
++        const bytes = await get(
++          next.tarball,
++          async (response) => new Uint8Array(await response.arrayBuffer()),
++        );
+         if (integrityOf(bytes) !== next.integrity)
+           fail(`${next.tarball} does not match its locked integrity`);
+         fs.writeFileSync(next.file, bytes);
+@@ -208,4 +206,6 @@ const download = async () => {
+   );
+ };
+ 
+-await (process.argv.includes("--update") ? update() : download());
++await (process.argv.includes("--update") ? update() : download()).catch((error: unknown) =>
++  error instanceof RegistryReadError ? fail(error.message) : Promise.reject(error),
++);
+diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
+--- a/scripts/e2e-prepare.ts
++++ b/scripts/e2e-prepare.ts
+@@ -90,7 +90,12 @@ const steps: ReadonlyArray<Step> = [
+     name: "e2e:npm",
+     command: ["bun", "run", "e2e:npm"],
+     packages: [],
+-    files: ["scripts/e2e-npm-packages.ts", "e2e/npm-packages.json", "packages/apps/package.json"],
++    files: [
++      "scripts/e2e-npm-packages.ts",
++      "scripts/e2e-npm-fetch.ts",
++      "e2e/npm-packages.json",
++      "packages/apps/package.json",
++    ],
+     after: [],
+     outputs: [".local/test-runtime/npm"],
+   },
+diff --git a/scripts/e2e-npm-fetch.ts b/scripts/e2e-npm-fetch.ts
+new file mode 100644
+--- /dev/null
++++ b/scripts/e2e-npm-fetch.ts
+@@ -0,0 +1,117 @@
++/**
++ * Registry reads for `e2e:npm`. Many CI jobs read the public registry at once, so a reset
++ * connection or a slow response must not fail a job: transient failures retry with jittered
++ * backoff, and every other answer fails at once with its real cause.
++ */
++
++/** A registry read that will not succeed by retrying, or that ran out of attempts. */
++export class RegistryReadError extends Error {}
++
++export type RegistryReadOptions = {
++  readonly attempts?: number;
++  readonly timeoutMs?: number;
++  readonly baseDelayMs?: number;
++  readonly fetch?: typeof fetch;
++  readonly sleep?: (ms: number) => Promise<void>;
++  readonly random?: () => number;
++  readonly log?: (line: string) => void;
++};
++
++const transientCodes = new Set([
++  "ECONNRESET",
++  "ECONNREFUSED",
++  "ECONNABORTED",
++  "EAI_AGAIN",
++  "ENOTFOUND",
++  "ENETUNREACH",
++  "EHOSTUNREACH",
++  "ETIMEDOUT",
++  "EPIPE",
++  "UND_ERR_SOCKET",
++  "UND_ERR_CLOSED",
++  "UND_ERR_CONNECT_TIMEOUT",
++  "UND_ERR_HEADERS_TIMEOUT",
++  "UND_ERR_BODY_TIMEOUT",
++  // Bun's name for a refused connection.
++  "ConnectionRefused",
++]);
++
++const field = (value: unknown, key: string): unknown =>
++  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
++
++/** Runtimes wrap socket errors (`fetch failed` with a coded cause), so the whole chain counts. */
++const causes = (error: unknown) => {
++  const chain: unknown[] = [];
++  for (let next = error; next != null && chain.length < 6; next = field(next, "cause"))
++    chain.push(next);
++  return chain;
++};
++
++const isTransient = (error: unknown) =>
++  causes(error).some((cause) => {
++    const code = field(cause, "code");
++    return (
++      field(cause, "name") === "TimeoutError" ||
++      (typeof code === "string" && transientCodes.has(code))
++    );
++  });
++
++const retryableStatus = (status: number) => status === 408 || status === 429 || status >= 500;
++
++const describeCause = (error: unknown) =>
++  causes(error)
++    .map((cause) => {
++      const name = field(cause, "name");
++      const code = field(cause, "code");
++      const message = field(cause, "message");
++      return [
++        typeof name === "string" ? name : "Error",
++        typeof code === "string" ? ` ${code}` : "",
++        typeof message === "string" && message ? `: ${message}` : "",
++      ].join("");
++    })
++    .join(" <- ");
++
++/** One GET whose response `read` consumes inside the same attempt, so a body reset retries too. */
++export const registryReader = (options: RegistryReadOptions = {}) => {
++  const attempts = options.attempts ?? 4;
++  const timeoutMs = options.timeoutMs ?? 60_000;
++  const baseDelayMs = options.baseDelayMs ?? 1_000;
++  const request = options.fetch ?? fetch;
++  const sleep = options.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms)));
++  const random = options.random ?? Math.random;
++  const log = options.log ?? ((line: string) => console.error(line));
++  return async <T>(url: string, read: (response: Response) => Promise<T>, accept?: string) => {
++    for (let attempt = 1; ; attempt++) {
++      let cause: string;
++      let error: unknown;
++      try {
++        const response = await request(url, {
++          signal: AbortSignal.timeout(timeoutMs),
++          ...(accept === undefined ? {} : { headers: { Accept: accept } }),
++        });
++        if (response.ok) return await read(response);
++        await response.body?.cancel().catch(() => {});
++        cause = `HTTP ${response.status}`;
++        if (!retryableStatus(response.status))
++          throw new RegistryReadError(`${url} returned ${response.status}`);
++      } catch (thrown) {
++        if (thrown instanceof RegistryReadError) throw thrown;
++        error = thrown;
++        cause = describeCause(thrown);
++        if (!isTransient(thrown))
++          throw new RegistryReadError(`${url} failed: ${cause}`, { cause: thrown });
++      }
++      if (attempt >= attempts)
++        throw new RegistryReadError(`${url} failed after ${attempt} attempts: ${cause}`, {
++          cause: error,
++        });
++      // Jitter keeps parallel jobs from retrying in lockstep against a struggling registry.
++      const delay = Math.round(baseDelayMs * 2 ** (attempt - 1) * (0.5 + random()));
++      log(
++        `e2e:npm: ${url} attempt ${attempt}/${attempts} failed (${cause}); retrying in ${delay} ms`,
++      );
++      await sleep(delay);
++    }
++  };
++};

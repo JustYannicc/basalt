@@ -60,9 +60,13 @@ function fixture(overrides: Partial<VersionProvider> = {}) {
 test("every Worker upload and baseline check precedes the first exact-ID activation", async () => {
   const proof = fixture();
   const result = await releaseWorkers(manifest(), proof.options);
+  // Every Worker needs two passing startup samples before baseline checks begin.
   assert.deepEqual(proof.events, [
     "upload:Dashboard",
+    "upload:Dashboard",
     "upload:Api",
+    "upload:Api",
+    "upload:Router",
     "upload:Router",
     "baseline:Dashboard",
     "baseline:Api",
@@ -124,7 +128,7 @@ test("missing version ID refuses activation even with good startup evidence", as
   assert.deepEqual(proof.receipts.at(-1)?.activated, []);
 });
 
-test("one noisy startup measurement reuploads the frozen Worker before any activation", async () => {
+test("two passing startup measurements admit the frozen Worker before any activation", async () => {
   const uploads: string[] = [];
   const proof = fixture({
     async upload(worker) {
@@ -136,10 +140,19 @@ test("one noisy startup measurement reuploads the frozen Worker before any activ
     },
   });
   const result = await releaseWorkers(manifest(), proof.options);
-  assert.deepEqual(uploads, ["Dashboard", "Dashboard", "Api", "Router"]);
-  assert.deepEqual(result.startupMeasurements?.slice(0, 2), [
+  assert.deepEqual(uploads, [
+    "Dashboard",
+    "Dashboard",
+    "Dashboard",
+    "Api",
+    "Api",
+    "Router",
+    "Router",
+  ]);
+  assert.deepEqual(result.startupMeasurements?.slice(0, 3), [
     { worker: "Dashboard", versionId: "version-1", startupTimeMs: 770 },
     { worker: "Dashboard", versionId: "version-2", startupTimeMs: 303 },
+    { worker: "Dashboard", versionId: "version-3", startupTimeMs: 303 },
   ]);
   assert.deepEqual(result.accepted[0], {
     worker: "Dashboard",

@@ -1,6 +1,6 @@
 import { digest } from "./backend-users.ts";
 import { modelKeyScope } from "./key-scope.ts";
-import { policyHeader, policyUsePrefix } from "./membership-contract.ts";
+import { modelUseAssertionTtlMs, policyHeader, policyUsePrefix } from "./membership-contract.ts";
 import { NativeMemberships } from "./membership.ts";
 import type { RefusalIdentity } from "./gateway-failure.ts";
 import { signEnvelope } from "./token.ts";
@@ -35,6 +35,7 @@ export async function modelMembership(
   identity?: RefusalIdentity;
   pool?: string;
   lease?: NativeStreamLease;
+  assertionExpiresAt?: number;
 }> {
   const headers = new Headers(request.headers);
   headers.delete(policyHeader);
@@ -65,13 +66,15 @@ export async function modelMembership(
         throw new ModelMembershipUnavailable(identity);
       });
     }
+    let assertionExpiresAt: number | undefined;
     if (policy) {
+      assertionExpiresAt = Date.now() + modelUseAssertionTtlMs;
       headers.set(
         policyHeader,
         await signEnvelope(signingKey, policyUsePrefix, {
           pool,
           revision: policy.revision,
-          expiresAt: Date.now() + 2 * 60 * 60_000,
+          expiresAt: assertionExpiresAt,
         }),
       );
     }
@@ -80,6 +83,7 @@ export async function modelMembership(
       identity,
       pool,
       lease,
+      assertionExpiresAt,
     };
   } catch (error) {
     lease.release();

@@ -39,6 +39,8 @@ export const fixture = (
     baselineError?: CloudflareHttpError;
     baseline?: typeof import("../cloudflare.ts").readBaseline;
     upload?: typeof uploadVersion;
+    /** Api carries an asset completion token; `renewAssets` mints the next one. */
+    assets?: { renewAssets?: () => Effect.Effect<string> };
     extraWorkers?: readonly string[];
     evidence?: Pick<DeployStackOptions, "record" | "manifest">;
     preparationError?: unknown;
@@ -108,7 +110,21 @@ export const fixture = (
         if (Option.isSome(hook)) {
           if (options.preparationError && input.id === "Api")
             return yield* Effect.fail(options.preparationError);
-          const initialUpload = preparedUpload(input.id);
+          const fixtureUpload = preparedUpload(input.id);
+          const initialUpload =
+            options.assets && input.id === "Api"
+              ? {
+                  ...fixtureUpload,
+                  request: {
+                    ...fixtureUpload.request,
+                    metadata: {
+                      ...fixtureUpload.request.metadata,
+                      assets: { jwt: "plan-token-Api", config: {} },
+                    },
+                  },
+                  renewAssets: options.assets.renewAssets,
+                }
+              : fixtureUpload;
           const upload = repair
             ? yield* repair.prepare(initialUpload).pipe(Effect.provide(repair.services))
             : initialUpload;
@@ -373,10 +389,10 @@ export const fixture = (
                         { versionId: "previous", percentage: 100 },
                       ],
                     )),
-            upload: (worker) =>
+            upload: (worker, assetsJwt) =>
               Effect.gen(function* () {
                 events.push(`validate:${worker.id}`);
-                if (options.upload) return yield* options.upload(worker);
+                if (options.upload) return yield* options.upload(worker, assetsJwt);
                 if (options.reject && worker.id === "Router")
                   throw new Error("provider refuses Router");
                 if (repair && options.latestSettings && worker.id === "Api")

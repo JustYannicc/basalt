@@ -51,9 +51,17 @@ export function refusalTable(failure: Failure) {
       [
         failure.operation,
         failure.provider?.type,
+        failure.provider?.message,
         failure.provider?.reason,
         failure.provider?.status === undefined ? undefined : `status=${failure.provider.status}`,
         failure.provider?.codes?.length ? `codes=${failure.provider.codes.join(",")}` : undefined,
+        failure.provider?.request
+          ? `request=${failure.provider.request.method} ${failure.provider.request.path}`
+          : undefined,
+        ...(failure.provider?.cause ?? []).map(
+          (cause, index) =>
+            `cause.${index}=${[cause.type, cause.code, cause.message].filter(Boolean).join(": ")}`,
+        ),
       ]
         .filter((value) => value !== undefined)
         .join("; "),

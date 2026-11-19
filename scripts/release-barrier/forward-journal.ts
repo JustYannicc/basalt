@@ -1,6 +1,6 @@
 import { State, type StateService } from "alchemy/State/State";
 import { encodeState } from "alchemy/State/StateEncoding";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type { CompiledStack } from "alchemy/Stack";
 import type { BarrierReceipt } from "./barrier.ts";
 import {
@@ -16,13 +16,18 @@ import { encodedRecordHash, readForwardPacket, type ForwardPacket } from "./forw
 import { provisioningRefusal } from "./provisioning-refusal.ts";
 import { readRuntimeProvisioningHeader } from "./provisioning-header.ts";
 
-const header = Schema.Struct({
+/** An ordinary release's forward head; a runtime-provisioning head (schemaVersion 2) never decodes. */
+export const ForwardJournalHeader = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   candidate: Schema.String,
   manifest: Schema.String,
   sealed: Schema.Unknown,
   complete: Schema.Boolean,
 });
+const header = ForwardJournalHeader;
+/** The ordinary release that owns the forward head, without opening its sealed packet. */
+export const forwardHeadCandidate = (value: unknown) =>
+  Option.getOrUndefined(Schema.decodeUnknownOption(ForwardJournalHeader)(value))?.candidate;
 export const journalKey = (stack: Pick<CompiledStack, "name" | "stage">) => ({
   stack: `${stack.name}-release-barrier`,
   stage: stack.stage,

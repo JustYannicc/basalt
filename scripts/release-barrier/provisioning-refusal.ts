@@ -7,8 +7,19 @@ const paths = SchemaIssue.makeFormatterStandardSchemaV1({
   checkHook: () => "invalid",
 });
 
+const publicParents = new Set(["env", "bindings"]);
+
 export function decodeProvisioningInput<A>(schema: Schema.Codec<A>, location: string) {
   const decode = Schema.decodeUnknownSync(schema, { onExcessProperty: "error", errors: "all" });
+  // Locations are code constants, split so each segment is checked like any other key: it names
+  // its decoder unless a parent is private. A segment the redactor treats as a public parent
+  // would expose the raw keys below it, so those are refused here.
+  const prefix = location.split(".");
+  if (
+    !/^[A-Za-z]+(\.[A-Za-z]+)*$/u.test(location) ||
+    prefix.some((segment) => publicParents.has(segment))
+  )
+    throw new Error(`Provisioning decoder location ${location} is not a plain constant`);
   return (value: unknown) => {
     try {
       return decode(value);
@@ -16,7 +27,7 @@ export function decodeProvisioningInput<A>(schema: Schema.Codec<A>, location: st
       const changed = Schema.isSchemaError(error)
         ? paths(error.issue).issues.map((issue) => ({
             path: publicPropPath([
-              location,
+              ...prefix,
               ...(issue.path ?? []).map((part) =>
                 String(typeof part === "object" ? part.key : part),
               ),

@@ -27,6 +27,21 @@ import {
 
 import { ObservationStoreManifest, observationStoreDigest } from "./observation-store-contract.ts";
 import { provisionObservationStore } from "./observation-store-apply.ts";
+import {
+  JournalRestoreManifest,
+  journalRestoreDigest,
+  type AdoptionProof,
+} from "./journal-restore-contract.ts";
+import { applyJournalRestore, inspectJournalRestore } from "./journal-restore.ts";
+import {
+  ReleaseSettlementManifest,
+  releaseSettlementDigest,
+} from "./release-settlement-contract.ts";
+import {
+  applyReleaseSettlement,
+  inspectReleaseSettlement,
+  type SettlementOperationIo,
+} from "./release-settlement-operation.ts";
 
 export const ProvisioningOperation = Schema.Union([
   Schema.Struct({
@@ -36,6 +51,14 @@ export const ProvisioningOperation = Schema.Union([
   }),
   Schema.Struct({ kind: Schema.Literal("observation-token"), manifest: ObservationTokenManifest }),
   Schema.Struct({ kind: Schema.Literal("observation-store"), manifest: ObservationStoreManifest }),
+  Schema.Struct({
+    kind: Schema.Literal("observation-store-restore"),
+    manifest: JournalRestoreManifest,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("release-settlement"),
+    manifest: ReleaseSettlementManifest,
+  }),
 ]);
 export type ProvisioningOperation = typeof ProvisioningOperation.Type;
 const Go = Schema.Struct({
@@ -63,6 +86,10 @@ const manifestDigest = (operation: ProvisioningOperation) => {
       return observationTokenDigest(operation.manifest);
     case "observation-store":
       return observationStoreDigest(operation.manifest);
+    case "observation-store-restore":
+      return journalRestoreDigest(operation.manifest);
+    case "release-settlement":
+      return releaseSettlementDigest(operation.manifest);
   }
 };
 const operationResource = (operation: ProvisioningOperation) => {
@@ -72,7 +99,10 @@ const operationResource = (operation: ProvisioningOperation) => {
     case "observation-token":
       return "PoolProviderObservationToken";
     case "observation-store":
+    case "observation-store-restore":
       return "PoolObservationSecrets";
+    case "release-settlement":
+      return "PoolWorker";
   }
 };
 
@@ -143,6 +173,10 @@ export const inspectDeclaredProvisioning = (
     );
     const state = yield* yield* State;
     const operation = packet.operation;
+    if (operation.kind === "observation-store-restore")
+      return yield* inspectJournalRestore(stack, operation.manifest);
+    if (operation.kind === "release-settlement")
+      return yield* inspectReleaseSettlement(stack, operation.manifest, encryptionKey);
     const manifest = manifestDigest(operation);
     const store = stateProvisioningStore(state, stack, encryptionKey, async () => {
       throw new Error("Inspection cannot write provisioning state");
@@ -179,7 +213,13 @@ export const runDeclaredProvisioning = (
   writer: ProvisioningWriter,
   encryptionKey: string,
   signingKey: string,
-  io: { now?: () => number; connect?: PoolOperationsTarget["connect"]; fetcher?: Fetcher } = {},
+  io: {
+    now?: () => number;
+    connect?: PoolOperationsTarget["connect"];
+    fetcher?: Fetcher;
+    adoptionProof?: AdoptionProof;
+    settlement?: SettlementOperationIo;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const now = io.now ?? Date.now;
@@ -202,20 +242,43 @@ export const runDeclaredProvisioning = (
       yield* sourceObservationTokenPlan(stack, packet.operation.manifest);
     const state = yield* yield* State;
     let queue: Promise<unknown> = Promise.resolve();
-    const store = stateProvisioningStore(
-      state,
-      stack,
-      encryptionKey,
-      <A>(work: () => Promise<A>) => {
-        const pending = queue.then(() => {
-          validateProvisioningOperation(packet, writer, now());
-          return work();
-        });
-        queue = pending.catch(() => {});
-        return pending;
-      },
-    );
+    const exclusive = <A>(work: () => Promise<A>) => {
+      const pending = queue.then(() => {
+        validateProvisioningOperation(packet, writer, now());
+        return work();
+      });
+      queue = pending.catch(() => {});
+      return pending;
+    };
+    const store = stateProvisioningStore(state, stack, encryptionKey, exclusive);
     const operation = packet.operation;
+    if (operation.kind === "release-settlement") {
+      if (!io.settlement) throw new Error("Settlement requires retained operation evidence");
+      const work = applyReleaseSettlement(
+        stack,
+        operation.manifest,
+        encryptionKey,
+        enable,
+        io.settlement,
+        now,
+      );
+      const context = yield* Effect.context<Effect.Services<typeof work>>();
+      return yield* Effect.promise(() => exclusive(() => Effect.runPromiseWith(context)(work)));
+    }
+    if (operation.kind === "observation-store-restore") {
+      if (!io.adoptionProof) throw new Error("Restore requires a verified adoption artifact");
+      const work = applyJournalRestore(
+        stack,
+        operation.manifest,
+        io.adoptionProof,
+        encryptionKey,
+        enable,
+        now,
+      );
+      const context = yield* Effect.context<Effect.Services<typeof work>>();
+      const run = Effect.runPromiseWith(context);
+      return yield* Effect.promise(() => exclusive(() => run(work)));
+    }
     if (operation.kind === "observation-store")
       return yield* provisionObservationStore(stack, {
         manifest: operation.manifest,

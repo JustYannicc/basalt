@@ -105,10 +105,7 @@ export const readObservationStorePlan = (stack: CompiledStack, accountId: string
     );
   });
 
-export function assertObservationStorePlanGo(
-  request: typeof ObservationStorePlanRequest.Type,
-  now: number,
-) {
+export function assertObservationStorePlanGo(request: { readonly expiresAt: number }, now: number) {
   if (
     !Number.isSafeInteger(now) ||
     !Number.isSafeInteger(request.expiresAt) ||

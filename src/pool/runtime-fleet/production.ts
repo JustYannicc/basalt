@@ -1,3 +1,5 @@
+import { RuntimeCrash } from "../runtime-crash.ts";
+import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
 import { forwardRecoverably } from "./retry.ts";
 import { FleetDemand } from "./demand.ts";
@@ -70,6 +72,7 @@ export class PoolRuntimeFleet {
   private replacement: RuntimeFleetReplacement;
   private imageUpdate: RuntimeImageUpdate;
   private demand: FleetDemand;
+  private fault: RuntimeCrash;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.demand = new FleetDemand(deps.ctx.storage);
@@ -114,6 +117,14 @@ export class PoolRuntimeFleet {
         if (!fleet) throw new SlotRefused("selection");
         return fleet.drain(identity);
       },
+    });
+    this.fault = new RuntimeCrash({
+      storage: deps.ctx.storage,
+      secret: deps.env.POOL_DEPLOYMENT_KEY ?? "",
+      handoff: deps.handoff,
+      state: this.state,
+      configuration: this.configuration,
+      endpoint: (identity) => this.namespace(identity).endpoint(identity),
     });
     this.peers = new RuntimeFleetPeers({
       controllerId: deps.ctx.id.toString(),
@@ -309,6 +320,12 @@ export class PoolRuntimeFleet {
       imageDigest: application.imageDigest,
       imageInput: application.imageInput,
     };
+  }
+  crash(command: RuntimeCrashCommand) {
+    return this.fault.crash(command);
+  }
+  inspectCrash(identity: SlotIdentity, nonce: string) {
+    return this.fault.inspect(identity, nonce);
   }
   async replace(operationId: string, identity: SlotIdentity) {
     const receipt = await this.replacement.plan(operationId, identity);

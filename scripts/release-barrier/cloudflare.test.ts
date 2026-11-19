@@ -14,6 +14,7 @@ import {
 } from "./pending-placement.ts";
 import { preparedUpload } from "./fixture.ts";
 import * as HttpClientError from "effect/http/HttpClientError";
+import { BarrierRefusal } from "./manifest.ts";
 
 test("baseline reads the active deployment from a real SDK wire response", async () => {
   const sdk = HttpClient.make((request) =>
@@ -85,6 +86,83 @@ test("version upload never retries a transient transport failure", async () => {
     ),
   );
   assert.equal(attempts, 1);
+});
+
+test("the real SDK keeps safe unknown-upload diagnostics and never retries an unconfirmed response", async () => {
+  const envName = "BASALT_UPLOAD_DIAGNOSTIC_SECRET";
+  const previousSecret = process.env[envName];
+  process.env[envName] = "synthetic-environment-secret";
+  let attempts = 0;
+  const sdk = HttpClient.make((request) => {
+    attempts++;
+    return Effect.succeed(
+      HttpResponse.fromWeb(
+        request,
+        Response.json(
+          {
+            success: false,
+            errors: [
+              {
+                code: 100312,
+                message:
+                  "An unknown error has occurred. env=synthetic-environment-secret Authorization: Bearer synthetic-sdk-private-token https://private.invalid/upload?email=owner@example.invalid source: export default privateSourceValue",
+              },
+            ],
+            bindings: { PRIVATE: "private-binding-value" },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+  });
+  const worker = await freezeUpload(preparedUpload(), [{ versionId: "previous", percentage: 100 }]);
+  let refusal: BarrierRefusal | undefined;
+  try {
+    await Effect.runPromise(
+      uploadVersion(worker).pipe(
+        Effect.provideService(HttpClient.HttpClient, sdk),
+        Effect.provideService(
+          Credentials,
+          Effect.succeed({
+            type: "apiToken",
+            apiToken: Redacted.make("synthetic-sdk-private-token"),
+            apiBaseUrl: "https://fixture.invalid",
+          }),
+        ),
+      ),
+    );
+  } catch (error) {
+    if (!(error instanceof BarrierRefusal)) throw error;
+    refusal = error;
+  } finally {
+    if (previousSecret === undefined) delete process.env[envName];
+    else process.env[envName] = previousSecret;
+  }
+  assert.equal(attempts, 1);
+  assert.ok(refusal);
+  assert.equal(refusal.reason, "upload-rejected-or-unconfirmed");
+  const fields = new Map(
+    refusal.delta?.changed.map((row) => [row.path, "new" in row ? row.new : null]),
+  );
+  assert.equal(fields.get("$upload.status"), 400);
+  assert.equal(fields.get("$upload.codes"), "100312");
+  assert.equal(fields.get("$upload.messageClass"), "asset-completion-token-consumed");
+  assert.equal(fields.get("$upload.bodyClass"), "cloudflare-errors-json");
+  assert.match(String(fields.get("$upload.message")), /An unknown error has occurred/);
+  assert.match(String(fields.get("$upload.message")), /\[redacted-source\]/);
+  assert.match(String(fields.get("$upload.bodyExcerpt")), /100312/);
+  assert.ok(String(fields.get("$upload.message")).length <= 512);
+  assert.ok(String(fields.get("$upload.bodyExcerpt")).length <= 1024);
+  const text = JSON.stringify(refusal);
+  for (const secret of [
+    "synthetic-environment-secret",
+    "synthetic-sdk-private-token",
+    "private.invalid",
+    "owner@example.invalid",
+    "privateSourceValue",
+    "private-binding-value",
+  ])
+    assert.ok(!text.includes(secret), secret);
 });
 
 test("the real version multipart repairs the exact damaged Api baseline and protects all setting groups", async () => {

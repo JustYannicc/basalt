@@ -62,7 +62,10 @@ for (const retained of [false, true]) {
       await release();
       assert.deepEqual(
         (await scoped.query("SELECT name FROM basalt_model_history_migrations ORDER BY name")).rows,
-        historySchemaMigrations.map(({ name }) => ({ name })),
+        historySchemaMigrations
+          .map(({ name }) => name)
+          .sort()
+          .map((name) => ({ name })),
       );
       assert.equal(
         (await scoped.query("SELECT to_regclass('basalt_model_requests_account_time') AS index"))

@@ -1,10 +1,13 @@
+import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import {
+  providerObservationFailureHeader,
   type ProviderObservationTarget,
   type observeBoundProvider,
 } from "../runtime-provider/observation.ts";
 import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
 import { runtimeErrorResponse } from "./request-error.ts";
+import { runtimeResponseDiagnostic } from "../runtime-route-diagnostic.ts";
 import { openEnvelope } from "../token.ts";
 import {
   sameControllerCode,
@@ -22,6 +25,8 @@ import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/ima
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
 
 export interface HandoffFleet {
+  crash?(command: RuntimeCrashCommand): Promise<unknown>;
+  inspectCrash?(identity: SlotIdentity, nonce: string): Promise<unknown>;
   observeProvider?(
     target: ProviderObservationTarget,
     signal?: AbortSignal,
@@ -53,6 +58,7 @@ export async function handleRuntimeHandoff(
   probe?: RuntimeCandidateProbe,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
+  let command: RefusedCommand | undefined;
   try {
     const text = await request.text();
     if (text.length > 256 * 1024) return new Response(null, { status: 413 });
@@ -64,6 +70,17 @@ export async function handleRuntimeHandoff(
     const value = decodeRuntimeHandoffCommand(
       await openEnvelope(secret, runtimeHandoffCommandPrefix, envelope),
     );
+    command = {
+      action: value.action,
+      // Adopt and stage carry no operation; the candidate commit still ties the line to a release.
+      candidate: value.controllerCode.candidate,
+      operationId:
+        "operationId" in value && typeof value.operationId === "string"
+          ? value.operationId
+          : "intent" in value
+            ? value.intent.operationId
+            : null,
+    };
     if (!sameControllerCode(value.controllerCode, code)) throw new SlotRefused("identity");
     if (
       [
@@ -80,6 +97,14 @@ export async function handleRuntimeHandoff(
       await fleet?.assertPrimaryChange?.(value.action);
     let result: unknown;
     switch (value.action) {
+      case "runtime-crash":
+        if (!fleet?.crash) throw new SlotRefused("selection");
+        result = await fleet.crash(value);
+        break;
+      case "runtime-crash-inspect":
+        if (!fleet?.inspectCrash) throw new SlotRefused("selection");
+        result = await fleet.inspectCrash(value.identity, value.nonce);
+        break;
       case "provider-observe":
         if (!fleet?.observeProvider) throw new Error("Provider observation unavailable");
         result = await fleet.observeProvider(value.target, request.signal);
@@ -182,6 +207,33 @@ export async function handleRuntimeHandoff(
     }
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    return runtimeErrorResponse(error, "handoff");
+    const response = runtimeErrorResponse(error, "handoff");
+    if (response.status === 409) logRuntimeCommandRefusal(response, command);
+    return response;
   }
+}
+
+interface RefusedCommand {
+  action: string;
+  candidate: string;
+  operationId: string | null;
+}
+
+/** One closed-vocabulary line per refused command, so a refusal is diagnosable from Workers logs. */
+export function logRuntimeCommandRefusal(response: Response, command: RefusedCommand | undefined) {
+  const diagnostic = runtimeResponseDiagnostic(response);
+  const cause = response.headers.get(providerObservationFailureHeader);
+  console.warn(
+    "POOL_RUNTIME_COMMAND_REFUSED " +
+      JSON.stringify({
+        action: command?.action ?? null,
+        candidate: command?.candidate ?? null,
+        operationId: command?.operationId ?? null,
+        step: diagnostic?.runtimeStep ?? null,
+        reason: diagnostic?.runtimeReason ?? null,
+        ...(cause === "provider_observation_refused" || cause === "provider_fetch_failed"
+          ? { cause }
+          : {}),
+      }),
+  );
 }

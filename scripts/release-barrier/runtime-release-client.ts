@@ -14,7 +14,11 @@ import { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts"
 import { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
 import { decodeRuntimeHandoffCommand } from "../../src/pool/runtime-slots/handoff-command.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
-import { sendRuntimeCommand, type RuntimeCommandAction } from "./runtime-command-rpc.ts";
+import {
+  sendRuntimeCommand,
+  type RuntimeCommandAction,
+  type RuntimeCommandCall,
+} from "./runtime-command-rpc.ts";
 import {
   releasePromotionGate,
   retainReleaseStartup,
@@ -26,13 +30,18 @@ import {
   runtimeHandoffDigest,
   type RuntimeHandoffManifest,
 } from "./runtime-slot-manifest.ts";
-import { authorizeRuntimeStart, attestRuntimeRelease } from "./runtime-slot-admission.ts";
+import {
+  authorizeRuntimeStart,
+  signRuntimeRelease,
+  witnessRuntimeRelease,
+} from "./runtime-slot-admission.ts";
 import { signRuntimeAdmission } from "./runtime-slot-proof.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
 import { readFirstHandoffAdoption } from "./first-handoff-runtime.ts";
 import { runtimeApplicationPins, type runtimeReleaseState } from "./runtime-release-state.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { verifyContainerHealth } from "./container-health.ts";
+import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { awaitRuntimeStartup } from "./runtime-startup-client.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
@@ -96,27 +105,40 @@ export const runtimeReleaseClient = (input: {
     const { state, code, writer } = input;
     const target = input.target ?? state.target;
     const signingKey = state.deploymentKey;
-    const call = (action: RuntimeCommandAction, mutation = false, signal?: AbortSignal) => {
+    // An action given as a function is built after the bridge opens; see sendRuntimeCommand.
+    const prepared = (
+      action: RuntimeCommandAction | (() => Promise<RuntimeCommandAction>),
+      mutation = false,
+      signal?: AbortSignal,
+      dispatched?: (requestedAt: number) => void,
+      received?: (receivedAt: number) => void,
+    ) => {
       const send = () => {
         writer.assert();
-        const at = Date.now();
-        const command = decodeRuntimeHandoffCommand(
-          { ...action, controllerCode: code, at, expiresAt: at + 60_000 },
-          at,
-        );
+        const build = async () => {
+          const value = typeof action === "function" ? await action() : action;
+          const at = Date.now();
+          return decodeRuntimeHandoffCommand(
+            { ...value, controllerCode: code, at, expiresAt: at + 60_000 },
+            at,
+          );
+        };
         return sendRuntimeCommand(
-          command,
+          build,
           signingKey,
           target,
-          () => {
+          (command) => {
             writer.assert();
             decodeRuntimeHandoffCommand(command);
           },
           signal,
+          dispatched,
+          received,
         );
       };
       return mutation ? writer.exclusive(send) : send();
     };
+    const call: RuntimeCommandCall = prepared;
     const inspect = async () => {
       const value = result(Snapshot, await call({ action: "inspect" }));
       sameProvisioningValue("runtime-release.controller-code", code, value.controllerCode);
@@ -175,13 +197,40 @@ export const runtimeReleaseClient = (input: {
       target,
     });
     const health = async () => {
-      const start = performance.now();
+      // The lease runs from dispatch to the reply over the open bridge, as the controller's own
+      // slot driver bounds it; bridge setup or close from a CI runner alone can outlast the lease.
+      let requestedAt: number | undefined;
+      let receivedAt: number | undefined;
+      const reply = await call(
+        { action: "active-health" },
+        false,
+        undefined,
+        (at) => {
+          requestedAt = at;
+        },
+        (at) => {
+          receivedAt = at;
+        },
+      );
       const value = result(
         Schema.Struct({ identity: SlotIdentity, leaseMs: Schema.Number }),
-        await call({ action: "active-health" }),
+        reply,
       );
-      if (value.leaseMs <= performance.now() - start)
-        throw new BarrierRefusal("runtime-release-health-expired", "PoolWorker");
+      const elapsedMs =
+        requestedAt === undefined || receivedAt === undefined ? null : receivedAt - requestedAt;
+      if (elapsedMs === null || !(value.leaseMs > elapsedMs))
+        throw new BarrierRefusal("runtime-release-health-expired", "PoolWorker", {
+          fqn: "PoolWorker",
+          type: "Cloudflare.Worker",
+          // Old is the lease the controller granted, new is how long its reply took to arrive.
+          changed: [
+            {
+              path: "runtime-release.health.leaseMs",
+              old: value.leaseMs,
+              new: elapsedMs === null ? null : Math.ceil(elapsedMs),
+            },
+          ],
+        });
       const snapshot = await inspect();
       sameProvisioningValue(
         "runtime-release.healthy-selection",
@@ -216,6 +265,10 @@ export const runtimeReleaseClient = (input: {
           snapshot.selection!.active.retirement
         )
           return false;
+        // The adopted root is never a release's settled primary: its unattested witness cannot
+        // prove readiness and its readback is bound to the adopting controller's code, so the
+        // release always promotes a fleet primary instead of reading its witness.
+        if (isLegacyAdoptionTarget(snapshot.selection!.active.target)) return false;
         const witness = result(
           Schema.Struct({
             configurationFingerprint: Schema.optional(Schema.String),
@@ -240,16 +293,7 @@ export const runtimeReleaseClient = (input: {
           AbortSignal.timeout(15_000),
         );
         const retained = await manifest(
-          {
-            format: "pool-runtime-slot-v1",
-            controllerId: observed.instanceId,
-            instanceId: observed.instanceId,
-            slotId: "legacy",
-            applicationId: root.attributes.applicationId,
-            applicationVersion: String(root.attributes.version),
-            imageDigest: root.attributes.configuration.image.split("@")[1]!,
-            imageInput: root.image.inputHash,
-          },
+          legacyAdoptionTarget(root, observed.instanceId),
           `adopt-${writer.candidate}`,
           "preserve-unattested",
         );
@@ -307,6 +351,7 @@ export const runtimeReleaseClient = (input: {
           gate,
           operationId: promotionOperationId,
           beforePromotion,
+          promotionRefused,
         } = await releasePromotionGate({
           operationId,
           candidate: identity,
@@ -317,9 +362,8 @@ export const runtimeReleaseClient = (input: {
           call,
         });
         sameProvisioningValue("runtime-release.public-candidate", identity, gate.ticket.candidate);
-        const joined = await run(
-          attestRuntimeRelease({ ...options, selection: retained.selection }),
-        );
+        const attestation = { ...options, selection: retained.selection };
+        const witness = await run(witnessRuntimeRelease(attestation));
         const intent = {
           operationId: promotionOperationId,
           controllerCode: code,
@@ -328,11 +372,34 @@ export const runtimeReleaseClient = (input: {
           candidate: identity,
           policyDigest: retained.selection.policyDigest,
         };
+        // The journal write takes the writer queue itself, so it stays outside the queued send.
         await beforePromotion();
-        const receipt = result(
-          PromotionReceipt,
-          await call({ action: "promote", intent, proof: joined.envelope }, true),
-        );
+        let dispatched = false;
+        let reply: unknown;
+        try {
+          reply = await prepared(
+            async () => {
+              // The provider observation's 30 s window starts here, after the bridge is open.
+              const joined = await run(signRuntimeRelease(attestation, witness));
+              return { action: "promote", intent, proof: joined.envelope };
+            },
+            true,
+            undefined,
+            () => {
+              dispatched = true;
+            },
+          );
+        } catch (error) {
+          // Unsent, or answered with a non-200, so a fresh attempt may follow; a lost reply stays unknown.
+          // An answer that raced a receipt is still safe: the gate reads receipts before this flag.
+          if (
+            !dispatched ||
+            (error instanceof BarrierRefusal && error.reason === "runtime-handoff-response-refused")
+          )
+            await promotionRefused();
+          throw error;
+        }
+        const receipt = result(PromotionReceipt, reply);
         sameProvisioningValue("runtime-release.promotion-intent", intent, receipt.intent);
         sameProvisioningValue("runtime-release.promotion-status", "promoted", receipt.status);
         await health();

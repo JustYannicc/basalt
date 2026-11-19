@@ -2,6 +2,8 @@ import { StateStoreError } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
 import { migrationCommandFailure, type MigrationDiagnostic } from "./migration-failure.ts";
+import { redactFailureOutput } from "../deploy-safety/failure-output.ts";
+import type { PropChange } from "./prop-diff.ts";
 
 export type ReleaseOperation =
   | "plan-read-state"
@@ -16,6 +18,7 @@ export type ReleaseOperation =
   | "prepare-resource"
   | "read-worker-baseline"
   | "freeze-worker-upload"
+  | "renew-asset-upload-session"
   | "read-class-expansion"
   | "deploy-class-expansion"
   | "stage-class-baseline-clone"
@@ -143,14 +146,153 @@ const field = (value: unknown, key: string): unknown => {
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 
+// Fetch's own failures under a TransportError; everything else stays "unknown".
+const causeTypes = new Set([
+  ...knownTypes,
+  "AbortError",
+  "SocketError",
+  "ConnectTimeoutError",
+  "HeadersTimeoutError",
+  "BodyTimeoutError",
+  "RequestAbortedError",
+  "InformationalError",
+]);
+const httpMethods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+// Cloudflare API collection words: the segment after one is always an identifier.
+const idAfter = new Set([
+  "accounts",
+  "scripts",
+  "buckets",
+  "database",
+  "versions",
+  "deployments",
+  "namespaces",
+  "workflows",
+  "instances",
+  "applications",
+  "rollouts",
+  "secrets",
+  "objects",
+  "custom",
+]);
+// Words that may print as themselves outside an identifier position; anything else is "{id}".
+const staticSegments = new Set([
+  ...idAfter,
+  "client",
+  "v4",
+  "workers",
+  "settings",
+  "script-settings",
+  "content",
+  "v2",
+  "subdomain",
+  "assets-upload-session",
+  "assets",
+  "upload",
+  "r2",
+  "domains",
+  "managed",
+  "cors",
+  "lifecycle",
+  "d1",
+  "query",
+  "raw",
+  "containers",
+  "durable_objects",
+]);
+
+/** Method and path shape only: no origin, query, or identifier ever leaves. */
+export function safeRequestShape(request: unknown): { method: string; path: string } | undefined {
+  const method = field(request, "method");
+  const url = field(request, "url");
+  if (typeof method !== "string" || !httpMethods.has(method) || typeof url !== "string") return;
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return;
+  }
+  // Walk the templated output so an identifier never counts as a collection word.
+  const out: string[] = [];
+  for (const segment of pathname.split("/")) {
+    const previous = out.at(-1) ?? "";
+    // `/workers/workers/{id}` is the beta API's collection; `/workers/scripts` is not.
+    const collection =
+      idAfter.has(previous) || (previous === "workers" && out.at(-2) === "workers");
+    out.push(!segment || (!collection && staticSegments.has(segment)) ? segment : "{id}");
+  }
+  const path = out.join("/").slice(0, 256);
+  return { method, path };
+}
+
+// Fetch and JavaScript global names that look like hosts in messages such as `Headers.append: ...`.
+const apiName =
+  "(?!(?:Headers|Request|Response|URL|URLSearchParams|FormData|Blob|File|ReadableStream|WritableStream|AbortSignal|AbortController|JSON|Object|Array|Promise|Buffer|Reflect|Symbol)\\.)";
+const hostPattern = new RegExp(
+  `(?<![\\w$.-])${apiName}(?:[a-z0-9-]+\\.)+[a-z]{2,}(?::\\d+)?(?![\\w$-])`,
+  "giu",
+);
+
+/** Fetch TypeErrors explain transport failures; URLs, quoted values, hosts and addresses are removed. */
+export const safeTransportMessage = (message: string) =>
+  redactFailureOutput(
+    message
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]+/giu, "[url]")
+      // A pair, else an unmatched opening quote through the end. In-word apostrophes (can't) never open.
+      .replace(
+        /("[^"]*"|`[^`]*`|(?<![\p{L}\p{N}])'[^']*')|(?:["`]|(?<![\p{L}\p{N}])')[\s\S]*$/gu,
+        (quoted, pair: string | undefined) =>
+          pair !== undefined && pair.slice(1, -1) === "[url]" ? quoted : "[value]",
+      ),
+    process.env,
+  )
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b|\[[0-9a-f:]+\](?::\d+)?/giu, "[address]")
+    .replace(
+      /(?<![\w:.])(?=[0-9a-f:]*[0-9a-f])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/giu,
+      "[address]",
+    )
+    .replace(hostPattern, "[host]")
+    .replace(/\p{Cc}/gu, " ")
+    .slice(0, 512);
+
+export interface ProviderCause {
+  type: string;
+  code?: string;
+  message?: string;
+}
+
+function safeCause(error: unknown): ProviderCause {
+  const tag = field(error, "_tag");
+  const name = field(error, "name");
+  const constructor = field(field(error, "constructor"), "name");
+  const type = [tag, name, constructor].find(
+    (value): value is string => typeof value === "string" && causeTypes.has(value),
+  );
+  const code = field(error, "code");
+  const message = field(error, "message");
+  return {
+    type: type ?? "unknown",
+    ...(typeof code === "string" && stringCodes.has(code) ? { code } : {}),
+    // Parser and server messages can carry response bodies; fetch's TypeErrors do not.
+    ...(error instanceof TypeError && typeof message === "string"
+      ? { message: safeTransportMessage(message) }
+      : {}),
+  };
+}
+
 export interface ProviderFailure {
   type: string;
+  message?: string;
   reason?: string;
   status?: number;
   codes?: number[];
   code?: string;
   exitCode?: number | null;
   migration?: MigrationDiagnostic;
+  /** The failed HTTP request's method and identifier-free path. */
+  request?: { method: string; path: string };
+  /** What the HTTP client wrapped, outermost first: fetch's own error and its socket cause. */
+  cause?: ProviderCause[];
 }
 
 /** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed diagnostics. */
@@ -190,13 +332,50 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
   const codes = [...new Set(values.filter((value) => integer(value, 0, 2_147_483_647)))]
     .sort((a, b) => a - b)
     .slice(0, 8);
+  const request =
+    httpReason === undefined ? undefined : safeRequestShape(field(httpReason, "request"));
+  const cause: ProviderCause[] = [];
+  const seen = new Set<unknown>();
+  for (
+    let current = field(httpReason, "cause");
+    current !== undefined && current !== null && cause.length < 3 && !seen.has(current);
+    current = field(current, "cause")
+  ) {
+    seen.add(current);
+    cause.push(safeCause(current));
+  }
   return {
     type,
     ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
     ...(integer(status, 100, 599) ? { status } : {}),
     ...(codes.length ? { codes } : {}),
     ...(typeof code === "string" && stringCodes.has(code) ? { code } : {}),
+    ...(request ? { request } : {}),
+    ...(cause.length ? { cause } : {}),
   };
+}
+
+/** Refusal rows for a provider failure. Every value is closed or sanitized above. */
+export function providerChanges(provider: ProviderFailure): PropChange[] {
+  const changed: PropChange[] = [{ path: "$provider.type", old: null, new: provider.type }];
+  if (provider.reason !== undefined)
+    changed.push({ path: "$provider.reason", old: null, new: provider.reason });
+  if (provider.status !== undefined)
+    changed.push({ path: "$provider.status", old: null, new: provider.status });
+  for (const [index, code] of (provider.codes ?? []).entries())
+    changed.push({ path: `$provider.codes.${index}`, old: null, new: code });
+  if (provider.request) {
+    changed.push({ path: "$provider.request.method", old: null, new: provider.request.method });
+    changed.push({ path: "$provider.request.path", old: null, new: provider.request.path });
+  }
+  for (const [index, cause] of (provider.cause ?? []).entries()) {
+    changed.push({ path: `$provider.cause.${index}.type`, old: null, new: cause.type });
+    if (cause.code !== undefined)
+      changed.push({ path: `$provider.cause.${index}.code`, old: null, new: cause.code });
+    if (cause.message !== undefined)
+      changed.push({ path: `$provider.cause.${index}.message`, old: null, new: cause.message });
+  }
+  return changed;
 }
 
 /** Connection wrappers often retain the useful API or network failure only in cause. */
@@ -226,7 +405,22 @@ export class ReleaseOperationFailure extends BarrierRefusal {
       refusal?.stateStore,
     );
     this.operation = operation;
-    this.provider = refusal ? undefined : safeProviderFailure(error);
+    const message = field(error, "message");
+    this.provider = refusal
+      ? undefined
+      : {
+          ...safeProviderFailure(error),
+          // A top-level TypeError is usually a code bug whose message names the identifier at fault.
+          // Parser messages can contain response bodies.
+          ...(error instanceof TypeError && typeof message === "string"
+            ? {
+                message: redactFailureOutput(message, process.env)
+                  .replace(/https?:\/\/[^\s"'<>]+/gu, "[url]")
+                  .replace(/\p{Cc}/gu, " ")
+                  .slice(0, 1024),
+              }
+            : {}),
+        };
   }
 }
 

@@ -27,6 +27,19 @@ test("pre-adoption request accounting survives reconstruction and duplicate comp
   assert.equal(await new LegacyActivity(storage).active(), 0);
 });
 
+test("a legacy count left by a dead isolate is not live, while this isolate's count is", async (context) => {
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  await storage.put("runtime-legacy-activity-v1", 3);
+  await new LegacyActivity(storage, "dead-isolate").acquire();
+  assert.equal(await new LegacyActivity(storage).active(), 0);
+  const complete = await new LegacyActivity(storage).acquire();
+  assert.equal(await new LegacyActivity(storage).active(), 1);
+  assert.equal(await new LegacyActivity(storage, "next-isolate").active(), 0);
+  await complete();
+  assert.equal(await new LegacyActivity(storage).active(), 0);
+});
+
 test("reconstruction cannot retire a live stream, and a drain fence excludes new admissions", async (context) => {
   const storage = new RuntimeSqlite();
   context.after(() => storage.close());

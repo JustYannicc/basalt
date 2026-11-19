@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The e2e package download retries a registry read up to four times with jittered exponential backoff, but only on a timeout, a reset, refused or unresolved connection, HTTP 429 or a 5xx; a body read that fails retries the whole request. Every other answer fails at once, and an exhausted read fails with its last real cause. Each retry is logged. Downloaded archives are still checked against their locked integrity."
+    }
+  }
+}

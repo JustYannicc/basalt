@@ -89,6 +89,21 @@ export class BoundSlotDriver implements SlotDriver {
       throw error;
     }
   }
+  async crash(identity: SlotIdentity, envelope: string) {
+    return (
+      await this.call(identity, "runtime-crash", { envelope }, AbortSignal.timeout(2_000))
+    ).json();
+  }
+  async inspectCrash(identity: SlotIdentity, nonce: string) {
+    return (
+      await this.call(
+        identity,
+        "runtime-crash-inspect",
+        { identity, nonce },
+        AbortSignal.timeout(3_000),
+      )
+    ).json();
+  }
   async start(target: SlotTarget, signal: AbortSignal) {
     const response = await this.call(target, "start", { target }, signal);
     const started = Schema.decodeUnknownSync(Health)(await response.json());
@@ -230,7 +245,21 @@ export async function runtimeRequest(
     const text = await request.text();
     const value: unknown = runtimeInput(() => JSON.parse(text));
     const action = new URL(request.url).pathname;
-    if (action === "/admit" || action === "/attest") {
+    if (action === "/runtime-crash") {
+      const { envelope } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }), {
+          onExcessProperty: "error",
+        })(value),
+      );
+      return Response.json(await endpoint.crash(envelope));
+    } else if (action === "/runtime-crash-inspect") {
+      const { identity, nonce } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity, nonce: Schema.String }), {
+          onExcessProperty: "error",
+        })(value),
+      );
+      return Response.json(await endpoint.inspectCrash(identity, nonce));
+    } else if (action === "/admit" || action === "/attest") {
       const { envelope } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(value),
       );

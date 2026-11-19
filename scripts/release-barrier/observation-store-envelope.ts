@@ -68,7 +68,8 @@ export function observationStoreEnvelope(
     }
     return nativeFetch(
       new Request(request, {
-        redirect: "error",
+        // Artifact downloads inspect the signed redirect before sending a credential-free GET.
+        redirect: request.redirect === "manual" ? "manual" : "error",
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]),
       }),
     );

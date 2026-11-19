@@ -7,6 +7,9 @@ import { observationStoreEnvelope } from "./observation-store-envelope.ts";
 import { evalStack } from "alchemy/Stack";
 import { State } from "alchemy/State/State";
 import { observationStoreStack } from "./observation-store-stack.ts";
+import { JournalRestorePlanRequest } from "./journal-restore-contract.ts";
+import { planJournalRestore } from "./journal-restore.ts";
+import { assertAdoptionRunPin, loadAdoptionProof } from "./journal-restore-proof.ts";
 import { ObservationStorePlanRequest } from "./observation-store-contract.ts";
 import { assertObservationStorePlanGo, planObservationStore } from "./observation-store-plan.ts";
 import { provisioningStack } from "./provisioning-stack.ts";
@@ -21,6 +24,12 @@ import {
 } from "./provisioning-operation.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { releaseOutcome } from "./entry-outcome.ts";
+import { ReleaseSettlementPlanRequest } from "./release-settlement-contract.ts";
+import {
+  assertReleaseSettlementPlanGo,
+  planReleaseSettlement,
+} from "./release-settlement-operation.ts";
+import { releaseStateStack } from "./release-state-stack.ts";
 
 /** Only the main-only workflow holding deploy-production may supply the writer identity. */
 export function provisioningWorkflowWriter(env: NodeJS.ProcessEnv) {
@@ -82,7 +91,10 @@ if (import.meta.main && process.argv[2] === "digest") {
   process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
   const nativeFetch = globalThis.fetch;
   const envelope =
-    mode === "plan" || packet?.operation.kind === "observation-store"
+    mode === "plan" ||
+    packet?.operation.kind === "observation-store" ||
+    packet?.operation.kind === "observation-store-restore" ||
+    packet?.operation.kind === "release-settlement"
       ? observationStoreEnvelope(
           writer.accountId,
           (entry) =>
@@ -100,16 +112,43 @@ if (import.meta.main && process.argv[2] === "digest") {
         Effect.gen(function* () {
           const planRequest =
             mode === "plan"
-              ? yield* Schema.decodeUnknownEffect(ObservationStorePlanRequest, {
-                  onExcessProperty: "error",
-                })(value)
+              ? yield* Schema.decodeUnknownEffect(
+                  Schema.Union([
+                    ObservationStorePlanRequest,
+                    JournalRestorePlanRequest,
+                    ReleaseSettlementPlanRequest,
+                  ]),
+                  {
+                    onExcessProperty: "error",
+                  },
+                )(value)
               : undefined;
-          if (planRequest) assertObservationStorePlanGo(planRequest, Date.now());
+          if (planRequest?.kind === "release-settlement")
+            assertReleaseSettlementPlanGo(planRequest, Date.now());
+          else if (planRequest) assertObservationStorePlanGo(planRequest, Date.now());
+          const restore =
+            planRequest?.kind === "observation-store-restore"
+              ? planRequest
+              : packet?.operation.kind === "observation-store-restore"
+                ? packet.operation.manifest
+                : undefined;
+          if (restore) assertAdoptionRunPin(restore.source, process.env);
+          const adoptionProof =
+            restore && mode !== "inspect"
+              ? yield* Effect.promise(() =>
+                  loadAdoptionProof(restore.source, restore.adoption, process.env),
+                )
+              : undefined;
           envelope?.beginAuth();
           return yield* evalStack(
-            planRequest || packet?.operation.kind === "observation-store"
-              ? observationStoreStack
-              : provisioningStack,
+            planRequest?.kind === "release-settlement" ||
+              packet?.operation.kind === "release-settlement"
+              ? releaseStateStack
+              : planRequest ||
+                  packet?.operation.kind === "observation-store" ||
+                  packet?.operation.kind === "observation-store-restore"
+                ? observationStoreStack
+                : provisioningStack,
             (compiled) =>
               Effect.gen(function* () {
                 if (envelope) {
@@ -122,10 +161,45 @@ if (import.meta.main && process.argv[2] === "digest") {
                 } else yield* assertReleaseStateVersion(compiled);
                 const receipt = planRequest
                   ? {
-                      operation: {
-                        kind: "observation-store" as const,
-                        manifest: yield* planObservationStore(compiled, planRequest, writer),
-                      },
+                      operation:
+                        planRequest.kind === "release-settlement"
+                          ? {
+                              kind: "release-settlement" as const,
+                              manifest: yield* planReleaseSettlement(
+                                compiled,
+                                planRequest,
+                                writer,
+                                process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                                {
+                                  directory,
+                                  runtimeRead: (call) =>
+                                    appendFile(
+                                      resolve(directory, "runtime-reads.jsonl"),
+                                      JSON.stringify(call) + "\n",
+                                      { mode: 0o600, flush: true },
+                                    ),
+                                },
+                              ),
+                            }
+                          : planRequest.kind === "observation-store-restore"
+                            ? {
+                                kind: "observation-store-restore" as const,
+                                manifest: yield* planJournalRestore(
+                                  compiled,
+                                  planRequest,
+                                  writer,
+                                  adoptionProof!,
+                                  process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                                ),
+                              }
+                            : {
+                                kind: "observation-store" as const,
+                                manifest: yield* planObservationStore(
+                                  compiled,
+                                  planRequest,
+                                  writer,
+                                ),
+                              },
                     }
                   : mode === "apply"
                     ? yield* runDeclaredProvisioning(
@@ -134,6 +208,24 @@ if (import.meta.main && process.argv[2] === "digest") {
                         writer,
                         process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
                         process.env.POOL_DEPLOYMENT_KEY ?? "",
+                        {
+                          adoptionProof,
+                          settlement: {
+                            directory,
+                            runtimeRead: (call) =>
+                              appendFile(
+                                resolve(directory, "runtime-reads.jsonl"),
+                                JSON.stringify(call) + "\n",
+                                { mode: 0o600, flush: true },
+                              ),
+                            intent: (intent) =>
+                              writeFile(
+                                resolve(directory, "settlement-intent.json"),
+                                JSON.stringify(intent, null, 2),
+                                { mode: 0o600, flush: true },
+                              ),
+                          },
+                        },
                       )
                     : yield* inspectDeclaredProvisioning(
                         compiled,
