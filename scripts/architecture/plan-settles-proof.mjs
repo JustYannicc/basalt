@@ -65,6 +65,11 @@ export const provePlanSettles = (stack, recompile) =>
       .map((type) =>
         Provider.succeed(Resource(type), {
           ...(stables[type] ? { stables: stables[type] } : {}),
+          // The pool Worker and its container name each other; the engine breaks such a cycle by
+          // creating one side early, as the installed Worker provider allows.
+          ...(type === "Cloudflare.Worker"
+            ? { precreate: ({ fqn }) => Effect.sync(() => attributes(type, fqn)) }
+            : {}),
           reconcile: ({ fqn }) => Effect.sync(() => attributes(type, fqn)),
           delete: () => Effect.void,
         }),
