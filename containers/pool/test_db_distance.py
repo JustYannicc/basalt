@@ -153,6 +153,7 @@ class ReadinessFieldTests(unittest.TestCase):
                 "db_rtt_ms": 6,
                 "db_rtt_max_ms": 44,
                 "location": "fra07",
+                "refusal": "policy_unproven",
             },
         )
 
