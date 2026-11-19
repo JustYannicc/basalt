@@ -16,7 +16,7 @@
  **Known gaps**
 --- /dev/null
 +++ b/health.ts
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,229 @@
 +import { decodeJson, json, object, string, type AccountCheckContext, type AuthMethods } from "apps";
 +
 +const botUser = object({
@@ -74,26 +74,40 @@
 +
 +const protocolVersion = "2025-03-26";
 +
-+/** A JSON-RPC error answer to the lookup; the account stays healthy and unnamed. */
++/** The versions the MCP client library accepts in a server's `initialize` answer. */
++const protocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
++
++/** No usable answer to a lookup request; the account stays healthy and unnamed. */
 +class LookupFailed extends Error {}
 +
 +/** The answer when `message` is the response to request `id`, else undefined. */
 +function reply(message: unknown, id: number): { readonly result: unknown } | undefined {
-+  if (message === null || typeof message !== "object" || !("id" in message) || message.id !== id)
++  // A message carrying `method` is a server request or notification, never the answer.
++  if (
++    message === null ||
++    typeof message !== "object" ||
++    "method" in message ||
++    !("id" in message) ||
++    message.id !== id
++  )
 +    return undefined;
 +  if ("error" in message) throw new LookupFailed();
 +  return { result: "result" in message ? message.result : undefined };
 +}
 +
 +/**
-+ * The JSON-RPC answer to request `id`: a JSON body, or the first matching event of a server-sent
-+ * event stream, read as it arrives so a stream the server keeps open still answers.
++ * The JSON-RPC answer to request `id`: from a JSON body or batch, or the first matching event of a
++ * server-sent event stream, read as it arrives so a stream the server keeps open still answers.
 + */
 +async function answer(response: Response, id: number): Promise<unknown> {
 +  if (!(response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-+    const found = reply(JSON.parse(await response.text()), id);
-+    if (found === undefined) throw new LookupFailed();
-+    return found.result;
++    const body: unknown = JSON.parse(await response.text());
++    const messages: unknown[] = Array.isArray(body) ? body : [body];
++    for (const message of messages) {
++      const found = reply(message, id);
++      if (found !== undefined) return found.result;
++    }
++    throw new LookupFailed();
 +  }
 +  const reader = response.body?.getReader();
 +  if (reader === undefined) throw new LookupFailed();
@@ -166,15 +180,16 @@
 +    if (!initialized.ok) return void (await initialized.body?.cancel());
 +    session = initialized.headers.get("mcp-session-id") ?? undefined;
 +    const started = await answer(initialized, 1);
-+    version =
-+      started !== null &&
-+      typeof started === "object" &&
-+      "protocolVersion" in started &&
-+      typeof started.protocolVersion === "string"
++    const negotiated =
++      started !== null && typeof started === "object" && "protocolVersion" in started
 +        ? started.protocolVersion
-+        : protocolVersion;
++        : undefined;
++    // As the MCP client library does, end the lookup when the server picks an unsupported version.
++    if (typeof negotiated !== "string" || !protocolVersions.includes(negotiated)) return;
++    version = negotiated;
 +    const notified = await post({ method: "notifications/initialized" });
 +    await notified.body?.cancel();
++    if (!notified.ok) return;
 +    const called = await post({
 +      id: 2,
 +      method: "tools/call",
