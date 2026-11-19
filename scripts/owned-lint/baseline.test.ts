@@ -108,7 +108,23 @@ test("only a single `//` comment naming upstream rules may disable anything", ()
   );
 });
 
-const state = (lintChanged = false, changed = (file: string) => file === "src/touched.ts") => ({
+test("a rule list split by a character oxlint reads as a line end or a space is refused", () => {
+  const off = (scope = "", tool = "oxlint") => `${tool}-disable${scope}`;
+  // oxlint reads U+0085 as a space, so it sees no rule names and disables every rule.
+  for (const text of [
+    `// ${off()} \u0085 -- generated`,
+    `// ${off("-next-line")} no-console\u0085anti-slop/no-reflect-get`,
+    `  // ${off("-next-line", "eslint")}\r  return Reflect.get(target, "k");`,
+    `// ${off("-next-line")}\u2028return Reflect.get(target, "k");`,
+  ])
+    assert.equal(directiveProblems("src/a.ts", text).length, 1, JSON.stringify(text));
+  assert.deepEqual(
+    directiveProblems("src/a.ts", `// ${off("-next-line")} no-console -- why\u0085 it stays`),
+    [],
+  );
+});
+
+const state =(lintChanged = false, changed = (file: string) => file === "src/touched.ts") => ({
   allowlist: {},
   basePath: (file: string) =>
     ({ "src/new-name.ts": "src/old-name.ts", "src/moved.ts": "scripts/release-barrier/moved.ts" })[

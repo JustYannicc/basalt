@@ -90,19 +90,24 @@ export function directiveProblems(
 ) {
   const problems: string[] = [];
   for (const match of text.matchAll(/(?:oxlint|eslint)-disable/gu)) {
-    const lineStart = text.lastIndexOf("\n", match.index) + 1;
-    const lineEnd = text.indexOf("\n", match.index);
+    // A `//` comment ends at any JavaScript line terminator, not only \n.
+    const lineStart = text.slice(0, match.index).search(/[\n\r\u2028\u2029][^\n\r\u2028\u2029]*$/u) + 1;
+    const rest = text.slice(match.index + match[0].length);
+    const lineEnd = rest.search(/[\n\r\u2028\u2029]/u);
     const before = text.slice(lineStart, match.index);
-    const after = text.slice(match.index + match[0].length, lineEnd === -1 ? undefined : lineEnd);
+    const after = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
     const names = after
       .replace(/^(?:-next-line|-line)?/u, "")
       .replace(/--.*$/u, "")
       .split(/[\s,]+/u)
       .filter(Boolean);
+    // oxlint splits names on Unicode whitespace such as U+0085, which \s leaves inside a name, so
+    // only plain rule names count; anything else, a wildcard included, is refused.
     const upstreamOnly =
       /^\s*\/\/\s*$/u.test(before) &&
       names.length > 0 &&
-      !names.some((name) => OWNED_RULE.test(name) || native.has(bare(name)) || /[*<>]/u.test(name));
+      names.every((name) => /^[@\w./-]+$/u.test(name)) &&
+      !names.some((name) => OWNED_RULE.test(name) || native.has(bare(name)));
     if (upstreamOnly) continue;
     problems.push(
       `${file}:${text.slice(0, match.index).split("\n").length} has a disable comment that is not a single \`//\` comment naming only upstream rules. Owned rules take no disable comments: fix the finding, or for a reasoned exception use scripts/owned-lint/allowlist.json.`,

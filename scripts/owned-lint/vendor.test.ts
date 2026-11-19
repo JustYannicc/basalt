@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   commitOf,
+  linkedVendorFiles,
   parseManifest,
   unrecordedVendorFiles,
   vendorChanges,
@@ -50,6 +51,31 @@ test("vendor/ holds only the recorded upstream files, the manifest and the prove
   assert.deepEqual(
     unrecordedVendorFiles(files, recorded).map((problem) => problem.split(" ")[0]),
     ["scripts/owned-lint/vendor/package.json", "scripts/owned-lint/vendor/anti-slop/helper.ts"],
+  );
+});
+
+test("a recorded file passes only as a plain file reached at its own path", () => {
+  const plain = "scripts/owned-lint/vendor/anti-slop/index.ts";
+  const link = "scripts/owned-lint/vendor/anti-slop/rules/no-reflect-get.ts";
+  const linkedDir = "scripts/owned-lint/vendor/anti-slop/shared/scope.ts";
+  const recorded = new Map([plain, link, linkedDir].map((file) => [file, "1"]));
+  // git records a symbolic link as mode 120000, and lists nothing under a linked directory.
+  const modes = new Map([
+    [plain, "100644"],
+    [link, "120000"],
+  ]);
+  const real = new Map([
+    [plain, plain],
+    [link, "scripts/owned-lint/upstream/no-reflect-get.ts"],
+    [linkedDir, "tools/copy/anti-slop/shared/scope.ts"],
+  ]);
+  assert.deepEqual(
+    linkedVendorFiles(
+      recorded,
+      (file) => modes.get(file),
+      (file) => real.get(file),
+    ).map((problem) => problem.split(" ")[0]),
+    [link, linkedDir],
   );
 });
 

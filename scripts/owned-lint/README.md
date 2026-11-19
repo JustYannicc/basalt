@@ -13,8 +13,10 @@ node scripts/owned-lint/check.ts <files> # only these files, against their own e
 The check lints the exact `git ls-files` list, new untracked files included, and fails when
 oxlint checks fewer files than it was given: an ignored path reports nothing and would look
 clean. Named files must exist. It refuses `oxlint-disable` and `eslint-disable` comments that
-are bare or name an owned rule, including the built-in rules the configuration enables under
-any plugin prefix, which oxlint accepts for them.
+are bare, hold anything but plain rule names, or name an owned rule, including the built-in
+rules the configuration enables under any plugin prefix, which oxlint accepts for them. oxlint
+reads Unicode spaces such as U+0085 as separators, so a comment that looks like one name to
+JavaScript can name none and disable every rule.
 
 ## Baseline and allowlist
 
@@ -84,8 +86,9 @@ plugins:
 README asks (commit, license and update steps in `vendor/anti-slop/UPSTREAM.md`): the generic
 plugin, the Effect plugin, and `oxc/no-accumulating-spread`, the built-in rule it pairs with.
 The copy is byte-identical to upstream, and `vendor/manifest.json` records each file's hash.
-The full check fails when a recorded file differs or when `vendor/` holds any other file but
-the manifest and `UPSTREAM.md`, and when a package the gate's code imports by name (such as the
+The full check fails when a recorded file differs or is not committed as a plain file at its own
+path (a symbolic link would load other code), when `vendor/` holds any other file but the
+manifest and `UPSTREAM.md`, and when a package the gate's code imports by name (such as the
 rules' `@oxlint/plugins`) resolves anywhere but into this package's lockfile install. Recorded
 files are left to upstream: neither the owned rules nor the fast lane's oxfmt and oxlint check
 them. With `BASE_SHA`, a change to the recorded files passes only together with a new commit on

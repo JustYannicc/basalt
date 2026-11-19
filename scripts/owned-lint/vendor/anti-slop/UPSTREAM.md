@@ -11,8 +11,8 @@
   loaded by `../../.oxlintrc.json`. `@oxlint/plugins` is pinned to the owned oxlint version in
   `../../package.json`.
 - Deviations: none. Every file here but this one is byte-identical to upstream, recorded with its
-  sha256 in `../manifest.json`; the check fails when one differs or when `vendor/` holds a file
-  the manifest does not list. Neither oxfmt nor oxlint rewrites the recorded files.
+  sha256 in `../manifest.json`; the check fails when one differs or is a symbolic link, or when
+  `vendor/` holds a file the manifest does not list. Neither oxfmt nor oxlint rewrites the recorded files.
   Configuration choices are recorded in `../../README.md`.
 
 To update, replace this directory's contents with the new upstream commit's assets and

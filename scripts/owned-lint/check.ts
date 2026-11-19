@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,7 @@ import {
   MANIFEST,
   VENDOR,
   currentVendor,
+  linkedVendorFiles,
   nextManifest,
   sha256,
   unrecordedVendorFiles,
@@ -279,8 +280,9 @@ export function checkFiles(files: readonly string[], timeout?: number): Checked 
 }
 
 /**
- * The vendored copy is exactly its recorded upstream files, and every package the gate's own code
- * names resolves into the lockfile install, none of whose files is committed.
+ * The vendored copy is exactly its recorded upstream files, committed as plain files, and every
+ * package the gate's own code names resolves into the lockfile install, none of whose files is
+ * committed.
  */
 function toolchainProblems() {
   const recorded = currentVendor().manifest;
@@ -297,8 +299,19 @@ function toolchainProblems() {
   const committed = listFiles(root, () => true, "scripts/owned-lint/node_modules").map(
     (file) => `${file} is committed inside the installed tools, which come only from bun.lock.`,
   );
+  // Index entries read "<mode> <object> <stage>\t<path>".
+  const modes = new Map(
+    execFileSync("git", ["ls-files", "-s", "-z", "--", VENDOR], { cwd: root, encoding: "utf8" })
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => [entry.slice(entry.indexOf("\t") + 1), entry.split(" ")[0]]),
+  );
+  const realRoot = realpathSync(root);
+  const realPathOf = (file: string) =>
+    existsSync(join(root, file)) ? relative(realRoot, realpathSync(join(root, file))) : undefined;
   return [
     ...vendorProblems(recorded, sha256),
+    ...linkedVendorFiles(recorded, (file) => modes.get(file), realPathOf),
     ...unrecordedVendorFiles(vendorFiles, recorded),
     ...resolutionProblems(join(here, "node_modules"), imports, root),
     ...committed,

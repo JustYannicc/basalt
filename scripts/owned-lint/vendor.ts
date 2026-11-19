@@ -82,6 +82,24 @@ export const unrecordedVendorFiles = (files: readonly string[], recorded: Manife
       : [],
   );
 
+/**
+ * Recorded files that are not committed as regular files at their own path. Through a symbolic
+ * link, of the file or of a directory above it, the hash still matches while the rules load
+ * their imports from wherever the link points, and git lists nothing under a linked directory.
+ */
+export const linkedVendorFiles = (
+  recorded: Manifest,
+  modeOf: (file: string) => string | undefined,
+  realPathOf: (file: string) => string | undefined,
+) =>
+  [...recorded.keys()].flatMap((file) =>
+    /^100(?:644|755)$/u.test(modeOf(file) ?? "") && realPathOf(file) === file
+      ? []
+      : [
+          `${file} is not committed as a regular file at its own path. Vendored files are plain copies; replace the symbolic link with the upstream file.`,
+        ],
+  );
+
 /** Vendored files added, changed or removed against the base, one line per kind. */
 export function vendorChanges(current: Manifest, base: Manifest) {
   const differ = [...new Set([...current.keys(), ...base.keys()])]
