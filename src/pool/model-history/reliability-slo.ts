@@ -3,6 +3,7 @@ import { digest } from "../backend-users.ts";
 import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
 import { readPoolReliabilityWindows, terminalCollectionReady } from "./reliability.ts";
 import { HistoryInputError } from "./record.ts";
+import { reportingReliabilityStatements } from "./reliability-read-failure.ts";
 
 export function reliabilityState(
   hour: PoolReliabilitySlo["hour"],
@@ -22,6 +23,7 @@ export async function readPoolReliabilitySlo(
   now = Date.now(),
   transaction: "owned" | "caller" = "owned",
 ): Promise<PoolReliabilitySlo> {
+  db = reportingReliabilityStatements(db);
   const to = new Date(now).toISOString();
   if (transaction === "owned")
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -92,10 +94,14 @@ export async function readPoolReliabilitySlo(
               WHERE h.pool=$1 AND h.source=$3
                 AND h.timestamp >= GREATEST($2::timestamptz - interval '24 hours', m.completed_at)
                 AND h.timestamp < $2::timestamptz
+                -- Probe the start by its key: a text comparison scans every start for each Home row.
+                -- Only a canonical UUID can equal a start's id as text, so the answer is unchanged.
                 AND NOT EXISTS (
                   SELECT 1 FROM basalt_model_terminal_starts s
                   JOIN basalt_model_terminal_finishes f USING (request_id)
-                  WHERE s.pool=h.pool AND s.request_id::text=h.request_id
+                  WHERE s.pool=h.pool AND s.request_id=CASE
+                    WHEN h.request_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                    THEN h.request_id::uuid END
                 )
             ) AS unmatched_home
           FROM basalt_model_history_migrations m WHERE m.name=$4`,

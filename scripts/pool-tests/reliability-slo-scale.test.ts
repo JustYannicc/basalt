@@ -1,0 +1,149 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
+import { digest } from "../../src/pool/backend-users.ts";
+import { migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
+import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
+import { historyMemoryOwnerFixture } from "./history-fixture.ts";
+
+// Shaped like the production pool: imported history far larger than the terminal evidence.
+const olderRows = 100_000,
+  requests = 4_000;
+
+interface PlanNode {
+  "Node Type": string;
+  "Relation Name"?: string;
+  "Actual Rows": number;
+  "Actual Loops": number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Join Filter"?: number;
+  Plans?: PlanNode[];
+}
+
+/** Rows each terminal table, or a materialized copy of it, handed to the plan across all loops. */
+function terminalRows(node: PlanNode, inside = false): number {
+  const terminal =
+    inside ||
+    node["Node Type"] === "Materialize" ||
+    (node["Relation Name"] ?? "").startsWith("basalt_model_terminal_");
+  const own = terminal
+    ? (node["Actual Rows"] +
+        (node["Rows Removed by Filter"] ?? 0) +
+        (node["Rows Removed by Join Filter"] ?? 0)) *
+      node["Actual Loops"]
+    : 0;
+  const below = (node.Plans ?? []).reduce(
+    (sum, child) => sum + terminalRows(child, node["Node Type"] === "Materialize"),
+    0,
+  );
+  return node["Node Type"] === "Materialize" ? own : own + below;
+}
+
+test(
+  "the terminal evidence check reads each Home row's evidence by key, not every start per row",
+  { timeout: 300_000 },
+  async () => {
+    const database = new PGlite();
+    const db: HistoryDatabase = {
+      query: async (text, values) => {
+        const result = await database.query<Record<string, unknown>>(text, values);
+        return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
+      },
+    };
+    try {
+      await historyMemoryOwnerFixture(db);
+      await migrateModelHistory(db);
+      await db.query("CREATE TABLE usage (id bigint PRIMARY KEY)");
+      const now = Date.parse("2026-11-18T11:51:43Z"),
+        at = new Date(now).toISOString();
+      const pool = (await digest("fixture")).slice(0, 16);
+      const home = await digest("home-local-v1");
+      const person = await digest("fixture-person");
+      // Terminal evidence began 30 hours ago; every request since has its start, finish and Home row.
+      await db.query(
+        "UPDATE basalt_model_history_migrations SET completed_at = $1::timestamptz - interval '30 hours'",
+        [at],
+      );
+      await db.query(
+        `INSERT INTO basalt_model_terminal_starts (request_id,pool,person,client_key,endpoint,started_at)
+        SELECT md5('r'||g)::uuid,$2,$3,$3,'/v1/responses',$4::timestamptz - g * interval '27 seconds'
+        FROM generate_series(1,$1::int) g`,
+        [requests, pool, person, at],
+      );
+      await db.query(
+        `INSERT INTO basalt_model_terminal_finishes (request_id,outcome,status,bytes,finished_at)
+        SELECT request_id,'complete',200,1,started_at + interval '1 second'
+        FROM basalt_model_terminal_starts`,
+      );
+      const insertHome = (count: number, prefix: string, from: string, idSql: string) =>
+        db.query(
+          `INSERT INTO basalt_model_requests
+            (id,source,source_record,timestamp,timestamp_exact,pool,person,client_key,request_id,
+              token_quality,failed,status_code,cost_basis,attribution)
+          SELECT encode(sha256(convert_to($3||g,'UTF8')),'hex'),$1,
+            encode(sha256(convert_to($3||'record'||g,'UTF8')),'hex'),t.at,
+            to_char(t.at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS".000000000Z"'),
+            $2,$4,$4,${idSql},'unclassified',false,200,'unpriced','unknown'
+          FROM generate_series(1,$5::int) g
+          CROSS JOIN LATERAL (SELECT ${from} AS at) t`,
+          [home, pool, prefix, person, count, at],
+        );
+      await insertHome(
+        requests,
+        "r",
+        "$6::timestamptz - g * interval '27 seconds'",
+        "md5('r'||g)::uuid::text",
+      );
+      await insertHome(
+        olderRows,
+        "o",
+        "$6::timestamptz - interval '31 hours' - g * interval '20 seconds'",
+        "md5('o'||g)::uuid::text",
+      );
+      await db.query(
+        `INSERT INTO basalt_model_history_cursor
+          (source,forward_id,backfill_upper,backfill_id,backfill_complete,sweep_id,updated_at)
+        VALUES ($1,0,0,0,true,0,$2::timestamptz)`,
+        [home, at],
+      );
+      await db.query("ANALYZE");
+
+      let statement: { text: string; values?: unknown[] } | undefined;
+      const recorded: HistoryDatabase = {
+        query: (text, values) => {
+          if (text.includes("AS unmatched_home")) statement = { text, values };
+          return db.query(text, values);
+        },
+      };
+      const slo = await readPoolReliabilitySlo(recorded, "fixture", now);
+      assert.equal(slo.reason, undefined, "every Home row in the window has its evidence");
+      assert.equal(slo.day.real.requests, Math.ceil(86_400 / 27));
+      assert.ok(statement);
+
+      const explained = await db.query(
+        `EXPLAIN (ANALYZE, FORMAT JSON) ${statement.text}`,
+        statement.values,
+      );
+      const [explain] = explained.rows;
+      assert.ok(explain);
+      const [root] = explain["QUERY PLAN"] as { Plan: PlanNode }[];
+      assert.ok(root);
+      const read = terminalRows(root.Plan);
+      // Comparing each Home row's id as text against every start read about 6.4 million rows here.
+      assert.ok(read < 5 * requests, `terminal evidence rows read: ${read}`);
+
+      // One Home row in the window without evidence still makes the figure unavailable.
+      await insertHome(
+        1,
+        "missing",
+        "$6::timestamptz - interval '1 minute'",
+        "md5('missing')::uuid::text",
+      );
+      const gap = await readPoolReliabilitySlo(db, "fixture", now);
+      assert.equal(gap.state, "unavailable");
+      assert.equal(gap.reason, "terminal_collection_unavailable");
+    } finally {
+      await database.close();
+    }
+  },
+);

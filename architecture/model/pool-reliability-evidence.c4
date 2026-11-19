@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "The request reliability read finds a Home row without terminal evidence by probing the start's key for that row. Only a canonical UUID request identity can match, exactly as the text comparison it replaces; that comparison scanned every start for each Home row, grew with all evidence ever recorded and crossed the read's five-second statement limit. A failing statement logs its closed step name, timeout reason or SQLSTATE, never SQL text or driver messages, and the read still fails. The availability check-in logs a session-level cause for a read that fails before or around its statements; its alert stays collection_unavailable."
+    }
+  }
+}
