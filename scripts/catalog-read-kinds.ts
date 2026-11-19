@@ -4,14 +4,15 @@ import { createHash } from "node:crypto";
  * Carried catalog apps reclassify some POST operations as reads by operationId. That decision
  * holds only for the request those operations accepted when it was reviewed: a vendor that later
  * adds a webhook or a background option would otherwise ride the read classification silently.
- * Each reviewed read pins its method, path, tags and a hash of its input surface; the live check
- * compares the vendor's current document with those pins.
+ * Each reviewed read pins its method, path, tags and a hash of its input surface, and each app its
+ * OpenAPI version; the live check compares the vendor's current document with those pins.
  */
 export type ReadKindPins = Readonly<
   Record<
     string,
     {
       readonly source: string;
+      readonly openapi: Json;
       readonly operations: Readonly<
         Record<
           string,
@@ -55,14 +56,23 @@ const isObject = (value: unknown): value is JsonObject =>
 /**
  * The value a local reference names, where the framework would find the same one: a `#/` pointer
  * through the document's own object keys. The framework also decodes percent-encoding, indexes
- * arrays and resolves a reference on the way first; the check refuses those rather than repeat
- * its rules.
+ * arrays and resolves a reference on the way first, and reads `#/components` and
+ * `#/components/schemas` with component schemas kept apart, so empty; the check refuses those
+ * rather than repeat its rules.
  */
 const pointer = (document: JsonObject, reference: string): Json | undefined => {
   if (!reference.startsWith("#/") || reference.includes("%")) return undefined;
+  const keys = reference
+    .slice(2)
+    .split("/")
+    .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+  if (
+    keys[0] === "components" &&
+    (keys.length === 1 || (keys.length === 2 && keys[1] === "schemas"))
+  )
+    return undefined;
   let value: Json | undefined = document;
-  for (const token of reference.slice(2).split("/")) {
-    const key = token.replaceAll("~1", "/").replaceAll("~0", "~");
+  for (const key of keys) {
     if (!isObject(value) || typeof value.$ref === "string" || !Object.hasOwn(value, key))
       return undefined;
     value = value[key];
@@ -73,15 +83,19 @@ const pointer = (document: JsonObject, reference: string): Json | undefined => {
 /**
  * Everything a caller can send, with local references inlined and wording dropped, and what the
  * hash cannot stand for. Beside a reference only wording may sit: a schema adds its other
- * siblings to the target. Servers count only as lists without variables in an OpenAPI 3
- * document: the framework fills variables, skips servers that are not a list and converts
- * Swagger 2.0. A cycle keeps its reference rather than recursing.
+ * siblings to the target. Servers count only as lists without variables in a plain OpenAPI 3
+ * document: the framework fills variables, skips servers that are not a list and converts any
+ * document with a `swagger` version as Swagger 2.0. A cycle keeps its reference rather than
+ * recursing.
  */
 const operationInput = (document: JsonObject, found: Declared) => {
   const refused = new Set<string>();
+  const { openapi, swagger } = document;
+  if (typeof openapi !== "string" || !openapi.startsWith("3.") || swagger !== undefined)
+    refused.add(
+      `its document is not plain OpenAPI 3.x (openapi ${JSON.stringify(openapi ?? null)}, swagger ${JSON.stringify(swagger ?? null)}), so the hash would not cover how it is sent`,
+    );
   const address = "so the hash would not cover the address it is sent to";
-  if (typeof document.openapi !== "string" || !document.openapi.startsWith("3."))
-    refused.add(`its document is not OpenAPI 3.x, ${address}`);
   const levels = [
     ["operation", found.operation.servers],
     ["path item", found.item.servers],
@@ -216,10 +230,17 @@ const pinDrift = (
     const problems: string[] = [];
     if (found.method !== pin.method) problems.push(`${at}: method ${pin.method} → ${found.method}`);
     if (found.path !== pin.path) problems.push(`${at}: path ${pin.path} → ${found.path}`);
-    // Tags name the tool, and an approval policy may recognise a read by its name.
-    const tags = JSON.stringify(found.operation.tags ?? null);
-    if (tags !== JSON.stringify(pin.tags))
-      problems.push(`${at}: tags ${JSON.stringify(pin.tags)} → ${tags}`);
+    // Tags name the tool, and an approval policy may recognise a read by its name. Naming reads
+    // them as a list; anything else drops the operationId from the name.
+    const tags = found.operation.tags ?? null;
+    if (tags !== null && !Array.isArray(tags))
+      problems.push(
+        `${at}: its tags are not a list, so the framework would name its tool without its operationId`,
+      );
+    else if (JSON.stringify(tags) !== JSON.stringify(pin.tags))
+      problems.push(
+        `${at}: tags ${JSON.stringify(pin.tags)} → ${JSON.stringify(tags)}; they name its tool, so check that its approval policy still recognises it`,
+      );
     const { input, refused } = operationInput(document, found);
     const inputSha256 = sha256(input);
     if (refused.length > 0) problems.push(...refused.map((reason) => `${at}: ${reason}`));
@@ -263,5 +284,17 @@ export const readKindDrift = (
   const inherited = prototypeKeys(document).map(
     (at) => `${app}: ${at} has a __proto__ key, which the framework would read as inherited fields`,
   );
-  return [...inherited, ...referenced, ...malformed, ...pinDrift(app, pins, document, declared)];
+  // The version picks how the framework reads every schema.
+  const openapi = JSON.stringify(document.openapi ?? null);
+  const version =
+    openapi === JSON.stringify(pins.openapi)
+      ? []
+      : [`${app}: openapi ${JSON.stringify(pins.openapi)} → ${openapi}`];
+  return [
+    ...inherited,
+    ...referenced,
+    ...malformed,
+    ...version,
+    ...pinDrift(app, pins, document, declared),
+  ];
 };

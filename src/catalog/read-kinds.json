@@ -1,6 +1,7 @@
 {
   "exa": {
     "source": "https://api.exa.ai/openapi.json",
+    "openapi": "3.1.0",
     "operations": {
       "search": {
         "method": "post",
@@ -38,6 +39,7 @@
   },
   "firecrawl": {
     "source": "https://docs.firecrawl.dev/api-reference/v2-openapi.json",
+    "openapi": "3.0.0",
     "operations": {
       "scrapeAndExtractFromUrl": {
         "method": "post",

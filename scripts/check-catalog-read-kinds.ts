@@ -50,7 +50,7 @@ for (const [app, pin] of Object.entries(pins)) {
         ];
       }),
     );
-    next[app] = { source: pin.source, operations };
+    next[app] = { source: pin.source, openapi: document.openapi ?? null, operations };
   } else problems.push(...readKindDrift(app, pin, document));
 }
 
