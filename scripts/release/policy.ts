@@ -22,6 +22,8 @@ export const ReleasePolicy = Schema.Struct({
   wire: Schema.Struct({
     sqliteClasses: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     expectLiveModule: Schema.optional(Schema.Array(Schema.String)),
+    /** FQNs admitted as code-only changes: their uploads keep the serving version's bindings. */
+    fixedBindings: Schema.optional(Schema.Array(Schema.String)),
   }),
   /**
    * A release that declares the root will restart, because its own code restarts a runtime that

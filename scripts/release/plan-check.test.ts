@@ -421,6 +421,46 @@ test("a code-only release is admitted without, and refused with, a new binding",
   });
 });
 
+test("a code-only allowance moves the bulk-import store's code and nothing else of it", async (context) => {
+  const allowance = (references: string[] = ["env"]) => ({
+    mode: "code-only",
+    allow: [
+      { fqn: "ArtifactsCredentials", action: "update", codeOnly: { references, why: "skew" } },
+    ],
+  });
+  // Its recorded hashes come from another checkout: Alchemy plans an update of its code alone.
+  const code = await planned(context);
+  assert.equal(code.plan.resources.ArtifactsCredentials?.action, "update");
+  assert.ok((await admitted(code.plan, allowance([]))).includes("update ArtifactsCredentials"));
+  // A reference both sides hold whose target moved is admitted only under a named property.
+  const rows = productionRows();
+  const props = (
+    rows.ArtifactsCredentials as unknown as { props: { env: { Coordinator: object } } }
+  ).props;
+  props.env.Coordinator = { ...props.env.Coordinator, recordedOutput: "before" };
+  const moved = await planned(context, { rows });
+  assert.ok((await admitted(moved.plan, allowance())).includes("update ArtifactsCredentials"));
+  assert.deepEqual((await refused(moved.plan, allowance([]))).rules, [
+    "code-only-allowance-exceeded ArtifactsCredentials",
+  ]);
+  // A value of its own, or an entry added, is configuration, not a moved reference.
+  const env = await planned(context, { declared: { credentialsEnv: { MODE: "next" } } });
+  const byEnv = await refused(env.plan, allowance());
+  assert.deepEqual(byEnv.rules, [
+    "code-only-binding-change ArtifactsCredentials",
+    "code-only-allowance-exceeded ArtifactsCredentials",
+  ]);
+  assert.match(byEnv.message, /props\.env\.MODE: absent -> /u);
+  // A class it starts to bind is a binding change, whatever the allowance names.
+  const bound = await planned(context, { declared: { credentialsClass: "SecondCoordinator" } });
+  const byClass = await refused(bound.plan, allowance());
+  assert.ok(
+    byClass.rules.includes("code-only-allowance-exceeded ArtifactsCredentials"),
+    byClass.rules.join(", "),
+  );
+  assert.match(byClass.message, /bindings\.Second: create/u);
+});
+
 test("a filtered plan needs the policy's include list, and the list needs a filtered plan", async (context) => {
   const selected = await planned(context, { include: ["PoolWorker"] });
   assert.deepEqual((await refused(selected.plan)).rules, ["filtered-plan-without-include (plan)"]);

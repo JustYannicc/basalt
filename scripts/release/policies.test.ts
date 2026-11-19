@@ -99,23 +99,33 @@ test("only the healing release declares a root restart, bounded, and it is other
   // No reviewed policy is an image release of the root: every one refuses any row on it.
   for (const name of ["release", "code", "code-restart", "cutover-code", "cutover-classes"])
     assert.equal((await read(name)).check.poolContainer.imageRelease, undefined, name);
-  // No general loosening: apart from its named commands and the two connections that wait on
-  // them, it is the code policy.
+  // No general loosening: apart from its named commands, the two connections that wait on them
+  // and the bulk-import store's code, it is the code policy.
   const { commands, allow, ...rest } = healing.check;
   const { commands: _none, allow: codeAllow, ...codeRest } = code.check;
+  const { fixedBindings, ...wire } = healing.wire;
   assert.deepEqual(codeAllow, []);
   assert.deepEqual(
-    { check: rest, include: healing.include, wire: healing.wire, env: healing.env },
+    { check: rest, include: healing.include, wire, env: healing.env },
     { check: codeRest, include: code.include, wire: code.wire, env: code.env },
   );
   assert.ok(commands?.includes("Migrations") && commands.includes("PoolDatabase"));
   assert.deepEqual(
-    allow.map((entry) => [entry.fqn, entry.action, entry.unresolvedOnly]),
+    allow.map((entry) => [
+      entry.fqn,
+      entry.action,
+      entry.unresolvedOnly,
+      entry.codeOnly?.references,
+    ]),
     [
-      ["DatabaseConnection", "update", true],
-      ["PoolModelDatabaseConnection", "update", true],
+      ["ArtifactsCredentials", "update", undefined, ["env"]],
+      ["DatabaseConnection", "update", true, undefined],
+      ["PoolModelDatabaseConnection", "update", true, undefined],
     ],
   );
+  // Its code moves only with its uploads held to the serving bindings, and the reason is written.
+  assert.deepEqual(fixedBindings, ["ArtifactsCredentials"]);
+  assert.match(allow[0]?.codeOnly?.why ?? "", /version skew/u);
 });
 
 test("the class change adopts the shared Secrets Store and expects the pool database command settled", async () => {
