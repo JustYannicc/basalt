@@ -4,7 +4,7 @@ import { retryDelay } from "./github-read.ts";
 // GitHub's API answers brief server failures and rate limits that are gone a moment later. A release
 // must not fail on one, and must still fail closed once a short budget shows the outage is real.
 // The statuses match github-read.ts, which retries release classification reads.
-const transientStatuses = new Set([500, 502, 503, 504]);
+export const transientStatuses = new Set([500, 502, 503, 504]);
 const maximumServerWaitMs = 60_000;
 const resetCodes = new Set([
   "ECONNRESET",

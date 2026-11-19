@@ -47,9 +47,13 @@ test("shards are planned near eight minutes and each job budget covers its shard
     // Longest-processing-time packing leaves no shard more than one file above the lightest.
     assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...seconds), job);
     for (const [index, shard] of shards.entries()) {
-      // Covers its planned files with half again as margin, setup, and one file's own deadline.
-      assert.ok(shard.timeout >= (loads[index]! / 60) * 1.5 + fileDeadlineMinutes + 3, shard.shard);
-      assert.ok(shard.timeout <= 30, shard.shard);
+      // Covers its planned files with half again as margin, setup, and one file running to its
+      // own deadline on both its attempts.
+      assert.ok(
+        shard.timeout >= (loads[index]! / 60) * 1.5 + 2 * fileDeadlineMinutes + 3,
+        shard.shard,
+      );
+      assert.ok(shard.timeout <= 40, shard.shard);
     }
   }
 });
