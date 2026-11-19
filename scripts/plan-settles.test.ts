@@ -6,11 +6,11 @@ import { discoverPlanSettlesProof } from "./architecture/native-stack.ts";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 for (const shape of ["production", "preview"] as const)
-  test(`${shape}: a plan right after an apply changes no resource`, { timeout: 80_000 }, () => {
+  test(`${shape}: a plan right after an apply changes no resource`, { timeout: 40_000 }, () => {
     const proof = discoverPlanSettlesProof(root, shape);
     assert.deepEqual(
-      { failed: proof.failed, error: proof.error, detail: proof.detail },
-      { failed: undefined, error: undefined, detail: undefined },
+      { failed: proof.failed, error: proof.error },
+      { failed: undefined, error: undefined },
     );
     assert.ok(proof.resources > 50, "the whole stack is planned, not a part of it");
     for (const [name, plan] of [

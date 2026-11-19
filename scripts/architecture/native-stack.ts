@@ -97,9 +97,6 @@ function evaluate(
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
       NATIVE_STACK_CONTAINER_PROOF: options.containerProof ?? "",
       NATIVE_STACK_SETTLES_PROOF: options.settlesProof ?? "",
-      NATIVE_STACK_PROOF_DETAIL: options.settlesProof
-        ? (process.env.NATIVE_STACK_PROOF_DETAIL ?? "")
-        : "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -150,12 +147,9 @@ function evaluate(
           result.stdout ?? "",
         );
       throw new Error(
-        (failure
+        failure
           ? `Native stack inventory ${failure[1]} failed (${failure[2]}); check installed source dependencies and declaration fixtures`
-          : "Native stack inventory sandbox failed or timed out; OS network denial and Bun are required") +
-          (env.NATIVE_STACK_PROOF_DETAIL === "1"
-            ? `\n${(result.stdout ?? "").slice(0, 3200)}`
-            : ""),
+          : "Native stack inventory sandbox failed or timed out; OS network denial and Bun are required",
       );
     }
     try {
@@ -279,7 +273,6 @@ export function discoverPlanSettlesProof(
 ): {
   failed?: string;
   error?: string;
-  detail?: string;
   resources: number;
   afterApply: PlannedRow[];
   nextAttempt: PlannedRow[];

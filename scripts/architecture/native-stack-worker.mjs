@@ -31,20 +31,16 @@ try {
   const previewStack = previewConnection || settlesProof === "preview";
   const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
-  if (settlesProof) {
-    globalThis.proofRequests = [];
+  if (settlesProof)
     // A test stage seeds its private billing instance while its declaration is resolved. The plan
     // proof answers that one request; every other request still meets the declaration fixtures.
     globalThis.fetch = (input, init) => {
       const request = input instanceof Request ? input : undefined;
-      const method = init?.method ?? request?.method ?? "GET";
-      const target = String(request?.url ?? input);
-      globalThis.proofRequests.push(`${method} ${target.slice(0, 160)}`);
-      return method === "POST" && /^https:\/\/emulators\.dev\/[^?#]+\/_emulate\/seed$/.test(target)
+      return (init?.method ?? request?.method) === "POST" &&
+        /^https:\/\/emulators\.dev\/[^?#]+\/_emulate\/seed$/.test(String(request?.url ?? input))
         ? Promise.resolve(Response.json({}))
         : http.fetch(input, init);
     };
-  }
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
     await load("scripts/environment.ts");
   const synthetic = Object.fromEntries(
@@ -273,8 +269,6 @@ try {
   http.assertAllowed();
   if (Exit.isFailure(exit)) {
     const diagnostic = Cause.pretty(exit.cause);
-    if (settlesProof && process.env.NATIVE_STACK_PROOF_DETAIL === "1")
-      emit(`${JSON.stringify({ detail: diagnostic.slice(0, 1500) })}\n`);
     const labels = [
       "Invalid native declaration name",
       "Invalid native declaration metadata",
@@ -292,12 +286,7 @@ try {
   }
   emit(JSON.stringify(exit.value));
 } catch (error) {
-  // Never forward exception messages, causes, file paths, config, or request details. A maintainer
-  // debugging the plan proof locally may opt in; no workflow sets this.
-  if (process.env.NATIVE_STACK_SETTLES_PROOF && process.env.NATIVE_STACK_PROOF_DETAIL === "1")
-    emit(
-      `${JSON.stringify({ detail: String(error?.stack ?? error).slice(0, 600), requests: (globalThis.proofRequests ?? []).slice(-14) })}\n`,
-    );
+  // Never forward exception messages, causes, file paths, config, or request details.
   const labels = [
     "Invalid native declaration name",
     "Invalid native declaration metadata",

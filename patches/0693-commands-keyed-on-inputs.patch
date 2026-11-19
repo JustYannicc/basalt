@@ -50,30 +50,15 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
  /** Database infrastructure belongs to cloud; Docker and local keep their own drivers. */
  import * as Output from "alchemy/Output";
  import { fileURLToPath } from "node:url";
-@@ -73,6 +72,22 @@
-   return Redacted.make(url.toString());
- };
- 
-+/**
-+ * What `src/migrate.ts` reads: its imports reach the hosted server and most workspace packages, so
-+ * the key is their sources and the lockfile. The two files the preparation step rewrites for every
-+ * revision are no input of it. Resources read the migration's outcome, and a plan cannot know the
-+ * outcome of a command that runs on every plan, so it runs when these change and carries no
-+ * attempt identity.
-+ */
-+const migrationInputs = {
-+  include: ["src/**", "../server/src/**", "../../marketing/src/**", "../../../packages/*/src/**"],
-+  exclude: [
-+    "src/implementation/production-ops-release.ts",
-+    "../server/src/implementation/catalog-app-release.ts",
-+  ],
-+  lockfile: true,
-+};
-+
- /** Dedicated automated and performance stages may hand fixture authority to a local runner. */
- const fixtureStage = /^test-(?:e2e|perf)-/;
- 
-@@ -84,6 +99,7 @@
+@@ -26,6 +25,7 @@
+   Tracer,
+ } from "effect";
+ import { databasePoolBudget } from "./database-pool-budget.ts";
++import { migrationInputs } from "./migration-inputs.ts";
+ import { developmentDatabase } from "./development.ts";
+ import { cloudOrigin, roleHostsJobEnvironment, testStage, type TestStage } from "./stage.ts";
+ import { postgresUrl, previewDatabase, previewPoolConnections } from "./preview-database.ts";
+@@ -84,6 +84,7 @@
        ? yield* Command.Exec.ref("Migrations")
        : yield* Command.Exec("Migrations", {
            command: "node src/migrate.ts",
@@ -81,7 +66,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
            env: {
              DATABASE_URL: preview.migrationUrl,
              // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
-@@ -92,7 +108,7 @@
+@@ -92,7 +93,7 @@
              // Auth setup provisions the OAuth resources at the role hosts too.
              ...(yield* roleHostsJobEnvironment),
            },
@@ -90,7 +75,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
            // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
            timeout: "7 minutes",
          });
-@@ -209,7 +225,6 @@
+@@ -209,7 +210,6 @@
      command: "node src/migrate.ts",
      cwd: fileURLToPath(new URL("../../", import.meta.url)),
      env: {
@@ -98,7 +83,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
        DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")),
        DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
        BETTER_AUTH_URL: yield* cloudOrigin,
-@@ -217,7 +232,7 @@
+@@ -217,7 +217,7 @@
        // Auth setup provisions the OAuth resources at the role hosts too.
        ...(yield* roleHostsJobEnvironment),
      },
@@ -107,3 +92,33 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
      // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
      timeout: "7 minutes",
    });
+diff --git a/apps/hosted/cloud/src/infrastructure/migration-inputs.ts b/apps/hosted/cloud/src/infrastructure/migration-inputs.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/migration-inputs.ts
+@@ -0,0 +1,25 @@
++/**
++ * What `src/migrate.ts` reads, as the key for when the migration runs. Its imports reach the
++ * hosted apps and most workspace packages, so the key is their sources and the lockfile.
++ * Resources wait on the migration's outcome, and a plan cannot know the outcome of a command that
++ * runs on every plan, so it runs when these change and carries no attempt identity.
++ */
++export const migrationInputs = {
++  include: [
++    "src/**",
++    "../server/src/**",
++    "../../marketing/src/**",
++    "../../../packages/*/src/**",
++    // Generated apps declare the framework release this manifest names.
++    "../../../packages/apps/package.json",
++  ],
++  // Preparation rewrites these for every revision or pool app change; the migration imports none.
++  // One of them inside the key would run the migration on every release.
++  exclude: [
++    "src/implementation/production-ops-release.ts",
++    "../server/src/implementation/catalog-app-release.ts",
++    "../server/src/implementation/pool-worker-revision.ts",
++    "../server/src/implementation/pool-app-source.ts",
++  ],
++  lockfile: true,
++};
