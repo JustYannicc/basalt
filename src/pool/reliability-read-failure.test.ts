@@ -64,7 +64,7 @@ test("every statement of the reliability read has its own step name", async () =
 
 test("a statement that times out is reported with its step, and the read still fails", async (t) => {
   const { read, statements } = idlePool((text) =>
-    text.includes("unknown(class,id,at)")
+    text.includes("unknown(class,id,at,home_at,home_failed)")
       ? Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" })
       : undefined,
   );

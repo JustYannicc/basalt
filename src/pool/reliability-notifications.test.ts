@@ -147,7 +147,14 @@ test("the percentage page needs its own window breached, unknown outcomes includ
   // 200 more requests it never counted could still bring it back within the target.
   const day = {
     ...window(1_000, 11),
-    unknown: { requests: 200, pending: 0, unavailable: 200, unmatched: 0, uncounted: 200, couldFail: 200 },
+    unknown: {
+      requests: 200,
+      pending: 0,
+      unavailable: 200,
+      unmatched: 0,
+      uncounted: 200,
+      couldFail: 200,
+    },
   };
   const slo: PoolReliabilitySlo = {
     target: 99,

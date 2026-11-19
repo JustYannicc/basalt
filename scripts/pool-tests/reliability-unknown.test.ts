@@ -92,8 +92,17 @@ test("one lost terminal record is shown, and does not hold a clean day unavailab
   const slo = await pool(lostFinish(1));
   assert.equal(slo.state, "ok", "120 clean requests an hour cannot be tipped by one unknown");
   assert.equal(slo.reason, undefined);
-  assert.deepEqual(slo.hour.unknown, { requests: 1, pending: 0, unavailable: 1, unmatched: 0 });
-  assert.deepEqual(slo.day.unknown, { requests: 1, pending: 0, unavailable: 1, unmatched: 0 });
+  // The lost request has no Home row, so the window never counted it, and it could have failed.
+  const lost = {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 1,
+    couldFail: 1,
+  };
+  assert.deepEqual(slo.hour.unknown, lost);
+  assert.deepEqual(slo.day.unknown, lost);
 });
 
 test("an abandoned start and a Home row without evidence are counted by class", async () => {
@@ -114,8 +123,23 @@ test("an abandoned start and a Home row without evidence are counted by class", 
     );
   });
   assert.equal(slo.state, "ok");
-  assert.deepEqual(slo.hour.unknown, { requests: 1, pending: 1, unavailable: 0, unmatched: 0 });
-  assert.deepEqual(slo.day.unknown, { requests: 2, pending: 1, unavailable: 0, unmatched: 1 });
+  assert.deepEqual(slo.hour.unknown, {
+    requests: 1,
+    pending: 1,
+    unavailable: 0,
+    unmatched: 0,
+    uncounted: 1,
+    couldFail: 1,
+  });
+  // The unmatched Home row is already counted; the abandoned start is not.
+  assert.deepEqual(slo.day.unknown, {
+    requests: 2,
+    pending: 1,
+    unavailable: 0,
+    unmatched: 1,
+    uncounted: 1,
+    couldFail: 2,
+  });
 });
 
 test("unknown outcomes that could tip the hour leave the figure unavailable", async () => {

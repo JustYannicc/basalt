@@ -118,7 +118,8 @@ test(
       let statement: { text: string; values?: unknown[] } | undefined;
       const recorded: HistoryDatabase = {
         query: (text, values) => {
-          if (text.includes("unknown(class,id,at)")) statement = { text, values };
+          if (text.includes("unknown(class,id,at,home_at,home_failed)"))
+            statement = { text, values };
           return db.query(text, values);
         },
       };

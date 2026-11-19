@@ -65,7 +65,10 @@ export async function readPoolReliabilitySlo(
           row.forward_id,
         ])
       ).rows[0]?.lagging === true;
-    const unknown = terminalReady ? await readUnknownOutcomes(db, pool, [hour, day, current]) : [];
+    // Ready classification means the traffic table exists, so proof traffic can be told apart.
+    const unknown = terminalReady
+      ? await readUnknownOutcomes(db, pool, [hour, day, current], hour.classification === "ready")
+      : [];
     const withUnknown = (window: PoolReliability, index: number): PoolReliability => {
       const outcomes = unknown[index];
       return outcomes ? { ...window, unknown: outcomes } : window;

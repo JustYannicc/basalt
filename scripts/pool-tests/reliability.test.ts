@@ -197,7 +197,14 @@ test("one SLO read aggregates its overlapping windows in one history statement",
       },
     };
     const actual = await readPoolReliabilitySlo(counted, "fixture", now);
-    const none = { requests: 0, pending: 0, unavailable: 0, unmatched: 0 };
+    const none = {
+      requests: 0,
+      pending: 0,
+      unavailable: 0,
+      unmatched: 0,
+      uncounted: 0,
+      couldFail: 0,
+    };
     assert.deepEqual(
       [actual.hour, actual.day, actual.current],
       expected.map((window) => ({ ...window, unknown: none })),

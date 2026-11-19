@@ -183,6 +183,8 @@ function unknownOutcomes(value: UnknownOutcomes) {
     pending: count(value.pending),
     unavailable: count(value.unavailable),
     unmatched: count(value.unmatched),
+    uncounted: count(value.uncounted),
+    could_fail: count(value.couldFail),
   };
 }
 

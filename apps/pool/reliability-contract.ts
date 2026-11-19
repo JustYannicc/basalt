@@ -23,6 +23,10 @@ export interface UnknownOutcomes {
   readonly unavailable: number;
   /** A Home row with no finished start. */
   readonly unmatched: number;
+  /** Not among the window's counted requests: no Home attempt of theirs is in the window. */
+  readonly uncounted: number;
+  /** Not already counted as failed, so their unknown outcome could still be a failure. */
+  readonly couldFail: number;
 }
 
 export interface PoolReliability {

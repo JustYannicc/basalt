@@ -271,7 +271,14 @@ test("unknown outcomes are logged every check-in, even when the objective is dec
     classification: "ready" as const,
     real: counts,
     proof: { ...counts, requests: 0, successRate: null },
-    unknown: { requests: unknown, pending: 0, unavailable: unknown, unmatched: 0 },
+    unknown: {
+      requests: unknown,
+      pending: 0,
+      unavailable: unknown,
+      unmatched: 0,
+      uncounted: unknown,
+      couldFail: unknown,
+    },
   });
   await runAvailabilityProbe(
     env,
@@ -285,7 +292,14 @@ test("unknown outcomes are logged every check-in, even when the objective is dec
       day: window(1),
     }),
   );
-  const unknown = { requests: 1, pending: 0, unavailable: 1, unmatched: 0 };
+  const unknown = {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 1,
+    could_fail: 1,
+  };
   assert.deepEqual(
     warnings.mock.calls.map((call) => call.arguments),
     [["POOL_REQUEST_OUTCOMES_UNKNOWN", { state: "ok", hour: unknown, day: unknown }]],
@@ -312,7 +326,14 @@ test("an undecided objective pages collection_unavailable with the unknown count
     successRate: 99.3,
     failures: [],
   };
-  const unknown = { requests: 1, pending: 0, unavailable: 1, unmatched: 0 };
+  const unknown = {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 0,
+    couldFail: 1,
+  };
   const window = {
     from: "2026-11-18T11:00:00Z",
     to: "2026-11-18T12:00:00Z",
@@ -344,7 +365,14 @@ test("an undecided objective pages collection_unavailable with the unknown count
     ["pool_request_reliability_unavailable"],
   );
   const [event] = events;
-  assert.deepEqual(event?.contexts.request_reliability.hour.unknown, unknown);
+  assert.deepEqual(event?.contexts.request_reliability.hour.unknown, {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 0,
+    could_fail: 1,
+  });
   assert.equal(event?.contexts.request_reliability.reason, "terminal_collection_unavailable");
   assertNoPrivateDiagnostics(messages);
 });
