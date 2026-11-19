@@ -6,6 +6,7 @@ import {
   forcedRestartServesWithinHeldStreamsMs,
   forcedRestartServesWithinMs,
   forcedStopGraceMs,
+  leakedStreamsMs,
   readinessReadMs,
   restartStartBoundMs,
   runtimeStartupMs,
@@ -14,6 +15,7 @@ import {
 import { poolLifecycle } from "./lifecycle.ts";
 import { policyHealthLeaseMs } from "./runtime-health.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
+import { RuntimeActivity } from "./runtime-slots/activity.ts";
 
 test("the timing module has no imports and matches the values the runtime enforces", async () => {
   const timing = await readFile(
@@ -66,6 +68,7 @@ function stopper(
   context: TestContext,
   record: Record<string, unknown>,
   readiness: () => Promise<unknown>,
+  streams?: { active: number; changedAt?: number },
 ) {
   context.mock.method(runtimeStopTiming, "stopGrace", async () => {});
   context.mock.method(console, "error", () => {});
@@ -91,7 +94,7 @@ function stopper(
       },
     },
     store: { read: async () => ({ record, configuration: {} }) },
-    activity: { inspect: async () => undefined },
+    activity: { inspect: async () => streams },
     health: async () => {
       throw new SlotRefused("identity");
     },
@@ -162,4 +165,40 @@ test("a restart's own boot is never stopped, while the old container under it is
     else await assert.rejects(result, (error) => error instanceof SlotRefused, name);
     assert.deepEqual(signals, stops ? [15] : [], name);
   }
+});
+
+test("a stamped stream count holds the stop until it has stood still for leakedStreamsMs", async (context) => {
+  const stuck = { identity: selected, authorization: { kind: "start" } };
+  for (const [age, stops] of [
+    [leakedStreamsMs - 1_000, false],
+    [leakedStreamsMs + 1_000, true],
+  ] as const) {
+    const { stop, signals } = stopper(context, stuck, async () => ({}), {
+      active: 2,
+      changedAt: Date.now() - age,
+    });
+    const result = await stop.stop(selected, Date.now(), AbortSignal.timeout(5_000));
+    if (stops) assert.deepEqual(result, { stopped: true, hard: false });
+    else assert.equal(result.waiting?.active, 2);
+    assert.deepEqual(signals, stops ? [15] : []);
+  }
+});
+
+test("every stream acquire and release stamps when the count last changed", async (context) => {
+  let now = 1_000;
+  context.mock.method(Date, "now", () => now);
+  const rows = new Map<string, unknown>();
+  const storage = {
+    get: async (key: string) => rows.get(key),
+    put: async (key: string, value: unknown) => void rows.set(key, value),
+    transaction: async <T>(work: (transaction: typeof storage) => Promise<T>) => work(storage),
+  };
+  const activity = new RuntimeActivity(storage);
+  const release = await activity.acquire(selected);
+  assert.equal((await activity.inspect(selected))?.changedAt, 1_000);
+  now = 5_000;
+  await release();
+  const row = await activity.inspect(selected);
+  assert.equal(row?.active, 0);
+  assert.equal(row?.changedAt, 5_000);
 });

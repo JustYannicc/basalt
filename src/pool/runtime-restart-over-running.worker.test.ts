@@ -28,7 +28,7 @@ async function stuckOverRunningContainer(f: Fixture) {
   await f.bootstrap();
   f.old.crash();
   await passes(f, 1);
-  assert.equal(f.old.calls.start, 1, "an earlier recovery restart, as on 18 Nov");
+  assert.equal(f.old.calls.start, 1, "an earlier recovery restart");
   const previous = f.old.identity();
   const epoch = ((await f.send("inspect")) as Inspected).selection.epoch;
   const start = f.old.ctx.container.start.bind(f.old.ctx.container);
@@ -55,8 +55,7 @@ async function assertStuck(f: Fixture, previous: { bootId: string }, epoch: numb
   const { selection } = (await f.send("inspect")) as Inspected;
   assert.equal(selection.epoch, epoch);
   assert.equal(selection.active.identity.bootId, previous.bootId);
-  // Production's code answered `pool_protection_unavailable` (`runtime_endpoint_route_slot_identity`);
-  // since #1407 the request ends in the native retry advice once its attempts are spent.
+  // The request ends in the native retry advice once its attempts are spent.
   const model = await f.model();
   assert.equal(model.status, 503);
   assert.equal(model.headers.get("Retry-After") !== null, true);
@@ -151,7 +150,7 @@ test(
 );
 
 test(
-  "the stuck record heals by itself when its pool policy expired long ago, as production's has",
+  "the stuck record heals by itself when its pool policy expired long ago",
   { timeout: 30_000 },
   async (context) => {
     let now = Date.now();

@@ -29,8 +29,9 @@ export const exitConfirmationMs = 2_000;
 /** The container's startup allowance (`poolLifecycle.startupTimeoutMs`; a test keeps them equal). */
 export const runtimeStartupMs = 180_000;
 /**
- * A restart's own start answers readiness, or meets its startup deadline, within this of its
- * admission. Past it, a container under that restart that doesn't answer is the old one.
+ * A restart's own start answers readiness within this of its admission, or its startup deadline has
+ * passed. Past it, a container under that restart that doesn't answer is taken for the old one; a
+ * forced restart's own start is never stopped again, whatever it answers.
  */
 export const restartStartBoundMs = runtimeStartupMs + 60_000;
 /** The outer bound on the stop's own health and readiness reads. */

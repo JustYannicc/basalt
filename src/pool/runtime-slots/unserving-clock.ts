@@ -75,6 +75,10 @@ export class UnservingClock {
         : state,
     );
   }
+  /** The stop no longer waits on streams. */
+  notWaiting() {
+    return this.change((state) => (state.streams ? { ...state, streams: undefined } : state));
+  }
   /** The stop waits on streams; recorded so a person sees a wait, not a hang. */
   waitingFor(streams: NonNullable<UnservingState["streams"]>) {
     return this.change((state) =>

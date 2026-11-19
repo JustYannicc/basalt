@@ -63,11 +63,15 @@ export class RuntimeForcedRestart {
     if (!pass.retained.running) return false;
     if (!notServing.has(reason) || !holdsSelectedBoot(pass.retained, pass.previous)) {
       // The bound counts only an unbroken stretch of a running, refusing selected boot.
+      this.declined = undefined;
       await this.clock.notRefusing();
       return false;
     }
     const now = Date.now();
     const state = await this.clock.refusing(pass.previous, now);
+    // A forced restart that hasn't served yet is never stopped again: whatever runs is its own
+    // start, slow or stuck, and its budget ends it in needs-a-person.
+    if (state.restartedAt !== undefined) return false;
     const decision = unservingDecision(state, now);
     if (decision === "restart_limit") this.report(await this.clock.needsPerson(decision, now), now);
     if (decision !== "stop") return false;
@@ -101,9 +105,11 @@ export class RuntimeForcedRestart {
           declined,
         });
       this.declined = declined;
+      if (state.streams) await this.clock.notWaiting();
       return false;
     }
     this.declined = undefined;
+    if (!result.waiting && state.streams) await this.clock.notWaiting();
     if (result.waiting) {
       const before = state.streams;
       await this.clock.waitingFor(result.waiting);
