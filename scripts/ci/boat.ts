@@ -1,5 +1,4 @@
-// One ordinary job per VM keeps the 16 GB runner free of competing suites.
-// Twelve non-matrix jobs fit the $20 tier's included starts per minute.
+// Jobs a Check may send to the runner label in vars.BASALT_CI_RUNNER_HEAVY; unset, they run hosted.
 export const boatJobs = [
   "host-managed-accounts",
   "host-managed-accounts-adopted",
