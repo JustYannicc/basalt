@@ -35,7 +35,9 @@ const policy = (changes: Record<string, unknown> = {}) =>
         types: ["Cloudflare.Hyperdrive", "Planetscale.*"],
       },
       removals: [],
-      poolContainer: { fqn: "PoolContainer", image: pinnedImage },
+      // The fixture's root row is the old layer's, so it plans a hash-only update. Tests of other
+      // rules admit that row as an image release would; the root's own tests use `rootUnchanged`.
+      poolContainer: { fqn: "PoolContainer", image: pinnedImage, imageRelease: true },
       poolWorker: "PoolWorker",
       artifactsCredentials: "ArtifactsCredentials",
       allow: [],
@@ -496,13 +498,64 @@ test("a Worker binding whose value waits on another row is not a removal", async
   );
 });
 
-test("a healing release refuses any row on the root, even a hash-only update", async (context) => {
+const rootUnchanged = { poolContainer: { fqn: "PoolContainer", image: pinnedImage } };
+
+test("no release but a declared image release may plan any row on the root, a hash-only update included", async (context) => {
+  // Production's root row was written by the old release layer: its recorded image hash is the old
+  // build context's, so an unchanged root plans a hash-only update.
   const { plan } = await planned(context);
   assert.equal(plan.resources.PoolContainer?.action, "update");
-  const healing = { poolContainer: { fqn: "PoolContainer", image: pinnedImage, noop: true } };
-  const { rules, message } = await refused(plan, healing);
-  assert.deepEqual(rules, ["pool-container-not-noop PoolContainer"]);
-  assert.match(message, /\$action: noop -> update/u);
-  // Without the flag the same hash-only update is admitted, as before.
+  for (const mode of ["release", "code-only"] as const) {
+    const { rules, message } = await refused(plan, { ...rootUnchanged, mode });
+    assert.ok(
+      rules.includes("pool-container-not-noop PoolContainer"),
+      `${mode}: ${rules.join(", ")}`,
+    );
+    assert.match(message, /\$action: noop -> update/u);
+  }
+  // An image release that declares it may move the row; a configuration change still refuses.
   assert.ok((await admitted(plan)).includes("update PoolContainer"));
+});
+
+test("a healing release admits a connection only while its origin waits on a database command", async () => {
+  const { literal } = await import("alchemy/Output");
+  const connection = (origin: unknown) => ({
+    action: "update",
+    resource: { FQN: "DatabaseConnection", Type: "Cloudflare.Hyperdrive", Props: { origin } },
+    props: { origin },
+    state: { status: "updated", props: { origin: "recorded-origin" }, bindings: [] },
+    bindings: [],
+  });
+  const command = (fqn: string) => ({
+    action: "update",
+    resource: { FQN: fqn, Type: "Command.Exec", Props: {} },
+    props: {},
+    state: { status: "updated", props: {}, bindings: [] },
+    bindings: [],
+  });
+  const plan = (...nodes: { resource: { FQN: string } }[]) =>
+    ({
+      resources: Object.fromEntries(nodes.map((node) => [node.resource.FQN, node])),
+      deletions: {},
+      actions: {},
+      actionDeletions: {},
+    }) as never;
+  const healing = {
+    mode: "code-only",
+    commands: ["Migrations"],
+    allow: [{ fqn: "DatabaseConnection", action: "update", unresolvedOnly: true }],
+  };
+  const rules = async (value: never) => {
+    const exit = await Effect.runPromiseExit(checkPlan(value, await policy(healing)));
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
+      : [];
+  };
+  // The origin is not known until the migration's hash resolves: the row the release expects.
+  assert.deepEqual(await rules(plan(connection(literal("pending")), command("Migrations"))), []);
+  // Another database is a resolved change, and a command outside the list does not run.
+  assert.deepEqual(await rules(plan(connection("another-origin"))), [
+    "outside-code-only DatabaseConnection",
+  ]);
+  assert.deepEqual(await rules(plan(command("Seed"))), ["outside-code-only Seed"]);
 });

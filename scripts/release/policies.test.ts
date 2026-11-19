@@ -96,25 +96,25 @@ test("only the healing release declares a root restart, bounded, and it is other
   const code = await read("code");
   const within = healing.acceptance?.rootRestart.withinSeconds ?? 0;
   assert.ok(within >= 60 && within <= 900, `bound ${within}`);
-  // No general loosening: the plan rules, include, wire rules and switches are the code policy's,
-  // and the root may not move at all.
-  assert.equal(healing.check.poolContainer.noop, true);
+  // No reviewed policy is an image release of the root: every one refuses any row on it.
+  for (const name of ["release", "code", "code-restart", "cutover-code", "cutover-classes"])
+    assert.equal((await read(name)).check.poolContainer.imageRelease, undefined, name);
+  // No general loosening: apart from its named commands and the two connections that wait on
+  // them, it is the code policy.
+  const { commands, allow, ...rest } = healing.check;
+  const { commands: _none, allow: codeAllow, ...codeRest } = code.check;
+  assert.deepEqual(codeAllow, []);
   assert.deepEqual(
-    {
-      check: {
-        ...healing.check,
-        poolContainer: { ...healing.check.poolContainer, noop: undefined },
-      },
-      include: healing.include,
-      wire: healing.wire,
-      env: healing.env,
-    },
-    {
-      check: { ...code.check, poolContainer: { ...code.check.poolContainer, noop: undefined } },
-      include: code.include,
-      wire: code.wire,
-      env: code.env,
-    },
+    { check: rest, include: healing.include, wire: healing.wire, env: healing.env },
+    { check: codeRest, include: code.include, wire: code.wire, env: code.env },
+  );
+  assert.ok(commands?.includes("Migrations") && commands.includes("PoolDatabase"));
+  assert.deepEqual(
+    allow.map((entry) => [entry.fqn, entry.action, entry.unresolvedOnly]),
+    [
+      ["DatabaseConnection", "update", true],
+      ["PoolModelDatabaseConnection", "update", true],
+    ],
   );
 });
 
