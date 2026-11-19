@@ -362,10 +362,18 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       `${original}\nexport const rehearsalCodeMarker = ${JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`)};\n`,
     );
     const probe = startProbe(lane, join(outputs, "probe-code.jsonl"), source);
+    let releaseError: unknown;
     try {
       result.release = await runEntry("deploy", subject, source, env, outputs, {
         policy: "cutover-code",
       });
+    } catch (error) {
+      // The version may be live even when the entry stops after its apply (e.g. a post-apply
+      // check); the rollback below runs either way, then this failure is reported.
+      releaseError = error;
+      result.releaseRefused = redactor(source)(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       await writeFile(workerPath, original);
       result.releaseInterruption = await probe.stop();
@@ -386,8 +394,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       args: ["--fqn", "PoolWorker", "--out", final],
     });
     result.servingFinal = JSON.parse(await readFile(final, "utf8")) as unknown;
+    await writeFile(join(outputs, "stage-code.json"), `${JSON.stringify(result, null, 2)}\n`, {
+      mode: 0o600,
+    });
     if (JSON.stringify(result.servingFinal) !== JSON.stringify(result.serving))
       throw new Error("The rollback did not restore the version that served before the release");
+    if (releaseError) throw releaseError;
   } else if (mode === "destroy") {
     await destroyStage(root, subject, source);
     await verifyStageAbsent(root, subject, source);
