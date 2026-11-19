@@ -211,6 +211,7 @@ test("the actual build downloader and pool wrapper require a release service", (
     [
       { id: "releases", hosts: ["github.com"], sdks: [] },
       { id: "gateway", hosts: ["home-peer.internal"], sdks: [] },
+      { id: "database", hosts: [], sdks: [], addressEnvs: ["POOL_DATABASE_URL"] },
     ],
   );
   expect(result.errors).toEqual([]);
@@ -219,6 +220,9 @@ test("the actual build downloader and pool wrapper require a release service", (
   );
   expect(result.dependencies).toContainEqual(
     expect.objectContaining({ source: "pool", target: "gateway" }),
+  );
+  expect(result.dependencies).toContainEqual(
+    expect.objectContaining({ source: "pool", target: "database" }),
   );
 });
 
