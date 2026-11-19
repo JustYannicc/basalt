@@ -122,8 +122,10 @@ export default Alchemy.Stack(
       },
       // The Router reads this command's outcome. A plan cannot know the outcome of a command that
       // runs on every plan, so the Router would plan as an update forever. Keyed on what the
-      // command reads, it runs when that changes.
-      memo: { include: ["ensure-artifacts.ts", "artifacts-http-failure.ts", "../brand.ts"] },
+      // command reads, it runs when that changes. The brand file is not in the key: the script
+      // takes only its namespace name from it, and that name is passed above. A test stage builds
+      // under its own brand, which would otherwise change the key between a deploy and a plan.
+      memo: { include: ["ensure-artifacts.ts", "artifacts-http-failure.ts"] },
       timeout: "1 minute",
     });
     yield* cloudDeployment;
