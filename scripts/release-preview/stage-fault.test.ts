@@ -8,7 +8,10 @@ const stuck = {
     selection: { epoch: 3, active: { fenced: false, identity } },
     policies: [{ pool: "pool-a", dirty: false, expiresAt: 1_000 }],
   },
-  witness: { kind: "witness", witness: { operationId: "restart-abc" } },
+  witness: {
+    kind: "witness",
+    witness: { operationId: "restart-abc", launch: { operationId: "restart-abc", generation: 2 } },
+  },
   activeHealth: { status: 409, reason: "runtime_endpoint_identity_slot_identity" },
   running: true,
   at: 61_000,
@@ -27,7 +30,13 @@ test("production's stuck state reads as stuck, with no raw id in the report", ()
 test("each missing condition clears the stuck verdict", () => {
   const variants = [
     { ...stuck, running: false },
-    { ...stuck, witness: { witness: { operationId: "restart-abc", bootId: "boot-new" } } },
+    {
+      ...stuck,
+      witness: {
+        witness: { operationId: "restart-abc", bootId: "boot-new", launch: { generation: 2 } },
+      },
+    },
+    { ...stuck, witness: { witness: { operationId: "restart-abc" } } },
     { ...stuck, witness: { witness: { operationId: "stage-abc" } } },
     { ...stuck, activeHealth: { status: 200 } },
     {

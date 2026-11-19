@@ -52,9 +52,20 @@ export function confirmedState(reads: Reads) {
     },
     witness: {
       restart: operationId?.startsWith("restart-") ?? false,
+      launch: Object.keys(record(witness.launch)).length > 0,
       operation: hashed(operationId),
       boot: hashed(witness.bootId),
     },
+    // The controller's recovery record, if any: production's stuck state has none, or a clean one.
+    recovery:
+      inspected.recovery === undefined || inspected.recovery === null
+        ? null
+        : {
+            keys: Object.keys(record(inspected.recovery)).sort(),
+            clean: !Object.keys(record(inspected.recovery)).some((key) =>
+              /fail|error|needs|refus/iu.test(key),
+            ),
+          },
     activeHealth: reads.activeHealth,
     container: { running: reads.running ?? null },
     policies: {
@@ -70,7 +81,9 @@ export function confirmedState(reads: Reads) {
     state.selection.boot !== null &&
     state.selection.fenced === false &&
     state.witness.restart &&
+    state.witness.launch &&
     state.witness.boot === null &&
+    (state.recovery === null || state.recovery.clean) &&
     state.container.running === true &&
     reads.activeHealth.status === 409 &&
     reads.activeHealth.reason === "runtime_endpoint_identity_slot_identity";

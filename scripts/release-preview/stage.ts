@@ -15,7 +15,8 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stageEnvironment } from "../environment.ts";
+import { previewStageOrigin, stageEnvironment } from "../environment.ts";
+import { stageModelRequest } from "./stage-model.ts";
 import { previewPoolDatabaseBranch } from "../../src/pool/database-settings.ts";
 import {
   deployStage,
@@ -272,7 +273,7 @@ async function healRelease(
     result.confirmed =
       now.stuck === true && now.policyCleanAndExpired === true
         ? { reused: true, state: now }
-        : await faultAndConfirm(lane, source, outputs);
+        : await faultAndConfirm(lane, subject, source, outputs);
     // 2. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     await rm(candidate, { recursive: true, force: true });
@@ -355,6 +356,19 @@ async function healRelease(
         healed = state;
         break;
       }
+      // A new boot that never commits ends, after forcedRestartBudgetMs, in needs-a-person: red, named.
+      if (timeline.length % 10 === 0) {
+        const needs = await workerLogLines(
+          subject,
+          source,
+          started,
+          "POOL_SELECTED_RECOVERY_NEEDS_PERSON",
+        ).catch(() => []);
+        if (needs.length) {
+          result.needsPerson = needs;
+          break;
+        }
+      }
       await new Promise((done) => setTimeout(done, 2_000));
     }
     result.secondsBootToCommit =
@@ -363,12 +377,26 @@ async function healRelease(
         : null;
     result.bootToCommitOver60 =
       typeof result.secondsBootToCommit === "number" && result.secondsBootToCommit > 60;
+    result.stopPath = await forcedStopPath(subject, source, started).catch((error: unknown) => ({
+      unavailable: error instanceof Error ? error.message : String(error),
+      green: false,
+    }));
+    if (result.needsPerson)
+      throw new Error(
+        `Recovery ended in needs-a-person: ${JSON.stringify(result.needsPerson).slice(0, 300)}`,
+      );
     if (!healed) throw new Error("Recovery did not report ready within 10 minutes of the release");
     result.healed = healed;
     result.secondsToReady = Math.round((Date.now() - started) / 1000);
-    result.stopPath = await forcedStopPath(subject, source, started).catch((error: unknown) => ({
-      unavailable: error instanceof Error ? error.message : String(error),
-    }));
+    // (b): with no account on the stage, the first model request after the heal must get through
+    // the runtime to account selection and fail only there. Recorded with its time.
+    result.firstModel = await stageModel(subject, source);
+    result.secondsToFirstModel = Math.round((Date.now() - started) / 1000);
+    // Green only with exactly one stop, of the old boot, by graceful_exit or destroy_after_grace.
+    if ((result.stopPath as { green?: boolean }).green !== true)
+      throw new Error(
+        `The stop lines are not one graceful_exit or destroy_after_grace: ${JSON.stringify(result.stopPath).slice(0, 400)}`,
+      );
   } finally {
     result.interruption = await probe.stop();
     await writeFile(join(outputs, "stage-heal.json"), `${JSON.stringify(result, null, 2)}\n`, {
@@ -403,22 +431,53 @@ async function faultRead(
   return state;
 }
 
+/** One model request on the stage's own pool, as its smoke user, with no provider account. */
+function stageModel(subject: StageSubject, source: NodeJS.ProcessEnv) {
+  return stageModelRequest({
+    origin: previewStageOrigin(stageNames(subject).slug, source.TEST_STAGE_DOMAIN ?? ""),
+    stage: stageNames(subject).stage,
+    email: source.PREVIEW_SMOKE_EMAIL ?? "",
+    password: source.PREVIEW_SMOKE_PASSWORD ?? "",
+  });
+}
+
 /**
  * The fault, then production's stuck state confirmed field for field: the selection still names
  * the boot it named before the fault, at the same epoch and unfenced; the witness names a restart
  * with no boot; the container runs; active-health refuses on slot identity; every clean policy has
  * lapsed (on today's code 15 to 20 s after the fault, so this waits rather than ages it).
  */
-async function faultAndConfirm(lane: number, source: NodeJS.ProcessEnv, outputs: string) {
+async function faultAndConfirm(
+  lane: number,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+) {
   const before = await faultRead(lane, source, outputs, "pre", ["--read-only"]);
   const pre = before.selection as { boot?: string | null; epoch?: number | null } | undefined;
   const sent = await faultRead(lane, source, outputs, "send", []);
-  const deadline = Date.now() + 120_000;
+  const sentAt = Date.now() - 60_000;
+  const deadline = Date.now() + 240_000;
   let state: Record<string, unknown> = sent;
+  let startRefusal: Record<string, unknown> | undefined;
+  let endpointLines: Record<string, unknown>[] = [];
   while (Date.now() < deadline) {
     state = await faultRead(lane, source, outputs, "confirm", ["--read-only"]);
-    if (state.stuck === true && state.policyCleanAndExpired === true) break;
-    await new Promise((done) => setTimeout(done, 5_000));
+    // Item 4: the running root answered recovery's start with another launch than the restart's.
+    endpointLines = await workerLogLines(
+      subject,
+      source,
+      sentAt,
+      "POOL_RUNTIME_ENDPOINT_FAILURE",
+    ).catch(() => endpointLines);
+    startRefusal = endpointLines.find(
+      (line) =>
+        line.method === "POST" &&
+        line.path === "/start" &&
+        JSON.stringify(line).includes("runtime_endpoint_route_slot_identity"),
+    );
+    if (state.stuck === true && state.policyCleanAndExpired === true && startRefusal) break;
+    await new Promise((done) => setTimeout(done, 10_000));
   }
   const selection = state.selection as { boot?: string | null; epoch?: number | null } | undefined;
   const mismatches = [
@@ -428,8 +487,36 @@ async function faultAndConfirm(lane: number, source: NodeJS.ProcessEnv, outputs:
       ? []
       : ["selection no longer names the pre-fault boot"]),
     ...(selection?.epoch === pre?.epoch ? [] : ["selection epoch moved"]),
+    ...(startRefusal
+      ? []
+      : [
+          "no POOL_RUNTIME_ENDPOINT_FAILURE on POST /start refusing runtime_endpoint_route_slot_identity",
+        ]),
   ];
-  const confirmed = { before, state, mismatches, at: new Date().toISOString() };
+  // Item 5: on b121+ code the stuck runtime answers a model request with the native retry advice.
+  const model = await stageModel(subject, source);
+  if (
+    !(
+      model.ok &&
+      model.status === 503 &&
+      model.retryAfter &&
+      /Please retry this request/u.test(model.body)
+    )
+  )
+    mismatches.push(
+      `the model request did not get the 503 retry advice: ${JSON.stringify(model).slice(0, 300)}`,
+    );
+  // The stage root's readiness answer as the endpoint saw it (status, launch headers), for the
+  // controller owner's comparison with production's old container.
+  const confirmed = {
+    before,
+    state,
+    startRefusal: startRefusal ?? null,
+    endpointLines,
+    model,
+    mismatches,
+    at: new Date().toISOString(),
+  };
   await writeFile(
     join(outputs, "fault-confirmed.json"),
     `${JSON.stringify(confirmed, null, 2)}\n`,
@@ -440,53 +527,70 @@ async function faultAndConfirm(lane: number, source: NodeJS.ProcessEnv, outputs:
   return confirmed;
 }
 
-/** The fix's `POOL_RUNTIME_FORCED_STOP` line for this stage's PoolWorker since `from`, read from Workers Logs. */
-async function forcedStopPath(subject: StageSubject, source: NodeJS.ProcessEnv, from: number) {
+/** This stage's PoolWorker log events since `from` whose message contains `needle`, as JSON payloads. */
+async function workerLogLines(
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  from: number,
+  needle: string,
+) {
+  const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
+  const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
   const scripts = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "")}/workers/scripts`,
-    { headers: { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` } },
+    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts`,
+    {
+      headers,
+    },
   ).then((response) => response.json() as Promise<{ result?: { id: string; tags?: string[] }[] }>);
   const { stage } = stageNames(subject);
   const script = (scripts.result ?? []).find(
     (item) =>
       item.tags?.includes(`alchemy:stage:${stage}`) && item.tags.includes("alchemy:id:PoolWorker"),
   )?.id;
+  // Only this stage's own Worker: the name carries the stage, as every rehearsal target must.
   if (!script || !script.includes(stage.replace(/^test-/u, "")))
     throw new Error("No PoolWorker of this stage to read logs from");
   const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "")}/workers/observability/telemetry/query`,
+    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/observability/telemetry/query`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}`,
-        "Content-Type": "application/json",
-      },
+      headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify({
-        queryId: `rehearsal-heal-${Date.now()}`,
+        queryId: `rehearsal-${needle.toLowerCase()}-${Date.now()}`,
         timeframe: { from, to: Date.now() },
         view: "events",
-        limit: 20,
+        limit: 50,
         parameters: {
           filters: [{ key: "$metadata.service", operation: "eq", type: "string", value: script }],
-          needle: { value: "POOL_RUNTIME_FORCED_STOP", isRegex: false, matchCase: true },
+          needle: { value: needle, isRegex: false, matchCase: true },
         },
       }),
     },
   );
   const text = await response.text();
   if (!response.ok) throw new Error(`Workers Logs query refused with HTTP ${response.status}`);
-  const paths = [
-    ...text.matchAll(
-      /\\?"path\\?":\\?"(graceful_exit|destroy_after_grace|destroy_without_signal)/gu,
-    ),
-  ].map((match) => match[1]);
-  // The lines themselves (slot, path, active streams, forced), unescaped, up to twenty.
-  const lines = [
-    ...text.replace(/\\"/gu, '"').matchAll(/POOL_RUNTIME_FORCED_STOP[^{]{0,8}(\{[^}]*\})/gu),
-  ]
-    .map((match) => match[1])
-    .slice(0, 20);
-  return { paths: [...new Set(paths)], count: paths.length, lines };
+  const plain = text.replace(/\\"/gu, '"');
+  const lines: Record<string, unknown>[] = [];
+  for (const match of plain.matchAll(
+    new RegExp(`${needle}[^{]{0,8}(\\{[^}]*(?:\\{[^}]*\\}[^}]*)*\\})`, "gu"),
+  ))
+    try {
+      lines.push(JSON.parse(match[1]!) as Record<string, unknown>);
+    } catch {
+      lines.push({ unparsed: match[1]!.slice(0, 400) });
+    }
+  return lines.slice(0, 50);
+}
+
+/** The fix's stop lines: exactly one, of the old boot, by a graceful exit or a destroy after grace. */
+async function forcedStopPath(subject: StageSubject, source: NodeJS.ProcessEnv, from: number) {
+  const lines = await workerLogLines(subject, source, from, "POOL_RUNTIME_FORCED_STOP");
+  const paths = lines
+    .map((line) => line.path)
+    .filter((path): path is string => typeof path === "string");
+  const green =
+    paths.length === 1 && (paths[0] === "graceful_exit" || paths[0] === "destroy_after_grace");
+  return { paths, count: lines.length, lines, green };
 }
 
 /** The commit the stage last deployed, from its readiness command's recorded input; refuse any other HEAD. */
@@ -804,7 +908,7 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         "new-migration-file",
       );
     } else if (mode === "fault") {
-      Object.assign(result, await faultAndConfirm(lane, source, outputs));
+      Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "heal") {
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "destroy") {
