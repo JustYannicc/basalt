@@ -3,6 +3,9 @@ import { Data, Effect, Redacted } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { servingVersion } from "./worker-version.ts";
 
+// A Worker script is at most 10 MB compressed; this bounds the read well above any real one.
+const contentLimit = 64_000_000;
+
 export class LiveModuleUnavailable extends Data.TaggedError("LiveModuleUnavailable")<{
   readonly script: string;
   readonly why: string;
@@ -40,11 +43,17 @@ export const liveMainModuleSha256 = (input: {
       .execute(
         HttpClientRequest.get(url).pipe(HttpClientRequest.bearerToken(Redacted.value(input.token))),
       )
-      .pipe(Effect.mapError((cause) => fail("the content read failed", cause)));
+      .pipe(
+        Effect.timeout("15 seconds"),
+        Effect.mapError((cause) => fail("the content read failed", cause)),
+      );
     const entrypoint = response.headers["cf-entrypoint"];
     const body = yield* response.arrayBuffer.pipe(
+      Effect.timeout("15 seconds"),
       Effect.mapError((cause) => fail("the content body could not be read", cause)),
     );
+    if (body.byteLength > contentLimit)
+      return yield* fail(`the content is ${body.byteLength} bytes, over ${contentLimit}`);
     const form = yield* Effect.tryPromise({
       try: () =>
         new Response(body, {
@@ -52,11 +61,14 @@ export const liveMainModuleSha256 = (input: {
         }).formData(),
       catch: (cause) => fail("the content is not multipart", cause),
     });
-    const modules = [...form.entries()].filter(
-      (entry): entry is [string, File] =>
-        typeof entry[1] !== "string" && entry[1].type.startsWith("application/javascript+module"),
+    // The entrypoint header names the main module, whatever media type the uploader gave its part
+    // (an Alchemy upload carries no `+module` type). Without the header, only a lone script will do.
+    const files = [...form.entries()].filter(
+      (entry): entry is [string, File] => typeof entry[1] !== "string",
     );
-    const main = entrypoint ? modules.filter(([name]) => name === entrypoint) : modules;
+    const main = entrypoint
+      ? files.filter(([name]) => name === entrypoint)
+      : files.filter(([, file]) => /javascript/u.test(file.type));
     if (main.length !== 1) return yield* fail(`expected one main module, found ${main.length}`);
     const bytes = new Uint8Array(yield* Effect.promise(() => main[0]![1].arrayBuffer()));
     return createHash("sha256").update(bytes).digest("hex");
