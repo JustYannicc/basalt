@@ -310,16 +310,16 @@ test("a call that starts a paid job is never sent twice and gets the cautious an
   );
   assert.equal(poll.resolved, 1);
   assert.equal(status.status, 503);
-  const socket = controllerHop([fails(reset)], observed.deferred);
+  const listed = controllerHop([fails(reset)], observed.deferred);
   const advised = await fetchController(
     new Request("https://pool.example/v1/messages", {
       method: "POST",
       headers: { Upgrade: "websocket" },
       body: "{}",
     }),
-    socket.hop,
+    listed.hop,
   );
-  assert.equal(socket.resolved, 1);
+  assert.equal(listed.resolved, 1);
   assert.equal(advised.status, 503);
   const { lines } = await observed.events();
   assert.deepEqual(

@@ -87,6 +87,7 @@ test("capacity refusal closes both retained upload branches", async () => {
 for (const [method, path, status, retry, upgrade] of [
   ["POST", "/v1/messages", 503, true, false],
   ["POST", "/v1/responses", 503, true, false],
+  ["POST", "/v1/responses", 503, true, true],
   ["GET", "/v1/videos/video_1", 503, true, false],
   ["POST", "/v1/images/generations", 502, false, false],
   ["POST", "/v1/images/generations", 502, false, true],
