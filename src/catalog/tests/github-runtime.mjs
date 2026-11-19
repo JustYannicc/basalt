@@ -105,11 +105,15 @@ const mcpAnswer = async (request) => {
   if (request.method === "DELETE") return new Response("", { status: 200 });
   const message = await request.json();
   if (message.id === undefined) return new Response("", { status: 202 });
+  // A call's recorded answer is chosen by its tool and the path it reads.
   const key =
-    message.method === "tools/call" ? `tools/call ${message.params.name}` : message.method;
+    message.method === "tools/call"
+      ? `tools/call ${message.params.name} ${message.params.arguments.path}`
+      : message.method;
   assert.ok(Object.hasOwn(mcp, key), `Unexpected MCP request ${key}`);
   return Response.json({ jsonrpc: "2.0", id: message.id, result: mcp[key] });
 };
+const reached = [];
 const oversized = { total: 32 * 1_048_576, sent: 0 };
 const megabyte = new TextEncoder().encode("a".repeat(1_048_576));
 const originalFetch = globalThis.fetch;
@@ -147,6 +151,7 @@ try {
         { headers: { "content-type": "application/json; charset=utf-8" } },
       );
     const route = `${request.method} ${url.origin}${url.pathname}`;
+    reached.push(route);
     const body = routes.get(route);
     const text = JSON.stringify(body ?? { message: "Not Found" });
     // GitHub's own headers: a JSON media type and the length of the body as sent.
@@ -182,8 +187,8 @@ try {
   const path = { owner: "octocat", repo: "Hello-World" };
   const client = { client_id: "Iv1.8a61f9b3a7aba766" };
   const results = {};
-  // Mutations run as a person approved them.
-  for (const [tool, input, approved] of [
+  // Mutations run as a person approved them. A label after the tool's name tells calls apart.
+  for (const [label, input, approved] of [
     ["api.repos.get", { path }],
     ["api.repos.listForAuthenticatedUser", {}],
     ["api.actions.listRunnerApplicationsForRepo", { path }],
@@ -196,17 +201,35 @@ try {
       true,
     ],
     ["api.apps.resetToken", { path: client, body: { access_token: "synthetic-old-token" } }, true],
-    ["mcp.get_file_contents", { ...path, path: "large-file.bin", ref: "refs/heads/main" }],
+    [
+      "mcp.get_file_contents large-file.bin",
+      { ...path, path: "large-file.bin", ref: "refs/heads/main" },
+    ],
+    ["mcp.get_file_contents lib", { ...path, path: "lib" }],
   ]) {
+    const [tool] = label.split(" ");
     const call = { accountId: account.id, input };
     const result = await request(
       { operation: "call", tool, input: call },
       accounts,
       approved ? { tool, input: call } : undefined,
     );
-    assert.equal(result.ok, true, `${tool}: ${JSON.stringify(result).slice(0, 2_000)}`);
-    results[tool] = result.value;
+    assert.equal(result.ok, true, `${label}: ${JSON.stringify(result).slice(0, 2_000)}`);
+    results[label] = result.value;
   }
+  // Filtering keeps a mutation's approval: unapproved, it never reaches GitHub.
+  const before = reached.length;
+  const unapproved = await request(
+    {
+      operation: "call",
+      tool: "api.apps.resetToken",
+      input: { accountId: account.id, input: { path: client, body: { access_token: "x" } } },
+    },
+    accounts,
+  );
+  const catalog = await request({ operation: "inspect" }, accounts);
+  assert.equal(catalog.ok, true, JSON.stringify(catalog).slice(0, 2_000));
+  const { mintingTools } = await load(join(directory, "results.ts"));
   const refused = await request(
     {
       operation: "call",
@@ -220,6 +243,13 @@ try {
     JSON.stringify({
       results,
       oversized: { ok: refused.ok, error: refused.error, ...oversized },
+      unapproved: {
+        ok: unapproved.ok,
+        error: unapproved.error?._tag,
+        reached: reached.slice(before).filter((route) => route.startsWith("PATCH")),
+      },
+      tools: catalog.value.tools.map((tool) => tool.name),
+      minting: Object.keys(mintingTools),
     }),
   );
 } finally {

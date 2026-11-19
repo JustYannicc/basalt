@@ -576,6 +576,527 @@
           "subcategory": "oauth-applications"
         }
       }
+    },
+    "/orgs/{org}/actions/runners/registration-token": {
+      "post": {
+        "summary": "Create a registration token for an organization",
+        "description": "Returns a token that you can pass to the `config` script. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to configure your self-hosted runner:\n\n```\n./config.sh --url https://github.com/octo-org --token TOKEN\n```\n\nAuthenticated users must have admin access to the organization to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the`admin:org` scope to use this endpoint. If the repository is private, OAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-registration-token-for-org",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-registration-token-for-an-organization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/orgs/{org}/actions/runners/remove-token": {
+      "post": {
+        "summary": "Create a remove token for an organization",
+        "description": "Returns a token that you can pass to the `config` script to remove a self-hosted runner from an organization. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to remove your self-hosted runner from an organization:\n\n```\n./config.sh remove --token TOKEN\n```\n\nAuthenticated users must have admin access to the organization to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the`admin:org` scope to use this endpoint. If the repository is private, OAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-remove-token-for-org",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-remove-token-for-an-organization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/actions/runners/remove-token": {
+      "post": {
+        "summary": "Create a remove token for a repository",
+        "description": "Returns a token that you can pass to the `config` script to remove a self-hosted runner from an repository. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to remove your self-hosted runner from an organization:\n\n```\n./config.sh remove --token TOKEN\n```\n\nAuthenticated users must have admin access to the repository to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-remove-token-for-repo",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-remove-token-for-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/orgs/{org}/actions/runners/generate-jitconfig": {
+      "post": {
+        "summary": "Create configuration for a just-in-time runner for an organization",
+        "description": "Generates a configuration that can be passed to the runner application at startup.\n\nThe authenticated user must have admin access to the organization.\n\nOAuth tokens and personal access tokens (classic) need the`admin:org` scope to use this endpoint. If the repository is private, OAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/generate-runner-jitconfig-for-org",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-an-organization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "runner_group_id",
+                  "labels"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "The name of the new runner."
+                  },
+                  "runner_group_id": {
+                    "type": "integer",
+                    "description": "The ID of the runner group to register the runner to."
+                  },
+                  "labels": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The names of the custom labels to add to the runner. **Minimum items**: 1. **Maximum items**: 100."
+                  },
+                  "work_folder": {
+                    "type": "string",
+                    "description": "The working directory to be used for job execution, relative to the runner install directory.",
+                    "default": "_work"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/actions_runner_jitconfig"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "409": {
+            "$ref": "#/components/responses/conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/actions/runners/generate-jitconfig": {
+      "post": {
+        "summary": "Create configuration for a just-in-time runner for a repository",
+        "description": "Generates a configuration that can be passed to the runner application at startup.\n\nThe authenticated user must have admin access to the repository.\n\nOAuth tokens and personal access tokens (classic) need the`repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/generate-runner-jitconfig-for-repo",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "runner_group_id",
+                  "labels"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "The name of the new runner."
+                  },
+                  "runner_group_id": {
+                    "type": "integer",
+                    "description": "The ID of the runner group to register the runner to."
+                  },
+                  "labels": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The names of the custom labels to add to the runner. **Minimum items**: 1. **Maximum items**: 100."
+                  },
+                  "work_folder": {
+                    "type": "string",
+                    "description": "The working directory to be used for job execution, relative to the runner install directory.",
+                    "default": "_work"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/actions_runner_jitconfig"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "409": {
+            "$ref": "#/components/responses/conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/app/installations/{installation_id}/access_tokens": {
+      "post": {
+        "summary": "Create an installation access token for an app",
+        "description": "Creates an installation access token that enables a GitHub App to make authenticated API requests for the app's installation on an organization or individual account. Installation tokens expire one hour from the time you create them. Using an expired token produces a status code of `401 - Unauthorized`, and requires creating a new installation token. By default the installation token has access to all repositories that the installation can access.\n\n> [!NOTE]\n> Starting April 27, 2026, GitHub began a staged rollout of a stateless format (`ghs_APPID_JWT`) to all newly minted GitHub App installation tokens, making them more performant and improving the reliability of our API surface. If your application expects or relies on installation tokens being exactly 40 characters long, it may not handle this new token format correctly. You can now validate your apps and workflows using a temporary request header that lets you enable the token format on demand. For more information about the temporary header, see [the GitHub blog](https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header).\n\nOptionally, you can use the `repositories` or `repository_ids` body parameters to specify individual repositories that the installation access token can access. If you don't use `repositories` or `repository_ids` to grant access to specific repositories, the installation access token will have access to all repositories that the installation was granted access to. The installation access token cannot be granted access to repositories that the installation was not granted access to. Up to 500 repositories can be listed in this manner.\n\nOptionally, use the `permissions` body parameter to specify the permissions that the installation access token should have. If `permissions` is not specified, the installation access token will have all of the permissions that were granted to the app. The installation access token cannot be granted permissions that the app was not granted.\n\nYou must use a [JWT](https://docs.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app) to access this endpoint.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/create-installation-access-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/installation-id"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "repositories": {
+                    "description": "List of repository names that the token should have access to",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "repository_ids": {
+                    "description": "List of repository IDs that the token should have access to",
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "permissions": {
+                    "$ref": "#/components/schemas/app-permissions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/installation-token"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "apps",
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/applications/{client_id}/token/scoped": {
+      "post": {
+        "summary": "Create a scoped access token",
+        "description": "Use a non-scoped user access token to create a repository-scoped and/or permission-scoped user access token. You can specify\nwhich repositories the token can access and which permissions are granted to the\ntoken.\n\nInvalid tokens will return `404 NOT FOUND`.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/scope-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-a-scoped-access-token"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "access_token": {
+                    "type": "string",
+                    "description": "The access token used to authenticate to the GitHub API."
+                  },
+                  "target": {
+                    "description": "The name of the user or organization to scope the user access token to. **Required** unless `target_id` is specified.",
+                    "type": "string"
+                  },
+                  "target_id": {
+                    "description": "The ID of the user or organization to scope the user access token to. **Required** unless `target` is specified.",
+                    "type": "integer"
+                  },
+                  "repositories": {
+                    "description": "The list of repository names to scope the user access token to. `repositories` may not be specified if `repository_ids` is specified.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "repository_ids": {
+                    "description": "The list of repository IDs to scope the user access token to. `repository_ids` may not be specified if `repositories` is specified.",
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "permissions": {
+                    "$ref": "#/components/schemas/app-permissions"
+                  }
+                },
+                "required": [
+                  "access_token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authorization"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/app-manifests/{code}/conversions": {
+      "post": {
+        "summary": "Create a GitHub App from a manifest",
+        "description": "Use this endpoint to complete the handshake necessary when implementing the [GitHub App Manifest flow](https://docs.github.com/apps/building-github-apps/creating-github-apps-from-a-manifest/). When you create a GitHub App with the manifest flow, you receive a temporary `code` used to retrieve the GitHub App's `id`, `pem` (private key), and `webhook_secret`.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/create-from-manifest",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-a-github-app-from-a-manifest"
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/integration"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "client_id": {
+                          "type": "string"
+                        },
+                        "client_secret": {
+                          "type": "string"
+                        },
+                        "webhook_secret": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "pem": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "client_id",
+                        "client_secret",
+                        "webhook_secret",
+                        "pem"
+                      ],
+                      "additionalProperties": true
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "apps"
+        }
+      }
     }
   },
   "components": {
@@ -1769,6 +2290,67 @@
           "url"
         ]
       },
+      "enterprise": {
+        "title": "Enterprise",
+        "description": "An enterprise on GitHub.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "A short description of the enterprise.",
+            "type": "string",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "website_url": {
+            "description": "The enterprise's website URL.",
+            "type": "string",
+            "nullable": true,
+            "format": "uri"
+          },
+          "id": {
+            "description": "Unique identifier of the enterprise",
+            "type": "integer"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the enterprise.",
+            "type": "string"
+          },
+          "slug": {
+            "description": "The slug url identifier for the enterprise.",
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "avatar_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "name",
+          "slug",
+          "html_url",
+          "created_at",
+          "updated_at",
+          "avatar_url"
+        ]
+      },
       "full-repository": {
         "title": "Full Repository",
         "description": "Full Repository",
@@ -2273,6 +2855,155 @@
             },
             "version": "2026-03-10"
           }
+        ]
+      },
+      "installation-token": {
+        "title": "Installation Token",
+        "description": "Authentication token for a GitHub App installed on a user or org.",
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/app-permissions"
+          },
+          "repository_selection": {
+            "type": "string",
+            "enum": [
+              "all",
+              "selected"
+            ]
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/repository"
+            }
+          },
+          "single_file": {
+            "type": "string"
+          },
+          "has_multiple_single_files": {
+            "type": "boolean"
+          },
+          "single_file_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ]
+      },
+      "integration": {
+        "title": "GitHub app",
+        "description": "GitHub apps are a new way to extend GitHub. They can be installed directly on organizations and user accounts and granted access to specific repositories. They come with granular permissions and built-in webhooks. GitHub apps are first class actors within GitHub.",
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "id": {
+            "description": "Unique identifier of the GitHub app",
+            "type": "integer"
+          },
+          "slug": {
+            "description": "The slug name of the GitHub app",
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "owner": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/simple-user"
+              },
+              {
+                "$ref": "#/components/schemas/enterprise"
+              }
+            ]
+          },
+          "name": {
+            "description": "The name of the GitHub app",
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "external_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "permissions": {
+            "description": "The set of permissions for the GitHub app",
+            "type": "object",
+            "properties": {
+              "issues": {
+                "type": "string"
+              },
+              "checks": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "string"
+              },
+              "contents": {
+                "type": "string"
+              },
+              "deployments": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "events": {
+            "description": "The list of events for the GitHub app. Note that the `installation_target`, `security_advisory`, and `meta` events are not included because they are global events and not specific to an installation.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "installations_count": {
+            "description": "The number of installations associated with the GitHub app. Only returned when the integration is requesting details about itself.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "owner",
+          "name",
+          "description",
+          "external_url",
+          "html_url",
+          "created_at",
+          "updated_at",
+          "permissions",
+          "events"
         ]
       },
       "nullable-alert-updated-at": {
@@ -3749,6 +4480,58 @@
           }
         ]
       },
+      "runner": {
+        "title": "Self hosted runners",
+        "description": "A self hosted runner",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The ID of the runner.",
+            "type": "integer"
+          },
+          "runner_group_id": {
+            "description": "The ID of the runner group.",
+            "type": "integer"
+          },
+          "name": {
+            "description": "The name of the runner.",
+            "type": "string"
+          },
+          "os": {
+            "description": "The Operating System of the runner.",
+            "type": "string"
+          },
+          "status": {
+            "description": "The status of the runner.",
+            "type": "string"
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/runner-label"
+            }
+          },
+          "ephemeral": {
+            "type": "boolean"
+          },
+          "version": {
+            "description": "The version of the GitHub Actions Runner software. This is only set if the runner has connected to the service at least once.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "os",
+          "status",
+          "busy",
+          "labels"
+        ]
+      },
       "runner-application": {
         "title": "Runner Application",
         "description": "Runner Application",
@@ -3779,6 +4562,32 @@
           "architecture",
           "download_url",
           "filename"
+        ]
+      },
+      "runner-label": {
+        "title": "Self hosted runner label",
+        "description": "A label for a self hosted runner",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Unique identifier of the label."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of the label."
+          },
+          "type": {
+            "type": "string",
+            "description": "The type of label. Read-only labels are applied automatically when the runner is configured.",
+            "enum": [
+              "read-only",
+              "custom"
+            ]
+          }
+        },
+        "required": [
+          "name"
         ]
       },
       "secret-scanning-alert-metadata": {
@@ -4632,6 +5441,29 @@
             }
           }
         }
+      },
+      "validation-error-simple": {
+        "title": "Validation Error Simple",
+        "description": "Validation Error Simple",
+        "type": "object",
+        "required": [
+          "message",
+          "documentation_url"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "documentation_url": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       }
     },
     "parameters": {
@@ -4659,6 +5491,24 @@
         "in": "path",
         "required": true,
         "description": "The client ID of the GitHub app.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "installation-id": {
+        "name": "installation_id",
+        "description": "The unique identifier of the installation.",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "org": {
+        "name": "org",
+        "description": "The organization name. The name is not case sensitive.",
+        "in": "path",
+        "required": true,
         "schema": {
           "type": "string"
         }
@@ -4721,6 +5571,39 @@
       }
     },
     "responses": {
+      "actions_runner_jitconfig": {
+        "description": "Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "runner",
+                "encoded_jit_config"
+              ],
+              "properties": {
+                "runner": {
+                  "$ref": "#/components/schemas/runner"
+                },
+                "encoded_jit_config": {
+                  "type": "string",
+                  "description": "The base64 encoded runner configuration."
+                }
+              }
+            }
+          }
+        }
+      },
+      "conflict": {
+        "description": "Conflict",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        }
+      },
       "forbidden": {
         "description": "Forbidden",
         "content": {
@@ -4794,6 +5677,16 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/validation-error"
+            }
+          }
+        }
+      },
+      "validation_failed_simple": {
+        "description": "Validation failed, or the endpoint has been spammed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/validation-error-simple"
             }
           }
         }

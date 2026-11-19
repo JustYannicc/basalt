@@ -70,14 +70,18 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
     "$.POST /applications/{client_id}/token.token",
     "$.PATCH /applications/{client_id}/token.token",
   ]);
-  // GitHub's MCP server answering `get_file_contents` for a file too large to show, as its source
-  // and tests at commit df32d7ec build it, for a private file whose link carries a token. A client
-  // on a protocol before 2026-07-28, as Executor's is, gets no output schema or structured content.
+  // GitHub's MCP server answering `get_file_contents` for a private file too large to show, whose
+  // link carries a token, and for a private directory, whose JSON listing gives each file's
+  // `download_url`: GitHub's documented entries, as the server's source and tests at commit
+  // df32d7ec pass them on. A client on a protocol before 2026-07-28, as Executor's is, gets no
+  // output schema or structured content.
   const mcp = JSON.parse(
     readFileSync(new URL("./tests/github-mcp.json", import.meta.url), "utf8"),
   ) as Record<string, unknown>;
-  const fileTooLarge = mcp["tools/call get_file_contents"];
+  const fileTooLarge = mcp["tools/call get_file_contents large-file.bin"];
+  const listing = mcp["tools/call get_file_contents lib"];
   assert.deepEqual(credentialPaths(fileTooLarge), ["$.content[0].text"]);
+  assert.deepEqual(credentialPaths(listing), ["$.content[0].text"]);
   const directory = mkdtempSync(join(tmpdir(), "github-served-"));
   try {
     const source = join(directory, "github.json");
@@ -88,10 +92,21 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
       [new URL("./tests/github-runtime.mjs", import.meta.url).pathname, root, source, output],
       { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const { results, oversized } = JSON.parse(readFileSync(output, "utf8")) as {
+    const { results, oversized, unapproved, tools, minting } = JSON.parse(
+      readFileSync(output, "utf8"),
+    ) as {
       results: Record<string, unknown>;
       oversized: { ok: boolean; error: unknown; sent: number; total: number };
+      unapproved: unknown;
+      tools: string[];
+      minting: string[];
     };
+    // Every tool the app lists as minting is a REST tool GitHub's description defines.
+    assert.deepEqual(
+      minting.filter((name) => !tools.includes(`api.${name}`)),
+      [],
+      "minting tools the app does not serve",
+    );
     // Checking a token and resetting it answer with the same shape; only the reset mints one.
     assert.deepEqual(
       credentialPaths(results),
@@ -119,10 +134,18 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
         recorded["POST /repos/{owner}/{repo}/actions/runners/registration-token"],
       "api.apps.checkToken": omit(recorded["POST /applications/{client_id}/token"], "token"),
       "api.apps.resetToken": recorded["PATCH /applications/{client_id}/token"],
-      "mcp.get_file_contents": JSON.parse(
+      "mcp.get_file_contents large-file.bin": JSON.parse(
         JSON.stringify(fileTooLarge).replaceAll("?token=synthetic-raw-content-token", ""),
       ),
+      "mcp.get_file_contents lib": JSON.parse(
+        JSON.stringify(listing).replaceAll("?token=synthetic-raw-content-token", ""),
+      ),
     });
+    assert.deepEqual(
+      unapproved,
+      { ok: false, error: "HostToolApprovalRequired", reached: [] },
+      "an unapproved minting call still waits for approval",
+    );
     // The router refuses a body over its 16 MiB limit; nothing reads all of it into memory first.
     assert.equal(oversized.ok, false, "an oversized body is refused");
     assert.ok(oversized.sent > 0, "the oversized body was requested");

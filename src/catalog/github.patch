@@ -10,7 +10,7 @@ diff --git a/README.md b/README.md
 +Tool results reach agent transcripts, so they don't carry the credentials GitHub puts in some responses. REST and MCP results go through the same filter in `results.ts`:
 +
 +- `temp_clone_token` and `temp_download_token`, the short-lived credentials on repository and runner-download reads, are dropped wherever they appear.
-+- A link to a private file's raw content, such as its `download_url`, loses its `token` query parameter. Read the file through the tools instead.
++- A file's `download_url`, and a raw-content link in a message from GitHub's MCP server, lose their `token` query parameter, which reads a private file without the account. Read the file through the tools instead. File contents, issue bodies and other text stay as GitHub sent them.
 +- A secret-scanning alert's `secret`, the leaked value itself, is dropped.
 +- A credential minted because a person asked for one, such as a runner registration token or an installation token, is returned only by the REST tools `results.ts` lists as minting it. Every other result drops those fields, so a token checked with `api.apps.checkToken` is not repeated back.
 +
@@ -91,7 +91,7 @@ diff --git a/results.ts b/results.ts
 new file mode 100644
 --- /dev/null
 +++ b/results.ts
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,117 @@
 +// Tool results land in agent transcripts, so they never carry a credential GitHub puts in a
 +// response unless the tool exists to mint it. REST and MCP results go through the same filter.
 +
@@ -118,21 +118,28 @@ new file mode 100644
 +const none: ReadonlySet<string> = new Set();
 +
 +// A link to a private file's raw content carries a `token` that reads the file without the
-+// account, such as a file's `download_url` or the link GitHub's MCP server gives for a large file.
++// account: a file's `download_url`, or the link GitHub's MCP server writes for a large file.
 +const contentLink = /https:\/\/[\w-]+\.githubusercontent\.com\/[^\s"'<>\\]*/g;
++
++/**
++ * `link` without its `token` query parameters. It is edited as text, so nothing else in it
++ * changes and no link can fail to parse; a `#` or `)` ends the query, as in a Markdown link.
++ */
++const withoutToken = (link: string) => {
++  const start = link.indexOf("?");
++  if (start < 0) return link;
++  const tail = link.slice(start + 1);
++  const end = tail.search(/[#)]/);
++  const parameters = (end < 0 ? tail : tail.slice(0, end)).split("&");
++  const kept = parameters.filter((parameter) => !parameter.startsWith("token="));
++  if (kept.length === parameters.length) return link;
++  return `${link.slice(0, start)}${kept.length ? `?${kept.join("&")}` : ""}${end < 0 ? "" : tail.slice(end)}`;
++};
 +const withoutLinkTokens = (text: string) =>
-+  text.includes("token=")
-+    ? text.replace(contentLink, (link) => {
-+        const url = new URL(link);
-+        if (!url.searchParams.has("token")) return link;
-+        url.searchParams.delete("token");
-+        return url.href;
-+      })
-+    : text;
++  text.includes("token=") ? text.replace(contentLink, withoutToken) : text;
 +
 +/** `value` without credentials, other than the minted fields in `keep`; `value` itself if none. */
 +const clean = (value: unknown, keep: ReadonlySet<string>): unknown => {
-+  if (typeof value === "string") return withoutLinkTokens(value);
 +  if (typeof value !== "object" || value === null) return value;
 +  if (Array.isArray(value)) {
 +    const items = value.map((item) => clean(item, keep));
@@ -146,7 +153,11 @@ new file mode 100644
 +      changed = true;
 +      return [];
 +    }
-+    const cleaned = clean(item, keep);
++    // Other text, such as file contents and issue bodies, stays as GitHub sent it.
++    const cleaned =
++      key === "download_url" && typeof item === "string"
++        ? withoutLinkTokens(item)
++        : clean(item, keep);
 +    if (cleaned !== item) changed = true;
 +    return [[key, cleaned] as const];
 +  });
@@ -178,7 +189,9 @@ new file mode 100644
 +
 +/**
 + * GitHub's MCP server writes GitHub's objects as JSON text, so a text block that is JSON is
-+ * filtered as that value. Any other text is a message, such as a large file's download link.
++ * filtered as that value and rewritten only if that changed it. Any other text block is the
++ * server's own message, such as a large file's download link. A file's contents arrive in a
++ * resource block, which stays as sent.
 + */
 +const textBlock = (block: { readonly type: "text"; readonly text: string }) => {
 +  const parsed = json(block.text);

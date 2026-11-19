@@ -33,7 +33,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
    const child = (node: AppNode, name: string): AppNode => {
      switch (node.kind) {
        case "query":
-@@ -305,6 +296,54 @@ export const withApprovals = <Query, Mutation>(
+@@ -305,6 +296,57 @@ export const withApprovals = <Query, Mutation>(
    return routerDeclaration(walk(native, ""));
  };
  
@@ -58,15 +58,18 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
 +
 +/**
 + * Change what each operation a router contains returns, including tools a dynamic router resolves
-+ * later. `map` receives a successful result and the operation's name relative to this router, and
-+ * what it returns is the result the host checks against the operation's output schema. Apply it
-+ * to each account's router before `accountRouter` combines them, as with `withApprovals`.
++ * later. `map` runs synchronously on each successful result with the operation's name relative to
++ * this router; what it returns replaces the result before the host checks it against the
++ * operation's `output`, when it declares one. A `map` that throws fails the call. Apply it to each
++ * account's router before `accountRouter` combines them, as with `withApprovals`.
 + */
 +export const mapResults = <Query, Mutation>(
 +  source: RouterDeclaration<Query, Mutation>,
 +  map: (result: unknown, name: string) => unknown,
 +): RouterDeclaration<Query, Mutation> =>
 +  eachOperation(source, "mapResults", (node, name) => {
++    // Copied by descriptor, not spread, so getters stay lazy: an OpenAPI tool builds its output
++    // schema only when read.
 +    // SAFETY: the copy has every own property of `node`, with only `run` replaced below.
 +    const copy = Object.defineProperties(
 +      {},
