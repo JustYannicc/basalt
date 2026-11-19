@@ -1,7 +1,7 @@
 {
   "identity": "basalt-commands-keyed-on-inputs",
   "file": "0693-commands-keyed-on-inputs.patch",
-  "content_sha256": "f068e9abd80b22167335759be87ec5f16cad6f1f39c27023bb2b40a34b3559e5",
+  "content_sha256": "3b86834504932122cbb1140da42acbfe6cc467a2c179d72acd625741385ddc7f",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
