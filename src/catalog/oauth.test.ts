@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { brand } from "../../brand.ts";
 import { handleCatalog } from "./worker.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
-import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-metadata.ts";
 import {
   oauthFitness,
   oauthReviews,
