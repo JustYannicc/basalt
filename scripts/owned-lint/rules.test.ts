@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
+import { severity, type Config } from "./baseline.ts";
 import { lint } from "./check.ts";
 
 // Each case is linted by the real oxlint with the real configuration. A line ending in
@@ -384,7 +385,7 @@ for (const [file, source] of Object.entries(sources)) {
   mkdirSync(dirname(join(root, file)), { recursive: true });
   writeFileSync(join(root, file), source.trimStart());
 }
-const all = lint(Object.keys(sources), undefined, root);
+const all = lint(Object.keys(sources), { cwd: root });
 const findings = all.filter(({ rule }) => rule.startsWith("basalt/"));
 
 for (const suite of suites)
@@ -412,21 +413,17 @@ test("every basalt rule says what to do instead", () => {
 });
 
 test("every enforced basalt, anti-slop and built-in rule has a case that shows it firing", () => {
-  const config: { rules: Record<string, string | [string, ...object[]]> } = JSON.parse(
+  const config: Config = JSON.parse(
     readFileSync(new URL("./.oxlintrc.json", import.meta.url), "utf8"),
   );
-  const enforced = Object.entries(config.rules).flatMap(([rule, setting]) =>
-    (Array.isArray(setting) ? setting[0] : setting) === "error" && !rule.startsWith("landmines-")
-      ? [rule]
-      : [],
-  );
-  const covered = new Set(
-    Object.values(sources).flatMap((source) =>
-      [...source.matchAll(/\/\/ expect: (.+)$/gmu)].flatMap(([, rules]) => rules!.split(", ")),
-    ),
-  );
+  const fired = new Set(all.map(({ rule }) => rule));
   assert.deepEqual(
-    enforced.filter((rule) => !covered.has(rule)),
+    Object.keys(config.rules).filter(
+      (rule) =>
+        severity(config.rules[rule]) === "error" &&
+        !rule.startsWith("landmines-") &&
+        !fired.has(rule),
+    ),
     [],
   );
 });

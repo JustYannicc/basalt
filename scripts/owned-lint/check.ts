@@ -21,16 +21,14 @@ import {
 } from "./baseline.ts";
 import {
   MANIFEST,
-  PROVENANCE,
   VENDOR,
-  commitOf,
-  currentCommit,
-  manifest,
-  parseManifest,
+  currentVendor,
+  nextManifest,
   sha256,
+  vendorPolicy,
   vendorProblems,
+  vendorState,
   vendored,
-  writeVendor,
 } from "./vendor.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,18 +72,16 @@ const listFiles = (cwd: string, keep: (file: string) => boolean, ...paths: strin
     .sort();
 export const scopedFiles = (cwd = root) => listFiles(cwd, inScope);
 
-export function lint(files: readonly string[], config = configPath, cwd = root) {
+export function lint(
+  files: readonly string[],
+  { config = configPath, cwd = root, timeout = 120_000 } = {},
+) {
   if (!existsSync(oxlint))
     throw new Error("scripts/owned-lint is not installed. Run npm run prepare:upstream.");
   const result = spawnSync(
     process.execPath,
     [oxlint, "-c", config, "--no-ignore", "-f", "json", ...files],
-    {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 256 * 1024 * 1024,
-      timeout: 120_000,
-    },
+    { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, timeout },
   );
   if (result.error) throw result.error;
   let report: {
@@ -133,7 +129,7 @@ function writeBaseline(files: readonly string[] = scopedFiles()) {
   writeJson(scratch, unlimited);
   let diagnostics: Diagnostic[];
   try {
-    diagnostics = lint(files, scratch);
+    diagnostics = lint(files, { config: scratch });
   } finally {
     rmSync(scratch, { force: true });
   }
@@ -157,6 +153,16 @@ function writeBaseline(files: readonly string[] = scopedFiles()) {
   );
 }
 
+// Records the vendored code files with their hashes, after an upstream update replaced the copy.
+function writeVendor() {
+  const files = listFiles(root, (file) => SCOPE.test(file), VENDOR);
+  const { manifest, changes } = nextManifest(files);
+  writeJson(join(root, MANIFEST), manifest);
+  console.log(
+    `Vendored manifest written: ${files.length} files${changes.length ? `; ${changes.join("; ")}` : ""}.`,
+  );
+}
+
 function baseState(base: string) {
   if (
     !/^[0-9a-f]{40}$/u.test(base) ||
@@ -164,8 +170,17 @@ function baseState(base: string) {
   )
     throw new Error(`BASE_SHA ${base} is not a commit in this repository.`);
   const showText = (file: string) => {
-    const result = spawnSync("git", ["show", `${base}:${file}`], { cwd: root, encoding: "utf8" });
-    return result.status === 0 ? result.stdout : undefined;
+    const result = spawnSync("git", ["show", `${base}:${file}`], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    // git exits 128 for a path the base lacks; any other failure must not read as "absent",
+    // which would skip the ratchet.
+    if (result.status === 128) return undefined;
+    if (result.error || result.status !== 0)
+      throw result.error ?? new Error(`git show ${base}:${file} failed: ${result.stderr}`);
+    return result.stdout;
   };
   const show = (path: string) => {
     const text = showText(relative(root, path));
@@ -195,16 +210,17 @@ function baseState(base: string) {
   const lintChanged =
     spawnSync("git", ["diff", "--quiet", base, "--", ...LINT_INPUTS], { cwd: root }).status !== 0;
   return {
-    baseline: show(baselinePath) as Counts | undefined,
-    config: show(configPath) as Config | undefined,
-    allowlist: (show(allowlistPath) ?? {}) as Allowlist,
-    vendor: parseManifest(showText(MANIFEST)),
-    commit: commitOf(showText(PROVENANCE)),
-    basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
-    enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
-    changed: (file: string) => changed.has(file) || !tracked.has(file),
-    lintChanged,
-  } satisfies BaseState;
+    policy: {
+      baseline: show(baselinePath) as Counts | undefined,
+      config: show(configPath) as Config | undefined,
+      allowlist: (show(allowlistPath) ?? {}) as Allowlist,
+      basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
+      enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
+      changed: (file: string) => changed.has(file) || !tracked.has(file),
+      lintChanged,
+    } satisfies BaseState,
+    vendor: vendorState(showText),
+  };
 }
 
 // Only the named files' entries, for a check of the files an agent just edited.
@@ -216,11 +232,74 @@ const only = <T>(byRule: Record<string, Record<string, T>>, files: ReadonlySet<s
     ]),
   );
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const writers = {
-    "--write-baseline": writeBaseline,
-    "--write-vendor": () => writeVendor(listFiles(root, (file) => SCOPE.test(file), VENDOR)),
+type Entries = { config: Config; baseline: Counts; allowlist: Allowlist };
+type Checked = { files: number; findings: number; problems: string[]; notices: string[] };
+const readEntries = (): Entries => ({
+  config: readJson<Config>(configPath, { rules: {} }),
+  baseline: readJson<Counts>(baselinePath, {}),
+  allowlist: readJson<Allowlist>(allowlistPath, {}),
+});
+
+function findings(files: readonly string[], entries: Entries, timeout?: number) {
+  const diagnostics = lint(files, { timeout });
+  const native = nativeRules(entries.config);
+  return {
+    files: files.length,
+    findings: diagnostics.length,
+    problems: [
+      ...files.flatMap((file) =>
+        directiveProblems(file, readFileSync(join(root, file), "utf8"), native),
+      ),
+      ...compare(diagnostics, entries.baseline, entries.allowlist),
+    ],
   };
+}
+
+/**
+ * The owned rules over named files, against only those files' baseline and allowlist entries.
+ * The base ratchet reads the whole baseline, so it is left to the full run.
+ */
+export function checkFiles(files: readonly string[], timeout?: number): Checked {
+  const entries = readEntries();
+  const named = new Set(files);
+  const result = findings(
+    files,
+    {
+      ...entries,
+      baseline: only(entries.baseline, named),
+      allowlist: only(entries.allowlist, named),
+    },
+    timeout,
+  );
+  return {
+    ...result,
+    problems: [...result.problems, ...configProblems(entries.config, undefined)],
+    notices: [],
+  };
+}
+
+/** Every file in scope and the vendored copy; with a base commit, the ratchet against it too. */
+function checkAll(base: string | undefined): Checked {
+  const entries = readEntries();
+  const result = findings(scopedFiles(), entries);
+  const problems = [...result.problems, ...vendorProblems(currentVendor().manifest, sha256)];
+  if (base === undefined)
+    return {
+      ...result,
+      problems: [...problems, ...configProblems(entries.config, undefined)],
+      notices: [],
+    };
+  const state = baseState(base);
+  const policies = [basePolicy(entries, state.policy), vendorPolicy(currentVendor(), state.vendor)];
+  return {
+    ...result,
+    problems: [...problems, ...policies.flatMap((policy) => policy.problems)],
+    notices: policies.flatMap((policy) => policy.notices),
+  };
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const writers = { "--write-baseline": writeBaseline, "--write-vendor": writeVendor };
   const named = process.argv.slice(2).filter((argument) => !Object.hasOwn(writers, argument));
   const unknown = named.filter((argument) => argument.startsWith("-"));
   if (unknown.length)
@@ -237,49 +316,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // A mistyped path would otherwise check nothing and pass.
   const missing = named.filter((file) => !existsSync(resolve(file)));
   if (missing.length) throw new Error(`No such file: ${missing.join(", ")}.`);
-  const files = named.length
-    ? [
-        ...new Set(
-          named
-            .map((file) => relative(root, resolve(file)))
-            .filter((file) => inScope(file) && existsSync(join(root, file))),
-        ),
-      ].sort()
-    : scopedFiles();
+  const files = [
+    ...new Set(named.map((file) => relative(root, resolve(file))).filter(inScope)),
+  ].sort();
   if (named.length && !files.length) {
     console.log("Owned lint: none of the named files is in scope.");
     process.exit(0);
   }
   const started = Date.now();
-  const diagnostics = lint(files);
-  const config = readJson<Config>(configPath, { rules: {} });
-  const selected = new Set(files);
-  const baseline = named.length
-    ? only(readJson<Counts>(baselinePath, {}), selected)
-    : readJson<Counts>(baselinePath, {});
-  const allowlist = named.length
-    ? only(readJson<Allowlist>(allowlistPath, {}), selected)
-    : readJson<Allowlist>(allowlistPath, {});
-  const native = nativeRules(config);
-  const problems = [
-    ...files.flatMap((file) =>
-      directiveProblems(file, readFileSync(join(root, file), "utf8"), native),
-    ),
-    ...compare(diagnostics, baseline, allowlist),
-    ...(named.length ? [] : vendorProblems(manifest, sha256)),
-  ];
-  const notices: string[] = [];
-  // The base ratchet reads the whole baseline, so a check of named files leaves it to the full run.
-  if (process.env.BASE_SHA && !named.length) {
-    const policy = basePolicy(
-      { config, baseline, allowlist, vendor: manifest, commit: currentCommit() },
-      baseState(process.env.BASE_SHA),
-    );
-    problems.push(...policy.problems);
-    notices.push(...policy.notices);
-  } else problems.push(...configProblems(config, undefined));
+  const { problems, notices, ...counted } = named.length
+    ? checkFiles(files)
+    : checkAll(process.env.BASE_SHA || undefined);
   console.log(
-    `Owned lint: ${files.length} files, ${diagnostics.length} findings (baselined or allowlisted unless listed below), ${Date.now() - started} ms.`,
+    `Owned lint: ${counted.files} files, ${counted.findings} findings (baselined or allowlisted unless listed below), ${Date.now() - started} ms.`,
   );
   if (notices.length) {
     console.log(notices.join("\n"));

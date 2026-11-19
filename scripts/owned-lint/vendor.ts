@@ -3,7 +3,7 @@
 // their upstream hash count as vendored: any other file there is Basalt code and is checked like
 // the rest.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,20 +14,36 @@ export const PROVENANCE = `${VENDOR}anti-slop/UPSTREAM.md`;
 
 /** Each vendored file's sha256, by repository path. */
 export type Manifest = ReadonlyMap<string, string>;
+/** A vendored copy: its recorded files and the upstream commit it names. */
+export type VendorState = { readonly manifest: Manifest; readonly commit?: string };
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const read = (file: string) =>
-  existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8") : undefined;
+const isText = (value: unknown): value is string => typeof value === "string";
 
-export const parseManifest = (text: string | undefined): Manifest =>
-  new Map(Object.entries<string>(text === undefined ? {} : JSON.parse(text)));
+export function parseManifest(text: string | undefined): Manifest {
+  const manifest = new Map<string, string>();
+  // An entry that is not a hash matches no file, so the integrity check reports it.
+  for (const [file, hash] of Object.entries(text === undefined ? {} : JSON.parse(text)))
+    manifest.set(file, isText(hash) ? hash : "");
+  return manifest;
+}
 /** The upstream commit a provenance record names. */
 export const commitOf = (text: string | undefined) =>
   text?.match(/^- Commit: `([0-9a-f]{40})`/mu)?.[1];
+/** A vendored copy read through `read`, which returns a repository file's text or undefined. */
+export const vendorState = (read: (file: string) => string | undefined): VendorState => ({
+  manifest: parseManifest(read(MANIFEST)),
+  commit: commitOf(read(PROVENANCE)),
+});
 
-export const manifest = parseManifest(read(MANIFEST));
-export const currentCommit = () => commitOf(read(PROVENANCE));
-export const vendored = (file: string) => file.startsWith(VENDOR) && manifest.has(file);
+let checkout: VendorState | undefined;
+/** This checkout's vendored copy, read once. */
+export const currentVendor = () =>
+  (checkout ??= vendorState((file) =>
+    existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8") : undefined,
+  ));
+export const vendored = (file: string) =>
+  file.startsWith(VENDOR) && currentVendor().manifest.has(file);
 export const sha256 = (file: string) => {
   const path = join(root, file);
   return existsSync(path)
@@ -69,18 +85,14 @@ export function vendorChanges(current: Manifest, base: Manifest) {
  * names it on the provenance Commit line. Nothing here can check the copy against upstream, so
  * the update is listed with both commits for review.
  */
-export function vendorPolicy(
-  current: Manifest,
-  base: Manifest,
-  commit: { readonly base?: string; readonly current?: string },
-) {
-  const changes = vendorChanges(current, base);
+export function vendorPolicy(current: VendorState, base: VendorState) {
+  const changes = vendorChanges(current.manifest, base.manifest);
   if (!changes.length) return { problems: [], notices: [] };
-  if (commit.current !== undefined && commit.current !== commit.base)
+  if (current.commit !== undefined && current.commit !== base.commit)
     return {
       problems: [],
       notices: [
-        `Vendored anti-slop updated ${commit.base ?? "(none)"} -> ${commit.current}; review the copy against that upstream commit: ${changes.join("; ")}`,
+        `Vendored anti-slop updated ${base.commit ?? "(none)"} -> ${current.commit}; review the copy against that upstream commit: ${changes.join("; ")}`,
       ],
     };
   return {
@@ -91,12 +103,16 @@ export function vendorPolicy(
   };
 }
 
-/** Records the vendored code files with their hashes, after an upstream update replaced the copy. */
-export function writeVendor(files: readonly string[]) {
-  const next = new Map(files.map((file) => [file, sha256(file) ?? ""]));
-  writeFileSync(join(root, MANIFEST), `${JSON.stringify(Object.fromEntries(next), null, 2)}\n`);
-  const changes = vendorChanges(next, manifest);
-  console.log(
-    `Vendored manifest written: ${files.length} files${changes.length ? `; ${changes.join("; ")}` : ""}.`,
-  );
+/** The manifest for the copy now on disk, and how it differs from the recorded one. */
+export function nextManifest(files: readonly string[]) {
+  const next = new Map<string, string>();
+  for (const file of files) {
+    const hash = sha256(file);
+    if (hash === undefined) throw new Error(`${file} is listed by git but cannot be read.`);
+    next.set(file, hash);
+  }
+  return {
+    manifest: Object.fromEntries(next),
+    changes: vendorChanges(next, currentVendor().manifest),
+  };
 }

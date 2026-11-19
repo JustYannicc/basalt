@@ -1,6 +1,4 @@
 // How lint findings compare with the recorded baseline, the allowlist and the base commit.
-import { vendorPolicy, type Manifest } from "./vendor.ts";
-
 const regenerate = "npm run lint:owned -- --write-baseline";
 // landmines keeps these counts itself, in the rule's options, and reports a stale count.
 export const NATIVE_ALLOWLIST = new Set([
@@ -290,10 +288,6 @@ export type BaseState = {
   changed: (file: string) => boolean;
   /** Whether the rules or their pins differ from the base. */
   lintChanged: boolean;
-  /** The base commit's vendored files and their hashes. */
-  vendor: Manifest;
-  /** The upstream commit the base's vendored copy names. */
-  commit?: string;
 };
 
 /**
@@ -335,26 +329,13 @@ export function ratchet(
 }
 
 export function basePolicy(
-  current: {
-    config: Config;
-    baseline: Counts;
-    allowlist: Allowlist;
-    vendor: Manifest;
-    commit?: string;
-  },
+  current: { config: Config; baseline: Counts; allowlist: Allowlist },
   base: BaseState,
 ) {
-  const vendor = vendorPolicy(current.vendor, base.vendor, {
-    base: base.commit,
-    current: current.commit,
-  });
-  const problems = [...configProblems(current.config, base.config), ...vendor.problems];
-  const notices = [
-    ...allowlistAdditions(current.allowlist, base.allowlist).map(
-      (line) => `Allowlist addition, review its reason: ${line}`,
-    ),
-    ...vendor.notices,
-  ];
+  const problems = configProblems(current.config, base.config);
+  const notices = allowlistAdditions(current.allowlist, base.allowlist).map(
+    (line) => `Allowlist addition, review its reason: ${line}`,
+  );
   if (base.config)
     notices.push(
       ...optionChanges(current.config, base.config).map(

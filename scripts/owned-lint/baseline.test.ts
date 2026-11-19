@@ -11,7 +11,6 @@ import {
   optionChanges,
   ratchet,
 } from "./baseline.ts";
-import { commitOf, vendorChanges, vendorProblems } from "./vendor.ts";
 
 const finding = (rule: string, file: string, line = 1) => ({
   rule,
@@ -118,7 +117,6 @@ const state = (lintChanged = false, changed = (file: string) => file === "src/to
   changed,
   enteredScope: (file: string) => file === "src/moved.ts",
   lintChanged,
-  vendor: new Map<string, string>(),
 });
 const enforced = new Set([spread]);
 
@@ -253,77 +251,6 @@ test("a built-in rule is written once, with its plugin listed, so no other spell
   );
 });
 
-test("only the recorded upstream copy of a vendored file passes, and changes are listed", () => {
-  const manifest = new Map([
-    ["scripts/owned-lint/vendor/a.ts", "1"],
-    ["scripts/owned-lint/vendor/b.ts", "2"],
-  ]);
-  const onDisk = new Map([
-    ["scripts/owned-lint/vendor/a.ts", "1"],
-    ["scripts/owned-lint/vendor/b.ts", "edited"],
-  ]);
-  const problems = vendorProblems(manifest, (file) => onDisk.get(file));
-  assert.equal(problems.length, 1);
-  assert.match(problems[0]!, /^scripts\/owned-lint\/vendor\/b\.ts is not the upstream copy/u);
-  assert.match(vendorProblems(manifest, () => undefined)[0]!, /vendor\/a\.ts is not the upstream/u);
-  const outside = new Map([["src/pool/x.ts", "1"]]);
-  assert.match(
-    vendorProblems(outside, () => "1")[0]!,
-    /records src\/pool\/x\.ts, which is outside/u,
-  );
-  const base = new Map([
-    ["scripts/owned-lint/vendor/a.ts", "1"],
-    ["scripts/owned-lint/vendor/gone.ts", "3"],
-  ]);
-  assert.deepEqual(vendorChanges(onDisk, base), [
-    "added 1: scripts/owned-lint/vendor/b.ts",
-    "removed 1: scripts/owned-lint/vendor/gone.ts",
-  ]);
-  assert.deepEqual(vendorChanges(onDisk, manifest), ["changed 1: scripts/owned-lint/vendor/b.ts"]);
-});
-
-test("vendored code changes only with a new upstream commit, which is listed for review", () => {
-  const [old, next] = ["a".repeat(40), "b".repeat(40)];
-  assert.equal(commitOf(`# provenance\n\n- Commit: \`${old}\` (2026-10-13)\n`), old);
-  assert.equal(commitOf("- Commit: not a hash\n"), undefined);
-  const base = new Map([["scripts/owned-lint/vendor/rule.ts", "1"]]);
-  const current = {
-    config: { jsPlugins: plugins, rules: {} },
-    baseline: {},
-    allowlist: {},
-    // A neutered rule and a Basalt file hidden as vendored code, both recorded with --write-vendor.
-    vendor: new Map([
-      ["scripts/owned-lint/vendor/rule.ts", "edited"],
-      ["scripts/owned-lint/vendor/helper.ts", "2"],
-    ]),
-  };
-  for (const commit of [undefined, old])
-    assert.match(
-      basePolicy({ ...current, commit }, { ...state(), vendor: base, commit: old }).problems.join(
-        "\n",
-      ),
-      /Vendored code changed without an upstream update \(added 1: scripts\/owned-lint\/vendor\/helper\.ts; changed 1: scripts\/owned-lint\/vendor\/rule\.ts\)/u,
-      String(commit),
-    );
-  const update = basePolicy(
-    { ...current, commit: next },
-    { ...state(), vendor: base, commit: old },
-  );
-  assert.deepEqual(update.problems, []);
-  assert.match(
-    update.notices.join("\n"),
-    new RegExp(
-      `Vendored anti-slop updated ${old} -> ${next}; review the copy against that upstream commit: added 1: scripts/owned-lint/vendor/helper\\.ts; changed 1`,
-      "u",
-    ),
-  );
-  assert.deepEqual(
-    basePolicy({ ...current, vendor: base, commit: old }, { ...state(), vendor: base, commit: old })
-      .problems,
-    [],
-  );
-});
-
 test("an anti-slop or built-in owned rule takes no disable comment either", () => {
   const off = (scope: string, tool = "oxlint") => `${tool}-disable${scope}`;
   const native = nativeRules({
@@ -435,7 +362,6 @@ test("against the base, policy combines the config, allowlist and both ratchets"
     config: { jsPlugins: plugins, rules: { [spread]: "error" } },
     baseline: { [spread]: { "src/a.ts": 2 } },
     allowlist: {},
-    vendor: new Map<string, string>(),
   };
   const base = {
     ...state(),

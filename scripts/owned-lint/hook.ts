@@ -7,27 +7,27 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { styleSteps, type StyleStep } from "../ci/style.ts";
-import { vendored } from "./vendor.ts";
+import { styleSteps, styled, type StyleStep } from "../ci/style-steps.ts";
+import { checkFiles, inScope } from "./check.ts";
 
 const HOOK = "scripts/owned-lint/hook.ts";
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
-// The files scripts/ci/style.ts formats and lints.
-const SOURCE = /\.(?:[cm]?[jt]sx?)$/u;
 // Codex edits through apply_patch, whose patch text names each file it writes.
 const PATCH_FILE = /^\*\*\* (?:Add File|Update File|Move to): (.+)$/gmu;
 // Claude Code stops a hook after 60 s by default; finishing first lets this say which step hung.
 const BUDGET_MS = 50_000;
 
-export type Payload = {
+type Payload = {
   cwd?: unknown;
   tool_name?: unknown;
   tool_input?: { file_path?: unknown; command?: unknown };
 };
+type Outcome = { failure?: string; crash?: string };
 const text = (value: unknown): value is string => typeof value === "string";
+const remaining = (deadline: number) => Math.max(1, deadline - Date.now());
 
 /** The absolute paths an edit payload names, as the harness wrote them. */
-export function editedPaths(payload: Payload) {
+function editedPaths(payload: Payload) {
   const base = text(payload.cwd) ? payload.cwd : process.cwd();
   const { file_path: file, command } = payload.tool_input ?? {};
   const named =
@@ -42,27 +42,39 @@ export function editedFiles(payload: Payload, repository = root) {
   const files = editedPaths(payload).flatMap((path) => {
     // A checkout reached through a symbolic link names the same files under another path.
     const file = relative(repository, existsSync(path) ? realpathSync(path) : path);
-    return !file.startsWith("..") && SOURCE.test(file) && !vendored(file) ? [file] : [];
+    return !file.startsWith("..") && styled(file) ? [file] : [];
   });
   return [...new Set(files)].sort();
 }
 
 /** Runs one step; a step that could not start or finish is a failure of the hook, not the edit. */
-export function runStep({ label, command, args, cwd }: StyleStep, deadline: number) {
+export function runStep({ label, command, args, cwd }: StyleStep, deadline: number): Outcome {
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    timeout: Math.max(1, deadline - Date.now()),
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: remaining(deadline),
   });
-  if (result.error || result.status === null)
+  if (result.error || result.status === null) {
+    const hint = existsSync(command) ? "" : "; prepare the checkout with npm run prepare:upstream";
     return {
-      crash: `${label} could not run (${result.error?.message ?? `stopped by ${result.signal}`}); prepare the checkout with npm run prepare:upstream.`,
+      crash: `${label} could not run (${result.error?.message ?? `stopped by ${result.signal}`})${hint}.`,
     };
+  }
   const output = `${result.stdout}${result.stderr}`.trim();
   return result.status === 0 ? {} : { failure: `${label}:\n${output}` };
 }
 
-type Outcome = { failure?: string; crash?: string };
+/** The owned rules in this process, so their oxlint run stops at the hook's own deadline. */
+function ownedLint(files: readonly string[], deadline: number): Outcome {
+  try {
+    const { problems } = checkFiles(files, remaining(deadline));
+    return problems.length ? { failure: `owned lint:\n${problems.join("\n")}` } : {};
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { crash: `owned lint could not run (${reason}).` };
+  }
+}
 
 /** Findings block the agent with exit 2; a step that could not run is reported with exit 1. */
 export function verdict(outcomes: readonly Outcome[]) {
@@ -104,27 +116,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     });
     process.exit(result.status ?? 1);
   }
+  // A patch's moved-from path is gone, and the owned check refuses a missing file.
   const files = editedFiles(payload).filter((file) => existsSync(join(root, file)));
   if (!files.length) process.exit(0);
   const deadline = Date.now() + BUDGET_MS;
   // Formatting is mechanical, so it is applied rather than reported.
-  const steps = styleSteps(root, files, true);
-  const owned = files.filter((file) => !file.startsWith(".upstream/"));
-  // check.ts exits 1 for findings and for a missing install alike, so the install is checked here.
-  const installed = existsSync(join(root, "scripts/owned-lint/node_modules/oxlint/bin/oxlint"));
-  if (owned.length && installed)
-    steps.push({
-      label: "owned lint",
-      command: process.execPath,
-      args: [join(root, "scripts/owned-lint/check.ts"), ...owned],
-      cwd: root,
-    });
-  const outcomes: Outcome[] = steps.map((step) => runStep(step, deadline));
-  if (owned.length && !installed)
-    outcomes.push({
-      crash:
-        "owned lint could not run (scripts/owned-lint is not installed); prepare the checkout with npm run prepare:upstream.",
-    });
+  const outcomes = styleSteps(files, { write: true }).map((step) => runStep(step, deadline));
+  const owned = files.filter(inScope);
+  if (owned.length) outcomes.push(ownedLint(owned, deadline));
   const { exit, message } = verdict(outcomes);
   if (message) console.error(message);
   process.exit(exit);

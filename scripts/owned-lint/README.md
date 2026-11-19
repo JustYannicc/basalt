@@ -115,11 +115,11 @@ taken from it.
   upstream's guidance.
 - **Post-edit hook:** `.claude/settings.json` and `.codex/hooks.json` use Ultracite's events to
   run `hook.ts` after every file-editing tool. It formats the edited file with oxfmt, then runs
-  upstream oxlint and this check on it with the fast lane's own steps (`scripts/ci/style.ts`),
-  and hands any finding back to the agent. A step that cannot run is reported without blocking
-  the edit, and an edit in another checkout goes to that checkout's hook. Ultracite's own hook
-  runs its pinned tools instead of the repository's. Codex reads a linked worktree's project
-  hooks from the main checkout, and runs them once a person trusts them with `/hooks`. Edits
-  made through a shell command reach neither hook.
+  upstream oxlint and this check on it with the fast lane's own steps
+  (`scripts/ci/style-steps.ts`), and hands any finding back to the agent. A step that cannot run
+  is reported without blocking the edit, and an edit in another checkout goes to that
+  checkout's hook. Ultracite's own hook runs its pinned tools instead of the repository's. Codex
+  reads a linked worktree's project hooks from the main checkout, and runs them once a person
+  trusts them with `/hooks`. Edits made through a shell command reach neither hook.
 - **Versions:** Ultracite needs oxlint 1.90 and oxfmt 0.71 or later; this package pins oxlint
   1.91. Upstream's oxlint 1.83 and oxfmt 0.68 move with a carry.
