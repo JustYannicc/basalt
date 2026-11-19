@@ -54,7 +54,7 @@ test("native Boat jobs fit the included start burst and retain individual job ga
       );
 });
 
-test("same-repository PR proof requests the full lane without changing normal routing", () => {
+test("same-repository non-batch PR proof requests the full lane without changing normal routing", () => {
   const step = workflow.jobs.select.steps.find((step: { id?: string }) => step.id === "jobs");
   assert.equal(
     step.env.BOAT_JOBS,

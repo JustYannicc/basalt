@@ -227,7 +227,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
   assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
   assert.equal(
     jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env.FULL_SUITE,
-    "${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update') }}",
+    "${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}",
   );
 });
 
