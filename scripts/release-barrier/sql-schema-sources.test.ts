@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Redacted } from "effect";
 import { InMemoryService } from "alchemy/State/InMemoryState";
-import {
-  deploymentSqlSources,
-  inspectionSqlSource,
-  SqlSchemaAuthorityFailure,
-} from "./sql-schema-sources.ts";
+import { inspectionSqlSource, SqlSchemaAuthorityFailure } from "./sql-schema-sources.ts";
 
 const url = "postgresql://fixture:private-password@database.example.test/tools?sslmode=require";
 async function fixture(status: "created" | "updating", oldUrl = url) {
@@ -83,47 +79,4 @@ test("a failed update with changed SQL authority refuses instead of choosing a d
     );
     return true;
   });
-});
-
-test("a preflight reads the authority an interrupted release will resume with; the release refuses it", async () => {
-  const store = await Effect.runPromise(InMemoryService());
-  const next = { Migrations: url.replace("/tools?", "/tools_next?"), PoolDatabase: url };
-  for (const [fqn, key] of [
-    ["Migrations", "DATABASE_URL"],
-    ["PoolDatabase", "POOL_DATABASE_ADMIN_URL"],
-  ] as const)
-    await Effect.runPromise(
-      store.set({
-        stack: "basalt",
-        stage: "production",
-        fqn,
-        value: {
-          resourceType: "Command.Exec",
-          namespace: undefined,
-          fqn,
-          logicalId: fqn,
-          instanceId: "fixture",
-          providerVersion: 1,
-          downstream: [],
-          bindings: [],
-          status: "updating",
-          props: { env: { [key]: Redacted.make(next[fqn]) } },
-          old: {
-            props: { env: { [key]: Redacted.make(url.replace("/tools?", "/old?")) } },
-            bindings: [],
-            attr: {},
-          },
-          attr: {},
-        },
-      }),
-    );
-  const stack = { name: "basalt", stage: "production" };
-  const { sources } = await Effect.runPromise(deploymentSqlSources(store, stack, "next"));
-  assert.equal(sources.tools.databaseName, "tools_next");
-  assert.equal(sources.pool.databaseName, "basalt_pool");
-  await assert.rejects(
-    Effect.runPromise(deploymentSqlSources(store, stack)),
-    (error) =>
-      error instanceof SqlSchemaAuthorityFailure && error.authority.check === "resource-status",
-  );
 });

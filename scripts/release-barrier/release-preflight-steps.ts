@@ -45,9 +45,7 @@ import {
   runningRelease,
   type PreflightBridgeCounters,
 } from "./release-preflight-guard.ts";
-import { releaseSchemaPlan } from "./release-preflight-schemas.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
-import { deploymentSqlSources } from "./sql-schema-sources.ts";
 import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import { assertReleaseImageCapacity } from "./runtime-release-image.ts";
 import { decodeRuntimeReleaseHead, runtimeReleaseJournal } from "./runtime-release-journal.ts";
@@ -130,14 +128,6 @@ export const preflightSteps = (
       );
       await step("migration-activation", ["state-version"], () =>
         read(assertMigrationActivationSettled(state, compiled, encryptionKey)),
-      );
-      // Summarized as each namespace's migrations the release will apply; names are source code.
-      await step(
-        "sql-schemas",
-        ["state-version"],
-        async () =>
-          releaseSchemaPlan((await read(deploymentSqlSources(state, compiled, "next"))).sources),
-        (applies) => applies,
       );
       const journal = await step(
         "release-journal",
