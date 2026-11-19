@@ -76,16 +76,6 @@ export const reply = (result: Effect.Effect<unknown, DriveRequestFailed>): Promi
 
 const record = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-/** The grant id in the host's MCP caller, `[userId, clientId, organization, grantId]`. */
-export const grantOf = (caller: string | undefined) => {
-  if (caller === undefined) return null;
-  try {
-    const parts: unknown = JSON.parse(caller);
-    return Array.isArray(parts) && typeof parts[3] === "string" && parts[3] ? parts[3] : null;
-  } catch {
-    return null;
-  }
-};
 /**
  * The main a device's sync call has seen. Only the shapes of the plugin's sync calls count: its
  * heartbeat (a one-entry listing of the root, at the start of every pull and checkpoint), its change
@@ -220,9 +210,8 @@ export function vaultObject(
   sql.exec(
     "CREATE TABLE IF NOT EXISTS vault_devices (agent TEXT PRIMARY KEY, last_sync_at INTEGER NOT NULL, last_head TEXT NOT NULL)",
   );
-  const stamp = (caller: string | undefined, command: Command, value: unknown) => {
-    const agent = grantOf(caller),
-      head = seenHead(command, value);
+  const stamp = (agent: string | undefined, command: Command, value: unknown) => {
+    const head = seenHead(command, value);
     if (!agent || !head) return;
     sql.exec(
       "INSERT INTO vault_devices(agent, last_sync_at, last_head) VALUES (?, ?, ?) ON CONFLICT(agent) DO UPDATE SET last_sync_at = excluded.last_sync_at, last_head = excluded.last_head",
@@ -255,8 +244,11 @@ export function vaultObject(
   });
 
   return {
-    /** `caller` is the host's authenticated MCP caller; a sync from a device grant is recorded. */
-    async request(command: unknown, caller?: string): Promise<VaultReply> {
+    /**
+     * `identity` is `{ grant }`, the MCP grant the host authenticated the command's request with.
+     * Any other value names no device: a caller's user id must never be recorded as one.
+     */
+    async request(command: unknown, identity?: unknown): Promise<VaultReply> {
       let decoded: Command;
       try {
         decoded = Schema.decodeUnknownSync(DriveCommand)(command);
@@ -266,7 +258,8 @@ export function vaultObject(
       const dispatch = await ready();
       if (!dispatch) return unavailable;
       const answer = await reply(dispatch(decoded));
-      if (answer.ok) stamp(caller, decoded, answer.value);
+      const { grant } = record(identity);
+      if (answer.ok) stamp(typeof grant === "string" ? grant : undefined, decoded, answer.value);
       return answer;
     },
   };

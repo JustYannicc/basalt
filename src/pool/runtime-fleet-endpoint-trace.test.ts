@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EndpointTrace } from "./runtime-fleet/endpoint-trace.ts";
-import { retainRuntimeFailure, runtimeFailureDiagnostic } from "./runtime-route-diagnostic.ts";
+import {
+  rememberRuntimeFailure,
+  retainRuntimeFailure,
+  runtimeFailureDiagnostic,
+} from "./runtime-route-diagnostic.ts";
 import { gatewayUnavailable } from "./gateway-failure.ts";
+import { PoolDependencyFailure } from "./dependency-failure.ts";
+import { ControlFailure } from "./json.ts";
+import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "./lifecycle.ts";
+import { SlotRefused } from "./runtime-slots/contract.ts";
+import { runtimeErrorResponse } from "./runtime-slots/request-error.ts";
+
+function settled(attempts: { elapsedMs?: unknown }[]) {
+  return attempts.map(({ elapsedMs, ...attempt }) => {
+    assert.ok(Number.isInteger(elapsedMs) && (elapsedMs as number) >= 0);
+    return attempt;
+  });
+}
 
 test("endpoint failures retain both attempts and join the gateway without raw error or request data", async (context) => {
   const log = context.mock.method(console, "error", () => {});
@@ -46,7 +62,7 @@ test("endpoint failures retain both attempts and join the gateway without raw er
   assert.equal(fields.reconnectEligible, true);
   assert.equal(fields.reconnectRan, true);
   assert.equal(fields.reconnectOutcome, "error");
-  assert.deepEqual(fields.attempts, [
+  assert.deepEqual(settled(fields.attempts), [
     {
       attempt: 1,
       stub: 1,
@@ -59,6 +75,8 @@ test("endpoint failures retain both attempts and join the gateway without raw er
         disconnected: true,
         retryable: false,
         overloaded: null,
+        remote: null,
+        durableObjectReset: null,
       },
     },
     {
@@ -73,6 +91,8 @@ test("endpoint failures retain both attempts and join the gateway without raw er
         disconnected: null,
         retryable: null,
         overloaded: false,
+        remote: null,
+        durableObjectReset: null,
       },
     },
   ]);
@@ -138,7 +158,9 @@ test("successful model calls and provider HTTP errors stay silent, while health 
   await assert.rejects(driver.health(slotIdentity("candidate"), AbortSignal.timeout(2000)));
   assert.equal(log.mock.callCount(), 1);
   const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
-  assert.deepEqual(fields.attempts, [{ attempt: 1, stub: 1, outcome: "response", status: 200 }]);
+  assert.deepEqual(settled(fields.attempts), [
+    { attempt: 1, stub: 1, outcome: "response", status: 200 },
+  ]);
   assert.equal(fields.reconnectRan, false);
   assert.equal(fields.terminalError.name, "SyntaxError");
   assert.doesNotMatch(JSON.stringify(fields), /private-/);
@@ -256,4 +278,132 @@ test("cancellation retains a disconnected first send and pending reconnect in on
   await finished.promise;
   assert.equal(log.mock.callCount(), 1);
   assert.doesNotMatch(JSON.stringify(fields), /private-/);
+});
+
+test("a refused health read logs its closed reason, cause and elapsed time on the failure line", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const timeout = new DOMException("private-deadline", "TimeoutError");
+  // The endpoint remembers its step before the 409 is built, as RuntimeEndpoint.health does.
+  const refused = (error: unknown) => {
+    rememberRuntimeFailure("endpoint_identity", error);
+    return runtimeErrorResponse(error, "endpoint");
+  };
+  const cases = [
+    [
+      new PoolDependencyFailure("membership", new Error("private-dependency")),
+      { code: "runtime_endpoint_identity_transport", cause: "dependency_membership" },
+    ],
+    [
+      new PoolStartupDeadline(),
+      { code: "runtime_endpoint_identity_transport", cause: "startup_deadline" },
+    ],
+    [
+      new ControlFailure(503, "backend_unavailable", "private-control"),
+      { code: "runtime_endpoint_identity_transport", cause: "control" },
+    ],
+    [timeout, { code: "runtime_endpoint_identity_timeout" }],
+    [new PoolRuntimeUnhealthy(), { code: "runtime_endpoint_identity_unhealthy" }],
+  ] as const;
+  for (const [error, refusal] of cases) {
+    const trace = new EndpointTrace(
+      new Request("http://runtime/health", { method: "POST" }),
+      "legacy",
+      "cell",
+    );
+    const response = await trace.send(1, async () => refused(error));
+    assert.equal(response.status, 409);
+    // Older callers parse only step and reason, so the reason value keeps its vocabulary.
+    assert.ok(
+      ["transport", "timeout", "unhealthy"].includes(
+        response.headers.get("X-Signalbox-Runtime-Failure-Reason")!,
+      ),
+    );
+    trace.finish(response);
+    const fields = JSON.parse(log.mock.calls.at(-1)!.arguments[1]);
+    assert.equal(fields.path, "/health");
+    assert.deepEqual(settled(fields.attempts), [
+      { attempt: 1, stub: 1, outcome: "response", status: 409, refusal },
+    ]);
+  }
+  assert.equal(log.mock.callCount(), cases.length);
+  assert.doesNotMatch(JSON.stringify(log.mock.calls.map((call) => call.arguments)), /private-/);
+});
+
+test("a retained refusal re-emits its cause at the next runtime boundary", () => {
+  const first = runtimeErrorResponse(
+    new PoolDependencyFailure("storage", new Error("private-storage")),
+    "endpoint",
+  );
+  const wrapped = retainRuntimeFailure(first, new SlotRefused("uncertain"));
+  const second = runtimeErrorResponse(wrapped, "handoff");
+  assert.equal(second.status, 409);
+  assert.equal(second.headers.get("X-Signalbox-Runtime-Failure-Step"), "endpoint_route");
+  assert.equal(second.headers.get("X-Signalbox-Runtime-Failure-Reason"), "transport");
+  assert.equal(second.headers.get("X-Signalbox-Runtime-Failure-Cause"), "dependency_storage");
+  const untyped = new Response(null, {
+    status: 409,
+    headers: {
+      "X-Signalbox-Runtime-Failure-Step": "endpoint_route",
+      "X-Signalbox-Runtime-Failure-Reason": "transport",
+      "X-Signalbox-Runtime-Failure-Cause": "private-cause",
+    },
+  });
+  const plain = runtimeErrorResponse(
+    retainRuntimeFailure(untyped, new SlotRefused("uncertain")),
+    "endpoint",
+  );
+  assert.equal(plain.headers.get("X-Signalbox-Runtime-Failure-Cause"), null);
+});
+
+test("each send records its own elapsed time, and a send the caller abandoned reports its wait so far", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  let now = 1_000;
+  context.mock.method(performance, "now", () => now);
+  const trace = new EndpointTrace(
+    new Request("http://runtime/install", { method: "POST" }),
+    "legacy",
+    "cell",
+  );
+  const refused = runtimeErrorResponse(
+    new PoolDependencyFailure("membership", new Error("private-dependency")),
+    "endpoint",
+  );
+  await trace.send(1, async () => {
+    now += 325;
+    return refused;
+  });
+  void trace.send(2, () => new Promise<Response>(() => {}));
+  now += 2_000;
+  trace.finish(new DOMException("private-deadline", "TimeoutError"));
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.deepEqual(fields.attempts, [
+    {
+      attempt: 1,
+      stub: 1,
+      outcome: "response",
+      status: 409,
+      elapsedMs: 325,
+      refusal: { code: "runtime_endpoint_route_transport", cause: "dependency_membership" },
+    },
+    { attempt: 2, stub: 2, outcome: "pending", elapsedMs: 2_000 },
+  ]);
+
+  const defect = new EndpointTrace(
+    new Request("http://runtime/health", { method: "POST" }),
+    "legacy",
+    "cell",
+  );
+  const response = await defect.send(
+    1,
+    async () =>
+      new Response(null, {
+        status: 500,
+        headers: {
+          "X-Signalbox-Runtime-Failure-Step": "endpoint_route",
+          "X-Signalbox-Runtime-Failure-Reason": "transport",
+        },
+      }),
+  );
+  defect.finish(response);
+  assert.equal(JSON.parse(log.mock.calls[1]!.arguments[1]).attempts[0].refusal, undefined);
 });

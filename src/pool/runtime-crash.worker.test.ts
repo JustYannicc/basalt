@@ -202,7 +202,7 @@ test(
 
 for (const [path, status] of [
   ["responses", 503],
-  ["messages", 529],
+  ["messages", 503],
 ] as const)
   test(
     `the signed kill interrupts an accepted ${path} call with native retry advice and no server replay`,
