@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A local Cloud whose run names an Autumn emulator CLI starts it on a free loopback port for the environment's scope, keys it in place of a hosted billing instance, keeps its output and stops only the process it started; without one, billing uses the hosted emulator unchanged. CI builds that CLI from one checksum-pinned commit of the repository the locked emulate release comes from, with that repository's frozen lockfile, and caches the build by commit. Only emulator configuration and the harness fixture accept plain HTTP, only on loopback and only for billing and routes; an operator's Autumn endpoint stays HTTPS and the live-key endpoint check is unchanged."
+    }
+  }
+}

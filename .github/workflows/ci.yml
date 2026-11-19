@@ -1430,6 +1430,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated production operation test assets
         working-directory: .upstream
@@ -1585,6 +1586,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1967,6 +1969,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream

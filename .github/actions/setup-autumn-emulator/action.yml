@@ -1,0 +1,20 @@
+name: Set up the local Autumn emulator
+description: Restore or build the pinned Autumn billing emulator that local Cloud runs start on loopback.
+runs:
+  using: composite
+  steps:
+    - id: build
+      shell: bash
+      run: node scripts/ci/autumn-emulator.ts identify
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: ${{ steps.build.outputs.path }}
+        key: ${{ steps.build.outputs.key }}
+    - shell: bash
+      run: node scripts/ci/autumn-emulator.ts install
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ steps.build.outputs.path }}
+        key: ${{ steps.build.outputs.key }}
