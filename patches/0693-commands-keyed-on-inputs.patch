@@ -215,16 +215,18 @@ diff --git a/apps/hosted/cloud/src/infrastructure/site-inputs.ts b/apps/hosted/c
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/site-inputs.ts
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,17 @@
 +/**
 + * The site build reads the whole tree, so its key stays every file the tree does not ignore, plus
 + * the lockfile. Three files are rewritten for every release and no page or site script imports
-+ * them. With them in the key the site, and every Worker that serves it, changed on every release.
++ * them. A fourth is written by every install and names that install's own dependency store. With
++ * any of them in the key the site, and every Worker that serves it, changed on every release.
 + * Patterns are relative to the tree's root, the build's working directory.
 + */
 +export const siteInputs = {
 +  include: [
 +    "**/*",
++    "!.basalt-dependencies.json",
 +    "!apps/hosted/cloud/src/implementation/production-ops-release.ts",
 +    "!apps/hosted/server/src/implementation/catalog-app-release.ts",
 +    "!apps/hosted/server/src/implementation/pool-worker-revision.ts",

@@ -25,11 +25,15 @@ export const poolDatabaseCommandSources = [
 /**
  * The pool database command's key, relative to the directory it runs in. A hand-kept copy of
  * this list once missed the files that hold the migrations' statements, so a release that
- * changed only one of them would have skipped the command.
+ * changed only one of them would have skipped the command. The lockfile that pins the database
+ * driver is named here: the planning engine looks for one only upward from the command's
+ * directory, and this one sits beside it.
  */
 export const poolDatabaseInputs = {
-  include: poolDatabaseCommandSources.map((path) =>
-    path.startsWith("scripts/") ? path.slice("scripts/".length) : `../${path}`,
-  ),
-  lockfile: true,
+  include: [
+    ...poolDatabaseCommandSources.map((path) =>
+      path.startsWith("scripts/") ? path.slice("scripts/".length) : `../${path}`,
+    ),
+    "../.upstream/bun.lock",
+  ],
 };
