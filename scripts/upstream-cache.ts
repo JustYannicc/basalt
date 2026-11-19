@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./process.ts";
 import { applyCarries } from "./upstream-carries.ts";
 import { currentProcessOwner, processOwnerAlive } from "./process-owner.ts";
@@ -68,6 +68,24 @@ export async function prepareUpstreamCheckout(
   if (lstatSync(upstream, { throwIfNoEntry: false })?.isSymbolicLink())
     throw new Error("Prepared upstream must not be a symbolic link");
   const repository = join(upstreamCache(), "repositories", `${digest(pin.repository)}.git`);
+  mkdirSync(dirname(upstream), { recursive: true });
+  const checkoutLock = join(
+    upstreamCache(),
+    "checkouts",
+    `${digest(join(realpathSync(dirname(upstream)), basename(upstream)))}.lock`,
+  );
+  // One preparation owns the checkout from its reset until the patched tree is recorded.
+  return withCacheLock(checkoutLock, () =>
+    prepareLockedCheckout(upstream, repository, pin, patches),
+  );
+}
+
+async function prepareLockedCheckout(
+  upstream: string,
+  repository: string,
+  pin: { repository: string; commit: string },
+  patches: readonly string[],
+) {
   await withCacheLock(`${repository}.lock`, () => {
     if (!existsSync(repository)) {
       mkdirSync(dirname(repository), { recursive: true });

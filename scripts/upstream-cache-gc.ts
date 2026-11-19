@@ -10,11 +10,13 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processOwnerAlive } from "./process-owner.ts";
 import { upstreamCache } from "./upstream-cache.ts";
+import { patchedTreeUse } from "./upstream-carries.ts";
 
 const inside = (parent: string, path: string) => path === parent || path.startsWith(parent + sep);
 const retiredName = /^\.gc-[0-9a-f-]{36}$/;
@@ -164,5 +166,43 @@ export function preparedCacheCollection(stores: ReadonlySet<string>, attempts: r
     // Missing or incomplete process/worktree evidence cannot authorize a partial collection pass.
     console.warn("Prepared cache cleanup skipped because usage could not be verified.");
     return;
+  }
+}
+
+/** Keeps each cache repository's most recently used patched trees; an evicted tree costs one replay. */
+export function collectPatchedTrees(keep = 32) {
+  for (const repository of directories(join(upstreamCache(), "repositories"))) {
+    const listed = spawnSync(
+      "git",
+      [
+        "-C",
+        repository,
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        "refs/basalt/patched/",
+      ],
+      { encoding: "utf8" },
+    );
+    if (listed.status !== 0) continue;
+    const trees = listed.stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [ref = "", object = ""] = line.split(" ");
+        const key = basename(ref);
+        const use = statSync(patchedTreeUse(repository, key), { throwIfNoEntry: false });
+        return { ref, object, key, used: use?.mtimeMs ?? 0 };
+      })
+      .sort((a, b) => b.used - a.used);
+    for (const { ref, object, key } of trees.slice(keep)) {
+      // A conditional delete never removes a ref that changed after it was listed.
+      spawnSync("git", ["-C", repository, "update-ref", "-d", ref, object]);
+      rmSync(patchedTreeUse(repository, key), { force: true });
+    }
+    const kept = new Set(trees.slice(0, keep).map(({ key }) => key));
+    const uses = patchedTreeUse(repository);
+    if (existsSync(uses))
+      for (const key of readdirSync(uses))
+        if (!kept.has(key)) rmSync(join(uses, key), { force: true });
   }
 }
