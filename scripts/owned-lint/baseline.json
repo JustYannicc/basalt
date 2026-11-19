@@ -2292,6 +2292,7 @@
     "scripts/upstream-tests/change-failure-hydration.test.ts": 1,
     "scripts/upstream-tests/change-feed.test.ts": 1,
     "scripts/upstream-tests/management-provisioning.test.ts": 7,
+    "scripts/upstream-tests/native-access-memory.test.ts": 1,
     "src/feedback/host.test.ts": 1,
     "src/pool/availability-schedule.test.ts": 8,
     "src/pool/availability-worker.test.ts": 1,
@@ -2357,7 +2358,8 @@
   },
   "basalt/no-strict-provider-decode": {
     "src/pool/fleet-deployment.ts": 2,
-    "src/pool/runtime-provider/application.ts": 2
+    "src/pool/runtime-provider/application.ts": 2,
+    "src/pool/storage-bookmark.ts": 1
   },
   "landmines-testing/no-test-doubles": {
     "scripts/cutover-import.test.ts": 1,
@@ -2392,6 +2394,7 @@
     "src/catalog/tests/plaid-runtime.mjs": 2,
     "src/pool/automatic-authority.test.ts": 1,
     "src/pool/bulk-refusal-observation.test.ts": 2,
+    "src/pool/controller-reset.test.ts": 2,
     "src/pool/dispatch-timing.test.ts": 1,
     "src/pool/inventory-storage.test.ts": 1,
     "src/pool/launch-recovery-races.test.ts": 2,
