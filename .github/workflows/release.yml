@@ -22,7 +22,6 @@ on:
         description: Plan policy in scripts/release/policies (release, or a cutover step)
         required: true
         type: choice
-        # cutover-code is also the mode for any code-only PoolWorker release: a rollbackable Worker version.
         # code: any code-only release (every changed Worker, rollbackable); cutover-*: the two cutover steps.
         options: [release, code, cutover-code, cutover-classes]
         default: code
