@@ -330,14 +330,13 @@ test(
   { timeout: 60_000 },
   async (context) => {
     const { f, advance, stopPaths, phases } = await root(context);
-    // One stream that never ends: a live long turn and a leaked lease look the same.
-    f.onModel(async () => new Response(new ReadableStream<Uint8Array>({ start() {} })));
-    const open = await f.model(
-      new Request("http://pool/v1/responses", { method: "POST", body: "{}" }),
+    // A lease an earlier isolate never released, from before this code stamped changes: the
+    // count reads 1 and never moves, as a live long turn would.
+    const identity = f.old.identity();
+    await f.old.storage.put(
+      `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`,
+      { identity, phase: "open", active: 1, known: true, leases: { leaked: "active" } },
     );
-    // The protection watcher polls while the stream is open; end it whatever the outcome.
-    context.after(() => open.body?.cancel().catch(() => {}));
-    assert.equal(open.status, 200);
     refuseCurrentBoot(f);
     const firstRefusal = Date.now();
     for (let elapsed = 0; elapsed < leakedStreamsMs; elapsed += 10_000) {
@@ -350,11 +349,13 @@ test(
       recovery: { streams?: { active: number; stillSince: number } };
     };
     assert.equal(recovery.streams?.active, 1);
-    assert.ok((recovery.streams?.stillSince ?? 0) <= firstRefusal);
+    assert.ok(
+      (recovery.streams?.stillSince ?? 0) >= firstRefusal,
+      "counted from the first refusal",
+    );
     advance(10_000);
     await pass(f);
     assert.deepEqual(stopPaths(), ["graceful_exit"]);
-    await open.body?.cancel().catch(() => {});
     await pass(f);
     assert.equal(await serves(f), true);
   },
