@@ -47,7 +47,7 @@ diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
 diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/management-setup-diagnostics.ts
 --- a/e2e/support/management-setup-diagnostics.ts
 +++ b/e2e/support/management-setup-diagnostics.ts
-@@ -1,16 +1,66 @@
+@@ -1,16 +1,68 @@
  /** Setup runs before case Evidence exists. These records contain no response values. */
  import { Cause, Effect, Exit, Schema } from "effect";
 -import { RequestFailed } from "./api.ts";
@@ -92,9 +92,11 @@ diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/managemen
 +          ? failed(error.status)
 +          : error,
 +      ),
-+      Effect.flatMap((value) =>
-+        succeeded(value.status) ? body(schema, value) : Effect.fail(failed(value.status)),
++      Effect.filterOrFail(
++        (value) => succeeded(value.status),
++        (value) => failed(value.status),
 +      ),
++      Effect.flatMap((value) => body(schema, value)),
 +    );
 +  };
 +
@@ -117,7 +119,7 @@ diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/managemen
    response?: {
      readonly status: number;
      readonly shape: "object" | "array" | "null" | "string" | "number" | "boolean" | "other";
-@@ -27,15 +77,9 @@ export const managementSetupDiagnostics = (
+@@ -27,15 +79,9 @@ export const managementSetupDiagnostics = (
      work: (response: (response: Response) => void) => Effect.Effect<A, E, R>,
    ) =>
      Effect.suspend(() => {
@@ -134,7 +136,7 @@ diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/managemen
          startedAt: Date.now(),
          outcome: "started",
        };
-@@ -91,14 +135,16 @@ export const managementSetupDiagnostics = (
+@@ -91,14 +137,16 @@ export const managementSetupDiagnostics = (
                ? "interrupted"
                : Schema.isSchemaError(error)
                  ? "schema"

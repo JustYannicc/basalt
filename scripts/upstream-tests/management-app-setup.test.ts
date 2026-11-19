@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, FileSystem, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { prepareManagementApp } from "../../.upstream/e2e/support/management-app.ts";
 import { SessionClients, type Session } from "../../.upstream/e2e/support/api.ts";
@@ -130,6 +130,8 @@ const setup = (failing: string, response: () => Response) => {
   }).pipe(
     Effect.flip,
     Effect.provide(SessionClients.layer),
+    // Only a target TLS certificate is read from disk; this target has none.
+    Effect.provide(FileSystem.layerNoop({})),
     Effect.provideService(Target, base),
     Effect.provideService(HttpClient.HttpClient, http),
   );
