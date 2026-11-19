@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-drive-device-grant",
+  "file": "0686-drive-device-grant.patch",
+  "content_sha256": "2bc9998207b80c6deb776f94eb455ddc99a8b651c43d93f0f7d8248318e5ec0d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

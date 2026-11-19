@@ -145,6 +145,8 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     const view = 'import { source } from "./account-observation-text.ts"; export { source };';
     writeFileSync(join(shared, "account-observation-text.ts"), text);
     writeFileSync(join(shared, "account-observation-readings-view.tsx"), view);
+    const moments = "export const formatMoment = () => 'one canonical moment format';";
+    writeFileSync(join(shared, "moment-format.ts"), moments);
     writeFileSync(
       join(root, "apps/pool/ui/observation-readings.ts"),
       'export * from "../../../.upstream/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx";',
@@ -158,6 +160,10 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       reused.find((file) => file.path === "ui/shared-account/account-observation-readings-view.tsx")
         ?.content,
       view,
+    );
+    assert.equal(
+      reused.find((file) => file.path === "ui/shared-account/moment-format.ts")?.content,
+      moments,
     );
     assert.equal(
       reused.find((file) => file.path === "ui/observation-readings.ts")?.content,
