@@ -196,7 +196,7 @@ const program = Effect.gen(function* () {
     beforeCommandDrift + 1,
     "non-resource configuration drift still rolls out",
   );
-  assert.equal(state.app.configuration.command, undefined);
+  assert.deepEqual(state.app.configuration.command, []);
 
   state.app.configuration.image = image(digest("4"));
   const stale = yield* read();
