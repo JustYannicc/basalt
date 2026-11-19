@@ -221,9 +221,9 @@ export const grantStore = (organization: string) =>
        * storage records the same rows for either.
        */
       connectAgent: (resource: string, name: string) =>
-        Effect.promise(async () => {
-          const { client_id } = Schema.decodeUnknownSync(Registered)(
-            await reply(
+        Effect.gen(function* () {
+          const { client_id } = yield* Effect.promise(async () =>
+            reply(
               await auth.handler(
                 new Request(`${issuer}/oauth2/register`, {
                   method: "POST",
@@ -240,24 +240,26 @@ export const grantStore = (organization: string) =>
               ),
               201,
             ),
-          );
-          const started = Schema.decodeUnknownSync(Started)(
-            await reply(
+          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Registered)), Effect.orDie);
+          const started = yield* Effect.promise(async () =>
+            reply(
               await form("/oauth2/device-authorization", {
                 client_id,
                 scope: "mcp offline_access",
                 resource,
               }),
             ),
-          );
-          await approve(started.user_code);
-          await reply(
-            await form("/oauth2/token", {
-              grant_type: deviceCode,
-              client_id,
-              device_code: started.device_code,
-            }),
-          );
+          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Started)), Effect.orDie);
+          yield* Effect.promise(async () => {
+            await approve(started.user_code);
+            await reply(
+              await form("/oauth2/token", {
+                grant_type: deviceCode,
+                client_id,
+                device_code: started.device_code,
+              }),
+            );
+          });
           return client_id;
         }).pipe(Effect.flatMap(grantOf)),
       /** Disconnect: the person revokes one grant. */
