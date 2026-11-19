@@ -13,6 +13,7 @@ import {
 import { ChildProcessFailure } from "./child.ts";
 import { failureKind, failures } from "./kind.ts";
 import { publicGuidance, publicTail, publicText, redactCredentials } from "./redact.ts";
+import { stackCommand } from "./stack-command.ts";
 
 /**
  * A failure as an evlog structured error with what happened, why, how to fix it and the cause
@@ -66,6 +67,9 @@ function printed(value: unknown): string {
 
 /** What a failure says of itself: its type and its message, as text nobody here wrote. */
 function said(error: unknown, environment: NodeJS.ProcessEnv): string {
+  // Alchemy's own message for a command it ran ends in that command's whole standard error.
+  const ran = stackCommand(error, environment);
+  if (ran) return ran.what;
   const type = typeName(error);
   const message = text(typeof error === "string" ? error : field(error, "message"));
   return [
@@ -162,19 +166,31 @@ export function structuredFailure(
   environment: NodeJS.ProcessEnv = process.env,
 ): FailureReport {
   const all = reach(error);
-  const children = all.filter((value) => value instanceof ChildProcessFailure);
-  const named = (child: ChildProcessFailure) =>
-    publicGuidance(child.message.split("\n")[0]!, environment);
-  // Made public again here: a report built by a caller is not known to be.
-  const output = children
-    .flatMap((child) => [
-      ...(children.length > 1 ? [`--- ${named(child)}`] : []),
-      publicTail(child.report.tail, environment),
+  // Every command that failed: one run here, with the end of its output, or one Alchemy ran, with
+  // what Alchemy's error keeps of it.
+  const commands = all.flatMap((value): { what: string; tail: string; why?: string }[] => {
+    if (value instanceof ChildProcessFailure)
+      return [
+        {
+          what: publicGuidance(value.message.split("\n")[0]!, environment),
+          // Made public again here: a report built by a caller is not known to be.
+          tail: publicTail(value.report.tail, environment),
+        },
+      ];
+    const ran = stackCommand(value, environment);
+    return ran ? [ran] : [];
+  });
+  const subject = all.find(refused);
+  // A command the report is not named after is named above its own output.
+  const headed = commands.length > 1 || subject !== undefined;
+  const output = commands
+    .flatMap(({ what, why, tail }) => [
+      ...(headed ? [`--- ${what}${why ? `: ${why}` : ""}`] : []),
+      tail,
     ])
     .filter(Boolean)
     .join("\n");
   const tail = output ? { tail: output } : {};
-  const subject = all.find(refused);
   if (subject !== undefined) return { ...refusal(error, subject, environment), ...tail };
 
   const chain = causeChain(error, environment);
@@ -188,13 +204,18 @@ export function structuredFailure(
         .slice(0, 8)
         .map((member, index) => `failure ${index + 1}: ${said(member, environment)}`),
     );
-  if (children[0])
+  const [first] = commands;
+  if (first) {
+    const { what, why } = first;
     return {
-      error: failures.CHILD_FAILED({ what: named(children[0]), ...publicError(causes) }),
+      error: why
+        ? failures.STACK_COMMAND_FAILED({ what, why, ...publicError(causes) })
+        : failures.CHILD_FAILED({ what, ...publicError(causes) }),
       causes,
       details,
       ...tail,
     };
+  }
 
   const kind = failureKind(error, environment);
   const top = chain[0] ?? { type: "unknown" };

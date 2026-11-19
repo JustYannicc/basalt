@@ -45,6 +45,19 @@ test("a failed command's error carries the end of its output with credentials re
   assert.ok(!error.message.includes('building stage one");'));
 });
 
+test("a command that explains its failure on standard output only still carries it and its exit", () => {
+  // 19 November, 00:22Z: a check printed its failure through a logger that writes to standard
+  // output, wrote nothing to standard error and exited 1.
+  const script = `console.log('level=ERROR cause="PoolBudgetFailed: 31 of 25 connections, token ${secret}"'); process.exit(1);`;
+  const error = failure(() => run(node, ["-e", script], undefined, environment));
+
+  assert.equal(error.report.exitCode, 1);
+  assert.equal(
+    error.message,
+    'node failed with exit 1\nLast output lines, credentials removed:\n--- stdout\nlevel=ERROR cause="PoolBudgetFailed: 31 of 25 connections, token [redacted]"',
+  );
+});
+
 test("the command's output still reaches the caller's own output, complete and as written", () => {
   const lines = 20_000;
   const child = spawnSync(

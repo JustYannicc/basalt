@@ -20,6 +20,11 @@ export const failures = defineErrorCatalog("release", {
     why: "A command this step ran did not succeed. Its last output lines are below.",
     fix: "Fix what the output names and rerun this step. If the output is empty, run the command alone to see it fail.",
   },
+  // A command Alchemy ran: its error keeps the exit code and the standard error, nothing else.
+  STACK_COMMAND_FAILED: {
+    message: what,
+    fix: "Fix what the standard error lines below name. If there are none, or they do not explain the failure, run the command alone to see everything it prints. Then rerun this step.",
+  },
   UNREACHABLE: {
     message: what,
     fix: "This attempt could not open a connection, so it sent nothing. Rerun it. If the request was redirected or retried before this attempt, check first whether a write took effect.",
@@ -49,7 +54,10 @@ export const failures = defineErrorCatalog("release", {
     fix: "This failure has no written fix yet. Start at the frames and the cause chain below.",
   },
 });
-type Kind = Exclude<keyof typeof failures, "_prefix" | "_codes" | "CHILD_FAILED">;
+type Kind = Exclude<
+  keyof typeof failures,
+  "_prefix" | "_codes" | "CHILD_FAILED" | "STACK_COMMAND_FAILED"
+>;
 
 // What fetch says when it refuses its own arguments, under Node and under Bun.
 const refusedArguments =
