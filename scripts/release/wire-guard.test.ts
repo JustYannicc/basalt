@@ -821,15 +821,22 @@ test("the root application is never patched, rolled out or deleted; other applic
 });
 
 test("a destroy deletes exactly the resources its own plan names, and nothing else", async (t) => {
-  const run = await guarded(t, { deletable: ["basalt-test-pr-7-poolworker"] }, () =>
+  const own = "basalt-test-pr-7-poolworker";
+  const run = await guarded(t, { deletable: [{ kind: "Worker", id: own }] }, (base) =>
     Effect.gen(function* () {
-      const own = yield* Effect.exit(
-        Workers.deleteScript({ accountId: ACCOUNT, scriptName: "basalt-test-pr-7-poolworker" }),
+      const mine = yield* Effect.exit(
+        Workers.deleteScript({ accountId: ACCOUNT, scriptName: own }),
       );
       const other = yield* Effect.exit(
         Workers.deleteScript({ accountId: ACCOUNT, scriptName: "basalt-production-poolworker" }),
       );
-      return { own, other };
+      // The same name as another kind of resource is not a target.
+      const bucket = yield* Effect.exit(
+        Effect.tryPromise(() =>
+          fetch(`${base}/accounts/${ACCOUNT}/r2/buckets/${own}`, { method: "DELETE" }),
+        ),
+      );
+      return { own: mine, other, bucket };
     }),
   );
   assert.ok(
@@ -838,6 +845,7 @@ test("a destroy deletes exactly the resources its own plan names, and nothing el
   );
   const refused = refusalOf(run.exit.value.other);
   assert.equal(refused.resource, "Worker basalt-production-poolworker");
+  assert.equal(refusalOf(run.exit.value.bucket).resource, `R2 bucket ${own}`);
   assert.deepEqual(reads(run.received), [
     `DELETE /accounts/${ACCOUNT}/workers/scripts/basalt-test-pr-7-poolworker`,
   ]);
