@@ -540,6 +540,33 @@ test("a Worker binding whose value waits on another row is not a removal", async
 
 const rootUnchanged = { poolContainer: { fqn: "PoolContainer", image: pinnedImage } };
 
+test("a release given no root pin, a tag, or another digest than the root runs is refused in plan", async (context) => {
+  // Unset: the entry hands the check an empty image, which is no digest reference.
+  await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: "" } }));
+  // A tag names whatever the registry holds under it today.
+  const tag = pinnedImage.replace(/@sha256:e{64}$/u, ":latest");
+  await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: tag } }));
+  // Another digest, set consistently: the declaration follows the pin, so the pin rule alone
+  // cannot see it; the recorded image the root runs differs from it.
+  const other = pinnedImage.replace(/e{64}$/u, "f".repeat(64));
+  const wrong = await planned(context, { declared: { container: { image: other } } });
+  const { rules, message } = await refused(wrong.plan, {
+    poolContainer: { fqn: "PoolContainer", image: other },
+  });
+  assert.deepEqual(rules, [
+    "pool-container-configuration-change PoolContainer",
+    "pool-container-not-noop PoolContainer",
+  ]);
+  assert.match(message, /props\.image: /u);
+  // The right pin has no configuration change: only the old layer's hash-only row remains.
+  const right = await planned(context);
+  assert.deepEqual((await refused(right.plan, rootUnchanged)).rules, [
+    "pool-container-not-noop PoolContainer",
+  ]);
+  // The plan only read: nothing was sent that could roll the root.
+  assert.ok(wrong.requests.every((request) => request.startsWith("GET ")));
+});
+
 test("no release but a declared image release may plan any row on the root, a hash-only update included", async (context) => {
   // Production's root row was written by the old release layer: its recorded image hash is the old
   // build context's, so an unchanged root plans a hash-only update.

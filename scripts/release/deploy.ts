@@ -360,6 +360,7 @@ const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
+const { rootPinMismatch } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -698,35 +699,18 @@ try {
         yield* legacy
           .assertNoUnresolvedHome(stack, stage, key)
           .pipe(Effect.provideService(legacy.State, Effect.succeed(state)));
-        const pin = process.env.POOL_ROOT_IMAGE
-          ? JSON.parse(process.env.POOL_ROOT_IMAGE)
-          : undefined;
-        const rootRow = (yield* state.get({
+        const rootRow = yield* state.get({
           stack: yield* stackName(),
           stage,
           fqn: "PoolContainer",
-        }) as Fx.Effect<unknown, unknown, never>) as
-          | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
-          | undefined;
-        // The input is the identity the controller knows the root by: PoolWorker's POOL_IMAGE_HASH.
-        // Once the root is pinned, PoolContainer's own hash.image names the reference, not the build.
-        const workerRow = (yield* state.get({
+        }) as Fx.Effect<unknown, unknown, never>;
+        const workerRow = yield* state.get({
           stack: yield* stackName(),
           stage,
           fqn: "PoolWorker",
-        }) as Fx.Effect<unknown, unknown, never>) as
-          | { props?: { env?: { POOL_IMAGE_HASH?: unknown } } }
-          | undefined;
-        const recorded = {
-          image: rootRow?.attr?.configuration?.image,
-          input: workerRow?.props?.env?.POOL_IMAGE_HASH,
-        };
-        if (!pin || pin.image !== recorded.image || pin.input !== recorded.input)
-          return yield* Effect.die(
-            new Error(
-              `POOL_ROOT_IMAGE does not match State (image ${recorded.image === pin?.image ? "equal" : "differs"} from PoolContainer's configuration.image, input ${recorded.input === pin?.input ? "equal" : "differs"} from PoolWorker's POOL_IMAGE_HASH)`,
-            ),
-          );
+        }) as Fx.Effect<unknown, unknown, never>;
+        const mismatch = rootPinMismatch(process.env.POOL_ROOT_IMAGE, rootRow, workerRow);
+        if (mismatch) return yield* Effect.die(new Error(mismatch));
         return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
       }),
     );
