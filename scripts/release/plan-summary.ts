@@ -1,6 +1,8 @@
-import { havePropsChanged } from "alchemy/Diff";
+import { havePropsChanged, isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import { Data } from "effect";
 import type * as AlchemyPlan from "alchemy/Plan";
+import { propChanges } from "./plan-check.ts";
 import { safeJson } from "./safe-json.ts";
 
 /** The slices of Alchemy's plan snapshot the release entry reads. */
@@ -52,8 +54,90 @@ export const changedRows = (snapshot: Snapshot) =>
     });
 
 /**
- * What a fresh plan after apply still wants to change: names only, no props. A command that re-runs
- * on every deploy (`memo: false`) always plans as an update, so a command update is not a leftover.
+ * Why Alchemy plans a row as changed, read from the plan alone: no settled State row, an input not
+ * known until another row resolves, or a binding path that differs from the recorded one. Values
+ * are shown only when their form cannot hold a secret; expressions are described, never evaluated.
+ */
+export function plannedReasons(plan: AlchemyPlan.Plan, fqn: string): string[] {
+  const node = plan.resources[fqn] ?? plan.deletions[fqn];
+  if (!node) return [];
+  const reasons = new Set<string>();
+  const state = node.state as
+    | {
+        status?: string;
+        bindings?: ReadonlyArray<{ sid: string; data: unknown }>;
+        old?: { bindings?: ReadonlyArray<{ sid: string; data: unknown }> };
+      }
+    | undefined;
+  if (!state) reasons.add("no recorded State row: first creation planned");
+  else if (state.status && !["created", "updated"].includes(state.status))
+    reasons.add(`recorded lifecycle is ${state.status}`);
+  const seen = new Set<unknown>();
+  const walk = (value: unknown, path: readonly string[]) => {
+    if (Output.isExpr(value) && !isResolved(value)) {
+      for (const upstream of Object.keys(Output.upstreamAny(value)))
+        reasons.add(
+          `${path.join(".")} unknown until ${upstream} (${plan.resources[upstream]?.action ?? "resolve"}) resolves`,
+        );
+      return;
+    }
+    if (!value || typeof value !== "object" || seen.has(value) || path.length > 12) return;
+    seen.add(value);
+    if (Array.isArray(value)) value.forEach((part, index) => walk(part, [...path, String(index)]));
+    else if (Object.getPrototypeOf(value) === Object.prototype)
+      for (const [key, part] of Object.entries(value)) walk(part, [...path, key]);
+  };
+  const declared = "props" in node ? node.props : node.resource.Props;
+  walk(declared, ["props"]);
+  // Only keys Alchemy's own comparison calls changed, a few levels deep: a stored, provider-normalised
+  // value is not a change, and resolved resources inside props refer back to each other.
+  const recordedProps = (state as { props?: Record<string, unknown> } | undefined)?.props ?? {};
+  if (state && "props" in node && declared && typeof declared === "object")
+    for (const key of Object.keys({
+      ...recordedProps,
+      ...(declared as Record<string, unknown>),
+    }).sort())
+      if (changed(recordedProps[key], (declared as Record<string, unknown>)[key]))
+        for (const change of propChanges(
+          recordedProps[key],
+          (declared as Record<string, unknown>)[key],
+          ["props", key],
+          4,
+        ).filter((line) => !line.includes("<unresolved>")))
+          reasons.add(change);
+  const recorded = new Map(
+    (state?.status === "updating" ? state.old?.bindings : state?.bindings)?.map((binding) => [
+      binding.sid,
+      binding.data,
+    ]) ?? [],
+  );
+  for (const binding of node.bindings ?? []) {
+    walk(binding.data, ["bindings", binding.sid]);
+    if (binding.action === "noop") continue;
+    try {
+      const changes = propChanges(
+        recorded.get(binding.sid),
+        binding.action === "delete" ? undefined : binding.data,
+        ["bindings", binding.sid],
+      );
+      for (const change of changes) reasons.add(change);
+      if (!changes.length)
+        reasons.add(`bindings.${binding.sid}: ${binding.action}, no leaf differs`);
+    } catch {
+      reasons.add(`bindings.${binding.sid}: ${binding.action}`);
+    }
+  }
+  if (!reasons.size)
+    reasons.add(
+      "the provider asked for this change with unchanged props and resolved bindings: the difference is on the provider's side",
+    );
+  return [...reasons].slice(0, 12);
+}
+
+/**
+ * What a fresh plan after apply still wants to change: the names of the properties and bindings
+ * that differ, and why Alchemy plans them. A command that re-runs on every deploy (`memo: false`)
+ * always plans as an update, so a command update is not a leftover.
  */
 export const remainingRows = (snapshot: Snapshot) =>
   changedRows(snapshot)
@@ -64,6 +148,7 @@ export const remainingRows = (snapshot: Snapshot) =>
       action,
       changedProps,
       bindings: bindings.map((binding) => binding.sid ?? "?"),
+      reasons: plannedReasons(snapshot.native, fqn),
     }));
 
 /**
@@ -81,9 +166,11 @@ export class ChangesRemainAfterApply extends Data.TaggedError("ChangesRemainAfte
       check: "read-back",
       why: "A fresh plan right after the apply still changes these rows, so the apply did not settle.",
       fix: "Find the input that differs on every plan (a per-run value, or a command that always re-runs) and settle it at its source.",
-      remaining: rows.map(
-        (row) =>
-          `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"})`,
+      remaining: rows.map((row) =>
+        `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"}${row.reasons.length ? `; why: ${row.reasons.slice(0, 6).join(" | ")}` : ""})`.slice(
+          0,
+          1_200,
+        ),
       ),
     });
   }

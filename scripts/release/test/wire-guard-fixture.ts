@@ -91,12 +91,15 @@ export interface ServerOptions {
   readonly versionId?: string;
   /** GET answers for `/containers/applications/{id}`, by id; others answer 404. */
   readonly applications?: Readonly<Record<string, { status?: number; body: unknown }>>;
+  /** When set, GET `/workers/scripts/{name}/settings` answers with these tags, by name; others 404. */
+  readonly scriptTags?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
 
 export const startServer = async ({
   createdId = "app-created-in-run",
   versionId = "synthetic-version",
   applications = {},
+  scriptTags,
 }: ServerOptions = {}) => {
   const received: Array<Received> = [];
   const server = createServer(async (request, response) => {
@@ -127,6 +130,21 @@ export const startServer = async ({
         JSON.stringify(
           answer?.body ?? { success: false, errors: [{ code: 1000 }], messages: [], result: null },
         ),
+      );
+    }
+    const settings = /\/workers\/scripts\/([^/?]+)\/settings$/.exec(path)?.[1];
+    if (request.method === "GET" && scriptTags && settings !== undefined) {
+      const tags = scriptTags[decodeURIComponent(settings)];
+      response.statusCode = tags ? 200 : 404;
+      return response.end(
+        tags
+          ? envelope({ tags, bindings: [] })
+          : JSON.stringify({
+              success: false,
+              errors: [{ code: 10007 }],
+              messages: [],
+              result: null,
+            }),
       );
     }
     if (request.method === "POST" && path.endsWith("/containers/applications"))
