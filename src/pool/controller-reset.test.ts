@@ -749,10 +749,15 @@ test("an unsent call whose replay fails keeps cause unsent and the native retry 
     assert.equal(response.headers.get("Retry-After"), "1");
     assert.equal(response.headers.get("X-Request-Id"), attempt);
   }
-  const { lines, sentry } = await observed.events();
+  const { lines, calls, sentry } = await observed.events();
   assert.deepEqual(
     lines.map((line) => [line.outcome, line.saved, line.cause]),
     Array(2).fill(["replay_failed", false, "unsent"]),
+  );
+  // Why the replay failed is joined to the interruption by the same id.
+  assert.deepEqual(
+    calls.map((call) => [call.attempt, call.requestId]),
+    lines.map((line) => [2, line.requestId]),
   );
   assert.equal(sentry.length, 2);
 });

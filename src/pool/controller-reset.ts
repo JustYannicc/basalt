@@ -108,8 +108,8 @@ type Held = { body: Uint8Array<ArrayBuffer> } | { refused: Refusal };
 
 /**
  * Reads a tee of the body beside the real send and holds it only while a replay is still
- * possible: up to the per-call and per-isolate bounds, and until the controller answers or the
- * replay window closes, whichever is first.
+ * possible: up to the per-call and per-isolate bounds, and until the controller's final answer or
+ * the replay window closes, whichever is first.
  */
 function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: () => void) {
   if (!body)
@@ -281,7 +281,8 @@ async function forwardHeld(
   const now = hop.now ?? Date.now;
   const begun = now();
   let attempt = 0;
-  const send = async (outgoing: Request) => {
+  // The id the attempt's failure is joined by: the Worker's own, or the refused attempt's.
+  const send = async (outgoing: Request, id = requestId) => {
     const started = now();
     attempt++;
     try {
@@ -291,7 +292,7 @@ async function forwardHeld(
         "POOL_CONTROLLER_CALL_FAILED",
         JSON.stringify({
           at: now(),
-          requestId,
+          requestId: id,
           endpoint: endpointOf(request),
           attempt,
           elapsedMs: now() - started,
@@ -326,6 +327,7 @@ async function forwardHeld(
                 signal: request.signal,
               })
             : request,
+          id,
         ),
       );
       report(hop, request, id, "replayed", cause, undefined, response.ok);
