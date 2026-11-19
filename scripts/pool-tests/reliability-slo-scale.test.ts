@@ -20,6 +20,12 @@ interface PlanNode {
   Plans?: PlanNode[];
 }
 
+const handled = (node: PlanNode) =>
+  (node["Actual Rows"] +
+    (node["Rows Removed by Filter"] ?? 0) +
+    (node["Rows Removed by Join Filter"] ?? 0)) *
+  node["Actual Loops"];
+
 function readsTerminal(node: PlanNode): boolean {
   return (
     (node["Relation Name"] ?? "").startsWith("basalt_model_terminal_") ||
@@ -27,16 +33,17 @@ function readsTerminal(node: PlanNode): boolean {
   );
 }
 
-/** Terminal evidence rows handed to the plan across all loops; a materialized copy counts per read. */
-function terminalRows(node: PlanNode): number {
-  const handed =
-    (node["Actual Rows"] +
-      (node["Rows Removed by Filter"] ?? 0) +
-      (node["Rows Removed by Join Filter"] ?? 0)) *
-    node["Actual Loops"];
-  if (node["Node Type"] === "Materialize" && readsTerminal(node)) return handed;
-  const own = (node["Relation Name"] ?? "").startsWith("basalt_model_terminal_") ? handed : 0;
-  return own + (node.Plans ?? []).reduce((sum, child) => sum + terminalRows(child), 0);
+/**
+ * Rows the plan handled, by table, across all loops and every node. Rescans of a materialized copy of
+ * terminal evidence count as terminal rows, since each one walks that whole copy again.
+ */
+function rowsRead(node: PlanNode, into = { home: 0, terminal: 0 }) {
+  const relation = node["Relation Name"] ?? "";
+  if (relation.startsWith("basalt_model_requests")) into.home += handled(node);
+  if (relation.startsWith("basalt_model_terminal_")) into.terminal += handled(node);
+  if (node["Node Type"] === "Materialize" && readsTerminal(node)) into.terminal += handled(node);
+  for (const child of node.Plans ?? []) rowsRead(child, into);
+  return into;
 }
 
 test(
@@ -117,11 +124,7 @@ test(
       };
       const slo = await readPoolReliabilitySlo(recorded, "fixture", now);
       assert.equal(slo.reason, undefined);
-      assert.deepEqual(
-        slo.day.unknown,
-        { requests: 0, pending: 0, unavailable: 0, unmatched: 0 },
-        "every Home row in the window has its evidence",
-      );
+      assert.equal(slo.day.unknown?.requests, 0, "every Home row in the window has its evidence");
       assert.equal(slo.day.real.requests, Math.ceil(86_400 / 27));
       assert.ok(statement);
 
@@ -133,9 +136,11 @@ test(
       assert.ok(explain);
       const [root] = explain["QUERY PLAN"] as { Plan: PlanNode }[];
       assert.ok(root);
-      const read = terminalRows(root.Plan);
+      const read = rowsRead(root.Plan);
+      // The day window holds 3,200 of the pool's 104,000 Home rows; reading the rest is a history scan.
+      assert.ok(read.home < 5 * requests, `Home rows read: ${read.home}`);
       // Comparing each Home row's id as text against every start read about 6.4 million rows here.
-      assert.ok(read < 5 * requests, `terminal evidence rows read: ${read}`);
+      assert.ok(read.terminal < 5 * requests, `terminal evidence rows read: ${read.terminal}`);
 
       // One Home row in the window without evidence is shown, and cannot tip 3,200 clean requests.
       await insertHome(

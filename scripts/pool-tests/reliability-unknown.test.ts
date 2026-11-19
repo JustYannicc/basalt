@@ -137,6 +137,62 @@ test("known failures that break the target are a breach even beside unknown outc
   assert.equal(slo.reason, undefined);
 });
 
+/** Home rows without terminal evidence, already among the window's counted requests. */
+const homeWithoutEvidence =
+  (prefix: string, count: number, failed: boolean, spreadSeconds: number) =>
+  async (db: HistoryDatabase, ids: { pool: string; home: string; person: string }) => {
+    await db.query(
+      `INSERT INTO basalt_model_requests
+        (id,source,source_record,timestamp,timestamp_exact,pool,person,client_key,request_id,
+          token_quality,failed,status_code,cost_basis,attribution)
+      SELECT encode(sha256(convert_to($8||g,'UTF8')),'hex'),$1,
+        encode(sha256(convert_to($8||'record'||g,'UTF8')),'hex'),t.at,
+        to_char(t.at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS".000000000Z"'),
+        $2,$3,$3,'resp_'||$8||g,'unclassified',$5,CASE WHEN $5 THEN 500 ELSE 200 END,'unpriced','unknown'
+      FROM generate_series(1,$4::int) g
+      CROSS JOIN LATERAL (SELECT $6::timestamptz - g * $7::int * interval '1 second' AS at) t`,
+      [ids.home, ids.pool, ids.person, count, failed, at, spreadSeconds, prefix],
+    );
+  };
+
+test("unknown requests already counted do not dilute a real breach", async () => {
+  // The hour's 162 counted requests include 2 failures (1.2 %) and 42 without terminal evidence.
+  const slo = await pool(async (db, ids) => {
+    await homeWithoutEvidence("ok", 40, false, 60)(db, ids);
+    await homeWithoutEvidence("failed", 2, true, 600)(db, ids);
+  });
+  assert.deepEqual(
+    [slo.hour.real.requests, slo.hour.real.failed, slo.hour.unknown?.requests],
+    [162, 2, 42],
+  );
+  assert.equal(slo.state, "breached");
+});
+
+test("a Home row that already failed is not counted as a second possible failure", async () => {
+  // 1 of the hour's 121 requests failed and is the only unknown one: 0.83 % even at worst.
+  const slo = await pool(homeWithoutEvidence("failed", 1, true, 300));
+  assert.deepEqual([slo.hour.real.requests, slo.hour.real.failed], [121, 1]);
+  assert.equal(slo.state, "ok");
+});
+
+test("proof traffic's lost records do not count against the real objective", async () => {
+  const slo = await pool(async (db, ids) => {
+    const key = await digest("fixture-proof-key");
+    await db.query(
+      `INSERT INTO basalt_model_traffic (pool,source,client_key,purpose,evidence)
+      VALUES ($1,$2,$3,'proof',$4)`,
+      [ids.pool, ids.home, key, await digest("fixture-proof-evidence")],
+    );
+    await db.query(
+      `INSERT INTO basalt_model_terminal_starts (request_id,pool,person,client_key,endpoint,started_at)
+      VALUES (md5('proof-abandoned')::uuid,$1,NULL,$2,'/v1/responses',$3::timestamptz - interval '30 minutes')`,
+      [ids.pool, key, at],
+    );
+  });
+  assert.equal(slo.hour.unknown?.requests, 0);
+  assert.equal(slo.state, "ok");
+});
+
 test("a start still without a finish names the undecided figure as pending", async () => {
   const slo = await pool(async (db, ids) => {
     await db.query(
