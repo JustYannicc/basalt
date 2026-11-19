@@ -6,9 +6,10 @@ import { runtimePolicyAssertion } from "./policy-assertion.ts";
 import type { RuntimeConfiguration, RuntimeEnvironment } from "./configuration.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 import { installNativePolicy } from "../native-policy-install.ts";
-import { ReadinessReadFailure, readRuntimeHealth } from "../runtime-health.ts";
+import { readRuntimeHealth } from "../runtime-health.ts";
 import { policyUsePrefix, type NativeMembershipPolicy } from "../membership-contract.ts";
 import { signEnvelope } from "../token.ts";
+import { ReadinessReadFailure } from "../runtime-health.ts";
 
 /** Authenticated ports use the selected boot's preserved settings, not new controller bindings. */
 export class RuntimeChannel {
