@@ -263,3 +263,11 @@ test("while the hold is set an automatic run is skipped, and a failed rollback i
   assert.doesNotMatch(rollback, /\|\| true/u);
   assert.match(rollback, /::error::The rolled-back version also fails acceptance/u);
 });
+
+test("a dispatch can release an exact main commit, and only one that is on main", () => {
+  const pick = step("Pick the candidate");
+  assert.match(pick, /CANDIDATE_INPUT: \$\{\{ inputs\.candidate \}\}/u);
+  assert.match(pick, /\^\[0-9a-f\]\{40\}\$/u);
+  assert.match(pick, /git merge-base --is-ancestor "\$CANDIDATE_INPUT" "\$CANDIDATE"/u);
+  assert.match(pick, /CANDIDATE="\$CANDIDATE_INPUT"/u);
+});

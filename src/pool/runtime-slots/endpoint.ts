@@ -51,7 +51,10 @@ import type { StartupStopIntent } from "./startup-abort-contract.ts";
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
   POOL_CONTAINER_APPLICATION_ID?: string;
-  /** Bound "true" on disposable stages only, where the accounts are test accounts. */
+  /**
+   * Only exactly "true" lets a primary on a master Home be killed. Absent everywhere unless a stage's
+   * declaration binds it, which only disposable stages with test accounts should.
+   */
   POOL_ALLOW_MASTER_CRASH?: string;
 }
 /** How long the target may take to prove it still serves, right before it is signalled. */

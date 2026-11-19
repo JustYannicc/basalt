@@ -65,7 +65,7 @@ test("every side-stack record and the two embedded maps are exported sealed, not
   );
   const directory = await scratch();
   const exported = await run(
-    exportLegacyRecords(state, stage, directory, key, ["basalt-release-settlement-abc"]),
+    exportLegacyRecords(state, "basalt", stage, directory, key, ["basalt-release-settlement-abc"]),
   );
   assert.deepEqual(exported.map((entry) => entry.record).sort(), [
     "basalt-release-barrier",
@@ -102,7 +102,7 @@ test("the State rows of the stage are listed with type, status and removal polic
       } as never,
     }),
   );
-  assert.deepEqual(await Effect.runPromise(stateRows(state, "production")), [
+  assert.deepEqual(await Effect.runPromise(stateRows(state, "basalt", "production")), [
     {
       fqn: "PoolProviderObservationToken",
       type: "Cloudflare.ApiToken.AccountApiToken",
@@ -135,7 +135,7 @@ async function journal(state: Awaited<ReturnType<typeof memory>>) {
 }
 const check = (state: Awaited<ReturnType<typeof memory>>) =>
   Effect.runPromiseExit(
-    assertNoUnresolvedHome("production", key).pipe(
+    assertNoUnresolvedHome("basalt", "production", key).pipe(
       Effect.provideService(State, Effect.succeed(state)),
     ),
   );
@@ -150,7 +150,7 @@ test("no journal, or a settled one, lets the cutover start", async () => {
 test("an unresolved Home migration stops the cutover and names it", async () => {
   const state = await memory();
   const exit = await Effect.runPromiseExit(
-    assertNoUnresolvedHome("production", key, () =>
+    assertNoUnresolvedHome("basalt", "production", key, () =>
       Effect.succeed({ unresolvedHome: { intentId: "intent-1", targetVersion: 2 } }),
     ).pipe(Effect.provideService(State, Effect.succeed(state))),
   );

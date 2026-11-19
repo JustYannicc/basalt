@@ -65,6 +65,7 @@ export function sealRecord(plaintext: string, key: string, record: string) {
 /** Writes every legacy record to `directory` (one sealed file each) and returns their plaintext digests. */
 export const exportLegacyRecords = (
   state: StateService,
+  stack: string,
   stage: string,
   directory: string,
   key: string,
@@ -101,11 +102,11 @@ export const exportLegacyRecords = (
       const value = yield* state.getOutput({ stack, stage });
       if (value !== undefined) yield* save(stack, value);
     }
-    const output = (yield* state.getOutput({ stack: "basalt", stage })) as
+    const output = (yield* state.getOutput({ stack, stage })) as
       | Record<string, unknown>
       | undefined;
     for (const key of embedded)
-      if (output && key in output) yield* save(`basalt.${key}`, output[key]);
+      if (output && key in output) yield* save(`${stack}.${key}`, output[key]);
     return exported;
   });
 
@@ -114,6 +115,7 @@ export const exportLegacyRecords = (
  * outcome was unknown. The cutover must not start while one is open.
  */
 export const assertNoUnresolvedHome = (
+  stack: string,
   stage: string,
   key: string,
   // The retired layer's own reader (tested there); replaceable so the refusal itself can be tested.
@@ -126,7 +128,7 @@ export const assertNoUnresolvedHome = (
     State
   > = readSqlSchemaJournal,
 ) =>
-  read({ name: "basalt", stage }, key).pipe(
+  read({ name: stack, stage }, key).pipe(
     // The reader throws on a record it cannot decode; any failure or defect means "unknown".
     Effect.catchCause((cause) =>
       Effect.fail(
@@ -155,15 +157,13 @@ export const assertNoUnresolvedHome = (
     ),
   );
 
-/** The State rows a plan of `basalt/<stage>` sees, with what Alchemy would do to the undeclared ones. */
-export const stateRows = (state: StateService, stage: string) =>
+/** The State rows a plan of `<stack>/<stage>` sees, with what Alchemy would do to the undeclared ones. */
+export const stateRows = (state: StateService, stack: string, stage: string) =>
   Effect.gen(function* () {
-    const fqns = yield* state.list({ stack: "basalt", stage });
+    const fqns = yield* state.list({ stack, stage });
     const rows: { fqn: string; type: string; status: string; removalPolicy: string }[] = [];
     for (const fqn of fqns) {
-      const row = (yield* state.get({ stack: "basalt", stage, fqn })) as
-        | Record<string, unknown>
-        | undefined;
+      const row = (yield* state.get({ stack, stage, fqn })) as Record<string, unknown> | undefined;
       rows.push({
         fqn,
         type: String(row?.resourceType ?? "unknown"),
