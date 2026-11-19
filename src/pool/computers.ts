@@ -36,6 +36,8 @@ import { NativeComputers } from "./native-computers.ts";
 
 interface Dependencies {
   retirePool?(pool: string, at: number): Promise<void>;
+  /** A person's deletion drops their contributed accounts without a membership reservation. */
+  personDeleted?(): void;
   storage: ComputerStorage;
   home: ComputerHome;
   signingKey: string;
@@ -217,6 +219,7 @@ export class Computers {
       );
       return await this.run(async (registry) => {
         if (change.action === "pool-deleted") await this.deps.retirePool?.(change.pool, change.at);
+        if (change.action === "person-deleted") this.deps.personDeleted?.();
         const directory = await PoolDirectory.load(this.deps.storage, this.now());
         return json(
           await directory.apply(change, registry, this.deps.home, this.now(), () =>
