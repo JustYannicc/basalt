@@ -335,6 +335,8 @@ test(
     const open = await f.model(
       new Request("http://pool/v1/responses", { method: "POST", body: "{}" }),
     );
+    // The protection watcher polls while the stream is open; end it whatever the outcome.
+    context.after(() => open.body?.cancel().catch(() => {}));
     assert.equal(open.status, 200);
     refuseCurrentBoot(f);
     const firstRefusal = Date.now();
