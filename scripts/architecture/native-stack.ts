@@ -71,6 +71,7 @@ function evaluate(
     connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection";
     connectionChange?: "origin" | "limit" | "tls" | "name";
     containerProof?: string;
+    attemptProof?: "production" | "preview";
   } = {},
 ): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
@@ -95,6 +96,7 @@ function evaluate(
       NATIVE_STACK_PREVIEW_CONNECTION_PROOF: String(options.previewConnectionProof ?? false),
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
       NATIVE_STACK_CONTAINER_PROOF: options.containerProof ?? "",
+      NATIVE_STACK_ATTEMPT_PROOF: options.attemptProof ?? "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -252,6 +254,28 @@ export function discoverConnectionPlanProof(
     ...(connectionTarget ? { connectionTarget } : {}),
     ...(connectionChange ? { connectionChange } : {}),
   }) as ConnectionPlanProof;
+}
+
+export interface AttemptPlanRow {
+  id: string;
+  type: string;
+  action: string;
+}
+
+/**
+ * Applies the real stack once, then plans it again with the same attempt id and once more with a
+ * new one. A failed phase is named instead of forwarding its cause.
+ */
+export function discoverAttemptPlanProof(
+  root: string,
+  shape: "production" | "preview",
+): {
+  failed?: string;
+  resources: number;
+  secondPlan: AttemptPlanRow[];
+  nextAttempt: AttemptPlanRow[];
+} {
+  return evaluate(root, { attemptProof: shape }) as ReturnType<typeof discoverAttemptPlanProof>;
 }
 
 export function discoverContainerBarrierProof(root: string, scenario: string) {
