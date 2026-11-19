@@ -21,6 +21,8 @@ const runtime = {
   bootId: "boot",
   readyAt: 120_000,
 };
+/** One call every five seconds from the start of the wait until its deadline. */
+const refusedCalls = databaseReadinessCommandMs / 5_000;
 const refusal = () =>
   new ReadinessResponseError(503, { outcome: "readiness-error", stage: "readiness" });
 
@@ -149,11 +151,10 @@ test("readiness refused until its deadline fails with the last refusal", async (
       const { receipt } = error;
       assert.equal(receipt.outcome, "readiness-error");
       assert.equal(receipt.stage, "readiness");
-      // 330 s for the object to adopt the code, then the runtime's own 180 s startup budget.
-      assert.equal(receipt.commandDeadlineMs, 510_000);
-      assert.equal(receipt.elapsedMs, 510_000);
+      assert.equal(receipt.commandDeadlineMs, databaseReadinessCommandMs);
+      assert.equal(receipt.elapsedMs, databaseReadinessCommandMs);
       assert.deepEqual(receipt.refusals, {
-        count: 102,
+        count: refusedCalls,
         status: 503,
         outcome: "readiness-error",
         stage: "readiness",
@@ -161,7 +162,7 @@ test("readiness refused until its deadline fails with the last refusal", async (
       assert.match(error.message, /"refusals":\{[^}]*"status":503[^}]*"outcome":"readiness-error"/);
       return true;
     });
-    assert.equal(calls, 102);
+    assert.equal(calls, refusedCalls);
     assert.equal(closed, 1);
     assert.equal(JSON.parse(await readFile(path, "utf8")).refusals.status, 503);
   });

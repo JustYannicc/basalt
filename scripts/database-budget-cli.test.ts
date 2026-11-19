@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import {
+  databaseReadinessCommandMs,
+  databaseVerificationCommandMs,
+} from "./database-budget-command.ts";
 
 const scripts = fileURLToPath(new URL("./", import.meta.url));
 const target = {
@@ -215,7 +219,10 @@ for (const [scenario, mode, outcome] of [
       assert.equal(output.outcome, outcome);
       if (scenario === "close") assert.equal(output.stage, "teardown");
       if (scenario === "close-after-failure") assert.equal(output.stage, "readiness");
-      assert.equal(output.commandDeadlineMs, mode === "ready" ? 510000 : 115000);
+      assert.equal(
+        output.commandDeadlineMs,
+        mode === "ready" ? databaseReadinessCommandMs : databaseVerificationCommandMs,
+      );
       // A refused runtime is asked again until the command deadline, and the receipt says so.
       if (["unready", "close-after-failure"].includes(scenario))
         assert.deepEqual(output.refusals, { count: 3, status: 503 });

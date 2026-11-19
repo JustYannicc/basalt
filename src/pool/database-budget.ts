@@ -4,6 +4,7 @@ import type { Input } from "alchemy/Input";
 import { Effect, type Redacted } from "effect";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readinessCommandSeconds } from "./readiness-budget.ts";
 
 export const verifyRuntimeDatabaseBudget = (
   id: string,
@@ -49,9 +50,7 @@ export const verifyRuntimeDatabaseBudget = (
             DATABASE_BUDGET_DEPLOYMENT: options.deployment.pipe(Output.map(() => "deployed")),
           },
           memo: false,
-          // Up to 330 seconds for the controller object to adopt the uploaded code, then the
-          // 180-second startup budget. Five more keep receipt and teardown outside both.
-          timeout: "515 seconds",
+          timeout: `${readinessCommandSeconds} seconds`,
         })
       : undefined;
     return yield* Command.Exec(id, {
