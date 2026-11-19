@@ -102,8 +102,9 @@ export function captureChild(
               ? undefined
               : { exitCode, signal },
         );
-      // What the command already wrote is in the pipes; a short grace reads it.
-      const grace = setTimeout(finish, 250);
+      // What the command already wrote is in the pipes. A loaded machine needs longer to hand it
+      // over than a quiet one, and only a descendant that keeps the pipes open waits this out.
+      const grace = setTimeout(finish, 2000);
       child.once("close", () => {
         clearTimeout(grace);
         finish();

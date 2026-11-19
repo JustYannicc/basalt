@@ -13,7 +13,7 @@ test("a failed lifecycle step tells the log why it stopped", () => {
   const result = spawnSync(
     process.execPath,
     [fileURLToPath(new URL("./lifecycle.ts", import.meta.url)), "plan", "not-a-number"],
-    { encoding: "utf8", env: { PATH: process.env.PATH } },
+    { encoding: "utf8", env: { PATH: process.env.PATH }, timeout: 50_000, killSignal: "SIGKILL" },
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^Preview lifecycle step failed: Error: /);

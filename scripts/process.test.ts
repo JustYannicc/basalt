@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,8 +9,11 @@ import { ChildProcessFailure } from "./failure/child.ts";
 import { run } from "./process.ts";
 
 const node = process.execPath;
+const module = fileURLToPath(new URL("./process.ts", import.meta.url));
 const secret = "s3cr3t-value-0123456789";
 const environment = { PATH: process.env.PATH, FIXTURE_API_TOKEN: secret };
+// A caller that never returns is stopped before the suite's own limit, so it fails with its output.
+const bounded = { encoding: "utf8", timeout: 50_000, killSignal: "SIGKILL" } as const;
 
 function failure(action: () => void): ChildProcessFailure {
   try {
@@ -34,7 +38,7 @@ test("a failed command's error carries the end of its output with credentials re
   assert.match(error.message, /^node failed with exit 3\n/);
   assert.match(error.message, /--- stdout\nbuilding stage one/);
   assert.match(error.message, /--- stderr\nError: upload refused by \[url\]/);
-  assert.match(error.message, /Authorization: Bearer \[redacted\]/);
+  assert.match(error.message, /Authorization: \[redacted\]/);
   for (const forbidden of [secret, "api.example.com", "deploy@example.com", "203.0.113.7"])
     assert.ok(!error.message.includes(forbidden), forbidden);
   // Only the program is named: its arguments are not repeated.
@@ -48,10 +52,10 @@ test("the command's output still reaches the caller's own output, complete and a
     [
       "--input-type=module",
       "-e",
-      `import { run } from ${JSON.stringify(fileURLToPath(new URL("./process.ts", import.meta.url)))};
+      `import { run } from ${JSON.stringify(module)};
        run(process.execPath, ["-e", "for (let i = 0; i < ${lines}; i++) console.log('line ' + i); console.error('to stderr')"]);`,
     ],
-    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    { ...bounded, maxBuffer: 64 * 1024 * 1024 },
   );
   assert.equal(child.status, 0, child.stderr);
   const written = child.stdout.trimEnd().split("\n");
@@ -71,14 +75,22 @@ test("a command that cannot start, or dies from a signal, says so", () => {
   assert.match(killed.message, /failed with SIGKILL/);
 });
 
-test("a descendant that keeps the output open does not hold the caller", () => {
-  const started = performance.now();
+test("a descendant that keeps the output open does not hold the caller", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "basalt-run-descendant-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const pidFile = join(directory, "pid");
   run(node, [
     "-e",
-    `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "inherit", detached: true }).unref();
+    `const child = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit", detached: true });
+     require("node:fs").writeFileSync(process.argv[1], String(child.pid));
+     child.unref();
      console.log("parent done");`,
+    pidFile,
   ]);
-  assert.ok(performance.now() - started < 10_000);
+  const descendant = Number(readFileSync(pidFile, "utf8"));
+  // Signal 0 only asks whether the process exists: it does, so `run()` did not wait for it.
+  process.kill(descendant, 0);
+  process.kill(descendant, "SIGKILL");
 });
 
 test("standard input reaches the command", () => {
@@ -87,52 +99,80 @@ test("standard input reaches the command", () => {
     [
       "--input-type=module",
       "-e",
-      `import { run } from ${JSON.stringify(fileURLToPath(new URL("./process.ts", import.meta.url)))};
+      `import { run } from ${JSON.stringify(module)};
        run(process.execPath, ["-e", "process.stdin.pipe(process.stdout)"]);`,
     ],
-    { encoding: "utf8", input: "typed input\n" },
+    { ...bounded, input: "typed input\n" },
   );
-  assert.equal(child.stdout, "typed input\n");
+  assert.equal(child.stdout, "typed input\n", child.stderr);
 });
 
-test("the caller's NODE_OPTIONS reach the command and nothing in between", () => {
+test("the caller's NODE_OPTIONS reach the command, and nothing of the plumbing does", () => {
   // A preload that does not exist would stop any Node process it is loaded into.
   const options = "--require=/basalt-no-such-preload.cjs";
   run(
     "sh",
-    ["-c", `test "$NODE_OPTIONS" = "${options}" && test -z "$BASALT_RUN_NODE_OPTIONS"`],
+    [
+      "-c",
+      `test "$NODE_OPTIONS" = "${options}" && test -z "$BASALT_RUN_NODE_OPTIONS" && test -z "$BASALT_RUN_REPORT"`,
+    ],
     undefined,
-    {
-      PATH: process.env.PATH,
-      NODE_OPTIONS: options,
-    },
+    { PATH: process.env.PATH, NODE_OPTIONS: options },
   );
 });
 
-test("an interrupt sent to the whole group reaches the command once", () => {
-  const module = fileURLToPath(new URL("./process.ts", import.meta.url));
+test("an interrupt sent to the whole group reaches the command once", async () => {
   // The command counts its interrupts, says when it is ready, and reports the count as it leaves.
   const command = `let count = 0;
     process.on("SIGINT", () => { if (++count === 1) setTimeout(() => { console.log("interrupts " + count); process.exit(0); }, 300); });
     console.log("ready"); setInterval(() => {}, 1000);`;
-  const parent = `import { run } from ${JSON.stringify(module)};
-    run(process.execPath, ["-e", ${JSON.stringify(command)}]);`;
-  // The shell puts the caller and its command in one group, waits for "ready", interrupts the
-  // group, and reads what the command wrote as it left.
-  const result = spawnSync(
-    "sh",
+  // The caller leads a group of its own, so one signal reaches it, the process in between and the
+  // command at once, the way a terminal's interrupt does.
+  const caller = spawn(
+    node,
     [
-      "-c",
-      `set -m; "$0" --input-type=module -e "$1" > "$2" & pid=$!
-       until grep -q ready "$2" 2>/dev/null; do :; done
-       kill -INT -- -$pid; wait $pid
-       until grep -q interrupts "$2"; do :; done
-       cat "$2"; rm -f "$2"`,
-      node,
-      parent,
-      join(tmpdir(), `basalt-run-interrupt-${process.pid}`),
+      "--input-type=module",
+      "-e",
+      `import { run } from ${JSON.stringify(module)};
+       run(process.execPath, ["-e", ${JSON.stringify(command)}]);`,
     ],
-    { encoding: "utf8" },
+    { detached: true, stdio: ["ignore", "pipe", "pipe"] },
   );
-  assert.match(result.stdout, /^ready\ninterrupts 1\n$/, result.stderr);
+  const group = -caller.pid!;
+  let output = "";
+  let errors = "";
+  caller.stderr.on("data", (chunk: Buffer) => {
+    errors += chunk;
+  });
+  caller.stdout.on("data", (chunk: Buffer) => {
+    const ready = output.includes("ready");
+    output += chunk;
+    if (!ready && output.includes("ready")) process.kill(group, "SIGINT");
+  });
+  // A group that never ends is stopped, so a broken `run()` fails here with what it printed.
+  const deadline = setTimeout(() => process.kill(group, "SIGKILL"), 30_000);
+  await new Promise((resolve) => caller.once("close", resolve));
+  clearTimeout(deadline);
+
+  assert.equal(output, "ready\ninterrupts 1\n", errors);
+});
+
+test("a failed command's last lines survive when the caller runs under Bun", () => {
+  const result = spawnSync(
+    "bun",
+    [
+      "-e",
+      `import { run } from ${JSON.stringify(module)};
+       try { run("sh", ["-c", "echo deploy refused; exit 4"]); } catch (error) { console.log(JSON.stringify(error.report)); }`,
+    ],
+    bounded,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  // The command's own output arrives first, live; the report is the last line.
+  assert.deepEqual(JSON.parse(result.stdout.trimEnd().split("\n").at(-1)!), {
+    command: "sh",
+    exitCode: 4,
+    signal: null,
+    tail: "--- stdout\ndeploy refused",
+  });
 });

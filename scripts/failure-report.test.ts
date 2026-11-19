@@ -35,6 +35,7 @@ class WireRefused extends Data.TaggedError("WireRefused")<{
   readonly why: string;
   readonly fix: string;
   readonly link?: string;
+  readonly code?: string;
   readonly detail?: unknown;
 }> {}
 
@@ -60,12 +61,13 @@ async function reported(context: TestContext, error: unknown, title = "Release s
   };
 }
 
-/** A real request through Effect's fetch client; the failure is whatever that client raises. */
+/** A real request through Effect's fetch client, read as JSON; the failure is whatever that client raises. */
 async function requestFailure(request: HttpClientRequest.HttpClientRequest) {
   const exit = await Effect.runPromiseExit(
     Effect.gen(function* () {
       const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-      return yield* client.execute(request.pipe(HttpClientRequest.bearerToken(token)));
+      const response = yield* client.execute(request.pipe(HttpClientRequest.bearerToken(token)));
+      return yield* response.json;
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
   assert.ok(Exit.isFailure(exit));
@@ -106,7 +108,7 @@ test("a transport failure reaches the error line and the summary with its cause 
   assert.match(line, /\n {2}why: It was caused by Error ECONNREFUSED\./);
   assert.match(
     line,
-    /\n {2}fix: The request never left, so nothing changed at the service\. Rerun/,
+    /\n {2}fix: This request never left, so it changed nothing at the service\. Rerun/,
   );
   assert.match(line, /\n {2}cause 1: TypeError: fetch failed\n {2}cause 2: Error ECONNREFUSED$/);
   assert.equal(
@@ -126,12 +128,15 @@ test("a request that can never succeed is not offered a rerun", async (context) 
   const { line, report } = await reported(context, failure);
 
   assert.equal(report.error.code, "release.REQUEST_INVALID");
-  assert.match(line, /cause 1: TypeError: Request with GET\/HEAD method cannot have body/);
   assert.match(
     line,
-    /fix: The request failed before it was sent and will fail the same way on a rerun\./,
+    /\n {2}why: It was caused by TypeError: Request with GET\/HEAD method cannot have body\.\n/,
   );
-  assert.doesNotMatch(line, /Rerun;|nothing changed/);
+  assert.match(
+    line,
+    /fix: The request was refused before it was sent and will be refused again on a rerun\./,
+  );
+  assert.doesNotMatch(line, /Rerun;|changed nothing|may have reached/);
 });
 
 test("a connection lost after the request was sent is never called safe to rerun", async (context) => {
@@ -152,13 +157,77 @@ test("a connection lost after the request was sent is never called safe to rerun
 
   assert.ok(received > 0, "the service received the request");
   assert.equal(report.error.code, "release.OUTCOME_UNKNOWN");
+  assert.match(line, /fix: The request may have reached the service\. A read can be rerun\./);
+  assert.match(line, /Before rerunning a write, check whether it took effect\./);
+  assert.doesNotMatch(line, /changed nothing/);
+  noLeak(all);
+});
+
+test("an answer that is not HTTP leaves the outcome unknown, not a request to fix", async (context) => {
+  const origin = await listening(
+    context,
+    createServer((socket) => socket.once("data", () => socket.end("private-not-http\r\n\r\n"))),
+  );
+  const failure = await requestFailure(
+    HttpClientRequest.post(`${origin}${path}`).pipe(HttpClientRequest.bodyText('{"write":true}')),
+  );
+  const { line, report, all } = await reported(context, failure);
+
+  assert.equal(report.error.code, "release.OUTCOME_UNKNOWN");
+  assert.match(line, /\n {2}cause 2: HTTPParserError$/);
+  assert.doesNotMatch(line, /refused before it was sent|changed nothing/);
+  noLeak(all, [...leaks, "private-not-http"]);
+});
+
+test("a good answer that cannot be read is never offered a blind rerun", async (context) => {
+  const origin = await listening(
+    context,
+    createHttpServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(`<html>private-response-body for ${account}</html>`);
+    }),
+  );
+  const failure = await requestFailure(
+    HttpClientRequest.post(`${origin}${path}`).pipe(HttpClientRequest.bodyText('{"write":true}')),
+  );
+  const { line, report, all } = await reported(context, failure);
+
+  assert.equal(report.error.code, "release.ANSWER_UNREADABLE");
   assert.match(
     line,
-    /fix: The request may have reached the service before the connection failed\./,
+    new RegExp(`^Release stopped: HttpClientError DecodeError: HTTP 200: POST ${shape}\\n`),
   );
-  assert.match(line, /Before rerunning a write, check whether it took effect\./);
-  assert.doesNotMatch(line, /nothing changed/);
-  noLeak(all);
+  assert.match(
+    line,
+    /fix: The service answered without an error status, so a write has most likely taken effect\./,
+  );
+  noLeak(all, [...leaks, "private-response-body"]);
+});
+
+test("collected failures are only as safe to rerun as the least safe of them", async (context) => {
+  const unreachable = async () =>
+    requestFailure(HttpClientRequest.get(`${await closedOrigin()}${path}`));
+  const origin = await listening(
+    context,
+    createServer((socket) => socket.once("data", () => socket.destroy())),
+  );
+  const lost = await requestFailure(
+    HttpClientRequest.post(`${origin}${path}`).pipe(HttpClientRequest.bodyText("{}")),
+  );
+
+  const mixed = await reported(
+    context,
+    new AggregateError([await unreachable(), lost], "Two requests failed"),
+  );
+  assert.equal(mixed.report.error.code, "release.OUTCOME_UNKNOWN");
+  assert.match(mixed.line, /\n {2}failures collected: 2; the cause chain follows the first\n/);
+  assert.doesNotMatch(mixed.line, /changed nothing/);
+
+  const neverLeft = await reported(
+    context,
+    new AggregateError([await unreachable(), await unreachable()], "Two requests failed"),
+  );
+  assert.equal(neverLeft.report.error.code, "release.UNREACHABLE");
 });
 
 for (const [status, code, advice] of [
@@ -172,7 +241,11 @@ for (const [status, code, advice] of [
     "release.SERVICE_BUSY",
     /fix: The service answered with a temporary failure\. Wait and rerun\./,
   ],
-  [403, "release.REQUEST_REFUSED", /fix: A rerun gets the same answer\./],
+  [
+    403,
+    "release.REQUEST_REFUSED",
+    /fix: The service refused the request\. Before rerunning, fix the request, its credentials or the state it conflicts with/,
+  ],
 ] as const)
   test(`an HTTP ${status} answer is reported as what it is`, async (context) => {
     const origin = await listening(
@@ -218,6 +291,54 @@ test("a refusal keeps the reason and fix its author wrote, above the transport c
   assert.match(line, /\n {2}cause 3: Error ECONNREFUSED$/);
   assert.ok(summary.includes(line.replaceAll("```", "'''")));
   noLeak(all);
+});
+
+test("a refusal raised inside another error is still reported as the refusal", async (context) => {
+  const refusal = new LiveModuleUnavailable({
+    script: "PoolWorker",
+    why: "The live script's `main` module could not be read.",
+    fix: "Do not run the class change; read the live script again.",
+  });
+  const { line, report } = await reported(
+    context,
+    new Error("The deploy step failed", { cause: refusal }),
+  );
+
+  assert.equal(report.error.code, "LiveModuleUnavailable");
+  assert.equal(
+    line,
+    [
+      "Release stopped: LiveModuleUnavailable",
+      "  why: The live script's `main` module could not be read.",
+      "  fix: Do not run the class change; read the live script again.",
+      "  raised inside: Error",
+      "  script: PoolWorker",
+    ].join("\n"),
+  );
+});
+
+test("a refusal's evidence is printed exactly: digests, a commit and an operation id", async (context) => {
+  const uploaded = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+  const planned = "80a00f0b51c6d51dc228b0b2b1f4fb3a510da55c0aaef2a956d7c488180d68f9";
+  const { line } = await reported(
+    context,
+    new WireRefused({
+      resource: "PoolWorker",
+      path: "/workers/scripts/{id}",
+      value: `${uploaded} (expected ${planned})`,
+      why: `The uploaded module's digest ${uploaded} is not the planned one.`,
+      fix: "Plan again from commit 533199cfa3b565b9b7e14f69abae597f09828760.",
+      detail: { operation: "123e4567-e89b-12d3-a456-426614174000", planned },
+    }),
+  );
+
+  for (const exact of [
+    `  value: ${uploaded} (expected ${planned})`,
+    `  why: The uploaded module's digest ${uploaded} is not the planned one.`,
+    "  fix: Plan again from commit 533199cfa3b565b9b7e14f69abae597f09828760.",
+    `  detail: {"operation":"123e4567-e89b-12d3-a456-426614174000","planned":"${planned}"}`,
+  ])
+    assert.ok(line.split("\n").includes(exact), exact);
 });
 
 test("every violation of a refused plan is listed, with its reason and fix or the lack of one", async (context) => {
@@ -270,11 +391,14 @@ test("nothing a refusal carries can put private text or a command into the log",
         why: `Provider said: {"token":"${token}"} from api.Example.Com`,
         fix: "Ask ops@example.com.\n::stop-commands::x",
         link: `https://dash.cloudflare.com/${account}/workers?token=${token}`,
+        // Shaped like a code, and still a credential.
+        code: `K${"a1".repeat(20)}`,
         detail,
       }),
     );
 
     assert.equal(report.error.link, undefined);
+    assert.equal(report.error.code, "WireRefused");
     assert.match(
       line,
       /\n {2}resource: \[url\]\n {2}path: ~\/work\/basalt\/secret\.json\n {2}value: kept 'quoted name' ::error::spoofed\n/,
@@ -295,6 +419,7 @@ test("nothing a refusal carries can put private text or a command into the log",
       "ops@example.com",
       "10.0.0.5",
       "api.Example.Com",
+      "a1a1a1a1",
     ]);
   }
 });
@@ -349,7 +474,7 @@ test("a failed command reaches the error line and the summary with the end of it
   assert.match(line, /\n {2}fix: Fix what the output names and rerun this step\./);
   assert.match(
     line,
-    /\n {4}--- stdout\n {4}Plan: 2 to update\n {4}--- stderr\n {4}PoolWorker \(Cloudflare\.Worker\) update failed\n {4}CloudflareHttpError: PUT \[url\] 400\n {6}code 10021: Script startup exceeded CPU time limit\n {6}Authorization: Bearer \[redacted\]$/,
+    /\n {4}--- stdout\n {4}Plan: 2 to update\n {4}--- stderr\n {4}PoolWorker \(Cloudflare\.Worker\) update failed\n {4}CloudflareHttpError: PUT \[url\] 400\n {6}code 10021: Script startup exceeded CPU time limit\n {6}Authorization: \[redacted\]$/,
   );
   assert.ok(annotation.includes("code 10021: Script startup exceeded CPU time limit"));
   assert.ok(
@@ -381,6 +506,9 @@ test("an unclassified failure is reported without its message's private parts", 
   assert.equal(report.error.code, "release.UNEXPECTED");
   assert.match(line, /^Release stopped: Error: Could not reach \[url\] for \[value\]/);
   assert.match(line, /\n {2}why: It carries no cause, so its message is all that is known\./);
+  // Where it was raised, without the home directory it ran under.
+  assert.match(line, /\n {2}at .*\(scripts\/failure-report\.test\.ts:\d+:\d+\)$/);
+  assert.doesNotMatch(line, /\/(?:Users|home)\/|file:/);
   noLeak(line, ["preview.example.dev", "Jane Doe", "jane@example.com", token]);
 });
 
@@ -390,13 +518,13 @@ test("an evlog error is reported with its own fields, and nothing printed reache
     message: "No backup covers this release",
     why: `The newest backup is older than the candidate; the provider said token=${token}.`,
     fix: "Run the backup step, then plan again.",
-    link: "https://example.com/runbook",
+    link: "https://developers.cloudflare.com/workers/configuration/versions-and-deployments/",
     cause: new Error(`upstream said password=${token} at db.internal.example.com`),
   });
   const { line, report } = await reported(context, error);
   assert.match(
     line,
-    /^Release stopped: No backup covers this release\n {2}code: release\.BACKUP_MISSING\n {2}why: The newest backup is older than the candidate; the provider said token=\[redacted\]\n {2}fix: Run the backup step, then plan again\.\n {2}link: https:\/\/example\.com\/runbook\n {2}cause 1: Error$/,
+    /^Release stopped: No backup covers this release\n {2}code: release\.BACKUP_MISSING\n {2}why: The newest backup is older than the candidate; the provider said token=\[redacted\]\n {2}fix: Run the backup step, then plan again\.\n {2}link: https:\/\/developers\.cloudflare\.com\/workers\/configuration\/versions-and-deployments\/\n {2}cause 1: Error$/,
   );
   noLeak(
     JSON.stringify([
@@ -436,15 +564,20 @@ test("the same transport failure is recognised when the command runs under Bun",
     const failure = await fetch("http://127.0.0.1:" + port + ${JSON.stringify(path)}).then(() => undefined, (error) => error);
     const report = await reportFailure(new Error("read failed", { cause: failure }), { title: "Release stopped" });
     console.log(report.error.code);`;
-  const result = spawnSync("bun", ["-e", program], { encoding: "utf8" });
+  const result = spawnSync("bun", ["-e", program], {
+    encoding: "utf8",
+    timeout: 50_000,
+    killSignal: "SIGKILL",
+  });
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "release.UNREACHABLE");
   assert.match(
     result.stderr,
-    /\n {2}fix: The request never left, so nothing changed at the service\. Rerun/,
+    /\n {2}fix: This request never left, so it changed nothing at the service\. Rerun/,
   );
-  assert.match(result.stderr, /\n {2}cause 1: TypeError ConnectionRefused: /);
+  // Bun names the refusal on the fetch error itself, under either spelling.
+  assert.match(result.stderr, /\n {2}cause 1: TypeError (?:ConnectionRefused|ECONNREFUSED): /);
   noLeak(result.stderr, ["127.0.0.1", account]);
 });
 
@@ -453,4 +586,22 @@ test("structuredFailure gives the same report without printing", () => {
   assert.equal(report.error.code, "release.UNEXPECTED");
   assert.equal(report.error.message, "TypeError: fetch failed for [redacted]");
   assert.deepEqual(report.causes, []);
+
+  // A code bug's message names the identifier at fault.
+  const bug = structuredFailure(
+    new TypeError("Cannot read properties of undefined (reading 'main')"),
+    environment,
+  );
+  assert.equal(
+    bug.error.message,
+    "TypeError: Cannot read properties of undefined (reading 'main')",
+  );
+
+  // A failed command's exit status is not an HTTP status.
+  const exited = structuredFailure(
+    Object.assign(new Error("Command failed"), { status: 137, pid: 4242, spawnargs: ["sh"] }),
+    environment,
+  );
+  assert.equal(exited.error.code, "release.UNEXPECTED");
+  assert.doesNotMatch(String(exited.error.why), /HTTP/);
 });

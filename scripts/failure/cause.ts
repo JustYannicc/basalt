@@ -2,8 +2,9 @@ import { publicGuidance, publicText } from "./redact.ts";
 
 /**
  * What caused a failure, in a form that may be printed. Provider messages, bodies, URLs and stacks
- * can contain credentials, so only closed diagnostics are copied: a known type, an allowlisted
- * code, the HTTP client's reason and status, and the request's method and identifier-free path.
+ * can contain credentials, so only closed diagnostics are copied: a type name of a known shape, an
+ * allowlisted code, the HTTP client's reason and status, a provider's numeric codes, and the
+ * request's method and identifier-free path.
  */
 export interface PublicCause {
   type: string;
@@ -16,32 +17,13 @@ export interface PublicCause {
   message?: string;
 }
 
+// Names of errors that do not end the way this repository's own do.
 const knownTypes = new Set([
-  "TimeoutError",
-  "AbortError",
-  "TypeError",
-  "RangeError",
-  "SyntaxError",
-  "AggregateError",
   "Error",
-  "HttpClientError",
-  "RequestError",
-  "ResponseError",
-  "SchemaError",
-  "ConfigError",
-  "StateStoreError",
-  "CloudflareHttpError",
-  "CloudflareParseError",
-  "CloudflareRateLimited",
-  "UnknownCloudflareError",
-  "SocketError",
-  "ConnectTimeoutError",
-  "HeadersTimeoutError",
-  "BodyTimeoutError",
-  "RequestAbortedError",
   "WorkerNotFound",
   "WorkerVersionNotFound",
   "NoSuchBucket",
+  "CloudflareRateLimited",
   "BadRequest",
   "Unauthorized",
   "Forbidden",
@@ -50,12 +32,9 @@ const knownTypes = new Set([
   "UnprocessableEntity",
   "Locked",
   "TooManyRequests",
-  "InternalServerError",
   "BadGateway",
-  "ServiceUnavailable",
-  "GatewayTimeout",
 ]);
-// A class this repository names: letters only, with a suffix no credential ends in.
+// Every other error class: letters only, with an ending no credential has.
 const ownType =
   /^[A-Z][A-Za-z]{2,63}(?:Error|Refused|Refusal|Failure|Failed|Unavailable|Possible|Timeout)$/;
 /** A request with one of these never left: nothing changed at the service, under Node or Bun. */
@@ -79,12 +58,18 @@ export const interrupted = new Set([
   "UND_ERR_BODY_TIMEOUT",
   "ConnectionClosed",
 ]);
+/** fetch refused the request's own arguments, so nothing was sent. */
+export const badArguments = new Set([
+  "ERR_INVALID_ARG_VALUE",
+  "ERR_INVALID_ARG_TYPE",
+  "ERR_INVALID_URL",
+]);
 const codes = new Set([
   ...neverSent,
   ...interrupted,
+  ...badArguments,
   "MODULE_NOT_FOUND",
   "ERR_MODULE_NOT_FOUND",
-  "ERR_INVALID_ARG_VALUE",
   "ENOENT",
   "EACCES",
   "EPERM",
@@ -151,7 +136,7 @@ export const field = (value: unknown, key: string): unknown => {
 };
 
 /** Method and path shape only: no origin, query or identifier ever leaves. */
-export function requestShape(request: unknown): { method: string; path: string } | undefined {
+function requestShape(request: unknown): { method: string; path: string } | undefined {
   const method = field(request, "method");
   const url = field(request, "url");
   if (typeof method !== "string" || !httpMethods.has(method) || typeof url !== "string") return;
@@ -165,9 +150,10 @@ export function requestShape(request: unknown): { method: string; path: string }
   const out: string[] = [];
   for (const segment of pathname.split("/")) {
     const previous = out.at(-1) ?? "";
-    out.push(
-      !segment || (!idAfter.has(previous) && staticSegments.has(segment)) ? segment : "{id}",
-    );
+    // `/workers/workers/{id}` is the beta API's collection; `/workers/scripts` is not.
+    const collection =
+      idAfter.has(previous) || (previous === "workers" && out.at(-2) === "workers");
+    out.push(!segment || (!collection && staticSegments.has(segment)) ? segment : "{id}");
   }
   return { method, path: out.join("/").slice(0, 256) };
 }
@@ -188,8 +174,10 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
   const type = typeName(error);
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
+  // A failed command also has a `status`: its exit code.
+  const exited = field(error, "pid") !== undefined || field(error, "spawnargs") !== undefined;
   const status =
-    field(error, "status") ??
+    (exited ? undefined : field(error, "status")) ??
     field(field(httpReason, "response"), "status") ??
     field(field(error, "http"), "status");
   const code = field(error, "code");
@@ -223,27 +211,40 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
   };
 }
 
+/** The failures a collection holds, when it holds more than what it wraps. */
+export function members(error: unknown): unknown[] {
+  const errors = field(error, "errors");
+  return Array.isArray(errors) ? errors.slice(0, 8).filter((entry) => entry instanceof Error) : [];
+}
+
 /** What a failure wraps. Effect's HTTP client keeps fetch's error under its reason; a collection shows its first member. */
-export const wrapped = (error: unknown): unknown =>
+const wrapped = (error: unknown): unknown =>
   field(field(error, "reason"), "cause") ??
   field(error, "cause") ??
-  (Array.isArray(field(error, "errors")) ? field(field(error, "errors"), "0") : undefined);
+  field(error, "error") ??
+  field(error, "defect") ??
+  members(error)[0];
 
-/** The failure and what it wrapped, outermost first. */
-export function causeChain(
+/** The failure and everything it wraps, outermost first. */
+export function rawChain(error: unknown): unknown[] {
+  const found: unknown[] = [];
+  for (
+    let current = error;
+    current !== undefined && current !== null && found.length < 10 && !found.includes(current);
+    current = wrapped(current)
+  )
+    found.push(current);
+  return found;
+}
+
+/** The same chain as what may be printed of each level. */
+export const causeChain = (
   error: unknown,
   environment: NodeJS.ProcessEnv = process.env,
-): PublicCause[] {
-  const chain: PublicCause[] = [];
-  const seen = new Set<unknown>();
-  let current = error;
-  while (current !== undefined && current !== null && chain.length < 6 && !seen.has(current)) {
-    seen.add(current);
-    chain.push(publicCause(current, environment));
-    current = wrapped(current);
-  }
-  return chain;
-}
+): PublicCause[] =>
+  rawChain(error)
+    .slice(0, 6)
+    .map((entry) => publicCause(entry, environment));
 
 export const causeLine = (cause: PublicCause) =>
   [
@@ -255,3 +256,14 @@ export const causeLine = (cause: PublicCause) =>
   ]
     .filter(Boolean)
     .join(": ");
+
+/** Rebuilt from public causes, so nothing that prints the error can reach the original text. */
+export function publicError(causes: PublicCause[]): { cause?: Error } {
+  let inner: Error | undefined;
+  for (const cause of causes.toReversed()) {
+    inner = new Error(causeLine(cause), inner ? { cause: inner } : {});
+    inner.name = cause.type;
+    delete inner.stack;
+  }
+  return inner ? { cause: inner } : {};
+}

@@ -3,11 +3,14 @@
  * before these rules ran over it. No dependencies: `scripts/process.ts` imports this before
  * anything is installed.
  *
- * What they cannot know stays possible: a bare name with no dot, such as a single-label host or a
- * database's name, prints as written.
+ * The rules recognise shapes. What has no shape stays: a bare name with no dot (a single-label
+ * host, a database's or a person's name), a two-label name under a country's or a newer domain,
+ * and whatever a caller quotes inside text it wrote.
  */
 const maximumBytes = 64 * 1024;
 const tailLines = 60;
+/** Input is cut before the rules run, so no line can make them slow. */
+const inputLimit = 4096;
 const minimumEnvironmentValue = 8;
 const credentialName = /SECRET|TOKEN|KEY|PASSWORD|DSN|CLIENT_ID|DATABASE_URL|CREDENTIAL/i;
 
@@ -42,53 +45,81 @@ export class OutputTail {
 const stripAnsi = (text: string) =>
   text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
 
-/**
- * Removes the values of credential-named environment variables, URL userinfo, bearer and basic
- * credentials, password/secret/token key-value pairs, and long runs mixing letters and digits.
- * Runs over whole output, so a value that spans lines is still found.
- */
-export function redactCredentials(output: string, environment: NodeJS.ProcessEnv): string {
-  let text = stripAnsi(output);
+/** The values of credential-named environment variables. They can span lines, so this runs first. */
+function withoutEnvironmentValues(text: string, environment: NodeJS.ProcessEnv): string {
   const values = Object.entries(environment)
     .filter(([name]) => credentialName.test(name))
     .flatMap(([, value]) => (typeof value === "string" ? [value, value.trim()] : []))
     .filter((value) => value.trim().length >= minimumEnvironmentValue)
     .sort((left, right) => right.length - left.length);
   for (const value of values) text = text.split(value).join("[redacted]");
-  return text
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1[redacted]@")
-    .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
-    .replace(
-      /(\w*(?:pass(?:word)?|pwd|secret|token|api[_-]?key)["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'&,;}]+)/gi,
-      "$1[redacted]",
-    )
-    .replace(/[A-Za-z0-9+/_=-]{32,}/g, (run) =>
-      /\d/.test(run) && /[A-Za-z]/.test(run) ? "[redacted]" : run,
-    );
+  return text;
 }
 
-// Fetch and JavaScript global names that look like hosts in messages such as `Headers.append: ...`.
-const apiName =
-  "(?!(?:Headers|Request|Response|URL|URLSearchParams|FormData|Blob|File|ReadableStream|WritableStream|AbortSignal|AbortController|JSON|Object|Array|Promise|Buffer|Reflect|Symbol)\\.)";
-// Source file endings that are not top-level domains, so `worker.ts` is a file and `docs.example.md` a host.
-const fileType = "(?!(?:[cm]?[jt]sx?|jsonc?|ya?ml|toml|lock|sql|css|html|txt|log|patch)(?![a-z]))";
-const host = (lastLabel: string) =>
-  new RegExp(
-    `(?<![\\w$.-])${apiName}(?:[a-z0-9-]+\\.)+${fileType}${lastLabel}(?::\\d+)?(?![\\w$-]|\\.[a-z])`,
-    "giu",
+// Content digests, commit hashes and operation ids are evidence a refusal exists to show.
+const digest = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/u;
+
+/** Credentials by shape: userinfo, credential headers, bearer and basic, key=value, long mixed runs. */
+function withoutCredentialShapes(text: string, keepDigests: boolean): string {
+  return (
+    text
+      .replace(/([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/]*@/gi, "$1[redacted]@")
+      // The same with no scheme, and a name whose `@` is written `%40`.
+      .replace(/(?<![^\s"'=(])[^\s/"'=@:]+:[^\s/"'@]+@(?=[\p{L}\p{N}[])/gu, "[redacted]@")
+      .replace(/(?<![^\s/"'=])[^\s/"'=]*%40[^\s/"'=:@]*/gi, "[redacted]")
+      .replace(
+        /\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b(["']?\s*[:=]\s*)[^\n]*/gi,
+        "$1$2[redacted]",
+      )
+      .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
+      .replace(
+        /((?:pass(?:word)?|pwd|secret|token|api[_-]?key)["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'&,;}]+)/gi,
+        "$1[redacted]",
+      )
+      .replace(/[A-Za-z0-9+/_=-]{32,}/g, (run) =>
+        /\d/.test(run) && /[A-Za-z]/.test(run) && !(keepDigests && digest.test(run))
+          ? "[redacted]"
+          : run,
+      )
   );
-const hostPattern = host("[a-z]{2,}");
-// In text this repository wrote, `bindings.PoolRuntimeBlue` is a property path, so only a name that
-// ends in a domain in common use is taken for a host.
-const knownHostPattern = host(
-  "(?:com|net|org|io|dev|app|cloud|co|ai|sh|run|tech|xyz|info|eu|de|ch|uk|us|internal|local|lan|corp|invalid|test|example)",
-);
-// Alchemy's resource types, such as `Cloudflare.Worker`: every label starts with a capital. A host
-// written that way would stay too; hosts are written in lower case.
-const typeName = /^(?:[A-Z][A-Za-z0-9]*\.)+[A-Z][A-Za-z0-9]*$/u;
+}
+
+/** A command line or a name: credentials go, the rest stays. */
+export const redactCredentials = (output: string, environment: NodeJS.ProcessEnv): string =>
+  withoutCredentialShapes(withoutEnvironmentValues(stripAnsi(output), environment), false);
+
+// Under these a dotted name is a host whatever its length.
+const domains = new Set("com net org edu gov int internal local lan corp arpa".split(" "));
+// Under a country's two letters or one of these, a host has a name in front of its domain. With
+// two labels it is a property, a file or a public registration: `props.id`, `README.md`.
+const longDomains = new Set("dev app cloud tech xyz site online".split(" "));
+// Two-letter file endings that no country has, so `alchemy.run.ts` is never a host.
+const sourceEndings = new Set("ts js go rb cs c4".split(" "));
+const dottedName =
+  /(?<![\p{L}\p{N}_$.-])(?:[\p{L}\p{N}_-]+\.)+\p{L}{2,24}(?::\d+)?(?![\p{L}\p{N}_$-])/gu;
+
+function withoutHosts(text: string): string {
+  return text.replace(dottedName, (name) => {
+    const labels = name.replace(/:\d+$/u, "").split(".");
+    // The longest leading part that ends in a domain is the host; what follows it stays.
+    for (let length = labels.length; length >= 2; length--) {
+      const last = labels[length - 1]!.toLowerCase();
+      const domain =
+        domains.has(last) ||
+        (length > 2 && !sourceEndings.has(last) && (last.length === 2 || longDomains.has(last)));
+      if (!domain) continue;
+      const rest = labels.slice(length);
+      return rest.length ? `[host].${rest.join(".")}` : "[host]";
+    }
+    return name;
+  });
+}
 
 function scrub(text: string, environment: NodeJS.ProcessEnv, written: boolean, limit: number) {
-  let result = text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]+/giu, "[url]");
+  let result = withoutEnvironmentValues(stripAnsi(text.slice(0, inputLimit)), environment).replace(
+    /[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'`<>]+/giu,
+    "[url]",
+  );
   // The same without a scheme; a comment's `// ` is followed by a space.
   result = result.replace(/(?<![:/\w])\/\/[^\s"'`<>/][^\s"'`<>]*/gu, "[url]");
   if (!written)
@@ -99,19 +130,22 @@ function scrub(text: string, environment: NodeJS.ProcessEnv, written: boolean, l
         pair !== undefined && pair.slice(1, -1) === "[url]" ? quoted : "[value]",
     );
   return (
-    redactCredentials(result, environment)
-      .replace(/[^\s@<>()[\]"'`,;:]+@[^\s@<>()[\]"'`,;:]+\.[a-z]{2,}/giu, "[email]")
-      .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b|\[[0-9a-f:]+\](?::\d+)?/giu, "[address]")
-      .replace(
-        /(?<![\w:.])(?=[0-9a-f:]*[0-9a-f])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/giu,
-        "[address]",
-      )
-      .replace(written ? knownHostPattern : hostPattern, (name) =>
-        typeName.test(name) ? name : "[host]",
-      )
+    withoutHosts(
+      withoutCredentialShapes(result, written)
+        .replace(
+          /(?<![^\s@<>()[\]"'`,;:])[^\s@<>()[\]"'`,;:]+@[^\s@<>()[\]"'`,;:]+\.[a-z]{2,}/giu,
+          "[email]",
+        )
+        .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b|\[[0-9a-f:]+\](?::\d+)?/giu, "[address]")
+        // A clock time is three numbers too: an address has a hex letter or a `::`.
+        .replace(
+          /(?<![\w:.])(?=[0-9a-f:]*(?:[a-f]|::))(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:-])/giu,
+          "[address]",
+        ),
+    )
       // A home directory names a person.
       .replace(/\/(?:Users|home)\/[^/\s"'`]+/gu, "~")
-      .replace(/\p{Cc}/gu, " ")
+      .replace(/[\p{Cc}\u2028\u2029]/gu, " ")
       // The Actions runner reads `::name::` at the start of a line and `##[name]` as commands.
       .replace(/^(\s*):(?=:)/u, "$1: ")
       .replaceAll("##[", "# #[")
@@ -127,8 +161,8 @@ export const publicText = (text: string, environment: NodeJS.ProcessEnv = proces
   scrub(text, environment, false, 512);
 
 /**
- * One line this repository wrote for the log, such as a refusal's reason or fix. Its wording and
- * quoted names stay; credentials, URLs, hosts, addresses and emails that reached it still go.
+ * One line this repository wrote for the log: a refusal's reason, fix or evidence. Its wording,
+ * quoted names, digests and ids stay; credentials, URLs, hosts, addresses and emails still go.
  */
 export const publicGuidance = (
   text: string,
@@ -137,7 +171,7 @@ export const publicGuidance = (
 
 /** The last lines of a command's output, each made public on its own. */
 export function publicTail(output: string, environment: NodeJS.ProcessEnv = process.env): string {
-  return redactCredentials(output, environment)
+  return withoutEnvironmentValues(stripAnsi(output), environment)
     .trimEnd()
     .split("\n")
     .slice(-tailLines)

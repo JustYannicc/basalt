@@ -3,30 +3,49 @@ import { test } from "node:test";
 import { publicGuidance, publicTail, publicText } from "./failure/redact.ts";
 
 const none = {};
+const digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+const commit = "533199cfa3b565b9b7e14f69abae597f09828760";
+const operation = "123e4567-e89b-12d3-a456-426614174000";
 
-test("hosts go in any spelling and position, and names that only look like hosts stay", () => {
+test("hosts go in any spelling and position, in text of either kind", () => {
   for (const host of [
     "api.cloudflare.com",
-    "api.Example.Com",
+    "Api.Example.Com",
+    "example.com",
     "db.prod.Internal",
+    "nas.local",
+    "db_primary.prod.internal",
+    "blob.core.windows.net",
+    "münchen.example.de",
     "api.vendor.sh",
     "docs.example.md",
-    "shop.example.py",
+    "worker.example.workers.dev",
     "pr-41.preview.example.dev:8443",
-    "api.example.com.Foo",
-  ]) {
-    assert.equal(publicText(`connect to ${host} failed`, none), "connect to [host] failed", host);
-    assert.equal(publicText(`build/${host}`, none), "build/[host]", host);
-  }
+  ])
+    for (const clean of [publicText, publicGuidance]) {
+      assert.equal(clean(`connect to ${host} failed`, none), "connect to [host] failed", host);
+      assert.equal(clean(`build/${host}`, none), "build/[host]", host);
+    }
+  // What follows a host stays, so a file named after one still reads as a file.
+  assert.equal(
+    publicText("certs/api.example.com.json is unreadable", none),
+    "certs/[host].json is unreadable",
+  );
+});
+
+test("names that only look like hosts stay, so a diagnostic still names its place", () => {
   for (const kept of [
     "PoolWorker (Cloudflare.Worker) update failed",
     "Cloudflare.R2.Bucket created",
     "src/pool/worker.ts(12,5): error TS2322",
     "see scripts/release/deploy.ts:317 and alchemy.run.ts",
+    "scripts/failure-report.test.ts failed at 12:30:45",
     "Headers.append: invalid header value",
-    "bun.lock and tsconfig.json changed",
+    "props.id changed and bindings.PoolRuntimeBlue: present -> absent",
+    "bun.lock, tsconfig.app.json, index.dev.js and README.md changed",
+    "at process.processTicksAndRejections (node:internal/process/task_queues:103:5)",
   ])
-    assert.equal(publicText(kept, none), kept);
+    for (const clean of [publicText, publicGuidance]) assert.equal(clean(kept, none), kept);
 });
 
 test("urls, addresses, emails, home directories and quoted values go from text nobody here wrote", () => {
@@ -52,12 +71,23 @@ test("urls, addresses, emails, home directories and quoted values go from text n
     publicText(`provider said "account 'Acme Corp' is suspended" and can't continue`, none),
     "provider said [value] and can't continue",
   );
+  assert.equal(
+    publicText("listening on fe80::1 and :::8787", none),
+    "listening on [address] and [address]",
+  );
 });
 
-test("guidance keeps its wording and quoted names, and still loses what must not leave", () => {
+test("guidance keeps its wording, quoted names and digests, and still loses what must not leave", () => {
   assert.equal(
     publicGuidance("Pass the policy's `include` list to the plan, or review 'release.json'.", none),
     "Pass the policy's `include` list to the plan, or review 'release.json'.",
+  );
+  // A refusal says exactly what it compared: content digests, a commit and an operation id.
+  const evidence = `value: ${digest} (expected ${commit}) in operation ${operation}`;
+  assert.equal(publicGuidance(evidence, none), evidence);
+  assert.equal(
+    publicText(evidence, none),
+    "value: [redacted] (expected [redacted]) in operation [redacted]",
   );
   assert.equal(
     publicGuidance(
@@ -66,10 +96,10 @@ test("guidance keeps its wording and quoted names, and still loses what must not
     ),
     'Provider said: {"token":[redacted]} at [host] [address] for [email]',
   );
-  // A property path is not a host; a name under a domain in common use is.
+  // A long mixed run that is no digest is a key, whoever wrote the sentence around it.
   assert.equal(
-    publicGuidance("bindings.PoolRuntimeBlue: present -> absent on api.Example.Com", none),
-    "bindings.PoolRuntimeBlue: present -> absent on [host]",
+    publicGuidance("key AKIAIOSFODNN7EXAMPLEabcdefghijklmnop1234 was rejected", none),
+    "key [redacted] was rejected",
   );
 });
 
@@ -84,14 +114,28 @@ test("credentials go by environment value, by shape and across lines", () => {
       "starting",
       environment.DEPLOY_PRIVATE_KEY,
       `Authorization: Bearer ${environment.CLOUDFLARE_API_TOKEN}`,
+      "Authorization: Token abcdef123456",
+      "cookie: session=abc; other=1",
+      "sent Bearer abcdef123456 to the service",
       "account 0123456789abcdef0123456789abcdef password=hunter2hunter2",
+      "connect admin:hunter2@db and jane%40example.com:hunter2@db",
       "done",
     ].join("\n"),
     environment,
   );
   assert.equal(
     tail,
-    "starting\n[redacted]\nAuthorization: Bearer [redacted]\naccount [redacted] password=[redacted]\ndone",
+    [
+      "starting",
+      "[redacted]",
+      "Authorization: [redacted]",
+      "Authorization: [redacted]",
+      "cookie: [redacted]",
+      "sent Bearer [redacted] to the service",
+      "account [redacted] password=[redacted]",
+      "connect [redacted]@db and [redacted]@db",
+      "done",
+    ].join("\n"),
   );
 });
 
@@ -100,6 +144,7 @@ test("a line cannot issue a workflow command or span lines", () => {
   assert.equal(publicText("   ::stop-commands::token", none), "   : :stop-commands::token");
   assert.equal(publicText("##[error]spoofed", none), "# #[error]spoofed");
   assert.equal(publicGuidance("first\n::warning::second", none), "first ::warning::second");
+  assert.equal(publicGuidance("first ::warning::second", none), "first ::warning::second");
   assert.deepEqual(publicTail("ok\n::set-output name=x::y\n", none).split("\n"), [
     "ok",
     ": :set-output name=x::y",
