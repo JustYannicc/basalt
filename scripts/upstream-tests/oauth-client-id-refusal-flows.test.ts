@@ -134,7 +134,7 @@ const signIn = <A, E>(
           values ('prv_fixture', ${JSON.stringify(definition)})`;
         yield* sql`insert into executor_deployments
           (id, code, owner, build, requirements, created_at, source_commit, file_count)
-          values ('dpl_fixture', 'code_fixture', ${owner}, 'build_fixture',
+          values ('dpl_fixture', 'code_fixture', ${owner}, 'bld_fixture',
             ${JSON.stringify(requirements)}, now(), null, 1)`;
         yield* sql`insert into executor_apps
           (id, code, repository, owner, name, slug, active_deployment, copied_from, created_at)
