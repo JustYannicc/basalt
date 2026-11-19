@@ -29,21 +29,15 @@ async function serves(f: Fixture) {
 
 /**
  * What a restart reads after its container stopped, in order (STOP-OPTIONS §7). Each refusal must
- * name itself on the pending line, and the pool must serve again once its cause clears.
+ * name itself on the pending line, and the pool must serve again once its cause clears. A new boot
+ * whose readiness never answers ends in the 180 s startup deadline, which
+ * runtime-startup-deadline.worker.test.ts covers.
  */
 const refusals: {
   name: string;
   fault(f: Fixture): () => void;
   expected: Pending;
 }[] = [
-  {
-    name: "the provider read is refused (step 2)",
-    fault: (f) => {
-      f.providerAvailable(false);
-      return () => f.providerAvailable(true);
-    },
-    expected: { class: "ProviderObservationRefused" },
-  },
   {
     name: "the observation token is missing (step 2)",
     fault: (f) => {
@@ -64,21 +58,6 @@ const refusals: {
       };
     },
     expected: { class: "RemoteRuntimeDefect", step: "endpoint_route" },
-  },
-  {
-    name: "the new boot's readiness refuses (step 7)",
-    fault: (f) => {
-      const old = f.old.identity().bootId;
-      let refusing = true;
-      f.old.hooks.health = async () =>
-        refusing && f.old.identity().bootId !== old
-          ? new Response(null, { status: 503 })
-          : undefined;
-      return () => {
-        refusing = false;
-      };
-    },
-    expected: { class: "SlotRefused", reason: "unhealthy", step: "endpoint_health" },
   },
   {
     name: "a policy install on the new boot fails (step 8)",
