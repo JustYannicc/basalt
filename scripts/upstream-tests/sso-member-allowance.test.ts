@@ -10,24 +10,15 @@ const team = "org_fixture";
 const created = new Date("2026-11-01T00:00:00.000Z");
 
 /**
- * The refusal the hosted auth's billing hook raises when the allowance cannot be confirmed: a
- * 503 with the safe failure category and the reference its server log carries.
- */
-const allowanceUnavailable = () =>
-  new APIError("SERVICE_UNAVAILABLE", {
-    message: "We could not check your member allowance. Try again.",
-    code: "MEMBER_ALLOWANCE_UNAVAILABLE",
-    operation: "getCustomer",
-    reason: "unavailable",
-    providerStatus: 503,
-    reference: "ref-fixture",
-  });
-
-/**
  * The hosted SSO plugin inside a real Better Auth instance on its memory adapter, with one team
  * holding an owner. Billing either answers an allowance or refuses as it does during an outage.
  */
 const fixture = async (allowance: number | "unavailable") => {
+  // The hosted auth's billing hook maps any unconfirmed allowance to this 503.
+  const refusal = new APIError("SERVICE_UNAVAILABLE", {
+    message: "We could not check your member allowance. Try again.",
+  });
+  let whileAsking = () => {};
   const db: Record<string, Record<string, unknown>[]> = {
     user: [],
     session: [],
@@ -44,7 +35,8 @@ const fixture = async (allowance: number | "unavailable") => {
     {
       memberLimit: async (organizationId) => {
         asked.push(organizationId);
-        if (allowance === "unavailable") throw allowanceUnavailable();
+        whileAsking();
+        if (allowance === "unavailable") throw refusal;
         return allowance;
       },
     },
@@ -108,7 +100,20 @@ const fixture = async (allowance: number | "unavailable") => {
     );
   const memberships = (user: { readonly id: string }) =>
     db.member.filter((row) => row.organizationId === team && row.userId === user.id);
-  return { db, asked, added, owner, person, signIn, memberships };
+  return {
+    db,
+    refusal,
+    asked,
+    added,
+    owner,
+    person,
+    signIn,
+    memberships,
+    /** Run while billing answers, as another request would between the checks. */
+    meanwhile: (run: () => void) => {
+      whileAsking = run;
+    },
+  };
 };
 
 test("an existing member signs in with SSO while billing is unavailable", async () => {
@@ -151,20 +156,38 @@ test("an invited person signs in with SSO while billing is unavailable", async (
 });
 
 test("a new member's SSO sign-in fails closed while billing is unavailable", async () => {
-  const { asked, added, person, signIn, memberships } = await fixture("unavailable");
+  const { refusal, asked, added, person, signIn, memberships } = await fixture("unavailable");
   const newcomer = person("newcomer");
 
   await assert.rejects(signIn(newcomer), (error: unknown) => {
-    assert.ok(error instanceof APIError);
-    assert.equal(error.status, "SERVICE_UNAVAILABLE");
-    assert.equal(error.body?.code, "MEMBER_ALLOWANCE_UNAVAILABLE");
-    assert.equal(error.body?.reference, "ref-fixture");
+    assert.equal(error, refusal, "the billing refusal and its failure category reach the person");
     return true;
   });
 
   assert.deepEqual(asked, [team]);
   assert.equal(memberships(newcomer).length, 0, "an unconfirmed allowance admits no one");
   assert.deepEqual(added, []);
+});
+
+test("a sign-in racing a concurrent join keeps one membership", async () => {
+  const room = await fixture(5);
+  const racer = room.person("racer");
+  // A concurrent first sign-in commits this person's membership after the early check.
+  room.meanwhile(() => {
+    room.db.member.push({
+      id: "member_racer",
+      organizationId: team,
+      userId: racer.id,
+      role: "member",
+      createdAt: created,
+    });
+  });
+
+  await room.signIn(racer);
+
+  assert.deepEqual(room.asked, [team]);
+  assert.equal(room.memberships(racer).length, 1, "the team lock checks membership again");
+  assert.deepEqual(room.added, []);
 });
 
 test("a new member joins through SSO within the allowance and is refused beyond it", async () => {
