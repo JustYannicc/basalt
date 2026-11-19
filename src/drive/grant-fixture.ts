@@ -174,12 +174,17 @@ export const grantStore = (organization: string) =>
       userId: user.id,
       /** The plain MCP URL a full-access agent connects at. */
       mcpUrl: `${origin}/mcp`,
-      /** A connection, as the dashboard creates it for the signed-in person. */
+      /** A connection, as the dashboard creates it for the signed-in person, with its MCP URL. */
       connection: (input: ConnectionInput) =>
         Effect.promise(() =>
           auth.api.createMcpConnection({
             body: { ...owner, id: input.id, name: input.name, policy: { apps: input.apps } },
           }),
+        ).pipe(
+          Effect.map((created) => ({
+            ...created,
+            url: mcpResource(origin, { mode: "model", connection: created.id }),
+          })),
         ),
       /** An Obsidian device connecting at a connection's URL with the plugin's code, then approved. */
       connectDevice: (connection: { readonly url: string }, device: string) =>
