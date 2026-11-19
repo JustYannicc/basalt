@@ -8,6 +8,7 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { poolDatabase, poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
+import { poolDatabaseInputs } from "./model-history/sources.ts";
 import { databasePoolBudget } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts";
 import { productionDatabaseMigration } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database.ts";
 import { postgresUrl } from "../../.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
@@ -114,17 +115,7 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     // The pool Worker and, on test stages, its database connection read this command's outcome.
     // A plan cannot know the outcome of a command that runs on every plan, so they would plan as
     // updates forever. Keyed on what the command reads, it runs when that changes, on every stage.
-    memo: {
-      include: [
-        "ensure-pool-database.ts",
-        "pool-database-provisioning.ts",
-        "pool-database-ownership.ts",
-        "../src/pool/model-history/change-schema.ts",
-        "../src/pool/model-history/schema.ts",
-        "../src/pool/database-settings.ts",
-      ],
-      lockfile: true,
-    },
+    memo: poolDatabaseInputs,
     // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
     // exits with the step it failed at. This outer limit only catches a script that cannot exit.
     timeout: "3 minutes",
