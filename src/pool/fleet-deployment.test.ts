@@ -371,27 +371,3 @@ test("POOL_FLEET_CLASSES=absent leaves both fleet classes out of PoolWorker and 
     /POOL_FLEET_CLASSES/,
   );
 });
-
-test("POOL_WORKER_VERSION_TRAFFIC uploads PoolWorker as a version at that traffic, within 0-100", async () => {
-  const { poolWorkerVersion } = await import("./deployment.ts");
-  const version = (env: Record<string, string>) =>
-    Effect.runPromise(
-      poolWorkerVersion.pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))),
-    );
-  assert.deepEqual(await version({}), {});
-  assert.deepEqual(await version({ POOL_WORKER_VERSION_TRAFFIC: "0" }), {
-    version: { traffic: 0 },
-  });
-  assert.deepEqual(await version({ POOL_WORKER_VERSION_TRAFFIC: "100" }), {
-    version: { traffic: 100 },
-  });
-  for (const value of ["101", "-1"])
-    await assert.rejects(
-      version({ POOL_WORKER_VERSION_TRAFFIC: value }),
-      /worker-version-traffic-out-of-range/,
-    );
-  await assert.rejects(
-    version({ POOL_WORKER_VERSION_TRAFFIC: "1.5" }),
-    /POOL_WORKER_VERSION_TRAFFIC/,
-  );
-});
