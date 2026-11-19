@@ -310,18 +310,54 @@ async function healRelease(
     });
     result.releaseSeconds = Math.round((Date.now() - started) / 1000);
     // 4. Recovery: wait, bounded, for the Worker's own restart to bring a new boot that answers.
+    // Every read goes into a timeline: the boot the witness names (the restart's new boot N), the
+    // boot the selection names, its epoch, active-health and the container. From it: seconds from
+    // N first appearing to the selection committing it (the fix's 60 s clock lives in that gap).
+    const confirmed =
+      (result.confirmed as { before?: Record<string, unknown>; state?: Record<string, unknown> }) ??
+      {};
+    const pre = ((confirmed.before ?? confirmed.state)?.selection ?? {}) as {
+      boot?: string | null;
+      epoch?: number | null;
+    };
+    const timeline: Record<string, unknown>[] = [];
+    result.timeline = timeline;
     const deadline = Date.now() + 10 * 60_000;
     let healed: Record<string, unknown> | undefined;
+    let bootSeenAt: number | undefined;
+    let committedAt: number | undefined;
     while (Date.now() < deadline) {
       const state = await faultRead(lane, source, outputs, "after", ["--read-only"]).catch(
         () => undefined,
       );
-      if ((state?.activeHealth as { status?: number } | undefined)?.status === 200) {
+      const at = Date.now();
+      const selection = (state?.selection ?? {}) as { boot?: string | null; epoch?: number | null };
+      const witness = (state?.witness ?? {}) as { boot?: string | null };
+      const health = (state?.activeHealth ?? {}) as { status?: number; reason?: string };
+      timeline.push({
+        atSeconds: Math.round((at - started) / 1000),
+        epoch: selection.epoch ?? null,
+        selectionBoot: selection.boot ?? null,
+        witnessBoot: witness.boot ?? null,
+        health: health.status ?? null,
+        reason: health.reason ?? null,
+        running: (state?.container as { running?: boolean } | undefined)?.running ?? null,
+      });
+      if (bootSeenAt === undefined && witness.boot) bootSeenAt = at;
+      if (committedAt === undefined && selection.boot && selection.boot !== pre.boot)
+        committedAt = at;
+      if (health.status === 200) {
         healed = state;
         break;
       }
-      await new Promise((done) => setTimeout(done, 5_000));
+      await new Promise((done) => setTimeout(done, 2_000));
     }
+    result.secondsBootToCommit =
+      bootSeenAt !== undefined && committedAt !== undefined
+        ? Math.round((committedAt - bootSeenAt) / 1000)
+        : null;
+    result.bootToCommitOver60 =
+      typeof result.secondsBootToCommit === "number" && result.secondsBootToCommit > 60;
     if (!healed) throw new Error("Recovery did not report ready within 10 minutes of the release");
     result.healed = healed;
     result.secondsToReady = Math.round((Date.now() - started) / 1000);
@@ -439,7 +475,13 @@ async function forcedStopPath(subject: StageSubject, source: NodeJS.ProcessEnv, 
       /\\?"path\\?":\\?"(graceful_exit|destroy_after_grace|destroy_without_signal)/gu,
     ),
   ].map((match) => match[1]);
-  return { paths: [...new Set(paths)], lines: paths.length };
+  // The lines themselves (slot, path, active streams, forced), unescaped, up to twenty.
+  const lines = [
+    ...text.replace(/\\"/gu, '"').matchAll(/POOL_RUNTIME_FORCED_STOP[^{]{0,8}(\{[^}]*\})/gu),
+  ]
+    .map((match) => match[1])
+    .slice(0, 20);
+  return { paths: [...new Set(paths)], count: paths.length, lines };
 }
 
 /** The commit the stage last deployed, from its readiness command's recorded input; refuse any other HEAD. */
