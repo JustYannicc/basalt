@@ -327,17 +327,39 @@ function containerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
       why: "Any change besides the image hash makes Alchemy patch the application, which starts a rollout of the legacy root.",
       fix: "Make the declaration equal to the recorded props, or change the root in its own reviewed release.",
     });
-  for (const binding of node.bindings)
-    if (binding.action === "create" || binding.action === "delete")
-      violations.push({
-        ...at,
-        rule: "pool-container-attachment-change",
-        change: [
-          `bindings.${binding.sid}: ${binding.action === "create" ? "absent -> present" : "present -> absent"}`,
-        ],
-        why: "The binding attaches the application to its Durable Object namespace; changing it makes Alchemy recreate the application.",
-        fix: "Keep the Worker binding that attaches the root container exactly as recorded.",
-      });
+  const recordedAttachments = new Map(
+    recordedBindings(node).map((binding) => [binding.sid, binding.data]),
+  );
+  for (const binding of node.bindings) {
+    if (binding.action === "noop") continue;
+    // A value unknown until another row resolves, or none at all, is not a planned change: the plan
+    // cannot see it, and the wire guard refuses any PATCH or rollout of the root it would cause.
+    const changes =
+      binding.action === "update"
+        ? propChanges(recordedAttachments.get(binding.sid), binding.data, [
+            "bindings",
+            binding.sid,
+          ]).filter((line) => !line.includes("<unresolved>"))
+        : [];
+    if (binding.action === "update" && changes.length === 0) continue;
+    violations.push({
+      ...at,
+      rule: "pool-container-attachment-change",
+      change:
+        binding.action === "create" || binding.action === "delete"
+          ? [
+              `bindings.${binding.sid}: ${binding.action === "create" ? "absent -> present" : "present -> absent"}`,
+            ]
+          : changes,
+      // The root's own restart proof records the application's version and settings digest; it
+      // refuses for good once either moves, and only a stopped container can be restarted.
+      why:
+        binding.action === "update"
+          ? "A changed attachment makes Alchemy patch the root application, which moves its version: the pool's own restart then refuses for good, and the root cannot be restarted by any path."
+          : "The binding attaches the application to its Durable Object namespace; changing it makes Alchemy recreate the application.",
+      fix: "Keep the Worker binding that attaches the root container exactly as recorded; find why it plans as changed (the reasons print the paths) before any release.",
+    });
+  }
   return violations;
 }
 

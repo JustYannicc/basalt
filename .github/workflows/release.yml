@@ -23,7 +23,7 @@ on:
         required: true
         type: choice
         # code: any code-only release (every changed Worker, rollbackable); cutover-*: the two cutover steps.
-        options: [release, code, cutover-code, cutover-classes]
+        options: [release, code, code-restart, cutover-code, cutover-classes]
         default: code
       plan_digest:
         description: For apply, the digest printed by the reviewed plan run
@@ -312,7 +312,11 @@ jobs:
       - name: Record the root's boot before the apply
         env: *release-secrets
         if: env.MODE == 'apply'
-        run: bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json
+        # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
+        # pool that does not answer; every other release needs the root's boot.
+        run: |
+          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
       # The restore target if the class change fails. Reading it also arms a restore to it for ten
       # minutes, the window the class change runs in.
       - name: Take the controller storage bookmark
@@ -347,13 +351,18 @@ jobs:
         # Every request must succeed; the runtimes that served are recorded (a code update may restart the root).
         # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
         # release may change the hosted app's Workers too.
+        # A declared root restart first waits, bounded by the policy, for the root's new boot; then every
+        # request must succeed on that one boot.
         run: |
-          bun scripts/release/deploy.ts accept --stage production --expect ${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }} --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
+          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
+          if [ -n "$within" ]; then expect=(--expect restart --within "$within"); fi
+          bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
           node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
         env: *release-secrets
-        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
         run: |
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
           # The release is red either way; this says whether the version rolled back to still serves.
@@ -361,6 +370,13 @@ jobs:
             echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
           fi
           echo "::error::Release rolled back (every Worker the plan updated); the cause is in the step above and in the sealed detail."
+          exit 1
+      # The code before a healing release could not restart the pool, so putting it back helps nothing
+      # and would stop a restart in progress. The run ends red; a rollback is its own GO.
+      - name: Stop on a failed healing release
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'code-restart' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        run: |
+          echo "::error::The healing release failed, or the pool did not serve on a new root boot within its bound. It is not rolled back: the code before it could not restart the pool. The serving versions are in .local/release/serving.json; a rollback is a separate GO."
           exit 1
       - name: Stop on a failed class change
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')

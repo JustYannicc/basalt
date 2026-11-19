@@ -11,7 +11,7 @@ const read = async (name: string) => decodeReleasePolicy(await raw(name));
 // The pin is supplied at run time from POOL_ROOT_IMAGE; it carries the account id, never committed.
 const image = `registry.cloudflare.com/${"0".repeat(32)}/pool@sha256:${"a".repeat(64)}`;
 
-for (const name of ["release", "code", "cutover-code", "cutover-classes"])
+for (const name of ["release", "code", "code-restart", "cutover-code", "cutover-classes"])
   test(`the ${name} policy decodes whole, and its check once the pin is supplied`, async () => {
     const policy = await read(name);
     await Effect.runPromise(
@@ -75,7 +75,7 @@ test("an automatic release is code-only and keeps the fleet classes absent until
 });
 
 test("every policy that can update PoolWorker carries the readiness command that waits for adoption", async () => {
-  for (const name of ["code", "cutover-code", "cutover-classes", "release"]) {
+  for (const name of ["code", "code-restart", "cutover-code", "cutover-classes", "release"]) {
     const policy = await read(name);
     // No include means the whole stack is planned, the readiness command with it.
     if (policy.include) assert.ok(policy.include.includes("PoolBackendBudgetRuntimeReady"), name);
@@ -87,4 +87,18 @@ test("every policy that can update PoolWorker carries the readiness command that
         name,
       );
   }
+});
+
+test("only the healing release declares a root restart, bounded, and it is otherwise the code policy", async () => {
+  for (const name of ["release", "code", "cutover-code", "cutover-classes"])
+    assert.equal((await read(name)).acceptance, undefined, name);
+  const healing = await read("code-restart");
+  const code = await read("code");
+  const within = healing.acceptance?.rootRestart.withinSeconds ?? 0;
+  assert.ok(within >= 60 && within <= 900, `bound ${within}`);
+  // No general loosening: the plan rules, include, wire rules and switches are the code policy's.
+  assert.deepEqual(
+    { check: healing.check, include: healing.include, wire: healing.wire, env: healing.env },
+    { check: code.check, include: code.include, wire: code.wire, env: code.env },
+  );
 });
