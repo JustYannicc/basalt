@@ -60,7 +60,7 @@ jobs:
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.path == '.github/workflows/ci.yml')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -75,7 +75,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       - name: Pick the candidate
@@ -125,7 +125,7 @@ jobs:
   release:
     needs: candidate
     if: needs.candidate.outputs.release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -178,7 +178,7 @@ jobs:
             echo "::error::An apply dispatch needs the plan_digest and attempt its reviewed plan run printed."
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       - name: Stop the line and require a rehearsal
@@ -188,7 +188,7 @@ jobs:
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           GH_TOKEN: ${{ github.token }}
         run: node scripts/guardrails/release-gate.ts "$BASALT_RELEASE_CANDIDATE"
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Prepare
