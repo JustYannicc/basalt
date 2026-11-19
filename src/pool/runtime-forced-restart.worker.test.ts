@@ -82,6 +82,11 @@ test("a 30-second readiness blip causes no restart", { timeout: 20_000 }, async 
     advance(2_000);
   }
   f.old.hooks.health = async () => {};
+  await pass(f);
+  const health = await f.command("active-health");
+  assert.equal(health.status, 200, `${await health.clone().text()}\n${lines()}`);
+  await health.body?.cancel();
+  assert.equal(await serves(f, lines), true);
   for (let elapsed = 0; elapsed <= unservingBoundMs * 2; elapsed += 2_000) {
     await pass(f);
     advance(2_000);
