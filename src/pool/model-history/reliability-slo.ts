@@ -23,7 +23,10 @@ export async function readPoolReliabilitySlo(
   now = Date.now(),
   transaction: "owned" | "caller" = "owned",
 ): Promise<PoolReliabilitySlo> {
-  const db = reportingReliabilityStatements(history);
+  const db = reportingReliabilityStatements(
+    history,
+    transaction === "owned" ? "standalone" : "overview",
+  );
   const to = new Date(now).toISOString();
   if (transaction === "owned")
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");

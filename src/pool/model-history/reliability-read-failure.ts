@@ -46,15 +46,19 @@ export function reliabilityFailure(error: unknown): {
       return { failure: "history_deadline" };
   }
   const failure = historySeriesFailure(error);
-  const code =
-    typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+  // Only a server error carries an SQLSTATE; a socket code such as EPIPE has the same shape.
+  const database = typeof error === "object" && error !== null && "severity" in error;
+  const code = database && "code" in error ? error.code : undefined;
   return typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)
     ? { failure, sqlstate: code }
     : { failure };
 }
 
 /** The read rethrows unchanged; the log names the step that failed and why. */
-export function reportingReliabilityStatements(db: HistoryDatabase): HistoryDatabase {
+export function reportingReliabilityStatements(
+  db: HistoryDatabase,
+  read: "standalone" | "overview",
+): HistoryDatabase {
   return {
     query: async (text, values) => {
       try {
@@ -64,6 +68,7 @@ export function reportingReliabilityStatements(db: HistoryDatabase): HistoryData
         // A rollback after a failure only repeats the cause already reported.
         if (step !== "rollback")
           console.error("POOL_REQUEST_RELIABILITY_READ_FAILED", {
+            read,
             step,
             ...reliabilityFailure(error),
           });

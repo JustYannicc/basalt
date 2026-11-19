@@ -76,7 +76,7 @@ test("a statement that times out is reported with its step, and the read still f
     [
       [
         "POOL_REQUEST_RELIABILITY_READ_FAILED",
-        { step: "terminal_evidence", failure: "statement_timeout" },
+        { read: "standalone", step: "terminal_evidence", failure: "statement_timeout" },
       ],
     ],
     "one line for the failing statement",
@@ -87,10 +87,15 @@ test("a statement that times out is reported with its step, and the read still f
 });
 
 test("a database error keeps its SQLSTATE, and session failures map to closed causes", () => {
-  assert.deepEqual(reliabilityFailure(Object.assign(new Error("x"), { code: "42501" })), {
-    failure: "database_error",
-    sqlstate: "42501",
-  });
+  assert.deepEqual(
+    reliabilityFailure(Object.assign(new Error("x"), { code: "42501", severity: "ERROR" })),
+    { failure: "database_error", sqlstate: "42501" },
+  );
+  assert.equal(
+    reliabilityFailure(Object.assign(new Error("x"), { code: "EPIPE" })).sqlstate,
+    undefined,
+    "a socket code is not an SQLSTATE",
+  );
   assert.deepEqual(reliabilityFailure(new Error("Model request history is disabled")), {
     failure: "history_disabled",
   });
