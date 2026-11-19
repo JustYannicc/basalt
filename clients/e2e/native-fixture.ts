@@ -381,9 +381,10 @@ export async function nativeFixture(
             return;
           }
           if (modelFailure === "unknown") {
-            response(502, { "content-type": "application/json", "x-should-retry": "false" });
+            // The pool's answer for a model call cut after dispatch (clients/contracts/model-error.ts).
+            response(502, { "content-type": "application/json", "retry-after": "1" });
             data(
-              Buffer.from('{"error":{"code":"upstream_outcome_unknown","retryable":false}}'),
+              Buffer.from('{"error":{"code":"upstream_outcome_unknown","retryable":true}}'),
               false,
               false,
               true,
