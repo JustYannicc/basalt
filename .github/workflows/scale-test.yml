@@ -129,7 +129,7 @@ jobs:
           node -e 'const ms = Number(process.env.DEADLINE) - Date.now() - 20 * 60_000; if (!Number.isFinite(ms)) process.exit(1); setTimeout(() => {}, Math.max(0, ms));'
   expire:
     needs: [scale, lease]
-    if: always() && inputs.mode == 'deploy' && needs.scale.result == 'success'
+    if: always() && github.ref == 'refs/heads/main' && inputs.mode == 'deploy' && needs.scale.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
