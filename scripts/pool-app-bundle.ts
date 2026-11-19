@@ -15,6 +15,7 @@ const fontFiles = ["geist-sans.woff2", "geist-mono.woff2", "LICENSE.txt"];
 export const sharedObservationFiles = [
   "account-observation-text.ts",
   "account-observation-readings-view.tsx",
+  "moment-format.ts",
 ];
 const observationImport = "../../../.upstream/packages/ui/src/implementation/dashboard/";
 

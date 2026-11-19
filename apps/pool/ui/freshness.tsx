@@ -58,7 +58,7 @@ export function Freshness({
         ? "Saved view, updating…"
         : `Showing ${savedText}`;
   const title = [
-    reading === null ? null : `Usage read ${new Date(reading).toLocaleString()}`,
+    reading === null ? null : `Usage read ${exactTime(new Date(reading).toISOString())}`,
     saved === null ? null : `Saved view from ${exactTime(new Date(saved).toISOString())}`,
   ]
     .filter(Boolean)
