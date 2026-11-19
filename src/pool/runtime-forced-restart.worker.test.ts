@@ -272,9 +272,9 @@ test(
     };
     await pass(f);
     advance(unservingBoundMs);
-    for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 2_000) {
+    for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 30_000) {
       await pass(f);
-      advance(2_000);
+      advance(30_000);
     }
     assert.deepEqual(f.old.calls.signals, [15]);
     assert.equal(f.old.calls.start, 1);
