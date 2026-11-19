@@ -200,7 +200,11 @@ const program = Effect.gen(function* () {
   state.app.configuration.runtime = "unexpected-runtime";
   const beforeRuntimeDrift = state.rollouts;
   expected = yield* reconcile(yield* read());
-  assert.equal(state.rollouts, beforeRuntimeDrift + 1, "a runtime other than the default rolls out");
+  assert.equal(
+    state.rollouts,
+    beforeRuntimeDrift + 1,
+    "a runtime other than the default rolls out",
+  );
   assert.equal(state.app.configuration.runtime, "firecracker");
 
   // The platform's defaults count as not set. A declaration that sets one is a real change.
