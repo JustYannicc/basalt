@@ -31,6 +31,16 @@ try {
   const previewStack = previewConnection || settlesProof === "preview";
   const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
+  if (settlesProof && process.env.NATIVE_STACK_PROOF_DETAIL === "1") {
+    globalThis.proofRequests = [];
+    globalThis.fetch = (input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      globalThis.proofRequests.push(
+        `${init?.method ?? request?.method ?? "GET"} ${String(request?.url ?? input).slice(0, 160)}`,
+      );
+      return http.fetch(input, init);
+    };
+  }
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
     await load("scripts/environment.ts");
   const synthetic = Object.fromEntries(
@@ -281,7 +291,9 @@ try {
   // Never forward exception messages, causes, file paths, config, or request details. A maintainer
   // debugging the plan proof locally may opt in; no workflow sets this.
   if (process.env.NATIVE_STACK_SETTLES_PROOF && process.env.NATIVE_STACK_PROOF_DETAIL === "1")
-    emit(`${JSON.stringify({ detail: String(error?.stack ?? error).slice(0, 1500) })}\n`);
+    emit(
+      `${JSON.stringify({ detail: String(error?.stack ?? error).slice(0, 600), requests: (globalThis.proofRequests ?? []).slice(-14) })}\n`,
+    );
   const labels = [
     "Invalid native declaration name",
     "Invalid native declaration metadata",
