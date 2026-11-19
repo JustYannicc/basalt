@@ -1,7 +1,0 @@
-model {
-  extend basalt.build {
-    metadata {
-      constraint "The contributed-account access scenario waits for the links of every app a departure touches before it reads the member's saved accounts. A departure detaches each app's link in its own transaction in app ID order, and the saved-account list keeps an account that any readable app still links, so waiting for one app leaves a window. Each wait drives cleanup with a read-only POST and keeps its 15-second deadline; the saved-list, app tool and 403 assertions that follow stay immediate and unchanged."
-    }
-  }
-}
