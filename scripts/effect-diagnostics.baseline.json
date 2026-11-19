@@ -85,6 +85,7 @@
     "scripts/upstream-tests/fixtures/oauth-setup-copy.mjs": 1,
     "scripts/upstream-tests/self-host-committed-changes.test.mjs": 1,
     "scripts/upstream-tests/shell-migration-order-worker.mjs": 1,
+    "src/catalog/tests/github-runtime.mjs": 1,
     "src/catalog/tests/plaid-provider-continuity.mjs": 1,
     "src/catalog/tests/plaid-runtime.mjs": 1
   },
