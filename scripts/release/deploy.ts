@@ -359,6 +359,7 @@ const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./releas
 const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
+const { servingBindingShapes } = await import("./fixed-bindings.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -410,6 +411,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
         const wire = {
           sqliteClasses: {} as Record<string, ReadonlyArray<string>>,
           mainModuleSha256: {} as Record<string, string>,
+          fixedBindings: {} as Record<string, ReadonlyArray<string>>,
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
@@ -465,6 +467,15 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             });
             wire.mainModuleSha256[script] = digest;
             liveModules.push({ fqn, digest });
+          }
+          // A Worker admitted as code only uploads exactly what its serving version binds.
+          for (const fqn of policy?.wire.fixedBindings ?? []) {
+            const script = yield* scriptName(fqn);
+            wire.fixedBindings[script] = yield* servingBindingShapes({
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+              token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
+              script,
+            });
           }
           // Every reviewed release leaves the root application as recorded; previews roll it freely.
           if (policy?.check) {
