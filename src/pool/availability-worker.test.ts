@@ -26,6 +26,7 @@ const {
   ) => {
     availabilityProbe(pool: string, includeRuntime?: boolean): Promise<ProbeResult>;
     automaticRecoveryObservation(pool: string): Promise<unknown>;
+    reliabilitySlo(pool: string): Promise<unknown>;
   };
   PoolOperations: {
     prototype: { fetch(this: { env: object }, request: Request): Promise<Response> };
@@ -83,6 +84,10 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
               },
               automaticRecoveryObservation(pool: string) {
                 return object.automaticRecoveryObservation(pool);
+              },
+              // History is disabled here, so the figure is refused before any storage write.
+              reliabilitySlo(pool: string) {
+                return object.reliabilitySlo(pool);
               },
             };
           },

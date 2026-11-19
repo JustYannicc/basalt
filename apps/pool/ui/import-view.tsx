@@ -2,17 +2,11 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { Button, buttonClass, Problem } from "./controls.tsx";
 import { openImportSource } from "./import-source.ts";
 import type { ImportProgress, ImportSession } from "./import-session.ts";
+import { formatMoment, utc } from "./moments.ts";
 
 const count = (value: number | string) => BigInt(value).toLocaleString();
 const date = (value: string | null) =>
-  value === null
-    ? "—"
-    : new Date(value).toLocaleDateString(undefined, {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-        timeZone: "UTC",
-      });
+  value === null ? "—" : formatMoment(value, utc, { dateStyle: "short" });
 
 export function ImportView({
   session,
