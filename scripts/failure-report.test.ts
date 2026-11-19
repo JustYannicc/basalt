@@ -933,12 +933,10 @@ test("structuredFailure gives the same report without printing", () => {
     structuredFailure(undefined, environment).error.message,
     "A failure of an unlisted type",
   );
-  // A provider's answer thrown as it came has no type and no message, only its codes.
+  // Something thrown that is no error and holds only coded entries is told by its codes.
   assert.equal(
-    structuredFailure(
-      { success: false, errors: [{ code: 10000, message: "Authentication error" }] },
-      environment,
-    ).error.message,
+    structuredFailure({ errors: [{ code: 10000, message: "Authentication error" }] }, environment)
+      .error.message,
     "A failure of an unlisted type: provider code 10000",
   );
 
