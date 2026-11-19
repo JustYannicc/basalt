@@ -152,7 +152,12 @@ class Child:
         if self.process.poll() is not None:
             return None
         if not self._reader.is_alive():
-            return "reader_dead"
+            # A pipe EOF can arrive just before the exit is reapable; then the exit path reports it.
+            try:
+                self.process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                return "reader_dead"
+            return None
         started = self._processing_since
         if started is not None and now - started > READER_STALL_SECONDS:
             return "reader_blocked"
@@ -162,7 +167,7 @@ class Child:
         exit_code = self.process.poll()
         return {
             "name": self.name,
-            "state": "running" if exit_code is None else "exited",
+            "state": "running" if exit_code is None else "killed" if exit_code < 0 else "exited",
             **({} if exit_code is None else {"exit_code": exit_code}),
         }
 
@@ -182,8 +187,7 @@ def serving_failure(
     if monitor is not None and not monitor.is_alive():
         return "monitor_dead"
     for child in children:
-        check = getattr(child, "reader_failure", None)
-        reason = check(now) if check is not None else None
+        reason = child.reader_failure(now)
         if reason is not None:
             return reason
     return None
@@ -205,10 +209,7 @@ def diagnostics(
     tail = home.diagnostics.snapshot() if home is not None and home.diagnostics is not None else []
     return {
         "boot_id": readiness.boot_id,
-        "children": [
-            child.status() if hasattr(child, "status") else {"name": child.name}
-            for child in children
-        ],
+        "children": [child.status() for child in children],
         **({"stop_reason": stop_state["reason"]} if "reason" in stop_state else {}),
         "crash_tail": tail,
         "signals": [{"seq": seq, "line": line} for seq, line in OUTPUT.lines_after(after)],
@@ -474,6 +475,13 @@ def main(stop: threading.Event | None = None) -> int:
                             raise HomeExited(failed[0][1])
                         raise StartupError("Pool child exited before initial health")
                     operation_timeout(STARTUP_TIMEOUT_SECONDS)
+                    if selected:
+                        # Waiting out the startup timeout would only delay the same ending.
+                        reason = serving_failure(
+                            children, policy_monitor_thread, readiness, time.monotonic()
+                        )
+                        if reason is not None:
+                            raise ContainerEnding(reason)
                     if recovering and readiness.policy_fused():
                         raise StartupError("Policy fused during recovery")
                     audit_revision = readiness.service_audit_revision()
@@ -583,11 +591,14 @@ def main(stop: threading.Event | None = None) -> int:
             home_peers.close()
         if not recovery_cleanup_done and policy_monitor_thread is not None:
             policy_monitor_thread.join(timeout=1)
-        if not recovery_cleanup_done and ready_server is not None:
-            ready_server.shutdown()
-            ready_server.server_close()
-        if not recovery_cleanup_done:
-            terminate_children(children)
+        try:
+            if not recovery_cleanup_done:
+                terminate_children(children)
+        finally:
+            # Serve /diagnostics and the stop reason through Home's stop grace, then close.
+            if not recovery_cleanup_done and ready_server is not None:
+                ready_server.shutdown()
+                ready_server.server_close()
         (ROOT / "bootstrap.yaml").unlink(missing_ok=True)
         (ROOT / "cluster.yaml").unlink(missing_ok=True)
         for signum, handler in original_signals.items():

@@ -132,11 +132,11 @@ class SupervisorTests(unittest.TestCase):
             boot_ids.append(ready.generation())
             return True
 
-        def make_service_health(*args):
+        def make_service_health(*args, **kwargs):
             if invalidate_startup_audit:
                 ready_instances[0].invalidate_policy()
                 ready_instances[0].refresh_policy_lease("b" * 32)
-            return service_health(*args, health, health)
+            return service_health(*args, health, health, **kwargs)
 
         def advance_phase(phase):
             if sum(child.name == "home" for child in launched) > 1:
@@ -354,7 +354,9 @@ class SupervisorTests(unittest.TestCase):
     def test_main_exhaustion_does_not_start_fresh_cleanup_grace(self):
         result, children, ready, records, _, terminations, *_ = self.run_supervisor(
             actual_cleanup=True,
-            recovery_phase_delays={"home": 80, "config": 83},
+            # The first teardown spends the child stop grace; the phases then end just inside
+            # the 180-second episode, so only a fresh cleanup grace could pass 182.
+            recovery_phase_delays={"home": 95 - supervisor.CHILD_STOP_GRACE_SECONDS, "config": 83},
         )
         self.assertEqual(result, 1)
         # One initial teardown and one terminal cleanup, with no third finally teardown.

@@ -8,11 +8,11 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-
-from .output import emit
 from enum import Enum, IntEnum
 from types import TracebackType
+
 from .crash_tail import HomeCrashTail
+from .output import emit
 
 
 STARTUP_PHASE_MARKER = "POOL_STARTUP_PHASE "

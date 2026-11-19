@@ -2,9 +2,11 @@
 
 Home's own stdout is a pipe that the supervisor's reader drains. If the reader waited on the
 container's stdout, a slow log consumer would stop the reader, fill Home's pipe and stall Home on
-its next log write. Every supervisor line therefore goes through a bounded queue: a writer thread
-does the blocking write, and a full queue drops lines and counts them instead of waiting. The last
-lines are also kept, with sequence numbers, so `/diagnostics` can serve them on demand.
+its next log write. Every supervisor line therefore goes through a bounded queue per stream: a
+writer thread does the blocking write, and a full queue drops lines and counts them instead of
+waiting. Stdout and stderr have separate queues and writers, so a stalled stdout never holds back
+the stop and failure records on stderr. The last lines are also kept, with sequence numbers, so
+`/diagnostics` can serve them on demand.
 """
 
 from __future__ import annotations
@@ -22,6 +24,13 @@ HISTORY_LINES = 256
 DROPPED_MARKER = "POOL_OUTPUT_DROPPED "
 
 
+class _Lane:
+    def __init__(self, capacity: int) -> None:
+        self.queue: queue.Queue[str | None] = queue.Queue(maxsize=capacity)
+        self.dropped = 0
+        self.writer: threading.Thread | None = None
+
+
 class Output:
     def __init__(
         self,
@@ -33,13 +42,12 @@ class Output:
         # None means the process's own streams, looked up when used.
         self._out = out
         self._err = err
-        self._queue: queue.Queue[tuple[bool, str]] = queue.Queue(maxsize=capacity)
+        self._lanes = {False: _Lane(capacity), True: _Lane(capacity)}
         self._history: collections.deque[tuple[int, str]] = collections.deque(maxlen=history)
-        self._lock = threading.Lock()
+        # Reentrant: emit can run from sys.unraisablehook while this thread holds the lock.
+        self._lock = threading.RLock()
         self._seq = 0
-        self._dropped = 0
         self._dropped_total = 0
-        self._writer: threading.Thread | None = None
 
     def emit(self, line: str, err: bool = False) -> None:
         with self._lock:
@@ -50,12 +58,13 @@ class Output:
             # A replaced stream (tests, embedding) is the caller's own and is written in place.
             _write(stream, line)
             return
-        self._start_writer()
+        lane = self._lanes[err]
+        self._ensure_writer(err)
         try:
-            self._queue.put_nowait((err, line))
+            lane.queue.put_nowait(line)
         except queue.Full:
             with self._lock:
-                self._dropped += 1
+                lane.dropped += 1
                 self._dropped_total += 1
 
     def lines_after(self, seq: int) -> list[tuple[int, str]]:
@@ -70,37 +79,62 @@ class Output:
         """Wait up to `timeout` for queued lines to be written; never longer."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self._queue.unfinished_tasks == 0:
+            if self._drained():
                 return True
             time.sleep(0.01)
-        return self._queue.unfinished_tasks == 0
+        return self._drained()
+
+    def close(self, timeout: float = 1) -> None:
+        """Stop the writers once their queued lines are written; lines still blocked are left."""
+        for lane in self._lanes.values():
+            writer = lane.writer
+            if writer is not None and writer.is_alive():
+                try:
+                    lane.queue.put(None, timeout=timeout)
+                except queue.Full:
+                    continue
+                writer.join(timeout)
+
+    def _drained(self) -> bool:
+        return all(lane.queue.unfinished_tasks == 0 for lane in self._lanes.values())
 
     def _target(self, err: bool) -> TextIO | None:
         if err:
             return self._err if self._err is not None else sys.__stderr__
         return self._out if self._out is not None else sys.__stdout__
 
-    def _start_writer(self) -> None:
+    def _ensure_writer(self, err: bool) -> None:
         with self._lock:
-            if self._writer is not None:
+            lane = self._lanes[err]
+            if lane.writer is not None and lane.writer.is_alive():
                 return
-            self._writer = threading.Thread(target=self._write_loop, daemon=True)
-            self._writer.start()
-
-    def _write_loop(self) -> None:
-        while True:
-            err, line = self._queue.get()
+            writer = threading.Thread(target=self._write_loop, args=(err,), daemon=True)
             try:
-                _write(self._target(err), line)
+                writer.start()
+            except RuntimeError:
+                # No thread now (interpreter shutdown, resource limits): the line stays queued and
+                # the next emit tries again.
+                return
+            lane.writer = writer
+
+    def _write_loop(self, err: bool) -> None:
+        lane = self._lanes[err]
+        while True:
+            line = lane.queue.get()
+            try:
+                if line is None:
+                    return
+                stream = self._target(err)
+                _write(stream, line)
                 with self._lock:
-                    dropped, self._dropped = self._dropped, 0
+                    dropped, lane.dropped = lane.dropped, 0
                 if dropped:
-                    _write(
-                        self._target(False),
-                        DROPPED_MARKER + json.dumps({"count": dropped}, separators=(",", ":")),
-                    )
+                    _write(stream, DROPPED_MARKER + json.dumps({"count": dropped}, separators=(",", ":")))
+            except Exception:
+                # One bad write must not end the only writer for this stream.
+                pass
             finally:
-                self._queue.task_done()
+                lane.queue.task_done()
 
 
 def _write(stream: TextIO | None, line: str) -> None:

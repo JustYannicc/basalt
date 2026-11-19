@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from types import SimpleNamespace
@@ -41,10 +40,18 @@ def fake_child(name: str, clock: Clock) -> supervisor.Child:
     child.config_empty = threading.Event()
     child._processing_since = None
     child.exit_code = None
+    child.reaped = True
     child.reader_alive = True
+
+    def wait(timeout=None):
+        if child.exit_code is None:
+            raise subprocess.TimeoutExpired(name, timeout)
+        child.reaped = True
+        return child.exit_code
+
     child.process = SimpleNamespace(
-        poll=lambda: child.exit_code,
-        wait=lambda timeout=None: child.exit_code,
+        poll=lambda: child.exit_code if child.reaped else None,
+        wait=wait,
         returncode=None,
         terminate=lambda: None,
         kill=lambda: None,
@@ -54,14 +61,19 @@ def fake_child(name: str, clock: Clock) -> supervisor.Child:
 
 
 class SelectedSupervisorTests(unittest.TestCase):
-    def run_selected(self, on_tick, *, monitor_dies: bool = False, environment=LAUNCH):
+    def run_selected(
+        self, on_tick, *, monitor_dies: bool = False, environment=LAUNCH, on_startup_wait=None, services=True
+    ):
         clock = Clock()
         stop = Stop(clock)
         launched: list[supervisor.Child] = []
         readiness: list[Readiness] = []
+        servers: list[Mock] = []
         release_monitor = threading.Event()
         self.addCleanup(release_monitor.set)
         ticks = [0]
+        self.monitor_threads: list[threading.Thread] = []
+        self.at_stop: dict[str, object] = {}
 
         def make_child(name, *_args):
             child = fake_child(name, clock)
@@ -71,23 +83,36 @@ class SelectedSupervisorTests(unittest.TestCase):
         def ready_server(ready: Readiness) -> Mock:
             readiness.append(ready)
             ready.refresh_policy_lease("b" * 32)
-            return Mock()
+            servers.append(Mock())
+            return servers[-1]
 
         class Monitor:
             def __init__(self, *_args) -> None:
                 pass
 
             def run(self, _stop) -> None:
+                test.monitor_threads.append(threading.current_thread())
                 if not monitor_dies:
                     release_monitor.wait()
 
+        test = self
+
         def on_wait(seconds: float) -> None:
             if seconds != 2:
+                if on_startup_wait is not None:
+                    on_startup_wait(launched, readiness[0])
                 return
             ticks[0] += 1
             on_tick(ticks[0], launched, readiness[0], clock)
             if ticks[0] >= TICKS:
                 stop.set()
+
+        def at_terminate(_children) -> None:
+            # What the controller can still read while Home gets its stop grace.
+            if readiness and "ready" not in self.at_stop:
+                self.at_stop["ready"] = readiness[0].snapshot()[0]
+                self.at_stop["diagnostics"] = readiness[0].diagnostics(0)
+                self.at_stop["server_shut"] = servers[-1].shutdown.called
 
         stop.on_wait = on_wait
         health = SimpleNamespace(check=lambda: True, invalidate=lambda: None)
@@ -104,11 +129,11 @@ class SelectedSupervisorTests(unittest.TestCase):
                 "wait_for_home": Mock(return_value="ready"),
                 "apply_pool_config": Mock(),
                 "create_node_jwt": Mock(return_value=("node", "jwt")),
-                "check_services": Mock(return_value=True),
+                "check_services": Mock(return_value=services),
                 "ServiceHealth": Mock(return_value=health),
                 "DatabasePoolPoll": Mock(),
                 "PolicyHealthMonitor": Monitor,
-                "terminate_children": Mock(),
+                "terminate_children": Mock(side_effect=at_terminate),
             }.items():
                 stack.enter_context(patch.object(supervisor, name, value))
             stack.enter_context(
@@ -128,13 +153,15 @@ class SelectedSupervisorTests(unittest.TestCase):
         self.assertLess(ticks, TICKS)
         self.assertEqual([child.name for child in launched].count("home"), 1, "Home was replaced in place")
         self.assertIn('POOL_SUPERVISOR_STOP {"reason":"' + reason + '"}', stderr)
-        self.assertFalse(ready.snapshot()[0])
-        self.assertEqual(ready.diagnostics(0)["stop_reason"], reason)
+        self.assertIs(self.at_stop["ready"], False)
+        self.assertEqual(self.at_stop["diagnostics"]["stop_reason"], reason)
+        self.assertFalse(self.at_stop["server_shut"], "/diagnostics closed before the children stopped")
 
     def test_a_home_exit_ends_the_container_instead_of_a_replacement_in_place(self) -> None:
         def exit_home(tick, launched, _ready, _clock):
             if tick == 2:
                 launched[0].exit_code = 1
+                launched[0].reader_alive = False
 
         self.assert_ended(self.run_selected(exit_home), "child_exit")
 
@@ -147,7 +174,8 @@ class SelectedSupervisorTests(unittest.TestCase):
 
     def test_a_dead_policy_monitor_thread_ends_the_container(self) -> None:
         def wait_for_thread_end(tick, _launched, _ready, _clock):
-            time.sleep(0.05)
+            for thread in self.monitor_threads:
+                thread.join(5)
 
         self.assert_ended(self.run_selected(wait_for_thread_end, monitor_dies=True), "monitor_dead")
 
@@ -158,10 +186,38 @@ class SelectedSupervisorTests(unittest.TestCase):
 
         self.assert_ended(self.run_selected(kill_reader), "reader_dead")
 
+    def test_a_dead_node_reader_ends_the_container(self) -> None:
+        def kill_reader(tick, launched, _ready, _clock):
+            if tick == 2:
+                next(child for child in launched if child.name == "node").reader_alive = False
+
+        self.assert_ended(self.run_selected(kill_reader), "reader_dead")
+
+    def test_a_reader_that_ends_with_its_child_reports_the_exit(self) -> None:
+        def exit_node(tick, launched, _ready, _clock):
+            if tick == 2:
+                node = next(child for child in launched if child.name == "node")
+                node.reader_alive = False
+                node.reaped = False  # the pipe closed before the exit could be reaped
+                node.exit_code = 1
+
+        outcome = self.run_selected(exit_node)
+        self.assertIn('POOL_SUPERVISOR_STOP {"reason":"child_exit"}', outcome[3])
+
+    def test_a_fuse_during_initial_health_ends_the_container_at_once(self) -> None:
+        def fuse(_launched, ready):
+            ready.note_policy_fused(ready.policy_observation_generation())
+
+        result, _launched, _ready, stderr, ticks = self.run_selected(
+            lambda *_args: None, on_startup_wait=fuse, services=False
+        )
+        self.assertEqual((result, ticks), (1, 0))
+        self.assertIn('POOL_SUPERVISOR_STOP {"reason":"policy_fused"}', stderr)
+
     def test_a_blocked_output_reader_ends_the_container(self) -> None:
         def block_reader(tick, launched, _ready, clock):
             if tick == 2:
-                launched[0]._processing_since = clock.now - supervisor.READER_STALL_SECONDS - 1
+                launched[0]._processing_since = clock.now - getattr(supervisor, "READER_STALL_SECONDS", 10) - 1
 
         self.assert_ended(self.run_selected(block_reader), "reader_blocked")
 
@@ -204,6 +260,8 @@ class OutputPipeTests(unittest.TestCase):
         stream = BlockingStream()
         self.addCleanup(stream.release.set)
         output = Output(out=stream, err=stream) if Output is not None else None
+        if output is not None:
+            self.addCleanup(output.close)
         with ExitStack() as stack:
             root = stack.enter_context(tempfile.TemporaryDirectory())
             stack.enter_context(patch.object(sys, "stdout", stream))
@@ -224,6 +282,55 @@ class OutputPipeTests(unittest.TestCase):
         output.drain(10)
         self.assertGreater(output.dropped_total(), 0)
         self.assertTrue(any(text.startswith("POOL_OUTPUT_DROPPED ") for text in stream.lines))
+
+
+class SignalStream(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.written = threading.Event()
+
+    def write(self, text: str) -> int:
+        result = super().write(text)
+        self.written.set()
+        return result
+
+
+class OutputLaneTests(unittest.TestCase):
+    def output(self, out, err) -> Output:
+        output = Output(out=out, err=err)
+        self.addCleanup(output.close)
+        stack = ExitStack()
+        stack.enter_context(patch.object(sys, "stdout", out))
+        stack.enter_context(patch.object(sys, "stderr", err))
+        self.addCleanup(stack.close)
+        return output
+
+    def test_a_stalled_stdout_never_holds_back_the_stop_record(self) -> None:
+        out, err = BlockingStream(), SignalStream()
+        self.addCleanup(out.release.set)
+        output = self.output(out, err)
+        for index in range(5000):
+            output.emit(f"line {index}")
+        output.emit('POOL_SUPERVISOR_STOP {"reason":"child_exit"}', err=True)
+        self.assertTrue(err.written.wait(5), "the stop record waited behind stdout")
+        self.assertIn('POOL_SUPERVISOR_STOP {"reason":"child_exit"}', err.getvalue())
+
+    def test_a_failing_write_does_not_end_the_writer(self) -> None:
+        class Flaky(io.StringIO):
+            failed = False
+
+            def write(self, text: str) -> int:
+                if not Flaky.failed:
+                    Flaky.failed = True
+                    raise RuntimeError("one bad write")
+                return super().write(text)
+
+        out = Flaky()
+        output = self.output(out, io.StringIO())
+        output.emit("first")
+        output.emit("second")
+        self.assertTrue(output.drain(5), "the writer stopped after one failed write")
+        self.assertEqual(out.getvalue(), "second\n")
 
 
 class DiagnosticsTests(unittest.TestCase):
