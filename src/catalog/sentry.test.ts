@@ -118,7 +118,7 @@ test("Sentry's available OAuth claim is bound to the served source and DCR metad
   );
   assert.ok(
     oauthFitness(official, review, { ...evidence, sources: new Map() }).some((problem) =>
-      problem.includes("published source is unavailable"),
+      problem.includes("published source could not be read"),
     ),
   );
   assert.throws(

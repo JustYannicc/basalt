@@ -2562,8 +2562,9 @@ jobs:
         run: node scripts/catalog-sources.ts --check --base "$BASE_SHA" --summary "$GITHUB_STEP_SUMMARY"
       - name: Check every catalog OAuth method has a reviewed connection path
         env:
-          # Drift always fails. A publisher that stays unreachable after retries fails full-suite
-          # Checks (main and batch pushes) and only warns on a PR's fast lane, which ships nothing.
+          # Drift, redirects, missing documents and invalid JSON always fail. A publisher that stays
+          # unreachable after retries fails full-suite Checks (main and batch pushes) and only warns
+          # on a PR's fast lane, which ships nothing.
           # Anything but "false", including an empty output, counts as required.
           CATALOG_SOURCES_REQUIRED: ${{ needs.select.outputs.full_suite }}
         run: node scripts/check-catalog-oauth.ts

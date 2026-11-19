@@ -84,18 +84,26 @@ export const oauthMethods = (entry: FeedEntry): string[] =>
     record(method) && method.kind === "oauth2" && text(method.method) ? [method.method] : [],
   );
 
+/** Why a document is missing. `transient` means its retries ran out on an outage-shaped failure. */
+export interface OAuthReadFailure {
+  reason: string;
+  transient: boolean;
+}
+
 export interface OAuthEvidence {
   sources: ReadonlyMap<string, string>;
   hostedClients: ReadonlySet<string>;
   metadata: ReadonlyMap<string, { sha256: string; document: unknown }>;
-  sourceFailures?: ReadonlyMap<string, string>;
-  metadataFailures?: ReadonlyMap<string, string>;
+  sourceFailures?: ReadonlyMap<string, OAuthReadFailure>;
+  metadataFailures?: ReadonlyMap<string, OAuthReadFailure>;
 }
 
 /**
  * Source content binds manual review to the declaration that a person will actually install.
- * Evidence that could not be fetched is not drift: a caller that passes `unavailable` receives
- * those findings there to apply its own rule, and without it they fail like every other problem.
+ * Only a transient read failure is an outage rather than drift: a caller that passes
+ * `unavailable` receives those findings there to apply its own rule, and without it they fail
+ * like every other problem. A redirect, a missing document, invalid JSON or absent evidence will
+ * not clear on its own, so it always fails.
  */
 export function oauthFitness(
   feed: Feed,
@@ -104,7 +112,11 @@ export function oauthFitness(
   unavailable?: string[],
 ): string[] {
   const problems: string[] = [];
-  const missing = unavailable ?? problems;
+  const unread = (subject: string, failure: OAuthReadFailure | undefined, at = "") => {
+    if (failure?.transient)
+      (unavailable ?? problems).push(`${subject} is unavailable (${at}${failure.reason})`);
+    else problems.push(`${subject} could not be read (${at}${failure?.reason ?? "no document"})`);
+  };
   const reviewed = new Map(reviews.map((review) => [review.entry, review]));
   const entries = new Map(feed.apps.map((entry) => [entry.id, entry]));
   for (const entry of feed.apps) {
@@ -119,9 +131,7 @@ export function oauthFitness(
     if (Object.values(review.methods).some((method) => method.kind !== "deferred")) {
       const source = evidence.sources.get(entry.id);
       if (source === undefined)
-        missing.push(
-          `${entry.id}: published source is unavailable (${evidence.sourceFailures?.get(entry.id) ?? "no document"})`,
-        );
+        unread(`${entry.id}: published source`, evidence.sourceFailures?.get(entry.id));
       else if (source !== review.sourceSha256)
         problems.push(
           `${entry.id}: published source changed (sourceSha256: ${review.sourceSha256} -> ${source})`,
@@ -138,8 +148,10 @@ export function oauthFitness(
       else if (decision.kind === "automatic") {
         const proof = evidence.metadata.get(decision.metadata);
         if (proof === undefined) {
-          missing.push(
-            `${entry.id}/${method}: automatic client metadata is unavailable (${decision.metadata}: ${evidence.metadataFailures?.get(decision.metadata) ?? "no document"})`,
+          unread(
+            `${entry.id}/${method}: automatic client metadata`,
+            evidence.metadataFailures?.get(decision.metadata),
+            `${decision.metadata}: `,
           );
           continue;
         }

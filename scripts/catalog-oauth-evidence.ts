@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { setTimeout as pause } from "node:timers/promises";
 import { brand } from "../brand.ts";
 import { handleCatalog } from "../src/catalog/worker.ts";
-import { type OAuthReview, type OAuthEvidence } from "../src/catalog/oauth-policy.ts";
+import {
+  type OAuthReview,
+  type OAuthEvidence,
+  type OAuthReadFailure,
+} from "../src/catalog/oauth-policy.ts";
 import type { Feed } from "../src/catalog/feed.ts";
 
 const canonical = (value: unknown): unknown =>
@@ -30,8 +34,10 @@ export interface CatalogReadOptions {
   attemptTimeoutMs?: number;
 }
 
-/** A publisher document that could not be fetched: unreachable, not changed. */
+/** A publisher document whose retries ran out: unreachable, not changed. */
 export class CatalogSourceUnavailable extends Error {}
+/** A publisher answer no retry can change: a redirect, another refused status or invalid JSON. */
+class CatalogSourceUnreadable extends Error {}
 
 const attempts = 3;
 // The largest documents read here (the index and Google's source) are about 1 MB and arrive in
@@ -90,18 +96,28 @@ async function readCompletely(
   }
 }
 
+const statusReason = (status: number) =>
+  status >= 300 && status < 400 ? `HTTP ${status} redirect` : `HTTP ${status}`;
+
 const read = async (url: string, options: CatalogReadOptions): Promise<unknown> => {
-  const response = await readCompletely(url, { redirect: "error" }, options);
-  if (!response.ok) throw new CatalogSourceUnavailable(`HTTP ${response.status}`);
+  // A manual redirect comes back as its own 3xx response, so it is final instead of a thrown,
+  // retried request.
+  const response = await readCompletely(url, { redirect: "manual" }, options);
+  if (!response.ok) throw new CatalogSourceUnreadable(statusReason(response.status));
   try {
     return await response.json();
   } catch {
-    throw new CatalogSourceUnavailable("invalid JSON");
+    throw new CatalogSourceUnreadable("invalid JSON");
   }
 };
 
-const failureReason = (error: unknown) =>
-  error instanceof CatalogSourceUnavailable ? error.message : "request did not complete";
+const readFailure = (error: unknown): OAuthReadFailure => ({
+  reason:
+    error instanceof CatalogSourceUnavailable || error instanceof CatalogSourceUnreadable
+      ? error.message
+      : "request did not complete",
+  transient: error instanceof CatalogSourceUnavailable,
+});
 
 const bounded = async <A>(items: readonly A[], run: (item: A) => Promise<void>) => {
   let next = 0;
@@ -114,8 +130,9 @@ const bounded = async <A>(items: readonly A[], run: (item: A) => Promise<void>) 
 
 /**
  * Exercise the catalog's public handler, including this revision's carried app sources. A source
- * or metadata document that cannot be fetched is recorded with its last failure, never as drift.
- * Throws CatalogSourceUnavailable when the index itself cannot be fetched.
+ * or metadata document that cannot be read is recorded with its last failure and whether its
+ * retries ran out, never as drift. When the index's retries run out this throws
+ * CatalogSourceUnavailable; a redirected, missing or invalid index throws a plain Error.
  */
 export async function catalogOAuthEvidence(
   reviews: readonly OAuthReview[],
@@ -124,9 +141,12 @@ export async function catalogOAuthEvidence(
 ) {
   const index = "https://catalog.executor.sh/index.json";
   const official = await read(index, options).catch((error: unknown) => {
-    throw new CatalogSourceUnavailable(
-      `catalog index is unavailable (${index}: ${failureReason(error)})`,
-    );
+    const failure = readFailure(error);
+    if (failure.transient)
+      throw new CatalogSourceUnavailable(
+        `catalog index is unavailable (${index}: ${failure.reason})`,
+      );
+    throw new Error(`catalog index could not be read (${index}: ${failure.reason})`);
   });
   const response = await handleCatalog(
     new Request(`https://${brand.host}/catalog/index.json`),
@@ -135,9 +155,9 @@ export async function catalogOAuthEvidence(
   if (!response.ok) throw new Error("The composed catalog is unavailable");
   const feed: Feed = await response.json();
   const sources = new Map<string, string>();
-  const sourceFailures = new Map<string, string>();
+  const sourceFailures = new Map<string, OAuthReadFailure>();
   const metadata = new Map<string, { sha256: string; document: unknown }>();
-  const metadataFailures = new Map<string, string>();
+  const metadataFailures = new Map<string, OAuthReadFailure>();
   const positiveClaims = new Set(
     reviews
       .filter((review) =>
@@ -149,28 +169,32 @@ export async function catalogOAuthEvidence(
     feed.apps.filter((entry) => positiveClaims.has(entry.id)),
     async (entry) => {
       // The handler answers 502 for any publisher failure; this keeps the publisher's own reason.
-      let failure: string | undefined;
+      let failure: OAuthReadFailure | undefined;
       const source = await handleCatalog(
         new Request(`https://${brand.host}/catalog/apps/${encodeURIComponent(entry.id)}.json`),
         async (input, init) => {
           try {
             const published = await readCompletely(input, init ?? {}, options);
-            if (!published.ok) failure = `HTTP ${published.status}`;
+            if (!published.ok)
+              failure = { reason: statusReason(published.status), transient: false };
             return published;
           } catch (error) {
-            failure = failureReason(error);
+            failure = readFailure(error);
             throw error;
           }
         },
       );
       if (!source.ok) {
-        sourceFailures.set(entry.id, failure ?? `catalog source returned HTTP ${source.status}`);
+        sourceFailures.set(
+          entry.id,
+          failure ?? { reason: `catalog source returned HTTP ${source.status}`, transient: false },
+        );
         return;
       }
       try {
         sources.set(entry.id, catalogDocumentSha256(await source.json()));
       } catch {
-        sourceFailures.set(entry.id, "invalid JSON");
+        sourceFailures.set(entry.id, { reason: "invalid JSON", transient: false });
       }
     },
   );
@@ -188,7 +212,7 @@ export async function catalogOAuthEvidence(
       const document = await read(url, options);
       metadata.set(url, { sha256: catalogDocumentSha256(document), document });
     } catch (error) {
-      metadataFailures.set(url, failureReason(error));
+      metadataFailures.set(url, readFailure(error));
     }
   });
   const evidence: OAuthEvidence = {
@@ -202,12 +226,14 @@ export async function catalogOAuthEvidence(
 }
 
 /**
- * `changed` and every other problem fail everywhere. An `unavailable` source, one that still
- * could not be fetched after its retries, fails wherever this check gates what ships: full-suite
- * Checks (pushes to main and to batch branches, which feed main) and local runs. Only a pull
- * request's fast lane sets CATALOG_SOURCES_REQUIRED=false and gets warnings instead, because it
- * ships nothing and the batch's full Check re-runs this check before main. A missing or any other
- * value counts as required.
+ * `changed`, a permanent read failure (a redirect, a missing document, invalid JSON) and every
+ * other problem fail everywhere. An `unavailable` source, one whose retries ran out on a network
+ * error, timeout, 5xx or 429, fails unless CATALOG_SOURCES_REQUIRED is exactly "false". So it
+ * fails full-suite Checks (pushes to main and to batch branches, which feed main) and a direct
+ * `node scripts/check-catalog-oauth.ts` run without the variable. Two lanes set "false" and only
+ * warn: a pull request's fast lane in CI, and its local replay `npm run ci:fast`, whose plan
+ * (scripts/ci/fast-plan.ts) maps the flag to "false". Neither ships anything, and the batch's full
+ * Check re-runs this check before main. A missing or any other value counts as required.
  */
 export function catalogOAuthVerdict(
   problems: readonly string[],

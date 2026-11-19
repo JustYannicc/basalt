@@ -161,7 +161,7 @@ test("a client reference or discover URL alone cannot establish automatic sign-i
   missingMetadata.metadata.clear();
   assert.match(
     oauthFitness(feed, reviews, missingMetadata).join("\n"),
-    /automatic client metadata is unavailable/,
+    /automatic client metadata could not be read \(https:\/\/fixture\.example\/metadata: no document\)/,
   );
   const changedMetadata = evidence();
   changedMetadata.metadata.set("https://fixture.example/metadata", {
@@ -354,7 +354,7 @@ test("account endpoint reviews bind source without inventing fixed OAuth metadat
   assert.deepEqual(withOAuthDeferrals({ version: 1, apps: [app] }, classified).apps, [app]);
   assert.match(
     oauthFitness({ version: 1, apps: [app] }, classified, { ...data, sources: new Map() }).join(),
-    /private-endpoint: published source is unavailable \(no document\)/,
+    /private-endpoint: published source could not be read \(no document\)/,
   );
   assert.throws(
     () => oauthReviews({ version: 1, entries: [{ ...input.entries[0], sourceSha256: undefined }] }),

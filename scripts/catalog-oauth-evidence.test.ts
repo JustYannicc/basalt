@@ -56,14 +56,25 @@ const official = {
 type Answer = (init?: RequestInit) => Response | Promise<Response>;
 const status = (code: number) => () => new Response(null, { status: code });
 const json = (value: unknown) => () => Response.json(value);
+const redirect = () =>
+  new Response(null, { status: 301, headers: { location: "https://moved.example/source.json" } });
+const invalid = () => new Response("{", { status: 200 });
+// Answers no retry can change. Each fails on every lane, after a single read.
+const permanent = [
+  ["redirect", redirect, "HTTP 301 redirect"],
+  ["404", status(404), "HTTP 404"],
+  ["invalid JSON", invalid, "invalid JSON"],
+] as const;
 
 /** Serves the index, then each listed URL's answers in order, repeating the last. */
 function publisher(routes: Record<string, Answer[]>) {
   const reads = new Map<string, number>();
   const signals: AbortSignal[] = [];
+  const redirects: (RequestRedirect | undefined)[] = [];
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
     if (init?.signal) signals.push(init.signal);
+    redirects.push(init?.redirect);
     if (url === index) return Response.json(official);
     const answers = routes[url];
     assert.ok(answers, `unexpected read of ${url}`);
@@ -71,7 +82,7 @@ function publisher(routes: Record<string, Answer[]>) {
     reads.set(url, count + 1);
     return answers[Math.min(count, answers.length - 1)]!(init);
   };
-  return { fetch, reads: (url: string) => reads.get(url) ?? 0, signals };
+  return { fetch, reads: (url: string) => reads.get(url) ?? 0, signals, redirects };
 }
 
 async function check(
@@ -125,8 +136,6 @@ for (const [failure, answer, reason, attempts] of [
     "response body did not complete after 3 attempts",
     3,
   ],
-  ["HTTP 404", status(404), "HTTP 404", 1],
-  ["invalid JSON", () => new Response("{", { status: 200 }), "invalid JSON", 1],
 ] as const) {
   test(`unavailable metadata is reported apart from drift: ${failure}`, async () => {
     const served = publisher({ [metadataUrl]: [answer] });
@@ -137,6 +146,32 @@ for (const [failure, answer, reason, attempts] of [
     ]);
     assert.equal(served.reads(metadataUrl), attempts);
     assert.deepEqual(result.sleeps, [1000, 2000].slice(0, attempts - 1));
+  });
+}
+
+for (const [failure, answer, reason] of permanent) {
+  test(`metadata answering ${failure} fails on every lane without a retry`, async () => {
+    const served = publisher({ [metadataUrl]: [answer, json(metadata)] });
+    const { problems, unavailable, sleeps } = await check([review], served.fetch);
+    assert.deepEqual(problems, [
+      `elevenlabs/oauth: automatic client metadata could not be read (${metadataUrl}: ${reason})`,
+    ]);
+    assert.deepEqual(unavailable, []);
+    assert.deepEqual(sleeps, []);
+    assert.equal(served.reads(metadataUrl), 1);
+    // A thrown redirect would look like a failed request and be retried.
+    assert.ok(served.redirects.every((mode) => mode === "manual"));
+    assert.equal(catalogOAuthVerdict(problems, unavailable, "false").failed, true);
+  });
+
+  test(`a source answering ${failure} fails on every lane without a retry`, async () => {
+    const served = publisher({ [sourceUrl]: [answer, json(sourceDocument)] });
+    const { problems, unavailable, sleeps } = await check([published], served.fetch);
+    assert.deepEqual(problems, [`published: published source could not be read (${reason})`]);
+    assert.deepEqual(unavailable, []);
+    assert.deepEqual(sleeps, []);
+    assert.equal(served.reads(sourceUrl), 1);
+    assert.equal(catalogOAuthVerdict(problems, unavailable, "false").failed, true);
   });
 }
 
@@ -182,17 +217,6 @@ test("a stalled read ends at its own per-try timeout and is retried", async () =
   assert.notEqual(first, second);
 });
 
-test("a 404 is final without a retry", async () => {
-  const served = publisher({ [sourceUrl]: [status(404), json(sourceDocument)] });
-  const result = await check([published], served.fetch);
-  assert.deepEqual(result, {
-    problems: [],
-    unavailable: ["published: published source is unavailable (HTTP 404)"],
-    sleeps: [],
-  });
-  assert.equal(served.reads(sourceUrl), 1);
-});
-
 test("a fetched source that differs from its pin is changed and fails even when not required", async () => {
   const changed = { ...sourceDocument, files: [{ path: "index.ts", content: "export {1};\n" }] };
   const served = publisher({ [sourceUrl]: [json(changed)] });
@@ -227,6 +251,23 @@ test("an unreachable index is unavailable rather than drift", async () => {
       error.message === `catalog index is unavailable (${index}: HTTP 503 after 3 attempts)`,
   );
 });
+
+for (const [failure, answer, reason] of permanent)
+  test(`an index answering ${failure} fails outright instead of reading as unavailable`, async () => {
+    let reads = 0;
+    await assert.rejects(
+      catalogOAuthEvidence([review], new Set(), {
+        fetch: async () => (reads++, answer()),
+        sleep: async () => undefined,
+        log: () => undefined,
+      }),
+      (error) =>
+        !(error instanceof CatalogSourceUnavailable) &&
+        error instanceof Error &&
+        error.message === `catalog index could not be read (${index}: ${reason})`,
+    );
+    assert.equal(reads, 1);
+  });
 
 test("a fetched metadata change fails without accepting a later matching response", async () => {
   const changed = { ...metadata, issuer: "https://unreviewed.example" };
