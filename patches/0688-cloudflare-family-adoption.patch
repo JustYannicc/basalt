@@ -58,14 +58,20 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/clou
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,346 @@
 +import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 +import { catalogAppSweepPending } from "@executor-js/hosted-server/catalog-app-upgrades";
 +import { familyProviderIdentity } from "@executor-js/hosted-server/provider-account-definitions";
 +import { identifyProvider } from "@executor-js/sdk/core";
 +import { Crypto, Data, Effect, Option, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
-+import type { Change, Json, MigrationPlan, ProductionMigration } from "../contracts.ts";
++import {
++  ProductionOperationBusy,
++  type Change,
++  type Json,
++  type MigrationPlan,
++  type ProductionMigration,
++} from "../contracts.ts";
 +import { canonical } from "../crypto.ts";
 +import { contention } from "../locking.ts";
 +import {
@@ -326,8 +332,12 @@ new file mode 100644
 +      const input = yield* Schema.decodeUnknownEffect(Request)(raw);
 +      const data = yield* Schema.decodeUnknownEffect(PlanData)(plan.data);
 +      const sql = yield* SqlClient.SqlClient;
-+      // Link writers take the organization's access lock first; adoption keeps that order.
-+      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0))`;
++      // Link writers take the organization's access lock first; adoption keeps that order. The
++      // plan's snapshot is already fixed, so waiting here would hide what commits meanwhile.
++      const [access] = yield* sql<{
++        readonly held: boolean;
++      }>`select pg_try_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0)) as held`;
++      if (access?.held !== true) return yield* new ProductionOperationBusy();
 +      // Deploys and activations lock the app row, so every app owning a moved version waits for
 +      // the GO and then reads the moved rows.
 +      const versions = data.deployments.map((entry) => entry.version);
@@ -345,7 +355,7 @@ new file mode 100644
 +        ]),
 +      ].sort();
 +      for (const app of apps)
-+        yield* sql`select id from executor_apps where id = ${app} for update nowait`;
++        yield* sql`select id from executor_apps where id = ${app} for no key update nowait`;
 +    }).pipe(Effect.mapError(contention)),
 +  apply: (raw, plan) =>
 +    Effect.gen(function* () {
@@ -537,7 +547,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/clou
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-verification.ts
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,93 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type { MigrationPlan } from "../contracts.ts";
@@ -564,8 +574,9 @@ new file mode 100644
 +
 +/**
 + * Inside the GO every written row must match its planned hash and every kept link must exist.
-+ * After commit people renew, rename, refresh and unlink, so the post-commit check and replays only
-+ * require that the moved refs still name the family ref and nothing names the retained one.
++ * After commit people renew, rename, refresh, unlink and move apps to other providers, so the
++ * post-commit check and replays only require that the moved refs still name the family ref and
++ * that nothing, links included, names the retained one.
 + */
 +export const familyVerification = (
 +  input: Refs,
@@ -614,12 +625,13 @@ new file mode 100644
 +        input.to === data.to,
 +      movedRefs: written.every(moved),
 +      nothingLeftOnRetainedRef: accountsLeft.length === 0 && versionsLeft.length === 0,
-+      linksResolve: links.every((link) => link.provider === data.to),
++      noLinkOnRetainedRef: links.every((link) => link.provider !== data.from),
 +      ...(exact
 +        ? {
 +            exactRows:
 +              written.length === changes.length &&
 +              written.every(({ key, row }) => after.get(canonical(key)) === sha256(canonical(row))),
++            linksResolve: links.every((link) => link.provider === data.to),
 +            // People may link the moved accounts once they share the family ref.
 +            linksKept: data.links.every((planned) =>
 +              links.some(({ link }) => canonical(link) === canonical(planned)),
@@ -663,6 +675,90 @@ diff --git a/apps/hosted/server/src/implementation/provider-account-definitions.
 +    const declaration = yield* providerDeclaration(providers[lab]);
 +    return yield* identifyProvider(declaration, yield* Crypto.Crypto);
 +  });
+diff --git a/apps/hosted/server/src/implementation/requirement-account-creation.ts b/apps/hosted/server/src/implementation/requirement-account-creation.ts
+--- a/apps/hosted/server/src/implementation/requirement-account-creation.ts
++++ b/apps/hosted/server/src/implementation/requirement-account-creation.ts
+@@ -16,6 +16,7 @@ import { checkDestination } from "./connection-policy.ts";
+ import { requireAccountAccess } from "./resource-policy.ts";
+ import { requireRequirementAccess } from "./contributed-account-policy.ts";
+ import { accountDestination } from "./resource-lifecycle.ts";
++import { accountForRequirement } from "./requirement-account-guard.ts";
+ import { requireProviderAccountMethod } from "./provider-account-methods.ts";
+ 
+ /** Creation commits before a native pool's appLink performs any backend mirroring. */
+@@ -73,5 +74,5 @@ export const createRequirementAccount = (
+         fields: payload.fields,
+         ...(payload.label === undefined ? {} : { label: payload.label }),
+       })
+-      .pipe(accountDestination(destination));
++      .pipe(accountDestination(destination), accountForRequirement(input));
+   });
+diff --git a/apps/hosted/server/src/implementation/requirement-account-guard.ts b/apps/hosted/server/src/implementation/requirement-account-guard.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/requirement-account-guard.ts
+@@ -0,0 +1,40 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Context, Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++type Requirement = { readonly app: string; readonly requirement: string };
++
++/** The app requirement an account is being saved for, when a person adds one for it. */
++export const AccountForRequirement = Context.Reference<Requirement | undefined>(
++  "hosted/AccountForRequirement",
++  { defaultValue: () => undefined },
++);
++export const accountForRequirement =
++  (requirement: Requirement) =>
++  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++    effect.pipe(Effect.provideService(AccountForRequirement, requirement));
++
++/**
++ * Runs in the account's insert transaction. A production migration may have moved the app's
++ * provider ref since the request read the requirement, and an account saved under the old ref is
++ * offered by no app. Lock the app's row as deploys do, then read the requirement again.
++ */
++export const requireRequirementProvider = (
++  sql: SqlClient.SqlClient,
++  target: Requirement,
++  account: { readonly owner: string; readonly provider: string },
++) =>
++  Effect.gen(function* () {
++    const locked = yield* sql<{ readonly version: string | null }>`update executor_apps
++      set code = code where id = ${target.app} and owner = ${account.owner}
++      returning active_deployment as version`;
++    const version = locked[0]?.version;
++    // A separate statement, so it reads what committed while the update waited for the lock.
++    const named =
++      version === undefined || version === null
++        ? []
++        : yield* sql<{ readonly provider: string | null }>`select
++            requirements::jsonb -> 'accounts' -> ${target.requirement} ->> 'provider' as provider
++            from executor_deployments where id = ${version} and owner = ${account.owner}`;
++    if (named[0]?.provider !== account.provider) return yield* new StorageError();
++  });
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -18,6 +18,7 @@ import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retire
+ import { checkConnection } from "./connection-policy.ts";
+ import { isContributed, checkContributedAccountRemoval } from "./contributed-account-policy.ts";
+ import { lockAccountRemoval } from "./account-removal-lock.ts";
++import { AccountForRequirement, requireRequirementProvider } from "./requirement-account-guard.ts";
+ /** Product metadata commits with SDK resources using the same SQL transaction context. */
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
+@@ -666,6 +667,9 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+         ),
+       accountCreated: (account) =>
+         Effect.gen(function* () {
++          const requirement = yield* AccountForRequirement;
++          if (requirement !== undefined)
++            yield* requireRequirementProvider(sql, requirement, account);
+           const organization = yield* organizationOf(account.owner);
+           const destination = yield* AccountCreation;
+           const user = yield* member(
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts

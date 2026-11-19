@@ -1,7 +1,7 @@
 {
   "identity": "basalt-cloudflare-family-adoption",
   "file": "0688-cloudflare-family-adoption.patch",
-  "content_sha256": "7d3524c88fb1fad24ef816374ac0040227ca2cf41d598cfc08ff4b2178f4e496",
+  "content_sha256": "e6ad69e0e91c2a94df4e68d2ccc0eeab4d8dd0a4085b70a3e43c1402339340f3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

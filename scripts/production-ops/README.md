@@ -280,11 +280,11 @@ versions move, the links it keeps and the apps already on `to` that start
 offering the moved accounts. Review those app IDs before the GO.
 Account IDs, credentials, generations and links never change; provider rows are
 only read. Apply with the standard saved-plan GO. Inside the GO every written
-row must match its planned hash and every kept link must still exist. The check
-after commit and any replay only require that the moved rows still name the
-family ref, nothing in the organization names `from` and every link of the
-moved accounts resolves to the family ref, so renewals, renames and unlinks
-after the GO don't read as a failed migration.
+row must match its planned hash and every kept link must still exist and
+resolve to the family ref. The check after commit and any replay only require
+that the moved rows still name the family ref and that nothing in the
+organization, links included, names `from`, so renewals, renames, unlinks and
+apps moving to other providers after the GO don't read as a failed migration.
 
 It refuses `declaration-not-family` while an app whose active version names
 `from` still declares the first Cloudflare definition: a copy of that app, or
@@ -312,7 +312,11 @@ either of these is true, read from the same database:
 
 The GO also takes the row lock of every app that owns a version it moves, so
 deploys and activations of those apps wait for it and then read the moved
-versions. Deploys choose provider refs again under that lock, from the version
+versions. It takes the organization's access lock without waiting and reports
+busy when a link change holds it; retry the GO. An API-token account a person
+adds for an app's requirement locks that app and re-reads the requirement in
+its own transaction, so one saved around the GO is refused rather than saved
+under `from`; the person adds it again. Deploys choose provider refs again under that lock, from the version
 they built on, so a deploy that read `from` before the GO writes the family ref
 after it. The GO is done
 only after two more dry runs with the same request and `"accounts": []`: one
@@ -321,7 +325,12 @@ Cloudflare apps that finishes later (the next release's catalog sweep, or an
 update). Each must report `changes: 0`. Any other result means something names
 `from` again: `account-set-changed` means an account was saved under it (list
 it with the `accounts` inventory and adopt it with a new exact selection), and
-a plan with changes lists the versions to move; review it and GO it.
+a plan with changes lists the versions to move; review it and GO it. Two
+refusals mean the check could not run rather than that something names `from`:
+`family-ref-changed` (a release changed the shared Cloudflare declaration, which
+ships with its own adoption) and `retained-provider-not-family` (another
+organization's deploy changed the shared provider row under `from`). Then read
+the `accounts` inventory and the `pools` backup for rows that still name `from`.
 
 ## Retire redundant Google bindings
 
