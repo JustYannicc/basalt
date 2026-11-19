@@ -191,22 +191,20 @@ async function rootPin(
     | undefined;
   const reference = row?.attr?.configuration?.image ?? "";
   const digest = row?.attr?.hash?.digest ?? "";
-  const input = row?.attr?.hash?.image ?? "";
   const repository =
     /^(registry\.cloudflare\.com\/[a-f0-9]{32}\/[a-z0-9/_-]+)(?::[^/@]+|@sha256:[a-f0-9]{64})$/u.exec(
       reference,
     )?.[1];
-  if (!repository || !/^sha256:[a-f0-9]{64}$/u.test(digest) || !/^[a-f0-9]{16}$/u.test(input))
+  if (!repository || !/^sha256:[a-f0-9]{64}$/u.test(digest))
     throw new Error(
       "PoolContainer's State row has no image digest and build input to pin the root by",
     );
-  // The controller must already know the root by that input, or the pin would move its identity.
-  const live = (await hooks.readBack("root-pin")).plainText?.POOL_IMAGE_HASH;
-  if (live !== input)
-    throw new Error(
-      `PoolWorker's POOL_IMAGE_HASH (${live ?? "none"}) is not the root row's build input (${input})`,
-    );
-  return JSON.stringify({ image: `${repository}@${digest}`, input });
+  // The pin's input is the build input PoolWorker already knows the root by (`POOL_IMAGE_HASH`);
+  // the preflight compares exactly that pair.
+  const live = (await hooks.readBack("root-pin")).plainText?.POOL_IMAGE_HASH ?? "";
+  if (!/^[a-f0-9]{16}$/u.test(live))
+    throw new Error("PoolWorker has no 16-hex POOL_IMAGE_HASH to pin the root by");
+  return JSON.stringify({ image: `${repository}@${digest}`, input: live });
 }
 
 export async function runStageMode(mode: StageMode, lane: number, source = process.env) {
@@ -230,15 +228,22 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
   if (mode === "baseline") {
-    const env = { ...source, ...declaration.baseline };
+    const env: NodeJS.ProcessEnv = { ...source, ...declaration.baseline };
     try {
       await deployStage(root, subject, env);
     } catch (error) {
+      // An existing stage: deploy it again with the root pinned, as production's root is. No policy
+      // here, so the root may roll once; every later policy run then sees the pinned form.
+      if (error instanceof Error && /existing remote state/u.test(error.message))
+        Object.assign(env, { POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) });
       // A standing stage that already has state (a partial or earlier baseline) is deployed again
       // the ordinary way; Alchemy resumes from its state.
       if (!(error instanceof Error && /existing remote state/u.test(error.message))) throw error;
       await withStageBuild(root, subject, env, async () => {});
-      await redeployStage(root, subject, env, declaration.baseline);
+      await redeployStage(root, subject, env, {
+        ...declaration.baseline,
+        ...(env.POOL_ROOT_IMAGE ? { POOL_ROOT_IMAGE: env.POOL_ROOT_IMAGE } : {}),
+      });
       result.redeployed = true;
     }
     const read = await hooks.readBack("baseline");
