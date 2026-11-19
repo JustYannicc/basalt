@@ -189,7 +189,10 @@ function baseState(base: string) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const unknown = process.argv.slice(2).filter((argument) => argument !== "--write-baseline");
+  // pnpm, unlike npm, passes the `--` of `npm run lint:owned -- --write-baseline` through.
+  const unknown = process.argv
+    .slice(2)
+    .filter((argument) => argument !== "--" && argument !== "--write-baseline");
   if (unknown.length)
     throw new Error(`Unknown argument ${unknown.join(" ")}; the only option is --write-baseline.`);
   const files = scopedFiles();
