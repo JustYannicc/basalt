@@ -1,4 +1,3 @@
-import { requiredReleaseCommandAttempt } from "../../.upstream/apps/hosted/cloud/src/infrastructure/release-command-attempt.ts";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Planetscale from "alchemy/Planetscale";
@@ -96,15 +95,12 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     isPreview || globalThis.__ALCHEMY_RUNTIME__
       ? undefined
       : (yield* productionDatabaseMigration).migrations;
-  const attempt =
-    isPreview || globalThis.__ALCHEMY_RUNTIME__ ? "" : yield* requiredReleaseCommandAttempt;
   const script = fileURLToPath(new URL("../../scripts/ensure-pool-database.ts", import.meta.url));
   const ready = yield* Command.Exec("PoolDatabase", {
     // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.
     command: `node ${basename(script)}`,
     cwd: dirname(script),
     env: {
-      BASALT_RELEASE_ATTEMPT: attempt,
       ...(migration
         ? { DATABASE_MIGRATIONS_READY: migration.hash.pipe(Output.map(() => "ready")) }
         : {}),
@@ -115,19 +111,20 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
       // `name` is PlanetScale's display name; the Postgres role that logs in is `username`.
       POOL_DATABASE_RUNTIME_ROLE: runtime.username,
     },
-    memo: isPreview
-      ? false
-      : {
-          include: [
-            "ensure-pool-database.ts",
-            "pool-database-provisioning.ts",
-            "pool-database-ownership.ts",
-            "../src/pool/model-history/change-schema.ts",
-            "../src/pool/model-history/schema.ts",
-            "../src/pool/database-settings.ts",
-          ],
-          lockfile: true,
-        },
+    // The pool Worker and, on test stages, its database connection read this command's outcome.
+    // A plan cannot know the outcome of a command that runs on every plan, so they would plan as
+    // updates forever. Keyed on what the command reads, it runs when that changes, on every stage.
+    memo: {
+      include: [
+        "ensure-pool-database.ts",
+        "pool-database-provisioning.ts",
+        "pool-database-ownership.ts",
+        "../src/pool/model-history/change-schema.ts",
+        "../src/pool/model-history/schema.ts",
+        "../src/pool/database-settings.ts",
+      ],
+      lockfile: true,
+    },
     // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
     // exits with the step it failed at. This outer limit only catches a script that cannot exit.
     timeout: "3 minutes",
@@ -138,7 +135,7 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
   return {
     adminUrl: admin.connectionUrl,
     runtimeRole: runtime.username,
-    // Desired settings are read before apply; per-attempt readiness is a separate Worker dependency.
+    // Desired settings are read before apply; readiness is a separate Worker dependency.
     runtimeReady: readyHash,
     runtimeUrl: runtime.pooledOrigin.pipe(
       Output.map((origin) => Redacted.make(poolDatabaseUrl(Redacted.value(postgresUrl(origin))))),

@@ -120,7 +120,13 @@ export default Alchemy.Stack(
         CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
         CLOUD_SOURCE_NAMESPACE: preview?.sourceNamespace ?? deployment.sourceNamespace,
       },
-      memo: false,
+      // The Router reads this command's outcome. A plan cannot know the outcome of a command that
+      // runs on every plan, so the Router would plan as an update forever. Keyed on what the
+      // command reads, it runs when that changes.
+      memo: {
+        include: ["ensure-artifacts.ts", "artifacts-http-failure.ts", "../brand.ts"],
+        lockfile: true,
+      },
       timeout: "1 minute",
     });
     yield* cloudDeployment;
