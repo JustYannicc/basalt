@@ -124,3 +124,32 @@ test("a stage never writes another stack's or stage's State, nor drops a whole s
     "PUT /state/stacks/basalt-rehearsal/stages/test-rehearsal-2/resources/Api",
   ]);
 });
+
+test("a read of production sends reads only; any write is refused before it leaves", async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const outcomes = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const guard = yield* install({ readOnly: true });
+        const send = (url: string, init: RequestInit) =>
+          Effect.promise(() =>
+            guard
+              .fetch(url, init)
+              .then((response) => response.status)
+              .catch((error: unknown) => (error instanceof WireRefused ? error.field : "error")),
+          );
+        return [
+          yield* send(script(server.base, "basalt-production-api"), { method: "GET" }),
+          yield* send(script(server.base, "basalt-production-api"), json("PUT")),
+          yield* send(`${server.base}/accounts/${ACCOUNT}/hyperdrive/configs`, json("POST")),
+        ];
+      }),
+    ),
+  );
+  assert.deepEqual(outcomes, [200, "method", "method"]);
+  assert.deepEqual(
+    server.received.map((r) => r.method),
+    ["GET"],
+  );
+});

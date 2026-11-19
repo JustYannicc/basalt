@@ -367,6 +367,10 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           rootApplicationNames: [] as string[],
           deletable,
           stage: undefined as StageScope | undefined,
+          // Reads of production send nothing but reads; the guard refuses anything else.
+          readOnly:
+            stage === "production" &&
+            ["plan", "preflight", "snapshot", "serving"].includes(command),
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
