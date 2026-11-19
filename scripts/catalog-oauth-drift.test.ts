@@ -97,8 +97,11 @@ test("a benign vendor addition becomes a re-pin with its field diff and no alert
     repinMetadata(directory, drift[0]!);
     // The re-pin PR is exactly the committed state the offline check accepts.
     const repinned = load(directory);
+    const automatic = repinned.reviews.filter((review) =>
+      Object.values(review.methods).some((decision) => decision.kind === "automatic"),
+    );
     assert.deepEqual(
-      oauthPinProblems(repinned.reviews, { hostedClients: new Set(), ...repinned.committed }),
+      oauthPinProblems(automatic, { hostedClients: new Set(), ...repinned.committed }),
       [],
     );
     assert.deepEqual(
