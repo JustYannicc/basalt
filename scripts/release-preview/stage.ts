@@ -33,7 +33,15 @@ import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { planHighlights, requireBaselineShape, requireCutoverShape } from "./rehearsal-native.ts";
 
-export const stageModes = ["check", "baseline", "plan", "apply", "code", "destroy"] as const;
+export const stageModes = [
+  "check",
+  "baseline",
+  "plan",
+  "apply",
+  "code",
+  "settle",
+  "destroy",
+] as const;
 export type StageMode = (typeof stageModes)[number];
 
 /** The pull-request label that dispatches a mode: `stage-<mode>` on lane 1, `stage-<mode>-<lane>` on 2 or 3. */
@@ -400,6 +408,54 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     if (JSON.stringify(result.servingFinal) !== JSON.stringify(result.serving))
       throw new Error("The rollback did not restore the version that served before the release");
     if (releaseError) throw releaseError;
+  } else if (mode === "settle") {
+    // The plan-settles acceptance, plan only: two code-policy plans at the deployed commit (zero
+    // rows), one Worker source change (that Worker only), one new migration file (the migration,
+    // its connection and the Workers bound to it). Each keeps its rows or its refusal privately.
+    const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
+    const plan = async (label: string) => {
+      await rm(join(outputs, "release-failure.txt"), { force: true });
+      let rows: unknown;
+      try {
+        const planned = await runEntry("plan", subject, source, env, outputs, { policy: "code" });
+        const record = planned.record as { changes?: unknown; planned?: unknown };
+        rows = record.changes ?? record.planned ?? [];
+      } catch {
+        rows = {
+          refused: await readFile(join(outputs, "release-failure.txt"), "utf8").catch(
+            () => "no detail",
+          ),
+        };
+      }
+      await writeFile(join(outputs, `settle-${label}.json`), `${JSON.stringify(rows, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      result[label] = rows;
+    };
+    const edited = async (path: string, change: (text: string) => string, label: string) => {
+      const original = existsSync(path) ? await readFile(path, "utf8") : undefined;
+      await writeFile(path, change(original ?? ""));
+      try {
+        await plan(label);
+      } finally {
+        if (original === undefined) await rm(path, { force: true });
+        else await writeFile(path, original);
+      }
+    };
+    const marker = JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`);
+    await plan("deployed-1");
+    await plan("deployed-2");
+    await edited(
+      join(root, "src/router.ts"),
+      (text) => `${text}\nexport const rehearsalSettleMarker = ${marker};\n`,
+      "one-worker-router",
+    );
+    await edited(
+      join(cloud, "src/infrastructure/production-ops/migrations/zz-rehearsal-settle-marker.ts"),
+      () =>
+        `// Rehearsal-only marker: a new file where migrations live. Never committed.\nexport const marker = ${marker};\n`,
+      "new-migration-file",
+    );
   } else if (mode === "destroy") {
     await destroyStage(root, subject, source);
     await verifyStageAbsent(root, subject, source);
