@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "A new account's naming prompt runs the one check of that account as it opens. While the page holds an account check, running or finished, an app Accounts tab's background revalidation of the same account waits for that check instead of sending a second one, then reads the app's links again as its own check would, so one prompt costs one check. Explicit checks still run their own."
+    }
+  }
+}
