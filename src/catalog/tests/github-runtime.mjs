@@ -168,7 +168,15 @@ try {
   const requirements = await request({ operation: "requirements" }, { app: {} });
   assert.equal(requirements.ok, true, JSON.stringify(requirements));
   const provider = requirements.value.accounts.user.github.definition;
-  const account = { id: "acc_github_synthetic", provider, method: "token", fields: { token } };
+  // As the host sends it: an MCP catalog is cached in the account's scope, which names its
+  // generation.
+  const account = {
+    id: "acc_github_synthetic",
+    provider,
+    method: "token",
+    generation: 1,
+    fields: { token },
+  };
   const accounts = { app: {}, user: { github: [account] } };
   const path = { owner: "octocat", repo: "Hello-World" };
   const client = { client_id: "Iv1.8a61f9b3a7aba766" };
