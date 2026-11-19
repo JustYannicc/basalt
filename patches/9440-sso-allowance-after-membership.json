@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-sso-allowance-after-membership",
+  "file": "9440-sso-allowance-after-membership.patch",
+  "content_sha256": "0a00a4451e01704a35b97584d076d3b93c8a349598289fe52584d41e614cfefb",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

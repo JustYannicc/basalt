@@ -1,0 +1,84 @@
+diff --git a/apps/hosted/cloud/src/implementation/sso.ts b/apps/hosted/cloud/src/implementation/sso.ts
+index b16fa01..5e0cd26 100644
+--- a/apps/hosted/cloud/src/implementation/sso.ts
++++ b/apps/hosted/cloud/src/implementation/sso.ts
+@@ -18,6 +18,38 @@ const Registration = Schema.Struct({
+ const invalidEmail = () =>
+   new APIError("BAD_REQUEST", { code: "INVALID_EMAIL", message: "Invalid email" });
+ 
++/**
++ * Whether signing in leaves the team as it is: the person is already a member, or an explicit
++ * invitation owns their role and must still be accepted.
++ */
++const joinsNoOne = async (
++  database: Pick<AuthContext["adapter"], "findOne">,
++  organizationId: string,
++  user: { readonly id: string; readonly email: string },
++) => {
++  if (
++    await database.findOne({
++      model: "member",
++      where: [
++        { field: "organizationId", value: organizationId },
++        { field: "userId", value: user.id },
++      ],
++    })
++  )
++    return true;
++  return Boolean(
++    await database.findOne({
++      model: "invitation",
++      where: [
++        { field: "organizationId", value: organizationId },
++        { field: "email", value: user.email.toLowerCase() },
++        { field: "status", value: "pending" },
++        { field: "expiresAt", value: new Date(), operator: "gt" },
++      ],
++    }),
++  );
++};
++
+ /**
+  * Native SAML/OIDC protocol handling, with cloud-owned tenancy and encrypted
+  * configuration. Each auth instance owns its key; nothing survives its scope.
+@@ -76,6 +108,9 @@ export const cloudSso = (billing?: CloudBillingHooks, access?: CloudAccessHooks)
+     provisionUser: async ({ user, provider: row }) => {
+       if (auth === undefined) throw invalid();
+       const provider = parse(Provider, row);
++      // The allowance guards adding a member only, so a billing outage never locks out
++      // someone who already belongs. The transaction checks again under the team lock.
++      if (await joinsNoOne(auth.adapter, provider.organizationId, user)) return;
+       // Resolve the external allowance before opening the membership transaction.
+       const limit =
+         billing === undefined ? undefined : await billing.memberLimit(provider.organizationId);
+@@ -89,29 +124,7 @@ export const cloudSso = (billing?: CloudBillingHooks, access?: CloudAccessHooks)
+           update: { id: provider.organizationId },
+         });
+         if (!team) throw invalid();
+-        if (
+-          await database.findOne({
+-            model: "member",
+-            where: [
+-              { field: "organizationId", value: provider.organizationId },
+-              { field: "userId", value: user.id },
+-            ],
+-          })
+-        )
+-          return;
+-        // An explicit invitation owns its role and must still be accepted.
+-        if (
+-          await database.findOne({
+-            model: "invitation",
+-            where: [
+-              { field: "organizationId", value: provider.organizationId },
+-              { field: "email", value: user.email.toLowerCase() },
+-              { field: "status", value: "pending" },
+-              { field: "expiresAt", value: new Date(), operator: "gt" },
+-            ],
+-          })
+-        )
+-          return;
++        if (await joinsNoOne(database, provider.organizationId, user)) return;
+         const count = await database.count({
+           model: "member",
+           where: [{ field: "organizationId", value: provider.organizationId }],
