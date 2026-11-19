@@ -220,7 +220,7 @@ test("a command Alchemy ran is reported with its standard error, cleaned, wherev
   assert.equal(
     direct.line,
     [
-      "Release stopped: node src/migrate.ts --admin-url [url] failed with exit 3",
+      "Release stopped: node migrate.ts failed with exit 3",
       "  code: release.STACK_COMMAND_FAILED",
       "  why: Alchemy ran this command for a resource. Its error keeps the command's standard error, whose last lines are below, and none of its standard output.",
       "  fix: Fix what those lines name and rerun this step. If they do not explain the failure, run the command alone to see what it prints on standard output.",
@@ -233,10 +233,7 @@ test("a command Alchemy ran is reported with its standard error, cleaned, wherev
   // Raised inside the entry's own error, the command is still the subject.
   const wrapped = await reported(context, new Error("The apply failed", { cause: loud }));
   assert.equal(wrapped.report.error.code, "release.STACK_COMMAND_FAILED");
-  assert.match(
-    wrapped.line,
-    /^Release stopped: node src\/migrate\.ts --admin-url \[url\] failed with exit 3\n/,
-  );
+  assert.match(wrapped.line, /^Release stopped: node migrate\.ts failed with exit 3\n/);
   assert.match(wrapped.line, /\n {2}cause 1: CommandError\n/);
   assert.ok(wrapped.line.endsWith(kept.join("\n")));
 
@@ -257,7 +254,7 @@ test("a command Alchemy ran is reported with its standard error, cleaned, wherev
       "  fix: Do not release until the budget check passes.",
       "  cause 1: CommandError",
       "  last output lines, credentials removed:",
-      `    --- node verify-database-budget.ts failed with exit 1: ${silentWhy}`,
+      `    --- node verify-database-budget.ts failed with exit 1: ${silentWhy} ${alone}`,
     ].join("\n"),
   );
 });
@@ -273,7 +270,7 @@ test("a command Alchemy stopped, refused or could not run is told as that, never
   assert.equal(
     timedOut.line,
     [
-      "Release stopped: node verify-database-budget.ts --ready timed out after 3m 5s",
+      "Release stopped: node verify-database-budget.ts timed out after 3m 5s",
       "  code: release.STACK_COMMAND_FAILED",
       "  why: Alchemy ran this command for a resource and stopped it at its time limit. Its error keeps none of the command's output.",
       "  fix: The command was stopped part-way, so check what it had already changed. Run it alone to see where its time goes, then rerun this step.",
@@ -288,7 +285,7 @@ test("a command Alchemy stopped, refused or could not run is told as that, never
         reason: new CommandTimedOut({ timeout: `after ${token}` }),
       }),
     ),
-    "Release stopped: node src/migrate.ts timed out",
+    "Release stopped: node migrate.ts timed out",
   );
 
   const lost = await reported(
@@ -306,7 +303,7 @@ test("a command Alchemy stopped, refused or could not run is told as that, never
   assert.equal(
     lost.line,
     [
-      "Release stopped: basalt-no-such-command --check could not be run to its end (NotFound)",
+      "Release stopped: basalt-no-such-command could not be run to its end (NotFound)",
       "  code: release.STACK_COMMAND_FAILED",
       "  why: Alchemy could not start this command, or lost it while it ran. Its error keeps none of the command's output.",
       "  fix: Check that the program is installed and on the path and that its working directory exists. If it had started, check what it changed before rerunning this step.",
@@ -376,41 +373,40 @@ test("a command Alchemy stopped, refused or could not run is told as that, never
   assert.equal(other.report.error.code, "release.UNEXPECTED");
 });
 
-test("the command line Alchemy was given is cleaned and bounded like output", async (context) => {
-  const long = await reported(
+test("a command Alchemy ran is named by its program and what it runs, never by its arguments", async (context) => {
+  const named = async (command: string) =>
+    firstLine(
+      context,
+      new CommandError({ command, reason: new UnexpectedExit({ exitCode: 1, stderr: "" }) }),
+    );
+  // Arguments can carry a value no rule knows to be a credential, so the first flag or value ends
+  // the name.
+  for (const [command, name] of [
+    ["bun run build", "bun run build"],
+    [
+      "node /Users/alice/work/scripts/verify-database-budget.ts --ready",
+      "node verify-database-budget.ts",
+    ],
+    ["curl -u admin:made-up-pass https://api.example.com/v4/x", "curl"],
+    ["psql --key made-up-key-value postgres", "psql"],
+    ["deploy \\\n  --password \\\n  made-up-pass", "deploy"],
+    ["PGPASSWORD=made-up-pass PGUSER=admin psql -c 'select 1'", "psql"],
+    [`sh -c "${"echo step; ".repeat(200)}"`, "sh"],
+  ])
+    assert.equal(await named(command), `Release stopped: ${name} failed with exit 1`, command);
+
+  const spoofed = await reported(
     context,
     new CommandError({
-      command: `sh -c "${"echo step; ".repeat(200)}"\n::error::spoofed`,
+      command: "::error::spoofed",
       reason: new UnexpectedExit({ exitCode: 2, stderr: "::stop-commands::x\n##[error]y" }),
     }),
   );
-  const [head, ...rest] = long.line.split("\n");
-  assert.ok(head!.startsWith("Release stopped: sh -c "), head);
-  assert.ok(head!.length < 600 && head!.endsWith("[cut] failed with exit 2"), head);
-  assert.ok(rest.every((printed) => !/^\s*::|##\[/u.test(printed)));
-
-  // A flag and its value on two lines are read together, and a long script keeps its start.
-  assert.equal(
-    await firstLine(
-      context,
-      new CommandError({
-        command: "deploy \\\n  --password \\\n  s3cr3tvalue \\\n  --go",
-        reason: new UnexpectedExit({ exitCode: 1, stderr: "" }),
-      }),
-    ),
-    "Release stopped: deploy --password [redacted] --go failed with exit 1",
+  assert.ok(
+    spoofed.line.split("\n").every((printed) => !/^\s*::|##\[/u.test(printed)),
+    spoofed.line,
   );
-  const script = `sh -c '\n${Array.from({ length: 70 }, (_, index) => `echo step${index}`).join("\n")}\n'`;
-  assert.match(
-    (await firstLine(
-      context,
-      new CommandError({
-        command: script,
-        reason: new UnexpectedExit({ exitCode: 1, stderr: "" }),
-      }),
-    ))!,
-    /^Release stopped: sh -c ' echo step0 echo step1 /,
-  );
+  noLeak(spoofed.all, ["::stop-commands", "##[error]"]);
 
   // A credential that spans lines goes whole, and line by line where a window cut its start off.
   const end = Array.from({ length: 12 }, (_, index) => `made-up-key-line-${index}`).join("\n");
@@ -425,7 +421,7 @@ test("the command line Alchemy was given is cleaned and bounded like output", as
     }),
     { DEPLOY_KEY: key },
   );
-  assert.equal(keyed.error.message, `sh -c 'echo "[redacted]" | install-key' failed with exit 1`);
+  assert.equal(keyed.error.message, "sh failed with exit 1");
   assert.match(
     keyed.tail!,
     /^--- stderr\n\[truncated\]\ncould not read\n(?:\[redacted\]\n){12}later line\n/,
@@ -467,11 +463,11 @@ test("commands among collected failures are each named, with what is kept of eac
       `  fix: ${alone}`,
       "  failures collected: 2; the cause chain follows the first",
       "  failure 1: node verify-database-budget.ts failed with exit 1",
-      "  failure 2: node src/migrate.ts failed with exit 3",
+      "  failure 2: node migrate.ts failed with exit 3",
       "  cause 1: CommandError",
       "  last output lines, credentials removed:",
-      `    --- node verify-database-budget.ts failed with exit 1: ${silentWhy}`,
-      "    --- node src/migrate.ts failed with exit 3",
+      "    --- node verify-database-budget.ts failed with exit 1",
+      "    --- node migrate.ts failed with exit 3: Fix what those lines name and rerun this step. If they do not explain the failure, run the command alone to see what it prints on standard output.",
       "    --- stderr",
       "    lock timeout (55P03)",
     ].join("\n"),
@@ -496,12 +492,92 @@ test("a failed command beside a write that may have landed does not turn the adv
       line,
       /\n {2}fix: The request may have reached the service\. A read can be rerun\. Before rerunning a write, check whether it took effect\.\n/,
     );
-    assert.doesNotMatch(line, /rerun this step/);
-    // The command is still named, above what is kept of its output.
-    assert.match(line, /\n {2}last output lines, credentials removed:\n {4}--- node /);
+    const [advice, kept] = line.split("\n  last output lines, credentials removed:\n");
+    assert.doesNotMatch(advice!, /rerun this step/);
+    // The command is still named, with its own fix, above what is kept of its output.
+    assert.match(kept!, /^ {4}--- node (?:\S+ )?failed with exit 1: .*rerun this step\./);
   }
   assert.match(
     (await reported(context, new AggregateError([ours, lostWrite()]))).line,
-    /\n {4}--- node failed with exit 1\n {4}--- stderr\n {4}bucket not empty$/,
+    /\n {4}--- node failed with exit 1: Fix what the output names and rerun this step\.\n {4}--- stderr\n {4}bucket not empty$/,
   );
+});
+
+test("a command stopped part-way keeps its warning beside a request that was never sent or refused", async (context) => {
+  const migration = new ChildProcessFailure({
+    command: "node",
+    exitCode: null,
+    signal: "SIGTERM",
+    stopped: "output-limit",
+    tail: "--- stdout\nmigrated 4000 of 9000 rows",
+  });
+  const neverSent = Object.assign(new Error("The call was not made"), {
+    request: { method: "POST", url: "https://api.example.com/client/v4/accounts/1/workers" },
+    cause: Object.assign(new TypeError("bad argument"), { code: "ERR_INVALID_ARG_TYPE" }),
+  });
+  const migrating = await reported(context, new AggregateError([neverSent, migration]));
+  assert.equal(migrating.report.error.code, "release.CHILD_FAILED", migrating.line);
+  assert.match(migrating.line, /\n {2}fix: .*check what it had already changed before rerunning/);
+
+  const refused = Object.assign(new Error("refused"), {
+    _tag: "HttpClientError",
+    reason: {
+      _tag: "StatusCodeError",
+      response: { status: 400 },
+      request: { method: "POST", url: "https://api.example.com/client/v4/accounts/1/workers" },
+    },
+  });
+  const slow = new CommandError({
+    command: "node migrate.ts",
+    reason: new CommandTimedOut({ timeout: "5m" }),
+  });
+  const timing = await reported(context, new AggregateError([refused, slow]));
+  assert.equal(timing.report.error.code, "release.STACK_COMMAND_FAILED", timing.line);
+  assert.match(
+    timing.line,
+    /\n {2}fix: The command was stopped part-way, so check what it had already changed\./,
+  );
+});
+
+test("a stdout reason is kept when the command also floods its standard error", async (context) => {
+  const failure = await failed(process.execPath, [
+    "-e",
+    'console.log("BUDGET FAILED: 31 of 25 connections"); for (let i = 0; i < 80; i++) console.error(`warn: progress ${i}`); process.exit(1)',
+  ]);
+  const { line } = await reported(context, failure);
+  assert.match(line, /\n {4}--- stdout\n {4}BUDGET FAILED: 31 of 25 connections\n {4}--- stderr\n/);
+  assert.match(line, /\n {4}warn: progress 79$/);
+});
+
+test("collected failures are named by what each holds, and an unreadable one costs nothing else", async (context) => {
+  const loud = new CommandError({
+    command: "node migrate.ts",
+    reason: new UnexpectedExit({ exitCode: 3, stderr: "lock timeout (55P03)" }),
+  });
+  // Effect wraps each failure of a cause in a `Fail`; the report names what is inside.
+  const { line } = await reported(context, Cause.combine(Cause.fail(silent()), Cause.fail(loud)));
+  assert.match(
+    line,
+    /\n {2}failure 1: node verify-database-budget\.ts failed with exit 1\n {2}failure 2: node migrate\.ts failed with exit 3\n/,
+  );
+
+  const hostile = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw new Error("private-trap");
+      },
+      get() {
+        throw new Error("private-trap");
+      },
+    },
+  );
+  const beside = await reported(context, new AggregateError([silent(), hostile], "two"));
+  assert.equal(beside.report.error.code, "release.STACK_COMMAND_FAILED", beside.line);
+  const wrapped = await reported(
+    context,
+    new Error("Preview deploy failed: budget 31 of 25", { cause: hostile }),
+  );
+  assert.match(wrapped.line, /^Release stopped: Error: Preview deploy failed: budget 31 of 25\n/);
+  noLeak(`${beside.all}${wrapped.all}`, ["private-trap"]);
 });

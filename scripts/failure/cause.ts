@@ -1,3 +1,4 @@
+import { field, isA, rawChain } from "./graph.ts";
 import { publicGuidance, publicText } from "./redact.ts";
 
 /**
@@ -126,13 +127,11 @@ const staticSegments = new Set([
   "durable_objects",
 ]);
 
-export const field = (value: unknown, key: string): unknown => {
+const plainError = (value: unknown): boolean => {
   try {
-    return (typeof value === "object" || typeof value === "function") && value !== null
-      ? Reflect.get(value, key)
-      : undefined;
+    return Object.getPrototypeOf(value) === Error.prototype;
   } catch {
-    return undefined;
+    return false;
   }
 };
 
@@ -171,7 +170,8 @@ export function typeName(error: unknown): string {
     : "unknown";
 }
 
-function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCause {
+/** What may be printed of one level without its message: names, codes, statuses and the request's shape. */
+export function closedCause(error: unknown): Omit<PublicCause, "message"> {
   const type = typeName(error);
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
@@ -191,15 +191,6 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
       typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
   );
   const request = requestShape(field(httpReason, "request") ?? field(error, "request"));
-  const why = field(error, "why");
-  const message = typeof error === "string" ? error : field(error, "message");
-  // A plain `Error` with no code, or a thrown string, is how a command's own code says what went
-  // wrong, and fetch's TypeErrors explain a failure without quoting a response. A library's own
-  // error classes can quote a response or a row, so of those only the closed diagnostics print.
-  const said =
-    typeof error === "string" ||
-    error instanceof TypeError ||
-    (Object.getPrototypeOf(error) === Error.prototype && typeof code !== "string");
   return {
     type,
     ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
@@ -210,6 +201,22 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
     ...(typeof code === "string" && codes.has(code) ? { code } : {}),
     ...(numbers.length ? { codes: [...new Set(numbers)] } : {}),
     ...(request ? { request } : {}),
+  };
+}
+
+function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCause {
+  const closed = closedCause(error);
+  const why = field(error, "why");
+  const message = typeof error === "string" ? error : field(error, "message");
+  // A plain `Error` with no code, or a thrown string, is how a command's own code says what went
+  // wrong, and fetch's TypeErrors explain a failure without quoting a response. A library's own
+  // error classes can quote a response or a row, so of those only the closed diagnostics print.
+  const said =
+    typeof error === "string" ||
+    isA(error, TypeError) ||
+    (plainError(error) && typeof field(error, "code") !== "string");
+  return {
+    ...closed,
     // A refusal's own reason is written for the log; any other message passes the strict rules.
     ...(typeof why === "string"
       ? { message: publicGuidance(why, environment) }
@@ -219,54 +226,6 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
   };
 }
 
-const memberLimit = 1000;
-
-/**
- * The failures a collection holds: an `AggregateError`'s errors or an Effect cause's reasons. A
- * provider's own list of `{ code, message }` entries is not one, so a member is an `Error` or
- * carries a tag.
- */
-export function members(error: unknown): unknown[] {
-  const held = field(error, "errors") ?? field(error, "reasons");
-  return Array.isArray(held)
-    ? held
-        .slice(0, memberLimit)
-        .filter((entry) => entry instanceof Error || typeof field(entry, "_tag") === "string")
-    : [];
-}
-
-/** What a failure wraps. Effect's HTTP client keeps fetch's error under its reason. */
-const wrapped = (error: unknown): unknown =>
-  field(field(error, "reason"), "cause") ??
-  field(error, "cause") ??
-  field(error, "error") ??
-  field(error, "defect");
-
-/** The failure and what it wraps, outermost first. A collection is followed through its first member. */
-export function rawChain(error: unknown): unknown[] {
-  const found: unknown[] = [];
-  for (
-    let current = error;
-    current !== undefined && current !== null && found.length < 10 && !found.includes(current);
-    current = wrapped(current) ?? members(current)[0]
-  )
-    found.push(current);
-  return found;
-}
-
-/** Every failure reachable from one, outermost first: what each wraps and each member of a collection. */
-export function reach(error: unknown): unknown[] {
-  const found: unknown[] = [];
-  const queue = [error];
-  while (queue.length > 0 && found.length < 64) {
-    const current = queue.shift();
-    if (current === undefined || current === null || found.includes(current)) continue;
-    found.push(current);
-    queue.push(wrapped(current), ...members(current));
-  }
-  return found;
-}
-
 /** The same chain as what may be printed of each level. */
 export const causeChain = (
   error: unknown,
@@ -274,7 +233,14 @@ export const causeChain = (
 ): PublicCause[] =>
   rawChain(error)
     .slice(0, 6)
-    .map((entry) => publicCause(entry, environment));
+    .map((entry) => {
+      // One level that cannot be read must not cost the levels that can.
+      try {
+        return publicCause(entry, environment);
+      } catch {
+        return { type: "unknown" };
+      }
+    });
 
 export const causeLine = (cause: PublicCause) =>
   [

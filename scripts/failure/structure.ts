@@ -1,17 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { createError, EvlogError } from "evlog";
-import {
-  causeChain,
-  causeLine,
-  field,
-  members,
-  publicError,
-  reach,
-  typeName,
-  type PublicCause,
-} from "./cause.ts";
+import { causeChain, causeLine, publicError, typeName, type PublicCause } from "./cause.ts";
 import { failedCommand } from "./command.ts";
-import { failureKind, failures } from "./kind.ts";
+import { field, members, reach } from "./graph.ts";
+import { failureKind, failures, mayHaveLanded } from "./kind.ts";
 import { publicGuidance, publicText, redactCredentials } from "./redact.ts";
 
 /**
@@ -82,8 +74,14 @@ function said(error: unknown, environment: NodeJS.ProcessEnv): string {
 /** A refusal is a failure whose author said why: an evlog error, a stated reason, or violations. */
 function refused(value: unknown): boolean {
   const violations = field(value, "violations");
+  let evlog = false;
+  try {
+    evlog = EvlogError.isEvlogError(value);
+  } catch {
+    // A hostile object is no evlog error; its other fields are still read.
+  }
   return (
-    EvlogError.isEvlogError(value) ||
+    evlog ||
     text(field(value, "why")) !== undefined ||
     (Array.isArray(violations) && violations.length > 0)
   );
@@ -167,17 +165,20 @@ export function structuredFailure(
   const all = reach(error);
   const commands = all.flatMap((value) => failedCommand(value, environment) ?? []);
   const subject = all.find(refused);
-  const kind = failureKind(error, environment);
+  const kind = failureKind(error);
   // A failed command names the report and gives its fix, unless a request among the failures may
-  // have reached a service: then what a rerun would do comes first, and the command follows.
-  const named = subject === undefined && kind === "UNEXPECTED" ? commands[0] : undefined;
-  // A command the report is not named after is named above its own output, with the reason when
-  // there is no output to speak for it.
-  const headed = !named || commands.length > 1;
+  // have reached a service: then that warning comes first, and the command follows.
+  const named = subject === undefined && !mayHaveLanded.has(kind) ? commands[0] : undefined;
+  // Every other command is named above its own output with its fix, and with its reason when there
+  // is no output to speak for it: a command stopped part-way says to check what it changed.
   const output = commands
-    .flatMap(({ what, why, tail }) => [
-      ...(headed ? [`--- ${what}${tail ? "" : `: ${why}`}`] : []),
-      tail,
+    .flatMap((command) => [
+      command === named
+        ? commands.length > 1
+          ? `--- ${command.what}`
+          : ""
+        : `--- ${command.what}: ${command.tail ? "" : `${command.why} `}${command.fix}`,
+      command.tail,
     ])
     .filter(Boolean)
     .join("\n");

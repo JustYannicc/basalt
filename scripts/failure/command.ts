@@ -1,6 +1,14 @@
-import { field } from "./cause.ts";
+import { basename } from "node:path";
 import { ChildProcessFailure } from "./child.ts";
-import { OutputTail, publicGuidance, publicLine, publicTail, publicText } from "./redact.ts";
+import { field, isA } from "./graph.ts";
+import {
+  OutputTail,
+  publicGuidance,
+  publicLine,
+  publicTail,
+  publicText,
+  tailLines,
+} from "./redact.ts";
 
 /**
  * A command that did not succeed, as the report tells it: its name and how it ended, why, the fix
@@ -31,8 +39,9 @@ const installed =
   "Check that the program is installed and on the path and that its working directory exists";
 
 function ranHere(failure: ChildProcessFailure, environment: NodeJS.ProcessEnv): FailedCommand {
-  // Made public again here: a report built by a caller is not known to be.
-  const tail = publicTail(failure.report.tail, environment);
+  // Made public again here: a report built by a caller is not known to be. It holds a window of
+  // each stream under its header, so a noisy standard error cannot push standard output out.
+  const tail = publicTail(failure.report.tail, environment, 2 * (tailLines + 1));
   const told = (why: string, fix: string): FailedCommand => ({
     code: "CHILD_FAILED",
     what: publicGuidance(failure.message.split("\n")[0]!, environment),
@@ -75,6 +84,26 @@ const systemTags = new Set([
   "WriteZero",
 ]);
 
+/**
+ * A command line the stack was given, as its program and the words that say what it runs:
+ * `node verify-database-budget.ts`, `bun run build`. Its arguments can carry a value no rule knows
+ * to be a credential (`-u admin:…`, `--key …`), so the first flag or value ends it, as only the
+ * program's name is kept of a command run here.
+ */
+function commandName(command: string, environment: NodeJS.ProcessEnv): string {
+  const all = command.trim().split(/\s+/u);
+  // A shell's `NAME=value` before the program sets the command's environment.
+  const [program = "", ...words] = all.slice(
+    Math.max(
+      0,
+      all.findIndex((word) => !/^\w+=/u.test(word)),
+    ),
+  );
+  const end = words.findIndex((word) => !/^[\w./-]+$/u.test(word) || word.startsWith("-"));
+  const plain = words.slice(0, end === -1 ? 2 : Math.min(end, 2)).map((word) => basename(word));
+  return publicLine([basename(program), ...plain].join(" "), environment) || "A command";
+}
+
 function ranByAlchemy(error: unknown, environment: NodeJS.ProcessEnv): FailedCommand | undefined {
   const command = field(error, "command");
   const reason = field(error, "reason");
@@ -85,8 +114,7 @@ function ranByAlchemy(error: unknown, environment: NodeJS.ProcessEnv): FailedCom
     typeof tag !== "string"
   )
     return undefined;
-  // The command line is whatever the stack passed, so it is cleaned like output.
-  const name = publicLine(command, environment) || "A command";
+  const name = commandName(command, environment);
   const ended = (how: string, why: string, fix: string, tail = ""): FailedCommand => ({
     code: "STACK_COMMAND_FAILED",
     what: `${name} ${how}`,
@@ -157,6 +185,4 @@ export const failedCommand = (
   value: unknown,
   environment: NodeJS.ProcessEnv,
 ): FailedCommand | undefined =>
-  value instanceof ChildProcessFailure
-    ? ranHere(value, environment)
-    : ranByAlchemy(value, environment);
+  isA(value, ChildProcessFailure) ? ranHere(value, environment) : ranByAlchemy(value, environment);

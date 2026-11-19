@@ -310,6 +310,7 @@ for (const [status, code, advice] of [
   ],
   // Waiting does not change what a service says it will never do.
   [501, "release.REQUEST_REFUSED", /fix: The service did not accept the request\./],
+  [505, "release.REQUEST_REFUSED", /fix: The service did not accept the request\./],
 ] as const)
   test(`an HTTP ${status} answer is reported as what it is`, async (context) => {
     const origin = await listening(
@@ -584,7 +585,7 @@ test("every failed command among collected failures keeps its output, wherever i
   );
   assert.match(
     line,
-    /\n {4}--- node failed with exit 1\n {4}--- stderr\n {4}database refused\n {4}--- node failed with exit 1\n {4}--- stderr\n {4}bucket not empty$/,
+    /\n {4}--- node failed with exit 1\n {4}--- stderr\n {4}database refused\n {4}--- node failed with exit 1: Fix what the output names and rerun this step\.\n {4}--- stderr\n {4}bucket not empty$/,
   );
 });
 
@@ -725,6 +726,68 @@ test("advice follows the least safe thing the evidence allows", async (context) 
     ),
     "release.OUTCOME_UNKNOWN",
   );
+  // A failed command's exit status is no HTTP answer.
+  assert.equal(
+    await code(Object.assign(new Error("exited"), { status: 137 })),
+    "release.UNEXPECTED",
+  );
+});
+
+test("collected failures are as safe as the least safe of them however deep, shared or many", async (context) => {
+  const code = async (error: unknown) => (await reported(context, error)).report.error.code;
+  const request = { method: "PUT", url: "https://api.example.com/client/v4/accounts/1/workers" };
+  const lostWrite = () =>
+    Object.assign(new Error("The upload failed"), {
+      request,
+      cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    });
+  const neverSent = () =>
+    Object.assign(new Error("The call was not made"), {
+      request,
+      cause: Object.assign(new TypeError("bad argument"), { code: "ERR_INVALID_ARG_TYPE" }),
+    });
+  const refused = () =>
+    new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" }),
+    });
+  const nest = (inner: Error, levels: number) => {
+    let nested = inner;
+    for (let level = 0; level < levels; level++)
+      nested = new AggregateError([nested, new Error("plain")], `level ${level}`);
+    return nested;
+  };
+
+  // The same collection reached five levels down first and then directly reads the same.
+  const shared = new AggregateError([lostWrite(), new Error("plain")]);
+  assert.equal(
+    await code(new AggregateError([nest(shared, 4), shared, neverSent()])),
+    "release.OUTCOME_UNKNOWN",
+  );
+  assert.equal(
+    await code(new AggregateError([neverSent(), nest(lostWrite(), 5)])),
+    "release.OUTCOME_UNKNOWN",
+  );
+  // Past what is read nothing is claimed, never "refused again".
+  assert.equal(
+    await code(new AggregateError([neverSent(), nest(lostWrite(), 40)])),
+    "release.UNEXPECTED",
+  );
+  // A write past the members that are read leaves "sent nothing" unsaid.
+  const many = Array.from({ length: 1000 }, refused);
+  assert.equal(await code(new AggregateError([...many, lostWrite()])), "release.UNEXPECTED");
+  assert.equal(await code(new AggregateError([lostWrite(), ...many])), "release.OUTCOME_UNKNOWN");
+  // Anything an AggregateError holds is a failure, an Error or not.
+  assert.equal(
+    await code(new AggregateError([{ code: "ECONNRESET", message: "socket hang up" }, refused()])),
+    "release.OUTCOME_UNKNOWN",
+  );
+  // A reset seven levels down is still read.
+  let chain: Error = Object.assign(new Error("connect failed"), {
+    code: "ECONNREFUSED",
+    cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+  });
+  for (let level = 0; level < 5; level++) chain = new Error(`wrap ${level}`, { cause: chain });
+  assert.equal(await code(chain), "release.OUTCOME_UNKNOWN");
 });
 
 test("a write answered with a redirect that cannot be followed is not called refused before it was sent", async (context) => {
@@ -773,7 +836,7 @@ test("a failure that holds very many others, or the same ones many times over, i
   assert.equal((await reported(context, shared)).report.error.code, "release.UNEXPECTED");
 });
 
-test("a title or an environment that cannot be read does not stop the report", async () => {
+test("a title, an environment or a writer that fails does not stop the report", async (context) => {
   const lines: string[] = [];
   const write = (line: string) => lines.push(line);
   const unreadable = new Proxy(
@@ -791,6 +854,19 @@ test("a title or an environment that cannot be read does not stop the report", a
   assert.match(lines[2]!, /^Failed: The failure could not be described\n/);
   assert.equal(lines.length, 4);
   assert.ok(!lines.join("\n").includes("private-keys"));
+
+  // A writer that fails costs neither the summary nor the report.
+  const directory = mkdtempSync(join(tmpdir(), "basalt-failure-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const summaryPath = join(directory, "summary.md");
+  const report = await reportFailure(new Error("it failed"), {
+    summaryPath,
+    write: () => {
+      throw new Error("the log is closed");
+    },
+  });
+  assert.equal(report.error.message, "Error: it failed");
+  assert.match(readFileSync(summaryPath, "utf8"), /Failed: Error: it failed/);
 });
 
 test("the same transport failure is recognised when the command runs under Bun", () => {

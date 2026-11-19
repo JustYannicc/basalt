@@ -60,7 +60,14 @@ export async function reportFailure(
     environment?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<FailureReport> {
-  const write = options.write ?? ((line: string) => console.error(line));
+  const writer = options.write ?? ((line: string) => console.error(line));
+  const write = (line: string) => {
+    try {
+      writer(line);
+    } catch {
+      // A caller's writer that fails leaves the summary and the returned report.
+    }
+  };
   const printed = (report: FailureReport, title: string, environment: NodeJS.ProcessEnv) => ({
     report,
     lines: failureText(report, title, environment),

@@ -1,13 +1,6 @@
 import { defineErrorCatalog } from "evlog";
-import {
-  badArguments,
-  causeChain,
-  field,
-  interrupted,
-  members,
-  neverSent,
-  rawChain,
-} from "./cause.ts";
+import { badArguments, closedCause, interrupted, neverSent } from "./cause.ts";
+import { field, heldInPart, isA, members, rawChain } from "./graph.ts";
 
 /**
  * What kind of failure it is, which for a request means what a rerun would do. The fix each kind
@@ -58,8 +51,15 @@ const refusedArguments =
   /^(?:Request with GET\/HEAD method cannot have body|Request cannot be constructed|RequestInit: |Headers\.\w+: |Header '[^']*' has invalid value)|is not a valid HTTP method\.$/u;
 
 /** What a rerun of one failed request would do, or undefined when it was not a request. */
-function requestKind(error: unknown, environment: NodeJS.ProcessEnv): Kind | undefined {
-  const all = causeChain(error, environment);
+function requestKind(error: unknown): Kind | undefined {
+  const chain = rawChain(error);
+  const all = chain.map((entry) => {
+    try {
+      return closedCause(entry);
+    } catch {
+      return { type: "unknown" };
+    }
+  });
   const status = all.find((entry) => entry.status !== undefined)?.status;
   if (status !== undefined) {
     // 501 and 505 say the service will never do this, which waiting does not change.
@@ -80,10 +80,10 @@ function requestKind(error: unknown, environment: NodeJS.ProcessEnv): Kind | und
   // Nothing was sent when the request could not be built or fetch refused its arguments. Any
   // other failure of a request, known or not, leaves the outcome open.
   const reason = all.find((entry) => entry.reason !== undefined)?.reason;
-  const leaf = rawChain(error).at(-1);
+  const leaf = chain.at(-1);
   const message = field(leaf, "message");
   const argument =
-    leaf instanceof TypeError && typeof message === "string" && refusedArguments.test(message);
+    isA(leaf, TypeError) && typeof message === "string" && refusedArguments.test(message);
   return reason === "EncodeError" || reason === "InvalidUrlError" || coded(badArguments) || argument
     ? "REQUEST_INVALID"
     : "OUTCOME_UNKNOWN";
@@ -98,30 +98,49 @@ const leastSafeFirst: Kind[] = [
   "REQUEST_INVALID",
 ];
 
+/** Failures that were not all read, so nothing is claimed about a rerun. */
+const unread = "unread";
+type Read = Kind | undefined | typeof unread;
+/** The kinds whose advice already says a write may have landed: nothing unread can be worse. */
+export const mayHaveLanded = new Set<Read>([
+  "ANSWER_UNREADABLE",
+  "OUTCOME_UNKNOWN",
+  "SERVICE_BUSY",
+]);
+// Bounds for the stack and the time a report takes, far past any real failure.
+const deepest = 32;
+const readable = 4000;
+
 function kindOf(
   error: unknown,
-  environment: NodeJS.ProcessEnv,
   depth: number,
   // A failure held by many collections is read once, however often it is reached.
-  known: Map<unknown, Kind | undefined>,
-): Kind | undefined {
-  if (known.has(error)) return known.get(error);
-  const group = rawChain(error)
-    .map(members)
-    .find((list) => list.length > 1);
-  let kind: Kind | undefined;
-  if (!group) kind = requestKind(error, environment);
-  // Past this depth nothing is claimed about a rerun.
-  else if (depth <= 4) {
-    const kinds = group.map((member) => kindOf(member, environment, depth + 1, known));
-    kind =
+  state: { known: Map<unknown, Read>; left: number },
+): Read {
+  if (state.known.has(error)) return state.known.get(error);
+  if (--state.left < 0) return unread;
+  const holder = rawChain(error).find((entry) => members(entry).length > 1);
+  let kind: Read;
+  if (holder === undefined) kind = requestKind(error);
+  else if (depth >= deepest) kind = unread;
+  else {
+    // A collection that holds itself adds nothing new while it is being read.
+    state.known.set(error, undefined);
+    const kinds = members(holder).map((member) => kindOf(member, depth + 1, state));
+    const found =
       leastSafeFirst.find((unsafe) => kinds.includes(unsafe)) ??
       (kinds.every((member) => member === "UNREACHABLE") ? "UNREACHABLE" : undefined);
+    // Members left unread, past the limit or too deep, may hold a write that landed: only a kind
+    // whose advice already allows for that can stand.
+    const partial = heldInPart(holder) || kinds.includes(unread);
+    kind = partial && !mayHaveLanded.has(found) ? unread : found;
   }
-  known.set(error, kind);
+  state.known.set(error, kind);
   return kind;
 }
 
 /** Collected failures are only as safe to rerun as the least safe of them, however they nest. */
-export const failureKind = (error: unknown, environment: NodeJS.ProcessEnv): Kind =>
-  kindOf(error, environment, 0, new Map()) ?? "UNEXPECTED";
+export function failureKind(error: unknown): Kind {
+  const kind = kindOf(error, 0, { known: new Map(), left: readable });
+  return kind === unread || kind === undefined ? "UNEXPECTED" : kind;
+}

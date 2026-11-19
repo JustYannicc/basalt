@@ -15,7 +15,8 @@
  */
 type Text = "message" | "output" | "written";
 const maximumBytes = 64 * 1024;
-const tailLines = 60;
+/** The lines of one stream a failure keeps. */
+export const tailLines = 60;
 /** The rules run over a bounded line, so none of them can be made slow. */
 const inputLimit = 4096;
 const minimumEnvironmentValue = 8;
@@ -226,11 +227,15 @@ export const publicLine = (text: string, environment: NodeJS.ProcessEnv = proces
   );
 
 /** The last lines of a command's output, each made public on its own. */
-export function publicTail(output: string, environment: NodeJS.ProcessEnv = process.env): string {
+export function publicTail(
+  output: string,
+  environment: NodeJS.ProcessEnv = process.env,
+  lines = tailLines,
+): string {
   return withoutEnvironmentValues(stripAnsi(output), environment)
     .trimEnd()
     .split("\n")
-    .slice(-tailLines)
+    .slice(-lines)
     .map((line) => scrub(line, environment, "output", 512).trimEnd())
     .join("\n");
 }

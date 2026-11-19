@@ -23,6 +23,8 @@ export function runBuffered(
     env,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    // Past that limit a command that ignores the request to stop would hold the caller.
+    killSignal: "SIGKILL",
     stdio: ["inherit", "pipe", "pipe"],
   });
   const output = { stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
