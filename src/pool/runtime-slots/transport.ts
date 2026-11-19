@@ -152,7 +152,11 @@ export class BoundSlotDriver implements SlotDriver {
   async stopRefusing(identity: SlotIdentity, force: boolean, signal: AbortSignal) {
     const response = await this.call(identity, "stop-refusing", { identity, force }, signal);
     return Schema.decodeUnknownSync(
-      Schema.Struct({ stopped: Schema.Boolean, hard: Schema.Boolean }),
+      Schema.Struct({
+        stopped: Schema.Boolean,
+        hard: Schema.Boolean,
+        limited: Schema.optional(Schema.Boolean),
+      }),
     )(await response.json());
   }
   async abortStartup(intent: StartupStopIntent, inspect: boolean) {

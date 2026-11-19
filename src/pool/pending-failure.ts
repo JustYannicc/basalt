@@ -18,8 +18,8 @@ function errorClass(error: unknown) {
 }
 
 /**
- * Closed fields for a line that reports a failed background pass, never the error's text. On
- * 19 Nov 2026 both pending lines discarded their error for nine hours, so no line said why.
+ * Closed fields for a line that reports a failed background pass, never the error's text: a pass
+ * that fails every 2 s for hours must say why each time.
  */
 export function pendingFields(error: unknown) {
   const remembered = runtimeRouteDiagnostic(error);

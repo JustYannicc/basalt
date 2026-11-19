@@ -19,7 +19,7 @@ async function passes(f: Fixture, count: number) {
 }
 
 /**
- * Production on 19 Nov 2026: the root had been restarted by recovery before. Then one recovery pass
+ * The stuck state: the root had been restarted by recovery before. Then one recovery pass
  * read its container as not running, admitted a restart and wrote that restart's launch witness,
  * but the old container was still there, so the start never produced a boot. From then on every
  * read refused identity while the old container kept running, and every pass joined that restart.
@@ -161,10 +161,9 @@ test(
     context.mock.method(console, "info", () => {});
     const errors = context.mock.method(console, "error", () => {});
     const { previous, epoch } = await stuckOverRunningContainer(f);
-    // Production's six-account pool: clean, expired since a few seconds after the latch, never
-    // renewed, because every install and Home call since was refused.
+    // A pool policy that is clean but long expired: every install and Home call was refused.
     now += 3_600_000;
-    // The new code's clock first sees the refusal after its release, as production's will.
+    // A release's new code first sees the refusal with a fresh clock.
     await f.send("recovery-reset", { operationId: "incident-release" });
     await passes(f, 1);
     await assertStuck(f, previous, epoch);

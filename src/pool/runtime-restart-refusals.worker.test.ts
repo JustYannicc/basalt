@@ -28,7 +28,7 @@ async function serves(f: Fixture) {
 }
 
 /**
- * What a restart reads after its container stopped, in order (STOP-OPTIONS §7). Each refusal must
+ * What a restart reads after its container stopped, in order. Each refusal must
  * name itself on the pending line, and the pool must serve again once its cause clears. A new boot
  * whose readiness never answers ends in the 180 s startup deadline, which
  * runtime-startup-deadline.worker.test.ts covers.

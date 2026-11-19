@@ -163,7 +163,7 @@ test(
   async (context) => {
     const { f } = await root(context);
     const before = f.old.identity();
-    // 19 Nov 2026: `running` read false for under a second while the old container lived.
+    // `running` reads false for a moment while the old container lives.
     context.mock.method(runtimeStopTiming, "confirmExit", async () => {
       f.old.revive();
     });
@@ -177,5 +177,143 @@ test(
     assert.equal(health.status, 200, await health.clone().text());
     await health.body?.cancel();
     assert.equal(await serves(f), true);
+  },
+);
+
+async function recoveryState(f: Fixture) {
+  return ((await f.send("inspect")) as { recovery: { needsPerson?: { reason: string } } }).recovery;
+}
+
+test(
+  "a restart's own new boot that hasn't committed within the bound is never stopped",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance } = await root(context);
+    let failing = true;
+    f.old.hooks.install = async () => {
+      if (failing) throw new Error("synthetic install failure");
+    };
+    f.old.crash();
+    for (let elapsed = 0; elapsed <= unservingBoundMs * 2; elapsed += 2_000) {
+      await pass(f);
+      advance(2_000);
+    }
+    assert.deepEqual(f.old.calls.signals, [], "the new boot is the restart's own");
+    assert.equal(f.old.calls.start, 1);
+    failing = false;
+    await pass(f);
+    await pass(f);
+    assert.equal(await serves(f), true);
+    assert.equal(f.old.calls.start, 1);
+  },
+);
+
+test(
+  "a slow but healthy cold start that commits after 120 s passes untouched",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance } = await root(context);
+    const old = f.old.identity().bootId;
+    let ready = false;
+    f.old.hooks.health = async () =>
+      !ready && f.old.identity().bootId !== old ? new Response(null, { status: 503 }) : undefined;
+    f.old.crash();
+    for (let elapsed = 0; elapsed < 120_000; elapsed += 2_000) {
+      await pass(f);
+      advance(2_000);
+    }
+    assert.equal(f.old.ctx.container.running, true, "the new boot is still starting");
+    ready = true;
+    await pass(f);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, []);
+    assert.equal(f.old.calls.start, 1);
+    assert.equal(await serves(f), true);
+  },
+);
+
+test(
+  "a forced restart whose new boot never commits ends in needs-a-person, not a loop of stops",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance } = await root(context);
+    const old = refuseCurrentBoot(f);
+    f.old.hooks.install = async () => {
+      if (f.old.identity().bootId !== old) throw new Error("synthetic install failure");
+    };
+    await pass(f);
+    advance(unservingBoundMs);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [15]);
+    for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 2_000) {
+      await pass(f);
+      advance(2_000);
+    }
+    assert.deepEqual(f.old.calls.signals, [15], "the restart's own boot is never stopped");
+    assert.equal((await recoveryState(f)).needsPerson?.reason, "restart_failed");
+  },
+);
+
+test(
+  "a forced restart that commits but never reaches ready ends in needs-a-person",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance } = await root(context);
+    refuseCurrentBoot(f);
+    await pass(f);
+    advance(unservingBoundMs);
+    // The peer bootstrap after the commit fails, so the restart never reports ready.
+    f.old.ctx.container.exec = async () => {
+      throw new Error("synthetic peer bootstrap failure");
+    };
+    for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 2_000) {
+      await pass(f);
+      advance(2_000);
+    }
+    assert.deepEqual(f.old.calls.signals, [15]);
+    assert.equal(f.old.calls.start, 1);
+    assert.equal((await recoveryState(f)).needsPerson?.reason, "restart_failed");
+  },
+);
+
+test(
+  "no launch witness is written when the container reads running again before the start",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f } = await root(context);
+    let confirmations = 0;
+    // Admission sees a confirmed stop; the start's own confirmation sees the container again.
+    context.mock.method(runtimeStopTiming, "confirmExit", async () => {
+      if (++confirmations === 2) f.old.revive();
+    });
+    f.old.crash();
+    await pass(f);
+    assert.equal(confirmations, 2);
+    assert.equal(f.old.calls.start, 0);
+    const { witness } = (await f.send("witness", { target: f.old.target })) as {
+      witness?: unknown;
+    };
+    assert.equal(witness, undefined, "no launch witness over the running container");
+  },
+);
+
+test(
+  "a stop that fails records needs-a-person instead of trying again",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f, advance, stopPaths } = await root(context);
+    f.old.ctx.container.signal = () => {};
+    f.old.ctx.container.destroy = async () => {
+      throw new Error("synthetic destroy failure");
+    };
+    refuseCurrentBoot(f);
+    await pass(f);
+    advance(unservingBoundMs);
+    await pass(f);
+    assert.deepEqual(stopPaths(), ["stop_failed"]);
+    assert.equal((await recoveryState(f)).needsPerson?.reason, "stop_failed");
+    advance(unservingBoundMs);
+    await pass(f);
+    assert.deepEqual(stopPaths(), ["stop_failed"], "no second stop after a failed one");
   },
 );

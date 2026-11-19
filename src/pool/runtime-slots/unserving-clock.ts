@@ -41,6 +41,8 @@ export function unservingDecision(state: UnservingState, now: number): Decision 
  */
 export class UnservingClock {
   private storage: RuntimeSlotStorage;
+  // Only this controller writes the clock, so a clean state seen here stays clean until it does.
+  private clean = false;
   constructor(storage: RuntimeSlotStorage) {
     this.storage = storage;
   }
@@ -52,6 +54,13 @@ export class UnservingClock {
     const boot = executionKey(identity);
     return this.change((state) =>
       state.boot === boot && state.since !== undefined ? state : { ...state, boot, since: now },
+    );
+  }
+  /** The selected boot isn't running and refusing right now: the bound starts again next time. */
+  notRefusing() {
+    if (this.clean) return Promise.resolve({ restarts: [] });
+    return this.change((state) =>
+      state.since === undefined ? state : { ...state, since: undefined },
     );
   }
   /** A refusal of any kind: a forced restart that still hasn't served has failed. */
@@ -78,16 +87,27 @@ export class UnservingClock {
     );
   }
   /** Serving again. The hourly restart count stays, so a flapping runtime still meets its limit. */
-  serving() {
-    return this.change((state) =>
+  async serving() {
+    if (this.clean) return;
+    await this.change((state) =>
       state.since === undefined && state.restartedAt === undefined && !state.needsPerson
         ? state
         : { restarts: state.restarts },
     );
+    this.clean = true;
   }
-  /** The operator's way out of "needs a person": the next refusal starts a fresh bound and limit. */
+  /**
+   * The operator's way out of "needs a person": a fresh bound and hourly count here. The container
+   * object's own three-an-hour stop count isn't reset. It never reads the stored row, so a row
+   * that no longer decodes can't block it.
+   */
   reset() {
-    return this.change(() => ({ restarts: [] }));
+    this.clean = false;
+    return this.storage.transact(async (_, transaction) => {
+      const state = { restarts: [] };
+      await transaction.put(clockKey, state);
+      return state;
+    });
   }
   private change(next: (state: UnservingState) => UnservingState, write = true) {
     return this.storage.transact(async (_, transaction) => {
@@ -95,7 +115,10 @@ export class UnservingClock {
       const state =
         raw === undefined ? { restarts: [] } : Schema.decodeUnknownSync(UnservingState)(raw);
       const updated = next(state);
-      if (write && updated !== state) await transaction.put(clockKey, updated);
+      if (write && updated !== state) {
+        this.clean = false;
+        await transaction.put(clockKey, updated);
+      }
       return updated;
     });
   }

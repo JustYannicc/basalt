@@ -4,14 +4,15 @@ import type { SlotIdentity } from "./contract.ts";
 import type { WitnessRecord } from "./witness-store.ts";
 
 const repeatMs = 60_000;
+const keptKeys = 8;
 
 /**
- * One closed line per changed health refusal, and at most one a minute while it repeats. On 19 Nov
- * 2026 every read refused for hours and no line said why; this says what the endpoint saw: its
- * record, the container, and the readiness answer, never a value from either.
+ * One closed line per distinct health refusal, and at most one a minute for each while it repeats,
+ * even when callers alternate between them. It says what the endpoint saw: its record, the
+ * container, and the readiness answer, never a value from either.
  */
 export class RuntimeHealthRefusalLog {
-  private last?: { key: string; at: number };
+  private logged = new Map<string, number>();
   report(
     identity: SlotIdentity,
     error: unknown,
@@ -44,8 +45,12 @@ export class RuntimeHealthRefusalLog {
     };
     const key = JSON.stringify({ ...fields, leaseMs: undefined });
     const now = Date.now();
-    if (this.last?.key === key && now - this.last.at < repeatMs) return;
-    this.last = { key, at: now };
+    const at = this.logged.get(key);
+    if (at !== undefined && now - at < repeatMs) return;
+    this.logged.delete(key);
+    this.logged.set(key, now);
+    const oldest = this.logged.keys().next().value;
+    if (this.logged.size > keptKeys && oldest !== undefined) this.logged.delete(oldest);
     console.error("POOL_RUNTIME_HEALTH_REFUSED", JSON.stringify(fields));
   }
 }

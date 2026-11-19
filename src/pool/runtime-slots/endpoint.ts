@@ -122,6 +122,7 @@ export class RuntimeEndpoint {
       store: this.store,
       activity: this.activity,
       health: (identity, signal) => this.health(identity, signal),
+      readiness: (configuration, signal) => this.channel.health(configuration, signal),
     });
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {

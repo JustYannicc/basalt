@@ -5,9 +5,9 @@ import type { ControllerState } from "./runtime-state.ts";
 import { runtimeStopTiming } from "./forced-stop.ts";
 
 /**
- * Whether the container is still stopped after a confirmation wait. One `running: false` read is not
- * proof of an exit: on 19 Nov 2026 it read false for under a second while the old container lived,
- * a restart was admitted over it, and the record it replaced left the pool refusing for hours.
+ * Whether the container is still stopped after a confirmation wait. One `running: false` read is no
+ * proof of an exit: it can read false for a moment while the container lives, and a restart
+ * admitted then replaces the record of a boot that is still running.
  */
 export async function confirmedStopped(ctx: ControllerState) {
   if (ctx.container!.running) return false;
