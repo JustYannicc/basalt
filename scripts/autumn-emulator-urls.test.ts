@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Exit, Schema } from "../.upstream/node_modules/effect/dist/index.js";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, Exit, Schema } from "../.upstream/node_modules/effect/dist/index.js";
 import * as cloudEmulators from "../.upstream/apps/hosted/cloud/src/contracts/emulators.ts";
 import { AutumnServerUrl } from "../.upstream/apps/hosted/cloud/src/contracts/autumn.ts";
 import { EmulatorFixture } from "../.upstream/e2e/support/emulators.ts";
+import { localAutumnEmulator } from "../.upstream/e2e/support/autumn-emulator.ts";
 
 // CI runs the Autumn billing emulator on loopback (#642). Only the emulator configuration may name
 // it, and only for billing; an operator's Autumn endpoint stays HTTPS.
@@ -91,4 +93,19 @@ test("the harness fixture names a loopback emulator only for billing", () => {
       !accepts(EmulatorFixture, fixture(services({ [service]: { baseUrl: local, token: "x" } }))),
       service,
     );
+});
+
+test("without a configured emulator CLI, a local Cloud starts nothing and keeps hosted billing", async () => {
+  const configured = process.env.BASALT_E2E_AUTUMN_EMULATOR;
+  delete process.env.BASALT_E2E_AUTUMN_EMULATOR;
+  try {
+    const origin = await Effect.runPromise(
+      Effect.scoped(localAutumnEmulator("/nonexistent/cloud")).pipe(
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+    assert.equal(origin, undefined);
+  } finally {
+    if (configured !== undefined) process.env.BASALT_E2E_AUTUMN_EMULATOR = configured;
+  }
 });
