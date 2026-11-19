@@ -199,7 +199,65 @@ test("a Home row that already failed is not counted as a second possible failure
   assert.equal(slo.state, "ok");
 });
 
+/** A request finished without an observable outcome, with its latest Home attempt at another time. */
+const straddling =
+  (finishMinutesAgo: number, homeMinutesAgo: number, homeFailed: boolean) =>
+  async (db: HistoryDatabase, ids: { pool: string; home: string; person: string }) => {
+    await db.query(
+      `INSERT INTO basalt_model_terminal_starts (request_id,pool,person,client_key,endpoint,started_at)
+      VALUES (md5('straddle')::uuid,$1,$2,$2,'/v1/responses',$3::timestamptz - interval '61 minutes')`,
+      [ids.pool, ids.person, at],
+    );
+    await db.query(
+      `INSERT INTO basalt_model_terminal_finishes (request_id,outcome,status,bytes,finished_at)
+      VALUES (md5('straddle')::uuid,'unavailable',200,0,$1::timestamptz - $2::float8 * interval '1 minute')`,
+      [at, finishMinutesAgo],
+    );
+    await db.query(
+      `INSERT INTO basalt_model_requests
+        (id,source,source_record,timestamp,timestamp_exact,pool,person,client_key,request_id,
+          token_quality,failed,status_code,cost_basis,attribution)
+      SELECT $1,$2,$1,t.at,to_char(t.at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS".000000000Z"'),
+        $3,$4,$4,md5('straddle')::uuid::text,'unclassified',$5,CASE WHEN $5 THEN 500 ELSE 200 END,
+        'unpriced','unknown'
+      FROM (SELECT $6::timestamptz - $7::float8 * interval '1 minute' AS at) t`,
+      [await digest("straddle"), ids.home, ids.pool, ids.person, homeFailed, at, homeMinutesAgo],
+    );
+  };
+
+test("an unknown request is weighed in the window that counts its latest Home attempt", async () => {
+  // Finished just before the hour, its successful Home attempt landed just inside it: the hour counts
+  // that success, which could be a second failure in 121 requests.
+  const inside = await pool(straddling(60.5, 59.5, false), 120);
+  assert.equal(inside.state, "unavailable");
+  assert.deepEqual(inside.hour.unknown, {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 0,
+    couldFail: 1,
+  });
+});
+
+test("an unknown request whose latest Home attempt is before the hour is not weighed in it", async () => {
+  // Its failed Home attempt landed just before the hour: the day counts that failure, and the hour
+  // holds nothing of the request.
+  const before = await pool(straddling(59.5, 60.5, true), 120);
+  assert.equal(before.state, "ok");
+  assert.equal(before.hour.unknown?.requests, 0);
+  assert.deepEqual(before.day.unknown, {
+    requests: 1,
+    pending: 0,
+    unavailable: 1,
+    unmatched: 0,
+    uncounted: 0,
+    couldFail: 0,
+  });
+});
+
 test("proof traffic's lost records do not count against the real objective", async () => {
+  // At 99.2 % one more possible failure would leave the hour undecided.
   const slo = await pool(async (db, ids) => {
     const key = await digest("fixture-proof-key");
     await db.query(
@@ -212,9 +270,9 @@ test("proof traffic's lost records do not count against the real objective", asy
       VALUES (md5('proof-abandoned')::uuid,$1,NULL,$2,'/v1/responses',$3::timestamptz - interval '30 minutes')`,
       [ids.pool, key, at],
     );
-  });
-  assert.equal(slo.hour.unknown?.requests, 0);
+  }, 120);
   assert.equal(slo.state, "ok");
+  assert.equal(slo.hour.unknown?.requests, 0);
 });
 
 test("a start still without a finish names the undecided figure as pending", async () => {
