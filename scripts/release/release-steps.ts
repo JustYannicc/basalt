@@ -13,6 +13,8 @@ const EVERY_RELEASE = [/^node scripts\/database-pool-budget\.ts$/u, /^node ensur
 
 export interface ReleaseStep {
   readonly fqn: string;
+  /** A check that must pass on every release, or a build whose output the plan must see. */
+  readonly kind: "check" | "build";
   readonly command: string;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
@@ -39,19 +41,22 @@ const timeoutMs = (value: unknown) => {
 };
 
 /**
- * Every noop every-release command in the plan, with its command line and directory from this
- * checkout's declaration and each env value from the declaration when known, else from the State
- * row the last apply recorded. A value known in neither refuses: the check must not run half-set.
+ * One step per selected command row, with its command line and directory from this checkout's
+ * declaration and each env value from the declaration when known, else from the State row the
+ * last apply recorded. A value known in neither refuses: a step must not run half-set.
  */
-export const everyReleaseSteps = (plan: AlchemyPlan.Plan) =>
+const commandSteps = (
+  plan: AlchemyPlan.Plan,
+  kind: ReleaseStep["kind"],
+  select: (node: AlchemyPlan.CRUD, command: string) => boolean,
+) =>
   Effect.gen(function* () {
     const steps: ReleaseStep[] = [];
     for (const [fqn, node] of Object.entries(plan.resources)) {
-      if (!node || node.action !== "noop") continue;
+      if (!node) continue;
       const declared = record(node.resource.Props) ? node.resource.Props : {};
       const command = declared.command;
-      if (typeof command !== "string" || !EVERY_RELEASE.some((pattern) => pattern.test(command)))
-        continue;
+      if (typeof command !== "string" || !select(node, command)) continue;
       const recordedProps = (node.state as { props?: Record<string, unknown> } | undefined)?.props;
       const declaredEnv = record(declared.env) ? declared.env : {};
       const recordedEnv = record(recordedProps?.env) ? recordedProps.env : {};
@@ -67,7 +72,7 @@ export const everyReleaseSteps = (plan: AlchemyPlan.Plan) =>
         else
           return yield* new ReleaseStepFailed({
             check: fqn,
-            why: `${key} is known neither from the declaration nor from State, so the check cannot run before apply.`,
+            why: `${key} is known neither from the declaration nor from State, so the ${kind} cannot run before apply.`,
             fix: "Apply once so State records it, or settle the input that leaves it unresolved.",
             exit: "not run",
             detail: { stdout: "", stderr: "" },
@@ -77,17 +82,50 @@ export const everyReleaseSteps = (plan: AlchemyPlan.Plan) =>
       if (typeof cwd !== "string")
         return yield* new ReleaseStepFailed({
           check: fqn,
-          why: "The command's directory is not known before apply.",
+          why: `The ${kind}'s directory is not known before apply.`,
           fix: "Declare the command with a literal directory.",
           exit: "not run",
           detail: { stdout: "", stderr: "" },
         });
-      steps.push({ fqn, command, cwd, env, secrets, timeoutMs: timeoutMs(declared.timeout) });
+      steps.push({ fqn, kind, command, cwd, env, secrets, timeoutMs: timeoutMs(declared.timeout) });
     }
     return steps;
   });
 
-/** Runs one step as Alchemy runs a Command.Exec: the command split on whitespace, no shell. */
+/** Every noop every-release check in the plan. */
+export const everyReleaseSteps = (plan: AlchemyPlan.Plan) =>
+  commandSteps(
+    plan,
+    "check",
+    (node, command) =>
+      node.action === "noop" && EVERY_RELEASE.some((pattern) => pattern.test(command)),
+  );
+
+/**
+ * Every build the plan updates. A build plans as changed whenever its output is missing, which is
+ * every fresh job, and the Workers bundled from it plan as changed with it. The entry runs them
+ * before the plan it checks, so that plan compares what is really there. A build State has never
+ * recorded is left to the apply.
+ */
+export const buildSteps = (plan: AlchemyPlan.Plan) =>
+  commandSteps(
+    plan,
+    "build",
+    (node) => node.resource.Type === "Command.Build" && node.action === "update",
+  );
+
+const FAILED = {
+  check: [
+    "A check the stack runs on every release failed before anything was applied.",
+    "Read its output in the private detail; nothing has been applied.",
+  ],
+  build: [
+    "A build the plan depends on failed before the plan was made.",
+    "Read its output in the private detail; nothing has been planned or applied.",
+  ],
+} as const;
+
+/** Runs one step as Alchemy runs a command: the command split on whitespace, no shell. */
 export const runReleaseStep = (step: ReleaseStep, inherited: NodeJS.ProcessEnv = process.env) =>
   Effect.callback<void, ReleaseStepFailed>((resume) => {
     const [program, ...args] = step.command.split(/\s+/u);
@@ -110,8 +148,8 @@ export const runReleaseStep = (step: ReleaseStep, inherited: NodeJS.ProcessEnv =
     const failed = (exit: string) =>
       new ReleaseStepFailed({
         check: step.fqn,
-        why: "A check the stack runs on every release failed before anything was applied.",
-        fix: "Read its output in the private detail; nothing has been applied.",
+        why: FAILED[step.kind][0],
+        fix: FAILED[step.kind][1],
         exit,
         detail: {
           stdout: Buffer.concat(stdout).toString().slice(-20_000),

@@ -271,7 +271,7 @@ const {
   remainingRows,
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
-const { everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
+const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
 const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
@@ -484,7 +484,16 @@ try {
             new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
           );
         tracker.setPhase("plan");
-        const snapshot = yield* planOf("deploy");
+        let snapshot = yield* planOf("deploy");
+        // A build this job has not run plans as changed (its output is missing), and so does every
+        // Worker bundled from it. Build first, then check the plan of what is really there.
+        const builds = yield* buildSteps(snapshot.native);
+        if (builds.length > 0) {
+          tracker.setPhase("build");
+          for (const step of builds) yield* runReleaseStep(step);
+          tracker.setPhase("plan");
+          snapshot = yield* planOf("deploy");
+        }
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
