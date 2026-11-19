@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-instances-per-family",
   "file": "0703-catalog-instances-per-family.patch",
-  "content_sha256": "d3f9dff3b655bb7bf41532f2d2e9f662d7ae6ea03e105fe5e5a394f859785f9f",
+  "content_sha256": "9cc45941e7e9c327ab19d8bf42731f6f312dd3176897cfefaa443df6dd832d9c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -144,7 +144,7 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
          yield* browser.use("Choose among tracker instances", (page) =>
            row(page, officialApps.tracker.name)
              .getByRole("button", { name: /choose one of 2/ })
-@@ -141,9 +105,58 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+@@ -141,9 +105,61 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
          yield* browser.use("Cancel phone chooser", (page) =>
            page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click(),
          );
@@ -163,7 +163,7 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
 +        const viewer = yield* body(
 +          Schema.Struct({ userId: Schema.String }),
 +          yield* api.request(actors.owner, "GET", "/api/viewer"),
-+        );
+         );
 +        // The pool product's start also serves this write; stopping a stopped product is a no-op.
 +        yield* serverControl("stop");
 +        yield* legacyStorage([
@@ -186,12 +186,15 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
 +          { sql: "update executor_apps set copied_from = null where id = $1", params: [pool.id] },
 +        ]);
 +        yield* serverControl("start");
++        // Only the pool-service guard keeps the retained pool from answering another service's install.
++        const work = yield* install(officialApps.tracker.id, "Tracker work");
++        expect(work.id).not.toBe(pool.id);
 +        yield* browser.login(actors.owner);
 +        yield* visit;
 +        // Count reads do not wait; the installed row's link means the inventory has rendered.
 +        yield* browser.use("Show the retained pool", (page) =>
 +          row(page, "Pool").getByRole("link", { name: "Open", exact: true }).waitFor(),
-         );
++        );
 +        expect(
 +          yield* browser.use("Every installed service offers Add another", (page) =>
 +            row(page, "Pool").getByRole("button", { name: "More actions for Pool" }).count(),
@@ -205,7 +208,7 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
          yield* ui.another("Pool");
          yield* ui.name("Denied pool");
          yield* browser.use("Refuse creation before any write", (page) =>
-@@ -218,6 +231,28 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+@@ -218,6 +234,28 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
              page.getByRole("menuitem", { name: new RegExp(app.name) }).waitFor(),
            );
          yield* browser.use("Close pools chooser", (page) => page.keyboard.press("Escape"));
@@ -234,7 +237,7 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
          const addedMail = yield* ui.submit(`Add ${officialApps.mail.name}`);
          expect(addedMail.status).toBe(200);
          const mail = yield* Schema.decodeUnknownEffect(InstallResult)(addedMail.body);
-@@ -279,11 +314,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+@@ -279,11 +317,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
          });
          yield* ui.setup(mail.id);
          expect(yield* links(mail.id)).toEqual(originalLinks);
