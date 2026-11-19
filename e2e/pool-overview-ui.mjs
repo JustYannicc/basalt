@@ -409,7 +409,7 @@ const program = Effect.gen(function* () {
       );
       checked(
         "an import certificate names the interval it proves",
-        /Import complete \w+ \d+ to \w+ \d+/u.test(pills),
+        /Import complete \d{2}\.\d{2}\.\d{4} to \d{2}\.\d{2}\.\d{4}/u.test(pills),
         true,
       );
       checked(
@@ -632,7 +632,9 @@ const program = Effect.gen(function* () {
   checked(
     "the forecast distinguishes missing records from unknown metric values",
     (yield* page(() =>
-      screen.getByText(/Week of Nov 2 has 1 day with no records and 1 day with unknown /u).count(),
+      screen
+        .getByText(/Week of 02\.11\.2026 has 1 day with no records and 1 day with unknown /u)
+        .count(),
     )) > 0,
     true,
   );
