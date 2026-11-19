@@ -130,8 +130,16 @@ function shown(value: unknown, path: readonly string[]): string {
     : "<withheld>";
 }
 
-function propChanges(old: unknown, next: unknown, path: readonly string[] = ["props"]): string[] {
+/** Each leaf that differs, as `path: old -> new` with values shown only when safe to print. */
+export function propChanges(
+  old: unknown,
+  next: unknown,
+  path: readonly string[] = ["props"],
+  depth = 16,
+): string[] {
   if (Object.is(old, next)) return [];
+  // An applied plan's props can point back at themselves; past this depth a leaf is just changed.
+  if (path.length > depth) return [`${path.join(".")}: changed`];
   if (
     (record(old) || old === undefined) &&
     (record(next) || next === undefined) &&
@@ -141,11 +149,11 @@ function propChanges(old: unknown, next: unknown, path: readonly string[] = ["pr
     isResolved(next)
   ) {
     const keys = [...new Set([...Object.keys(old ?? {}), ...Object.keys(next ?? {})])].sort();
-    return keys.flatMap((key) => propChanges(old?.[key], next?.[key], [...path, key]));
+    return keys.flatMap((key) => propChanges(old?.[key], next?.[key], [...path, key], depth));
   }
   if (Array.isArray(old) && Array.isArray(next) && isResolved(old) && isResolved(next))
     return Array.from({ length: Math.max(old.length, next.length) }, (_, index) =>
-      propChanges(old[index], next[index], [...path, String(index)]),
+      propChanges(old[index], next[index], [...path, String(index)], depth),
     ).flat();
   if (!havePropsChanged({ value: old }, { value: next })) return [];
   return [`${path.join(".")}: ${shown(old, path)} -> ${shown(next, path)}`];
