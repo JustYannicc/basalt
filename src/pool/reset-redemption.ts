@@ -1,4 +1,9 @@
-import type { ResetAttempt, ResetResult } from "../../apps/pool/action-contract.ts";
+import type {
+  ResetAttempt,
+  ResetConfirmation,
+  ResetCredit,
+  ResetResult,
+} from "../../apps/pool/action-contract.ts";
 import type { HomeClient } from "./control.ts";
 import { digest } from "./backend-users.ts";
 import { fail, post } from "./json.ts";
@@ -16,7 +21,12 @@ interface Attempt {
   sent: boolean;
   result: ResetResult;
 }
-const succeeded = (result: ResetResult) => ["reset", "already_redeemed", "already_used"].includes(result.outcome);
+const sameKind = (credit: ResetCredit, confirmed: ResetConfirmation) =>
+  credit.kind === confirmed.kind &&
+  credit.scope.kind === confirmed.scope.kind &&
+  credit.scope.id === confirmed.scope.id;
+const succeeded = (result: ResetResult) =>
+  ["reset", "already_redeemed", "already_used"].includes(result.outcome);
 
 /** The account action queue owns serialization. Receipts outlive retries and DO restarts. */
 export class ResetRedemption {
@@ -24,7 +34,9 @@ export class ResetRedemption {
   private client: HomeClient;
   private now: () => number;
   constructor(storage: ActionStorage, client: HomeClient, now: () => number) {
-    this.storage = storage; this.client = client; this.now = now;
+    this.storage = storage;
+    this.client = client;
+    this.now = now;
   }
 
   async read(id: string): Promise<ResetAttempt | null> {
@@ -44,9 +56,20 @@ export class ResetRedemption {
     };
   }
 
-  async use(provider: ProviderResets, requestId: string, creditId: string, signal: AbortSignal, stillMember: () => Promise<void>): Promise<ResetResult> {
+  async use(
+    provider: ProviderResets,
+    requestId: string,
+    creditId: string,
+    signal: AbortSignal,
+    stillMember: () => Promise<void>,
+    confirmed?: ResetConfirmation,
+  ): Promise<ResetResult> {
     if (!resetUuid.test(requestId) || !creditId || creditId.length > 256) {
-      return fail(400, "invalid_query", "Provide a reset credit id and a UUID request id. Reuse that request id when retrying.");
+      return fail(
+        400,
+        "invalid_query",
+        "Provide a reset credit id and a UUID request id. Reuse that request id when retrying.",
+      );
     }
     requestId = requestId.toLowerCase();
     const accountKey = `reset-use-v1:${await digest(provider.id)}`;
@@ -57,18 +80,43 @@ export class ResetRedemption {
     }
     if (!attempt) {
       const pendingId = await this.storage.get<string>(accountKey);
-      const pending = pendingId ? await this.storage.get<Attempt>(`${accountKey}:${pendingId}`) : undefined;
+      const pending = pendingId
+        ? await this.storage.get<Attempt>(`${accountKey}:${pendingId}`)
+        : undefined;
       if (pending?.result.outcome === "unknown") {
-        return fail(409, "invalid_query", "The previous reset outcome is unknown. Retry with its original request id before starting another reset.");
+        return fail(
+          409,
+          "invalid_query",
+          "The previous reset outcome is unknown. Retry with its original request id before starting another reset.",
+        );
       }
       const credits = await provider.credits(signal);
       const credit = credits.credits.find((credit) => credit.id === creditId);
       if (!credit) return fail(404, "not_found", "This reset credit is no longer available.");
-      if (credit.usableNow === false) return fail(409, "invalid_query", "This reset cannot be used right now.");
+      // The person confirmed a kind of reset; nothing else may be spent in its name.
+      if (confirmed !== undefined && !sameKind(credit, confirmed))
+        return fail(
+          409,
+          "invalid_query",
+          "This reset credit is a different kind than the one confirmed.",
+        );
+      if (credit.usableNow === false)
+        return fail(409, "invalid_query", "This reset cannot be used right now.");
       const organization = await provider.organization(signal);
       await stillMember();
-      attempt = { provider: provider.provider, creditId, organization, startedAt: this.now(), sent: false,
-        result: { requestId, outcome: "unknown", cooldownCleared: false, usageRefreshQueued: false } };
+      attempt = {
+        provider: provider.provider,
+        creditId,
+        organization,
+        startedAt: this.now(),
+        sent: false,
+        result: {
+          requestId,
+          outcome: "unknown",
+          cooldownCleared: false,
+          usageRefreshQueued: false,
+        },
+      };
       // Both writes precede the provider call. A crash between them cannot have spent a credit.
       await this.storage.put(receiptKey, attempt);
       await this.storage.put(accountKey, requestId);
@@ -82,11 +130,19 @@ export class ResetRedemption {
       attempt = { ...attempt, sent: true };
       await this.storage.put(receiptKey, attempt);
       try {
-        let outcome = await provider.consume(requestId, attempt.creditId, attempt.organization, signal);
+        let outcome = await provider.consume(
+          requestId,
+          attempt.creditId,
+          attempt.organization,
+          signal,
+        );
         // A later refusal says nothing about an earlier request whose reply was lost.
-        if (previouslySent && !["reset", "already_redeemed", "already_used"].includes(outcome)) outcome = "unknown";
+        if (previouslySent && !["reset", "already_redeemed", "already_used"].includes(outcome))
+          outcome = "unknown";
         attempt = { ...attempt, result: { ...attempt.result, outcome } };
-      } catch { return attempt.result; }
+      } catch {
+        return attempt.result;
+      }
       await this.storage.put(receiptKey, attempt);
     }
     if (!succeeded(attempt.result)) return attempt.result;
@@ -94,19 +150,34 @@ export class ResetRedemption {
     if (!attempt.result.cooldownCleared) {
       try {
         await stillMember();
-        const result = await this.client.data(`/credentials/${encodeURIComponent(provider.id)}/cooldown`, { method: "DELETE", signal });
-        if (typeof result.cleared === "boolean") attempt.result = { ...attempt.result, cooldownCleared: true };
-      } catch { /* The receipt still records the confirmed provider outcome. */ }
+        const result = await this.client.data(
+          `/credentials/${encodeURIComponent(provider.id)}/cooldown`,
+          { method: "DELETE", signal },
+        );
+        if (typeof result.cleared === "boolean")
+          attempt.result = { ...attempt.result, cooldownCleared: true };
+      } catch {
+        /* The receipt still records the confirmed provider outcome. */
+      }
     }
     if (!attempt.result.usageRefreshQueued) {
       try {
         await stillMember();
-        const result = await this.client.data("/quota/collect", { ...post({ credential_ids: [provider.id] }), signal });
-        if (typeof result.accepted === "number" && Number.isInteger(result.accepted) && result.accepted > 0) {
+        const result = await this.client.data("/quota/collect", {
+          ...post({ credential_ids: [provider.id] }),
+          signal,
+        });
+        if (
+          typeof result.accepted === "number" &&
+          Number.isInteger(result.accepted) &&
+          result.accepted > 0
+        ) {
           this.client.dropQuotaDetail(provider.id);
           attempt.result = { ...attempt.result, usageRefreshQueued: true };
         }
-      } catch { /* Retry the collection, never the confirmed spend. */ }
+      } catch {
+        /* Retry the collection, never the confirmed spend. */
+      }
     }
     await this.storage.put(receiptKey, attempt);
     return attempt.result;

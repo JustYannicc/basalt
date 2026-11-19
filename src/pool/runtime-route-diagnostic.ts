@@ -1,8 +1,9 @@
 import { SlotRefused } from "./runtime-slots/contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
-import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
+import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "./lifecycle.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
-import { endpointRequestId, retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
+import { PoolDependencyFailure } from "./dependency-failure.ts";
+import { ControlFailure } from "./json.ts";
 
 const steps = [
   "primary_forward",
@@ -45,6 +46,14 @@ const reasons = [
   "transport",
   "unknown",
 ] as const;
+// A separate header, so callers on an older release still recognize every reason value.
+const causes = [
+  "startup_deadline",
+  "control",
+  "dependency_storage",
+  "dependency_membership",
+  "dependency_signing",
+] as const;
 export interface RuntimeRouteDiagnostic {
   runtimeStep: (typeof steps)[number];
   runtimeReason: (typeof reasons)[number];
@@ -52,10 +61,29 @@ export interface RuntimeRouteDiagnostic {
 }
 const stepHeader = "X-Signalbox-Runtime-Failure-Step";
 const reasonHeader = "X-Signalbox-Runtime-Failure-Reason";
+const causeHeader = "X-Signalbox-Runtime-Failure-Cause";
 // Preserve exception identity and existing refusal/replay handling; only closed metadata crosses the binding.
 const observed = new WeakMap<object, RuntimeRouteDiagnostic>();
+const observedCauses = new WeakMap<object, (typeof causes)[number]>();
+const correlations = new WeakMap<object, string>();
 const object = (value: unknown): value is object =>
   value !== null && (typeof value === "object" || typeof value === "function");
+export function endpointRequestId(error: unknown) {
+  return object(error) ? correlations.get(error) : undefined;
+}
+export function correlateEndpointRequest(value: object, requestId: string) {
+  correlations.set(value, requestId);
+}
+export function retainEndpointRequestId(source: object, destination: object) {
+  const id = correlations.get(source);
+  if (id) correlations.set(destination, id);
+}
+function cause(error: unknown): (typeof causes)[number] | undefined {
+  if (error instanceof PoolStartupDeadline) return "startup_deadline";
+  if (error instanceof ControlFailure) return "control";
+  if (error instanceof PoolDependencyFailure) return `dependency_${error.dependency}`;
+  return object(error) ? observedCauses.get(error) : undefined;
+}
 function reason(error: unknown): RuntimeRouteDiagnostic["runtimeReason"] {
   if (error instanceof SlotRefused) return `slot_${error.reason}`;
   if (error instanceof FleetRefused) return `fleet_${error.reason}`;
@@ -105,20 +133,38 @@ export function knownRuntimeFailureCode(code: string) {
 }
 export function runtimeFailureHeaders(error: unknown, step: RuntimeRouteDiagnostic["runtimeStep"]) {
   const diagnostic = runtimeFailureDiagnostic(error, step);
-  return { [stepHeader]: diagnostic.runtimeStep, [reasonHeader]: diagnostic.runtimeReason };
+  const failureCause = cause(error);
+  return {
+    [stepHeader]: diagnostic.runtimeStep,
+    [reasonHeader]: diagnostic.runtimeReason,
+    ...(failureCause ? { [causeHeader]: failureCause } : {}),
+  };
 }
 export function runtimeResponseDiagnostic(response: Response) {
   const runtimeStep = steps.find((value) => value === response.headers.get(stepHeader));
   const runtimeReason = reasons.find((value) => value === response.headers.get(reasonHeader));
   return runtimeStep && runtimeReason ? { runtimeStep, runtimeReason } : undefined;
 }
+export function runtimeResponseCause(response: Response) {
+  return causes.find((value) => value === response.headers.get(causeHeader));
+}
+/** One closed log field: the refusal code and, when known, the failed dependency or deadline. */
+export function runtimeResponseRefusal(response: Response) {
+  const diagnostic = runtimeResponseDiagnostic(response);
+  if (!diagnostic) return undefined;
+  const failureCause = runtimeResponseCause(response);
+  return { code: runtimeFailureCode(diagnostic), ...(failureCause ? { cause: failureCause } : {}) };
+}
 export function stripRuntimeFailureHeaders(headers: Headers) {
   headers.delete(stepHeader);
   headers.delete(reasonHeader);
+  headers.delete(causeHeader);
 }
 export function retainRuntimeFailure(response: Response, error: object) {
   retainEndpointRequestId(response, error);
   const diagnostic = runtimeResponseDiagnostic(response);
   if (diagnostic) observed.set(error, diagnostic);
+  const failureCause = runtimeResponseCause(response);
+  if (diagnostic && failureCause) observedCauses.set(error, failureCause);
   return error;
 }
