@@ -15,6 +15,8 @@
   as Basalt code. Neither oxfmt nor oxlint rewrites the recorded files. Configuration choices are
   recorded in `../../README.md`.
 
-To update, copy the assets of the new upstream commit over this directory, record the commit
-here, run `node scripts/owned-lint/check.ts --write-vendor` and
-`npm run lint:owned -- --write-baseline`, and review both diffs against upstream.
+To update, replace this directory's contents with the new upstream commit's assets and
+`LICENSE`, keeping this file, and put that commit on the `Commit:` line: the check refuses a
+change to the recorded files without a new commit there. Then run
+`node scripts/owned-lint/check.ts --write-vendor`, which lists the files added, changed and
+removed, and `npm run lint:owned -- --write-baseline`, and review both diffs against upstream.

@@ -10,9 +10,8 @@ import {
   nativeRules,
   optionChanges,
   ratchet,
-  vendorChanges,
-  vendorProblems,
 } from "./baseline.ts";
+import { commitOf, vendorChanges, vendorProblems } from "./vendor.ts";
 
 const finding = (rule: string, file: string, line = 1) => ({
   rule,
@@ -56,6 +55,15 @@ test("an allowlist entry covers exactly its count, for the rules that offer one"
   assert.match(
     compare([finding(spread, "src/a.ts")], {}, misuse)[0]!,
     /takes no allowlist entries/u,
+  );
+});
+
+test("a baseline entry that is not a count fails instead of passing every finding", () => {
+  // SAFETY: a hand-edited baseline.json can hold any JSON value; this is the one under test.
+  const baseline = { [spread]: { "src/a.ts": "x" } } as never;
+  assert.match(
+    compare([finding(spread, "src/a.ts"), finding(spread, "src/a.ts", 2)], baseline, {})[0]!,
+    /src\/a\.ts under basalt\/no-spread-into-provider-request is not a count of findings/u,
   );
 });
 
@@ -111,7 +119,6 @@ const state = (lintChanged = false, changed = (file: string) => file === "src/to
   enteredScope: (file: string) => file === "src/moved.ts",
   lintChanged,
   vendor: new Map<string, string>(),
-  upstreamRecorded: false,
 });
 const enforced = new Set([spread]);
 
@@ -210,17 +217,23 @@ test("the configuration loads the pinned plugins, keeps what the base enforced, 
   );
 });
 
-test("a built-in rule runs only with its plugin enabled, so one without it is refused", () => {
+test("a built-in rule is written once, with its plugin listed, so no other spelling can switch it off", () => {
   const rules = { "oxc/no-accumulating-spread": "error", "basalt/no-echo-stub": "error" };
   assert.deepEqual(configProblems({ jsPlugins: plugins, plugins: ["oxc"], rules }, undefined), []);
   for (const config of [
     { jsPlugins: plugins, plugins: [], rules },
     { jsPlugins: plugins, rules },
     { jsPlugins: plugins, plugins: ["oxc"], rules: { "no-accumulating-spread": "error" } },
+    { jsPlugins: plugins, plugins: ["oxc"], rules: { ...rules, "no-accumulating-spread": "off" } },
+    {
+      jsPlugins: plugins,
+      plugins: ["oxc"],
+      rules: { ...rules, "eslint/no-accumulating-spread": "off" },
+    },
   ])
     assert.match(
       configProblems(config, undefined).join("\n"),
-      /does not run unless it is written <plugin>\/<rule> and its plugin is listed in "plugins"/u,
+      /write the built-in rule \S+ once, as <plugin>\/<rule> with its plugin listed in "plugins"/u,
       JSON.stringify(config),
     );
   for (const off of ["off", "allow", 0])
@@ -262,25 +275,52 @@ test("only the recorded upstream copy of a vendored file passes, and changes are
     ["scripts/owned-lint/vendor/a.ts", "1"],
     ["scripts/owned-lint/vendor/gone.ts", "3"],
   ]);
-  assert.deepEqual(vendorChanges(manifest, base), [
-    "scripts/owned-lint/vendor/b.ts",
-    "scripts/owned-lint/vendor/gone.ts",
+  assert.deepEqual(vendorChanges(onDisk, base), [
+    "added 1: scripts/owned-lint/vendor/b.ts",
+    "removed 1: scripts/owned-lint/vendor/gone.ts",
   ]);
+  assert.deepEqual(vendorChanges(onDisk, manifest), ["changed 1: scripts/owned-lint/vendor/b.ts"]);
+});
+
+test("vendored code changes only with a new upstream commit, which is listed for review", () => {
+  const [old, next] = ["a".repeat(40), "b".repeat(40)];
+  assert.equal(commitOf(`# provenance\n\n- Commit: \`${old}\` (2026-10-13)\n`), old);
+  assert.equal(commitOf("- Commit: not a hash\n"), undefined);
+  const base = new Map([["scripts/owned-lint/vendor/rule.ts", "1"]]);
   const current = {
     config: { jsPlugins: plugins, rules: {} },
     baseline: {},
     allowlist: {},
-    vendor: manifest,
+    // A neutered rule and a Basalt file hidden as vendored code, both recorded with --write-vendor.
+    vendor: new Map([
+      ["scripts/owned-lint/vendor/rule.ts", "edited"],
+      ["scripts/owned-lint/vendor/helper.ts", "2"],
+    ]),
   };
-  const update = basePolicy(current, { ...state(), vendor: base, upstreamRecorded: true });
+  for (const commit of [undefined, old])
+    assert.match(
+      basePolicy({ ...current, commit }, { ...state(), vendor: base, commit: old }).problems.join(
+        "\n",
+      ),
+      /Vendored code changed without an upstream update \(added 1: scripts\/owned-lint\/vendor\/helper\.ts; changed 1: scripts\/owned-lint\/vendor\/rule\.ts\)/u,
+      String(commit),
+    );
+  const update = basePolicy(
+    { ...current, commit: next },
+    { ...state(), vendor: base, commit: old },
+  );
   assert.deepEqual(update.problems, []);
   assert.match(
     update.notices.join("\n"),
-    /Vendored code changed, review it against upstream: 2 file\(s\): scripts\/owned-lint\/vendor\/b\.ts, scripts\/owned-lint\/vendor\/gone\.ts/u,
+    new RegExp(
+      `Vendored anti-slop updated ${old} -> ${next}; review the copy against that upstream commit: added 1: scripts/owned-lint/vendor/helper\\.ts; changed 1`,
+      "u",
+    ),
   );
-  assert.match(
-    basePolicy(current, { ...state(), vendor: base }).problems.join("\n"),
-    /Vendored code changed without an upstream update: scripts\/owned-lint\/vendor\/b\.ts/u,
+  assert.deepEqual(
+    basePolicy({ ...current, vendor: base, commit: old }, { ...state(), vendor: base, commit: old })
+      .problems,
+    [],
   );
 });
 
@@ -288,19 +328,26 @@ test("an anti-slop or built-in owned rule takes no disable comment either", () =
   const off = (scope: string, tool = "oxlint") => `${tool}-disable${scope}`;
   const native = nativeRules({
     jsPlugins: plugins,
-    rules: { "oxc/no-accumulating-spread": "error", "anti-slop/no-reflect-get": "error" },
+    rules: {
+      "oxc/no-accumulating-spread": "error",
+      "anti-slop/no-reflect-get": "error",
+      "eslint/no-debugger": "off",
+    },
   });
-  assert.deepEqual([...native].sort(), ["no-accumulating-spread", "oxc/no-accumulating-spread"]);
+  assert.deepEqual([...native], ["no-accumulating-spread"]);
+  // oxlint applies a disable comment to a built-in rule under any prefix.
   const text = [
     `// ${off("-next-line")} anti-slop/no-reflect-get`,
     `// ${off("-next-line")} anti-slop-effect/prefer-effect-match`,
     `// ${off("-next-line")} oxc/no-accumulating-spread`,
     `// ${off("-next-line")} no-accumulating-spread`,
+    `// ${off("-next-line")} eslint/no-accumulating-spread`,
+    `// ${off("")} typescript/no-accumulating-spread`,
     `// ${off("-next-line")} typescript/no-explicit-any`,
   ].join("\n");
   assert.deepEqual(
     directiveProblems("src/a.ts", text, native).map((problem) => problem.split(" ")[0]),
-    ["src/a.ts:1", "src/a.ts:2", "src/a.ts:3", "src/a.ts:4"],
+    ["src/a.ts:1", "src/a.ts:2", "src/a.ts:3", "src/a.ts:4", "src/a.ts:5", "src/a.ts:6"],
   );
 });
 

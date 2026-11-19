@@ -12,8 +12,9 @@ node scripts/owned-lint/check.ts <files> # only these files, against their own e
 
 The check lints the exact `git ls-files` list, new untracked files included, and fails when
 oxlint checks fewer files than it was given: an ignored path reports nothing and would look
-clean. It refuses `oxlint-disable` and `eslint-disable` comments that are bare or name an
-owned rule, including the built-in rules the configuration enables.
+clean. Named files must exist. It refuses `oxlint-disable` and `eslint-disable` comments that
+are bare or name an owned rule, including the built-in rules the configuration enables under
+any plugin prefix, which oxlint accepts for them.
 
 ## Baseline and allowlist
 
@@ -36,11 +37,12 @@ Existing findings are recorded with an exact count per rule and file, so only ne
 To add or tighten a rule, change `plugin/` with a case in `rules.test.ts` and run
 `--write-baseline`. While the rules or their pins differ from the base, a count that rises in
 a file this change does not touch is listed for review instead of failing, and
-`rules.test.ts` guards the change. The configuration loads exactly the pinned plugins and
-takes no `extends`, `overrides` or other keys, and every enabled built-in rule names a plugin
-listed in `plugins`: oxlint silently skips a rule whose plugin is off. With `BASE_SHA`, changed
-options of a rule the base enforced are listed for review, since options decide what a rule
-finds.
+`rules.test.ts` guards the change: every enforced Basalt, anti-slop and built-in rule has a
+case there that shows it firing. The configuration loads exactly the pinned plugins and takes
+no `extends`, `overrides` or other keys. Each built-in rule is written once, as
+`<plugin>/<rule>` with its plugin listed in `plugins`: oxlint silently skips a rule whose
+plugin is off, and reads another spelling as the same rule. With `BASE_SHA`, changed options
+of a rule the base enforced are listed for review, since options decide what a rule finds.
 
 ## Basalt rules
 
@@ -81,19 +83,21 @@ plugins:
 [anti-slop](https://github.com/dmmulroy/anti-slop), vendored in `vendor/anti-slop/` as its
 README asks (commit, license and update steps in `vendor/anti-slop/UPSTREAM.md`): the generic
 plugin, the Effect plugin, and `oxc/no-accumulating-spread`, the built-in rule it pairs with.
-The copy is byte-identical to upstream, and `vendor/manifest.json` records each file's hash.
-The full check fails when a recorded file differs, and treats any other file under `vendor/`
-as Basalt code, so new code there is linted like the rest. Recorded files are left to upstream:
-neither the owned rules nor the fast lane's oxfmt and oxlint check them.
+The copy is byte-identical to upstream, and `vendor/manifest.json` records each code file's
+hash. The full check fails when a recorded file differs, and treats any other file under
+`vendor/` as Basalt code, so new code there is linted like the rest. Recorded files are left to
+upstream: neither the owned rules nor the fast lane's oxfmt and oxlint check them. With
+`BASE_SHA`, a change to the recorded files passes only together with a new commit on the
+`Commit:` line of `vendor/anti-slop/UPSTREAM.md`, and is listed with both commits for review.
 
 - **Enabled:** every rule but one, all five Effect rules included. `no-runtime-typeof` allows
   `typeof` inside a type predicate, Ultracite's setting: a named predicate is the boundary the
   rule asks for.
 - **Off, because layout is oxfmt's:** `require-readable-spacing` requires blank lines oxfmt
-  neither adds nor checks (32,581 whitespace-only findings here).
-- **Never fire today:** `no-module-mocking` needs `vi.mock` or `jest.mock`, and the only Vitest
-  suites here, in `scripts/architecture/`, mock no modules; `node:test`'s `mock.module` is
-  `basalt/no-node-test-doubles`'.
+  neither adds nor checks.
+- **No findings in existing code:** `no-module-mocking` needs `vi.mock` or `jest.mock`, and the
+  only Vitest suites here, in `scripts/architecture/`, mock no modules; `node:test`'s
+  `mock.module` is `basalt/no-node-test-doubles`'.
 
 ## Ultracite
 
@@ -109,13 +113,13 @@ taken from it.
   assertions, input parsed at its boundary, and a fix that changes the code rather than its
   wording. Its formatting, React, accessibility and framework rules are left to oxfmt and to
   upstream's guidance.
-- **Post-edit hook:** `.claude/settings.json` and `.codex/hooks.json` use Ultracite's events and
-  matchers to run `hook.ts` after each edit. It formats the edited file with oxfmt, then runs
-  upstream oxlint and this check on it, as the fast lane will, and hands any failure back to the
-  agent. Ultracite's own hook runs its pinned tools instead of the repository's. Codex reads a
-  linked worktree's project hooks from the main checkout, and runs them once a person trusts
-  them with `/hooks`.
+- **Post-edit hook:** `.claude/settings.json` and `.codex/hooks.json` use Ultracite's events to
+  run `hook.ts` after every file-editing tool. It formats the edited file with oxfmt, then runs
+  upstream oxlint and this check on it with the fast lane's own steps (`scripts/ci/style.ts`),
+  and hands any finding back to the agent. A step that cannot run is reported without blocking
+  the edit, and an edit in another checkout goes to that checkout's hook. Ultracite's own hook
+  runs its pinned tools instead of the repository's. Codex reads a linked worktree's project
+  hooks from the main checkout, and runs them once a person trusts them with `/hooks`. Edits
+  made through a shell command reach neither hook.
 - **Versions:** Ultracite needs oxlint 1.90 and oxfmt 0.71 or later; this package pins oxlint
-  1.91. Upstream's oxlint 1.83 and oxfmt 0.68 move with a carry. On this tree that bump changes
-  nothing: oxfmt 0.71 reformats no file 0.68 leaves alone, and oxlint 1.90 reports the same
-  findings with upstream's configuration.
+  1.91. Upstream's oxlint 1.83 and oxfmt 0.68 move with a carry.

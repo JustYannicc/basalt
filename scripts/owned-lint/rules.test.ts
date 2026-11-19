@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -9,7 +9,7 @@ import { lint } from "./check.ts";
 // `// expect: <rules>` must report exactly those rules of its suite; every other line must report
 // none of them.
 // Cases marked "production" quote the shipped line verbatim.
-const cases: Record<string, string> = {
+const cases = {
   // production: scripts/release-barrier/class-cloudflare.ts:99 at b96514294^ (failed releases 14 and 15,
   // a JSON body on a GET, refused by fetch as an opaque TransportError).
   "scripts/release/class-read.ts": `
@@ -322,11 +322,11 @@ before(() => {}, { timeout: 1_000 }); // expect: basalt/no-node-test-flake-maski
 test.skip("later", () => {}); // expect: basalt/no-node-test-flake-masking
 test("runs", { skip: false }, () => {});
 `,
-};
+} satisfies Record<string, string>;
 
-// The vendored anti-slop rules and the built-in rule they pair with, as configured. Every Effect
-// rule has a case: they are the ones that steer toward Effect's own tools.
-const antiSlopCases: Record<string, string> = {
+// The vendored anti-slop rules and the built-in rule they pair with, as configured. Every
+// enabled rule has a case, so a vendored rule edited to report nothing fails here.
+const antiSlopCases = {
   "src/pool/effect-style.ts": `
 import { Data, Effect } from "effect";
 import { makeLedger } from "./ledger.ts"; // expect: anti-slop-effect/no-service-constructor-imports
@@ -351,7 +351,25 @@ export const body = (id?: string) => ({ ...(id ? { id } : {}) }); // expect: ant
 export const flat = (items: string[][]) => items.reduce<string[]>((all, item) => [...all, ...item], []); // expect: oxc/no-accumulating-spread
 export const loose: Record<string, unknown> = {}; // expect: anti-slop/no-unsafe-dictionary-type
 `,
+  "src/pool/more-style.ts": `
+export const visible = (items: string[]) => items.filter((item) => item !== "").map((item) => item.trim()); // expect: anti-slop/no-array-filter-map
+export const merged = (items: string[]) => items.reduce<Record<string, boolean>>((all, item) => Object.assign({}, all, { [item]: true }), {}); // expect: anti-slop/no-reduce-accumulator-copy
+export const read = (target: object, key: string) => Reflect.get(target, key); // expect: anti-slop/no-object-parameters, anti-slop/no-reflect-get
+export const call = (fn: (value: string) => string, value: string) => Reflect.apply(fn, undefined, [value]); // expect: anti-slop/no-reflect-apply
+export const responseShape = { id: "a" }; // expect: anti-slop/no-shape-in-symbol-names
+export function parsed(text: string): unknown { return JSON.parse(text); } // expect: anti-slop/no-unknown-returns
+export type Opaque = unknown; // expect: anti-slop/no-unknown-type-aliases
+export const widened = () => {
+  const value: unknown = "a"; // expect: anti-slop/no-known-value-widening
+  // SAFETY: assigned a string literal above.
+  return value as string; // expect: anti-slop/no-widen-then-assert
 };
+`,
+  "src/pool/module-mocking.test.ts": `
+import { vi } from "vitest";
+vi.mock("./ledger.ts"); // expect: anti-slop/no-module-mocking
+`,
+} satisfies Record<string, string>;
 const suites = [
   { name: "basalt", cases, rules: /^basalt\//u },
   { name: "anti-slop", cases: antiSlopCases, rules: /^(?:anti-slop(?:-effect)?|oxc)\//u },
@@ -391,6 +409,26 @@ for (const suite of suites)
 test("every basalt rule says what to do instead", () => {
   for (const finding of findings)
     assert.match(finding.message, /\. [A-Z][^.]*(?:\.|$)/u, finding.rule);
+});
+
+test("every enforced basalt, anti-slop and built-in rule has a case that shows it firing", () => {
+  const config: { rules: Record<string, string | [string, ...object[]]> } = JSON.parse(
+    readFileSync(new URL("./.oxlintrc.json", import.meta.url), "utf8"),
+  );
+  const enforced = Object.entries(config.rules).flatMap(([rule, setting]) =>
+    (Array.isArray(setting) ? setting[0] : setting) === "error" && !rule.startsWith("landmines-")
+      ? [rule]
+      : [],
+  );
+  const covered = new Set(
+    Object.values(sources).flatMap((source) =>
+      [...source.matchAll(/\/\/ expect: (.+)$/gmu)].flatMap(([, rules]) => rules!.split(", ")),
+    ),
+  );
+  assert.deepEqual(
+    enforced.filter((rule) => !covered.has(rule)),
+    [],
+  );
 });
 
 test("formatting is left to oxfmt", () => {

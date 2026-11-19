@@ -72,11 +72,13 @@ enforce boundaries. For behavior, read [pools](docs/pools.md) or
 ## Lint as you edit
 
 After each edit, the repository's Claude Code and Codex hooks format the file with oxfmt and
-report upstream oxlint and [owned rule](scripts/owned-lint/README.md) findings; without them,
-run `node scripts/owned-lint/check.ts <files>`. Fix a finding by changing the code it names:
+report upstream oxlint and [owned rule](scripts/owned-lint/README.md) findings. Without them,
+`node scripts/owned-lint/check.ts <files>` checks the owned rules, and
+`node scripts/batch-preflight.ts` runs the fast lane's first step. Fix a finding by changing
+the code it names:
 
-- Parse input at its boundary into a named type with Effect Schema, then narrow. A `SAFETY:`
-  comment states the check that proves its assertion.
+- Parse input at its boundary into a named type, with Effect Schema in Effect code, then
+  narrow. A `SAFETY:` comment states the check that proves its assertion.
 - In Effect code, fail with tagged errors handled by `catchTag` or `Match`, and provide
   services as Layers.
 - Change the shape the message names; renaming, commenting or wrapping the same code keeps

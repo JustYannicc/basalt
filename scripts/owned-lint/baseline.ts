@@ -1,4 +1,6 @@
 // How lint findings compare with the recorded baseline, the allowlist and the base commit.
+import { vendorPolicy, type Manifest } from "./vendor.ts";
+
 const regenerate = "npm run lint:owned -- --write-baseline";
 // landmines keeps these counts itself, in the rule's options, and reports a stale count.
 export const NATIVE_ALLOWLIST = new Set([
@@ -26,15 +28,18 @@ const CONFIG_KEYS = new Set(["$schema", "plugins", "categories", "jsPlugins", "r
 const OWNED_RULE = /^(?:basalt|landmines-[\w-]+|anti-slop(?:-effect)?)\//u;
 const JS_PLUGIN = new Set(PLUGINS.map(({ name }) => name));
 
+const builtIn = (rule: string) => !JS_PLUGIN.has(rule.split("/")[0]!);
+const bare = (rule: string) => rule.split("/").at(-1)!;
+
 /**
- * The built-in rules the owned configuration enables, by every name a disable comment can use
- * for them: oxlint also accepts a built-in rule without its plugin prefix.
+ * The built-in rules the owned configuration enables, by bare name: oxlint applies a disable
+ * comment to a built-in rule whatever plugin prefix the comment writes before it.
  */
 export const nativeRules = (config: Config) =>
   new Set(
-    Object.keys(config.rules)
-      .filter((rule) => !JS_PLUGIN.has(rule.split("/")[0]!))
-      .flatMap((rule) => [rule, rule.split("/").at(-1)!]),
+    Object.entries(config.rules).flatMap(([rule, setting]) =>
+      builtIn(rule) && !OFF.has(severity(setting)) ? [bare(rule)] : [],
+    ),
   );
 
 export type Counts = Record<string, Record<string, number>>;
@@ -77,7 +82,8 @@ const counted = (rule: string) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlin
 /**
  * A disable comment would hide a finding from the baseline. The only form allowed is a `//`
  * comment that names upstream rules and nothing else; any other mention is refused. `native`
- * holds the built-in rules the owned configuration enables, which are owned rules too.
+ * holds the bare names of the built-in rules the owned configuration enables, which are owned
+ * rules too under any prefix.
  */
 export function directiveProblems(
   file: string,
@@ -98,7 +104,7 @@ export function directiveProblems(
     const upstreamOnly =
       /^\s*\/\/\s*$/u.test(before) &&
       names.length > 0 &&
-      !names.some((name) => OWNED_RULE.test(name) || native.has(name) || /[*<>]/u.test(name));
+      !names.some((name) => OWNED_RULE.test(name) || native.has(bare(name)) || /[*<>]/u.test(name));
     if (upstreamOnly) continue;
     problems.push(
       `${file}:${text.slice(0, match.index).split("\n").length} has a disable comment that is not a single \`//\` comment naming only upstream rules. Owned rules take no disable comments: fix the finding, or for a reasoned exception use scripts/owned-lint/allowlist.json.`,
@@ -177,7 +183,12 @@ export function compare(
     ].sort()) {
       const found = actual[rule]?.[file] ?? 0;
       const recorded = baseline[rule]?.[file] ?? 0;
-      if (found > recorded)
+      // A count that is not a number compares false both ways and would pass any finding.
+      if (!Number.isInteger(recorded))
+        problems.push(
+          `baseline.json: ${file} under ${rule} is not a count of findings. Rewrite it: ${regenerate}`,
+        );
+      else if (found > recorded)
         problems.push(
           `${file}: ${rule} found ${found}, baseline allows ${recorded}. Fix the new one${found - recorded > 1 ? "s" : ""}:\n${located(kept, rule, file)}`,
         );
@@ -201,14 +212,19 @@ export function configProblems(current: Config, base: Config | undefined) {
     problems.push(
       `.oxlintrc.json: jsPlugins must load exactly the pinned plugins: ${PLUGINS.map(({ name }) => name).join(", ")}.`,
     );
-  // oxlint silently skips a built-in rule whose plugin is not in "plugins"; eslint's always run.
+  // oxlint silently skips a built-in rule whose plugin is not in "plugins" (eslint's always run),
+  // and reads a bare or differently prefixed name as the same rule, which can switch it off.
   const enabled = new Set(["eslint", ...(Array.isArray(current.plugins) ? current.plugins : [])]);
+  const seen = new Set<string>();
   for (const [rule, setting] of Object.entries(current.rules)) {
+    if (!builtIn(rule)) continue;
     const plugin = rule.includes("/") ? rule.split("/")[0]! : "";
-    if (!OFF.has(severity(setting)) && !JS_PLUGIN.has(plugin) && !enabled.has(plugin))
+    const listed = enabled.has(plugin) || (plugin !== "" && OFF.has(severity(setting)));
+    if (!listed || seen.has(bare(rule)))
       problems.push(
-        `.oxlintrc.json: ${rule} does not run unless it is written <plugin>/<rule> and its plugin is listed in "plugins".`,
+        `.oxlintrc.json: write the built-in rule ${rule} once, as <plugin>/<rule> with its plugin listed in "plugins".`,
       );
+    seen.add(bare(rule));
   }
   for (const [rule, setting] of Object.entries(base?.rules ?? {}))
     if (severity(setting) === "error" && severity(current.rules[rule]) !== "error")
@@ -275,9 +291,9 @@ export type BaseState = {
   /** Whether the rules or their pins differ from the base. */
   lintChanged: boolean;
   /** The base commit's vendored files and their hashes. */
-  vendor: ReadonlyMap<string, string>;
-  /** Whether this change also changes an UPSTREAM.md under vendor/, as an upstream update does. */
-  upstreamRecorded: boolean;
+  vendor: Manifest;
+  /** The upstream commit the base's vendored copy names. */
+  commit?: string;
 };
 
 /**
@@ -318,58 +334,27 @@ export function ratchet(
   return { problems, notices };
 }
 
-/** Where vendored upstream code lives; only its recorded files are left to upstream. */
-export const VENDOR = "scripts/owned-lint/vendor/";
-
-/** Recorded vendored files whose content is no longer the upstream copy, or that sit outside vendor/. */
-export const vendorProblems = (
-  manifest: ReadonlyMap<string, string>,
-  hashOf: (file: string) => string | undefined,
-) =>
-  [...manifest].flatMap(([file, hash]) => {
-    if (!file.startsWith(VENDOR))
-      return [
-        `${VENDOR}manifest.json records ${file}, which is outside ${VENDOR}; only vendored upstream code is recorded there.`,
-      ];
-    return hashOf(file) === hash
-      ? []
-      : [
-          `${file} is not the upstream copy recorded in ${VENDOR}manifest.json. Vendored code stays byte-identical to upstream: put Basalt code outside vendor/, or record an upstream update as vendor/anti-slop/UPSTREAM.md says.`,
-        ];
-  });
-
-/** Vendored files added, removed or changed against the base. */
-export const vendorChanges = (
-  current: ReadonlyMap<string, string>,
-  base: ReadonlyMap<string, string>,
-) =>
-  [...new Set([...current.keys(), ...base.keys()])]
-    .filter((file) => current.get(file) !== base.get(file))
-    .sort();
-
 export function basePolicy(
   current: {
     config: Config;
     baseline: Counts;
     allowlist: Allowlist;
-    vendor: ReadonlyMap<string, string>;
+    vendor: Manifest;
+    commit?: string;
   },
   base: BaseState,
 ) {
-  const problems = configProblems(current.config, base.config);
-  const notices = allowlistAdditions(current.allowlist, base.allowlist).map(
-    (line) => `Allowlist addition, review its reason: ${line}`,
-  );
-  // Vendored code changes only as an upstream update, which records its new commit.
-  const vendor = vendorChanges(current.vendor, base.vendor);
-  if (vendor.length && base.upstreamRecorded)
-    notices.push(
-      `Vendored code changed, review it against upstream: ${vendor.length} file(s): ${vendor.join(", ")}`,
-    );
-  else if (vendor.length)
-    problems.push(
-      `Vendored code changed without an upstream update: ${vendor.join(", ")}. Put Basalt code outside vendor/; an upstream update records its commit in that copy's UPSTREAM.md.`,
-    );
+  const vendor = vendorPolicy(current.vendor, base.vendor, {
+    base: base.commit,
+    current: current.commit,
+  });
+  const problems = [...configProblems(current.config, base.config), ...vendor.problems];
+  const notices = [
+    ...allowlistAdditions(current.allowlist, base.allowlist).map(
+      (line) => `Allowlist addition, review its reason: ${line}`,
+    ),
+    ...vendor.notices,
+  ];
   if (base.config)
     notices.push(
       ...optionChanges(current.config, base.config).map(

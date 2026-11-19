@@ -459,7 +459,6 @@
     "scripts/framework-rebuild/run.ts": 1,
     "scripts/import-cpamp-bulk.test.ts": 1,
     "scripts/import-cpamp-bulk.ts": 3,
-    "scripts/owned-lint/rules.test.ts": 2,
     "scripts/pool-acceptance/preview-config.ts": 1,
     "scripts/pool-acceptance/preview-process.ts": 1,
     "scripts/pool-crash-dispatch.ts": 1,

@@ -1,5 +1,4 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,14 +13,25 @@ import {
   recordable,
   severity,
   total,
-  VENDOR,
-  vendorProblems,
   type Allowlist,
   type BaseState,
   type Config,
   type Counts,
   type Diagnostic,
 } from "./baseline.ts";
+import {
+  MANIFEST,
+  PROVENANCE,
+  VENDOR,
+  commitOf,
+  currentCommit,
+  manifest,
+  parseManifest,
+  sha256,
+  vendorProblems,
+  vendored,
+  writeVendor,
+} from "./vendor.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "../..");
@@ -44,18 +54,6 @@ const readJson = <T>(path: string, fallback: T) => {
 };
 const writeJson = (path: string, value: unknown) =>
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
-const vendorPath = join(root, VENDOR, "manifest.json");
-// Vendored rules keep their upstream form so an update stays a diff against upstream; no
-// formatter or linter rewrites them. Only the files under vendor/ recorded with their upstream
-// hash count as vendored: any other file there is Basalt code and is checked like the rest.
-const VENDORED = new Map<string, string>(Object.entries(readJson<object>(vendorPath, {})));
-export const vendored = (file: string) => file.startsWith(VENDOR) && VENDORED.has(file);
-const sha256 = (file: string) => {
-  const path = join(root, file);
-  return existsSync(path)
-    ? createHash("sha256").update(readFileSync(path)).digest("hex")
-    : undefined;
-};
 // Changing these may change what the rules find, so a rise against the base is listed for
 // review instead of failing; the rule cases in rules.test.ts guard the change.
 const LINT_INPUTS = [
@@ -159,25 +157,19 @@ function writeBaseline(files: readonly string[] = scopedFiles()) {
   );
 }
 
-// Records the vendored code files with their hashes, after copying in an upstream update.
-function writeVendor() {
-  const files = listFiles(root, (file) => SCOPE.test(file), VENDOR);
-  writeJson(vendorPath, Object.fromEntries(files.map((file) => [file, sha256(file)])));
-  console.log(`Vendored manifest written: ${files.length} files.`);
-}
-
 function baseState(base: string) {
   if (
     !/^[0-9a-f]{40}$/u.test(base) ||
     spawnSync("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: root }).status !== 0
   )
     throw new Error(`BASE_SHA ${base} is not a commit in this repository.`);
+  const showText = (file: string) => {
+    const result = spawnSync("git", ["show", `${base}:${file}`], { cwd: root, encoding: "utf8" });
+    return result.status === 0 ? result.stdout : undefined;
+  };
   const show = (path: string) => {
-    const result = spawnSync("git", ["show", `${base}:${relative(root, path)}`], {
-      cwd: root,
-      encoding: "utf8",
-    });
-    return result.status === 0 ? JSON.parse(result.stdout) : undefined;
+    const text = showText(relative(root, path));
+    return text === undefined ? undefined : JSON.parse(text);
   };
   const git = (args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).split(
@@ -206,10 +198,8 @@ function baseState(base: string) {
     baseline: show(baselinePath) as Counts | undefined,
     config: show(configPath) as Config | undefined,
     allowlist: (show(allowlistPath) ?? {}) as Allowlist,
-    vendor: new Map<string, string>(Object.entries(show(vendorPath) ?? {})),
-    upstreamRecorded: git(["diff", "-z", "--name-only", base, "--", VENDOR]).some((file) =>
-      file.endsWith("/UPSTREAM.md"),
-    ),
+    vendor: parseManifest(showText(MANIFEST)),
+    commit: commitOf(showText(PROVENANCE)),
     basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
     enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
     changed: (file: string) => changed.has(file) || !tracked.has(file),
@@ -227,7 +217,10 @@ const only = <T>(byRule: Record<string, Record<string, T>>, files: ReadonlySet<s
   );
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const writers = { "--write-baseline": writeBaseline, "--write-vendor": writeVendor };
+  const writers = {
+    "--write-baseline": writeBaseline,
+    "--write-vendor": () => writeVendor(listFiles(root, (file) => SCOPE.test(file), VENDOR)),
+  };
   const named = process.argv.slice(2).filter((argument) => !Object.hasOwn(writers, argument));
   const unknown = named.filter((argument) => argument.startsWith("-"));
   if (unknown.length)
@@ -241,6 +234,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     write();
     process.exit(0);
   }
+  // A mistyped path would otherwise check nothing and pass.
+  const missing = named.filter((file) => !existsSync(resolve(file)));
+  if (missing.length) throw new Error(`No such file: ${missing.join(", ")}.`);
   const files = named.length
     ? [
         ...new Set(
@@ -270,13 +266,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       directiveProblems(file, readFileSync(join(root, file), "utf8"), native),
     ),
     ...compare(diagnostics, baseline, allowlist),
-    ...(named.length ? [] : vendorProblems(VENDORED, sha256)),
+    ...(named.length ? [] : vendorProblems(manifest, sha256)),
   ];
   const notices: string[] = [];
   // The base ratchet reads the whole baseline, so a check of named files leaves it to the full run.
   if (process.env.BASE_SHA && !named.length) {
     const policy = basePolicy(
-      { config, baseline, allowlist, vendor: VENDORED },
+      { config, baseline, allowlist, vendor: manifest, commit: currentCommit() },
       baseState(process.env.BASE_SHA),
     );
     problems.push(...policy.problems);
