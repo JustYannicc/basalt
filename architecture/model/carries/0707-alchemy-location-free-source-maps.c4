@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A Worker's bundle is the same bytes wherever the checkout and the dependency store sit. Its source map names each source without the machine's directories: a dependency from its package directory in the store onward, everything else relative to the Worker's own package directory. The bundle's hash covers the map, and an install puts dependencies into a store directory of its own, so without this a plan made in another job saw every Worker as changed although its code was identical. A changed source still changes the code, the map and the hash."
+    }
+  }
+}
