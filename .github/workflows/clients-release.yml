@@ -156,6 +156,11 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: ${{ matrix.platform == 'mac' && '1' || '' }}
       - run: bun run --cwd clients/desktop build
+      # electron-builder would fetch Electron's checksums from the mirror on every run, bypassing its
+      # cache; packaging from the zip verified against the locked checksums makes no request.
+      - name: Verify the cached Electron release against its locked checksums
+        if: matrix.platform != 'mac'
+        run: node scripts/ci/desktop-release-assets.ts dist
       # The keyring's native module is installed for the runner's own architecture only, so each
       # runner packages its own: Apple Silicon on macos-latest, x64 on Windows and Linux.
       # Published builds carry the permanent identifiers; package.json keeps the development ones.
@@ -163,7 +168,7 @@ jobs:
       - name: Package the app
         if: matrix.platform != 'mac'
         shell: bash
-        run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.appId=run.signalbox.client -c.productName=Signalbox
+        run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.appId=run.signalbox.client -c.productName=Signalbox -c.electronDist="$ELECTRON_DIST_ZIP"
       - name: Test the Mac app
         if: matrix.platform == 'mac'
         run: swift test --package-path clients/desktop/mac

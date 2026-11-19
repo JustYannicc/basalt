@@ -241,11 +241,20 @@ test("desktop packaging uses only an Electron zip whose bytes match the locked c
     rmSync(cache, { recursive: true, force: true });
   }
   const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
-  const job = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"))
-    .jobs["client-desktop"];
-  const names = job.steps.map((step: { name?: string }) => step.name);
-  const verify = names.indexOf("Verify the cached Electron release against its locked checksums");
-  const packaging = names.indexOf("Package the unsigned development client");
-  assert.ok(verify >= 0 && verify < packaging);
-  assert.match(job.steps[packaging].run, /-c\.electronDist="\$\{\{ env\.ELECTRON_DIST_ZIP \}\}"$/);
+  // Every Electron packaging step, in Check and in the release, takes the verified zip.
+  for (const [workflow, id, step] of [
+    ["ci.yml", "client-desktop", "Package the unsigned development client"],
+    ["clients-release.yml", "desktop", "Package the app"],
+  ]) {
+    const path = new URL("../.github/workflows/" + workflow, import.meta.url);
+    const job = parse(readFileSync(path, "utf8")).jobs[id!];
+    const names = job.steps.map((entry: { name?: string }) => entry.name);
+    const verify = names.indexOf("Verify the cached Electron release against its locked checksums");
+    const packaging = names.indexOf(step);
+    assert.ok(verify >= 0 && verify < packaging, workflow);
+    assert.equal(job.steps[verify].if, job.steps[packaging].if, workflow);
+    // PowerShell would split -c.electronDist at its dot on Windows.
+    assert.equal(job.steps[packaging].shell, "bash", workflow);
+    assert.match(job.steps[packaging].run, /-c\.electronDist="\$ELECTRON_DIST_ZIP"$/, workflow);
+  }
 });
