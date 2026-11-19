@@ -7,7 +7,10 @@ import { backendUserName } from "../../src/pool/backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
 import { readPoolHistoryChanges } from "../../src/pool/model-history/change-revisions.ts";
-import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
+import {
+  historyChangeOnceVersion,
+  historyRowSchemaVersion,
+} from "../../src/pool/model-history/history-row-schema.ts";
 import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
 import {
   historySchemaMigrations,
@@ -51,7 +54,8 @@ test("capture preserves old-schema history and begins pending delivery after the
       if (
         migration.name === "model_request_history_v5_change_revisions" ||
         migration.name === historyJournalPrepareVersion ||
-        migration.name === historyRowSchemaVersion
+        migration.name === historyRowSchemaVersion ||
+        migration.name === historyChangeOnceVersion
       )
         continue;
       for (const statement of migration.statements) await db.query(statement);
