@@ -27,14 +27,20 @@ try {
   const { brand } = await load("brand.ts");
   if (setupRequestDenied) throw new Error();
   const previewConnection = process.env.NATIVE_STACK_PREVIEW_CONNECTION_PROOF === "true";
-  // A rehearsal stage evaluated the way its baseline probe projects it: its own stage and zone.
-  const rehearsalStage = process.env.NATIVE_STACK_CANDIDATE_PROOF?.startsWith("rehearsal-")
-    ? "test-rehearsal-1"
-    : undefined;
-  const http = declarationFetch(
-    previewConnection || rehearsalStage ? "preview.fixture.invalid" : brand.zone,
-  );
+  const settlesProof = process.env.NATIVE_STACK_SETTLES_PROOF;
+  const previewStack = previewConnection || settlesProof === "preview";
+  const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
+  if (settlesProof)
+    // A test stage seeds its private billing instance while its declaration is resolved. The plan
+    // proof answers that one request; every other request still meets the declaration fixtures.
+    globalThis.fetch = (input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      return (init?.method ?? request?.method) === "POST" &&
+        /^https:\/\/emulators\.dev\/[^?#]+\/_emulate\/seed$/.test(String(request?.url ?? input))
+        ? Promise.resolve(Response.json({}))
+        : http.fetch(input, init);
+    };
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
     await load("scripts/environment.ts");
   const synthetic = Object.fromEntries(
@@ -65,39 +71,25 @@ try {
     delete synthetic.BASALT_POOL_IMAGE_RECEIPT;
     delete synthetic.GITHUB_SHA;
   }
-  if (rehearsalStage) process.env.ALCHEMY_STAGE = rehearsalStage;
-  const settings = rehearsalStage
+  const settings = previewStack
     ? {
-        ...(
-          await load("scripts/release-preview/rehearsal-environment.ts")
-        ).rehearsalReleaseEnvironment({
+        ...previewEnvironment(1, {
           ...synthetic,
-          ALCHEMY_STAGE: rehearsalStage,
           TEST_STAGE_DOMAIN: "preview.fixture.invalid",
           PREVIEW_STATE_KEY: "a".repeat(64),
           PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
           PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
-        }),
+        }).deploy,
+        PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
+        PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
         PREVIEW_AUTH_SEED_OUTPUT: "fixture-auth-seed.json",
         TEST_STAGE_EXPIRES_AT: "4070908800000",
       }
-    : previewConnection
-      ? {
-          ...previewEnvironment(1, {
-            ...synthetic,
-            TEST_STAGE_DOMAIN: "preview.fixture.invalid",
-            PREVIEW_STATE_KEY: "a".repeat(64),
-            PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
-            PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
-          }).deploy,
-          PREVIEW_SMOKE_EMAIL: "fixture@example.invalid",
-          PREVIEW_SMOKE_PASSWORD: "fixture-password-123456",
-          PREVIEW_AUTH_SEED_OUTPUT: "fixture-auth-seed.json",
-          TEST_STAGE_EXPIRES_AT: "4070908800000",
-        }
-      : deployEnvironment(synthetic);
+    : deployEnvironment(synthetic);
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
+  // The release entry gives every stage an attempt id, test stages included.
+  if (settlesProof) process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
   if (candidateProof) {
     if (
@@ -105,8 +97,7 @@ try {
       candidateProof.startsWith("retirement-") ||
       candidateProof.startsWith("release-state-") ||
       candidateProof.startsWith("forward-state-") ||
-      candidateProof.startsWith("entry-") ||
-      rehearsalStage
+      candidateProof.startsWith("entry-")
     ) {
       const { randomUUID } = await import("node:crypto");
       process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
@@ -140,15 +131,10 @@ try {
       "scripts/release-barrier/candidate-failure.ts",
     );
     try {
-      // A rehearsal stage declares no apex site and no app pages; offering them must refuse.
-      const roles =
-        candidateProof === "rehearsal-ready"
-          ? baselineRoles.filter((role) => role !== "PublicSite" && role !== "AppPages")
-          : baselineRoles;
       const rows = await candidateScriptSettings(
-        roles.map((role) => ({
+        baselineRoles.map((role) => ({
           role,
-          scriptName: `basalt-${role.toLowerCase()}-${rehearsalStage ?? "production"}-fixture`,
+          scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
         })),
         settings,
         retirement?.fetch,
@@ -211,7 +197,8 @@ try {
     process.env.NATIVE_STACK_SETTINGS_PROOF === "true"
       ? await load("scripts/release-barrier/candidate-settings.ts")
       : undefined;
-  const inspect = settingsProof
+  const planSettles = settlesProof ? await import("./plan-settles-proof.mjs") : undefined;
+  const inspectDeclarations = settingsProof
     ? (stack) =>
         settingsProof.settingsFromDeclarations(
           stack,
@@ -256,6 +243,13 @@ try {
                     Output.isOutput,
                   ),
                 );
+  const inspect = planSettles
+    ? (stack) =>
+        planSettles.provePlanSettles(stack, (inspectNext) => {
+          process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+          return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+        })
+    : inspectDeclarations;
   const program = evalStack(
     actualRoot,
     (stack) =>
