@@ -542,7 +542,10 @@ export const productionRows = (): Record<string, ResourceState> => ({
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     },
+    // An apply records every class binding the settings read returns an id for, the class another
+    // Worker hosts included (production's BulkUsageImport binding has one).
     workerAttributes("basalt-production-poolworker", {
+      ArtifactsTokenCoordinator: "namespace-coordinator",
       PoolContainer: "namespace-pool-container",
       PoolLedger: "namespace-pool-ledger",
     }),
