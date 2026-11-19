@@ -170,6 +170,7 @@
     "src/catalog/gitlab-mcp.test.ts": 1,
     "src/catalog/tests/canva-runtime.mjs": 1,
     "src/catalog/tests/exa-runtime.mjs": 2,
+    "src/catalog/tests/github-runtime.mjs": 2,
     "src/catalog/tests/google-maps-runtime.mjs": 2,
     "src/catalog/tests/plaid-runtime.mjs": 2,
     "src/pool/automatic-authority.test.ts": 1,
