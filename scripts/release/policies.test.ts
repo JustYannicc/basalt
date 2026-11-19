@@ -73,3 +73,18 @@ test("an automatic release is code-only and keeps the fleet classes absent until
   assert.equal(code.env.POOL_FLEET_CLASSES, "absent");
   assert.equal(code.include, undefined);
 });
+
+test("every policy that can update PoolWorker carries the readiness command that waits for adoption", async () => {
+  for (const name of ["code", "cutover-code", "cutover-classes", "release"]) {
+    const policy = await read(name);
+    // No include means the whole stack is planned, the readiness command with it.
+    if (policy.include) assert.ok(policy.include.includes("PoolBackendBudgetRuntimeReady"), name);
+    if (policy.check.mode === "cutover-classes")
+      assert.ok(
+        policy.check.allow.some(
+          (entry) => entry.fqn === "PoolBackendBudgetRuntimeReady" && entry.action === "update",
+        ),
+        name,
+      );
+  }
+});
