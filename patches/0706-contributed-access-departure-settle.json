@@ -1,7 +1,7 @@
 {
   "identity": "basalt-contributed-access-departure-settle",
   "file": "0706-contributed-access-departure-settle.patch",
-  "content_sha256": "b3e742b9cb230c05bc4941c3bc5674f40c4e2a44931cb843f393da7baee3b0d6",
+  "content_sha256": "e8fb11f10e589ba7bd5713c85a65bd69e803c337eaca03d0aa82e962892a2dd1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
