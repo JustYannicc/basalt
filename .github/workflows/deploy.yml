@@ -22,7 +22,7 @@ jobs:
       github.event.repository.full_name == github.repository &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.path == '.github/workflows/ci.yml'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     # On the job, not the workflow, so a Deploy run whose jobs are all skipped can't replace a pending release.
     concurrency:
       group: deploy-production
@@ -93,7 +93,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       # Check runs can finish out of order. A newer passing main commit that contains the candidate goes to Manual release
@@ -108,7 +108,7 @@ jobs:
         env:
           NEWER: ${{ steps.newer.outputs.newer }}
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
-        uses: oven-sh/setup-bun@v2
+        uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Validate credentials
@@ -253,7 +253,7 @@ jobs:
     if: >-
       needs.deploy.outputs.already_live == 'false' &&
       (needs.deploy.outputs.newer != '' || needs.deploy.outputs.manual_required == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
       actions: write
