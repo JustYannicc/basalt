@@ -53,6 +53,8 @@ const { positionals, values } = parseArgs({
     light: { type: "boolean" },
     to: { type: "string" },
     "root-boot": { type: "string" },
+    within: { type: "string" },
+    "allow-not-serving": { type: "boolean" },
   },
 });
 const command = positionals[0] ?? "";
@@ -153,30 +155,62 @@ if (command === "boot" || command === "accept") {
   try {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
-    const { runAcceptance, servingBoot } = await import("./acceptance.ts");
+    const { awaitRootRestart, NOT_SERVING, runAcceptance, servingBoot } =
+      await import("./acceptance.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
       : new PoolAcceptanceClient();
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
-      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client);
+      // Only a release that declares a root restart may start on a pool that does not answer.
+      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client).catch(
+        (error: unknown) => {
+          if (values["allow-not-serving"]) return NOT_SERVING;
+          throw error;
+        },
+      );
       await output(resolve(values.out ?? ""), { boot });
-      await summary("The root's boot is recorded before the apply.");
+      await summary(
+        boot === NOT_SERVING
+          ? "The pool does not answer before the apply; this release declares a root restart."
+          : "The root's boot is recorded before the apply.",
+      );
       process.exit(0);
     }
-    const rootBoot = values["root-boot"]
+    let rootBoot = values["root-boot"]
       ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
           JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
         ).boot
       : undefined;
     const expect = values.expect ?? "same-boot";
-    if (!["same-boot", "two-runtimes", "any"].includes(expect))
+    if (!["same-boot", "two-runtimes", "any", "restart"].includes(expect))
       throw new Error(`Unknown --expect ${expect}`);
+    if (rootBoot === NOT_SERVING && expect !== "restart")
+      throw new Error(
+        "The pool did not answer before the apply, and this release declares no restart",
+      );
+    let restart: { waitedMs: number; reads: number } | undefined;
+    if (expect === "restart") {
+      // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
+      // controller's recovery starts a new one inside its own startup budget.
+      const within = Number(values.within);
+      if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot)
+        throw new Error("--expect restart needs --root-boot and --within <60..900 seconds>");
+      const healed = await awaitRootRestart({
+        apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+        before: rootBoot,
+        withinMs: within * 1000,
+        client,
+      });
+      rootBoot = healed.boot;
+      restart = { waitedMs: healed.waitedMs, reads: healed.reads };
+    }
     const result = await runAcceptance({
       apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
       ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
-      expect: expect as "same-boot",
+      // After a declared restart, every request must be served by the one new boot.
+      expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
       client,
     });
@@ -187,6 +221,7 @@ if (command === "boot" || command === "accept") {
       failed: result.failures.length,
       runtimes: result.boots.length,
       firstByteMs: result.firstByteMs,
+      ...(restart ? { restart } : {}),
     };
     if (values.out) await output(resolve(values.out), view);
     await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);

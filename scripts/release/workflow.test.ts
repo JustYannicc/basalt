@@ -66,7 +66,7 @@ test("a failed apply or acceptance rolls PoolWorker back by itself and ends red"
   const rollback = step("Roll back a failed release");
   assert.equal(
     condition("Roll back a failed release"),
-    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
+    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
   );
   assert.match(rollback, /rollback --stage production --from .local\/release\/serving.json/u);
   assert.match(rollback, /exit 1/u);
@@ -254,4 +254,25 @@ test("a dispatch can release an exact main commit, and only one that is on main"
   assert.match(pick, /\^\[0-9a-f\]\{40\}\$/u);
   assert.match(pick, /git merge-base --is-ancestor "\$CANDIDATE_INPUT" "\$CANDIDATE"/u);
   assert.match(pick, /CANDIDATE="\$CANDIDATE_INPUT"/u);
+});
+
+test("a healing release waits for the root's new boot within its policy's bound, and is not rolled back", () => {
+  assert.match(
+    step("Record the root's boot before the apply"),
+    /\$\{within:\+--allow-not-serving\}/u,
+  );
+  assert.match(
+    step("Accept the release through the live pool"),
+    /expect=\(--expect restart --within "\$within"\)/u,
+  );
+  assert.match(
+    step("Accept the release through the live pool"),
+    /acceptance\.rootRestart\.withinSeconds/u,
+  );
+  assert.equal(
+    condition("Stop on a failed healing release"),
+    "always() && env.MODE == 'apply' && env.POLICY_NAME == 'code-restart' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
+  );
+  assert.match(step("Stop on a failed healing release"), /exit 1/u);
+  assert.match(step("Roll back a failed release"), /exit 1/u);
 });
