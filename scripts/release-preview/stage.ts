@@ -41,6 +41,7 @@ export const stageModes = [
   "apply",
   "code",
   "settle",
+  "fault",
   "heal",
   "destroy",
 ] as const;
@@ -257,39 +258,14 @@ async function healRelease(
   hooks: ReturnType<typeof nativeHooks>,
 ) {
   const result: Record<string, unknown> = {};
-  const fault = (args: string[], out: string) =>
-    new Promise<number | null>((done) => {
-      const child = spawn(
-        "node",
-        [join(root, "scripts/release-preview/stage-fault.ts"), String(lane), out, ...args],
-        {
-          cwd: root,
-          env: source,
-          stdio: ["ignore", "ignore", "ignore"],
-        },
-      );
-      child.once("close", done);
-    });
-  const read = async (label: string, args: string[]) => {
-    const out = join(outputs, `heal-${label}.json`);
-    const code = await fault(args, out);
-    const state = JSON.parse(await readFile(out, "utf8").catch(() => "null")) as Record<
-      string,
-      unknown
-    > | null;
-    if (code !== 0 || !state) throw new Error(`The fault client's ${label} exited ${code}`);
-    return state;
-  };
   const probe = startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
   try {
-    // 1. The fault, then production's stuck state, field for field (the client checks and reports).
-    result.fault = await read("fault", []);
-    const stuck = await read("stuck", ["--read-only"]);
-    result.stuck = stuck;
-    if (stuck.stuck !== true)
-      throw new Error(
-        `The stage is not in production's stuck state: ${JSON.stringify(stuck.mismatches ?? stuck)}`,
-      );
+    // 1. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
+    const now = await faultRead(lane, source, outputs, "before", ["--read-only"]);
+    result.confirmed =
+      now.stuck === true && now.policyCleanAndExpired === true
+        ? { reused: true, state: now }
+        : await faultAndConfirm(lane, source, outputs);
     // 2. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     await rm(candidate, { recursive: true, force: true });
@@ -335,8 +311,10 @@ async function healRelease(
     const deadline = Date.now() + 10 * 60_000;
     let healed: Record<string, unknown> | undefined;
     while (Date.now() < deadline) {
-      const state = await read("after", ["--read-only"]).catch(() => undefined);
-      if (state?.healthy === true) {
+      const state = await faultRead(lane, source, outputs, "after", ["--read-only"]).catch(
+        () => undefined,
+      );
+      if ((state?.activeHealth as { status?: number } | undefined)?.status === 200) {
         healed = state;
         break;
       }
@@ -355,6 +333,68 @@ async function healRelease(
     });
   }
   return result;
+}
+
+/** One run of the rehearsal-only fault client; it writes its read as JSON to the private output. */
+async function faultRead(
+  lane: number,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+  label: string,
+  args: string[],
+) {
+  const out = join(outputs, `fault-${label}.json`);
+  const code = await new Promise<number | null>((done) => {
+    const child = spawn(
+      "node",
+      [join(root, "scripts/release-preview/stage-fault.ts"), String(lane), out, ...args],
+      { cwd: root, env: source, stdio: ["ignore", "ignore", "ignore"] },
+    );
+    child.once("close", done);
+  });
+  const state = JSON.parse(await readFile(out, "utf8").catch(() => "null")) as Record<
+    string,
+    unknown
+  > | null;
+  if (code !== 0 || !state) throw new Error(`The fault client's ${label} read exited ${code}`);
+  return state;
+}
+
+/**
+ * The fault, then production's stuck state confirmed field for field: the selection still names
+ * the boot it named before the fault, at the same epoch and unfenced; the witness names a restart
+ * with no boot; the container runs; active-health refuses on slot identity; every clean policy has
+ * lapsed (on today's code 15 to 20 s after the fault, so this waits rather than ages it).
+ */
+async function faultAndConfirm(lane: number, source: NodeJS.ProcessEnv, outputs: string) {
+  const before = await faultRead(lane, source, outputs, "pre", ["--read-only"]);
+  const pre = before.selection as { boot?: string | null; epoch?: number | null } | undefined;
+  const sent = await faultRead(lane, source, outputs, "send", []);
+  const deadline = Date.now() + 120_000;
+  let state: Record<string, unknown> = sent;
+  while (Date.now() < deadline) {
+    state = await faultRead(lane, source, outputs, "confirm", ["--read-only"]);
+    if (state.stuck === true && state.policyCleanAndExpired === true) break;
+    await new Promise((done) => setTimeout(done, 5_000));
+  }
+  const selection = state.selection as { boot?: string | null; epoch?: number | null } | undefined;
+  const mismatches = [
+    ...(state.stuck === true ? [] : ["not stuck"]),
+    ...(state.policyCleanAndExpired === true ? [] : ["policy not clean and expired"]),
+    ...(selection?.boot && selection.boot === pre?.boot
+      ? []
+      : ["selection no longer names the pre-fault boot"]),
+    ...(selection?.epoch === pre?.epoch ? [] : ["selection epoch moved"]),
+  ];
+  const confirmed = { before, state, mismatches, at: new Date().toISOString() };
+  await writeFile(
+    join(outputs, "fault-confirmed.json"),
+    `${JSON.stringify(confirmed, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  if (mismatches.length)
+    throw new Error(`The stage is not in production's stuck state: ${mismatches.join("; ")}`);
+  return confirmed;
 }
 
 /** The fix's `POOL_RUNTIME_FORCED_STOP` line for this stage's PoolWorker since `from`, read from Workers Logs. */
@@ -696,6 +736,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
           `// Rehearsal-only marker: a new file where migrations live. Never committed.\nexport const marker = ${marker};\n`,
         "new-migration-file",
       );
+    } else if (mode === "fault") {
+      Object.assign(result, await faultAndConfirm(lane, source, outputs));
     } else if (mode === "heal") {
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "destroy") {
@@ -709,12 +751,13 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     mode === "apply" ||
     mode === "code" ||
     mode === "settle" ||
+    mode === "fault" ||
     mode === "heal"
   ) {
     // A plan measures the deployed commit only if it is that commit, built as the stage is built.
     // The heal release builds its own candidate checkout, so it only checks the deployed commit.
     result.deployedCommit = await requireDeployedHead(subject, source);
-    if (mode === "heal") await run();
+    if (mode === "heal" || mode === "fault") await run();
     else await withStageBuild(root, subject, source, run);
   } else await run();
   result.seconds = Math.round((Date.now() - started) / 1000);
