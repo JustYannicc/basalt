@@ -21,16 +21,23 @@ async function root(context: TestContext) {
     },
     forcedStops: () =>
       errors.mock.calls.filter((call) => call.arguments[0] === "POOL_RUNTIME_FORCED_STOP").length,
+    lines: () =>
+      errors.mock.calls
+        .map((call) => call.arguments.map(String).join(" "))
+        .slice(-12)
+        .join("\n"),
   };
 }
 async function pass(f: Fixture) {
   await f.upkeep();
   await f.settle();
 }
+/** Reads the whole answer, so its stream lease is released before the next pass. */
 async function serves(f: Fixture) {
   const response = await f.model();
-  await response.body?.cancel();
-  return response.status === 200;
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  return true;
 }
 /** Readiness refuses for the current boot only, as a runtime that went bad and stays bad. */
 function refuseCurrentBoot(f: Fixture) {
@@ -84,7 +91,7 @@ test(
   "SIGTERM is never sent while a token refresh is in flight (twenty restarts)",
   { timeout: 60_000 },
   async (context) => {
-    const { f, advance, forcedStops } = await root(context);
+    const { f, advance, forcedStops, lines } = await root(context);
     let inFlight = false;
     context.mock.method(runtimeStopTiming, "refreshInFlight", async () => inFlight);
     const signal = f.old.ctx.container.signal.bind(f.old.ctx.container);
@@ -104,7 +111,7 @@ test(
         await pass(f);
         advance(2_000);
       }
-      assert.notEqual(f.old.identity().bootId, boot, `run ${run} restarted`);
+      assert.notEqual(f.old.identity().bootId, boot, `run ${run} restarted\n${lines()}`);
       assert.equal(await serves(f), true);
       // Past both hourly limits, the controller's and the container object's.
       advance(3_600_000 + 1);
