@@ -15,9 +15,8 @@ const appendFlags =
  */
 function shorten(line: string) {
   const long = line.length > lineLength;
-  const text = redactLogText(
-    long ? line.slice(0, line.lastIndexOf(" ", lineLength - 1) + 1) : line,
-  ).trimEnd();
+  const head = long ? line.slice(0, line.lastIndexOf(" ", lineLength - 1) + 1) : line;
+  const text = redactLogText(head).trimEnd();
   if (!long && text.length <= lineLength) return text;
   const kept = text.slice(0, lineLength - cutMark.length).trimEnd();
   return kept ? kept + cutMark : cutMark.trim();
@@ -88,25 +87,21 @@ export class ConnectionLog {
   private async append(lines: readonly string[]) {
     try {
       const current = await lstat(this.path).catch(() => undefined);
-      let size = current?.isFile() ? current.size : 0;
-      // Checked per line, not per read, so neither file ever passes `maxBytes`.
-      for (let start = 0; start < lines.length; ) {
-        let end = start,
-          bytes = 0;
-        for (; end < lines.length; end++) {
-          const next = Buffer.byteLength(lines[end]!);
-          if (size + bytes + next > this.maxBytes) break;
-          bytes += next;
-        }
-        if (end > start) {
-          await this.write(lines.slice(start, end).join(""));
-          size += bytes;
-          start = end;
-        } else if (size > 0) {
+      let size = current?.isFile() ? current.size : 0,
+        batch = "";
+      // Per line, not per read: a line is at most about 3 KiB, so neither file passes `maxBytes`.
+      for (const line of lines) {
+        const bytes = Buffer.byteLength(line);
+        if (size > 0 && size + bytes > this.maxBytes) {
+          if (batch) await this.write(batch);
           await rename(this.path, `${this.path}.1`);
           size = 0;
-        } else start++; // A line larger than a whole file: unreachable with the default size.
+          batch = "";
+        }
+        batch += line;
+        size += bytes;
       }
+      if (batch) await this.write(batch);
     } catch {}
   }
 
