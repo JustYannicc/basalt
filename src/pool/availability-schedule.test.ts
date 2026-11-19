@@ -224,7 +224,7 @@ test("pending traffic classification reports blindness without a failing-now pag
   assert.deepEqual(codes, ["pool_request_reliability_unavailable"]);
 });
 
-test("a failed reliability read names its closed cause instead of vanishing", async (t) => {
+test("a failed reliability read logs its closed cause and still reports collection_unavailable", async (t) => {
   const messages: ReturnType<typeof unpack>[] = [];
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
     messages.push(unpack(init));

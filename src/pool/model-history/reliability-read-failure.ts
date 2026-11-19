@@ -1,45 +1,56 @@
 import type { HistoryDatabase } from "./schema.ts";
-import { historyTimeoutReason } from "./series-deadline.ts";
+import { historySeriesFailure, type HistorySeriesFailure } from "./series-diagnostics.ts";
 
-// Closed labels for the reliability read's statements, so a failure names its step without SQL text.
-const steps: readonly (readonly [string, string])[] = [
+// Each statement of the reliability read, by a fragment only that statement contains. A failure
+// names its step this way, so neither SQL text nor parameters reach the log.
+const statements = [
   ["BEGIN", "begin"],
   ["statement_timeout", "timeout_setting"],
-  ["to_regclass", "readiness"],
-  ["FROM basalt_model_history_migrations WHERE name", "readiness"],
+  ["to_regclass('basalt_model_terminal_starts')", "terminal_tables"],
+  ["FROM basalt_model_history_migrations WHERE name", "terminal_marker"],
+  ["to_regclass('basalt_model_traffic')", "traffic_table"],
   ["FROM selected", "windows"],
   ["FROM basalt_model_history_cursor", "cursor"],
-  ["FROM usage", "lagging"],
+  ["to_regclass('usage')", "usage_table"],
+  ["FROM usage WHERE", "lagging"],
   ["AS pending", "terminal_pending"],
   ["AS unmatched_home", "terminal_evidence"],
   ["COMMIT", "commit"],
   ["ROLLBACK", "rollback"],
-];
+] as const;
 
-export function reliabilityStep(text: string): string {
-  return steps.find(([fragment]) => text.includes(fragment))?.[1] ?? "other";
+export type ReliabilityStep = (typeof statements)[number][1] | "other" | "session";
+export type ReliabilityFailure =
+  | HistorySeriesFailure
+  | "history_disabled"
+  | "database_unavailable"
+  | "history_deadline"
+  | "probe_budget";
+
+export function reliabilityStep(text: string): ReliabilityStep {
+  return statements.find(([fragment]) => text.includes(fragment))?.[1] ?? "other";
 }
 
-/** A timeout reason, an SQLSTATE class or a closed session cause. Never a driver message. */
+/** A closed failure and, for a database error, its five-character SQLSTATE. Never a driver message. */
 export function reliabilityFailure(error: unknown): {
-  failure: string;
+  failure: ReliabilityFailure;
   sqlstate?: string;
 } {
-  const timeout = historyTimeoutReason(error);
-  const code =
-    typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-  const sqlstate = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : undefined;
-  if (timeout) return { failure: timeout, ...(sqlstate ? { sqlstate } : {}) };
-  if (sqlstate) return { failure: "sql_error", sqlstate };
   if (error instanceof Error) {
     if (error.message === "Model request history is disabled")
       return { failure: "history_disabled" };
     if (error.message === "Model history database is unavailable")
       return { failure: "database_unavailable" };
+    // The session rethrows every timeout, of any kind, as this one message.
     if (error.message === "Model history database deadline exceeded")
-      return { failure: "total_deadline" };
+      return { failure: "history_deadline" };
   }
-  return { failure: "unknown" };
+  const failure = historySeriesFailure(error);
+  const code =
+    typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+  return typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)
+    ? { failure, sqlstate: code }
+    : { failure };
 }
 
 /** The read rethrows unchanged; the log names the step that failed and why. */

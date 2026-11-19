@@ -18,12 +18,12 @@ export function reliabilityState(
 
 /** Capture runs every five minutes. An old or unfinished capture cannot prove an SLO. */
 export async function readPoolReliabilitySlo(
-  db: HistoryDatabase,
+  history: HistoryDatabase,
   pool: string,
   now = Date.now(),
   transaction: "owned" | "caller" = "owned",
 ): Promise<PoolReliabilitySlo> {
-  db = reportingReliabilityStatements(db);
+  const db = reportingReliabilityStatements(history);
   const to = new Date(now).toISOString();
   if (transaction === "owned")
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -94,8 +94,9 @@ export async function readPoolReliabilitySlo(
               WHERE h.pool=$1 AND h.source=$3
                 AND h.timestamp >= GREATEST($2::timestamptz - interval '24 hours', m.completed_at)
                 AND h.timestamp < $2::timestamptz
-                -- Probe the start by its key: a text comparison scans every start for each Home row.
-                -- Only a canonical UUID can equal a start's id as text, so the answer is unchanged.
+                -- Probe the start by its key, so the cost follows the window's Home rows, not all
+                -- retained evidence. Only a canonical lowercase UUID names a start; any other id
+                -- stays unmatched and never reaches the cast.
                 AND NOT EXISTS (
                   SELECT 1 FROM basalt_model_terminal_starts s
                   JOIN basalt_model_terminal_finishes f USING (request_id)
