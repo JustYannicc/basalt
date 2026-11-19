@@ -10,6 +10,7 @@ import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { activeSteps } from "./ci/e2e-workflow.ts";
 import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { declaredMatrices } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 
@@ -309,6 +310,8 @@ test("explicit fast selection never schedules heavy work even without comparison
       assert.deepEqual(selected.hostedJobs, selected.jobs);
       assert.deepEqual(selected.boatJobs, []);
       assert.equal(selected.full, lane === "--all");
+      // Shard rows, not one row per file; the fast lane plans no declared work at all.
+      assert.deepEqual(selected.matrices, declaredMatrices(lane === "--all" ? null : []));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
