@@ -12,12 +12,21 @@ import {
   baselineControllerHealth,
   readBaselineController,
   readBaselineControllerKey,
+  releaseBaselineController,
   type BaselineController,
+  type BaselineControllerSource,
 } from "./baseline-controller.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { isLegacyAdoptionTarget, legacyAdoptionTarget } from "./legacy-adoption-target.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { forwardHeadCandidate, journalKey } from "./forward-journal.ts";
+import {
+  preflightSettlementProof,
+  type PreflightSettlementIo,
+} from "./release-preflight-settlement.ts";
+import type { RehearsalCounters } from "./release-resume-rehearsal.ts";
+import { canonical } from "./manifest.ts";
 import {
   NotApplicable,
   SettlementRequired,
@@ -51,6 +60,12 @@ import { verifyBoundProviderObservation } from "./runtime-provider-observation.t
 import { releaseSelectedReady } from "./runtime-release-readiness.ts";
 import { runtimeReleaseState, type RuntimeReleaseState } from "./runtime-release-state.ts";
 import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
+import type { DeclaredChanges } from "./declared-change-schema.ts";
+import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
+import { bootstrapNamespacePlan } from "./runtime-bootstrap-preflight.ts";
+import { readDeclaredClass } from "./class-cloudflare.ts";
+import { releaseImagePlan } from "./runtime-release-plan.ts";
+import { plannedContainerClasses } from "../../src/pool/fleet-deployment.ts";
 
 /**
  * The release promotes a fleet primary before finalize, so it never reads readiness from the legacy
@@ -81,10 +96,11 @@ const controllerSteps = [
 ];
 
 /**
- * The release's production reads in release order, each through the release's own function.
- * Not reachable read-only: backup, code adoption, candidate-code reads before its controller
- * phase, the stack plan and forward resume (baseline-probe job), the settlement proof (rehearsal
- * step), and every adopt, bind, promote, fleet, image, upload, version or deploy write.
+ * The release's production reads in release order, each through the release's own function, plus
+ * the settlement plan's proof for an unsettled prior. Not reachable read-only: backup, code
+ * adoption, candidate-code reads before its controller phase, the stack plan and forward resume
+ * (baseline-probe job), and every adopt, bind, promote, fleet, image, upload, version, deploy or
+ * settlement archive write.
  */
 export const preflightSteps = (
   compiled: CompiledStack,
@@ -100,6 +116,12 @@ export const preflightSteps = (
     receipts: readonly (typeof ControllerCode.Type)[];
     /** Each live-controller inspect: the code it signed with and how the controller answered. */
     attempts: ControllerAttempt[];
+    /** The repository's reviewed release declarations, as the release loads them. */
+    declarations?: DeclaredChanges;
+    /** The entry's read counters, so the settlement proof reports the reads it added. */
+    counters?: RehearsalCounters;
+    /** Test stand-ins for the settlement proof's Cloudflare readers; production uses the real ones. */
+    settlementIo?: PreflightSettlementIo;
   },
 ) =>
   Effect.gen(function* () {
@@ -132,16 +154,16 @@ export const preflightSteps = (
         ["state-version"],
         async () => {
           try {
-            const record = await (
+            // The release's own first verdict on its journal: the head its init reads.
+            const head = await (
               await read(runtimeReleaseJournal(compiled, writer, encryptionKey))
-            ).read();
-            // The release's own first verdict on its journal.
-            if (record?.abort)
+            ).head();
+            if (head.record?.abort)
               throw new BarrierRefusal(
                 "runtime-release-candidate-aborted-or-pending",
                 "PoolWorker",
               );
-            return { record, prior: undefined };
+            return { head, prior: undefined };
           } catch (error) {
             if (
               !(error instanceof BarrierRefusal) ||
@@ -150,32 +172,103 @@ export const preflightSteps = (
               throw error;
             // Which settlement it needs depends on the live controller; release-settlement decides.
             const head = await read(state.getOutput(releaseImageJournalKey(compiled)));
+            const priorRecord = decodeRuntimeReleaseHead(head, encryptionKey).record;
+            const forward = forwardHeadCandidate(await read(state.getOutput(journalKey(compiled))));
             return {
-              record: undefined,
-              prior: decodeRuntimeReleaseHead(head, encryptionKey).record.candidate,
+              head: { record: undefined, sourceController: undefined },
+              prior: priorRecord.candidate,
+              // A prior that stopped before its forward packet froze the controller still live.
+              priorController: priorRecord.baselineController?.code,
+              forwardCandidate: forward,
             };
           }
         },
-        ({ record, prior }) =>
+        ({ head: { record, sourceController }, prior }) =>
           prior
             ? { record: "prior-candidate-unsettled", prior }
             : record
               ? { record: "this-candidate", complete: record.complete }
-              : { record: "none-or-settled" },
+              : sourceController
+                ? {
+                    record: "prior-settled-or-aborted",
+                    sourceCandidate: sourceController.candidate,
+                  }
+                : { record: "none" },
       );
+      // After a controller-active settlement the readiness row names an older controller than the
+      // live one; the release's own choice for this journal head names the live one.
       const baseline = await step(
         "baseline-controller",
-        ["state-version"],
-        async () => ({
-          controller: await read(readBaselineController(compiled)),
-          key: await read(readBaselineControllerKey(compiled)),
-        }),
-        (value) => ({ recordedCandidate: value.controller.code.candidate }),
+        ["state-version", "release-journal"],
+        async () => {
+          const chosen = await read(releaseBaselineController(compiled, journal!.head));
+          // A resumed release's frozen code may be older than the one its own code phase recorded,
+          // so the readiness code stays a fallback; unreadable, it is simply not offered.
+          const recorded =
+            chosen.source === "recorded"
+              ? chosen.controller.code
+              : await read(readBaselineController(compiled)).then(
+                  (value) => value.code,
+                  () => undefined,
+                );
+          return { ...chosen, recorded, key: await read(readBaselineControllerKey(compiled)) };
+        },
+        (value) => ({ candidate: value.controller.code.candidate, source: value.source }),
       );
       const native = await step("runtime-state", ["state-version"], () =>
         read(runtimeReleaseState(compiled)),
       );
-      if (native && baseline) await controllerReads(native, baseline, journal?.prior);
+      // Runs before the code phase would: GETs only, then the bootstrap's own pure builder.
+      await step(
+        "runtime-bootstrap",
+        ["runtime-state"],
+        async () => {
+          if (!native)
+            throw new BarrierRefusal("release-preflight-state-unavailable", "PoolWorker");
+          const colors = (["blue", "green"] as const).filter(
+            (color) => !native.applications[color],
+          );
+          if (!colors.length)
+            throw new NotApplicable("both fleet colors already have applications");
+          const accountId = native.applications.root.attributes.accountId;
+          const namespaces = await read(
+            Effect.gen(function* () {
+              const reader = yield* runtimeNamespaceReader(accountId, native.target.worker);
+              return yield* Effect.promise(() => reader.baseline());
+            }),
+          );
+          const plans = bootstrapNamespacePlan({
+            baseline: namespaces,
+            accountId,
+            colors,
+            declarations: input.declarations,
+            // The controller code phase evaluates the stack with the release's own image plan.
+            plannedContainers: plannedContainerClasses(
+              releaseImagePlan({ baseline: native, desiredConfiguration: native.configuration }),
+            ),
+          });
+          // A class the code phase still has to add goes through the reviewed class path; its own
+          // read refuses a baseline it cannot extend.
+          const migration = plans.some((plan) => plan.source === "declared")
+            ? await read(
+                readDeclaredClass({ accountId, scriptName: native.target.worker }, input.fetch),
+              )
+            : undefined;
+          return {
+            plans,
+            migrationTag: !migration
+              ? "not-needed"
+              : migration.migrationTag
+                ? "tagged"
+                : "untagged",
+          };
+        },
+        ({ plans, migrationTag }) => ({
+          colors: plans.map(({ color, source }) => ({ color, source })),
+          migrationTag,
+        }),
+      );
+      if (native && baseline) await controllerReads(native, baseline, journal);
       else
         for (const name of [...controllerSteps, ...(journal?.prior ? ["release-settlement"] : [])])
           await step(name, ["baseline-controller", "runtime-state"], async () => {});
@@ -201,9 +294,21 @@ export const preflightSteps = (
 
     async function controllerReads(
       native: RuntimeReleaseState,
-      baseline: { controller: BaselineController; key: string },
-      prior: string | undefined,
+      baseline: {
+        controller: BaselineController;
+        source: BaselineControllerSource;
+        recorded: typeof ControllerCode.Type | undefined;
+        key: string;
+      },
+      journal:
+        | {
+            prior?: string;
+            priorController?: typeof ControllerCode.Type;
+            forwardCandidate?: string;
+          }
+        | undefined,
     ) {
+      const prior = journal?.prior;
       const target = {
         ...native.target,
         connect: readOnlyPoolOperations(nodeBridgeFromConfig, native.deploymentKey, bridge),
@@ -253,20 +358,29 @@ export const preflightSteps = (
               throw error;
             }
           };
+          // The release's own choice goes first; it is the readiness code when its source is.
+          const chosen = { source: baseline.source, code: baseline.controller.code };
+          const release =
+            chosen.source !== "recorded"
+              ? chosen
+              : journal?.priorController
+                ? { source: "prior-journal-record", code: journal.priorController }
+                : undefined;
           let first: unknown;
           try {
-            return await attempt("recorded", baseline.controller.code);
+            return await attempt(chosen.source, chosen.code);
           } catch (error) {
             first = error;
           }
           // The controller refuses any code but its own, so an accepted inspect proves the code.
           const options = liveControllerCodes({
-            recorded: baseline.controller.code,
+            ...(release ? { release } : {}),
+            recorded: baseline.recorded,
             ...(prior ? { prior } : {}),
             running: await runningRelease(target),
             receipts: input.receipts,
             workerInput: poolWorkerRevision,
-          }).slice(1);
+          }).filter((option) => canonical(option.code) !== canonical(chosen.code));
           for (const option of options)
             try {
               return await attempt(option.source, option.code);
@@ -294,13 +408,34 @@ export const preflightSteps = (
             prior,
             liveCandidate: code.candidate,
             selected: !!selection,
+            ...(journal?.forwardCandidate ? { forwardCandidate: journal.forwardCandidate } : {}),
           });
           if (!verdict.supported)
             throw new BarrierRefusal(
               "release-preflight-settlement-unsupported",
               verdict.disposition,
             );
-          throw new SettlementRequired(verdict.disposition);
+          // The plan's own proof, on the preflight's read-only clients, so the Check shows whether
+          // this candidate can settle the prior; the release still blocks until it is applied.
+          throw new SettlementRequired(
+            verdict.disposition,
+            await preflightSettlementProof({
+              compiled,
+              state,
+              read,
+              candidate,
+              prior,
+              disposition: verdict.disposition,
+              liveCode: code,
+              accountId,
+              encryptionKey,
+              directory,
+              connect: target.connect,
+              bridge,
+              ...(input.counters ? { counters: input.counters } : {}),
+              ...(input.settlementIo ? { io: input.settlementIo } : {}),
+            }),
+          );
         });
 
       await step(

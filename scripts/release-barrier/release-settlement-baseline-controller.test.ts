@@ -1,7 +1,8 @@
-// The next candidate's image record freezes its baseline controller through the same two calls
-// runtime-image-release.ts init makes (journal head, then readBaselineController). The full init
-// runs only in the redirected release world (runtime-image-release.test.ts), so this proves those
-// calls against the real journal and archive, plus the resume step against the real handler.
+// The next candidate's image record freezes its baseline controller through the calls
+// runtime-image-release.ts init makes (journal head, then the read releaseBaselineController
+// makes with its code). The full init runs only in the redirected release world
+// (runtime-image-release.test.ts), so this proves those calls against the real journal and
+// archive, plus the resume step against the real handler.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";

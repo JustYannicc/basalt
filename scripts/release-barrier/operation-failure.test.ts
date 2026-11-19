@@ -3,10 +3,17 @@ import { test } from "node:test";
 import { MiniflareCoreError } from "../startup-profiler/node_modules/miniflare/dist/src/index.js";
 import { Cause, Effect, Exit } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
+import * as HttpClientError from "effect/http/HttpClientError";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import { classCheckFailure } from "./class-refusal.ts";
+import { refusalTable } from "./refusal-report.ts";
 import {
   operationFailure,
+  providerChanges,
   safeProviderFailure,
   safeProviderFailureChain,
+  safeRequestShape,
+  safeTransportMessage,
   withOperation,
 } from "./operation-failure.ts";
 
@@ -137,3 +144,114 @@ test("hostile provider error arrays cannot discard the original operator diagnos
     { type: "Error", status: 403, codes: [10000] },
   ]);
 });
+
+test("an HTTP transport refusal names the request shape and fetch's cause, never ids or values", async () => {
+  const privateValues = [
+    "private-account-0123",
+    "private-worker",
+    "private-version",
+    "private.example.invalid",
+    "synthetic-secret-header",
+    "token=secret",
+    "10.1.2.3",
+  ];
+  const request = HttpClientRequest.get(
+    "https://private.example.invalid/client/v4/accounts/private-account-0123/workers/scripts/private-worker/versions/private-version?token=secret",
+  );
+  const socket = Object.assign(new Error("connect ECONNRESET 10.1.2.3:443 private-worker"), {
+    code: "ECONNRESET",
+  });
+  const fetchError = new TypeError(
+    'Headers.append: "Bearer synthetic-secret-header" is an invalid header value for https://private.example.invalid/x via private.example.invalid:443',
+    { cause: socket },
+  );
+  const exit = await Effect.runPromiseExit(
+    Effect.fail(
+      new HttpClientError.HttpClientError({
+        reason: new HttpClientError.TransportError({ request, cause: fetchError }),
+      }),
+    ).pipe(withOperation("PoolWorker", "read-class-expansion")),
+  );
+  assert.ok(Exit.isFailure(exit));
+  const failure = Cause.squash(exit.cause);
+  const operation = operationFailure(failure, "PoolWorker", "read-class-expansion");
+  const provider = operation.provider!;
+  assert.deepEqual(provider, {
+    type: "HttpClientError",
+    reason: "TransportError",
+    request: { method: "GET", path: "/client/v4/accounts/{id}/workers/scripts/{id}/versions/{id}" },
+    cause: [
+      {
+        type: "TypeError",
+        message: "Headers.append: [value] is an invalid header value for [url] via [host]",
+      },
+      { type: "Error", code: "ECONNRESET" },
+    ],
+  });
+  const refusal = classCheckFailure(failure, "PoolWorker");
+  const rows = refusal.delta?.changed ?? [];
+  for (const path of [
+    "$provider.request.method",
+    "$provider.request.path",
+    "$provider.cause.0.type",
+    "$provider.cause.0.message",
+    "$provider.cause.1.code",
+  ])
+    assert.ok(
+      rows.some((row) => row.path === path),
+      `missing ${path}`,
+    );
+  const table = refusalTable({
+    reason: operation.reason,
+    worker: "PoolWorker",
+    operation: operation.operation,
+    provider: operation.provider,
+  });
+  assert.ok(
+    table.includes("request=GET /client/v4/accounts/{id}/workers/scripts/{id}/versions/{id}"),
+  );
+  assert.ok(table.includes("cause.1=Error: ECONNRESET"));
+  for (const output of [JSON.stringify(rows), JSON.stringify(providerChanges(provider)), table])
+    for (const value of privateValues) assert.ok(!output.includes(value), `leaked ${value}`);
+});
+
+test("a top-level code-bug TypeError keeps the identifier it names", () => {
+  const error = new TypeError("Cannot read properties of undefined (reading 'accountId')");
+  assert.equal(
+    operationFailure(error, "PoolWorker", "read-class-expansion").provider?.message,
+    "Cannot read properties of undefined (reading 'accountId')",
+  );
+});
+
+for (const [input, expected] of [
+  ["connect to API.Example.COM:443 refused", "connect to [host] refused"],
+  [
+    "Headers.append: invalid; Response.json failed",
+    "Headers.append: invalid; Response.json failed",
+  ],
+  ["read file:///home/someone/x and ws://private/y", "read [url] and [url]"],
+  ["bad 2001:db8::1 or ::1 or [fe80::1]:443", "bad [address] or [address] or [address]"],
+  ['unterminated "private value with no close', "unterminated [value]"],
+  ["can't reach 'private' and don't retry", "can't reach [value] and don't retry"],
+  ['fetching "https://private.invalid/x" failed', 'fetching "[url]" failed'],
+] as const)
+  test(`transport messages drop private text: ${input}`, () => {
+    assert.equal(safeTransportMessage(input), expected);
+  });
+
+for (const [path, expected] of [
+  ["/accounts/a/r2/buckets/assets/cors", "/accounts/{id}/r2/buckets/{id}/cors"],
+  ["/accounts/a/workers/scripts/settings/settings", "/accounts/{id}/workers/scripts/{id}/settings"],
+  [
+    "/client/v4/accounts/a/workers/workers/workers/versions/v",
+    "/client/v4/accounts/{id}/workers/workers/{id}/versions/{id}",
+  ],
+  ["/accounts/a/d1/database/query/query", "/accounts/{id}/d1/database/{id}/query"],
+  ["/accounts/a/private-unknown-word", "/accounts/{id}/{id}"],
+] as const)
+  test(`request paths template identifiers by position: ${path}`, () => {
+    assert.deepEqual(
+      safeRequestShape({ method: "GET", url: `https://private.invalid${path}?token=secret` }),
+      { method: "GET", path: expected },
+    );
+  });

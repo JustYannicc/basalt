@@ -17,6 +17,7 @@ import {
   SettlementRequired,
   preflightRefusal,
   preflightRunner,
+  type PreflightStepResult,
 } from "./release-preflight.ts";
 import { finalReadiness } from "./release-preflight-steps.ts";
 import {
@@ -194,6 +195,47 @@ test("an attempted write fails the report even when every step passed", () => {
   );
 });
 
+test("a Check passes a required settlement only while its proof is accepted; a release never does", () => {
+  const reads = { state: null, http: null, bridge: {} };
+  const required = (
+    proof?: NonNullable<Extract<PreflightStepResult, { status: "settlement-required" }>["proof"]>,
+  ) => ({
+    step: "release-settlement",
+    status: "settlement-required" as const,
+    disposition: "abandoned-before-forward",
+    ...(proof ? { proof } : {}),
+  });
+  const accepted = required({
+    status: "accepted",
+    disposition: "abandoned-before-forward",
+    source: "b".repeat(40),
+    controller: "c".repeat(40),
+    reads,
+  });
+  const refused = required({
+    status: "refused",
+    disposition: "abandoned-before-forward",
+    source: "b".repeat(40),
+    refusal: preflightRefusal(
+      new BarrierRefusal("release-settlement-not-before-forward", "forward.candidate"),
+    ),
+    reads,
+  });
+  const report = (mode: "check" | "release", step: PreflightStepResult) =>
+    preflightReport({
+      candidate: "a".repeat(40),
+      mode,
+      steps: [step],
+      state: createRehearsalCounters(),
+      bridge: createPreflightBridgeCounters(),
+    }).status;
+  assert.equal(report("check", accepted), "pass");
+  assert.equal(report("check", required()), "pass");
+  assert.equal(report("check", refused), "refused");
+  assert.equal(report("release", accepted), "refused");
+  assert.equal(report("release", refused), "refused");
+});
+
 test("the read-only writer refuses every write path", async () => {
   const writer = readOnlyReleaseWriter("a".repeat(40));
   writer.assert();
@@ -331,19 +373,48 @@ test("the release receipt for the running release supplies the code the controll
   assert.deepEqual(await releaseReceiptCodes(undefined), []);
 });
 
+test("a resumed release's frozen code goes first and the readiness code stays a fallback", () => {
+  const frozen = { candidate: "6".repeat(40), workerInput: "7".repeat(64) };
+  const codes = liveControllerCodes({
+    release: { source: "journal-record", code: frozen },
+    recorded: liveCode,
+    running: undefined,
+    receipts: [],
+    workerInput: "5".repeat(64),
+  });
+  assert.deepEqual(
+    codes.map(({ source }) => source),
+    ["journal-record", "recorded"],
+  );
+  assert.equal(codes.find(({ code }) => accepts(code))?.source, "recorded");
+});
+
 test("an unsettled prior candidate needs the settlement its live controller state implies", () => {
   const prior = "8".repeat(40);
   // Support follows this candidate's own disposition list, so the test holds with or without
   // a change that adds a disposition.
-  for (const [liveCandidate, selected, disposition] of [
-    [prior, true, "controller-active-adopted"],
-    [prior, false, "controller-active-unadopted"],
-    ["9".repeat(40), true, "abandoned-before-controller"],
+  const earlier = "9".repeat(40);
+  for (const [liveCandidate, selected, forwardCandidate, disposition] of [
+    [prior, true, prior, "controller-active-adopted"],
+    [prior, false, prior, "controller-active-unadopted"],
+    [earlier, true, prior, "abandoned-before-controller"],
+    [earlier, true, undefined, "abandoned-before-controller"],
+    // It stopped before freezing a forward packet, so the head is still the live release's.
+    [earlier, true, earlier, "abandoned-before-forward"],
   ] as const)
-    assert.deepEqual(settlementVerdict({ prior, liveCandidate, selected }), {
-      disposition,
-      supported: supportedDispositions.includes(disposition),
-    });
+    assert.deepEqual(
+      settlementVerdict({
+        prior,
+        liveCandidate,
+        selected,
+        ...(forwardCandidate ? { forwardCandidate } : {}),
+      }),
+      { disposition, supported: supportedDispositions.includes(disposition) },
+    );
+});
+
+test("this candidate can perform an abandoned-before-forward settlement", () => {
+  assert.ok(supportedDispositions.includes("abandoned-before-forward"));
 });
 
 test("a disposition missing from the candidate's list is unsupported and refuses everywhere", async () => {

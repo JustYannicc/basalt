@@ -1,5 +1,3 @@
-import * as Workers from "@distilled.cloud/cloudflare/workers";
-import { Schema } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
 import { canonical, digest } from "./manifest.ts";
 import {
@@ -12,31 +10,17 @@ import {
 } from "./provisioning-contract.ts";
 import { decodeCreatedRuntime, type CreatedRuntimeApplication } from "./provisioning-apply.ts";
 import {
-  assertRuntimeNamespace,
+  assertNamespaceAttachment,
   decodeNamespaceBaseline,
   type NamespaceBaseline,
   type NamespaceObservation,
-  runtimeNamespaceRequest,
+  runtimeNamespaceAttachment,
 } from "./provisioning-namespace.ts";
 import { provisioningJournal, type ProvisioningStore } from "./provisioning-journal.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
 
-const versionResult = Schema.decodeUnknownSync(
-  Schema.Struct({ versionId: Schema.NonEmptyString }),
-  { onExcessProperty: "error" },
-);
-const activationResult = Schema.decodeUnknownSync(
-  Schema.Struct({ deploymentId: Schema.NonEmptyString }),
-  { onExcessProperty: "error" },
-);
-
 export interface RuntimeProvisioningProvider {
   namespaceBaseline(): Promise<NamespaceBaseline>;
-  stageNamespace(
-    request: ReturnType<typeof runtimeNamespaceRequest>,
-  ): Promise<{ versionId: string }>;
-  readNamespaceVersion(versionId: string): Promise<Workers.GetBetaWorkerVersionResponse>;
-  activateNamespace(versionId: string): Promise<{ deploymentId: string }>;
   observeNamespace(): Promise<NamespaceObservation>;
   active(): Promise<RuntimeProvisioningManifest["active"]>;
   applicationAbsent(): Promise<boolean>;
@@ -104,67 +88,17 @@ async function provisionEnabled(
     manifest.namespaceBaselineDigest,
     digest(canonical(baseline)),
   );
-  const request = runtimeNamespaceRequest(baseline, manifest.declaration, manifest.operationId);
-  const requestDigest = digest(canonical(request));
-  sameProvisioningValue("namespace.requestDigest", manifest.namespaceRequestDigest, requestDigest);
-  const staged = await journal.once(
-    "namespace-stage",
-    requestDigest,
-    async () => {
-      await active();
-      return provider.stageNamespace(request);
-    },
-    versionResult,
+  const attachment = runtimeNamespaceAttachment(baseline, manifest.declaration);
+  sameProvisioningValue(
+    "namespace.attachmentDigest",
+    manifest.namespaceRequestDigest,
+    digest(canonical(attachment)),
   );
-  const version = await provider.readNamespaceVersion(staged.versionId);
-  sameProvisioningValue("namespace.staged.id", staged.versionId, version.id);
-  for (const key of [
-    "mainModule",
-    "modules",
-    "exports",
-    "containers",
-    "compatibilityDate",
-    "compatibilityFlags",
-    "limits",
-    "placement",
-    "cacheOptions",
-    "assets",
-    "usageModel",
-  ] as const)
-    sameProvisioningValue(`namespace.staged.${key}`, request[key], version[key]);
-  const activation = await journal.once(
-    "namespace-activation",
-    digest(canonical({ versionId: staged.versionId, requestDigest })),
-    async () => {
-      await active();
-      const current = await provider.observeNamespace();
-      sameProvisioningValue(
-        "namespace.beforeActivation.version",
-        baseline.version.id,
-        current.versionId,
-      );
-      sameProvisioningValue(
-        "namespace.beforeActivation.namespaces",
-        baseline.namespaces,
-        current.namespaces,
-      );
-      sameProvisioningValue(
-        "namespace.beforeActivation.exports",
-        baseline.version.exports,
-        current.exports,
-      );
-      sameProvisioningValue(
-        "namespace.beforeActivation.containers",
-        baseline.containers,
-        current.containers,
-      );
-      return provider.activateNamespace(staged.versionId);
-    },
-    activationResult,
+  const namespace = assertNamespaceAttachment(
+    attachment,
+    baseline,
+    await provider.observeNamespace(),
   );
-  const observed = await provider.observeNamespace();
-  sameProvisioningValue("namespace.deploymentId", activation.deploymentId, observed.deploymentId);
-  const namespace = assertRuntimeNamespace(baseline, request, staged.versionId, observed);
   const created = await journal.once(
     "application-create",
     digest(
@@ -176,7 +110,7 @@ async function provisionEnabled(
     ),
     async () => {
       await active();
-      sameProvisioningValue("namespace.beforeCreate", observed, await provider.observeNamespace());
+      assertNamespaceAttachment(attachment, baseline, await provider.observeNamespace());
       sameProvisioningValue("application.baseline", true, await provider.applicationAbsent());
       return provider.createApplication(namespace.namespaceId);
     },

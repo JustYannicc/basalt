@@ -50,19 +50,32 @@ test("installed dependencies require the exact successful Playwright report", ()
 });
 
 for (const updateFails of [false, true]) {
-  test(`browser package identification ${updateFails ? "stops on an index refresh failure" : "refreshes missing indexes before the real dependency probe"}`, () => {
+  test(`browser package identification ${updateFails ? "stops on an Ubuntu archive refresh failure" : "refreshes only the Ubuntu archives before the real dependency probe"}`, () => {
     const root = mkdtempSync(join(tmpdir(), "browser-identify-"));
     try {
       const bin = join(root, "bin");
       const upstream = join(root, ".upstream");
       const receipt = join(root, "calls.jsonl");
+      const apt = join(root, "etc/apt");
       for (const directory of [
         bin,
         join(root, "scripts"),
+        join(root, "tmp"),
+        join(apt, "apt.conf.d"),
+        join(apt, "sources.list.d"),
         join(upstream, "node_modules/playwright"),
       ])
         mkdirSync(directory, { recursive: true });
       writeFileSync(join(root, "os-release"), "ID=ubuntu\nVERSION_ID=26.04\n");
+      // The hosted image ships a Microsoft source next to Ubuntu's; we install nothing from it.
+      writeFileSync(
+        join(apt, "sources.list.d/ubuntu.sources"),
+        "Types: deb\nURIs: http://azure.archive.ubuntu.com/ubuntu\nSuites: resolute\n",
+      );
+      writeFileSync(
+        join(apt, "sources.list.d/microsoft-prod.list"),
+        "deb [arch=amd64] https://packages.microsoft.com/ubuntu/26.04/prod resolute main\n",
+      );
       writeFileSync(join(upstream, "node_modules/playwright/package.json"), '{"version":"1.63.0"}');
       const source = readFileSync(new URL("./ci-browser-packages.ts", import.meta.url), "utf8");
       writeFileSync(
@@ -70,7 +83,7 @@ for (const updateFails of [false, true]) {
         source.replace('"/etc/os-release"', JSON.stringify(join(root, "os-release"))),
       );
       const command = `#!${process.execPath}
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const root = ${JSON.stringify(root)};
@@ -82,8 +95,21 @@ if (name === 'sudo') {
   process.exit(result.status ?? 1);
 }
 if (name === 'apt-get') {
+  if (!args.includes('update') || !args.includes('APT::Update::Error-Mode=any')) process.exit(2);
+  // Resolve sources as apt does: Dir::Etc::sourceparts from apt.conf.d, else sources.list.d.
+  const apt = ${JSON.stringify(apt)};
+  let parts = join(apt, 'sources.list.d');
+  for (const file of readdirSync(join(apt, 'apt.conf.d'))) {
+    const match = /Dir::Etc::sourceparts "([^"]+)";/.exec(readFileSync(join(apt, 'apt.conf.d', file), 'utf8'));
+    if (match) parts = match[1];
+  }
+  const sources = readdirSync(parts).map((file) => readFileSync(join(parts, file), 'utf8')).join('');
+  if (!sources.includes('archive.ubuntu.com/ubuntu')) process.exit(2);
+  if (sources.includes('packages.microsoft.com')) {
+    console.error('E: Failed to fetch https://packages.microsoft.com/ubuntu/26.04/prod/dists/resolute/InRelease  429  Too Many Requests');
+    process.exit(100);
+  }
   if (${updateFails}) process.exit(100);
-  if (!args.includes('update')) process.exit(2);
   writeFileSync(join(root, 'indexes-ready'), 'yes');
 } else if (name === 'bunx') {
   if (!existsSync(join(root, 'indexes-ready'))) {
@@ -105,12 +131,15 @@ if (name === 'apt-get') {
       );
       const identify = action.runs.steps.find((step: { id?: string }) => step.id === "packages");
       const output = join(root, "output");
-      const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", identify.run], {
+      // Redirect only system paths so the real step runs without changing the host.
+      const run = identify.run.replaceAll("/etc/apt", apt);
+      const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", run], {
         cwd: upstream,
         env: {
           ...process.env,
           PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH}`,
           GITHUB_OUTPUT: output,
+          RUNNER_TEMP: join(root, "tmp"),
         },
         encoding: "utf8",
       });
@@ -128,7 +157,7 @@ if (name === 'apt-get') {
         assert.equal(result.status, 0, result.stdout + result.stderr);
         assert.deepEqual(
           calls.map((call) => call.name),
-          ["sudo", "apt-get", "bunx"],
+          ["sudo", "sudo", "apt-get", "bunx"],
         );
         assert.match(readFileSync(output, "utf8"), /^fingerprint=[a-f0-9]{64}\n$/);
       }

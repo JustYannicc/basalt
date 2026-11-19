@@ -19,7 +19,11 @@ import {
   expansionRequest,
   payloadDigest,
 } from "./class-payload.ts";
-import { assertClassObservation } from "./class-observation.ts";
+import {
+  assertClassObservation,
+  classStepContainersMatch,
+  linkedClasses,
+} from "./class-observation.ts";
 import { declaredMismatch } from "./declared-refusal.ts";
 import { assertClassRequests } from "./class-refusals.ts";
 import { declaredChecks } from "./declared-checks.ts";
@@ -192,19 +196,24 @@ export const prepareDeclaredClasses = (
                 { settings: observed.settings, migrationTag: observed.migrationTag },
                 entry.type,
               );
+            const before = linkedClasses(observed.containers);
             if (
               upload.request.metadata.assets ||
               upload.request.metadata.keepAssets ||
-              upload.request.metadata.containers?.length
+              !classStepContainersMatch(
+                entry,
+                observed.containers,
+                upload.request.metadata.containers,
+              )
             )
               throw declaredMismatch(
                 "declared-class-worker-mode-unsupported",
                 entry.fqn,
-                { assets: null, keepAssets: null, containers: [] },
+                { assets: null, keepAssets: null, containers: before },
                 {
                   assets: upload.request.metadata.assets,
                   keepAssets: upload.request.metadata.keepAssets,
-                  containers: upload.request.metadata.containers,
+                  containers: linkedClasses(upload.request.metadata.containers),
                 },
                 entry.type,
               );

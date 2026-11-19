@@ -13,6 +13,7 @@ export const RuntimeProvisioningManifest = Schema.Struct({
   operationId: Schema.NonEmptyString,
   declaration: RuntimeCreateDeclaration,
   namespaceBaselineDigest: hash,
+  // The journal persists this key, so it keeps its name; it now holds the attachment digest.
   namespaceRequestDigest: hash,
   applicationTemplateDigest: hash,
   active: Schema.Struct({

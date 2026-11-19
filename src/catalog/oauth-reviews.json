@@ -1502,7 +1502,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://api.us.elevenlabs.io/.well-known/oauth-authorization-server",
-          "metadataSha256": "3a294ab3214ca03b5e93883492b3a6f24568258e2cef6295fb5bbc4f890714ea"
+          "metadataSha256": "3fd293b754ff6af2006043e8f4f053769fb8223c57cc18e69ab4c057cbf32599"
         }
       }
     },

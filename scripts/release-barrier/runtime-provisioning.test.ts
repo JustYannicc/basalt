@@ -2,38 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { provisionRuntime, type RuntimeProvisioningProvider } from "./runtime-provisioning.ts";
 import { decodeCreatedRuntime } from "./provisioning-apply.ts";
-import { provisioningFixture } from "./test/provisioning-fixtures.ts";
-import { decodeNamespaceBaseline } from "./provisioning-namespace.ts";
-import { readRuntimeExports } from "./provisioning-exports.ts";
+import { namespaceBaseline, provisioningFixture } from "./test/provisioning-fixtures.ts";
 import { decodeRuntimeCreate, type RuntimeResourceName } from "./runtime-create-schema.ts";
 import type { ProvisioningRecord, ProvisioningStore } from "./provisioning-journal.ts";
 
 function harness(name: RuntimeResourceName = "PoolRuntime") {
   const f = provisioningFixture(name);
-  const counts = { baseline: 0, stage: 0, activate: 0, create: 0, reads: 0 };
-  let activated = false;
+  const counts = { baseline: 0, observe: 0, create: 0, reads: 0 };
   let current = f.baseline.version.id;
   let record: ProvisioningRecord | undefined;
   let lostCreate = false;
-  const { accountId: _account, workerId: _worker, deploy: _deploy, ...settings } = f.request;
-  const staged = decodeNamespaceBaseline({
-    ...f.baseline,
-    version: {
-      ...f.baseline.version,
-      ...settings,
-      id: "staged-version",
-      number: 2,
-      bindings: [
-        ...f.baseline.version.bindings!,
-        {
-          name,
-          type: "durable_object_namespace",
-          className: name,
-          namespaceId: f.namespaceId,
-        },
-      ],
-    },
-  }).version;
   const application = decodeCreatedRuntime({
     applicationId: "new-application",
     applicationName: f.manifest.declaration.props.name,
@@ -63,36 +41,17 @@ function harness(name: RuntimeResourceName = "PoolRuntime") {
       counts.baseline++;
       return f.baseline;
     },
-    stageNamespace: async () => {
-      counts.stage++;
-      return { versionId: staged.id };
+    observeNamespace: async () => {
+      counts.observe++;
+      return {
+        accountId: f.baseline.accountId,
+        scriptName: f.baseline.scriptName,
+        versionId: current,
+        deploymentId: "deployment",
+        namespaces: f.baseline.namespaces,
+        containers: f.baseline.containers,
+      };
     },
-    readNamespaceVersion: async () => staged,
-    activateNamespace: async () => {
-      counts.activate++;
-      activated = true;
-      current = staged.id;
-      return { deploymentId: "deployment" };
-    },
-    observeNamespace: async () => ({
-      accountId: f.baseline.accountId,
-      scriptName: f.baseline.scriptName,
-      versionId: current,
-      deploymentId: activated ? "deployment" : "prior-deployment",
-      namespaces: activated
-        ? [
-            ...f.baseline.namespaces,
-            {
-              id: f.namespaceId,
-              className: name,
-              binding: name,
-              storage: "sqlite",
-            },
-          ]
-        : f.baseline.namespaces,
-      exports: readRuntimeExports((activated ? staged : f.baseline.version).exports),
-      containers: (activated ? staged : f.baseline.version).containers ?? [],
-    }),
     applicationAbsent: async () => true,
     createApplication: async () => {
       counts.create++;
@@ -134,23 +93,19 @@ test("provisioning is inert without a separate enable and does no provider reads
     provisionRuntime(h.manifest, h.store, h.provider, undefined, () => 100),
     /runtime-provisioning-not-enabled/,
   );
-  assert.deepEqual(h.counts, { baseline: 0, stage: 0, activate: 0, create: 0, reads: 0 });
+  assert.deepEqual(h.counts, { baseline: 0, observe: 0, create: 0, reads: 0 });
 });
 
-test("namespace-first provisioning retains its baseline and never repeats acknowledged operations on resume", async () => {
+test("provisioning attaches to the deployed class, retains its baseline and never repeats acknowledged operations on resume", async () => {
   const h = harness();
   const receipt = await h.run();
   assert.equal(receipt.disposition, "idle");
   assert.equal(receipt.applicationId, "new-application");
+  assert.equal(receipt.namespaceId, h.namespaceId);
   assert.deepEqual(await h.run(), receipt);
   assert.deepEqual(
-    {
-      baseline: h.counts.baseline,
-      stage: h.counts.stage,
-      activate: h.counts.activate,
-      create: h.counts.create,
-    },
-    { baseline: 1, stage: 1, activate: 1, create: 1 },
+    { baseline: h.counts.baseline, create: h.counts.create },
+    { baseline: 1, create: 1 },
   );
 });
 
@@ -163,29 +118,39 @@ test("lost application reply remains unknown even after restart sees absence", a
   assert.equal(h.record()!.operations["application-create"]!.outcome, "unknown");
 });
 
-test("Worker version drift before activation refuses without activation or application create", async () => {
+test("Worker version drift after the frozen baseline refuses without an application create", async () => {
   const h = harness();
-  const stage = h.provider.stageNamespace;
-  h.provider.stageNamespace = async (request) => {
-    const result = await stage(request);
+  const observe = h.provider.observeNamespace;
+  h.provider.observeNamespace = async () => {
+    const result = await observe();
     h.changeWorker();
     return result;
   };
   await assert.rejects(h.run(), /provisioning-input-drift/);
-  assert.equal(h.counts.activate, 0);
   assert.equal(h.counts.create, 0);
 });
 
-test("active boot drift refuses before the next mutation", async () => {
+test("active boot drift refuses before the application create", async () => {
   const h = harness();
-  const stage = h.provider.stageNamespace;
-  h.provider.stageNamespace = async (request) => {
-    const result = await stage(request);
+  const observe = h.provider.observeNamespace;
+  h.provider.observeNamespace = async () => {
     h.provider.active = async () => ({ ...h.manifest.active, bootId: "unexpected-boot" });
-    return result;
+    return observe();
   };
   await assert.rejects(h.run(), /provisioning-input-drift/);
-  assert.equal(h.counts.activate, 0);
+  assert.equal(h.counts.create, 0);
+});
+
+test("a class the deploy has not created refuses before any provider write", async () => {
+  const h = harness("PoolRuntimeBlue");
+  h.provider.namespaceBaseline = async () => {
+    h.counts.baseline++;
+    return namespaceBaseline([]);
+  };
+  await assert.rejects(
+    h.run(),
+    /provisioning-input-drift|provisioning-namespace-baseline-unsupported/,
+  );
   assert.equal(h.counts.create, 0);
 });
 
@@ -212,7 +177,6 @@ for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"] as const) {
     assert.equal(h.record()!.resource, name);
     assert.deepEqual(await h.run(), receipt);
     assert.equal(h.counts.create, 1);
-    assert.equal(h.counts.activate, 1);
   });
 }
 
@@ -248,6 +212,5 @@ test("mutating the supplied fleet declaration after its first read cannot change
     return h.manifest.active;
   };
   await assert.rejects(h.run(), /provisioning-input-drift/);
-  assert.equal(h.counts.stage, 0);
   assert.equal(h.counts.create, 0);
 });
