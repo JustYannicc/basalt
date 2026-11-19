@@ -48,6 +48,8 @@ export const PlanPolicy = Schema.Struct({
     fqn: exactFqn,
     /** The registry digest reference the legacy root runs; supplied by the caller, never committed. */
     image: Schema.String.check(Schema.isPattern(digestRef)),
+    /** The root's row must not move at all, not even its recorded hash (the healing release). */
+    noop: Schema.optional(Schema.Literal(true)),
   }),
   poolWorker: exactFqn,
   artifactsCredentials: exactFqn,
@@ -130,8 +132,16 @@ function shown(value: unknown, path: readonly string[]): string {
     : "<withheld>";
 }
 
-function propChanges(old: unknown, next: unknown, path: readonly string[] = ["props"]): string[] {
+/** Each leaf that differs, as `path: old -> new` with values shown only when safe to print. */
+export function propChanges(
+  old: unknown,
+  next: unknown,
+  path: readonly string[] = ["props"],
+  depth = 16,
+): string[] {
   if (Object.is(old, next)) return [];
+  // An applied plan's props can point back at themselves; past this depth a leaf is just changed.
+  if (path.length > depth) return [`${path.join(".")}: changed`];
   if (
     (record(old) || old === undefined) &&
     (record(next) || next === undefined) &&
@@ -141,11 +151,11 @@ function propChanges(old: unknown, next: unknown, path: readonly string[] = ["pr
     isResolved(next)
   ) {
     const keys = [...new Set([...Object.keys(old ?? {}), ...Object.keys(next ?? {})])].sort();
-    return keys.flatMap((key) => propChanges(old?.[key], next?.[key], [...path, key]));
+    return keys.flatMap((key) => propChanges(old?.[key], next?.[key], [...path, key], depth));
   }
   if (Array.isArray(old) && Array.isArray(next) && isResolved(old) && isResolved(next))
     return Array.from({ length: Math.max(old.length, next.length) }, (_, index) =>
-      propChanges(old[index], next[index], [...path, String(index)]),
+      propChanges(old[index], next[index], [...path, String(index)], depth),
     ).flat();
   if (!havePropsChanged({ value: old }, { value: next })) return [];
   return [`${path.join(".")}: ${shown(old, path)} -> ${shown(next, path)}`];
@@ -245,6 +255,10 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
           fix: "Moving a class between Workers is its own reviewed change. If the class already lives on this Worker, its State row is missing the namespace: settle that first.",
         });
     if (binding.action !== "update") continue;
+    // A binding whose value waits on another row (a command's hash, a build's output) is not
+    // known yet: it keeps its sid and gets its data at apply. Only a `delete` removes it, and a
+    // class it hosted is still refused at the wire as `deleted_classes`.
+    if (!isResolved(binding.data)) continue;
     const before = wire(old.get(binding.sid));
     for (const entry of before) {
       const same = next.find((candidate) => candidate.name === entry.name);
@@ -319,17 +333,55 @@ function containerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
       why: "Any change besides the image hash makes Alchemy patch the application, which starts a rollout of the legacy root.",
       fix: "Make the declaration equal to the recorded props, or change the root in its own reviewed release.",
     });
-  for (const binding of node.bindings)
-    if (binding.action === "create" || binding.action === "delete")
-      violations.push({
-        ...at,
-        rule: "pool-container-attachment-change",
-        change: [
-          `bindings.${binding.sid}: ${binding.action === "create" ? "absent -> present" : "present -> absent"}`,
-        ],
-        why: "The binding attaches the application to its Durable Object namespace; changing it makes Alchemy recreate the application.",
-        fix: "Keep the Worker binding that attaches the root container exactly as recorded.",
-      });
+  // The pool's own restart refuses for good once the application's version or settings move, so
+  // a release that relies on it may not touch the root's row in any way.
+  if (policy.poolContainer.noop && node.action !== "noop")
+    violations.push({
+      ...at,
+      rule: "pool-container-not-noop",
+      change: [
+        `$action: noop -> ${node.action}`,
+        ...propChanges(before, props),
+        ...node.bindings
+          .filter((binding) => binding.action !== "noop")
+          .map((binding) => `bindings.${binding.sid}: ${binding.action}`),
+      ],
+      why: "This release relies on the pool restarting its runtime, which refuses for good once the root application's version or settings differ from its stored proof; even a hash-only update is a row the plan cannot prove harmless.",
+      fix: "Find why the root's row plans as changed (the planned reasons name it) and settle it in its own reviewed step before this release.",
+    });
+  const recordedAttachments = new Map(
+    recordedBindings(node).map((binding) => [binding.sid, binding.data]),
+  );
+  for (const binding of node.bindings) {
+    if (binding.action === "noop") continue;
+    // A value unknown until another row resolves, or none at all, is not a planned change: the plan
+    // cannot see it, and the wire guard refuses any PATCH or rollout of the root it would cause.
+    const changes =
+      binding.action === "update"
+        ? propChanges(recordedAttachments.get(binding.sid), binding.data, [
+            "bindings",
+            binding.sid,
+          ]).filter((line) => !line.includes("<unresolved>"))
+        : [];
+    if (binding.action === "update" && changes.length === 0) continue;
+    violations.push({
+      ...at,
+      rule: "pool-container-attachment-change",
+      change:
+        binding.action === "create" || binding.action === "delete"
+          ? [
+              `bindings.${binding.sid}: ${binding.action === "create" ? "absent -> present" : "present -> absent"}`,
+            ]
+          : changes,
+      // The root's own restart proof records the application's version and settings digest; it
+      // refuses for good once either moves, and only a stopped container can be restarted.
+      why:
+        binding.action === "update"
+          ? "A changed attachment makes Alchemy patch the root application, which moves its version: the pool's own restart then refuses for good, and the root cannot be restarted by any path."
+          : "The binding attaches the application to its Durable Object namespace; changing it makes Alchemy recreate the application.",
+      fix: "Keep the Worker binding that attaches the root container exactly as recorded; find why it plans as changed (the reasons print the paths) before any release.",
+    });
+  }
   return violations;
 }
 

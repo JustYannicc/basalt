@@ -19,6 +19,7 @@ import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
+import type { StageScope } from "./stage-writes.ts";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
@@ -52,6 +53,8 @@ const { positionals, values } = parseArgs({
     light: { type: "boolean" },
     to: { type: "string" },
     "root-boot": { type: "string" },
+    within: { type: "string" },
+    "allow-not-serving": { type: "boolean" },
   },
 });
 const command = positionals[0] ?? "";
@@ -152,30 +155,62 @@ if (command === "boot" || command === "accept") {
   try {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
-    const { runAcceptance, servingBoot } = await import("./acceptance.ts");
+    const { awaitRootRestart, NOT_SERVING, runAcceptance, servingBoot } =
+      await import("./acceptance.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
       : new PoolAcceptanceClient();
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
-      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client);
+      // Only a release that declares a root restart may start on a pool that does not answer.
+      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client).catch(
+        (error: unknown) => {
+          if (values["allow-not-serving"]) return NOT_SERVING;
+          throw error;
+        },
+      );
       await output(resolve(values.out ?? ""), { boot });
-      await summary("The root's boot is recorded before the apply.");
+      await summary(
+        boot === NOT_SERVING
+          ? "The pool does not answer before the apply; this release declares a root restart."
+          : "The root's boot is recorded before the apply.",
+      );
       process.exit(0);
     }
-    const rootBoot = values["root-boot"]
+    let rootBoot = values["root-boot"]
       ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
           JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
         ).boot
       : undefined;
     const expect = values.expect ?? "same-boot";
-    if (!["same-boot", "two-runtimes", "any"].includes(expect))
+    if (!["same-boot", "two-runtimes", "any", "restart"].includes(expect))
       throw new Error(`Unknown --expect ${expect}`);
+    if (rootBoot === NOT_SERVING && expect !== "restart")
+      throw new Error(
+        "The pool did not answer before the apply, and this release declares no restart",
+      );
+    let restart: { waitedMs: number; reads: number } | undefined;
+    if (expect === "restart") {
+      // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
+      // controller's recovery starts a new one inside its own startup budget.
+      const within = Number(values.within);
+      if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot)
+        throw new Error("--expect restart needs --root-boot and --within <60..900 seconds>");
+      const healed = await awaitRootRestart({
+        apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+        before: rootBoot,
+        withinMs: within * 1000,
+        client,
+      });
+      rootBoot = healed.boot;
+      restart = { waitedMs: healed.waitedMs, reads: healed.reads };
+    }
     const result = await runAcceptance({
       apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
       ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
-      expect: expect as "same-boot",
+      // After a declared restart, every request must be served by the one new boot.
+      expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
       client,
     });
@@ -186,6 +221,7 @@ if (command === "boot" || command === "accept") {
       failed: result.failures.length,
       runtimes: result.boots.length,
       firstByteMs: result.firstByteMs,
+      ...(restart ? { restart } : {}),
     };
     if (values.out) await output(resolve(values.out), view);
     await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);
@@ -270,7 +306,8 @@ const {
   remainingRows,
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
-const { everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
+const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
+const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -329,12 +366,39 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
           deletable,
+          stage: undefined as StageScope | undefined,
+          // Reads of production send nothing but reads; the guard refuses anything else.
+          readOnly:
+            stage === "production" &&
+            ["plan", "preflight", "snapshot", "serving"].includes(command),
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
         const guarded = Effect.gen(function* () {
           yield* WireGuard.selfTest();
           yield* storeCannotBootstrap;
+          // A disposable stage shares the account, token and State store with production: from here
+          // on every write it sends must target what its own State rows record or this run creates.
+          if (stage !== "production") {
+            const store = yield* Alchemist.State.store({
+              backend: "configured",
+              ...target,
+            } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+            const stack = yield* stackName();
+            wire.stage = {
+              stack,
+              stage,
+              label: stage.replace(/^test-/u, ""),
+              databases: process.env.TEST_STAGE_DATABASE ? [process.env.TEST_STAGE_DATABASE] : [],
+              owned: ownIdentities(
+                yield* stageRows(store as never, stack, stage) as Fx.Effect<
+                  unknown[],
+                  unknown,
+                  never
+                >,
+              ),
+            };
+          }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
             wire.sqliteClasses[yield* scriptName(fqn)] = classes;
           for (const fqn of policy?.wire.expectLiveModule ?? []) {
@@ -459,7 +523,16 @@ try {
             new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
           );
         tracker.setPhase("plan");
-        const snapshot = yield* planOf("deploy");
+        let snapshot = yield* planOf("deploy");
+        // A build this job has not run plans as changed (its output is missing), and so does every
+        // Worker bundled from it. Build first, then check the plan of what is really there.
+        const builds = yield* buildSteps(snapshot.native);
+        if (builds.length > 0) {
+          tracker.setPhase("build");
+          for (const step of builds) yield* runReleaseStep(step);
+          tracker.setPhase("plan");
+          snapshot = yield* planOf("deploy");
+        }
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);

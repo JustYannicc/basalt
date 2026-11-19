@@ -126,6 +126,20 @@ test("a move State already records on the Worker is history, in a code-only rele
   );
 });
 
+test("a root attachment that resolves to another namespace is refused, path by path", async (context) => {
+  const rows = productionRows();
+  // State recorded another namespace than the one PoolWorker now hosts the class in.
+  const root = rows.PoolContainer as unknown as { bindings: { sid: string; data: unknown }[] };
+  root.bindings = [
+    { sid: "PoolContainer", data: { durableObjects: { namespaceId: "namespace-elsewhere" } } },
+  ];
+  const { plan } = await planned(context, { rows });
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, ["pool-container-attachment-change PoolContainer"]);
+  assert.match(message, /bindings\.PoolContainer\.durableObjects\.namespaceId/u);
+  assert.match(message, /restart then refuses for good/u);
+});
+
 test("a root container declared by build context is refused", async (context) => {
   const { plan } = await planned(context, { declared: { container: { context: buildContext } } });
   const { rules, message } = await refused(plan);
@@ -441,4 +455,54 @@ test("the plan digest is stable for the same inputs and moves with the plan", as
 test("a policy with an unknown key or an unpinned image is not decoded", async () => {
   await assert.rejects(policy({ removal: [] }));
   await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: "pool:latest" } }));
+});
+
+test("a Worker binding whose value waits on another row is not a removal", async () => {
+  const { literal } = await import("alchemy/Output");
+  const recorded = {
+    bindings: [{ type: "plain_text", name: "EXECUTOR_SITE_BUILD", text: "built" }],
+  };
+  const node = (data: unknown) => ({
+    action: "update",
+    resource: { FQN: "Dashboard", Type: "Cloudflare.Worker", Props: {} },
+    props: {},
+    state: {
+      status: "updated",
+      props: {},
+      bindings: [{ sid: "EXECUTOR_SITE_BUILD", data: recorded }],
+    },
+    bindings: [{ sid: "EXECUTOR_SITE_BUILD", action: "update", data }],
+  });
+  const plan = (data: unknown) =>
+    ({
+      resources: { Dashboard: node(data) },
+      deletions: {},
+      actions: {},
+      actionDeletions: {},
+    }) as never;
+  // The site build's hash is not known until the build row resolves.
+  const exit = await Effect.runPromiseExit(
+    checkPlan(plan({ bindings: literal([]) }), await policy({ mode: "code-only" })),
+  );
+  const rules = Exit.isFailure(exit)
+    ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => v.rule)
+    : [];
+  assert.ok(!rules.includes("worker-binding-removed"), rules.join(", "));
+  // Resolved to nothing, it is still the removal it always was.
+  assert.ok(
+    (await refused(plan({ bindings: [] }), { mode: "code-only" })).rules.includes(
+      "worker-binding-removed Dashboard",
+    ),
+  );
+});
+
+test("a healing release refuses any row on the root, even a hash-only update", async (context) => {
+  const { plan } = await planned(context);
+  assert.equal(plan.resources.PoolContainer?.action, "update");
+  const healing = { poolContainer: { fqn: "PoolContainer", image: pinnedImage, noop: true } };
+  const { rules, message } = await refused(plan, healing);
+  assert.deepEqual(rules, ["pool-container-not-noop PoolContainer"]);
+  assert.match(message, /\$action: noop -> update/u);
+  // Without the flag the same hash-only update is admitted, as before.
+  assert.ok((await admitted(plan)).includes("update PoolContainer"));
 });

@@ -1,0 +1,47 @@
+{
+  "description": "The code-only release that heals a pool whose runtime runs but refuses: exactly the code policy, plus a stated root restart. The new controller code stops that runtime gracefully and its recovery starts a new one, so acceptance waits for the new boot and then requires every request on it. A failure is not rolled back: the code before it could not restart the pool.",
+  "check": {
+    "mode": "code-only",
+    "protected": {
+      "fqns": [
+        "PoolContainer",
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+        "PoolRuntime",
+        "VaultAttachments",
+        "PublicSiteWaitlist",
+        "PoolObservationSecrets",
+        "PoolProviderObservationToken",
+        "ArtifactsCredentials"
+      ],
+      "types": [
+        "Cloudflare.Hyperdrive",
+        "Planetscale.*",
+        "Cloudflare.R2.Bucket",
+        "Cloudflare.D1Database",
+        "Cloudflare.SecretsStore"
+      ]
+    },
+    "removals": [],
+    "poolContainer": {
+      "fqn": "PoolContainer",
+      "image": "",
+      "noop": true
+    },
+    "poolWorker": "PoolWorker",
+    "artifactsCredentials": "ArtifactsCredentials",
+    "allow": []
+  },
+  "wire": {
+    "sqliteClasses": {}
+  },
+  "acceptance": {
+    "rootRestart": {
+      "withinSeconds": 420,
+      "why": "About 60 s for the fix to act, a graceful stop of up to 30 s, one recovery pass of up to 200 s (startup allows 180 s), and the peer bootstrap and membership pass before the pool serves."
+    }
+  },
+  "env": {
+    "POOL_FLEET_CLASSES": "absent"
+  }
+}

@@ -12,13 +12,27 @@ export const ReleasePolicy = Schema.Struct({
   check: Schema.Struct({
     ...checkFields,
     // The pin carries the account id, so the file leaves it empty and the run supplies it.
-    poolContainer: Schema.Struct({ fqn: poolContainer.fields.fqn, image: Schema.Literal("") }),
+    poolContainer: Schema.Struct({
+      fqn: poolContainer.fields.fqn,
+      image: Schema.Literal(""),
+      noop: poolContainer.fields.noop,
+    }),
   }),
   include: Schema.optional(Schema.Array(Schema.String)),
   wire: Schema.Struct({
     sqliteClasses: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     expectLiveModule: Schema.optional(Schema.Array(Schema.String)),
   }),
+  /**
+   * A release that declares the root will restart, because its own code restarts a runtime that
+   * runs but refuses. Acceptance waits for the new boot within this bound, then requires every
+   * request on it; a failure is not rolled back to code that could not heal the pool.
+   */
+  acceptance: Schema.optional(
+    Schema.Struct({
+      rootRestart: Schema.Struct({ withinSeconds: Schema.Number, why: Schema.String }),
+    }),
+  ),
   // Only the cutover's declaration switches; a policy never supplies other configuration.
   env: Schema.Struct({
     POOL_FLEET_BUILD: Schema.optional(Schema.Literal("true")),

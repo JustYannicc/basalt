@@ -19,6 +19,12 @@ import { Cause, Data, Deferred, Effect, Exit, Layer, Schema } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import {
+  createdIdentities,
+  stageWriteVerdict,
+  type StageScope,
+  type StageVerdict,
+} from "./stage-writes.ts";
 
 export class WireRefused extends Data.TaggedError("WireRefused")<{
   readonly resource: string;
@@ -68,6 +74,10 @@ export interface WireGuardConfig {
    * resources it deletes. A delete of exactly one of them is admitted; every other stays refused.
    */
   readonly deletable?: ReadonlyArray<{ readonly kind: string; readonly id: string }>;
+  /** A disposable stage: every write must target what the stage owns (`stage-writes.ts`). */
+  readonly stage?: StageScope;
+  /** A read of production (plan, preflight, counts): every method but GET and HEAD is refused. */
+  readonly readOnly?: boolean;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -100,6 +110,14 @@ const REASONS = {
   store: [
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
     "Upgrade or bootstrap the store by hand under its own approval.",
+  ],
+  readonly: [
+    "This run only reads production, so it sends nothing but reads; this request would write.",
+    "Find what tried to write during a read. A plan, preflight or count never writes.",
+  ],
+  stage: [
+    "A disposable stage shares the account, the deploy token and the State store with production, so it may write only what it owns: what its own State rows record, what this run created, or what is named for the stage. This target is none of those, or the guard cannot place it.",
+    "If the target is the stage's, name it for the stage or let the stage create it. If it is a new kind of write, teach stage-writes.ts to place it. Never point a stage at a shared resource.",
   ],
 } as const;
 interface At {
@@ -371,6 +389,107 @@ const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: A
       );
   });
 
+const authHeaders = (request: Request) => {
+  const headers = new Headers();
+  for (const name of ["authorization", "x-auth-email", "x-auth-key"]) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  return headers;
+};
+
+/**
+ * A Worker or Workflow name the stage's State does not record: Cloudflare places it. Absent means
+ * this run creates it; present, it must carry this stage's Alchemy tags (a Worker) or run on a
+ * Worker the stage owns (a Workflow). Anything unreadable is refused.
+ */
+const proveStageName = (
+  scope: StageScope,
+  isOwned: (value: string) => boolean,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  verdict: Extract<StageVerdict, { kind: "prove" }>,
+) =>
+  Effect.gen(function* () {
+    const at = url.pathname.search(/\/accounts\//u);
+    const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
+    const base = `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+    const name = encodeURIComponent(verdict.name);
+    const read =
+      verdict.family === "Worker"
+        ? `${base}/workers/scripts/${name}/settings`
+        : `${base}/workflows/${name}`;
+    const response = yield* Effect.promise(() =>
+      inner(read, { headers: authHeaders(request) }).catch(() => undefined),
+    );
+    if (response?.status === 404) return;
+    const body = response?.ok
+      ? ((yield* Effect.promise(() => response.json().catch(() => null))) as {
+          result?: { tags?: unknown; script_name?: unknown };
+        } | null)
+      : null;
+    const tags = Array.isArray(body?.result?.tags) ? body.result.tags : [];
+    const owner = body?.result?.script_name;
+    const ours =
+      verdict.family === "Worker"
+        ? tags.includes(`alchemy:stack:${scope.stack}`) &&
+          tags.includes(`alchemy:stage:${scope.stage}`)
+        : typeof owner === "string" && isOwned(owner);
+    if (!ours)
+      return yield* refuse(
+        {
+          resource: `${verdict.family} ${verdict.name}`,
+          method: request.method,
+          path: template(apiPath(url.pathname)),
+        },
+        "stage",
+        "owner",
+        response ? `HTTP ${response.status}` : "unreadable",
+      );
+  });
+
+/** The stage rule, before every other check: what the write targets must be the stage's own. */
+const stageGate = (
+  config: WireGuardConfig,
+  ownedHere: Set<string>,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  path: string,
+) =>
+  Effect.gen(function* () {
+    const scope = config.stage;
+    const method = request.method.toUpperCase();
+    if (!scope || method === "GET" || method === "HEAD") return undefined;
+    // Alchemy's read of the store token and the self-test's own probe have their own checks.
+    if (STATE_STORE_PREVIEW.test(path) || path.endsWith(`/workers/scripts/${PROBE_SCRIPT}`))
+      return undefined;
+    const body = (request.headers.get("content-type") ?? "").includes("json")
+      ? yield* Effect.promise(() =>
+          request
+            .clone()
+            .json()
+            .catch(() => undefined),
+        )
+      : undefined;
+    const isOwned = (value: string) => scope.owned.includes(value) || ownedHere.has(value);
+    const verdict = stageWriteVerdict(scope, isOwned, method, url, body);
+    if (verdict.kind === "refuse")
+      return yield* refuse(
+        { resource: verdict.resource, method, path: template(path) },
+        "stage",
+        verdict.field,
+        url.pathname,
+      );
+    if (verdict.kind === "prove") {
+      yield* proveStageName(scope, isOwned, inner, request, url, verdict);
+      ownedHere.add(verdict.name);
+      return undefined;
+    }
+    return verdict.creates ? { body } : undefined;
+  });
+
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
@@ -394,6 +513,14 @@ const check = (
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
     if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))
       return yield* checkStoreCredentialRead(request, at("State store", "edge-preview"));
+    // Alchemy's read of the store token above is the one write-shaped request a read may send.
+    if (
+      config.readOnly &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !path.endsWith(`/workers/scripts/${PROBE_SCRIPT}`)
+    )
+      return yield* refuse(at("request", "{id}"), "readonly", "method", method);
     if (
       method !== "GET" &&
       method !== "HEAD" &&
@@ -446,13 +573,21 @@ export const install = (config: WireGuardConfig = {}) =>
     const created = new Set<string>();
     // Ids an application read named as the root's, whatever id State recorded.
     const held = new Set<string>();
+    // What this run created on a disposable stage: its own from here on.
+    const ownedHere = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       const path = apiPath(url.pathname);
       journal.push({ method: request.method, host: url.host, path: template(path) });
-      const exit = await Effect.runPromiseExit(check(config, created, held, inner, request, path));
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const creates = yield* stageGate(config, ownedHere, inner, request, url, path);
+          yield* check(config, created, held, inner, request, path);
+          return creates;
+        }),
+      );
       if (Exit.isFailure(exit)) {
         const error = Cause.squash(exit.cause);
         // The self-test's own probe is refused on purpose and must not end the run.
@@ -461,6 +596,15 @@ export const install = (config: WireGuardConfig = {}) =>
         throw error;
       }
       const response = await inner(request);
+      if (exit.value && response.ok)
+        for (const name of createdIdentities(
+          await response
+            .clone()
+            .json()
+            .catch(() => null),
+          exit.value.body,
+        ))
+          ownedHere.add(name);
       // Only a create of an application (a POST to the collection itself) feeds the created set.
       if (request.method === "POST" && response.ok && path.endsWith("/containers/applications")) {
         const decoded = Schema.decodeUnknownExit(Created)(
