@@ -147,3 +147,38 @@ test(
     assert.equal(f.old.calls.destroy, 0);
   },
 );
+
+test(
+  "the stuck record heals by itself when its pool policy expired long ago, as production's has",
+  { timeout: 30_000 },
+  async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    context.mock.method(console, "info", () => {});
+    const errors = context.mock.method(console, "error", () => {});
+    const { previous, epoch } = await stuckOverRunningContainer(f);
+    // Production's six-account pool: clean, expired since a few seconds after the latch, never
+    // renewed, because every install and Home call since was refused.
+    now += 3_600_000;
+    await passes(f, 1);
+    await assertStuck(f, previous, epoch);
+    now += unservingBoundMs;
+    try {
+      await assertHealed(f, previous, epoch);
+    } catch (error) {
+      const lines = errors.mock.calls
+        .map((call) =>
+          call.arguments
+            .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+            .join(" "),
+        )
+        .filter((line) => !/^POOL_RUNTIME_ENDPOINT_FAILURE/u.test(line))
+        .slice(-20)
+        .join("\n");
+      throw new Error(`${String(error)}\n${lines}`, { cause: error });
+    }
+    assert.deepEqual(f.old.calls.signals, [15]);
+  },
+);
