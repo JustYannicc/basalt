@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import pathlib
 import re
 import unittest
+from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -76,13 +78,40 @@ class StopGraceTests(unittest.TestCase):
         process = SimpleNamespace(
             poll=lambda: None, terminate=Mock(), kill=Mock(), wait=lambda timeout=None: waits.append(timeout)
         )
-        with patch.object(supervisor, "current_deadline", return_value=None):
-            supervisor.terminate_children([SimpleNamespace(process=process)])
+        with patch.object(supervisor, "current_deadline", return_value=None), redirect_stderr(io.StringIO()):
+            supervisor.terminate_children([SimpleNamespace(name="home", process=process)])
         self.assertGreaterEqual(waits[0], supervisor.CHILD_STOP_GRACE_SECONDS - 1)
         self.assertGreaterEqual(waits[0], 59)
 
 
+    def test_the_stop_grace_is_read_by_name(self) -> None:
+        waits: list[float] = []
+        process = SimpleNamespace(
+            poll=lambda: None, terminate=Mock(), kill=Mock(), wait=lambda timeout=None: waits.append(timeout)
+        )
+        with patch.object(supervisor, "current_deadline", return_value=None), patch.object(
+            supervisor, "CHILD_STOP_GRACE_SECONDS", 7
+        ), redirect_stderr(io.StringIO()):
+            supervisor.terminate_children([SimpleNamespace(name="home", process=process)])
+        self.assertTrue(6 <= waits[0] <= 7, waits)
+
+    def test_a_kill_at_the_grace_bound_is_reported(self) -> None:
+        process = SimpleNamespace(poll=lambda: None, terminate=Mock(), kill=Mock(), wait=lambda timeout=None: None)
+        stderr = io.StringIO()
+        with patch.object(supervisor, "current_deadline", return_value=None), redirect_stderr(stderr):
+            supervisor.terminate_children([SimpleNamespace(name="home", process=process)])
+        process.kill.assert_called_once()
+        self.assertIn('POOL_CHILD_KILLED {"child":"home"}', stderr.getvalue())
+
+
 class RejectedRefreshSignalTests(unittest.TestCase):
+    def test_a_drain_that_gave_up_is_forwarded_as_a_count(self) -> None:
+        self.assertEqual(
+            safe_child_output_line("home", self.line("credential refresh drain timed out in_flight=2")),
+            'POOL_HOME_REFRESH_DRAIN_TIMEOUT {"in_flight":2}',
+        )
+        self.assertIsNone(safe_child_output_line("home", self.line("credential refresh drain timed out in_flight=2 auth=x")))
+
     def line(self, message: str) -> str:
         return f"[CLIProxyAPIHome] [2026-11-19 00:00:00] [--------] [warn ] {message}"
 

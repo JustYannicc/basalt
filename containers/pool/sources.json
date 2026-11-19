@@ -279,7 +279,7 @@
         {
           "identity": "cliproxy-home-safe-stop",
           "file": "0695-home-safe-stop.patch",
-          "sha256": "553d77fb0060e8ab1c60b73895faac31e72584f6c51210f300032a7bc04a561e",
+          "sha256": "a4511839d43f86609e9b01891d4310ccaf5d7973d21c831beb34f0e10dbdafe3",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0695 makes a stopping Home keep a refresh token the provider already rotated. Retire when the pinned Home never cancels a claimed provider refresh call when its caller goes away, drains claimed refreshes on SIGTERM within a bounded wait and starts no new one meanwhile, reports refresh_in_flight on its database-free /healthz, logs a provider rejection naming the credential only by an opaque reference and a closed reason, and passes the cancelled-caller, drain, refused-while-draining and rejection-line regressions."
