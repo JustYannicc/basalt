@@ -9,6 +9,8 @@ export const cloudflareFamilyAdoptionReasons = [
   "acquisition-outside-selection",
   "provider-keyed-oauth-client",
   "link-unresolved",
+  "release-in-flight",
+  "deploy-in-flight",
   "reviewed-plan-changed",
   "write-count-changed",
   "post-write-checks-failed",

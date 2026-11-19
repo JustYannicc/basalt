@@ -37,12 +37,30 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts 
      return {
        format: "basalt-production-ops-failure-v1",
        category: "refused",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,4 +1,5 @@
+ import { poolAssociationRepairV1 } from "./migrations/pool-association-repair-v1.ts";
++import { cloudflareFamilyAdoptionV1 } from "./migrations/cloudflare-family-adoption-v1.ts";
+ import { googleDuplicateBindingsV1 } from "./migrations/google-duplicate-bindings-v1.ts";
+ import { atlassianFamilyAdoptionV1 } from "./migrations/atlassian-family-adoption-v1.ts";
+ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-identity-v1.ts";
+@@ -11,6 +12,7 @@ import type { ProductionMigration } from "./contracts.ts";
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
+   [poolAssociationRepairV1.name]: poolAssociationRepairV1,
++  [cloudflareFamilyAdoptionV1.name]: cloudflareFamilyAdoptionV1,
+   [atlassianFamilyAdoptionV1.name]: atlassianFamilyAdoptionV1,
+   [releasedRetirementV1.name]: releasedRetirementV1,
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,343 @@
 +import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
++import { catalogAppSweepPending } from "@executor-js/hosted-server/catalog-app-upgrades";
 +import { familyProviderIdentity } from "@executor-js/hosted-server/provider-account-definitions";
 +import { identifyProvider } from "@executor-js/sdk/core";
 +import { Crypto, Data, Effect, Option, Schema } from "effect";
@@ -74,6 +92,8 @@ new file mode 100644
 +  "acquisition-outside-selection",
 +  "provider-keyed-oauth-client",
 +  "link-unresolved",
++  "release-in-flight",
++  "deploy-in-flight",
 +  "reviewed-plan-changed",
 +  "write-count-changed",
 +  "post-write-checks-failed",
@@ -170,6 +190,12 @@ new file mode 100644
 +            sql`select to_jsonb(a) as row from executor_apps a where a.owner = ${owner} and ${sql.in("a.active_deployment", versions)}`,
 +          ),
 +    );
++    // A deploy that read the retained ref before this commits could write it back. Release sweeps
++    // redeploy catalog apps; any deploy reserves its order before it reads the active version.
++    if (yield* catalogAppSweepPending(input.organization))
++      return yield* refuse("release-in-flight");
++    if (apps.some((row) => Number(row.deploy_sequence) > Number(row.activated_sequence)))
++      return yield* refuse("deploy-in-flight");
 +
 +    // A sign-in still in progress would finish under the ref this adoption retires.
 +    const live = yield* sql`select id from executor_account_connections where owner = ${owner}
@@ -514,23 +540,26 @@ new file mode 100644
 +  beforeSha256: sha256(canonical(before)),
 +  afterSha256: sha256(canonical(after)),
 +});
-diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
---- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-+++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-@@ -1,4 +1,5 @@
- import { poolAssociationRepairV1 } from "./migrations/pool-association-repair-v1.ts";
-+import { cloudflareFamilyAdoptionV1 } from "./migrations/cloudflare-family-adoption-v1.ts";
- import { googleDuplicateBindingsV1 } from "./migrations/google-duplicate-bindings-v1.ts";
- import { atlassianFamilyAdoptionV1 } from "./migrations/atlassian-family-adoption-v1.ts";
- import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-identity-v1.ts";
-@@ -11,6 +12,7 @@ import type { ProductionMigration } from "./contracts.ts";
- /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
- export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
-   [poolAssociationRepairV1.name]: poolAssociationRepairV1,
-+  [cloudflareFamilyAdoptionV1.name]: cloudflareFamilyAdoptionV1,
-   [atlassianFamilyAdoptionV1.name]: atlassianFamilyAdoptionV1,
-   [releasedRetirementV1.name]: releasedRetirementV1,
-   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
+diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+--- a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+@@ -3,6 +3,16 @@ import { SqlClient } from "effect/sql";
+ import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { catalogAppRelease } from "./catalog-app-release.ts";
+ 
++/** Whether a release's catalog app sweep for the organization is queued or still running. */
++export const catalogAppSweepPending = (organization: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const jobs = yield* sql`select id from hosted_provisioning
++      where organization_id = ${organization} and status in ('queued', 'running')
++        and left(id, length(${catalogAppJobPrefix})) = ${catalogAppJobPrefix}`;
++    return jobs.length !== 0;
++  });
++
+ /**
+  * Once per Basalt release, queue one sweep per organization that holds a copy of the feed's apps,
+  * run as a member who can manage apps. Jobs wait for the replacement server, as pool upgrades do.
 diff --git a/apps/hosted/server/src/implementation/provider-account-definitions.ts b/apps/hosted/server/src/implementation/provider-account-definitions.ts
 --- a/apps/hosted/server/src/implementation/provider-account-definitions.ts
 +++ b/apps/hosted/server/src/implementation/provider-account-definitions.ts
@@ -545,3 +574,26 @@ diff --git a/apps/hosted/server/src/implementation/provider-account-definitions.
 +    const declaration = yield* providerDeclaration(providers[lab]);
 +    return yield* identifyProvider(declaration, yield* Crypto.Crypto);
 +  });
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -700,7 +700,18 @@ export const makeApps = (
+           if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
+           const createdAt = new Date(yield* Clock.currentTimeMillis);
+           const promote = existing === undefined || sequence > existing.activatedSequence;
+-          const storedEntries = yield* storeProviders(tx, crypto, entries);
++          // Refs continue from the active version as it is under this lock, not as the build read
++          // it: a production migration may have moved the lineage's ref meanwhile.
++          const chosen =
++            existing === undefined
++              ? entries
++              : yield* chooseProviderIds(
++                  tx,
++                  crypto,
++                  entries,
++                  (yield* project(tx, existing)).requirements.accounts,
++                );
++          const storedEntries = yield* storeProviders(tx, crypto, chosen);
+           const accounts = yield* Effect.forEach(storedEntries, ({ slot, provider }) => {
+             const required = requirements.accounts[slot];
+             return required === undefined

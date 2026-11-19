@@ -272,17 +272,38 @@ selection must be exact. Take `to` from the requirement of an app that already d
 current Cloudflare provider. The runtime derives the family ref from the host's
 Cloudflare declaration, refuses a `to` that differs, and refuses a `from` whose
 stored definition is a different provider. An organization with several
-retained Cloudflare refs needs one adoption per ref. Hold Cloudflare app updates
-during the GO window: a version deployed from requirements read before the
-adoption commits would name `from` again, and verification would fail. It also
-refuses a sign-in still in progress, an acquisition outside the selection and an
-OAuth client saved under the retained ref. The dry run lists each account,
-version and connection with its before and after hashes, the apps whose versions
-move, the links it keeps and the apps already on `to` that start offering the
-moved accounts. Review those app IDs before the GO.
+retained Cloudflare refs needs one adoption per ref. It also refuses a sign-in
+still in progress, an acquisition outside the selection and an OAuth client
+saved under the retained ref. The dry run lists each account, version,
+connection and acquisition with its before and after hashes, the apps whose
+versions move, the links it keeps and the apps already on `to` that start
+offering the moved accounts. Review those app IDs before the GO.
 Account IDs, credentials, generations and links never change; provider rows are
 only read. Apply with the standard saved-plan GO. Verification checks that
 nothing still names `from` and that every kept link resolves to the family ref.
+
+A deploy that read the app's active version before the GO commits could write
+`from` back. The dry run and the GO itself (the apply re-inspects inside its
+transaction) refuse while either of these is true, read from the same database:
+
+- `release-in-flight`: a release's catalog app sweep for the organization is
+  still `queued` or `running` (`hosted_provisioning`, ID prefix
+  `basalt-catalog-apps:`). Wait for it, then dry-run again.
+- `deploy-in-flight`: an app whose active version names `from` has reserved a
+  deploy that has not activated (`executor_apps.deploy_sequence` is above
+  `activated_sequence`). Wait for the deploy to finish, then dry-run again. A
+  deploy that failed keeps reading this way until the app's next successful
+  deploy; update the app once, then dry-run again.
+
+Deploys also choose provider refs again under their final app lock, so a deploy
+that overlaps the GO in any other way writes the family ref. The GO is done
+only after two more dry runs with the same request and `"accounts": []`: one
+right after the GO, and one after the first deploy of the organization's
+Cloudflare apps that finishes later (the next release's catalog sweep, or an
+update). Each must report `changes: 0`. Any other result means something names
+`from` again: `account-set-changed` means an account was saved under it (list
+it with the `accounts` inventory and adopt it with a new exact selection), and
+a plan with changes lists the versions to move; review it and GO it.
 
 ## Retire redundant Google bindings
 
