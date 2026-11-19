@@ -215,8 +215,9 @@ async function main() {
       ? ["## Published OAuth metadata could not be read", "", ...unavailable.map((l) => `- ${l}`)]
       : []),
   ].join("\n");
-  console.log(report || "Every published OAuth metadata document matches its reviewed pin.");
-  if (values.summary) appendFileSync(values.summary, `${report}\n`);
+  const text = report || "Every published OAuth metadata document matches its reviewed pin.";
+  console.log(text);
+  if (values.summary) appendFileSync(values.summary, `${text}\n`);
   if (values.repin !== undefined) {
     for (const item of drift) repinMetadata(directory, item);
     // Without a change the PR step finds nothing to commit; it still reads a body.
