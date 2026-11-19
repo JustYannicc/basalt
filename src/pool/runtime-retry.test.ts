@@ -312,3 +312,41 @@ test("a caller that leaves during the wait ends it", async () => {
   assert.equal(attempts, 3);
   assert.equal(clock.pauses.length, 3);
 });
+
+for (const [method, path, status, retry, upgrade] of [
+  ["POST", "/v1/messages", 503, true, false],
+  ["POST", "/v1/responses", 503, true, false],
+  ["POST", "/v1/responses", 503, true, true],
+  ["GET", "/v1/videos/video_1", 503, true, false],
+  ["POST", "/v1/images/generations", 502, false, false],
+  ["POST", "/v1/images/generations", 502, false, true],
+  ["POST", "/v1/videos", 502, false, false],
+] as const)
+  test(`a runtime crash after ${method} ${path}${upgrade ? " with an upgrade header" : ""} was accepted ${retry ? "asks for a retry" : "keeps the cautious answer"}`, async () => {
+    let sends = 0;
+    const response = await forwardRecoverably(
+      new Request(`http://pool${path}`, {
+        method,
+        ...(method === "POST" ? { body: "{}" } : {}),
+        ...(upgrade ? { headers: { Upgrade: "websocket" } } : {}),
+      }),
+      async (_request, dispatch) => {
+        sends++;
+        dispatch();
+        throw new Error("synthetic accepted runtime crash");
+      },
+      () => {},
+    );
+    assert.equal(sends, 1);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("x-should-retry"), retry ? null : "false");
+    assert.equal(response.headers.get("retry-after"), retry ? "1" : null);
+    // The step and reason join the client's request id to the endpoint trace either way.
+    assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), "fleet_forward");
+    assert.ok(response.headers.get("X-Signalbox-Runtime-Failure-Reason"));
+    const body = await response.json();
+    if (!retry) {
+      assert.equal(body.error.retryable, false);
+      assert.match(body.error.message, /outcome is unknown/);
+    }
+  });
