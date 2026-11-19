@@ -62,7 +62,7 @@
     "src/pool/runtime-provider.test.ts": 3
   },
   "basalt/no-node-test-doubles": {
-    "scripts/catalog-oauth-evidence.test.ts": 3,
+    "scripts/catalog-oauth-evidence.test.ts": 1,
     "scripts/catalog-source-check.test.ts": 1,
     "scripts/pool-tests/bulk-progress.test.ts": 3,
     "scripts/pool-tests/gateway-history.test.ts": 2,
