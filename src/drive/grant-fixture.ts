@@ -37,11 +37,11 @@ const Stored = Schema.Array(Schema.Struct({ id: GrantId }));
 
 /** Kysely over the test's SQL client, so Better Auth writes the same database the drive reads. */
 const kyselyOver = (sql: SqlClient.SqlClient) => {
-  const run = <R>(statement: string, parameters: readonly unknown[] = []) =>
-    Effect.runPromise(sql.unsafe<R>(statement, parameters));
+  const run = (statement: string, parameters: readonly unknown[] = []) =>
+    Effect.runPromise(sql.unsafe(statement, parameters));
   const connection: DatabaseConnection = {
     executeQuery: async <R>(query: CompiledQuery): Promise<QueryResult<R>> => ({
-      rows: [...(await run<R>(query.sql, query.parameters))],
+      rows: [...(await run(query.sql, query.parameters))] as R[],
     }),
     streamQuery: () => {
       throw new Error("Grant storage never streams");
