@@ -16,6 +16,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stageEnvironment } from "../environment.ts";
+import { previewPoolDatabaseBranch } from "../../src/pool/database-settings.ts";
 import {
   deployStage,
   destroyStage,
@@ -134,6 +135,44 @@ async function runEntry(
   return { record, highlights: planHighlights(redact(text)) };
 }
 
+/**
+ * Rehearsal-only diagnostic: the pool database budget script once by itself, for this lane's
+ * database and pool branch, before the deploy. Its failure text goes to stdout, which the deploy's
+ * report drops, so the whole output stays in the private directory. It never fails the mode.
+ */
+async function budgetProbe(subject: StageSubject, source: NodeJS.ProcessEnv, outputs: string) {
+  const config = stageEnvironment(subject, source);
+  const env: NodeJS.ProcessEnv = {
+    PATH: source.PATH,
+    HOME: source.HOME,
+    PLANETSCALE_ORGANIZATION: source.PLANETSCALE_ORGANIZATION,
+    PLANETSCALE_API_TOKEN_ID: source.PLANETSCALE_API_TOKEN_ID,
+    PLANETSCALE_API_TOKEN: source.PLANETSCALE_API_TOKEN,
+    POOL_BUDGET_DATABASE: config.deploy.TEST_STAGE_DATABASE,
+    POOL_BUDGET_BRANCH: previewPoolDatabaseBranch(config.stage),
+  };
+  const started = Date.now();
+  const { code, output } = await new Promise<{ code: number | null; output: string }>((done) => {
+    const child = spawn("node", ["scripts/database-pool-budget.ts"], {
+      cwd: cloud,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += `[stdout] ${chunk.toString("utf8")}`));
+    child.stderr.on("data", (chunk: Buffer) => (output += `[stderr] ${chunk.toString("utf8")}`));
+    child.once("error", (error) =>
+      done({ code: null, output: `${output}[spawn] ${error.message}\n` }),
+    );
+    child.once("close", (status) => done({ code: status, output }));
+  });
+  await writeFile(
+    join(outputs, "budget-probe.txt"),
+    `database=${env.POOL_BUDGET_DATABASE} branch=${env.POOL_BUDGET_BRANCH} exit=${code} ms=${Date.now() - started}\n${output}`,
+    { mode: 0o600 },
+  );
+}
+
 /** The probe runs as its own process; it is stopped by the PID captured at spawn, never by pattern. */
 function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
   const child = spawn(
@@ -228,6 +267,7 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
   if (mode === "baseline") {
+    await budgetProbe(subject, source, outputs);
     const env: NodeJS.ProcessEnv = { ...source, ...declaration.baseline };
     try {
       await deployStage(root, subject, env);
