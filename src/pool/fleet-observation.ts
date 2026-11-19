@@ -15,11 +15,14 @@ export const poolObservationStore = () =>
  * props, so declaring them here makes a plain plan adopt it as a noop instead of orphaning it.
  * Its value is never bound: the Worker reads it from the Secrets Store.
  */
-export const poolObservationToken = (accountId: string, stage: string) =>
-  Cloudflare.ApiToken.AccountApiToken(
+export const poolObservationToken = (accountId: string, stage: string) => {
+  const token = Cloudflare.ApiToken.AccountApiToken(
     "PoolProviderObservationToken",
     poolObservationTokenProps(accountId, stage),
-  ).pipe(retain());
+  );
+  // Production keeps the token provisioning created; a disposable stage's token goes with the stage.
+  return stage === "production" ? token.pipe(retain()) : token;
+};
 
 /** Provisioning owns the secret value; deployment binds the account store and stable name. */
 export const bindPoolObservationSecret = (worker: Cloudflare.Worker) =>

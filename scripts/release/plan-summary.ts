@@ -1,4 +1,5 @@
 import { havePropsChanged } from "alchemy/Diff";
+import { Data } from "effect";
 import type * as AlchemyPlan from "alchemy/Plan";
 import { safeJson } from "./safe-json.ts";
 
@@ -55,12 +56,38 @@ export const changedRows = (snapshot: Snapshot) =>
  * on every deploy (`memo: false`) always plans as an update, so a command update is not a leftover.
  */
 export const remainingRows = (snapshot: Snapshot) =>
-  snapshot.resources
-    .filter(
-      (row) => row.action !== "noop" || row.bindings.some((binding) => binding.action !== "noop"),
-    )
-    .filter((row) => !(row.resourceType.startsWith("Command.") && row.action === "update"))
-    .map((row) => ({ fqn: row.fqn, type: row.resourceType, action: row.action }));
+  changedRows(snapshot)
+    .filter((row) => !(row.type.startsWith("Command.") && row.action === "update"))
+    .map(({ fqn, type, action, changedProps, bindings }) => ({
+      fqn,
+      type,
+      action,
+      changedProps,
+      bindings: bindings.map((binding) => binding.sid ?? "?"),
+    }));
+
+/**
+ * A plan that still wants changes right after its apply: the rows and the names of the properties
+ * and bindings that differ. Names come from our own source, so they are printed in public.
+ */
+export class ChangesRemainAfterApply extends Data.TaggedError("ChangesRemainAfterApply")<{
+  readonly check: "read-back";
+  readonly why: string;
+  readonly fix: string;
+  readonly remaining: readonly string[];
+}> {
+  static of(rows: ReturnType<typeof remainingRows>) {
+    return new ChangesRemainAfterApply({
+      check: "read-back",
+      why: "A fresh plan right after the apply still changes these rows, so the apply did not settle.",
+      fix: "Find the input that differs on every plan (a per-run value, or a command that always re-runs) and settle it at its source.",
+      remaining: rows.map(
+        (row) =>
+          `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"})`,
+      ),
+    });
+  }
+}
 
 /**
  * The deploy-time readiness command polls until the pool's Durable Object has adopted the new
@@ -89,12 +116,39 @@ const IDENTITY = [
   "indexName",
 ] as const;
 
-/** The names and ids of every resource a destroy plan deletes, read from their recorded rows. */
+// Each resource type, as the kind the wire guard names its delete path by.
+const KINDS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^Cloudflare\.Worker$/u, "Worker"],
+  [/^Cloudflare\.Container/u, "container application"],
+  [/^Cloudflare\.R2\./u, "R2 bucket"],
+  [/^Cloudflare\.D1/u, "D1 database"],
+  [/^Cloudflare\.Hyperdrive/u, "Hyperdrive config"],
+  [/^Cloudflare\.KV/u, "KV namespace"],
+  [/^Cloudflare\.Queue/u, "Queue"],
+  [/^Cloudflare\.Vectorize/u, "Vectorize index"],
+  [/^Cloudflare\.Workflow/u, "Workflow"],
+  [/^Cloudflare\.SecretsStore/u, "Secrets Store store"],
+  [/^Cloudflare\.ApiToken\./u, "API token"],
+  [/^Planetscale\.(?:Postgres)?Database$/u, "PlanetScale database"],
+];
+
+/**
+ * Every resource a destroy plan deletes, as the kind and the names and ids its recorded row holds.
+ * A type with no kind yields nothing, so its delete stays refused and the destroy says which.
+ */
 export const destroyTargets = (plan: AlchemyPlan.Plan) =>
   [...Object.values(plan.resources), ...Object.values(plan.deletions)].flatMap((node) => {
     if (!node || (node.action !== "delete" && node.action !== "orphaned")) return [];
-    const attr = (node.state as { attr?: Record<string, unknown> } | undefined)?.attr ?? {};
-    return IDENTITY.map((key) => attr[key]).filter(
-      (value): value is string => typeof value === "string" && value.length > 0,
+    const state = node.state as
+      | { attr?: Record<string, unknown>; resourceType?: unknown }
+      | undefined;
+    const type = String(
+      state?.resourceType ?? (node as { resource?: { Type?: unknown } }).resource?.Type ?? "",
     );
+    const kind = KINDS.find(([pattern]) => pattern.test(type))?.[1];
+    if (!kind) return [];
+    const attr = state?.attr ?? {};
+    return IDENTITY.map((key) => attr[key])
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .map((id) => ({ kind, id }));
   });

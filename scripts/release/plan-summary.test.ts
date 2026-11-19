@@ -51,9 +51,15 @@ test("an applied plan with cyclic props summarises instead of throwing", () => {
   assert.doesNotThrow(() => safeJson(rows, 2));
 });
 
-test("what remains after apply is named without props", () => {
+test("what remains after apply is named with the properties that differ, never their values", () => {
   assert.deepEqual(remainingRows(appliedSnapshot()), [
-    { fqn: "PoolWorker", type: "Cloudflare.Worker", action: "update" },
+    {
+      fqn: "PoolWorker",
+      type: "Cloudflare.Worker",
+      action: "update",
+      changedProps: ["bindings", "compatibility"],
+      bindings: ["POOL"],
+    },
   ]);
 });
 
@@ -87,8 +93,14 @@ test("a command that re-runs on every deploy is not a change left after apply", 
       rows(row("PoolWorker", "Cloudflare.Worker", "update"), row("Seed", "Command.Exec", "create")),
     ),
     [
-      { fqn: "PoolWorker", type: "Cloudflare.Worker", action: "update" },
-      { fqn: "Seed", type: "Command.Exec", action: "create" },
+      {
+        fqn: "PoolWorker",
+        type: "Cloudflare.Worker",
+        action: "update",
+        changedProps: [],
+        bindings: [],
+      },
+      { fqn: "Seed", type: "Command.Exec", action: "create", changedProps: [], bindings: [] },
     ],
   );
 });
@@ -112,21 +124,69 @@ test("a PoolWorker update must carry the readiness command that waits for adopti
   );
 });
 
-test("a destroy plan's targets are the names and ids its deleted rows record", () => {
-  const deleted = (attr: Record<string, unknown>) => ({ action: "delete", state: { attr } });
+test("a destroy plan's targets are the kinds, names and ids its deleted rows record", () => {
+  const deleted = (resourceType: string, attr: Record<string, unknown>) => ({
+    action: "delete",
+    state: { resourceType, attr },
+  });
   const plan = {
     resources: {
-      Worker: deleted({
+      Worker: deleted("Cloudflare.Worker", {
         workerName: "basalt-test-pr-7-poolworker",
         bindings: [{ id: "shared-db" }],
       }),
-      Kept: { action: "noop", state: { attr: { workerName: "basalt-test-pr-7-router" } } },
+      Kept: {
+        action: "noop",
+        state: {
+          resourceType: "Cloudflare.Worker",
+          attr: { workerName: "basalt-test-pr-7-router" },
+        },
+      },
+      Odd: deleted("Cloudflare.SomethingNew", { name: "unknown-kind" }),
     },
-    deletions: { Bucket: deleted({ name: "vault-test-pr-7", jurisdiction: "eu" }) },
+    deletions: {
+      Bucket: deleted("Cloudflare.R2.Bucket", { name: "vault-test-pr-7", jurisdiction: "eu" }),
+    },
   };
-  // Ids a row only refers to (a binding's target) are not targets.
+  // Ids a row only refers to (a binding's target) are not targets, and an unknown type yields none.
   assert.deepEqual(destroyTargets(plan as never), [
-    "basalt-test-pr-7-poolworker",
-    "vault-test-pr-7",
+    { kind: "Worker", id: "basalt-test-pr-7-poolworker" },
+    { kind: "R2 bucket", id: "vault-test-pr-7" },
   ]);
+});
+
+test("a plan that did not settle says which rows and which properties still differ, in public", async () => {
+  const { failureReport } = await import("./public-report.ts");
+  const { ChangesRemainAfterApply } = await import("./plan-summary.ts");
+  const node = (props: Record<string, unknown>, recorded: Record<string, unknown>) => ({
+    action: "update",
+    props,
+    state: { props: recorded },
+  });
+  const after = {
+    resources: [
+      {
+        fqn: "Api",
+        resourceType: "Cloudflare.Worker",
+        action: "update",
+        bindings: [{ sid: "DB", action: "update" }],
+      },
+      { fqn: "Migrations", resourceType: "Command.Exec", action: "update", bindings: [] },
+      { fqn: "Kept", resourceType: "Cloudflare.Worker", action: "noop", bindings: [] },
+    ],
+    summary: {},
+    native: {
+      resources: {
+        Api: node({ main: "api.js", env: { A: "2" } }, { main: "api.js", env: { A: "1" } }),
+        Migrations: node({ env: { X: "1" } }, { env: { X: "0" } }),
+      },
+      deletions: {},
+    },
+  } as never;
+  const report = failureReport(ChangesRemainAfterApply.of(remainingRows(after)));
+  assert.match(
+    report.publicText,
+    /ChangesRemainAfterApply: check=read-back .*remaining=Api \(Cloudflare\.Worker update: env, binding DB\)/u,
+  );
+  assert.doesNotMatch(report.publicText, /Migrations/u, "a command that re-runs is not a leftover");
 });

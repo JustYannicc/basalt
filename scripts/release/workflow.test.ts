@@ -254,3 +254,20 @@ test("the class change takes the controller storage bookmark first, under the sa
   );
   assert.ok(taken! < verified! && verified! < apply!);
 });
+
+test("while the hold is set an automatic run is skipped, and a failed rollback is said out loud", () => {
+  const pick = step("Pick the candidate");
+  assert.match(pick, /PRODUCTION_RELEASE_HOLD: \$\{\{ vars\.PRODUCTION_RELEASE_HOLD \}\}/u);
+  assert.match(pick, /if \[ -n "\$PRODUCTION_RELEASE_HOLD" \]; then[\s\S]*?release=false/u);
+  const rollback = step("Roll back a failed release");
+  assert.doesNotMatch(rollback, /\|\| true/u);
+  assert.match(rollback, /::error::The rolled-back version also fails acceptance/u);
+});
+
+test("a dispatch can release an exact main commit, and only one that is on main", () => {
+  const pick = step("Pick the candidate");
+  assert.match(pick, /CANDIDATE_INPUT: \$\{\{ inputs\.candidate \}\}/u);
+  assert.match(pick, /\^\[0-9a-f\]\{40\}\$/u);
+  assert.match(pick, /git merge-base --is-ancestor "\$CANDIDATE_INPUT" "\$CANDIDATE"/u);
+  assert.match(pick, /CANDIDATE="\$CANDIDATE_INPUT"/u);
+});
