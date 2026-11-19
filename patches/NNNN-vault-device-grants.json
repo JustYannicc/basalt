@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-device-grants",
+  "file": "NNNN-vault-device-grants.patch",
+  "content_sha256": "cd892d17a0a2377a4f73aa20f6a5854b817198d65a6de722470268cebc9f8f2c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

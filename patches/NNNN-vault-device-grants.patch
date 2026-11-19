@@ -1,0 +1,295 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -8,7 +8,9 @@ import { Stage } from "alchemy/Stage";
+ import { Config, Effect, Option, Redacted, Schema } from "effect";
+ import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
+ import { DriveRequestFailed } from "apps/contracts";
+-import type { DriveBackend } from "@executor-js/sdk/core";
++import type { DriveBackend, StorageError } from "@executor-js/sdk/core";
++import { vaultDevicesOnly } from "@executor-js/hosted-server/vault-device-grants";
++import type { SqlClient } from "effect/sql";
+ import { testStage } from "./stage.ts";
+ // The retained bucket is declared once, by Basalt's reviewed release intent.
+ import { provisionVaultAttachments } from "../../../../../../scripts/release-barrier/vault-attachments.ts";
+@@ -139,7 +141,7 @@ const VaultReply = Schema.Union([
+ ]);
+ 
+ /** Every executor routes an app's drive commands to that app's vault object. */
+-export const cloudVaultDrives = (
++const vaultDrives = (
+   coordinator: Cloudflare.DurableObject<ArtifactsTokenCoordinator>,
+ ): DriveBackend => ({
+   // The request's grant names the device, so the vault can record each device's last sync.
+@@ -157,6 +159,15 @@ export const cloudVaultDrives = (
+       ),
+ });
+ 
++/**
++ * The vault records any grant's sync; `devices` lists only the grants that grant storage, the
++ * request's own database, holds as the vault's devices.
++ */
++export const cloudVaultDrives = (
++  coordinator: Cloudflare.DurableObject<ArtifactsTokenCoordinator>,
++  grants: Effect.Effect<SqlClient.SqlClient, StorageError>,
++): DriveBackend => vaultDevicesOnly(vaultDrives(coordinator), grants);
++
+ /**
+  * A private object per app code serializes refreshes across all Worker instances and callers.
+  * The namespace, with every stored credential, moved here from the API Worker.
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -103,7 +103,7 @@ export const cloudExecutor = Effect.fn(function* (
+   const makeRuntime = yield* cloudRuntime(origin, databases);
+   const workflows = yield* cloudWorkflows;
+   const blobs = yield* cloudBlobs;
+-  const drives = cloudVaultDrives(yield* ArtifactsTokenCoordinator.from(ArtifactsCredentials));
++  const vaults = yield* ArtifactsTokenCoordinator.from(ArtifactsCredentials);
+   const publishing = (yield* appPublishing.pipe(Effect.orDie)) === "on";
+   // App storage, hosted permission checks and Better Auth share the event's client.
+   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
+@@ -143,7 +143,11 @@ export const cloudExecutor = Effect.fn(function* (
+         // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
+         workflowInputUrl: ({ owner, app, id }) =>
+           `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+-        drives,
++        // A vault's device list reads grant storage, as event delivery checks do.
++        drives: cloudVaultDrives(
++          vaults,
++          Effect.succeed(Context.get(services, SqlClient.SqlClient)),
++        ),
+         registry: {
+           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryRuntimeStorage).pipe(
+             Effect.provideContext(services),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -30,6 +30,8 @@
+     "./database": "./src/implementation/database.ts",
+     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
+     "./events": "./src/implementation/events.ts",
++    "./vault-devices": "./src/contracts/vault-devices.ts",
++    "./vault-device-grants": "./src/implementation/vault-device-grants.ts",
+     "./app-ui": "./src/app-ui.ts",
+     "./app-ui/contracts": "./src/contracts/app-ui.ts",
+     "./provisioning": "./src/implementation/provisioning.ts",
+diff --git a/apps/hosted/server/src/contracts/vault-devices.ts b/apps/hosted/server/src/contracts/vault-devices.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/vault-devices.ts
+@@ -0,0 +1,43 @@
++/** Which MCP connections are an Obsidian vault's devices; the Accounts tab and the drive share it. */
++import type { ConnectionPolicy } from "@executor-js/mcp-auth/connections";
++
++/** Exact protocol used by the Obsidian plugin; cloned and renamed apps keep working. */
++export const obsidianTools = [
++  "listNotes",
++  "readNote",
++  "applyNotes",
++  "operationStatus",
++  "resolveConflict",
++  "changes",
++  "fileInfo",
++  "readAttachment",
++  "beginAttachment",
++  "uploadAttachmentPart",
++  "completeAttachment",
++  "cancelAttachment",
++  "importStatus",
++  "planImport",
++  "importRequest",
++  "finishImport",
++];
++
++/** The plugin's sync tools, any version; Connect Obsidian scopes each device to a subset. */
++const syncTools = new Set<string>(obsidianTools);
++
++/**
++ * A connection Connect Obsidian made for this vault: this one app, run as the app, limited to
++ * sync tools. A broader connection that happens to include the app belongs to an agent.
++ */
++export const isVaultConnectionPolicy = (app: string, policy: ConnectionPolicy) => {
++  const [only, ...rest] = policy.apps;
++  return (
++    only !== undefined &&
++    rest.length === 0 &&
++    only.app === app &&
++    only.runsAs.length === 1 &&
++    only.runsAs[0]?.kind === "app" &&
++    only.tools.kind === "selected" &&
++    only.tools.names.length > 0 &&
++    only.tools.names.every((name) => syncTools.has(name))
++  );
++};
+diff --git a/apps/hosted/server/src/implementation/vault-device-grants.ts b/apps/hosted/server/src/implementation/vault-device-grants.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/vault-device-grants.ts
+@@ -0,0 +1,94 @@
++/**
++ * A vault's devices, classified by grant. The vault sees only grant ids, so it records every grant
++ * that makes the plugin's sync calls, an agent's included. Grant storage tells them apart: a device
++ * holds its grant through a connection Connect Obsidian made for the vault's app, and neither the
++ * grant nor that connection is revoked.
++ */
++import { DriveDevices, DriveRequestFailed } from "apps/contracts";
++import { ConnectionPolicy } from "@executor-js/mcp-auth/connections";
++import type { DriveBackend, StorageError } from "@executor-js/sdk/core";
++import { Effect, Option, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import { isVaultConnectionPolicy } from "../contracts/vault-devices.ts";
++
++const GrantRow = Schema.Struct({
++  id: Schema.String,
++  userId: Schema.String,
++  resource: Schema.String,
++  revoked: Schema.Boolean,
++  connectionPolicy: Schema.String,
++  connectionRevoked: Schema.Boolean,
++  connectionUser: Schema.String,
++  connectionResource: Schema.String,
++});
++const connectionPolicy = Schema.decodeUnknownOption(Schema.fromJsonString(ConnectionPolicy));
++
++/** The grants among these that are current devices of the app's vault. */
++export const vaultDeviceGrants = (
++  sql: SqlClient.SqlClient,
++  app: string,
++  grants: readonly string[],
++) =>
++  Effect.gen(function* () {
++    if (grants.length === 0) return new Set<string>();
++    const rows = yield* sql`select g.id, g."userId" as "userId", g.resource, g.revoked,
++        mc.policy as "connectionPolicy", mc.revoked as "connectionRevoked",
++        mc."userId" as "connectionUser", mc.resource as "connectionResource"
++      from "mcpGrant" g join "mcpConnection" mc on mc.id = g.connection
++      where g.id in ${sql.in(grants)}`;
++    return new Set(
++      rows.flatMap((raw) => {
++        const row = Schema.decodeUnknownOption(GrantRow)(raw);
++        if (Option.isNone(row)) return [];
++        const grant = row.value;
++        // A connection grant has no authority of its own; it stands only with its connection.
++        if (
++          grant.revoked ||
++          grant.connectionRevoked ||
++          grant.connectionUser !== grant.userId ||
++          grant.connectionResource !== grant.resource
++        )
++          return [];
++        const policy = connectionPolicy(grant.connectionPolicy);
++        return Option.isSome(policy) && isVaultConnectionPolicy(app, policy.value)
++          ? [grant.id]
++          : [];
++      }),
++    );
++  });
++
++/**
++ * The drive with `devices` listing only the vault's device grants; every other command passes
++ * through unchanged. Grant storage is the request's own database.
++ */
++export const vaultDevicesOnly = (
++  backend: DriveBackend,
++  database: Effect.Effect<SqlClient.SqlClient, StorageError>,
++): DriveBackend => ({
++  request: (input) =>
++    input.command.method !== "devices"
++      ? backend.request(input)
++      : backend.request(input).pipe(
++          Effect.flatMap((value) =>
++            Schema.decodeUnknownEffect(DriveDevices)(value).pipe(
++              Effect.mapError(() => new DriveRequestFailed({ reason: "invalid_response" })),
++            ),
++          ),
++          Effect.flatMap((reply) =>
++            database.pipe(
++              Effect.flatMap((sql) =>
++                vaultDeviceGrants(
++                  sql,
++                  input.app,
++                  reply.devices.map((device) => device.agent),
++                ),
++              ),
++              Effect.mapError(() => new DriveRequestFailed({ reason: "unavailable" })),
++              Effect.map((devices) => ({
++                ...reply,
++                devices: reply.devices.filter((device) => devices.has(device.agent)),
++              })),
++            ),
++          ),
++        ),
++});
+diff --git a/apps/hosted/web/src/contracts/obsidian-connection.ts b/apps/hosted/web/src/contracts/obsidian-connection.ts
+--- a/apps/hosted/web/src/contracts/obsidian-connection.ts
++++ b/apps/hosted/web/src/contracts/obsidian-connection.ts
+@@ -1,25 +1,8 @@
+ import { ToolName, type App, type ToolSummary } from "@executor-js/sdk";
+ import type { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connections";
++import { obsidianTools } from "@executor-js/hosted-server/vault-devices";
+ 
+-/** Exact protocol used by the Obsidian plugin; cloned and renamed apps keep working. */
+-export const obsidianTools = [
+-  "listNotes",
+-  "readNote",
+-  "applyNotes",
+-  "operationStatus",
+-  "resolveConflict",
+-  "changes",
+-  "fileInfo",
+-  "readAttachment",
+-  "beginAttachment",
+-  "uploadAttachmentPart",
+-  "completeAttachment",
+-  "cancelAttachment",
+-  "importStatus",
+-  "planImport",
+-  "importRequest",
+-  "finishImport",
+-];
++export { obsidianTools };
+ 
+ export function supportsObsidian(
+   app: Pick<App, "requirements">,
+diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web/src/contracts/obsidian-devices.ts
+--- a/apps/hosted/web/src/contracts/obsidian-devices.ts
++++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
+@@ -1,6 +1,6 @@
+ import { Schema } from "effect";
+ import type { AppId } from "@executor-js/sdk";
+-import { obsidianTools } from "./obsidian-connection.ts";
++import { isVaultConnectionPolicy } from "@executor-js/hosted-server/vault-devices";
+ import type { ConnectedAgent } from "@executor-js/mcp-auth/agents";
+ import type { Connection, ConnectionId } from "@executor-js/mcp-auth/connections";
+ import type { GrantId } from "@executor-js/mcp-auth/grants";
+@@ -17,26 +17,9 @@ export interface ObsidianDevice {
+ /** The client name older plugins declare, identical on every device they run on. */
+ const pluginClientNames = new Set(["Signalbox Obsidian Sync", "Basalt Sync"]);
+ 
+-/** The plugin's sync tools, any version; Connect Obsidian scopes each device to a subset. */
+-const syncTools = new Set<string>(obsidianTools);
+-
+-/**
+- * A connection Connect Obsidian made for this vault: this one app, run as the app, limited to
+- * sync tools. A broader connection that happens to include the app belongs to an agent.
+- */
+-export const isVaultConnection = (app: AppId, connection: Connection) => {
+-  const [only, ...rest] = connection.policy.apps;
+-  return (
+-    only !== undefined &&
+-    rest.length === 0 &&
+-    only.app === app &&
+-    only.runsAs.length === 1 &&
+-    only.runsAs[0]?.kind === "app" &&
+-    only.tools.kind === "selected" &&
+-    only.tools.names.length > 0 &&
+-    only.tools.names.every((name) => syncTools.has(name))
+-  );
+-};
++/** A connection Connect Obsidian made for this vault, by the rule the drive's device list uses. */
++export const isVaultConnection = (app: AppId, connection: Connection) =>
++  isVaultConnectionPolicy(app, connection.policy);
+ 
+ /**
+  * The member's devices syncing this app's vault, oldest first: grants held through a connection

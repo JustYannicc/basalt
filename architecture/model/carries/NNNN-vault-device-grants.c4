@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A vault's devices query lists only its device grants. The vault object records the sync of any grant that makes the plugin's sync calls; the host's drive backend reads grant storage from the request's own database and keeps only grants held through a connection Connect Obsidian made for that app (that one app, run as the app, selected sync tools only), with neither the grant nor its connection revoked. The Accounts tab classifies devices by the same rule. The vault object, the drive protocol and the plugin are unchanged, so an agent making the same calls never appears and a revoked device leaves the list at once."
+    }
+  }
+}
