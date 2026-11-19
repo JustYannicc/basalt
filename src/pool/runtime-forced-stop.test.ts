@@ -1,14 +1,35 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test, type TestContext } from "node:test";
+import { RuntimeForcedStop, runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import {
-  RuntimeForcedStop,
+  forcedRestartServesWithinHeldStreamsMs,
+  forcedRestartServesWithinMs,
   forcedStopGraceMs,
+  readinessReadMs,
   restartStartBoundMs,
-  runtimeStopTiming,
+  runtimeStartupMs,
   supervisorStopGraceMs,
-} from "./runtime-slots/forced-stop.ts";
+} from "./runtime-slots/forced-restart-timing.ts";
+import { poolLifecycle } from "./lifecycle.ts";
+import { policyHealthLeaseMs } from "./runtime-health.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
+
+test("the timing module has no imports and matches the values the runtime enforces", async () => {
+  const timing = await readFile(
+    new URL("./runtime-slots/forced-restart-timing.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    timing,
+    /^\s*import\b/mu,
+    "release tooling imports it into a stricter program",
+  );
+  assert.equal(runtimeStartupMs, poolLifecycle.startupTimeoutMs);
+  assert.equal(readinessReadMs, policyHealthLeaseMs);
+  assert.equal(forcedRestartServesWithinMs, 298_000);
+  assert.equal(forcedRestartServesWithinHeldStreamsMs, 538_000);
+});
 
 test("a forced stop waits longer than the supervisor's own shutdown grace", async () => {
   const supervisor = await readFile(

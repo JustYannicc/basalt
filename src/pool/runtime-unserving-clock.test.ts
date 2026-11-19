@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  forcedRestartsPerHour,
-  unservingBoundMs,
-  unservingDecision,
-} from "./runtime-slots/unserving-clock.ts";
+import { unservingDecision } from "./runtime-slots/unserving-clock.ts";
+import { forcedRestartsPerHour, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 import { retainRuntimeFailure, runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
 import { poolGuard } from "./guard-failure.ts";

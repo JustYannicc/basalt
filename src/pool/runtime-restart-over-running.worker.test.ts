@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { unservingBoundMs } from "./runtime-slots/unserving-clock.ts";
+import { unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Inspected {

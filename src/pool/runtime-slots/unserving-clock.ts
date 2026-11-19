@@ -1,13 +1,13 @@
 import { Schema } from "effect";
 import { executionKey, type SlotIdentity } from "./contract.ts";
 import type { RuntimeSlotStorage } from "./storage.ts";
+import {
+  forcedRestartBudgetMs,
+  forcedRestartsPerHour,
+  unservingBoundMs,
+} from "./forced-restart-timing.ts";
 
 const clockKey = "runtime-slots-v1:unserving";
-/** A selected runtime that is running but refusing this long is stopped, so recovery replaces it. */
-export const unservingBoundMs = 60_000;
-/** A forced restart that hasn't produced a serving runtime by now has failed. */
-export const forcedRestartBudgetMs = 300_000;
-export const forcedRestartsPerHour = 3;
 const hourMs = 3_600_000;
 
 const NeedsPerson = Schema.Struct({

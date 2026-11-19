@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { leakedStreamsMs, runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
-import { unservingBoundMs } from "./runtime-slots/unserving-clock.ts";
+import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
+import { leakedStreamsMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 

@@ -4,42 +4,25 @@ import type { RuntimeWitnessStore, WitnessRecord } from "./witness-store.ts";
 import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
 import type { RuntimeConfiguration } from "./configuration.ts";
-import { poolLifecycle, type PoolStatus } from "../lifecycle.ts";
+import type { PoolStatus } from "../lifecycle.ts";
+import {
+  exitConfirmationMs,
+  forcedStopGraceMs,
+  forcedStopsPerHour,
+  leakedStreamsMs,
+  restartStartBoundMs,
+  servingReadMs,
+} from "./forced-restart-timing.ts";
 
 const stopsKey = "runtime-endpoint-v1:forced-stops";
 const Stops = Schema.Array(Schema.Number);
-/** At most this many forced stops per container object in any hour, whatever the controller asks. */
-export const forcedStopsPerHour = 3;
 const hourMs = 3_600_000;
-/**
- * The outer bound on the stop's own health and readiness reads. A readiness read gives up after its
- * 1.5 s lease window whatever this allows, so a runtime slower than that counts as not answering.
- */
-export const servingReadMs = 10_000;
-/**
- * Streams counted active hold a forced stop until their count has stood still this long: one long
- * live turn and a leaked count look alike, and this is the trade between the two.
- */
-export const leakedStreamsMs = 300_000;
-/**
- * A restart's own start answers readiness, or meets its startup deadline, well within this of its
- * admission. Past it, a container under that restart that doesn't answer is not its start.
- */
-export const restartStartBoundMs = poolLifecycle.startupTimeoutMs + 60_000;
-
 const pause = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
-/**
- * After SIGTERM the supervisor gives its children 15 s, then kills them and waits 1 s
- * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step.
- */
-export const supervisorStopGraceMs = 16_000;
-/** Longer than the supervisor's grace, so a Home finishing a token write-back is never cut short. */
-export const forcedStopGraceMs = 30_000;
 /** The waits around stopping a container; tests replace them instead of sleeping. */
 export const runtimeStopTiming = {
   /** Between the two "not running" reads that admit a restart. */
-  confirmExit: () => pause(2_000),
+  confirmExit: () => pause(exitConfirmationMs),
   /** How long SIGTERM gets before `destroy()`. */
   stopGrace: () => pause(forcedStopGraceMs),
   /** Whether Home is mid token refresh. The image doesn't report it yet; the Home owner adds it. */

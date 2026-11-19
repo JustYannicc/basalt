@@ -28,6 +28,7 @@ import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
 import { awaitProbe } from "../availability.ts";
 import { RuntimeForcedRestart } from "./forced-restart.ts";
+import { recoveryWarmMs } from "./forced-restart-timing.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
 const Completion = Schema.Struct({ identity: SlotIdentity, fingerprint: Schema.String });
@@ -160,7 +161,7 @@ export class RuntimeSlotRecovery {
       throw new SlotRefused("selection");
     let refusal: unknown;
     try {
-      await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(2_000)]));
+      await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(recoveryWarmMs)]));
       this.unavailable = false;
       await this.forced.clock.serving();
       return;
