@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ChildProcessFailure, type ChildReport } from "./failure/child.ts";
 
@@ -12,16 +12,24 @@ export function run(command: string, args: string[], cwd?: string, env = process
   // NODE_OPTIONS are meant for the command. Loaded into the process in between, a preload could
   // stop the command from ever starting, so they travel under another name and are put back.
   const { NODE_OPTIONS: nodeOptions, ...rest } = env;
-  // A file, not a descriptor: Bun's spawnSync hands back no fourth stream.
-  const directory = mkdtempSync(join(tmpdir(), "basalt-run-"));
-  const reportPath = join(directory, "report.json");
+  // The report comes back in a file: Bun's spawnSync hands back no fourth stream. Where no file
+  // can be made the command still runs, and its failure names the command and its exit.
+  let directory: string | undefined;
+  try {
+    directory = mkdtempSync(join(tmpdir(), "basalt-run-"));
+  } catch {
+    directory = undefined;
+  }
   try {
     const result = spawnSync(process.execPath, [tee, command, ...args], {
-      cwd,
+      // Bun loads an `.env` and a preload from the directory it starts in. Started in the
+      // command's directory, the process in between would pass both on to the command.
+      cwd: dirname(tee),
       env: {
         ...rest,
+        BASALT_RUN_CWD: cwd ?? process.cwd(),
         ...(nodeOptions === undefined ? {} : { BASALT_RUN_NODE_OPTIONS: nodeOptions }),
-        BASALT_RUN_REPORT: reportPath,
+        ...(directory ? { BASALT_RUN_REPORT: join(directory, "report.json") } : {}),
       },
       stdio: "inherit",
     });
@@ -34,12 +42,12 @@ export function run(command: string, args: string[], cwd?: string, env = process
       tail: "",
     };
     try {
-      report = JSON.parse(readFileSync(reportPath, "utf8"));
+      if (directory) report = JSON.parse(readFileSync(join(directory, "report.json"), "utf8"));
     } catch {
       // The report is an addition: without it the failure still names the command and its exit.
     }
     throw new ChildProcessFailure(report);
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    if (directory) rmSync(directory, { recursive: true, force: true });
   }
 }

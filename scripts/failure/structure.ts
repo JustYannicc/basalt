@@ -6,13 +6,13 @@ import {
   field,
   members,
   publicError,
-  rawChain,
+  reach,
   typeName,
   type PublicCause,
 } from "./cause.ts";
 import { ChildProcessFailure } from "./child.ts";
 import { failureKind, failures } from "./kind.ts";
-import { publicGuidance, publicText } from "./redact.ts";
+import { publicGuidance, publicTail, publicText, redactCredentials } from "./redact.ts";
 
 /**
  * A failure as an evlog structured error with what happened, why, how to fix it and the cause
@@ -24,9 +24,9 @@ export interface FailureReport {
   error: EvlogError;
   /** The same chain, outermost first. */
   causes: PublicCause[];
-  /** Named fields of a refusal and its violations, or where an unexpected failure was raised. */
+  /** A refusal's evidence and violations, collected failures, or where a failure was raised. */
   details: string[];
-  /** The last output lines of a failed command, already public. */
+  /** The last output lines of every failed command, already public. */
   tail?: string;
 }
 
@@ -41,6 +41,7 @@ const subjects = [
   "path",
   "field",
   "value",
+  "detail",
 ];
 const shown = 50;
 // Frames are printed from the repository's root: the path above it names a machine and a person.
@@ -51,6 +52,29 @@ const linkShape =
   /^https:\/\/(?:developers\.cloudflare\.com|alchemy\.run|github\.com|docs\.github\.com|planetscale\.com|effect\.website|evlog\.dev|nodejs\.org|bun\.sh)(?:\/[A-Za-z0-9/_.~-]*)?(?:#[A-Za-z0-9_.-]*)?$/u;
 // `PlanRefused`, or a catalog's `release.BACKUP_MISSING`.
 const codeShape = /^(?:[a-z][a-z0-9-]*\.)?[A-Z][A-Za-z0-9_]{1,63}$/u;
+
+/** A refusal's evidence as its author gave it: text as written, anything else as JSON. */
+function printed(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    // Evidence that cannot be printed must not replace the failure it belongs to.
+    return "[not printable]";
+  }
+}
+
+/** What a failure says of itself: its type and its message, as text nobody here wrote. */
+function said(error: unknown, environment: NodeJS.ProcessEnv): string {
+  const type = typeName(error);
+  const message = text(typeof error === "string" ? error : field(error, "message"));
+  return [
+    type === "unknown" ? "A failure of an unlisted type" : type,
+    message && publicText(message, environment),
+  ]
+    .filter(Boolean)
+    .join(": ");
+}
 
 /** A refusal is a failure whose author said why: an evlog error, a stated reason, or violations. */
 function refused(value: unknown): boolean {
@@ -67,37 +91,25 @@ function refusal(
   subject: unknown,
   environment: NodeJS.ProcessEnv,
 ): Omit<FailureReport, "tail"> {
-  const own = (value: unknown) => publicGuidance(String(value), environment);
+  const own = (value: unknown) => publicGuidance(printed(value), environment);
   const causes = causeChain(subject, environment).slice(1);
   const details: string[] = [];
-  if (subject !== error)
-    details.push(`raised inside: ${causeLine(causeChain(error, environment)[0]!)}`);
+  if (subject !== error) details.push(`raised inside: ${said(error, environment)}`);
   for (const key of subjects) {
     const value = field(subject, key);
-    if (typeof value === "string" || typeof value === "number")
+    if (value !== undefined && value !== null && typeof value !== "function")
       details.push(`${key}: ${own(value)}`);
-  }
-  const detail = field(subject, "detail");
-  if (detail !== undefined) {
-    let printed = "[not printable]";
-    try {
-      printed = JSON.stringify(detail) ?? printed;
-    } catch {
-      // A detail that cannot be printed must not replace the failure it belongs to.
-    }
-    details.push(`detail: ${own(printed)}`);
   }
   const violations = field(subject, "violations");
   const listed: unknown[] = Array.isArray(violations) ? violations : [];
   for (const violation of listed.slice(0, shown)) {
     const change = field(violation, "change");
+    const name = ["rule", "fqn", "type", "action"]
+      .map((key) => text(field(violation, key)))
+      .filter(Boolean)
+      .join(" ");
     details.push(
-      `violation: ${own(
-        ["rule", "fqn", "type", "action"]
-          .map((key) => text(field(violation, key)))
-          .filter(Boolean)
-          .join(" ") || "(unnamed)",
-      )}`,
+      `violation: ${own(name || "(unnamed)")}`,
       ...(Array.isArray(change)
         ? change.slice(0, shown).map((line) => `  change: ${own(line)}`)
         : []),
@@ -106,18 +118,27 @@ function refusal(
     );
   }
   if (listed.length > shown) details.push(`and ${listed.length - shown} more violations`);
-  const stated = (key: string) =>
-    text(field(subject, key)) ?? (listed.length === 1 ? text(field(listed[0], key)) : undefined);
-  const why = stated("why");
-  const fix = stated("fix");
+
   const many = listed.length > 1;
-  const link = text(field(subject, "link"));
+  const stated = (key: string, all: string) => {
+    if (many) return all;
+    const one = text(field(subject, key)) ?? text(field(listed[0], key));
+    return one && own(one);
+  };
+  const why = stated("why", "Each violation below gives its own reason.");
+  const fix = stated("fix", "Each violation below names its fix.");
   const type = typeName(subject);
   // A code is a name. One the rules would change is not, whatever its shape.
   const code = [text(field(subject, "code")), type].find(
     (value) =>
       value !== undefined && value !== "Error" && codeShape.test(value) && own(value) === value,
   );
+  // A token can sit in a path, so each part of the link has to pass the credential rules.
+  const link = text(field(subject, "link"));
+  const linked =
+    link !== undefined &&
+    linkShape.test(link) &&
+    link.split(/[/#]/u).every((part) => redactCredentials(part, environment) === part);
   const message = text(field(subject, "message"))?.split("\n")[0];
   return {
     error: createError({
@@ -125,13 +146,9 @@ function refusal(
       message: many
         ? `${listed.length} violations refused this step`
         : own(message ?? (type === "unknown" ? "The step was refused" : type)),
-      ...(many
-        ? { why: "Each violation below gives its own reason." }
-        : why
-          ? { why: own(why) }
-          : {}),
-      ...(many ? { fix: "Each violation below names its fix." } : fix ? { fix: own(fix) } : {}),
-      ...(link && linkShape.test(link) ? { link } : {}),
+      ...(why ? { why } : {}),
+      ...(fix ? { fix } : {}),
+      ...(linked ? { link } : {}),
       ...publicError(causes),
     }),
     causes,
@@ -144,66 +161,66 @@ export function structuredFailure(
   error: unknown,
   environment: NodeJS.ProcessEnv = process.env,
 ): FailureReport {
-  const wrappedBy = rawChain(error);
-  const child = wrappedBy.find((value) => value instanceof ChildProcessFailure);
-  const tail = child?.report.tail ? { tail: child.report.tail } : {};
-  const subject = wrappedBy.find(refused);
+  const all = reach(error);
+  const children = all.filter((value) => value instanceof ChildProcessFailure);
+  const named = (child: ChildProcessFailure) =>
+    publicGuidance(child.message.split("\n")[0]!, environment);
+  // Made public again here: a report built by a caller is not known to be.
+  const output = children
+    .flatMap((child) => [
+      ...(children.length > 1 ? [`--- ${named(child)}`] : []),
+      publicTail(child.report.tail, environment),
+    ])
+    .filter(Boolean)
+    .join("\n");
+  const tail = output ? { tail: output } : {};
+  const subject = all.find(refused);
   if (subject !== undefined) return { ...refusal(error, subject, environment), ...tail };
 
-  const all = causeChain(error, environment);
-  const causes = all.slice(1);
+  const chain = causeChain(error, environment);
+  const causes = chain.slice(1);
   const details: string[] = [];
-  const collected = wrappedBy.map(members).find((list) => list.length > 1);
+  const collected = all.map(members).find((list) => list.length > 1);
   if (collected)
-    details.push(`failures collected: ${collected.length}; the cause chain follows the first`);
-  if (child)
+    details.push(
+      `failures collected: ${collected.length}; the cause chain follows the first`,
+      ...collected
+        .slice(0, 8)
+        .map((member, index) => `failure ${index + 1}: ${said(member, environment)}`),
+    );
+  if (children[0])
     return {
-      error: failures.CHILD_FAILED({
-        what: publicGuidance(child.message.split("\n")[0]!, environment),
-        ...publicError(causes),
-      }),
+      error: failures.CHILD_FAILED({ what: named(children[0]), ...publicError(causes) }),
       causes,
       details,
       ...tail,
     };
 
   const kind = failureKind(error, environment);
-  const top = all[0]!;
-  const status = all.find((entry) => entry.status !== undefined)?.status;
-  const message = text(field(error, "message"));
-  // A code bug's message names the identifier at fault, in quotes; any other message can quote data.
-  const bug =
-    error instanceof TypeError || error instanceof RangeError || error instanceof ReferenceError;
-  if (kind === "UNEXPECTED") {
-    const stack = field(error, "stack");
-    if (typeof stack === "string")
-      details.push(
-        ...stack
-          .split("\n")
-          .filter((line) => /^\s+at /u.test(line) && !line.includes("node:"))
-          .slice(0, 3)
-          .map((line) =>
-            publicGuidance(line.trim().replaceAll("file://", "").replaceAll(root, ""), environment),
-          ),
-      );
-  }
+  const top = chain[0] ?? { type: "unknown" };
+  const status = chain.find((entry) => entry.status !== undefined)?.status;
+  const stack = kind === "UNEXPECTED" ? field(error, "stack") : undefined;
+  if (typeof stack === "string")
+    details.push(
+      ...stack
+        .split("\n")
+        .filter((line) => /^\s+at /u.test(line) && !line.includes("node:"))
+        .slice(0, 3)
+        .map((line) =>
+          publicGuidance(line.trim().replaceAll("file://", "").replaceAll(root, ""), environment),
+        ),
+    );
+  let why = "It carries no cause, so its message is all that is known.";
+  if (status !== undefined) why = `The service answered HTTP ${status}.`;
+  else if (chain.length > 1)
+    why = `It was caused by ${causeLine(chain.at(-1)!).replace(/[.!?]$/u, "")}.`;
   return {
     error: failures[kind]({
       what:
         top.type === "HttpClientError" || top.request
           ? causeLine({ ...top, message: undefined })
-          : [
-              top.type === "unknown" ? "A failure of an unlisted type" : top.type,
-              message && (bug ? publicGuidance : publicText)(message, environment),
-            ]
-              .filter(Boolean)
-              .join(": "),
-      why:
-        status !== undefined
-          ? `The service answered HTTP ${status}.`
-          : all.length > 1
-            ? `It was caused by ${causeLine(all.at(-1)!).replace(/\.$/u, "")}.`
-            : "It carries no cause, so its message is all that is known.",
+          : said(error, environment),
+      why,
       ...publicError(causes),
     }),
     causes,

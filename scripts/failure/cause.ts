@@ -211,29 +211,41 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
   };
 }
 
-/** The failures a collection holds, when it holds more than what it wraps. */
+/** The failures a collection holds. */
 export function members(error: unknown): unknown[] {
   const errors = field(error, "errors");
-  return Array.isArray(errors) ? errors.slice(0, 8).filter((entry) => entry instanceof Error) : [];
+  return Array.isArray(errors) ? errors.filter((entry) => entry instanceof Error) : [];
 }
 
-/** What a failure wraps. Effect's HTTP client keeps fetch's error under its reason; a collection shows its first member. */
+/** What a failure wraps. Effect's HTTP client keeps fetch's error under its reason. */
 const wrapped = (error: unknown): unknown =>
   field(field(error, "reason"), "cause") ??
   field(error, "cause") ??
   field(error, "error") ??
-  field(error, "defect") ??
-  members(error)[0];
+  field(error, "defect");
 
-/** The failure and everything it wraps, outermost first. */
+/** The failure and what it wraps, outermost first. A collection is followed through its first member. */
 export function rawChain(error: unknown): unknown[] {
   const found: unknown[] = [];
   for (
     let current = error;
     current !== undefined && current !== null && found.length < 10 && !found.includes(current);
-    current = wrapped(current)
+    current = wrapped(current) ?? members(current)[0]
   )
     found.push(current);
+  return found;
+}
+
+/** Every failure reachable from one, outermost first: what each wraps and each member of a collection. */
+export function reach(error: unknown): unknown[] {
+  const found: unknown[] = [];
+  const queue = [error];
+  while (queue.length > 0 && found.length < 64) {
+    const current = queue.shift();
+    if (current === undefined || current === null || found.includes(current)) continue;
+    found.push(current);
+    queue.push(wrapped(current), ...members(current));
+  }
   return found;
 }
 

@@ -108,7 +108,7 @@ test("a transport failure reaches the error line and the summary with its cause 
   assert.match(line, /\n {2}why: It was caused by Error ECONNREFUSED\./);
   assert.match(
     line,
-    /\n {2}fix: This request never left, so it changed nothing at the service\. Rerun/,
+    /\n {2}fix: This attempt could not open a connection, so it sent nothing\. Rerun it\./,
   );
   assert.match(line, /\n {2}cause 1: TypeError: fetch failed\n {2}cause 2: Error ECONNREFUSED$/);
   assert.equal(
@@ -136,7 +136,7 @@ test("a request that can never succeed is not offered a rerun", async (context) 
     line,
     /fix: The request was refused before it was sent and will be refused again on a rerun\./,
   );
-  assert.doesNotMatch(line, /Rerun;|changed nothing|may have reached/);
+  assert.doesNotMatch(line, /Rerun it|sent nothing|may have reached/);
 });
 
 test("a connection lost after the request was sent is never called safe to rerun", async (context) => {
@@ -159,7 +159,7 @@ test("a connection lost after the request was sent is never called safe to rerun
   assert.equal(report.error.code, "release.OUTCOME_UNKNOWN");
   assert.match(line, /fix: The request may have reached the service\. A read can be rerun\./);
   assert.match(line, /Before rerunning a write, check whether it took effect\./);
-  assert.doesNotMatch(line, /changed nothing/);
+  assert.doesNotMatch(line, /sent nothing/);
   noLeak(all);
 });
 
@@ -175,7 +175,7 @@ test("an answer that is not HTTP leaves the outcome unknown, not a request to fi
 
   assert.equal(report.error.code, "release.OUTCOME_UNKNOWN");
   assert.match(line, /\n {2}cause 2: HTTPParserError$/);
-  assert.doesNotMatch(line, /refused before it was sent|changed nothing/);
+  assert.doesNotMatch(line, /refused before it was sent|sent nothing/);
   noLeak(all, [...leaks, "private-not-http"]);
 });
 
@@ -204,6 +204,44 @@ test("a good answer that cannot be read is never offered a blind rerun", async (
   noLeak(all, [...leaks, "private-response-body"]);
 });
 
+test("a failure of the request's own body is not called refused before it was sent", async (context) => {
+  let received = 0;
+  const arrived = Promise.withResolvers<void>();
+  const origin = await listening(
+    context,
+    createServer((socket) =>
+      socket.on("data", (chunk) => {
+        received += chunk.length;
+        arrived.resolve();
+      }),
+    ),
+  );
+  let started = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!started) {
+        started = true;
+        return controller.enqueue(new TextEncoder().encode("x".repeat(400)));
+      }
+      // The source fails with fetch's own error type once the service has the first part.
+      await arrived.promise;
+      throw new TypeError("the source stopped");
+    },
+  });
+  const url = `${origin}${path}`;
+  const cause = await fetch(url, { method: "POST", body, duplex: "half" } as RequestInit).then(
+    () => assert.fail("The request was expected to fail"),
+    (error: unknown) => error,
+  );
+  const { line, report } = await reported(
+    context,
+    Object.assign(new Error("upload failed", { cause }), { request: { method: "POST", url } }),
+  );
+
+  assert.ok(received > 0, "the service received part of the request");
+  assert.equal(report.error.code, "release.OUTCOME_UNKNOWN", line);
+});
+
 test("collected failures are only as safe to rerun as the least safe of them", async (context) => {
   const unreachable = async () =>
     requestFailure(HttpClientRequest.get(`${await closedOrigin()}${path}`));
@@ -214,20 +252,36 @@ test("collected failures are only as safe to rerun as the least safe of them", a
   const lost = await requestFailure(
     HttpClientRequest.post(`${origin}${path}`).pipe(HttpClientRequest.bodyText("{}")),
   );
-
-  const mixed = await reported(
-    context,
-    new AggregateError([await unreachable(), lost], "Two requests failed"),
+  const invalid = await requestFailure(
+    HttpClientRequest.get(`${origin}${path}`).pipe(HttpClientRequest.bodyText("{}")),
   );
+  const collect = (...errors: unknown[]) => new AggregateError(errors, "Requests failed");
+  const code = async (error: unknown) => (await reported(context, error)).report.error.code;
+
+  const mixed = await reported(context, collect(await unreachable(), lost));
   assert.equal(mixed.report.error.code, "release.OUTCOME_UNKNOWN");
-  assert.match(mixed.line, /\n {2}failures collected: 2; the cause chain follows the first\n/);
-  assert.doesNotMatch(mixed.line, /changed nothing/);
-
-  const neverLeft = await reported(
-    context,
-    new AggregateError([await unreachable(), await unreachable()], "Two requests failed"),
+  assert.match(
+    mixed.line,
+    /\n {2}failures collected: 2; the cause chain follows the first\n {2}failure 1: HttpClientError: .*\n {2}failure 2: HttpClientError: /,
   );
-  assert.equal(neverLeft.report.error.code, "release.UNREACHABLE");
+  assert.doesNotMatch(mixed.line, /sent nothing/);
+  noLeak(mixed.all);
+
+  // The order they were collected in changes nothing, nor does how deep the unsafe one sits.
+  assert.equal(await code(collect(invalid, lost)), "release.OUTCOME_UNKNOWN");
+  assert.equal(await code(collect(lost, invalid)), "release.OUTCOME_UNKNOWN");
+  assert.equal(
+    await code(
+      collect(
+        new Error("a stack failed", { cause: collect(await unreachable(), lost) }),
+        await unreachable(),
+      ),
+    ),
+    "release.OUTCOME_UNKNOWN",
+  );
+  const many = await Promise.all(Array.from({ length: 8 }, unreachable));
+  assert.equal(await code(collect(...many, lost)), "release.OUTCOME_UNKNOWN");
+  assert.equal(await code(collect(...many)), "release.UNREACHABLE");
 });
 
 for (const [status, code, advice] of [
@@ -244,8 +298,10 @@ for (const [status, code, advice] of [
   [
     403,
     "release.REQUEST_REFUSED",
-    /fix: The service refused the request\. Before rerunning, fix the request, its credentials or the state it conflicts with/,
+    /fix: The service did not accept the request\. Before rerunning, fix the request, its credentials or the state it conflicts with/,
   ],
+  // A redirect that is not followed has changed nothing either.
+  [307, "release.REQUEST_REFUSED", /fix: The service did not accept the request\./],
 ] as const)
   test(`an HTTP ${status} answer is reported as what it is`, async (context) => {
     const origin = await listening(
@@ -311,7 +367,7 @@ test("a refusal raised inside another error is still reported as the refusal", a
       "Release stopped: LiveModuleUnavailable",
       "  why: The live script's `main` module could not be read.",
       "  fix: Do not run the class change; read the live script again.",
-      "  raised inside: Error",
+      "  raised inside: Error: The deploy step failed",
       "  script: PoolWorker",
     ].join("\n"),
   );
@@ -351,7 +407,11 @@ test("every violation of a refused plan is listed, with its reason and fix or th
           fqn: "PoolWorker",
           type: "Cloudflare.Worker",
           action: "update",
-          change: ["bindings.PoolRuntimeBlue: present -> absent"],
+          change: [
+            "bindings.PoolRuntimeBlue: present -> absent",
+            "props.script.id: 1a2b -> 3c4d",
+            { path: "bindings.POOL.ID", from: 1, to: null },
+          ],
           why: "A release never removes a Worker binding: the running code may still read it.",
           fix: "Restore the binding in the Worker's declaration.",
         },
@@ -363,7 +423,7 @@ test("every violation of a refused plan is listed, with its reason and fix or th
   assert.equal(report.error.message, "2 violations refused this step");
   assert.match(
     line,
-    /\n {2}violation: binding-removed PoolWorker Cloudflare\.Worker update\n {4}change: bindings\.PoolRuntimeBlue: present -> absent\n {4}why: A release never removes a Worker binding: the running code may still read it\.\n {4}fix: Restore the binding in the Worker's declaration\.\n/,
+    /\n {2}violation: binding-removed PoolWorker Cloudflare\.Worker update\n {4}change: bindings\.PoolRuntimeBlue: present -> absent\n {4}change: props\.script\.id: 1a2b -> 3c4d\n {4}change: \{"path":"bindings\.POOL\.ID","from":1,"to":null\}\n {4}why: A release never removes a Worker binding: the running code may still read it\.\n {4}fix: Restore the binding in the Worker's declaration\.\n/,
   );
   assert.match(
     line,
@@ -388,6 +448,7 @@ test("nothing a refusal carries can put private text or a command into the log",
         resource: `postgres://admin:${token}@db.internal.example.com:5432/prod`,
         path: "/Users/alice/work/basalt/secret.json",
         value: "kept 'quoted name'\n::error::spoofed",
+        // A hostname written bare in a refusal's own text stays: no rule can tell it from a path.
         why: `Provider said: {"token":"${token}"} from api.Example.Com`,
         fix: "Ask ops@example.com.\n::stop-commands::x",
         link: `https://dash.cloudflare.com/${account}/workers?token=${token}`,
@@ -405,7 +466,7 @@ test("nothing a refusal carries can put private text or a command into the log",
     );
     assert.match(
       line,
-      /\n {2}why: Provider said: \{"token":\[redacted\]\} from \[host\]\n {2}fix: Ask \[email\]\. ::stop-commands::x\n/,
+      /\n {2}why: Provider said: \{"token":\[redacted\]\} from api\.Example\.Com\n {2}fix: Ask \[email\]\. ::stop-commands::x\n/,
     );
     // No printed line starts a workflow command, and the annotation is the only `::error`.
     assert.ok(line.split("\n").every((printed) => !/^\s*::|##\[/u.test(printed)));
@@ -418,7 +479,6 @@ test("nothing a refusal carries can put private text or a command into the log",
       "jane@example.com",
       "ops@example.com",
       "10.0.0.5",
-      "api.Example.Com",
       "a1a1a1a1",
     ]);
   }
@@ -483,6 +543,41 @@ test("a failed command reaches the error line and the summary with the end of it
     ),
   );
   noLeak(all, [token, account, "api.cloudflare.com"]);
+});
+
+test("every failed command among collected failures keeps its output, wherever it sits", async (context) => {
+  const failed = (line: string) =>
+    captureChild(
+      process.execPath,
+      ["-e", `console.error(${JSON.stringify(line)}); process.exit(1)`],
+      {
+        env: { ...environment, PATH: process.env.PATH },
+      },
+    ).then(
+      () => assert.fail("The command was expected to fail"),
+      (error: unknown) => error,
+    );
+  const { line } = await reported(
+    context,
+    new AggregateError(
+      [
+        new Error("Preview basalt cleanup failed", { cause: new Error("state is locked") }),
+        new Error("Preview database cleanup failed", { cause: await failed("database refused") }),
+        new Error("Preview artifacts cleanup failed", { cause: await failed("bucket not empty") }),
+      ],
+      "Preview cleanup did not finish",
+    ),
+    "Preview stopped",
+  );
+
+  assert.match(
+    line,
+    /\n {2}failures collected: 3; the cause chain follows the first\n {2}failure 1: Error: Preview basalt cleanup failed\n {2}failure 2: Error: Preview database cleanup failed\n {2}failure 3: Error: Preview artifacts cleanup failed\n/,
+  );
+  assert.match(
+    line,
+    /\n {4}--- node failed with exit 1\n {4}--- stderr\n {4}database refused\n {4}--- node failed with exit 1\n {4}--- stderr\n {4}bucket not empty$/,
+  );
 });
 
 test("a command that prints past its limit is stopped and says so", async () => {
@@ -574,7 +669,7 @@ test("the same transport failure is recognised when the command runs under Bun",
   assert.equal(result.stdout.trim(), "release.UNREACHABLE");
   assert.match(
     result.stderr,
-    /\n {2}fix: This request never left, so it changed nothing at the service\. Rerun/,
+    /\n {2}fix: This attempt could not open a connection, so it sent nothing\. Rerun it\./,
   );
   // Bun names the refusal on the fetch error itself, under either spelling.
   assert.match(result.stderr, /\n {2}cause 1: TypeError (?:ConnectionRefused|ECONNREFUSED): /);
@@ -587,14 +682,34 @@ test("structuredFailure gives the same report without printing", () => {
   assert.equal(report.error.message, "TypeError: fetch failed for [redacted]");
   assert.deepEqual(report.causes, []);
 
-  // A code bug's message names the identifier at fault.
-  const bug = structuredFailure(
-    new TypeError("Cannot read properties of undefined (reading 'main')"),
+  // Fetch quotes the value it refused, which here is a credential.
+  const quoted = structuredFailure(
+    Reflect.apply(
+      () => {
+        try {
+          new Headers().append("authorization", "tok-made-up\nsecond-half");
+        } catch (error) {
+          return error;
+        }
+      },
+      undefined,
+      [],
+    ),
     environment,
   );
   assert.equal(
-    bug.error.message,
-    "TypeError: Cannot read properties of undefined (reading 'main')",
+    quoted.error.message,
+    "TypeError: Headers.append: [value] is an invalid header value.",
+  );
+
+  // Whatever was thrown is reported, text or nothing at all.
+  assert.equal(
+    structuredFailure("the step gave up", environment).error.message,
+    "A failure of an unlisted type: the step gave up",
+  );
+  assert.equal(
+    structuredFailure(undefined, environment).error.message,
+    "A failure of an unlisted type",
   );
 
   // A failed command's exit status is not an HTTP status.

@@ -14,7 +14,7 @@ import { structuredFailure, type FailureReport } from "./structure.ts";
 export { createError, structuredFailure, type FailureReport };
 
 /** Plain lines for a terminal or an Actions log. */
-export function failureText(
+function failureText(
   report: FailureReport,
   title: string,
   environment: NodeJS.ProcessEnv = process.env,
@@ -38,7 +38,7 @@ export function failureText(
 }
 
 /** The same report for the step summary, as text so nothing in it is read as Markdown. */
-export const failureSummary = (
+const failureSummary = (
   report: FailureReport,
   title: string,
   environment: NodeJS.ProcessEnv = process.env,

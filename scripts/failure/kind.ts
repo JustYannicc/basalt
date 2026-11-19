@@ -22,7 +22,7 @@ export const failures = defineErrorCatalog("release", {
   },
   UNREACHABLE: {
     message: what,
-    fix: "This request never left, so it changed nothing at the service. Rerun; if it repeats, check the service's status.",
+    fix: "This attempt could not open a connection, so it sent nothing. Rerun it. If the request was redirected or retried before this attempt, check first whether a write took effect.",
   },
   OUTCOME_UNKNOWN: {
     message: what,
@@ -34,7 +34,7 @@ export const failures = defineErrorCatalog("release", {
   },
   REQUEST_REFUSED: {
     message: what,
-    fix: "The service refused the request. Before rerunning, fix the request, its credentials or the state it conflicts with, as the status and cause chain say.",
+    fix: "The service did not accept the request. Before rerunning, fix the request, its credentials or the state it conflicts with, as the status and cause chain say.",
   },
   ANSWER_UNREADABLE: {
     message: what,
@@ -51,41 +51,59 @@ export const failures = defineErrorCatalog("release", {
 });
 type Kind = Exclude<keyof typeof failures, "_prefix" | "_codes" | "CHILD_FAILED">;
 
+// What fetch says when it refuses its own arguments, under Node and under Bun.
+const refusedArguments =
+  /^(?:Request with GET\/HEAD method cannot have body|Request cannot be constructed|RequestInit: |Headers\.\w+: |Header '[^']*' has invalid value)|is not a valid HTTP method\.$/u;
+
 /** What a rerun of one failed request would do, or undefined when it was not a request. */
 function requestKind(error: unknown, environment: NodeJS.ProcessEnv): Kind | undefined {
   const all = causeChain(error, environment);
   const status = all.find((entry) => entry.status !== undefined)?.status;
-  if (status !== undefined)
-    return status === 408 || status === 425 || status === 429 || status >= 500
-      ? "SERVICE_BUSY"
-      : status >= 400
-        ? "REQUEST_REFUSED"
-        : "ANSWER_UNREADABLE";
+  if (status !== undefined) {
+    if (status === 408 || status === 425 || status === 429 || status >= 500) return "SERVICE_BUSY";
+    // A redirect that was not followed changed nothing: the request went to the wrong place.
+    return status >= 300 ? "REQUEST_REFUSED" : "ANSWER_UNREADABLE";
+  }
   const coded = (set: Set<string>) =>
     all.some((entry) => entry.code !== undefined && set.has(entry.code));
   if (coded(neverSent)) return "UNREACHABLE";
   if (coded(interrupted)) return "OUTCOME_UNKNOWN";
   if (!all.some((entry) => entry.request || entry.type === "HttpClientError")) return undefined;
-  // Nothing was sent when the request could not be built or fetch refused its arguments. fetch
-  // raises that as a TypeError of its own; a network failure is "fetch failed" around a cause.
+  // Nothing was sent when the request could not be built or fetch refused its arguments. Any
+  // other failure of a request, known or not, leaves the outcome open.
   const reason = all.find((entry) => entry.reason !== undefined)?.reason;
   const leaf = rawChain(error).at(-1);
+  const message = field(leaf, "message");
   const argument =
-    leaf instanceof TypeError &&
-    field(leaf, "code") === undefined &&
-    field(leaf, "message") !== "fetch failed";
+    leaf instanceof TypeError && typeof message === "string" && refusedArguments.test(message);
   return reason === "EncodeError" || reason === "InvalidUrlError" || coded(badArguments) || argument
     ? "REQUEST_INVALID"
     : "OUTCOME_UNKNOWN";
 }
 
-/** A collected failure is only as safe to rerun as its least safe member. */
-export function failureKind(error: unknown, environment: NodeJS.ProcessEnv): Kind {
+// From the kind a rerun could hurt most to the one it cannot hurt.
+const leastSafeFirst: Kind[] = [
+  "ANSWER_UNREADABLE",
+  "OUTCOME_UNKNOWN",
+  "SERVICE_BUSY",
+  "REQUEST_REFUSED",
+  "REQUEST_INVALID",
+];
+
+function kindOf(error: unknown, environment: NodeJS.ProcessEnv, depth: number): Kind | undefined {
   const group = rawChain(error)
     .map(members)
     .find((list) => list.length > 1);
-  if (!group) return requestKind(error, environment) ?? "UNEXPECTED";
-  const kinds = group.map((member) => requestKind(member, environment));
-  if (kinds.every((kind) => kind === "UNREACHABLE")) return "UNREACHABLE";
-  return kinds.find((kind) => kind !== undefined && kind !== "UNREACHABLE") ?? "UNEXPECTED";
+  if (!group) return requestKind(error, environment);
+  // Past this depth nothing is claimed about a rerun.
+  if (depth > 4) return undefined;
+  const kinds = group.map((member) => kindOf(member, environment, depth + 1));
+  return (
+    leastSafeFirst.find((kind) => kinds.includes(kind)) ??
+    (kinds.every((kind) => kind === "UNREACHABLE") ? "UNREACHABLE" : undefined)
+  );
 }
+
+/** Collected failures are only as safe to rerun as the least safe of them, however they nest. */
+export const failureKind = (error: unknown, environment: NodeJS.ProcessEnv): Kind =>
+  kindOf(error, environment, 0) ?? "UNEXPECTED";

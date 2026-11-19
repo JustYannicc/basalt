@@ -8,18 +8,20 @@ export interface ChildReport {
   signal: string | null;
   /** Why the command never ran or was stopped, when it did not simply exit. */
   stopped?: "not-started" | "output-limit";
+  /** The system's reason a command could not start, such as `ENOENT`. */
+  code?: string;
   /** The last output lines, already public. */
   tail: string;
 }
 
 /** A command that did not succeed, with the end of what it printed. */
 export class ChildProcessFailure extends Error {
-  readonly report: ChildReport;
+  declare readonly report: ChildReport;
 
   constructor(report: ChildReport) {
     const how =
       report.stopped === "not-started"
-        ? "could not start"
+        ? `could not start${report.code ? ` (${report.code})` : ""}`
         : report.stopped === "output-limit"
           ? "printed more than its output limit and was stopped"
           : `failed with ${report.signal ?? `exit ${report.exitCode}`}`;
@@ -27,7 +29,8 @@ export class ChildProcessFailure extends Error {
       `${report.command} ${how}${report.tail ? `\nLast output lines, credentials removed:\n${report.tail}` : ""}`,
     );
     this.name = "ChildProcessFailure";
-    this.report = report;
+    // Not enumerable: an uncaught failure would print the output again under its message.
+    Object.defineProperty(this, "report", { value: report });
   }
 }
 
@@ -92,7 +95,15 @@ export function captureChild(
         .join("\n");
       reject(new ChildProcessFailure({ command: name, ...failure, tail: output }));
     };
-    child.once("error", () => settle({ exitCode: null, signal: null, stopped: "not-started" }));
+    child.once("error", (error) => {
+      const code = String(Reflect.get(error, "code"));
+      settle({
+        exitCode: null,
+        signal: null,
+        stopped: "not-started",
+        ...(/^E[A-Z]{2,14}$/u.test(code) ? { code } : {}),
+      });
+    });
     child.once("exit", (exitCode, signal) => {
       const finish = () =>
         settle(

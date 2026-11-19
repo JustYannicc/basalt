@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ChildProcessFailure } from "./failure/child.ts";
@@ -68,7 +68,10 @@ test("the command's output still reaches the caller's own output, complete and a
 test("a command that cannot start, or dies from a signal, says so", () => {
   const missing = failure(() => run("basalt-no-such-command", []));
   assert.equal(missing.report.stopped, "not-started");
-  assert.match(missing.message, /^basalt-no-such-command could not start/);
+  assert.equal(missing.message, "basalt-no-such-command could not start (ENOENT)");
+  // A directory that does not exist is the command's failure to start, not this module's.
+  const nowhere = failure(() => run("sh", ["-c", "true"], "/basalt-no-such-directory"));
+  assert.equal(nowhere.message, "sh could not start (ENOENT)");
 
   const killed = failure(() => run(node, ["-e", "process.kill(process.pid, 'SIGKILL')"]));
   assert.equal(killed.report.signal, "SIGKILL");
@@ -157,13 +160,19 @@ test("an interrupt sent to the whole group reaches the command once", async () =
   assert.equal(output, "ready\ninterrupts 1\n", errors);
 });
 
-test("a failed command's last lines survive when the caller runs under Bun", () => {
+test("under Bun the command gets its last lines reported and only the caller's environment", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "basalt-run-bun-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  // Bun loads an `.env` from the directory it starts in, and the command's directory has one.
+  writeFileSync(join(directory, ".env"), "PROBE_FROM_DOTENV=leaked\n");
+  const command = 'echo "probe=${PROBE_FROM_DOTENV:-unset} in $(basename "$PWD")"; exit 4';
   const result = spawnSync(
     "bun",
     [
       "-e",
       `import { run } from ${JSON.stringify(module)};
-       try { run("sh", ["-c", "echo deploy refused; exit 4"]); } catch (error) { console.log(JSON.stringify(error.report)); }`,
+       try { run("sh", ["-c", ${JSON.stringify(command)}], ${JSON.stringify(directory)}, { PATH: process.env.PATH }); }
+       catch (error) { console.log(JSON.stringify(error.report)); }`,
     ],
     bounded,
   );
@@ -173,6 +182,6 @@ test("a failed command's last lines survive when the caller runs under Bun", () 
     command: "sh",
     exitCode: 4,
     signal: null,
-    tail: "--- stdout\ndeploy refused",
+    tail: `--- stdout\nprobe=unset in ${basename(directory)}`,
   });
 });
