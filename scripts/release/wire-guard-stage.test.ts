@@ -153,3 +153,23 @@ test("a read of production sends reads only; any write is refused before it leav
     ["GET"],
   );
 });
+
+test("an API token delete is refused through the real base path too", async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const outcome = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const guard = yield* install({});
+        return yield* Effect.promise(() =>
+          guard
+            .fetch(`${server.base}/client/v4/user/tokens/token-id`, { method: "DELETE" })
+            .then((response) => response.status)
+            .catch((error: unknown) => (error instanceof WireRefused ? error.resource : "error")),
+        );
+      }),
+    ),
+  );
+  assert.equal(outcome, "API token token-id");
+  assert.deepEqual(server.received, []);
+});
