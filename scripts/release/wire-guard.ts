@@ -76,6 +76,8 @@ export interface WireGuardConfig {
   readonly deletable?: ReadonlyArray<{ readonly kind: string; readonly id: string }>;
   /** A disposable stage: every write must target what the stage owns (`stage-writes.ts`). */
   readonly stage?: StageScope;
+  /** A read of production (plan, preflight, counts): every method but GET and HEAD is refused. */
+  readonly readOnly?: boolean;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -108,6 +110,10 @@ const REASONS = {
   store: [
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
     "Upgrade or bootstrap the store by hand under its own approval.",
+  ],
+  readonly: [
+    "This run only reads production, so it sends nothing but reads; this request would write.",
+    "Find what tried to write during a read. A plan, preflight or count never writes.",
   ],
   stage: [
     "A disposable stage shares the account, the deploy token and the State store with production, so it may write only what it owns: what its own State rows record, what this run created, or what is named for the stage. This target is none of those, or the guard cannot place it.",
@@ -507,6 +513,14 @@ const check = (
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
     if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))
       return yield* checkStoreCredentialRead(request, at("State store", "edge-preview"));
+    // Alchemy's read of the store token above is the one write-shaped request a read may send.
+    if (
+      config.readOnly &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !path.endsWith(`/workers/scripts/${PROBE_SCRIPT}`)
+    )
+      return yield* refuse(at("request", "{id}"), "readonly", "method", method);
     if (
       method !== "GET" &&
       method !== "HEAD" &&

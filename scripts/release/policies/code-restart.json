@@ -25,7 +25,8 @@
     "removals": [],
     "poolContainer": {
       "fqn": "PoolContainer",
-      "image": ""
+      "image": "",
+      "noop": true
     },
     "poolWorker": "PoolWorker",
     "artifactsCredentials": "ArtifactsCredentials",

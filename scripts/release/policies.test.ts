@@ -96,10 +96,25 @@ test("only the healing release declares a root restart, bounded, and it is other
   const code = await read("code");
   const within = healing.acceptance?.rootRestart.withinSeconds ?? 0;
   assert.ok(within >= 60 && within <= 900, `bound ${within}`);
-  // No general loosening: the plan rules, include, wire rules and switches are the code policy's.
+  // No general loosening: the plan rules, include, wire rules and switches are the code policy's,
+  // and the root may not move at all.
+  assert.equal(healing.check.poolContainer.noop, true);
   assert.deepEqual(
-    { check: healing.check, include: healing.include, wire: healing.wire, env: healing.env },
-    { check: code.check, include: code.include, wire: code.wire, env: code.env },
+    {
+      check: {
+        ...healing.check,
+        poolContainer: { ...healing.check.poolContainer, noop: undefined },
+      },
+      include: healing.include,
+      wire: healing.wire,
+      env: healing.env,
+    },
+    {
+      check: { ...code.check, poolContainer: { ...code.check.poolContainer, noop: undefined } },
+      include: code.include,
+      wire: code.wire,
+      env: code.env,
+    },
   );
 });
 

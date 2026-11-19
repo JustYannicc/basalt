@@ -12,7 +12,11 @@ export const ReleasePolicy = Schema.Struct({
   check: Schema.Struct({
     ...checkFields,
     // The pin carries the account id, so the file leaves it empty and the run supplies it.
-    poolContainer: Schema.Struct({ fqn: poolContainer.fields.fqn, image: Schema.Literal("") }),
+    poolContainer: Schema.Struct({
+      fqn: poolContainer.fields.fqn,
+      image: Schema.Literal(""),
+      noop: poolContainer.fields.noop,
+    }),
   }),
   include: Schema.optional(Schema.Array(Schema.String)),
   wire: Schema.Struct({
