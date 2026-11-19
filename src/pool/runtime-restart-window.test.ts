@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
-import { RuntimeAdmissionLeases } from "./runtime-slots/admission-lease.ts";
 import { RuntimeSlotRouter } from "./runtime-slots/router.ts";
 import {
   RuntimeSlotStorage,
@@ -22,28 +21,6 @@ const boot = (bootId: string): SlotIdentity => ({
   imageDigest: `sha256:${"a".repeat(64)}`,
   imageInput: "image",
   bootId,
-});
-
-test("an endpoint's proof lasts exactly its lease, per boot", () => {
-  let now = 1_000;
-  const leases = new RuntimeAdmissionLeases(() => now);
-  const current = boot("boot-1");
-  assert.equal(leases.current(current), false);
-  // A healthy read can grant a short lease that runs out before the next read.
-  leases.prove(current, 1_147);
-  now += 1_146;
-  assert.equal(leases.current(current), true);
-  now += 1;
-  assert.equal(leases.current(current), false, "a spent lease reads readiness again");
-  leases.prove(current, 1_500);
-  leases.prove(current, 200);
-  now += 1_400;
-  assert.equal(leases.current(current), true, "a shorter later proof never shortens the lease");
-  assert.equal(leases.current(boot("boot-2")), false, "a replaced boot has no proof");
-  leases.prove(current, 0);
-  leases.prove(current, Number.NaN);
-  leases.forget(current);
-  assert.equal(leases.current(current), false);
 });
 
 async function routerWith(dirty: boolean, revision: number) {

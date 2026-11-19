@@ -106,7 +106,7 @@ export async function handoffRuntime(
   const policies = new Map<string, NativeMembershipPolicy>();
   const helper = { starts: 0, witness: undefined as object | undefined };
   const hooks = {
-    health: async () => {},
+    health: async (): Promise<Response | void> => {},
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
     connections: async () => 0,
@@ -208,8 +208,9 @@ export async function handoffRuntime(
               );
               if (url.pathname === "/ready") {
                 calls.health++;
-                await hooks.health();
+                const answered = await hooks.health();
                 request.signal.throwIfAborted();
+                if (answered) return answered;
                 const headers = new Headers({ [policyHealthHeader]: "1500" });
                 if (startup.env.POOL_LAUNCH_GENERATION) {
                   headers.set(launchGenerationHeader, startup.env.POOL_LAUNCH_GENERATION);

@@ -381,28 +381,31 @@ test("the production runtime DO serves a health read after reconstruction withou
   assert.equal(writes, 0);
 });
 
-test("a request admitted on the endpoint's own lease is dispatched though a second readiness read would fail", async (context) => {
+test("every model send reads readiness again, so a readiness refusal right after admission is never sent", async (context) => {
   const f = await fixture();
   context.after(f.cleanup);
   const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
-  // The controller's admission read: the endpoint answers its health with a current lease.
+  // The controller's admission read grants a fresh lease.
   await f.endpoint.health(identity, AbortSignal.timeout(2_000));
   const reads = f.calls.health;
-  // Readiness then fails for a second read, as when it answers late or flips.
-  f.hooks.health = async () => {
-    throw new TypeError("readiness transport failed");
-  };
-  const response = await f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317);
-  assert.equal(response.status, 200);
-  assert.equal(f.calls.health, reads, "no second readiness read inside the endpoint's lease");
-  await response.body?.cancel();
-
-  // Once that lease is spent, dispatch reads readiness again, and a failed read is degraded
-  // readiness the caller can wait on, not a defect.
-  const now = performance.now();
-  context.mock.method(performance, "now", () => now + 1_600);
+  // Readiness then refuses, as it does when the policy plugin fuses. The endpoint can't tell a fuse
+  // from a flip, so the lease it just granted must not carry the request past that refusal.
+  f.hooks.health = async () => new Response("policy unavailable", { status: 503 });
   await assert.rejects(
     f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
     PoolRuntimeUnhealthy,
   );
+  assert.equal(f.calls.health, reads + 1, "the send read readiness again");
+  assert.equal(f.calls.model, 0, "nothing reached the model port");
+
+  // A readiness read that fails in transport is degraded readiness the caller can wait on, not a
+  // defect, and it is never sent either.
+  f.hooks.health = async () => {
+    throw new TypeError("readiness transport failed");
+  };
+  await assert.rejects(
+    f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
+    PoolRuntimeUnhealthy,
+  );
+  assert.equal(f.calls.model, 0);
 });
