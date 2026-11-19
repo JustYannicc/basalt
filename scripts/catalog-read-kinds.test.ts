@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   findOperation,
@@ -12,14 +12,55 @@ const read = (path: string) => JSON.parse(readFileSync(new URL(path, import.meta
 const pins: ReadKindPins = read("../src/catalog/read-kinds.json");
 const safe = new Set(["get", "head", "options", "query"]);
 
-test("every operation a carried app reclassifies as a read is pinned, and nothing else", () => {
-  for (const app of ["exa", "firecrawl"]) {
+/** Every package the catalog serves, named like its pins: `<app>.json` or `<app>/source.json`. */
+const catalogPackages = () =>
+  readdirSync(new URL("../src/catalog/", import.meta.url), { recursive: true })
+    .map(String)
+    .filter((path) => path.endsWith(".json") && !path.endsWith(".published.json"))
+    .flatMap((path) => {
+      const source = read(`../src/catalog/${path}`);
+      if (!Array.isArray(source?.files)) return [];
+      const app = path.replace(/(\/source)?\.json$/, "");
+      const code = (source.files as { path: string; content: unknown }[]).filter(
+        (file) => /\.[mc]?[jt]s$/.test(file.path) && typeof file.content === "string",
+      );
+      return [{ app, code: code.map((file) => file.content as string) }];
+    });
+// A package reclassifies when it sets OpenAPI `kinds` and one of its operations to a read. That
+// over-matches (an API key sent `in: "query"` counts), which only asks for a recorded reason.
+const reclassifies = (code: readonly string[]) =>
+  code.some((content) => /\bkinds\b\s*[:,}=]/.test(content)) &&
+  code.some((content) => /["'`]query["'`]/.test(content));
+
+/**
+ * Packages that reclassify reads without pins, and why. The pins guard a live document that can
+ * change under a reviewed read; every other package that reclassifies needs pins.
+ */
+const unpinned: Readonly<Record<string, string>> = {};
+
+test("every catalog package that reclassifies operations as reads is pinned or has a reason", () => {
+  const found = catalogPackages()
+    .filter(({ code }) => reclassifies(code))
+    .map(({ app }) => app)
+    .sort();
+  const missing = found.filter((app) => pins[app] === undefined && unpinned[app] === undefined);
+  assert.deepEqual(missing, [], "these packages reclassify reads with no pins and no reason");
+  const stale = [...Object.keys(pins), ...Object.keys(unpinned)].filter(
+    (app) => !found.includes(app),
+  );
+  assert.deepEqual(stale, [], "these pinned or excused packages no longer reclassify reads");
+  const both = Object.keys(pins).filter((app) => unpinned[app] !== undefined);
+  assert.deepEqual(both, [], "these packages are both pinned and excused");
+});
+
+test("every pinned app's pins are exactly the operations it reclassifies as reads", () => {
+  for (const app of Object.keys(pins)) {
     const kinds: Record<string, string> = read(`../src/catalog/tests/${app}-kinds.json`);
     const document = read(`../src/catalog/tests/${app}-openapi.json`);
     const reclassified = Object.entries(kinds)
       .filter(([operationId, kind]) => {
         const found = findOperation(document, operationId);
-        return kind === "query" && found !== undefined && !safe.has(found.method);
+        return kind !== "mutation" && !(found !== undefined && safe.has(found.method));
       })
       .map(([operationId]) => operationId)
       .sort();
@@ -107,5 +148,69 @@ test("drift names the app, the operation and the change", () => {
   Reflect.deleteProperty(gone.paths, "/scrape");
   assert.deepEqual(readKindDrift("example", pin, gone), [
     "example/scrape: the document no longer declares this operation",
+  ]);
+});
+
+test("an operationId declared more than once refuses, wherever the copy is listed", () => {
+  const original = document();
+  const pin = pinned(original);
+  const refusal = (where: string) =>
+    `example/scrape: 2 operations declare this operationId (${where}), so its read kind would cover each of them`;
+  // The framework keys kinds by operationId and renames the copy's tool (scrapeAndExtractFromUrl
+  // on POST /scrape/execute becomes scrapeAndExtractFromUrlExecute), so the copy would be a read.
+  const after = document();
+  Object.assign(after.paths, { "/scrape/execute": { post: after.paths["/scrape"].post } });
+  assert.deepEqual(readKindDrift("example", pin, after), [
+    refusal("post /scrape, post /scrape/execute"),
+  ]);
+  const before = document();
+  const scrape = before.paths["/scrape"];
+  Reflect.deleteProperty(before.paths, "/scrape");
+  Object.assign(before.paths, { "/scrape/execute": { post: scrape.post }, "/scrape": scrape });
+  assert.deepEqual(readKindDrift("example", pin, before), [
+    refusal("post /scrape/execute, post /scrape"),
+  ]);
+  // The framework follows a path item's reference, so a referenced copy is a copy too.
+  const referenced = document();
+  Object.assign(referenced.paths, { "/scrape/execute": { $ref: "#/paths/~1scrape" } });
+  assert.deepEqual(readKindDrift("example", pin, referenced), [
+    refusal("post /scrape, post /scrape/execute"),
+  ]);
+  // Another method on the same path counts as well.
+  const deleted = document();
+  Object.assign(deleted.paths["/scrape"], { delete: deleted.paths["/scrape"].post });
+  assert.deepEqual(readKindDrift("example", pin, deleted), [
+    refusal("post /scrape, delete /scrape"),
+  ]);
+});
+
+test("a missing operationId refuses with the operation it left", () => {
+  const pin = pinned(document());
+  const absent = document();
+  Reflect.deleteProperty(absent.paths["/scrape"].post, "operationId");
+  // YAML writes an empty `operationId:` as null, which the framework reads as absent.
+  const empty = document();
+  Object.assign(empty.paths["/scrape"].post, { operationId: null });
+  for (const value of [absent, empty])
+    assert.deepEqual(readKindDrift("example", pin, value), [
+      "example/scrape: post /scrape no longer declares an operationId",
+    ]);
+});
+
+test("a malformed operationId refuses, on the pinned operation or any other", () => {
+  const pin = pinned(document());
+  const pinnedNumber = document();
+  Object.assign(pinnedNumber.paths["/scrape"].post, { operationId: 42 });
+  assert.deepEqual(readKindDrift("example", pin, pinnedNumber), [
+    "example: post /scrape declares a non-string operationId, 42",
+    "example/scrape: post /scrape no longer declares this operationId",
+  ]);
+  // An array whose only item is a pinned id would name it once coerced to a property key.
+  const other = document();
+  Object.assign(other.paths, {
+    "/scrape/execute": { post: { ...other.paths["/scrape"].post, operationId: ["scrape"] } },
+  });
+  assert.deepEqual(readKindDrift("example", pin, other), [
+    'example: post /scrape/execute declares a non-string operationId, ["scrape"]',
   ]);
 });

@@ -109,6 +109,19 @@ try {
         JSON.stringify(options),
       );
     }
+    // Kinds are keyed by operationId and colliding tool names get longer, so a copy of a reviewed
+    // read on another path is a query named scraping.scrapeAndExtractFromUrlExecute. Nobody
+    // reviewed it, so it asks like a mutation even for a plain request; the reviewed scrape keeps
+    // its name and its input guard.
+    const copied = JSON.parse(document);
+    copied.paths["/scrape/execute"] = { post: copied.paths["/scrape"].post };
+    const { tools: withCopy } = await openapiToolNames({ ...options, source: { document: copied } });
+    const at = (path) => withCopy.find((tool) => tool.path === path);
+    const plain = { body: { url: "https://example.com" } };
+    assert.equal(at("/scrape/execute").name, "scraping.scrapeAndExtractFromUrlExecute");
+    assert.equal(await decide(at("/scrape/execute"), plain), "user-approval");
+    assert.equal(at("/scrape").name, "scraping.scrapeAndExtractFromUrl");
+    assert.equal(await decide(at("/scrape"), plain), "approved");
     console.log("Firecrawl generated operation kinds and approvals PASS");
   }
 } finally {
