@@ -113,7 +113,7 @@ const hash = (value: ReturnType<typeof document>) =>
   operationInputSha256(value, findOperation(value, "scrape")!);
 const pinned = (value: ReturnType<typeof document>) => ({
   source: "https://api.example.test/openapi.json",
-  operations: { scrape: { method: "post", path: "/scrape", inputSha256: hash(value) } },
+  operations: { scrape: { method: "post", path: "/scrape", tags: null, inputSha256: hash(value) } },
 });
 
 test("wording and samples leave the input hash unchanged", () => {
@@ -224,6 +224,64 @@ test("a reference the check cannot follow refuses, rather than hash the referenc
     ]);
     assert.throws(() => hash(value), /^Error: post \/scrape: .* cannot be followed/, reference);
   }
+});
+
+test("a server the hash cannot stand for refuses: variables, servers not in a list, not OpenAPI 3", () => {
+  const pin = pinned(document());
+  // The framework fills a variable from its default, which the hash drops when it is named like
+  // wording, and a path item's server takes undeclared variables from the document's server.
+  const wordlike = document();
+  Object.assign(wordlike, {
+    servers: [
+      {
+        url: "https://api.example.test/{description}",
+        variables: { description: { default: "v2" } },
+      },
+    ],
+  });
+  const inherited = document();
+  Object.assign(inherited, {
+    servers: [{ url: "https://api.example.test", variables: { v: { default: "v2" } } }],
+  });
+  Object.assign(inherited.paths["/scrape"], { servers: [{ url: "https://api.example.test/{v}" }] });
+  // The framework skips path item servers that are not a list and uses the document's.
+  const unlisted = document();
+  Object.assign(unlisted.paths["/scrape"], { servers: {} });
+  // Swagger 2.0 builds the address from host, basePath and schemes instead.
+  const swagger = document();
+  Reflect.deleteProperty(swagger, "openapi");
+  Object.assign(swagger, { swagger: "2.0", host: "api.example.test", basePath: "/v2" });
+  for (const [value, reason] of [
+    [wordlike, 'its server "https://api.example.test/{description}" has variables'],
+    [inherited, 'its server "https://api.example.test/{v}" has variables'],
+    [unlisted, "its path item servers are not a list"],
+    [swagger, "its document is not OpenAPI 3.x"],
+  ] as const) {
+    assert.deepEqual(readKindDrift("example", pin, value), [
+      `example/scrape: ${reason}, so the hash would not cover the address it is sent to`,
+    ]);
+    assert.throws(() => hash(value), /^Error: post \/scrape: its /, reason);
+  }
+});
+
+test("a reviewed read's tags are pinned, since they name its tool", () => {
+  // A tag that reads like the operationId drops the id from the tool's name, and Firecrawl's
+  // approval policy recognises its reads by that name.
+  const pin = pinned(document());
+  const tagged = document();
+  Object.assign(tagged.paths["/scrape"].post, { tags: ["Scrape"] });
+  assert.deepEqual(readKindDrift("example", pin, tagged), [
+    'example/scrape: tags null → ["Scrape"]',
+  ]);
+});
+
+test("every pin reads the document its package serves", () => {
+  const packages = new Map(catalogPackages().map(({ app, code }) => [app, code]));
+  for (const [app, pin] of Object.entries(pins))
+    assert.ok(
+      packages.get(app)?.some((content) => content.includes(`url: ${JSON.stringify(pin.source)}`)),
+      `${app} does not serve ${pin.source}`,
+    );
 });
 
 test("an operationId declared more than once refuses, wherever the copy is listed", () => {
