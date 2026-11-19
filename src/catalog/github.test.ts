@@ -70,16 +70,14 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
     "$.POST /applications/{client_id}/token.token",
     "$.PATCH /applications/{client_id}/token.token",
   ]);
-  // GitHub's MCP server answering `get_file_contents` for a file too large to show, built as its
-  // source and tests at commit df32d7ec build it, for a private file whose link carries a token.
+  // GitHub's MCP server answering `get_file_contents` for a file too large to show, as its source
+  // and tests at commit df32d7ec build it, for a private file whose link carries a token. A client
+  // on a protocol before 2026-07-28, as Executor's is, gets no output schema or structured content.
   const mcp = JSON.parse(
     readFileSync(new URL("./tests/github-mcp.json", import.meta.url), "utf8"),
   ) as Record<string, unknown>;
   const fileTooLarge = mcp["tools/call get_file_contents"];
-  assert.deepEqual(credentialPaths(fileTooLarge), [
-    "$.content[0].text",
-    "$.structuredContent.content[0].text",
-  ]);
+  assert.deepEqual(credentialPaths(fileTooLarge), ["$.content[0].text"]);
   const directory = mkdtempSync(join(tmpdir(), "github-served-"));
   try {
     const source = join(directory, "github.json");

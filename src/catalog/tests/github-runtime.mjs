@@ -98,12 +98,13 @@ const routes = new Map([
 ]);
 // GitHub answers these with 201 Created; every other route with 200.
 const created = new Set([`POST ${repository}/actions/runners/registration-token`]);
-// GitHub's MCP server, answering in plain JSON as Streamable HTTP allows.
+// GitHub's MCP server, answering in plain JSON as Streamable HTTP allows. A body-less answer
+// arrives over HTTP as an empty body.
 const mcpAnswer = async (request) => {
-  if (request.method === "GET") return new Response(null, { status: 405 });
-  if (request.method === "DELETE") return new Response(null, { status: 200 });
+  if (request.method === "GET") return new Response("", { status: 405 });
+  if (request.method === "DELETE") return new Response("", { status: 200 });
   const message = await request.json();
-  if (message.id === undefined) return new Response(null, { status: 202 });
+  if (message.id === undefined) return new Response("", { status: 202 });
   const key =
     message.method === "tools/call" ? `tools/call ${message.params.name}` : message.method;
   assert.ok(Object.hasOwn(mcp, key), `Unexpected MCP request ${key}`);
