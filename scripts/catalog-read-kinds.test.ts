@@ -177,11 +177,31 @@ test("an operationId declared more than once refuses, wherever the copy is liste
   assert.deepEqual(readKindDrift("example", pin, before), [
     refusal("post /scrape/execute, post /scrape"),
   ]);
-  // The framework follows a path item's reference, so a referenced copy is a copy too.
+  // The framework resolves path items and operations written as references, keeping a path
+  // item's siblings, so a copy can hide behind one; the check refuses every such reference.
   const referenced = document();
   Object.assign(referenced.paths, { "/scrape/execute": { $ref: "#/paths/~1scrape" } });
+  const reference = (slot: string) =>
+    `example: ${slot} is a reference; the check reads operations only where written`;
   assert.deepEqual(readKindDrift("example", pin, referenced), [
-    refusal("post /scrape, post /scrape/execute"),
+    reference("path item /scrape/execute"),
+  ]);
+  const sibling = document();
+  Object.assign(sibling.paths, {
+    "/map/execute": { $ref: "#/paths/~1map", post: sibling.paths["/scrape"].post },
+  });
+  assert.deepEqual(readKindDrift("example", pin, sibling), [
+    reference("path item /map/execute"),
+    refusal("post /scrape, post /map/execute"),
+  ]);
+  const operation = document();
+  Object.assign(operation.paths, {
+    "/scrape/execute": { put: { $ref: "#/paths/~1scrape/post" } },
+    "/scrape/run": { additionalOperations: { $ref: "#/components/operations" } },
+  });
+  assert.deepEqual(readKindDrift("example", pin, operation), [
+    reference("put /scrape/execute"),
+    reference("additionalOperations of /scrape/run"),
   ]);
   // Another method on the same path counts as well.
   const deleted = document();
