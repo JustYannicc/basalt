@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { catalogDocumentSha256, liveOAuthMetadata } from "./catalog-oauth-metadata.ts";
+import { tmpdir } from "node:os";
+import {
+  catalogDocumentSha256,
+  committedOAuthMetadata,
+  liveOAuthMetadata,
+} from "./catalog-oauth-metadata.ts";
 import { oauthPinProblems, oauthReviews } from "../src/catalog/oauth-policy.ts";
 import reviewData from "../src/catalog/oauth-reviews.json" with { type: "json" };
 import metadata from "../src/catalog/elevenlabs.oauth-metadata.json" with { type: "json" };
@@ -74,4 +79,41 @@ test("a complete matching published document verifies against the reviewed pin",
     return Response.json(metadata);
   });
   assert.deepEqual(await problems(), []);
+});
+
+test("a snapshot is read only for a document exactly one entry owns", () => {
+  const decision = (url: string) =>
+    ({
+      kind: "automatic",
+      protocol: "dcr",
+      metadata: url,
+      metadataSha256: "a".repeat(64),
+    }) as const;
+  const [first, second] = ["https://one.example/metadata", "https://two.example/metadata"];
+  const shared = committedOAuthMetadata(
+    [
+      { entry: "one", package: "@fixture/one", methods: { oauth: decision(first) } },
+      { entry: "two", package: "@fixture/two", methods: { oauth: decision(first) } },
+    ],
+    tmpdir(),
+  );
+  assert.deepEqual(
+    [...shared.metadataFailures],
+    [[first, "reviewed by one, two; one entry owns it"]],
+  );
+  const several = committedOAuthMetadata(
+    [
+      {
+        entry: "one",
+        package: "@fixture/one",
+        methods: { a: decision(first), b: decision(second) },
+      },
+    ],
+    tmpdir(),
+  );
+  assert.deepEqual(
+    [...several.metadataFailures],
+    [first, second].map((url) => [url, "one names several documents; one snapshot per entry"]),
+  );
+  assert.equal(shared.metadata.size + several.metadata.size, 0);
 });

@@ -90,6 +90,7 @@ test("a metadata re-pin needs no architecture change, but any other registry edi
   expect(check(withoutMetadataRepins([snapshot, registry], repin), new Set())).toEqual([]);
   const decision = `${header}-          "kind": "deferred",\n+          "kind": "hosted",\n`;
   expect(check(withoutMetadataRepins([snapshot, registry], decision), new Set())).not.toEqual([]);
+  expect(check(withoutMetadataRepins([snapshot, registry], header), new Set())).not.toEqual([]);
   expect(check(withoutMetadataRepins([snapshot, "src/router.ts"], repin), new Set())).not.toEqual(
     [],
   );

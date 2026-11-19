@@ -138,7 +138,7 @@ test("a re-pinned snapshot still has to support the reviewed protocol", () => {
   }
 });
 
-test("an OAuth method this revision adds still needs a reviewed decision offline", () => {
+test("an OAuth method this revision adds or carries still needs a reviewed decision offline", () => {
   const edit = (change: (registry: { entries: { entry: string; methods: object }[] }) => void) =>
     catalogCopy((root) => {
       const registry = JSON.parse(readFileSync(join(root, "oauth-reviews.json"), "utf8"));
@@ -151,6 +151,13 @@ test("an OAuth method this revision adds still needs a reviewed decision offline
         registry.entries = registry.entries.filter((review) => review.entry !== "aws");
       },
       "aws: OAuth methods have no reviewed availability decision",
+    ],
+    [
+      // Carried code adds this sign-in to a published listing that has none.
+      (registry: { entries: { entry: string }[] }) => {
+        registry.entries = registry.entries.filter((review) => review.entry !== "vercel");
+      },
+      "vercel: OAuth methods have no reviewed availability decision",
     ],
     [
       (registry: { entries: { entry: string; methods: object }[] }) => {

@@ -44,10 +44,9 @@ export function signInValues(document: unknown, protocol: "dcr" | "cimd"): Field
     token_endpoint: server.token_endpoint,
     // Registration only runs while metadata documents aren't used; that flag alerts on its own.
     ...(protocol === "dcr" ? { registration_endpoint: server.registration_endpoint } : {}),
-    client_id_metadata_document_supported: server.client_id_metadata_document_supported,
-    // The callback check requires `iss` exactly when the server advertises it.
-    authorization_response_iss_parameter_supported:
-      server.authorization_response_iss_parameter_supported,
+    // Both flags act only when exactly true, so an explicit false changes nothing.
+    "metadata documents supported": server.client_id_metadata_document_supported === true,
+    "iss required on callback": server.authorization_response_iss_parameter_supported === true,
     "token endpoint auth method":
       methods === undefined || methods.includes(method) ? method : `${method} (not offered)`,
     "S256 PKCE accepted": challenges === undefined || challenges.includes("S256"),
@@ -175,8 +174,8 @@ export function driftReport(drift: Drift): string {
     ...drift.changes.map((line) => `- ${line}`),
     "",
     alert
-      ? "**Sign-in already behaves differently.** Values the connection path reads changed:"
-      : "Values the connection path reads are unchanged, so sign-in behaves as reviewed.",
+      ? "**Sign-in already behaves differently.** Values sign-in reads changed:"
+      : "Values sign-in reads are unchanged, so sign-in behaves as reviewed.",
     ...(alert ? ["", ...[...drift.signIn, ...drift.problems].map((line) => `- ${line}`)] : []),
     "",
   ].join("\n");

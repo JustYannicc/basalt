@@ -1,5 +1,5 @@
 import { brand } from "../brand.ts";
-import { handleCatalog } from "../src/catalog/worker.ts";
+import { carriedSources, handleCatalog } from "../src/catalog/worker.ts";
 import type { OAuthReview } from "../src/catalog/oauth-policy.ts";
 import type { Feed } from "../src/catalog/feed.ts";
 import { catalogDocumentSha256, readCatalogJson } from "./catalog-oauth-metadata.ts";
@@ -22,25 +22,34 @@ const compose = async (official: unknown): Promise<Feed> => {
   return response.json();
 };
 
+const listing = (id: string, packageName: string, methods: readonly string[]) => ({
+  id,
+  package: packageName,
+  name: id,
+  description: id,
+  auth: methods.map((method) => ({ method, kind: "oauth2" })),
+  icons: [],
+  source: `apps/${id}.json`,
+});
+
 /**
  * The published index as the reviews last saw it: every reviewed entry with exactly its reviewed
- * methods. Entries this revision adds itself come from the revision, never from the stand-in.
+ * methods, and every carried app without one, so carried code that adds a method is still seen.
+ * Entries this revision adds itself come from the revision, never from the stand-in.
  */
 async function reviewedIndex(reviews: readonly OAuthReview[]): Promise<Feed> {
   const added = new Set((await compose({ version: 1, apps: [] })).apps.map((entry) => entry.id));
+  const reviewed = new Set(reviews.map((review) => review.entry));
   return {
     version: 1,
-    apps: reviews
-      .filter((review) => !added.has(review.entry))
-      .map((review) => ({
-        id: review.entry,
-        package: review.package,
-        name: review.entry,
-        description: review.entry,
-        auth: Object.keys(review.methods).map((method) => ({ method, kind: "oauth2" })),
-        icons: [],
-        source: `apps/${review.entry}.json`,
-      })),
+    apps: [
+      ...reviews.map((review) =>
+        listing(review.entry, review.package, Object.keys(review.methods)),
+      ),
+      ...Object.entries(carriedSources)
+        .filter(([id]) => !reviewed.has(id))
+        .map(([id, source]) => listing(id, source.package, [])),
+    ].filter((entry) => !added.has(entry.id)),
   };
 }
 

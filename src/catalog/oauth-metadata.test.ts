@@ -24,6 +24,16 @@ const changes = (document: Record<string, unknown>) => [
   { token_endpoint_auth_methods_supported: ["unreviewed_method"] },
   { code_challenge_methods_supported: ["plain"] },
   { grant_types_supported: ["urn:example:unreviewed-grant"] },
+  { authorization_grant_profiles_supported: ["urn:example:unreviewed-profile"] },
+  { prompt_values_supported: ["unreviewed_prompt"] },
+  { revocation_endpoint: "https://unreviewed.example/revoke" },
+  {
+    authorization_response_iss_parameter_supported:
+      document.authorization_response_iss_parameter_supported !== true,
+  },
+  {
+    client_id_metadata_document_supported: document.client_id_metadata_document_supported !== true,
+  },
   { unreviewed_capability: true },
 ];
 

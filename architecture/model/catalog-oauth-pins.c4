@@ -1,7 +1,7 @@
 model {
   extend basalt.catalog {
     metadata {
-      constraint "Change checks verify every automatic OAuth decision against the committed copy of its outside service's client metadata and the pinned digest, with no network access, so a commit's result never depends on what a publisher serves that day. A daily drift job reads the published documents and opens one re-pin pull request per changed document with its field-level diff; it never pushes to the main branch. That job fails loudly, without gating anything, when a value automatic sign-in reads changed or a document could not be read, and on the same schedule it checks the published catalog for OAuth methods without a reviewed decision."
+      constraint "Change checks compose this revision's catalog over a stand-in index built from the reviews and verify every automatic OAuth decision against the committed copy of its outside service's client metadata and the pinned digest, with no network access, so a commit's result never depends on what a publisher serves that day. A daily drift job reads the published documents and opens one re-pin pull request per changed document with its field-level diff; it never pushes to the main branch. That job fails loudly, without gating anything, when a value automatic sign-in reads changed or a document could not be read, and on the same schedule it checks the published catalog for OAuth methods without a reviewed decision."
     }
   }
 }

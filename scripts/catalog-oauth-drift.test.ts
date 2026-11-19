@@ -157,6 +157,70 @@ test("a changed issuer, endpoint or sign-in method raises an alert beside its re
   ]);
 });
 
+test("registration and callback flags alert only where sign-in reads them", () => {
+  const { reviews, committed } = load(catalog);
+  const alphavantage = "https://mcp.alphavantage.co/.well-known/oauth-authorization-server";
+  const signIn = (url: string, change: Record<string, unknown>) => {
+    const current = committed.metadata.get(url)!.document as Record<string, unknown>;
+    const { drift } = metadataDrift(
+      reviews,
+      committed,
+      publishing(committed, url, { ...current, ...change }),
+    );
+    assert.equal(drift.length, 1, JSON.stringify(change));
+    return drift[0]!.signIn;
+  };
+  // Metadata-document sign-in never registers, so its registration endpoint is unused.
+  assert.deepEqual(
+    signIn(elevenlabs, { registration_endpoint: "https://unreviewed.example/register" }),
+    [],
+  );
+  assert.deepEqual(
+    signIn(alphavantage, { registration_endpoint: "https://unreviewed.example/register" }),
+    [
+      'registration_endpoint: `"https://mcp.alphavantage.co/register"` -> `"https://unreviewed.example/register"`',
+    ],
+  );
+  assert.deepEqual(
+    signIn(alphavantage, { authorization_response_iss_parameter_supported: false }),
+    [],
+  );
+  assert.deepEqual(signIn(alphavantage, { authorization_response_iss_parameter_supported: true }), [
+    "iss required on callback: `false` -> `true`",
+  ]);
+  assert.deepEqual(signIn(elevenlabs, { client_id_metadata_document_supported: false }), [
+    "metadata documents supported: `true` -> `false`",
+  ]);
+});
+
+test("methods sharing one document share one re-pin that moves every pin", () => {
+  const { directory, published } = previousCatalog();
+  try {
+    const file = join(directory, "oauth-reviews.json");
+    const registry = JSON.parse(readFileSync(file, "utf8"));
+    const entry = registry.entries.find((item: { entry: string }) => item.entry === "elevenlabs");
+    entry.methods.second = { ...entry.methods.oauth };
+    writeFileSync(file, JSON.stringify(registry, null, 2) + "\n");
+    const { reviews, committed } = load(directory);
+    const { drift } = metadataDrift(
+      reviews,
+      committed,
+      publishing(committed, elevenlabs, published),
+    );
+    assert.equal(drift.length, 1);
+    repinMetadata(directory, drift[0]!);
+    const repinned = JSON.parse(readFileSync(file, "utf8")).entries.find(
+      (item: { entry: string }) => item.entry === "elevenlabs",
+    );
+    assert.deepEqual(
+      [repinned.methods.oauth.metadataSha256, repinned.methods.second.metadataSha256],
+      [catalogDocumentSha256(published), catalogDocumentSha256(published)],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("registration picks the method the SDK would request", () => {
   const document = {
     token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],

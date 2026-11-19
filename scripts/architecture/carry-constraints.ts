@@ -74,14 +74,15 @@ const reviewRegistry = "src/catalog/oauth-reviews.json";
 const pinLine = /^[+-]\s*"metadataSha256": "[a-f0-9]{64}",?$/;
 
 /**
- * A reviewed OAuth metadata re-pin moves only snapshots and their digests. The runtime reads
- * neither, so the scheduled drift job's re-pin needs no architecture change.
+ * A reviewed OAuth metadata re-pin moves only snapshots and their digests. The runtime never reads
+ * the snapshots and ignores the digests, so the drift job's re-pin needs no architecture change.
  */
 export function withoutMetadataRepins(changed: readonly string[], registryDiff: string) {
-  const digestsOnly = registryDiff
+  const content = registryDiff
     .split("\n")
-    .filter((line) => /^[+-]/.test(line) && !/^(?:\+\+\+|---)(?: |$)/.test(line))
-    .every((line) => pinLine.test(line));
+    .filter((line) => /^[+-]/.test(line) && !/^(?:\+\+\+|---)(?: |$)/.test(line));
+  // A diff without content lines can't prove a pin-only change, so it keeps the rule.
+  const digestsOnly = content.length > 0 && content.every((line) => pinLine.test(line));
   return changed.filter(
     (file) => !metadataSnapshot.test(file) && !(file === reviewRegistry && digestsOnly),
   );
@@ -94,7 +95,16 @@ export function repositoryArchitectureErrors(root: string, base: string | undefi
     execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim().split("\n");
   const changed = withoutMetadataRepins(
     git("diff", "--no-renames", "--name-only", `${base}...HEAD`),
-    git("diff", "--no-renames", "--unified=0", `${base}...HEAD`, "--", reviewRegistry).join("\n"),
+    git(
+      "diff",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-renames",
+      "--unified=0",
+      `${base}...HEAD`,
+      "--",
+      reviewRegistry,
+    ).join("\n"),
   );
   const present = new Set(git("ls-files"));
   const constraints = new Map(
