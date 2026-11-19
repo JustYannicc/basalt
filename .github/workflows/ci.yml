@@ -468,7 +468,7 @@ jobs:
   client-mobile:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-mobile')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'client-mobile') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -530,7 +530,7 @@ jobs:
   client-native-product:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-native-product')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'client-native-product') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -569,7 +569,7 @@ jobs:
   clerk-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'clerk-sign-in')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'clerk-sign-in') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -598,7 +598,7 @@ jobs:
   workos-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'workos-sign-in')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'workos-sign-in') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -627,7 +627,7 @@ jobs:
   gitlab-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-sign-in')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'gitlab-sign-in') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -656,7 +656,7 @@ jobs:
   planetscale-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'planetscale-sign-in')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'planetscale-sign-in') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -712,7 +712,7 @@ jobs:
   vercel-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'vercel-sign-in')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'vercel-sign-in') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -739,7 +739,7 @@ jobs:
   elevenlabs-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'elevenlabs-sign-in')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'elevenlabs-sign-in') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -766,7 +766,7 @@ jobs:
   neon-key-reuse:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'neon-key-reuse')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'neon-key-reuse') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -793,7 +793,7 @@ jobs:
   slack-health:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'slack-health')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'slack-health') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -825,7 +825,7 @@ jobs:
   catalog-compat:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'catalog-compat')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'catalog-compat') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -860,7 +860,7 @@ jobs:
   host-managed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -913,7 +913,7 @@ jobs:
   host-managed-accounts-adopted:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-adopted')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-adopted') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -950,7 +950,7 @@ jobs:
   host-managed-accounts-pool:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-pool')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-pool') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -996,7 +996,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-local') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1037,7 +1037,7 @@ jobs:
   host-managed-accounts-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-cloud') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1082,7 +1082,7 @@ jobs:
   host-managed-accounts-cloud-actions:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud-actions')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-cloud-actions') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1124,7 +1124,7 @@ jobs:
   host-managed-accounts-runtime:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-runtime')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-runtime') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1178,7 +1178,7 @@ jobs:
   google-account-recovery:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-recovery')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'google-account-recovery') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1235,7 +1235,7 @@ jobs:
   google-account-diagnostics:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-diagnostics')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'google-account-diagnostics') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1296,7 +1296,7 @@ jobs:
   oauth-account-regressions:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'oauth-account-regressions')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'oauth-account-regressions') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1346,7 +1346,7 @@ jobs:
   pool-account-recovery:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-account-recovery')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'pool-account-recovery') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1391,7 +1391,7 @@ jobs:
   sso-service-binding:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'sso-service-binding')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'sso-service-binding') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1427,7 +1427,7 @@ jobs:
   production-ops:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'production-ops') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1480,7 +1480,7 @@ jobs:
   production-ops-migrations:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-migrations')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'production-ops-migrations') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1527,7 +1527,7 @@ jobs:
   production-ops-atlassian-adoption:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-atlassian-adoption')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'production-ops-atlassian-adoption') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -1569,7 +1569,7 @@ jobs:
   production-ops-identity:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'production-ops-identity') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -1630,7 +1630,7 @@ jobs:
   compiler-diagnostics:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'compiler-diagnostics')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'compiler-diagnostics') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1673,7 +1673,7 @@ jobs:
   human-in-the-loop:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'human-in-the-loop') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1714,7 +1714,7 @@ jobs:
   human-in-the-loop-navigation:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-navigation')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'human-in-the-loop-navigation') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1749,7 +1749,7 @@ jobs:
   human-in-the-loop-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-cloud')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'human-in-the-loop-cloud') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1787,7 +1787,7 @@ jobs:
   access-editor-reads:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'access-editor-reads')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'access-editor-reads') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1827,7 +1827,7 @@ jobs:
   contributed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'contributed-accounts') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1872,7 +1872,7 @@ jobs:
   contributed-account-recipes:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-account-recipes')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'contributed-account-recipes') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1909,7 +1909,7 @@ jobs:
   personal-data-reporting:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'personal-data-reporting')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'personal-data-reporting') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1953,7 +1953,7 @@ jobs:
   pool-inventory:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'pool-inventory') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     # Seven independent checks, about 22 minutes in a row; three shards of about 7 minutes each.
     strategy:
@@ -2047,7 +2047,7 @@ jobs:
   dashboard-batch:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'dashboard-batch')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'dashboard-batch') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -2110,7 +2110,7 @@ jobs:
   aws-connectors:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'aws-connectors') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -2164,7 +2164,7 @@ jobs:
   gitlab-connectors:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-connectors')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'gitlab-connectors') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -2200,7 +2200,7 @@ jobs:
   mcp-apps:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'mcp-apps')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'mcp-apps') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -2420,7 +2420,7 @@ jobs:
   upstream-image:
     needs: [select, workerd-assets]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'upstream-image') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
       EXECUTOR_E2E_DOCKER_IMAGE: basalt-ci-self-host:contract
@@ -2633,7 +2633,7 @@ jobs:
   pool-runtime:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-runtime')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'pool-runtime') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # The longest job of a full Check, in two shards that each build the candidate image. The
     # compatibility shard also loads the frozen compatibility images and runs the files that read
     # them plus the one-off proofs; the contracts shard runs every other pool test file.
@@ -2794,7 +2794,7 @@ jobs:
   production-build:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-build')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'production-build') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2825,7 +2825,7 @@ jobs:
   docs-build:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'docs-build')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'docs-build') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2843,7 +2843,7 @@ jobs:
   upstream-contracts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'upstream-contracts') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17.7-alpine
@@ -3021,7 +3021,7 @@ jobs:
   account-acquisition:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'account-acquisition') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # Measured 12.6-20.5 minutes on hosted runners in six full Checks; the slowest was cut at 20.
     timeout-minutes: 30
     steps:
@@ -3063,7 +3063,7 @@ jobs:
   account-usage:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-usage')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.box_jobs), 'account-usage') && vars.BASALT_CI_BOX_LABEL || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

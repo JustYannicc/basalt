@@ -31,7 +31,7 @@ export function readDeclaredDurations(root = repository) {
   return source as Record<string, number>;
 }
 
-export const median = (values: number[]) => {
+const median = (values: number[]) => {
   if (!values.length) return undefined;
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);

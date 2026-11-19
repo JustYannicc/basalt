@@ -1,48 +1,40 @@
-import { readFileSync } from "node:fs";
-import { heavyJobs } from "./areas.ts";
-import { estimator, median, readDeclaredDurations, setupMinutes, shardRuns } from "./shards.ts";
 import { shardJob } from "./retry-history.ts";
+import { estimator, readDeclaredDurations, setupMinutes, shardRuns } from "./shards.ts";
 
-// Check sends jobs to the self-hosted runners only on main and batch pushes, only while the box's
-// heartbeat is fresh and healthy, and only the part of the Check that would push hosted runners
-// past their cap. Everything else, and everything by default, runs hosted.
+// Check sends declared e2e shards to the self-hosted runners only on main and batch pushes, only
+// while the box's heartbeat is fresh and healthy, and only the part of the Check that would push
+// hosted runners past their cap. Every other job, and everything by default, runs hosted.
 //
 // Switch-back: deleting BASALT_CI_BOX_SLOTS, or setting it to 0, sends every job hosted on the
-// next Check. A job already queued for the box can't move back to hosted; the 15-minute heartbeat
-// window and the per-Check budget bound how much work can be stuck there.
+// next Check. A shard already queued for the box can't move back to hosted; the 10-minute
+// heartbeat window and the per-Check budget bound how much work can be stuck there.
 
 /** Concurrent hosted jobs for this repository when BASALT_CI_HOSTED_CAP is unset. */
 export const defaultHostedCap = 40;
 /** Box minutes each budgeted slot may spend per Check. */
 export const slotMinutes = 20;
-/** Routed jobs ran at 1.6–2× their hosted time on a loaded box; budgets assume the slow end. */
+/** Jobs ran at 1.45–1.98× their hosted time on a loaded box (1.06× idle); budgets assume the
+ * slow end. */
 export const boxSlowdown = 2.0;
 export const heartbeatMarker = "box-health:";
-const heartbeatWindow = 15 * 60_000;
+const heartbeatWindow = 10 * 60_000;
 const sampleSkew = 2 * 60_000;
 // The release runners are self-hosted too, so a broad label could hand CI work to them.
 const sharedLabels = ["self-hosted", "basalt-release"];
 
-/** Jobs that can't run on one Linux label, with their leg counts: desktop packaging has a
- * Windows leg. */
-export const hostedOnly: Record<string, number> = {
-  "client-desktop": 2,
-};
-/** Matrix jobs route as one job, every leg together; tests pin these counts to the workflow. */
+/** Only declared e2e shard rows route. Every job type runs slower on the box, and a shard needs
+ * only 1.0–1.4 cores, so shards alone keep its CI slots busy. */
+export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
+/** Matrix jobs start one hosted job per leg; tests pin these counts to the workflow. */
 export const matrixLegs: Record<string, number> = {
+  "client-desktop": 2,
   "pool-runtime": 2,
   "pool-inventory": 3,
   "production-ops-identity": 8,
 };
-/** Declared e2e jobs route per planned shard row, by the row's shard name. */
-export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
-/** Every other heavy job runs on one Linux label today and routes by its id. */
-export const routableJobs = heavyJobs.filter(
-  (job) => !(job in hostedOnly) && !declaredJobs.includes(job),
-);
 
-/** One routing choice: its id in box_jobs, the jobs it starts and each one's hosted minutes. */
-export type BoxUnit = { id: string; legs: number; minutes: number };
+/** A declared shard row: its name in box_jobs and its planned hosted minutes. */
+export type BoxShard = { id: string; minutes: number };
 export type Matrices = Record<string, { include: readonly { shard: string; runs: string }[] }>;
 export type Heartbeat = { conclusion: unknown; completedAt: unknown; log: string };
 export type BoxObserver = { heartbeat(): Promise<Heartbeat>; hostedActive(): Promise<number> };
@@ -54,6 +46,8 @@ export type BoxInput = {
   hostedCap?: string;
   selected: readonly string[];
   matrices: Matrices;
+  /** Measured seconds per declared file; defaults to scripts/ci/declared-durations.json. */
+  durations?: Record<string, number>;
   /** Jobs this Check runs beside its heavy selection. */
   fixedJobs: number;
 };
@@ -63,60 +57,43 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-/** Hosted median minutes per job, per leg for matrix jobs. */
-export function readJobDurations(path = new URL("./job-durations.json", import.meta.url)) {
-  const source = record(JSON.parse(readFileSync(path, "utf8")));
-  const values = Object.values(source);
-  if (!values.length || values.some((v) => typeof v !== "number" || !(v > 0)))
-    throw new Error("Invalid job durations");
-  return source as Record<string, number>;
-}
-
-/** Every job the selection starts, as routing choices; hosted-only jobs keep minutes 0. */
-export function checkUnits(
+/** The selection's shard rows with their planned minutes, and every hosted job it starts. */
+export function checkPlan(
   selected: readonly string[],
   matrices: Matrices,
-  durations = readJobDurations(),
-  declared = readDeclaredDurations(),
-): (BoxUnit & { routable: boolean })[] {
-  const fallback = median(Object.values(durations))!;
-  const estimate = estimator(declared);
-  return selected.flatMap((job) => {
-    if (declaredJobs.includes(job))
-      return (matrices[job]?.include ?? []).map((row) => ({
-        id: row.shard,
-        legs: 1,
-        minutes:
-          setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
-        routable: true,
-      }));
-    if (job in hostedOnly)
-      return [{ id: job, legs: hostedOnly[job]!, minutes: 0, routable: false }];
-    return [
-      { id: job, legs: matrixLegs[job] ?? 1, minutes: durations[job] ?? fallback, routable: true },
-    ];
-  });
+  durations = readDeclaredDurations(),
+) {
+  const estimate = estimator(durations);
+  const shards: BoxShard[] = selected.flatMap((job) =>
+    declaredJobs.includes(job)
+      ? (matrices[job]?.include ?? []).map((row) => ({
+          id: row.shard,
+          minutes:
+            setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
+        }))
+      : [],
+  );
+  const others = selected.filter((job) => !declaredJobs.includes(job));
+  return { shards, jobs: others.reduce((sum, job) => sum + (matrixLegs[job] ?? 1), shards.length) };
 }
 
-/** The heavy job a box_jobs id belongs to, or undefined when it names nothing routable. */
+/** The declared job a box_jobs id belongs to, or undefined when it names no declared shard. */
 export function routedJob(id: string) {
-  if (routableJobs.includes(id)) return id;
   const job = shardJob(id);
   return job && declaredJobs.includes(job) ? job : undefined;
 }
 
-/** Longest first, counting every leg; a choice that would overrun is skipped for a smaller one. */
-export function fillBox(units: readonly BoxUnit[], limit: number, budget: number) {
+/** Longest first; a shard that would overrun the budget is skipped for a shorter one. */
+export function fillBox(shards: readonly BoxShard[], limit: number, budget: number) {
   const jobs: string[] = [];
-  let legs = 0,
-    minutes = 0;
-  for (const unit of [...units].sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1))) {
-    if (legs + unit.legs > limit || minutes + unit.legs * unit.minutes > budget) continue;
-    jobs.push(unit.id);
-    legs += unit.legs;
-    minutes += unit.legs * unit.minutes;
+  let minutes = 0;
+  for (const shard of [...shards].sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1))) {
+    if (jobs.length >= limit) break;
+    if (minutes + shard.minutes > budget) continue;
+    jobs.push(shard.id);
+    minutes += shard.minutes;
   }
-  return { jobs, legs, minutes };
+  return { jobs, minutes };
 }
 
 export function boxSettings(
@@ -163,7 +140,7 @@ export function heartbeatProblem(heartbeat: Heartbeat, now: number) {
     return "the newest heartbeat ended " + String(heartbeat.conclusion ?? "without a conclusion");
   const end = Date.parse(String(heartbeat.completedAt));
   if (!(now - end <= heartbeatWindow && end - now <= sampleSkew))
-    return "the newest heartbeat is older than 15 minutes";
+    return "the newest heartbeat is older than 10 minutes";
   const status = heartbeatStatus(heartbeat.log);
   if (!status) return "the heartbeat log has no box status";
   if (!(Math.abs(Date.parse(status.at) - end) <= sampleSkew))
@@ -180,8 +157,9 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
   const settings = boxSettings(input);
   if (typeof settings === "string") return none(settings);
   try {
-    const units = checkUnits(input.selected, input.matrices);
-    const own = units.reduce((sum, unit) => sum + unit.legs, input.fixedJobs);
+    const plan = checkPlan(input.selected, input.matrices, input.durations);
+    if (!plan.shards.length) return none("this Check runs no declared e2e shards");
+    const own = input.fixedJobs + plan.jobs;
     const unhealthy = heartbeatProblem(await observe.heartbeat(), now());
     if (unhealthy) return none(unhealthy);
     const active = await observe.hostedActive();
@@ -189,16 +167,12 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
     const excess = active + own - settings.cap;
     if (excess <= 0) return none(load);
     const budget = (settings.slots * slotMinutes) / boxSlowdown;
-    const fill = fillBox(
-      units.filter((unit) => unit.routable),
-      excess,
-      budget,
-    );
-    if (!fill.jobs.length) return none(`no selected job fits the ${budget}-minute budget`);
+    const fill = fillBox(plan.shards, excess, budget);
+    if (!fill.jobs.length) return none(`no declared shard fits the ${budget}-minute budget`);
     return {
       jobs: fill.jobs,
       summary:
-        `Box routing: ${fill.legs} jobs (${Math.round(fill.minutes)} of ${budget} budgeted ` +
+        `Box routing: ${fill.jobs.length} declared shards (${Math.round(fill.minutes)} of ${budget} budgeted ` +
         `hosted minutes) go to the self-hosted runners, because the box reported healthy and ` +
         `${load}: ${fill.jobs.join(", ")}.`,
     };

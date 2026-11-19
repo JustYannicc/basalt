@@ -234,21 +234,20 @@ test("every workflow job has a gate dependency and declared selection policy", (
 });
 
 test("box routing keeps every original selected job required", () => {
-  const selected = ["host-managed-accounts", "production-build"];
+  const selected = ["declared-cloud", "production-build"];
   const needs = Object.fromEntries(
     [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
       { result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped" },
     ]),
   );
-  assert.deepEqual(gateErrors(needs, selected, ["host-managed-accounts"]), []);
+  assert.deepEqual(gateErrors(needs, selected, ["declared-cloud-1"]), []);
   for (const result of ["failure", "cancelled", "skipped"])
     assert.ok(
-      gateErrors({ ...needs, "host-managed-accounts": { result } }, selected, [
-        "host-managed-accounts",
-      ]).length,
+      gateErrors({ ...needs, "declared-cloud": { result } }, selected, ["declared-cloud-1"]).length,
     );
-  assert.ok(gateErrors(needs, selected, ["compiler-diagnostics"]).length);
+  assert.ok(gateErrors(needs, selected, ["declared-self-host-1"]).length);
+  assert.ok(gateErrors(needs, selected, ["production-build"]).length);
 });
 
 test("access editor changes select the public independent-read guards", () => {
