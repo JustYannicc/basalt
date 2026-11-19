@@ -271,6 +271,9 @@ test("the adapter keeps source read times and leaves unknown shares unknown", ()
   assert.equal(balanceView(aggregate, now, format).when, "Expiry not reported");
   const [, dated] = poolObservation(account("a")).balances;
   assert.ok(dated);
-  assert.match(balanceView(dated, now, format).when, /^Expires .*Dec/);
+  assert.match(
+    balanceView(dated, now, format).when,
+    /^Expires in \d+ days · \d{2}\.12\.\d{4} \d{2}:\d{2}$/,
+  );
   assert.match(balanceView(dated, Date.parse("2027-01-01T00:00:00Z"), format).when, /^Expired /);
 });

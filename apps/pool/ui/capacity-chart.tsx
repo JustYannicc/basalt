@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { CapacityForecastPoint, CapacityHistoryPoint } from "../capacity-contract.ts";
+import { utcMoment } from "./moments.ts";
 import {
   amount,
   candidateName,
@@ -640,7 +641,7 @@ export function CapacityChart({
       </svg>
       {since !== null && (
         <p className="m-0 mt-1 text-xs text-muted-foreground tabular-nums">
-          Readings since {new Date(since).toISOString().replace("T", " ").slice(0, 16)} UTC
+          Readings since {utcMoment(since)}
         </p>
       )}
       {hour !== null && (
@@ -803,7 +804,7 @@ function describe(
   const source =
     point.sourceAt === null || point.sourceAt === undefined
       ? "source time unavailable"
-      : `source read ${new Date(point.sourceAt).toISOString().replace("T", " ").slice(0, 16)} UTC`;
+      : `source read ${utcMoment(point.sourceAt)}`;
   const gateKnown = isMeasuredCapacityPoint(point);
   const raw = point.raw ?? { minimum: point.minimum, last: point.last, plans: point.plans };
   const remaining =
@@ -887,10 +888,7 @@ function Tip({
   const raw = point.raw ?? { minimum: point.minimum, last: point.last, plans: point.plans };
   const plans = tooltipPlanRows(point);
   const coverage = point.coverage == null ? "Unavailable" : `${Math.round(point.coverage * 100)}%`;
-  const sourceAt =
-    point.sourceAt == null
-      ? "Unavailable"
-      : new Date(point.sourceAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const sourceAt = point.sourceAt == null ? "Unavailable" : utcMoment(point.sourceAt);
   const usable =
     line.windowSeconds === 18_000
       ? point.usable

@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The pool account recovery scenario defers every queued job of its team and of its own actors before the warm-up cron runs, so none of its own jobs runs, and none ends in a workflow follow-up dispatch, before its final cron tick. Each role or email-verification update whose trigger queues a job commits in one held transaction together with that deferral, so no other dispatch ever sees the job ready. The exact queue checks stay exact; no wait is added."
+    }
+  }
+}

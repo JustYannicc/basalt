@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
-  declaredMatrices,
+  declaredRuns,
   matchingDeclarations,
   patternForGroup,
   prepareTestPlans,
@@ -22,6 +22,7 @@ import {
 } from "./ci/declarations.ts";
 import { selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
+import { declaredMatrices } from "./ci/shards.ts";
 
 const scenario = (title: string) => ({
   title,
@@ -92,6 +93,7 @@ test("an explicitly unrun scenario keeps its plan without claiming a running job
       inputs: ["src/first.ts"],
     });
     assert.deepEqual(readDeclarations(root).files["first.spec.ts"]!.runs.first, []);
+    assert.deepEqual(declaredRuns(null, readDeclarations(root))["declared-self-host"], []);
     assert.deepEqual(declaredMatrices(null, root)["declared-self-host"]!.include, []);
     write("e2e/plans/first.spec.ts.json", {
       scenarios: { first: plan },
@@ -126,9 +128,12 @@ test("adding a per-file plan extends existing groups and preserves exact scenari
       ["first.spec.ts"],
     );
     assert.deepEqual(matchingDeclarations("src/unrelated.ts", declarations), []);
-    assert.equal(
-      declaredMatrices(["first.spec.ts"], root)["declared-self-host"]!.include.length,
-      1,
+    assert.deepEqual(declaredRuns(["first.spec.ts"], declarations)["declared-self-host"], [
+      { group: "declared:self-host", file: "first.spec.ts" },
+    ]);
+    assert.deepEqual(
+      declaredMatrices(null, root)["declared-self-host"]!.include.map((shard) => shard.runs),
+      ["declared:self-host first.spec.ts declared:self-host second.spec.ts"],
     );
     assert.equal(prepareTestPlans(root, join(root, "prepared")), 2);
     const plans = JSON.parse(readFileSync(join(root, "prepared/e2e/basalt-plans.json"), "utf8"));
@@ -157,16 +162,20 @@ test("unmapped cases, unknown jobs and incompatible targets fail closed", () =>
 test("an affected Maps declaration selects its file rather than every newly adopted scenario", () => {
   const selected = selectPaths(["src/catalog/google-maps/hosted-routes.ts"]);
   assert.ok(selected.jobs.includes("declared-cloud"));
-  const matrix = declaredMatrices(selected.declaredFiles)["declared-cloud"]!.include;
   assert.deepEqual(
-    matrix.map((item) => item.file),
+    declaredRuns(selected.declaredFiles)["declared-cloud"]!.map((item) => item.file),
     ["hosted-routes.spec.ts"],
+  );
+  assert.deepEqual(
+    declaredMatrices(selected.declaredFiles)["declared-cloud"]!.include.map((shard) => shard.runs),
+    ["declared:cloud hosted-routes.spec.ts"],
   );
   assert.ok(!selected.jobs.includes("declared-self-host"));
 });
 
 test("undeclared E2E helpers retain every heavy job and every declaration matrix", () => {
   const all = declaredMatrices();
+  const runs = declaredRuns();
   for (const path of [
     ".upstream/e2e/support/account-family-product.ts",
     ".upstream/e2e/support/account-rows.ts",
@@ -178,13 +187,11 @@ test("undeclared E2E helpers retain every heavy job and every declaration matrix
     assert.deepEqual(declaredMatrices(selected.declaredFiles), all, path);
   }
   assert.ok(
-    all["declared-local"]!.include.some(
-      (entry) => entry.file === "account-identity-screens.spec.ts",
-    ),
+    runs["declared-local"]!.some((entry) => entry.file === "account-identity-screens.spec.ts"),
   );
   assert.ok(
-    Object.values(all).some((matrix) =>
-      matrix.include.some((entry) => entry.file === "account-directory-health.spec.ts"),
+    Object.values(runs).some((list) =>
+      list.some((entry) => entry.file === "account-directory-health.spec.ts"),
     ),
   );
 });
