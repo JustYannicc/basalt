@@ -297,3 +297,54 @@ test("unknown outcomes are logged every check-in, even when the objective is dec
   );
   assertNoPrivateDiagnostics(messages);
 });
+
+test("an undecided objective pages collection_unavailable with the unknown counts in its context", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  t.mock.method(console, "warn", () => {});
+  const counts = {
+    requests: 150,
+    failed: 1,
+    unassignedFailures: 0,
+    successRate: 99.3,
+    failures: [],
+  };
+  const unknown = { requests: 1, pending: 0, unavailable: 1, unmatched: 0 };
+  const window = {
+    from: "2026-11-18T11:00:00Z",
+    to: "2026-11-18T12:00:00Z",
+    classification: "ready" as const,
+    real: counts,
+    proof: { ...counts, requests: 0, failed: 0, successRate: null },
+    unknown,
+  };
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => ({
+      target: 99,
+      state: "unavailable",
+      reason: "terminal_collection_unavailable",
+      captureAt: null,
+      current: {
+        ...window,
+        real: { ...counts, failed: 0, successRate: 100 },
+        unknown: { ...unknown, requests: 0, unavailable: 0 },
+      },
+      hour: window,
+      day: window,
+    }),
+  );
+  const events = messages.filter((item) => item.type === "event").map((item) => item.payload);
+  assert.deepEqual(
+    events.map((payload) => payload.tags.error_code),
+    ["pool_request_reliability_unavailable"],
+  );
+  const [event] = events;
+  assert.deepEqual(event?.contexts.request_reliability.hour.unknown, unknown);
+  assert.equal(event?.contexts.request_reliability.reason, "terminal_collection_unavailable");
+  assertNoPrivateDiagnostics(messages);
+});

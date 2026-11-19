@@ -7,17 +7,13 @@ import { reportingReliabilityStatements } from "./reliability-read-failure.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { readPoolReliabilityWindows, terminalCollectionReady } from "./reliability.ts";
 import { HistoryInputError } from "./record.ts";
-import { readUnknownOutcomes, windowVerdict } from "./reliability-unknown.ts";
+import { objectiveVerdict, readUnknownOutcomes } from "./reliability-unknown.ts";
 
-/** A breach in either window wins; otherwise a window the unknown outcomes decide leaves it open. */
 export function reliabilityState(
   hour: PoolReliabilitySlo["hour"],
   day: PoolReliabilitySlo["day"],
 ): PoolReliabilitySlo["state"] {
-  const verdicts = [hour, day].map(windowVerdict);
-  if (verdicts.includes("breached")) return "breached";
-  if (verdicts.includes("undecided")) return "unavailable";
-  return verdicts.every((verdict) => verdict === "empty") ? "no_traffic" : "ok";
+  return objectiveVerdict(hour, day).state;
 }
 
 /** Capture runs every five minutes. An old or unfinished capture cannot prove an SLO. */
@@ -69,16 +65,14 @@ export async function readPoolReliabilitySlo(
           row.forward_id,
         ])
       ).rows[0]?.lagging === true;
-    const unknown = terminalReady
-      ? await readUnknownOutcomes(db, pool, [hour, day, current], to)
-      : [];
+    const unknown = terminalReady ? await readUnknownOutcomes(db, pool, [hour, day, current]) : [];
     const withUnknown = (window: PoolReliability, index: number): PoolReliability => {
       const outcomes = unknown[index];
       return outcomes ? { ...window, unknown: outcomes } : window;
     };
-    const hourOutcomes = withUnknown(hour, 0),
-      dayOutcomes = withUnknown(day, 1),
-      currentOutcomes = withUnknown(current, 2);
+    const hourWindow = withUnknown(hour, 0),
+      dayWindow = withUnknown(day, 1),
+      currentWindow = withUnknown(current, 2);
     const reason = !terminalReady
       ? "terminal_collection_unavailable"
       : !row || !sourceExists || row.backfill_complete !== true
@@ -90,25 +84,17 @@ export async function readPoolReliabilitySlo(
             : hour.classification !== "ready" || day.classification !== "ready"
               ? "classification_pending"
               : undefined;
-    const state = reason ? "unavailable" : reliabilityState(hourOutcomes, dayOutcomes);
-    // Unknown outcomes leave the objective undecided only while they could tip it either way.
-    const undecided = !reason && state === "unavailable";
-    const pending = [hourOutcomes, dayOutcomes].some(
-      (window) => windowVerdict(window) === "undecided" && (window.unknown?.pending ?? 0) > 0,
-    );
+    // These blockers come first: without complete collection no count can settle the objective.
+    const verdict = reason ? undefined : objectiveVerdict(hourWindow, dayWindow);
     if (transaction === "owned") await db.query("COMMIT");
     return {
       target: 99,
-      state,
+      state: verdict?.state ?? "unavailable",
       captureAt,
-      ...(reason
-        ? { reason }
-        : undecided
-          ? { reason: pending ? "terminal_collection_pending" : "terminal_collection_unavailable" }
-          : {}),
-      current: currentOutcomes,
-      hour: hourOutcomes,
-      day: dayOutcomes,
+      ...(reason ? { reason } : verdict?.reason ? { reason: verdict.reason } : {}),
+      current: currentWindow,
+      hour: hourWindow,
+      day: dayWindow,
     };
   } catch (error) {
     if (transaction === "owned") await db.query("ROLLBACK").catch(() => {});

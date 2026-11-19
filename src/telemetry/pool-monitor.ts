@@ -146,8 +146,11 @@ export async function capturePoolMonitor(
   }
 }
 
+const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+const state = (slo: PoolReliabilitySlo) =>
+  ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null;
+
 function reliabilityContext(slo: PoolReliabilitySlo) {
-  const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
   const window = (value: PoolReliabilitySlo["hour"]) => ({
     requests: count(value.real.requests),
     failed: count(value.real.failed),
@@ -157,7 +160,7 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
   });
   return {
     target: 99,
-    state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
+    state: state(slo),
     hour: window(slo.hour),
     day: window(slo.day),
     ...(slo.current ? { current: window(slo.current) } : {}),
@@ -175,7 +178,6 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
 }
 
 function unknownOutcomes(value: UnknownOutcomes) {
-  const count = (item: number) => (Number.isSafeInteger(item) && item >= 0 ? item : null);
   return {
     requests: count(value.requests),
     pending: count(value.pending),
@@ -188,7 +190,7 @@ function unknownOutcomes(value: UnknownOutcomes) {
 function unknownWindows(slo: PoolReliabilitySlo) {
   if (!slo.hour.unknown?.requests && !slo.day.unknown?.requests) return undefined;
   return {
-    state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
+    state: state(slo),
     ...(slo.hour.unknown ? { hour: unknownOutcomes(slo.hour.unknown) } : {}),
     ...(slo.day.unknown ? { day: unknownOutcomes(slo.day.unknown) } : {}),
   };

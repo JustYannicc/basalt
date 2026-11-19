@@ -14,10 +14,11 @@ export async function readUnknownOutcomes(
   db: HistoryDatabase,
   pool: string,
   windows: readonly Pick<PoolReliability, "from" | "to">[],
-  to: string,
 ): Promise<UnknownOutcomes[]> {
-  if (windows.length === 0) return [];
-  const from = windows.reduce((at, window) => (window.from < at ? window.from : at), to);
+  const [first] = windows;
+  if (first === undefined) return [];
+  const from = windows.reduce((at, window) => (window.from < at ? window.from : at), first.from);
+  const to = windows.reduce((at, window) => (window.to > at ? window.to : at), first.to);
   const result = await db.query(
     `WITH ranges(ordinal,from_at,to_at) AS (VALUES ${windows
       .map((_, index) => `(${index},$${6 + index * 2}::timestamptz,$${7 + index * 2}::timestamptz)`)
@@ -88,4 +89,29 @@ export function windowVerdict(window: PoolReliability): Verdict {
   if (BigInt(failed) * 100n > BigInt(requests) + unknown) return "breached";
   if ((BigInt(failed) + unknown) * 100n <= BigInt(requests)) return "ok";
   return "undecided";
+}
+
+/**
+ * A breach in either window wins. Otherwise a window its unknown outcomes decide leaves the
+ * objective unavailable, as pending when one of those requests is a start still without a finish.
+ */
+export function objectiveVerdict(
+  hour: PoolReliability,
+  day: PoolReliability,
+): {
+  state: "ok" | "breached" | "no_traffic" | "unavailable";
+  reason?: "terminal_collection_pending" | "terminal_collection_unavailable";
+} {
+  const windows = [hour, day];
+  const verdicts = windows.map(windowVerdict);
+  if (verdicts.includes("breached")) return { state: "breached" };
+  const undecided = windows.filter((_, index) => verdicts[index] === "undecided");
+  if (undecided.length > 0)
+    return {
+      state: "unavailable",
+      reason: undecided.some((window) => (window.unknown?.pending ?? 0) > 0)
+        ? "terminal_collection_pending"
+        : "terminal_collection_unavailable",
+    };
+  return { state: verdicts.every((verdict) => verdict === "empty") ? "no_traffic" : "ok" };
 }

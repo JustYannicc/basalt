@@ -129,7 +129,23 @@ test("unknown outcomes that could tip the hour leave the figure unavailable", as
 test("known failures that break the target are a breach even beside unknown outcomes", async () => {
   // About 1.4 % of the day failed: no unknown request could bring it back to 99 %.
   const slo = await pool(lostFinish(1), 72);
-  assert.ok(slo.day.real.failed * 100 > slo.day.real.requests + (slo.day.unknown?.requests ?? 0));
+  assert.deepEqual(
+    [slo.day.real.requests, slo.day.real.failed, slo.day.unknown?.requests],
+    [2880, 40, 1],
+  );
   assert.equal(slo.state, "breached");
   assert.equal(slo.reason, undefined);
+});
+
+test("a start still without a finish names the undecided figure as pending", async () => {
+  const slo = await pool(async (db, ids) => {
+    await db.query(
+      `INSERT INTO basalt_model_terminal_starts (request_id,pool,person,client_key,endpoint,started_at)
+      VALUES (md5('abandoned')::uuid,$1,NULL,NULL,'/v1/responses',$2::timestamptz - interval '30 minutes')`,
+      [ids.pool, at],
+    );
+  }, 120);
+  assert.equal(slo.state, "unavailable");
+  assert.equal(slo.reason, "terminal_collection_pending");
+  assert.equal(slo.hour.unknown?.pending, 1);
 });

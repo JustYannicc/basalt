@@ -116,7 +116,12 @@ test(
         },
       };
       const slo = await readPoolReliabilitySlo(recorded, "fixture", now);
-      assert.equal(slo.reason, undefined, "every Home row in the window has its evidence");
+      assert.equal(slo.reason, undefined);
+      assert.deepEqual(
+        slo.day.unknown,
+        { requests: 0, pending: 0, unavailable: 0, unmatched: 0 },
+        "every Home row in the window has its evidence",
+      );
       assert.equal(slo.day.real.requests, Math.ceil(86_400 / 27));
       assert.ok(statement);
 

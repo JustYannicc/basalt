@@ -31,7 +31,7 @@ export interface PoolReliability {
   readonly classification: "ready" | "pending";
   readonly real: ReliabilityCounts;
   readonly proof: ReliabilityCounts;
-  /** Present when terminal collection is ready. */
+  /** Present on the objective's windows when terminal collection is ready. */
   readonly unknown?: UnknownOutcomes;
 }
 
