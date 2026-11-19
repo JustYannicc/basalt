@@ -10,26 +10,52 @@ diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-
  
  const screenFiles = [
    {
-@@ -119,7 +119,9 @@
+@@ -119,20 +119,31 @@
          );
          yield* browser.login(actors.owner);
          // A document load renders the app's access on the server, so the page is opened in the
 -        // browser from a page that never read the Apps list.
-+        // browser from a page that never read the Apps list. Connect starts the list on the server
-+        // without waiting for it, so its document carries the list whenever the list answers
-+        // first. Settings starts no list on the server, and the browser's list read waits here.
-         const access = yield* browser.use("Hold the app's access", (page) =>
+-        const access = yield* browser.use("Hold the app's access", (page) =>
++        // browser from a page whose document never carries the Apps list. Connect starts the list
++        // on the server without waiting for it, so its document carries the list whenever it
++        // answers before the render ends. Settings starts no list on the server; the list read
++        // its page sends in the browser waits behind its own hold.
++        const list = yield* browser.use("Hold the Apps list", (page) =>
            hold(
              page,
-@@ -132,7 +134,10 @@
+             (url) =>
+-              readOf(screen.app.id, "/access")(url) ||
+-              (url.pathname.startsWith("/api/organizations/") &&
+-                url.pathname.endsWith("/resources")),
++              url.pathname.startsWith("/api/organizations/") && url.pathname.endsWith("/resources"),
+           ),
+         );
++        yield* Effect.addFinalizer(() =>
++          browser.use("Release the Apps list hold", () => list.release()).pipe(Effect.orDie),
++        );
++        const access = yield* browser.use("Hold the app's access", (page) =>
++          hold(page, readOf(screen.app.id, "/access")),
++        );
          yield* Effect.addFinalizer(() =>
            browser.use("Release the access hold", () => access.release()).pipe(Effect.orDie),
          );
 -        yield* openThroughBrowser("Open the app without the Apps list", screen.detail);
-+        yield* browser.use("Start from Settings, which never reads the Apps list", (page) =>
-+          page.goto(`/org/${actors.organization.slug}/organization`),
++        yield* browser.use(
++          "Start from Settings, whose document never carries the Apps list",
++          (page) => page.goto(`/org/${actors.organization.slug}/organization`),
 +        );
 +        yield* openInApp("Open the app without the Apps list", screen.detail);
          yield* browser.use("Wait for the app's access read", () => access.requested);
          // Until access answers, the tab keeps its place, nothing is selected and no frame loads.
          expect(
+@@ -146,7 +157,9 @@
+           ),
+         ).toEqual([1, 0, [], 0]);
+         yield* browser.checkpoint("app-tab-pending");
+-        yield* browser.use("Release the app's access", () => access.release());
++        yield* browser.use("Release the app's access and the Apps list", () =>
++          Promise.all([list.release(), access.release()]),
++        );
+         yield* browser.use("The App tab opens by default", (page) =>
+           tab(page, "App")
+             .and(page.locator('[aria-current="page"]'))
