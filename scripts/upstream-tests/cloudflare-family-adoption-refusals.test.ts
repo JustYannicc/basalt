@@ -4,6 +4,7 @@ import { Deferred, Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import {
   apply,
+  catalogSource,
   dryRun,
   everything,
   holdNextBuild,
@@ -98,6 +99,13 @@ refuses("link-unresolved", (w, sql) =>
   sql`insert into hosted_app_account_links values (${w.pipeline},'cloudflare','user-a','acc_token','user-a',now())`.pipe(
     Effect.as(undefined),
   ),
+);
+// An app still on the first published declaration: a copy of it, or that source deployed as a new
+// app, would derive the retained ref again after the GO.
+refuses("declaration-not-family", (w) =>
+  w
+    .install(teamA, "Earlier Cloudflare", catalogSource("cloudflare.published"))
+    .pipe(Effect.as(undefined)),
 );
 refuses("release-in-flight", (_w, sql) =>
   sql`insert into hosted_provisioning (id,kind,organization_id,user_id)

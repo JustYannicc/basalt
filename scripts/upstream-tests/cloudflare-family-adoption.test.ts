@@ -243,3 +243,25 @@ test("an error inside the GO leaves nothing behind, and the same GO applies once
       assert.equal((yield* dryRun({ ...w.requestA, accounts: [] })).dry.changes, 0);
     }),
   ));
+
+test("after the GO, a replay stays quiet while people keep using the moved accounts", () =>
+  run(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const w = yield* world;
+      const { go } = yield* dryRun(w.requestA);
+      yield* apply(go);
+      // A token renewal and a rename, a refreshed acquisition and a retained connection.
+      yield* sql`update executor_accounts set encrypted_credentials = ${new Uint8Array([9])},
+        credential_generation = credential_generation + 1, label = 'Renamed' where id = 'acc_token'`;
+      yield* sql`update executor_account_acquisitions set revision = 'r2' where account = 'acc_oauth'`;
+      yield* sql`update executor_account_connections set expires_at = now() + interval '1 day' where id = 'con_token'`;
+      assert.equal(yield* reasonOf(apply(go)), "succeeded", "the replay verifies the moved refs");
+      // A moved row that names the retained ref again still fails it.
+      yield* sql`update executor_account_connections set provider = ${w.retained} where id = 'con_token'`;
+      assert.equal(
+        yield* reasonOf(apply(go)),
+        "ProductionOperationRefused: Committed migration needs operator investigation",
+      );
+    }),
+  ));

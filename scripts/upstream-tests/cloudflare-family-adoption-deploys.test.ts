@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect, Exit, Fiber } from "effect";
+import { CurrentTransformer } from "effect/sql/Statement";
 import {
   apply,
+  catalogSource,
   dryRun,
   everything,
   holdNextBuild,
@@ -98,5 +100,44 @@ test("the first deploy after the GO keeps the family ref", () =>
       assert.equal(yield* settled(w.requestA), 0, "the check after the first later deploy");
       assert.deepEqual(yield* listed(w.toolA), ["acc_oauth", "acc_token"]);
       assert.equal(yield* link(w.pipeline, "acc_token"), "linked");
+    }),
+  ));
+
+test("the GO locks every app that owns a version it moves", () =>
+  run(
+    Effect.gen(function* () {
+      const w = yield* world;
+      // This app's active version declares another provider; an older version names the retained ref.
+      const renamed = catalogSource("cloudflare").map((file) =>
+        file.path === "index.ts"
+          ? {
+              ...file,
+              content: file.content.replace('name: "Cloudflare",', 'name: "Cloudflare staging",'),
+            }
+          : file,
+      );
+      const other = yield* w.install(
+        teamA,
+        "Second Cloudflare",
+        catalogSource("cloudflare.published"),
+      );
+      const current = yield* w.redeploy(teamA, other.app.id, renamed);
+      assert.notEqual(yield* w.requirement(current.version.id), w.retained);
+      const { plan, go } = yield* dryRun(w.requestA);
+      assert.ok(JSON.stringify(plan.data.deployments).includes(other.version.id));
+      const locked: string[] = [];
+      const applied = yield* apply(go).pipe(
+        Effect.provideService(CurrentTransformer, (statement) =>
+          Effect.sync(() => {
+            const [text, params] = statement.compile();
+            if (/for update nowait/iu.test(text)) locked.push(...params.map(String));
+            return statement;
+          }),
+        ),
+      );
+      assert.ok(applied.action === "apply" && applied.repeated === false);
+      // Activating that older version or deploying the app waits for the GO and reads moved rows.
+      assert.ok(locked.includes(other.app.id), "the GO holds the app's row lock");
+      assert.equal(yield* settled(w.requestA), 0);
     }),
   ));
