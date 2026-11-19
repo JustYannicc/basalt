@@ -8,6 +8,7 @@ import {
 } from "./database-budget-verification.ts";
 import {
   DatabaseBudgetFailure,
+  rehearsalDiagnostic,
   safeDatabaseError,
   type BudgetReceipt,
   type BudgetStage,
@@ -148,6 +149,7 @@ export async function checkDatabaseBackends(options: {
       abort.signal,
     );
   } catch (error) {
+    if (!(error instanceof DatabaseBudgetFailure)) rehearsalDiagnostic(error, stage);
     receipt =
       error instanceof DatabaseBudgetFailure
         ? error.receipt

@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { previewStageOrigin, stageEnvironment } from "../environment.ts";
 import { stageModelRequest } from "./stage-model.ts";
+import { stateEvidence } from "./stage-rows.ts";
 import { previewPoolDatabaseBranch } from "../../src/pool/database-settings.ts";
 import {
   deployStage,
@@ -145,12 +146,21 @@ async function runEntry(
   const redact = redactor(config.deploy, source);
   const text = await readFile(log, "utf8").catch(() => "");
   if (code !== 0) {
+    // The entry's wire journal (`GET {host}/…`) ends its output; quoting its tail once read as a
+    // failed request. The stop line and the refused rules lead, the rest of the tail follows.
     const lines = text
       .split(/\r?\n/u)
-      .filter((line) => line.trim() && !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line))
-      .slice(-150);
+      .filter(
+        (line) =>
+          line.trim() &&
+          !/^\s+at .*(?:\(|file:|node:|<anonymous>)/u.test(line) &&
+          !/^(?:GET|HEAD|PUT|POST|PATCH|DELETE) \S+$/u.test(line),
+      );
+    const stop = lines.filter((line) => /^Release stopped|^- \[[a-z0-9-]+\] /u.test(line));
     throw new Error(
-      `The release entry's ${command} failed with exit ${code}:\n${redact(lines.join("\n"))}`,
+      `The release entry's ${command} failed with exit ${code}:\n${redact(
+        [...stop, ...lines.slice(-150)].join("\n"),
+      )}`,
     );
   }
   const record = (
@@ -292,15 +302,32 @@ async function healRelease(
     execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
     const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
     const started = Date.now();
+    // The healing release's policy; a candidate without it measures nothing the GO asks about.
+    if (!existsSync(join(candidate, "scripts/release/policies/code-restart.json")))
+      throw new Error("The heal candidate has no code-restart policy");
     await withStageBuild(candidate, subject, source, async () => {
-      // 3. The plan must not touch the root container application.
-      const planned = await runEntry("plan", subject, source, env, outputs, {
-        policy: "code",
-        tree: candidate,
-      });
-      const rows =
-        (planned.record as { changes?: { fqn: string; type: string; action: string }[] }).changes ??
-        [];
+      // 3. The plan must not touch the root container application. The policy-free plan comes
+      // first and is kept whole, so a refusal below still leaves every row the candidate plans.
+      await writeStateEvidence(subject, source, outputs, "candidate");
+      let rows: { fqn: string; type: string; action: string }[] = [];
+      try {
+        const all = await runEntry("plan", subject, source, env, outputs, {
+          policy: null,
+          include: null,
+          tree: candidate,
+        });
+        rows = (all.record as { changes?: typeof rows }).changes ?? [];
+        result.candidateRows = rows;
+      } catch (error) {
+        result.candidateRows = {
+          failed: redactor(source)(error instanceof Error ? error.message : String(error)),
+        };
+      }
+      await writeFile(
+        join(outputs, "heal-candidate-rows.json"),
+        `${JSON.stringify(result.candidateRows, null, 2)}\n`,
+        { mode: 0o600 },
+      );
       const onRoot = rows.filter(
         (row) => row.fqn === "PoolContainer" || row.type === "Cloudflare.Container",
       );
@@ -309,8 +336,9 @@ async function healRelease(
         throw new Error(
           `The healing release plans changes on the root container: ${JSON.stringify(onRoot)}`,
         );
+      // The deploy plans again under the policy and stops in plan on any refusal.
       result.release = await runEntry("deploy", subject, source, env, outputs, {
-        policy: "code",
+        policy: "code-restart",
         tree: candidate,
       });
     });
@@ -619,6 +647,22 @@ async function forcedStopPath(subject: StageSubject, source: NodeJS.ProcessEnv, 
 }
 
 /** The commit the stage last deployed, from its readiness command's recorded input; refuse any other HEAD. */
+/** The State rows the 21-row noise is measured against, private, as `state-rows-<label>.json`. */
+async function writeStateEvidence(
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+  label: string,
+) {
+  const config = stageEnvironment(subject, source);
+  const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(config.stage);
+  await writeFile(
+    join(outputs, `state-rows-${label}.json`),
+    `${JSON.stringify(stateEvidence(stacks[stageNames(subject).stack] ?? []), null, 2)}\n`,
+    { mode: 0o600 },
+  );
+}
+
 async function requireDeployedHead(
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
@@ -955,6 +999,7 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         "new-migration-file",
       );
     } else if (mode === "fault") {
+      await writeStateEvidence(subject, source, outputs, "deployed");
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "heal") {
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
@@ -964,26 +1009,36 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       result.absent = true;
     }
   };
-  if (
-    mode === "plan" ||
-    mode === "apply" ||
-    mode === "code" ||
-    mode === "settle" ||
-    mode === "fault" ||
-    mode === "heal"
-  ) {
-    // A plan measures the deployed commit only if it is that commit, built as the stage is built.
-    // The heal release builds its own candidate checkout, so it only checks the deployed commit.
-    result.deployedCommit = await requireDeployedHead(subject, source, {
-      clientOnly: mode === "fault" || mode === "heal",
+  // A failed mode still leaves what it read (a baseline's root versions, a plan's rows).
+  try {
+    if (
+      mode === "plan" ||
+      mode === "apply" ||
+      mode === "code" ||
+      mode === "settle" ||
+      mode === "fault" ||
+      mode === "heal"
+    ) {
+      // A plan measures the deployed commit only if it is that commit, built as the stage is built.
+      // The heal release builds its own candidate checkout, so it only checks the deployed commit.
+      result.deployedCommit = await requireDeployedHead(subject, source, {
+        clientOnly: mode === "fault" || mode === "heal",
+      });
+      if (mode === "heal" || mode === "fault") await run();
+      else await withStageBuild(root, subject, source, run);
+    } else await run();
+  } catch (error) {
+    result.failed = redactor(source)(error instanceof Error ? error.message : String(error)).slice(
+      0,
+      4_000,
+    );
+    throw error;
+  } finally {
+    result.seconds = Math.round((Date.now() - started) / 1000);
+    await writeFile(join(outputs, `stage-${mode}.json`), `${JSON.stringify(result, null, 2)}\n`, {
+      mode: 0o600,
     });
-    if (mode === "heal" || mode === "fault") await run();
-    else await withStageBuild(root, subject, source, run);
-  } else await run();
-  result.seconds = Math.round((Date.now() - started) / 1000);
-  await writeFile(join(outputs, `stage-${mode}.json`), `${JSON.stringify(result, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  }
   if (source.GITHUB_STEP_SUMMARY)
     await appendFile(
       source.GITHUB_STEP_SUMMARY,
