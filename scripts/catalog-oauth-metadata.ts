@@ -22,10 +22,16 @@ export const catalogDocumentSha256 = (value: unknown): string =>
 
 export class CatalogEvidenceReadError extends Error {}
 
-export const readCatalogJson = async (url: string): Promise<unknown> => {
+/** The network read a live check uses; tests pass one that returns recorded responses. */
+export type CatalogFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+export const readCatalogJson = async (
+  url: string,
+  fetcher: CatalogFetch = fetch,
+): Promise<unknown> => {
   let response: Response;
   try {
-    response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+    response = await fetcher(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
   } catch (error) {
     throw new CatalogEvidenceReadError(
       error instanceof DOMException && error.name === "TimeoutError"
@@ -100,12 +106,15 @@ export function committedOAuthMetadata(
 }
 
 /** Today's published documents. Only the scheduled drift job reads these. */
-export async function liveOAuthMetadata(urls: readonly string[]): Promise<MetadataEvidence> {
+export async function liveOAuthMetadata(
+  urls: readonly string[],
+  fetcher: CatalogFetch = fetch,
+): Promise<MetadataEvidence> {
   const evidence: MetadataEvidence = { metadata: new Map(), metadataFailures: new Map() };
   await Promise.all(
     [...new Set(urls)].map(async (url) => {
       try {
-        const document = await readCatalogJson(url);
+        const document = await readCatalogJson(url, fetcher);
         evidence.metadata.set(url, { sha256: catalogDocumentSha256(document), document });
       } catch (error) {
         evidence.metadataFailures.set(
