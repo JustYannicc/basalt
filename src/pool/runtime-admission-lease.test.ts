@@ -29,7 +29,7 @@ test("an endpoint's proof lasts exactly its lease, per boot", () => {
   const leases = new RuntimeAdmissionLeases(() => now);
   const current = boot("boot-1");
   assert.equal(leases.current(current), false);
-  // 22:02Z and 22:05Z: a healthy read granted a short lease that ran out before the next one.
+  // A healthy read can grant a short lease that runs out before the next read.
   leases.prove(current, 1_147);
   now += 1_146;
   assert.equal(leases.current(current), true);
@@ -88,9 +88,9 @@ async function routerWith(dirty: boolean, revision: number) {
   return { router, sent };
 }
 
-test("in a restart's completion window a request is served only on a boot with the current policy installed", async () => {
-  // Recovery commits a restarted boot after installing every current policy on it; a newer
-  // revision is persisted dirty until it is installed, and dirty refuses admission.
+test("admission serves a boot only while its pool's current policy is installed", async () => {
+  // This is what makes the restart window safe: recovery commits a restarted boot after installing
+  // every current policy on it, and a newer revision stays dirty, refusing admission, until installed.
   const installed = await routerWith(false, 7);
   const response = await installed.router.forward(
     "pool",

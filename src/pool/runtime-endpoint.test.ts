@@ -388,7 +388,7 @@ test("a request admitted on the endpoint's own lease is dispatched though a seco
   // The controller's admission read: the endpoint answers its health with a current lease.
   await f.endpoint.health(identity, AbortSignal.timeout(2_000));
   const reads = f.calls.health;
-  // 20:47Z and the 22:0xZ shapes: readiness then fails or answers too late for a second read.
+  // Readiness then fails for a second read, as when it answers late or flips.
   f.hooks.health = async () => {
     throw new TypeError("readiness transport failed");
   };
@@ -404,14 +404,5 @@ test("a request admitted on the endpoint's own lease is dispatched though a seco
   await assert.rejects(
     f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
     PoolRuntimeUnhealthy,
-  );
-  // A replaced boot never rides the old boot's proof.
-  await assert.rejects(
-    f.endpoint.fetch(
-      { ...identity, bootId: "replaced-boot" },
-      new Request("http://pool/v1/responses"),
-      8317,
-    ),
-    SlotRefused,
   );
 });

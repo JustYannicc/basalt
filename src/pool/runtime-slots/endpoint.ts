@@ -317,6 +317,8 @@ export class RuntimeEndpoint {
       this.leases.prove(identity, proof.leaseMs);
       return proof;
     } catch (error) {
+      // A launch or boot mismatch is negative evidence about this boot; a readiness 503 is not.
+      if (error instanceof SlotRefused && error.reason === "identity") this.leases.forget(identity);
       refuseRuntime("endpoint_identity", error);
     }
   }
@@ -440,8 +442,9 @@ export class RuntimeEndpoint {
     }
     const socketData = this.modelLifetimes.data(identity, request, async () => {
       const { configuration } = await this.store.read(identity);
-      await this.dispatchable(identity, request.signal);
       await this.channel.keepAlive();
+      // Checked last, right before the send, so a lease spent during keepAlive reads again.
+      await this.dispatchable(identity, request.signal);
       request.signal.throwIfAborted();
       return this.channel.fetch(configuration, request, port);
     });
@@ -458,8 +461,8 @@ export class RuntimeEndpoint {
       return true;
     };
     try {
-      await this.dispatchable(identity, request.signal);
       await this.channel.keepAlive();
+      await this.dispatchable(identity, request.signal);
       request.signal.throwIfAborted();
       const response = await this.channel.fetch(configuration, request, port);
       if (isModelLifetimePath(new URL(request.url).pathname))
