@@ -1,0 +1,377 @@
+diff --git a/packages/mcp-auth/src/implementation/native-access-memory.ts b/packages/mcp-auth/src/implementation/native-access-memory.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp-auth/src/implementation/native-access-memory.ts
+@@ -0,0 +1,50 @@
++import { Effect } from "effect";
++import { authCall } from "./auth-call.ts";
++
++/**
++ * Every model request checks its device's bearer. An allowed answer and the database facts read
++ * for it are reused until this long after those rows were read, in one isolate, so a revocation
++ * made anywhere reaches every check within it. The pool's device check and the device budget
++ * still run every time.
++ */
++const memoryMs = 3_000;
++const capacity = 1_000;
++
++/** Whether an answer whose rows were read at `readAt` may still be served at `now`. */
++export const servable = (now: number, deadline: number, readAt: number) =>
++  now < Math.min(deadline, readAt + memoryMs);
++
++/** Allowed answers by bearer digest. An entry never outlives its own deadline. */
++export const recentAnswers = <V>() => {
++  const entries = new Map<string, { readonly value: V; readonly until: number }>();
++  return {
++    get: (key: string) => {
++      const entry = entries.get(key);
++      if (entry === undefined) return undefined;
++      if (Date.now() < entry.until) return entry.value;
++      entries.delete(key);
++      return undefined;
++    },
++    /** `readAt` is when the answer's rows were read, before any slow step that followed. */
++    set: (key: string, value: V, deadline: number, readAt: number) => {
++      entries.delete(key);
++      if (!servable(Date.now(), deadline, readAt)) return;
++      entries.set(key, { value, until: Math.min(deadline, readAt + memoryMs) });
++      for (const oldest of entries.keys()) {
++        if (entries.size <= capacity) break;
++        entries.delete(oldest);
++      }
++    },
++    delete: (key: string) => {
++      entries.delete(key);
++    },
++  };
++};
++
++/** The memory is keyed by a digest, so a bearer is never kept in clear. */
++export const bearerDigest = (token: string) =>
++  authCall(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).pipe(
++    Effect.map((digest) =>
++      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
++    ),
++  );
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -6,11 +6,12 @@
+   type Scope,
+ } from "@better-auth/oauth-provider";
+ import { APIError } from "better-auth/api";
+-import { Effect, Schema } from "effect";
++import { Clock, Effect, Schema } from "effect";
+ import { GrantId } from "../contracts/grant.ts";
+ import type { NativeGrantDisplay } from "../contracts/native-display.ts";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
+ import { deviceDecisionStep } from "./device-decision-step.ts";
++import { bearerDigest, recentAnswers, servable } from "./native-access-memory.ts";
+ 
+ /** Kept outside GrantPolicy so an older server cannot interpret a device as API authority. */
+ export const NativeGrantPolicy = Schema.Struct({
+@@ -40,7 +41,11 @@
+   readonly check: (
+     context: GenericEndpointContext,
+     access: NativeGrantAccess,
+-    options?: { display?: boolean },
++    options?: {
++      display?: boolean;
++      /** Present when the answer may be remembered; facts read under it are kept with it. */
++      facts?: object;
++    },
+   ) => Effect.Effect<void | NativeGrantDisplay, APIError>;
+   readonly revoke: (
+     context: GenericEndpointContext,
+@@ -71,8 +76,16 @@
+ export const isNativeGrant = (id: string) => id.startsWith("native:");
+ const invalid = () => new APIError("UNAUTHORIZED");
+ 
++interface Answer {
++  readonly access: NativeGrantAccess;
++  readonly expiresAt: number;
++  readonly readAt: number;
++  readonly facts: object;
++}
++
+ /** Better Auth owns tokens; native authority lives in the existing revocable grant record. */
+ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope[]>) => {
++  const remembered = recentAnswers<Answer>();
+   const stored = (ctx: GenericEndpointContext, id: GrantId) =>
+     Effect.gen(function* () {
+       if (!isNativeGrant(id)) return yield* Effect.fail(invalid());
+@@ -86,7 +99,7 @@
+         access: NativeGrantAccess.make({ id, userId: row.userId, clientId: row.clientId, policy }),
+       };
+     });
+-  const read = (ctx: GenericEndpointContext, id: GrantId, includeDisplay = false) =>
++  const grant = (ctx: GenericEndpointContext, id: GrantId) =>
+     Effect.gen(function* () {
+       const { row, access } = yield* stored(ctx, id);
+       if (row.revoked) return yield* Effect.fail(invalid());
+@@ -107,9 +120,47 @@
+         consent.scopes.some((scope) => scope !== "native" && scope !== "offline_access")
+       )
+         return yield* Effect.fail(invalid());
+-      const display = yield* host.check(ctx, access, { display: includeDisplay });
+-      return { ...access, ...(typeof display === "object" ? { display } : {}) };
+-    }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid())));
++      return access;
++    });
++  const confirm = (
++    ctx: GenericEndpointContext,
++    access: NativeGrantAccess,
++    options: { display: boolean; facts?: object },
++  ) =>
++    host.check(ctx, access, options).pipe(
++      Effect.map((display) => ({
++        ...access,
++        ...(typeof display === "object" ? { display } : {}),
++      })),
++    );
++  const read = (ctx: GenericEndpointContext, id: GrantId) =>
++    grant(ctx, id).pipe(
++      Effect.flatMap((access) => confirm(ctx, access, { display: false })),
++      Effect.mapError((error) => (error.statusCode === 503 ? error : invalid())),
++    );
++  /** The bearer's token, grant and consent rows; the host's own checks follow separately. */
++  const resolve = (ctx: GenericEndpointContext, token: string) =>
++    Effect.gen(function* () {
++      const readAt = yield* Clock.currentTimeMillis;
++      const payload = yield* authCall(() =>
++        Promise.resolve(getOAuthProviderApi(ctx, provider).requireActiveAccessToken(token)),
++      );
++      const claims = yield* parse(Claims, payload);
++      const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
++      const scopes = claims.scope.split(" ");
++      if (
++        claims.cnf !== undefined ||
++        audiences.length !== 1 ||
++        audiences[0] !== host.audience ||
++        !scopes.includes("native") ||
++        scopes.some((scope) => scope !== "native" && scope !== "offline_access")
++      )
++        return yield* Effect.fail(invalid());
++      const access = yield* grant(ctx, claims.grant_id);
++      if (access.userId !== claims.sub || access.clientId !== claims.client_id)
++        return yield* Effect.fail(invalid());
++      return { access, expiresAt: claims.exp * 1000, readAt, facts: {} };
++    });
+   const checkIssue = (
+     ctx: GenericEndpointContext,
+     id: string | undefined,
+@@ -183,28 +234,46 @@
+         );
+         return yield* parse(Stored, row);
+       }),
+-    authenticate: (ctx: GenericEndpointContext, options?: { display?: boolean }) =>
++    /**
++     * `remember` reuses a recent allowed answer for the same bearer instead of reading its rows
++     * again. Only allowed answers are kept, and a check that fails for any reason forgets the
++     * bearer. `checkedAt` tells callers when the answer's rows were read, so their own reuse
++     * cannot extend it.
++     */
++    authenticate: (
++      ctx: GenericEndpointContext,
++      options?: { display?: boolean; remember?: boolean },
++    ) =>
+       Effect.gen(function* () {
+         const token = ctx.headers?.get("authorization")?.match(/^Bearer ([^\s]+)$/iu)?.[1];
+         if (token === undefined) return yield* Effect.fail(invalid());
+-        const payload = yield* authCall(() =>
+-          Promise.resolve(getOAuthProviderApi(ctx, provider).requireActiveAccessToken(token)),
++        const key = options?.remember === true ? yield* bearerDigest(token) : undefined;
++        const answer = (known: Answer | undefined) =>
++          Effect.gen(function* () {
++            const resolved = known ?? (yield* resolve(ctx, token));
++            const access = yield* confirm(ctx, resolved.access, {
++              display: options?.display === true,
++              ...(key === undefined ? {} : { facts: resolved.facts }),
++            });
++            return { resolved, access };
++          });
++        return yield* Effect.gen(function* () {
++          const known = key === undefined ? undefined : remembered.get(key);
++          let { resolved, access } = yield* answer(known);
++          // A remembered answer can age past its bound while the pool answers; read it again.
++          const now = yield* Clock.currentTimeMillis;
++          if (known !== undefined && !servable(now, known.expiresAt, known.readAt))
++            ({ resolved, access } = yield* answer(undefined));
++          if (key !== undefined && resolved !== known)
++            remembered.set(key, resolved, resolved.expiresAt, resolved.readAt);
++          return { ...access, expiresAt: resolved.expiresAt, checkedAt: resolved.readAt };
++        }).pipe(
++          Effect.tapError(() =>
++            Effect.sync(() => {
++              if (key !== undefined) remembered.delete(key);
++            }),
++          ),
+         );
+-        const claims = yield* parse(Claims, payload);
+-        const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
+-        const scopes = claims.scope.split(" ");
+-        if (
+-          claims.cnf !== undefined ||
+-          audiences.length !== 1 ||
+-          audiences[0] !== host.audience ||
+-          !scopes.includes("native") ||
+-          scopes.some((scope) => scope !== "native" && scope !== "offline_access")
+-        )
+-          return yield* Effect.fail(invalid());
+-        const access = yield* read(ctx, claims.grant_id, options?.display === true);
+-        if (access.userId !== claims.sub || access.clientId !== claims.client_id)
+-          return yield* Effect.fail(invalid());
+-        return { ...access, expiresAt: claims.exp * 1000 };
+       }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid()))),
+     /** Rotation's replay cache can return tokens without invoking claim contributors again. */
+     beforeRefresh: (ctx: GenericEndpointContext) =>
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -1185,7 +1185,8 @@
+             ? Promise.reject(new APIError("NOT_FOUND"))
+             : runAuth(
+                 Effect.gen(function* () {
+-                  const access = yield* native.authenticate(ctx, { display: true });
++                  // Model requests repeat this check; the pool and the budget still run each time.
++                  const access = yield* native.authenticate(ctx, { display: true, remember: true });
+                   yield* nativeAccessBudget(ctx, {
+                     device: access.policy.computer,
+                     userId: access.userId,
+diff --git a/apps/hosted/server/src/implementation/native-grant-display.ts b/apps/hosted/server/src/implementation/native-grant-display.ts
+--- a/apps/hosted/server/src/implementation/native-grant-display.ts
++++ b/apps/hosted/server/src/implementation/native-grant-display.ts
+@@ -15,24 +15,31 @@
+   emailVerified: Schema.Boolean,
+ });
+ 
++export type NativeAccount = typeof Account.Type;
++
++/** The grant's own person, read by the grant's user ID. */
++export const readNativeAccount = (ctx: GenericEndpointContext, userId: string) =>
++  authCall(() =>
++    ctx.context.adapter.findOne({ model: "user", where: [{ field: "id", value: userId }] }),
++  ).pipe(
++    Effect.flatMap((row) =>
++      Schema.decodeUnknownEffect(Account)(row).pipe(
++        Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
++      ),
++    ),
++  );
++
+ /** Identity comes from the authenticated grant, never display input or a browser session. */
+ export const nativeGrantDisplay = (
+   ctx: GenericEndpointContext,
+   access: NativeGrantAccess,
+   metadata: NativePoolMetadata | undefined,
++  read: Effect.Effect<NativeAccount, APIError> = readNativeAccount(ctx, access.userId),
+ ): Effect.Effect<NativeGrantDisplay | undefined, APIError> =>
+   Effect.gen(function* () {
+     // Retained pool Workers can authorize the grant before their display projection is deployed.
+     if (metadata === undefined) return undefined;
+-    const row = yield* authCall(() =>
+-      ctx.context.adapter.findOne({
+-        model: "user",
+-        where: [{ field: "id", value: access.userId }],
+-      }),
+-    );
+-    const account = yield* Schema.decodeUnknownEffect(Account)(row).pipe(
+-      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
+-    );
++    const account = yield* read;
+     if (account.id !== access.userId || metadata.pool.id !== access.policy.pool)
+       return yield* Effect.fail(new APIError("UNAUTHORIZED"));
+     return {
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -9,7 +9,11 @@
+ import { APIError } from "better-auth/api";
+ import { Clock, Effect, Option, Redacted, Schema } from "effect";
+ import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+-import { nativeGrantDisplay } from "./native-grant-display.ts";
++import {
++  nativeGrantDisplay,
++  readNativeAccount,
++  type NativeAccount,
++} from "./native-grant-display.ts";
+ import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
+ import { nativeControlCall, nativeControlFailure } from "./native-control-error.ts";
+ 
+@@ -143,6 +147,13 @@
+     return JSON.stringify(teams).length > teamBytes ? undefined : teams;
+   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+ 
++/** Database facts read for one remembered bearer answer; they are dropped with it. */
++interface Facts {
++  membership?: true;
++  teams?: ReadonlyArray<{ readonly id: string; readonly name: string }>;
++  account?: NativeAccount;
++}
++
+ /** The approving browser selects a pool; the grant keeps its models and personal tools separate. */
+ export const nativeGrantHost = (
+   key: Option.Option<Redacted.Redacted<string>>,
+@@ -151,11 +162,31 @@
+ ): NativeGrantHost | undefined => {
+   if (Option.isNone(key)) return undefined;
+   const secret = key.value;
+-  const check = (ctx: GenericEndpointContext, access: NativeGrantAccess, display = false) =>
++  const known = new WeakMap<object, Facts>();
++  const factsFor = (answer: object | undefined) => {
++    if (answer === undefined) return undefined;
++    const facts = known.get(answer) ?? {};
++    known.set(answer, facts);
++    return facts;
++  };
++  // The pool's check below always runs: it alone answers for the device and its pool.
++  const check = (
++    ctx: GenericEndpointContext,
++    access: NativeGrantAccess,
++    display = false,
++    facts?: Facts,
++  ) =>
+     Effect.gen(function* () {
+-      if (access.policy.toolsOrganization !== undefined)
+-        yield* membership(ctx, access.userId, access.policy.toolsOrganization);
+-      const teams = display ? yield* currentTeams(ctx, access.userId) : undefined;
++      const organization = access.policy.toolsOrganization;
++      if (organization !== undefined && facts?.membership !== true) {
++        yield* membership(ctx, access.userId, organization);
++        if (facts !== undefined) facts.membership = true;
++      }
++      let teams = display ? facts?.teams : undefined;
++      if (display && teams === undefined) {
++        teams = yield* currentTeams(ctx, access.userId);
++        if (facts !== undefined && teams !== undefined) facts.teams = teams;
++      }
+       const result = yield* control(
+         secret,
+         poolOrigin,
+@@ -247,8 +278,24 @@
+       }),
+     check: (ctx, access, options) =>
+       Effect.gen(function* () {
+-        const display = yield* check(ctx, access, options?.display === true);
+-        if (options?.display) return yield* nativeGrantDisplay(ctx, access, display);
++        const facts = factsFor(options?.facts);
++        const display = yield* check(ctx, access, options?.display === true, facts);
++        if (!options?.display) return;
++        const account = facts?.account;
++        return yield* nativeGrantDisplay(
++          ctx,
++          access,
++          display,
++          account !== undefined
++            ? Effect.succeed(account)
++            : readNativeAccount(ctx, access.userId).pipe(
++                Effect.tap((value) =>
++                  Effect.sync(() => {
++                    if (facts !== undefined) facts.account = value;
++                  }),
++                ),
++              ),
++        );
+       }),
+     revoke: (_ctx, access) =>
+       control(
