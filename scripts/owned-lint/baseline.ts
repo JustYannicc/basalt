@@ -211,16 +211,16 @@ export function configProblems(current: Config, base: Config | undefined) {
       `.oxlintrc.json: jsPlugins must load exactly the pinned plugins: ${PLUGINS.map(({ name }) => name).join(", ")}.`,
     );
   // oxlint silently skips a built-in rule whose plugin is not in "plugins" (eslint's always run),
-  // and reads a bare or differently prefixed name as the same rule, which can switch it off.
+  // and reads a bare, differently prefixed or eslint-plugin- prefixed name as the same rule as
+  // one already written, which can switch it off.
   const enabled = new Set(["eslint", ...(Array.isArray(current.plugins) ? current.plugins : [])]);
   const seen = new Set<string>();
-  for (const [rule, setting] of Object.entries(current.rules)) {
+  for (const rule of Object.keys(current.rules)) {
     if (!builtIn(rule)) continue;
     const plugin = rule.includes("/") ? rule.split("/")[0]! : "";
-    const listed = enabled.has(plugin) || (plugin !== "" && OFF.has(severity(setting)));
-    if (!listed || seen.has(bare(rule)))
+    if (!enabled.has(plugin) || seen.has(bare(rule)))
       problems.push(
-        `.oxlintrc.json: write the built-in rule ${rule} once, as <plugin>/<rule> with its plugin listed in "plugins".`,
+        `.oxlintrc.json: ${rule} names no pinned JS plugin, so write it as a built-in rule, once, as <plugin>/<rule> with its plugin listed in "plugins".`,
       );
     seen.add(bare(rule));
   }

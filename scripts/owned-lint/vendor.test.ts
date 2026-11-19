@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commitOf, parseManifest, vendorChanges, vendorPolicy, vendorProblems } from "./vendor.ts";
+import {
+  commitOf,
+  parseManifest,
+  unrecordedVendorFiles,
+  vendorChanges,
+  vendorPolicy,
+  vendorProblems,
+} from "./vendor.ts";
 
 test("only the recorded upstream copy of a vendored file passes, and changes are listed", () => {
   const manifest = new Map([
@@ -29,6 +36,21 @@ test("only the recorded upstream copy of a vendored file passes, and changes are
     "removed 1: scripts/owned-lint/vendor/gone.ts",
   ]);
   assert.deepEqual(vendorChanges(onDisk, manifest), ["changed 1: scripts/owned-lint/vendor/b.ts"]);
+});
+
+test("vendor/ holds only the recorded upstream files, the manifest and the provenance record", () => {
+  const recorded = new Map([["scripts/owned-lint/vendor/anti-slop/index.ts", "1"]]);
+  const files = [
+    "scripts/owned-lint/vendor/anti-slop/index.ts",
+    "scripts/owned-lint/vendor/manifest.json",
+    "scripts/owned-lint/vendor/anti-slop/UPSTREAM.md",
+    "scripts/owned-lint/vendor/package.json",
+    "scripts/owned-lint/vendor/anti-slop/helper.ts",
+  ];
+  assert.deepEqual(
+    unrecordedVendorFiles(files, recorded).map((problem) => problem.split(" ")[0]),
+    ["scripts/owned-lint/vendor/package.json", "scripts/owned-lint/vendor/anti-slop/helper.ts"],
+  );
 });
 
 test("a manifest entry that is not a hash is kept, so the integrity check reports it", () => {

@@ -73,9 +73,8 @@ enforce boundaries. For behavior, read [pools](docs/pools.md) or
 
 After each edit, the repository's Claude Code and Codex hooks format the file with oxfmt and
 report upstream oxlint and [owned rule](scripts/owned-lint/README.md) findings. Without them,
-`node scripts/owned-lint/check.ts <files>` checks the owned rules, and
-`node scripts/batch-preflight.ts` runs the fast lane's first step. Fix a finding by changing
-the code it names:
+`node scripts/owned-lint/check.ts <files>` checks the owned rules alone. Fix a finding by
+changing the code it names:
 
 - Parse input at its boundary into a named type, with Effect Schema in Effect code, then
   narrow. A `SAFETY:` comment states the check that proves its assertion.

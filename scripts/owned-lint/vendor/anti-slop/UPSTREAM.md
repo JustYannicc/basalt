@@ -10,10 +10,10 @@
 - Entry points: `index.ts` (plugin `anti-slop`) and `effect/index.ts` (plugin `anti-slop-effect`),
   loaded by `../../.oxlintrc.json`. `@oxlint/plugins` is pinned to the owned oxlint version in
   `../../package.json`.
-- Deviations: none. The code files are byte-identical to upstream, recorded with their sha256 in
-  `../manifest.json`; the check fails when one differs, and lints any other file under `vendor/`
-  as Basalt code. Neither oxfmt nor oxlint rewrites the recorded files. Configuration choices are
-  recorded in `../../README.md`.
+- Deviations: none. Every file here but this one is byte-identical to upstream, recorded with its
+  sha256 in `../manifest.json`; the check fails when one differs or when `vendor/` holds a file
+  the manifest does not list. Neither oxfmt nor oxlint rewrites the recorded files.
+  Configuration choices are recorded in `../../README.md`.
 
 To update, replace this directory's contents with the new upstream commit's assets and
 `LICENSE`, keeping this file, and put that commit on the `Commit:` line: the check refuses a

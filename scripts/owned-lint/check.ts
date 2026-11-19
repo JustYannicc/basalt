@@ -1,10 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   NATIVE_ALLOWLIST,
+  PLUGINS,
   basePolicy,
   compare,
   configProblems,
@@ -19,12 +20,15 @@ import {
   type Counts,
   type Diagnostic,
 } from "./baseline.ts";
+import { bareImports, resolutionProblems } from "./toolchain.ts";
 import {
   MANIFEST,
   VENDOR,
   currentVendor,
   nextManifest,
   sha256,
+  unrecordedVendorFiles,
+  upstreamFile,
   vendorPolicy,
   vendorProblems,
   vendorState,
@@ -68,7 +72,7 @@ const listFiles = (cwd: string, keep: (file: string) => boolean, ...paths: strin
     maxBuffer: 32 * 1024 * 1024,
   })
     .split("\0")
-    .filter((file) => keep(file) && existsSync(join(cwd, file)))
+    .filter((file) => file !== "" && keep(file) && existsSync(join(cwd, file)))
     .sort();
 export const scopedFiles = (cwd = root) => listFiles(cwd, inScope);
 
@@ -155,7 +159,7 @@ function writeBaseline(files: readonly string[] = scopedFiles()) {
 
 // Records the vendored code files with their hashes, after an upstream update replaced the copy.
 function writeVendor() {
-  const files = listFiles(root, (file) => SCOPE.test(file), VENDOR);
+  const files = listFiles(root, upstreamFile, VENDOR);
   const { manifest, changes } = nextManifest(files);
   writeJson(join(root, MANIFEST), manifest);
   console.log(
@@ -169,23 +173,6 @@ function baseState(base: string) {
     spawnSync("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: root }).status !== 0
   )
     throw new Error(`BASE_SHA ${base} is not a commit in this repository.`);
-  const showText = (file: string) => {
-    const result = spawnSync("git", ["show", `${base}:${file}`], {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    // git exits 128 for a path the base lacks; any other failure must not read as "absent",
-    // which would skip the ratchet.
-    if (result.status === 128) return undefined;
-    if (result.error || result.status !== 0)
-      throw result.error ?? new Error(`git show ${base}:${file} failed: ${result.stderr}`);
-    return result.stdout;
-  };
-  const show = (path: string) => {
-    const text = showText(relative(root, path));
-    return text === undefined ? undefined : JSON.parse(text);
-  };
   const git = (args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).split(
       "\0",
@@ -193,6 +180,19 @@ function baseState(base: string) {
   const tracked = new Set(
     git(["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"]),
   );
+  // Absence comes from the base's tree: a failed read must not look absent, which skips the ratchet.
+  const showText = (file: string) =>
+    tracked.has(file)
+      ? execFileSync("git", ["show", `${base}:${file}`], {
+          cwd: root,
+          encoding: "utf8",
+          maxBuffer: 32 * 1024 * 1024,
+        })
+      : undefined;
+  const show = (path: string) => {
+    const text = showText(relative(root, path));
+    return text === undefined ? undefined : JSON.parse(text);
+  };
   // The working tree against the base, with renames: a renamed file keeps its old count.
   const renamed = new Map<string, string>();
   const changed = new Set<string>();
@@ -278,11 +278,38 @@ export function checkFiles(files: readonly string[], timeout?: number): Checked 
   };
 }
 
-/** Every file in scope and the vendored copy; with a base commit, the ratchet against it too. */
+/**
+ * The vendored copy is exactly its recorded upstream files, and every package the gate's own code
+ * names resolves into the lockfile install, none of whose files is committed.
+ */
+function toolchainProblems() {
+  const recorded = currentVendor().manifest;
+  const vendorFiles = listFiles(root, () => true, VENDOR);
+  const sources = new Map<string, string>();
+  for (const file of vendorFiles)
+    if (SCOPE.test(file) && recorded.has(file))
+      sources.set(join(root, file), readFileSync(join(root, file), "utf8"));
+  const imports = bareImports(sources);
+  // oxlint resolves package-named plugins from the configuration's directory.
+  for (const { specifier } of PLUGINS)
+    if (!specifier.startsWith("."))
+      imports.set(here, (imports.get(here) ?? new Set<string>()).add(specifier));
+  const committed = listFiles(root, () => true, "scripts/owned-lint/node_modules").map(
+    (file) => `${file} is committed inside the installed tools, which come only from bun.lock.`,
+  );
+  return [
+    ...vendorProblems(recorded, sha256),
+    ...unrecordedVendorFiles(vendorFiles, recorded),
+    ...resolutionProblems(join(here, "node_modules"), imports, root),
+    ...committed,
+  ];
+}
+
+/** Every file in scope and the gate's own tools; with a base commit, the ratchet against it too. */
 function checkAll(base: string | undefined): Checked {
   const entries = readEntries();
   const result = findings(scopedFiles(), entries);
-  const problems = [...result.problems, ...vendorProblems(currentVendor().manifest, sha256)];
+  const problems = [...result.problems, ...toolchainProblems()];
   if (base === undefined)
     return {
       ...result,
@@ -313,9 +340,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     write();
     process.exit(0);
   }
-  // A mistyped path would otherwise check nothing and pass.
-  const missing = named.filter((file) => !existsSync(resolve(file)));
-  if (missing.length) throw new Error(`No such file: ${missing.join(", ")}.`);
+  // A mistyped path or a directory would otherwise check nothing and pass.
+  const missing = named.filter(
+    (file) => !statSync(resolve(file), { throwIfNoEntry: false })?.isFile(),
+  );
+  if (missing.length) throw new Error(`Not a file: ${missing.join(", ")}.`);
   const files = [
     ...new Set(named.map((file) => relative(root, resolve(file))).filter(inScope)),
   ].sort();

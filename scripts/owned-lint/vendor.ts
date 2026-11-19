@@ -1,7 +1,7 @@
 // Vendored rules keep their upstream form so an update stays a diff against upstream; no
-// formatter or linter rewrites them. Only the files under vendor/ recorded in the manifest with
-// their upstream hash count as vendored: any other file there is Basalt code and is checked like
-// the rest.
+// formatter or linter rewrites them. vendor/ holds the upstream files listed in the manifest,
+// which the full check compares with their recorded hashes, plus the manifest and the copy's
+// provenance record; any other file there is refused.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -64,6 +64,23 @@ export const vendorProblems = (recorded: Manifest, hashOf: (file: string) => str
           `${file} is not the upstream copy recorded in ${MANIFEST}. Vendored code stays byte-identical to upstream: put Basalt code outside vendor/, or record an upstream update as ${PROVENANCE} says.`,
         ];
   });
+
+/** The files under vendor/ that an update records: everything but the manifest and provenance. */
+export const upstreamFile = (file: string) =>
+  file.startsWith(VENDOR) && file !== MANIFEST && file !== PROVENANCE;
+
+/**
+ * Files under vendor/ the manifest does not list. Even one that is never linted can change what
+ * the vendored rules load, as a package.json can.
+ */
+export const unrecordedVendorFiles = (files: readonly string[], recorded: Manifest) =>
+  files.flatMap((file) =>
+    upstreamFile(file) && !recorded.has(file)
+      ? [
+          `${file} is in ${VENDOR} but is not part of the recorded upstream copy. Put Basalt code outside vendor/, or record an upstream update as ${PROVENANCE} says.`,
+        ]
+      : [],
+  );
 
 /** Vendored files added, changed or removed against the base, one line per kind. */
 export function vendorChanges(current: Manifest, base: Manifest) {

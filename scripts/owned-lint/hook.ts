@@ -13,7 +13,10 @@ import { checkFiles, inScope } from "./check.ts";
 const HOOK = "scripts/owned-lint/hook.ts";
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 // Codex edits through apply_patch, whose patch text names each file it writes.
-const PATCH_FILE = /^\*\*\* (?:Add File|Update File|Move to): (.+)$/gmu;
+const PATCH_FILE = /^\s*\*\*\* (?:Add File|Update File|Move to): (.+)$/gmu;
+const PATCH_HEADER = /^\s*\*\*\* (?:Add|Update|Delete) File: /mu;
+// Set for a hook another checkout's hook handed an edit to, so the two never hand it back and forth.
+const HANDED_OFF = "OWNED_LINT_HOOK_HANDED_OFF";
 // Claude Code stops a hook after 60 s by default; finishing first lets this say which step hung.
 const BUDGET_MS = 50_000;
 
@@ -90,41 +93,64 @@ export function verdict(outcomes: readonly Outcome[]) {
   return { exit: 0, message: "" };
 }
 
-/** The checkout an edited file lives in, when it is not this one: it runs its own hook. */
-export function otherCheckout(paths: readonly string[], self = root) {
-  const first = paths.find((path) => existsSync(path));
-  if (first === undefined) return undefined;
-  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-    cwd: dirname(realpathSync(first)),
-    encoding: "utf8",
-  });
-  const top = result.status === 0 ? realpathSync(result.stdout.trim()) : undefined;
-  return top !== undefined && top !== realpathSync(self) && existsSync(join(top, HOOK))
-    ? top
-    : undefined;
+/** The other checkouts of this repository that edited files live in; each runs its own hook. */
+export function otherCheckouts(paths: readonly string[], self = root) {
+  const tops = new Map<string, string | undefined>();
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    const dir = dirname(realpathSync(path));
+    if (tops.has(dir)) continue;
+    const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    tops.set(dir, result.status === 0 ? realpathSync(result.stdout.trim()) : undefined);
+  }
+  const own = realpathSync(self);
+  return [...new Set(tops.values())].flatMap((top) =>
+    top !== undefined && top !== own && existsSync(join(top, HOOK)) ? [top] : [],
+  );
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const input = readFileSync(0, "utf8");
   const payload: Payload = input.trim() === "" ? {} : JSON.parse(input);
-  // Claude Code keeps running the main checkout's hook after a session enters a worktree.
-  const checkout = otherCheckout(editedPaths(payload));
-  if (checkout !== undefined) {
-    const result = spawnSync(process.execPath, [join(checkout, HOOK)], {
-      input,
-      stdio: ["pipe", "inherit", "inherit"],
-    });
-    process.exit(result.status ?? 1);
-  }
+  const outcomes: Outcome[] = [];
+  const handedOff = process.env[HANDED_OFF] !== undefined;
+  const deadline = Date.now() + BUDGET_MS;
+  let handedExit = 0;
+  // Claude Code keeps running the main checkout's hook after a session enters a worktree, and
+  // one patch can reach into another checkout: each checkout checks its own files.
+  if (!handedOff)
+    for (const checkout of otherCheckouts(editedPaths(payload))) {
+      const result = spawnSync(process.execPath, [join(checkout, HOOK)], {
+        input,
+        stdio: ["pipe", "inherit", "inherit"],
+        env: { ...process.env, [HANDED_OFF]: "1" },
+        timeout: remaining(deadline),
+      });
+      if (result.status === null)
+        outcomes.push({
+          crash: `the hook of ${checkout} did not finish (${result.error?.message ?? `stopped by ${result.signal}`}).`,
+        });
+      handedExit = Math.max(handedExit, result.status ?? 0);
+    }
+  const command = payload.tool_input?.command;
+  if (
+    !handedOff &&
+    payload.tool_name === "apply_patch" &&
+    !(text(command) && PATCH_HEADER.test(command))
+  )
+    outcomes.push({ crash: "the hook found no file headers in this apply_patch payload." });
   // A patch's moved-from path is gone, and the owned check refuses a missing file.
   const files = editedFiles(payload).filter((file) => existsSync(join(root, file)));
-  if (!files.length) process.exit(0);
-  const deadline = Date.now() + BUDGET_MS;
   // Formatting is mechanical, so it is applied rather than reported.
-  const outcomes = styleSteps(files, { write: true }).map((step) => runStep(step, deadline));
+  if (files.length)
+    outcomes.push(...styleSteps(files, { write: true }).map((step) => runStep(step, deadline)));
   const owned = files.filter(inScope);
   if (owned.length) outcomes.push(ownedLint(owned, deadline));
   const { exit, message } = verdict(outcomes);
   if (message) console.error(message);
-  process.exit(exit);
+  // Exiting at once would cut stderr off at the pipe buffer when the findings are long.
+  process.exitCode = Math.max(exit, handedExit);
 }

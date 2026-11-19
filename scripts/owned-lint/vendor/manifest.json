@@ -1,4 +1,5 @@
 {
+  "scripts/owned-lint/vendor/anti-slop/LICENSE": "10ed33bf340d6d63dc0633dfc917a346b369b6aa41fe20734aefc6a3fb75ba17",
   "scripts/owned-lint/vendor/anti-slop/effect/index.ts": "da7851d2c89a66b31ece6a36e88a78065d12dff6f92676d119981574bcd3669f",
   "scripts/owned-lint/vendor/anti-slop/effect/rules/no-manual-effect-error-tag.ts": "41434abb14bdb73760a2dfa4121b9e037f3ca741b0530c4f04d36f3a9e1041fd",
   "scripts/owned-lint/vendor/anti-slop/effect/rules/no-manual-tag-comparison.ts": "f1e7c36b878f872b3cd4482e751bede505aafc21dabf93353a16e1c305bdb0bb",
@@ -32,6 +33,8 @@
   "scripts/owned-lint/vendor/anti-slop/shared/reflect-method.ts": "d1b7bd13ca714bf20bec15e835ed0526316b7274e06bd9a582cf623c09ac1d40",
   "scripts/owned-lint/vendor/anti-slop/shared/scope.ts": "e38d41eeada854dbd02285e84e065d10e69460695e06e53fbe8662c963ae7eb4",
   "scripts/owned-lint/vendor/anti-slop/shared/type-alias-resolution.ts": "5520e97b177f0093af2943808ac63cef0f6c03fedd197a36137c66209d78a8e0",
+  "scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/LICENSE": "a429d52d537b871facb01c086191ec8a56a22bf1a10f4e641daff114bccc4a74",
+  "scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/UPSTREAM.md": "c0eb0f55399b0f29ee8f960b6f2400475e1bc4d9c3eb4c151cd63ab4e8ace4fa",
   "scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/padding-line-ast.ts": "ae3624502620452022691c89a30ed95d669dc961a5802dbe27c44e45a647c3d0",
   "scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/padding-line-between-statements.ts": "baead405a85b00d3e94c652844194feae4d0e39bfc9b44ecf7d76b1c8336f9de",
   "scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/padding-line-options.d.ts": "ff3d52f2b1c103bc429e030976641715caec676af4b8a0be802c0009874a0d58"

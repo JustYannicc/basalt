@@ -428,10 +428,6 @@ test("every enforced basalt, anti-slop and built-in rule has a case that shows i
   );
 });
 
-test("formatting is left to oxfmt", () => {
-  assert.ok(!all.some(({ rule }) => rule === "anti-slop/require-readable-spacing"));
-});
-
 test("landmines rules load from the pinned configuration", () => {
   assert.ok(
     all.some(

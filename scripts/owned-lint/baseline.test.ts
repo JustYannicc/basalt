@@ -228,16 +228,23 @@ test("a built-in rule is written once, with its plugin listed, so no other spell
       plugins: ["oxc"],
       rules: { ...rules, "eslint/no-accumulating-spread": "off" },
     },
+    // oxlint strips the prefix, so this switches the anti-slop rule off.
+    {
+      jsPlugins: plugins,
+      plugins: ["oxc"],
+      rules: { ...rules, "eslint-plugin-anti-slop/no-reflect-get": "off" },
+    },
+    { jsPlugins: plugins, plugins: [], rules: { "oxc/no-accumulating-spread": "off" } },
   ])
     assert.match(
       configProblems(config, undefined).join("\n"),
-      /write the built-in rule \S+ once, as <plugin>\/<rule> with its plugin listed in "plugins"/u,
+      /names no pinned JS plugin, so write it as a built-in rule, once, as <plugin>\/<rule> with its plugin listed in "plugins"/u,
       JSON.stringify(config),
     );
   for (const off of ["off", "allow", 0])
     assert.deepEqual(
       configProblems(
-        { jsPlugins: plugins, plugins: [], rules: { "oxc/no-accumulating-spread": off } },
+        { jsPlugins: plugins, plugins: ["oxc"], rules: { "oxc/no-accumulating-spread": off } },
         undefined,
       ),
       [],

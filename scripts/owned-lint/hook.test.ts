@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { editedFiles, otherCheckout, runStep, verdict } from "./hook.ts";
+import { fileURLToPath } from "node:url";
+import { editedFiles, otherCheckouts, runStep, verdict } from "./hook.ts";
 
 const repository = "/work/basalt";
 
@@ -102,14 +103,56 @@ test("findings block the agent; a step that could not run only reports", () => {
 
 const scratch = mkdtempSync(join(tmpdir(), "owned-lint-hook-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+// Another checkout whose hook echoes the payload it was handed and exits 2.
+const other = join(scratch, "worktree");
+mkdirSync(join(other, "scripts/owned-lint"), { recursive: true });
+execFileSync("git", ["init", "-q", other]);
+writeFileSync(
+  join(other, "scripts/owned-lint/hook.ts"),
+  'process.stderr.write("other hook: " + require("node:fs").readFileSync(0, "utf8")); process.exit(2);\n',
+);
+writeFileSync(join(other, "scripts/a.ts"), "");
+const hook = fileURLToPath(new URL("./hook.ts", import.meta.url));
+const runHook = (payload: Parameters<typeof editedFiles>[0], env: Record<string, string> = {}) =>
+  spawnSync(process.execPath, [hook], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
 
-test("an edit in another checkout of this repository is left to that checkout's hook", () => {
-  const other = join(scratch, "worktree");
-  mkdirSync(join(other, "scripts/owned-lint"), { recursive: true });
-  execFileSync("git", ["init", "-q", other]);
-  writeFileSync(join(other, "scripts/owned-lint/hook.ts"), "");
-  writeFileSync(join(other, "scripts/a.ts"), "");
-  assert.equal(otherCheckout([join(other, "scripts/a.ts")]), realpathSync(other));
-  assert.equal(otherCheckout([join(other, "scripts/a.ts")], other), undefined);
-  assert.equal(otherCheckout([join(scratch, "gone.ts")]), undefined);
+test("each other checkout an edit reaches is found once", () => {
+  const edited = join(other, "scripts/a.ts");
+  assert.deepEqual(otherCheckouts([edited, edited, join(scratch, "gone.ts")]), [
+    realpathSync(other),
+  ]);
+  assert.deepEqual(otherCheckouts([edited], other), []);
+});
+
+test("an edit in another checkout gets that checkout's verdict, and is never handed back", () => {
+  const payload = { cwd: other, tool_name: "Write", tool_input: { file_path: "scripts/a.ts" } };
+  const handed = runHook(payload);
+  assert.equal(handed.status, 2);
+  assert.match(handed.stderr, /^other hook: \{"cwd":/u);
+  const received = runHook(payload, { OWNED_LINT_HOOK_HANDED_OFF: "1" });
+  assert.equal(received.status, 0);
+  assert.equal(received.stderr, "");
+});
+
+test("an apply_patch payload the hook cannot read is reported without blocking the edit", () => {
+  const result = runHook({ cwd: scratch, tool_name: "apply_patch", tool_input: { command: "x" } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no file headers in this apply_patch payload/u);
+});
+
+test("indented patch headers and a symbolic link to the checkout name the same files", () => {
+  const command = "*** Begin Patch\n  *** Update File: scripts/a.ts\n*** End Patch";
+  const link = join(scratch, "link");
+  symlinkSync(other, link);
+  assert.deepEqual(
+    editedFiles(
+      { cwd: link, tool_name: "apply_patch", tool_input: { command } },
+      realpathSync(other),
+    ),
+    ["scripts/a.ts"],
+  );
 });
