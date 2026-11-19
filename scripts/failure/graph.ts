@@ -68,16 +68,37 @@ const wrapped = (error: unknown): unknown =>
   field(error, "error") ??
   field(error, "defect");
 
-/** The failure and what it wraps, outermost first. A collection is followed through its first member. */
-export function rawChain(error: unknown): unknown[] {
+const chainLimit = 10;
+
+function walk(error: unknown, limit: number): unknown[] {
   const found: unknown[] = [];
   for (
     let current = error;
-    current !== undefined && current !== null && found.length < 10 && !found.includes(current);
+    current !== undefined && current !== null && found.length < limit && !found.includes(current);
     current = wrapped(current) ?? members(current)[0]
   )
     found.push(current);
   return found;
+}
+
+/** The failure and what it wraps, outermost first. A collection is followed through its first member. */
+export const rawChain = (error: unknown): unknown[] => walk(error, chainLimit);
+
+/** The chain goes on past what `rawChain` reads. */
+export const chainCut = (error: unknown): boolean =>
+  walk(error, chainLimit + 1).length > chainLimit;
+
+/** A value whose own fields cannot be read: what it holds is unknown, which is not nothing. */
+export function unreadable(value: unknown): boolean {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+  try {
+    for (const key of ["reason", "cause", "error", "defect", "reasons"]) Reflect.get(value, key);
+    const list = Reflect.get(value, "errors") ?? Reflect.get(value, "reasons");
+    if (Array.isArray(list)) list.slice(0, memberLimit);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /** Every failure reachable from one, outermost first: what each wraps and each member of a collection. */

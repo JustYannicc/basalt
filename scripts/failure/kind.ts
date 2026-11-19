@@ -1,6 +1,6 @@
 import { defineErrorCatalog } from "evlog";
 import { badArguments, closedCause, interrupted, neverSent } from "./cause.ts";
-import { field, heldInPart, isA, members, rawChain } from "./graph.ts";
+import { chainCut, field, heldInPart, isA, members, rawChain, unreadable } from "./graph.ts";
 
 /**
  * What kind of failure it is, which for a request means what a rerun would do. The fix each kind
@@ -51,8 +51,7 @@ const refusedArguments =
   /^(?:Request with GET\/HEAD method cannot have body|Request cannot be constructed|RequestInit: |Headers\.\w+: |Header '[^']*' has invalid value)|is not a valid HTTP method\.$/u;
 
 /** What a rerun of one failed request would do, or undefined when it was not a request. */
-function requestKind(error: unknown): Kind | undefined {
-  const chain = rawChain(error);
+function requestKind(chain: unknown[]): Kind | undefined {
   const all = chain.map((entry) => {
     try {
       return closedCause(entry);
@@ -119,10 +118,14 @@ function kindOf(
 ): Read {
   if (state.known.has(error)) return state.known.get(error);
   if (--state.left < 0) return unread;
-  const holder = rawChain(error).find((entry) => members(entry).length > 1);
+  const chain = rawChain(error);
+  const holder = chain.find((entry) => members(entry).length > 1);
   let kind: Read;
-  if (holder === undefined) kind = requestKind(error);
-  else if (depth >= deepest) kind = unread;
+  if (holder === undefined) {
+    kind = requestKind(chain);
+    // Past the levels that are read, or behind one that cannot be, a write may still have landed.
+    if ((chainCut(error) || chain.some(unreadable)) && !mayHaveLanded.has(kind)) kind = unread;
+  } else if (depth >= deepest) kind = unread;
   else {
     // A collection that holds itself adds nothing new while it is being read.
     state.known.set(error, undefined);

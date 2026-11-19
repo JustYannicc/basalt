@@ -788,6 +788,26 @@ test("collected failures are as safe as the least safe of them however deep, sha
   });
   for (let level = 0; level < 5; level++) chain = new Error(`wrap ${level}`, { cause: chain });
   assert.equal(await code(chain), "release.OUTCOME_UNKNOWN");
+  // Past the levels a chain is read to, nothing is claimed: a reset can lie below "never sent".
+  let deep: Error = Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+  for (let level = 0; level < 9; level++) deep = new Error(`wrap ${level}`, { cause: deep });
+  assert.equal(
+    await code(Object.assign(new Error("connect failed"), { code: "ECONNREFUSED", cause: deep })),
+    "release.UNEXPECTED",
+  );
+  let buried: Error = new AggregateError([lostWrite(), lostWrite()]);
+  for (let level = 0; level < 10; level++) buried = new Error(`step ${level}`, { cause: buried });
+  assert.equal(await code(new AggregateError([neverSent(), buried])), "release.UNEXPECTED");
+  // A member that cannot be read may hold a write as much as one that can.
+  const hostile = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("private-trap");
+      },
+    },
+  );
+  assert.equal(await code(new AggregateError([neverSent(), hostile])), "release.UNEXPECTED");
 });
 
 test("a write answered with a redirect that cannot be followed is not called refused before it was sent", async (context) => {

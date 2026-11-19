@@ -392,8 +392,22 @@ test("a command Alchemy ran is named by its program and what it runs, never by i
     ["deploy \\\n  --password \\\n  made-up-pass", "deploy"],
     ["PGPASSWORD=made-up-pass PGUSER=admin psql -c 'select 1'", "psql"],
     [`sh -c "${"echo step; ".repeat(200)}"`, "sh"],
+    // A quoted value before the program can hold a space, so where the program starts is unknown.
+    ["DB_PASSWORD='made-up pass' bun run migrate", "bun run migrate"],
+    ["GREETING='made-up pass' node x.ts", "A command"],
+    ["notify.sh madeUpPass9", "notify.sh"],
+    ["deploy-tool sk-madeupmadeup", "deploy-tool"],
   ])
     assert.equal(await named(command), `Release stopped: ${name} failed with exit 1`, command);
+  // A known value goes before the line is split, so no part of it is left as a file name.
+  const uploaded = structuredFailure(
+    new CommandError({
+      command: "upload-artifacts Zm9vYmFy/YmF6cXV4enp5",
+      reason: new UnexpectedExit({ exitCode: 1, stderr: "" }),
+    }),
+    { FAKE_UPLOAD_TOKEN: "Zm9vYmFy/YmF6cXV4enp5" },
+  );
+  assert.equal(uploaded.error.message, "upload-artifacts failed with exit 1");
 
   const spoofed = await reported(
     context,
@@ -580,4 +594,18 @@ test("collected failures are named by what each holds, and an unreadable one cos
   );
   assert.match(wrapped.line, /^Release stopped: Error: Preview deploy failed: budget 31 of 25\n/);
   noLeak(`${beside.all}${wrapped.all}`, ["private-trap"]);
+
+  // A command of ours that cannot be read costs the command beside it nothing.
+  const unreadable = new Proxy(
+    new ChildProcessFailure({ command: "node", exitCode: 1, signal: null, tail: "" }),
+    {
+      get(target, key) {
+        if (key === "report") throw new Error("private-trap");
+        return Reflect.get(target, key);
+      },
+    },
+  );
+  const both = await reported(context, new AggregateError([silent(), unreadable]));
+  assert.equal(both.report.error.code, "release.STACK_COMMAND_FAILED", both.line);
+  assert.equal(both.report.error.why, silentWhy);
 });

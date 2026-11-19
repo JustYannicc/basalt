@@ -84,24 +84,36 @@ const systemTags = new Set([
   "WriteZero",
 ]);
 
+// What says what a command runs: a script's file name, or a subcommand such as `run build`.
+const scriptFile = /^[\w.-]{1,64}\.[a-z]{1,5}$/u;
+const subcommand = /^[a-z][a-z-]{0,23}$/u;
+const tokenPrefix = /^(?:sk|gh[pousr]|xox[abprs])[-_]/u;
+
 /**
  * A command line the stack was given, as its program and the words that say what it runs:
  * `node verify-database-budget.ts`, `bun run build`. Its arguments can carry a value no rule knows
- * to be a credential (`-u admin:…`, `--key …`), so the first flag or value ends it, as only the
- * program's name is kept of a command run here.
+ * to be a credential (`-u admin:…`, `--key …`), so the first word of any other shape ends it, as
+ * only the program's name is kept of a command run here.
  */
 function commandName(command: string, environment: NodeJS.ProcessEnv): string {
-  const all = command.trim().split(/\s+/u);
-  // A shell's `NAME=value` before the program sets the command's environment.
-  const [program = "", ...words] = all.slice(
-    Math.max(
-      0,
-      all.findIndex((word) => !/^\w+=/u.test(word)),
-    ),
-  );
-  const end = words.findIndex((word) => !/^[\w./-]+$/u.test(word) || word.startsWith("-"));
-  const plain = words.slice(0, end === -1 ? 2 : Math.min(end, 2)).map((word) => basename(word));
-  return publicLine([basename(program), ...plain].join(" "), environment) || "A command";
+  // Values go before the line is split: one can hold a space, or end in what looks like a file.
+  const words = publicLine(command, environment).split(" ").filter(Boolean);
+  // A shell's `NAME=value` before the program sets the command's environment. A quoted one can
+  // hold a space, and then where the program starts is not known.
+  const start = words.findIndex((word) => !/^\w+=/u.test(word));
+  if (start === -1 || words.slice(0, start).some((word) => /["'`]/u.test(word))) return "A command";
+  const [program = "", ...rest] = words.slice(start);
+  // A path is cleaned already: a home directory reads `~`.
+  const path = /^[\w./~-]+$/u;
+  if (!path.test(program)) return "A command";
+  const said = [];
+  for (const word of rest.slice(0, 2)) {
+    const file = path.test(word) ? basename(word) : "";
+    if (scriptFile.test(file)) said.push(file);
+    else if (subcommand.test(word) && !tokenPrefix.test(word)) said.push(word);
+    else break;
+  }
+  return [basename(program), ...said].join(" ");
 }
 
 function ranByAlchemy(error: unknown, environment: NodeJS.ProcessEnv): FailedCommand | undefined {
@@ -181,8 +193,16 @@ function ranByAlchemy(error: unknown, environment: NodeJS.ProcessEnv): FailedCom
   return ended("did not succeed", `${ran}. Its error keeps none of the command's output.`, alone);
 }
 
-export const failedCommand = (
+export function failedCommand(
   value: unknown,
   environment: NodeJS.ProcessEnv,
-): FailedCommand | undefined =>
-  isA(value, ChildProcessFailure) ? ranHere(value, environment) : ranByAlchemy(value, environment);
+): FailedCommand | undefined {
+  try {
+    return isA(value, ChildProcessFailure)
+      ? ranHere(value, environment)
+      : ranByAlchemy(value, environment);
+  } catch {
+    // A value that cannot be read as a command is reported as whatever else it is.
+    return undefined;
+  }
+}
