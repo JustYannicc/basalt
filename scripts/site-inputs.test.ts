@@ -10,6 +10,8 @@ import { Effect } from "effect";
 import { siteInputs } from "../.upstream/apps/hosted/cloud/src/infrastructure/site-inputs.ts";
 import { migrationInputs } from "../.upstream/apps/hosted/cloud/src/infrastructure/migration-inputs.ts";
 
+/** Preparation writes this beside the sources. It names the dependency store of this install. */
+const installMarker = ".basalt-dependencies.json";
 /** Preparation rewrites these for every revision. No page or site script imports them. */
 const perRevision = [
   "apps/hosted/cloud/src/implementation/production-ops-release.ts",
@@ -49,6 +51,11 @@ test("the site build's key follows the site's sources and not the revision", asy
       assert.equal(await key(), unchanged, `${file} must not change the site's key`);
       write(file, "before");
     }
+    // Every install gets its own store directory, so a fresh release job has another one.
+    for (const store of ["/stores/generations/one", "/stores/generations/two"]) {
+      write(installMarker, JSON.stringify({ store }));
+      assert.equal(await key(), unchanged, "an install's store path must not change the key");
+    }
     for (const file of siteSources) {
       write(file, "after");
       assert.notEqual(await key(), unchanged, `${file} must change the site's key`);
@@ -69,7 +76,7 @@ test("the site and the migration leave out the same per-revision files", () => {
     .sort();
   assert.deepEqual(
     siteInputs.include
-      .filter((pattern) => pattern.startsWith("!"))
+      .filter((pattern) => pattern.startsWith("!") && pattern !== `!${installMarker}`)
       .map((p) => p.slice(1))
       .sort(),
     fromMigration,
