@@ -228,6 +228,21 @@ const pinDrift = (
     return problems;
   });
 
+/**
+ * Where the document has a `__proto__` key. JSON keeps it as a key and the check reads own keys,
+ * but the framework copies path items and operations by assignment, which makes it the copy's
+ * prototype: an operation, operationId, server or parameter could hide there.
+ */
+const prototypeKeys = (value: Json, at = "#"): string[] =>
+  Array.isArray(value)
+    ? value.flatMap((item, index) => prototypeKeys(item, `${at}/${index}`))
+    : isObject(value)
+      ? Object.entries(value).flatMap(([key, item]) => [
+          ...(key === "__proto__" ? [at] : []),
+          ...prototypeKeys(item, `${at}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`),
+        ])
+      : [];
+
 /** Every way a vendor document no longer matches the reviewed reads, named for the reviewer. */
 export const readKindDrift = (
   app: string,
@@ -245,5 +260,8 @@ export const readKindDrift = (
   const referenced = references(document).map(
     (slot) => `${app}: ${slot} is a reference; the check reads operations only where written`,
   );
-  return [...referenced, ...malformed, ...pinDrift(app, pins, document, declared)];
+  const inherited = prototypeKeys(document).map(
+    (at) => `${app}: ${at} has a __proto__ key, which the framework would read as inherited fields`,
+  );
+  return [...inherited, ...referenced, ...malformed, ...pinDrift(app, pins, document, declared)];
 };
