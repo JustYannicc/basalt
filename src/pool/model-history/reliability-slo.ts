@@ -1,9 +1,9 @@
 import type { PoolReliabilitySlo } from "../../../apps/pool/reliability-contract.ts";
 import { digest } from "../backend-users.ts";
+import { reportingReliabilityStatements } from "./reliability-read-failure.ts";
 import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
 import { readPoolReliabilityWindows, terminalCollectionReady } from "./reliability.ts";
 import { HistoryInputError } from "./record.ts";
-import { reportingReliabilityStatements } from "./reliability-read-failure.ts";
 
 export function reliabilityState(
   hour: PoolReliabilitySlo["hour"],
