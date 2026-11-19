@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
-import { membershipPrefix, type NativeMembershipPolicy } from "./membership-contract.ts";
+import {
+  membershipPrefix,
+  membershipReadMs,
+  type NativeMembershipPolicy,
+} from "./membership-contract.ts";
 import { runtimeRecoveryPrefix } from "./runtime-recovery.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 
@@ -1216,9 +1220,14 @@ for (const retire of [false, true])
       alarm = null;
       await worker.alarm();
       await Promise.all(background);
-      assert.equal(reads, 2, "the restored alarm must perform a fresh repair");
+      assert.equal(reads, 1, "the restored alarm renews a clean pool without a host read");
       assert.ok(installed.at(-1)!.expiresAt > firstExpiry, "the next pass renews native authority");
       assert.equal(alarm, Date.now() + 5_000);
+      t.mock.timers.tick(membershipReadMs);
+      alarm = null;
+      await worker.alarm();
+      await Promise.all(background);
+      assert.equal(reads, 2, "the read interval's pass performs a fresh host read");
     },
   );
 
@@ -1591,6 +1600,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
         },
         changes: { deliver: async () => {} },
         appModels: { tick: async () => {} },
+        homeDatabasePool: { report: async () => {} },
         memberships: {
           tick: async () => {
             calls.membership++;
@@ -1708,6 +1718,7 @@ test("committed change delivery survives a shared Home task without delaying fle
         },
       },
       appModels: { tick: async () => {} },
+      homeDatabasePool: { report: async () => {} },
       memberships: {
         tick: async () => {
           counts.membership++;

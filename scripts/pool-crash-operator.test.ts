@@ -7,6 +7,7 @@ import { fleetWorkerFixture } from "./pool-tests/runtime-fleet-worker.ts";
 import { runtimeFixtureCode } from "./pool-tests/runtime-handoff-proofs.ts";
 import { deploymentReadinessPrefix } from "../src/pool/deployment-readiness.ts";
 import { openEnvelope } from "../src/pool/token.ts";
+import { answerTopology, followerTopology } from "../src/pool/test/home-topology.ts";
 import { crashOperatorOptions, runCrashOperator } from "./pool-crash-operator.ts";
 
 test(
@@ -26,6 +27,8 @@ test(
     await initial.body?.cancel();
     await f.settle();
     await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
+    // Production shape: the primary is killed only once its own Home proves it is a follower.
+    answerTopology(f.old.home, () => Response.json(followerTopology()));
     const packet = {
       accountId: "a".repeat(32),
       worker: "synthetic-pool",
