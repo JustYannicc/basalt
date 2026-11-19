@@ -51,7 +51,7 @@ test("the row amount is the current USD estimate, never the stored credits", () 
   assert.equal(shown.text, "$0.04");
   assert.equal(shown.priced, true);
   assert.equal(shown.price?.basis, "live");
-  assert.equal(requestEstimateBasis(shown), "Live models.dev prices, updated 10 Nov 2026.");
+  assert.equal(requestEstimateBasis(shown), "Live models.dev prices, updated 10.11.2026.");
   assert.equal(recordedCost(record), "41.5 credits · Home charge");
 });
 
@@ -109,7 +109,7 @@ test("token-count pricing and failed refreshes carry into the expanded basis", (
   assert.equal(shown.price?.calculation, "token-counts");
   assert.equal(
     requestEstimateBasis(shown),
-    "Shipped baseline models.dev prices, as of 3 Nov 2026. Price refresh failed. Priced from its recorded token counts because usable API usage details were missing.",
+    "Shipped baseline models.dev prices, as of 03.11.2026. Price refresh failed. Priced from its recorded token counts because usable API usage details were missing.",
   );
 });
 
