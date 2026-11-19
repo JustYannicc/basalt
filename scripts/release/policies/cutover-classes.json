@@ -49,11 +49,16 @@
       {
         "fqn": "PoolDatabase",
         "action": "update"
+      },
+      {
+        "fqn": "PoolBackendBudgetRuntimeReady",
+        "action": "update"
       }
     ]
   },
   "include": [
-    "PoolWorker"
+    "PoolWorker",
+    "PoolBackendBudgetRuntimeReady"
   ],
   "wire": {
     "sqliteClasses": {
