@@ -80,35 +80,40 @@ const surface = (
 };
 
 /** Follow local references, as the framework does; it refuses any other reference itself. */
-const resolved = (document: JsonObject, value: Json | undefined) => {
-  const seen = new Set<string>();
-  while (isObject(value) && typeof value.$ref === "string" && !seen.has(value.$ref)) {
-    seen.add(value.$ref);
-    value = pointer(document, value.$ref);
-  }
-  return value;
-};
-
-/**
- * Every operation the document declares, as the framework enumerates them: path items and
- * operations behind references, and OpenAPI 3.2's `additionalOperations`.
- */
-const declaredOperations = (document: JsonObject) => {
-  const paths = isObject(document.paths) ? document.paths : {};
-  return Object.entries(paths).flatMap(([path, source]) => {
-    const item = resolved(document, source);
+/** Each path item's operation slots, OpenAPI 3.2's `additionalOperations` included, unresolved. */
+const pathItems = (document: JsonObject) =>
+  Object.entries(isObject(document.paths) ? document.paths : {}).flatMap(([path, item]) => {
     if (!isObject(item)) return [];
     const additional = isObject(item.additionalOperations)
       ? Object.entries(item.additionalOperations)
       : [];
-    return [...methods.map((method) => [method, item[method]] as const), ...additional].flatMap(
-      ([method, value]) => {
-        const operation = resolved(document, value);
-        return isObject(operation) ? [{ method: method.toLowerCase(), path, item, operation }] : [];
-      },
-    );
+    const slots = [...methods.map((method) => [method, item[method]] as const), ...additional];
+    return [{ path, item, slots }];
   });
-};
+
+/**
+ * Path items, operation maps and operations written as references. The framework resolves them
+ * (keeping a path item's siblings, decoding and walking pointers), so a copied operationId can
+ * hide behind one; the check refuses them rather than repeat those rules.
+ */
+const references = (document: JsonObject) =>
+  pathItems(document).flatMap(({ path, item, slots }) => [
+    ...(item.$ref === undefined ? [] : [`path item ${path}`]),
+    ...(isObject(item.additionalOperations) && item.additionalOperations.$ref !== undefined
+      ? [`additionalOperations of ${path}`]
+      : []),
+    ...slots
+      .filter(([method, value]) => method !== "$ref" && isObject(value) && value.$ref !== undefined)
+      .map(([method]) => `${method.toLowerCase()} ${path}`),
+  ]);
+
+/** Every operation the document declares where it is written, as the framework enumerates them. */
+const declaredOperations = (document: JsonObject) =>
+  pathItems(document).flatMap(({ path, item, slots }) =>
+    slots.flatMap(([method, operation]) =>
+      isObject(operation) ? [{ method: method.toLowerCase(), path, item, operation }] : [],
+    ),
+  );
 type Declared = ReturnType<typeof declaredOperations>[number];
 const where = (found: Declared) => `${found.method} ${found.path}`;
 // YAML writes an empty `operationId:` as null, which the framework reads as absent.
@@ -189,5 +194,8 @@ export const readKindDrift = (
       (found) =>
         `${app}: ${where(found)} declares a non-string operationId, ${JSON.stringify(found.operation.operationId)}`,
     );
-  return [...malformed, ...pinDrift(app, pins, document, declared)];
+  const referenced = references(document).map(
+    (slot) => `${app}: ${slot} is a reference; the check reads operations only where written`,
+  );
+  return [...referenced, ...malformed, ...pinDrift(app, pins, document, declared)];
 };

@@ -11,7 +11,7 @@
  
 --- /dev/null
 +++ b/approvals.ts
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,50 @@
 +import { always } from "apps/operations/approval";
 +import { options } from "./openapi.js";
 +
@@ -49,9 +49,10 @@
 +  if (tool.kind === "mutation") return always();
 +  const leaf = name.slice(name.lastIndexOf(".") + 1);
 +  // Kinds are keyed by operationId and the framework lengthens colliding tool names, so a copy of
-+  // a reviewed read's operationId on another path is a query named like
++  // a reviewed read's operationId under the same tag is a query named like
 +  // scrapeAndExtractFromUrlExecute, as is a reviewed read renamed beside a new operation. Neither
-+  // was reviewed under that name, so each asks like a mutation.
++  // was reviewed under that name, so each asks like a mutation. A copy elsewhere can keep the
++  // reviewed name; the read-kinds check refuses any repeated operationId in the fast lane.
 +  if (reads.some((read) => leaf !== read && leaf.startsWith(read))) return always();
 +  if (!sideEffectReads.has(leaf)) return undefined;
 +  return ({ toolInput }: { readonly toolInput: unknown }) => {
