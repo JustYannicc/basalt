@@ -48,8 +48,12 @@ export const PlanPolicy = Schema.Struct({
     fqn: exactFqn,
     /** The registry digest reference the legacy root runs; supplied by the caller, never committed. */
     image: Schema.String.check(Schema.isPattern(digestRef)),
-    /** The root's row must not move at all, not even its recorded hash (the healing release). */
-    noop: Schema.optional(Schema.Literal(true)),
+    /**
+     * Only an image release of the root declares this. Every other release must leave the root's row
+     * as it is, not even its recorded hash: a rollout moves the application's version, and the
+     * pool's own restart then refuses for good.
+     */
+    imageRelease: Schema.optional(Schema.Literal(true)),
   }),
   poolWorker: exactFqn,
   artifactsCredentials: exactFqn,
@@ -335,7 +339,7 @@ function containerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
     });
   // The pool's own restart refuses for good once the application's version or settings move, so
   // a release that relies on it may not touch the root's row in any way.
-  if (policy.poolContainer.noop && node.action !== "noop")
+  if (!policy.poolContainer.imageRelease && node.action !== "noop")
     violations.push({
       ...at,
       rule: "pool-container-not-noop",
@@ -346,7 +350,7 @@ function containerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
           .filter((binding) => binding.action !== "noop")
           .map((binding) => `bindings.${binding.sid}: ${binding.action}`),
       ],
-      why: "This release relies on the pool restarting its runtime, which refuses for good once the root application's version or settings differ from its stored proof; even a hash-only update is a row the plan cannot prove harmless.",
+      why: "Only an image release of the root may plan a row on it. The pool's own restart refuses for good once the root application's version or settings differ from its stored proof, and an applied row can roll the application; even a hash-only update is a row the plan cannot prove harmless.",
       fix: "Find why the root's row plans as changed (the planned reasons name it) and settle it in its own reviewed step before this release.",
     });
   const recordedAttachments = new Map(

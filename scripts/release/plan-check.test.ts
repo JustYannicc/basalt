@@ -35,7 +35,9 @@ const policy = (changes: Record<string, unknown> = {}) =>
         types: ["Cloudflare.Hyperdrive", "Planetscale.*"],
       },
       removals: [],
-      poolContainer: { fqn: "PoolContainer", image: pinnedImage },
+      // The fixture's root row is the old layer's, so it plans a hash-only update. Tests of other
+      // rules admit that row as an image release would; the root's own tests use `rootUnchanged`.
+      poolContainer: { fqn: "PoolContainer", image: pinnedImage, imageRelease: true },
       poolWorker: "PoolWorker",
       artifactsCredentials: "ArtifactsCredentials",
       allow: [],
@@ -496,13 +498,21 @@ test("a Worker binding whose value waits on another row is not a removal", async
   );
 });
 
-test("a healing release refuses any row on the root, even a hash-only update", async (context) => {
+const rootUnchanged = { poolContainer: { fqn: "PoolContainer", image: pinnedImage } };
+
+test("no release but a declared image release may plan any row on the root, a hash-only update included", async (context) => {
+  // Production's root row was written by the old release layer: its recorded image hash is the old
+  // build context's, so an unchanged root plans a hash-only update.
   const { plan } = await planned(context);
   assert.equal(plan.resources.PoolContainer?.action, "update");
-  const healing = { poolContainer: { fqn: "PoolContainer", image: pinnedImage, noop: true } };
-  const { rules, message } = await refused(plan, healing);
-  assert.deepEqual(rules, ["pool-container-not-noop PoolContainer"]);
-  assert.match(message, /\$action: noop -> update/u);
-  // Without the flag the same hash-only update is admitted, as before.
+  for (const mode of ["release", "code-only"] as const) {
+    const { rules, message } = await refused(plan, { ...rootUnchanged, mode });
+    assert.ok(
+      rules.includes("pool-container-not-noop PoolContainer"),
+      `${mode}: ${rules.join(", ")}`,
+    );
+    assert.match(message, /\$action: noop -> update/u);
+  }
+  // An image release that declares it may move the row; a configuration change still refuses.
   assert.ok((await admitted(plan)).includes("update PoolContainer"));
 });
