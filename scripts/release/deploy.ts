@@ -269,6 +269,7 @@ const {
   remainingRows,
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
+const { everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -475,6 +476,10 @@ try {
             ),
           );
         const planned = changedRows(snapshot);
+        // Checks keyed on their real inputs plan as noop when those are unchanged; they must still
+        // pass on every release, so the entry runs them before anything is applied.
+        tracker.setPhase("checks");
+        for (const step of yield* everyReleaseSteps(snapshot.native)) yield* runReleaseStep(step);
         tracker.setPhase("apply");
         yield* Alchemist.Stack.apply(snapshot as never);
         tracker.setPhase("read-back");

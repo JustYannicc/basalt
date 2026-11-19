@@ -98,11 +98,32 @@ test("a changed class name on a Worker binding is refused", async (context) => {
   assert.match(message, /bindings\.PoolLedger\.className: PoolLedger -> PoolLedgerNext/u);
 });
 
-test("a class transferred from another Worker is refused", async (context) => {
+test("a class moved onto a Worker that State does not record it on is refused", async (context) => {
   const { plan } = await planned(context, {
+    declared: { newClass: { transferredFrom: "ArtifactsCredentials" } },
+  });
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, ["durable-object-class-transferred PoolWorker"]);
+  assert.match(message, /class PoolRuntimeBlue, and State records no namespace of it/u);
+});
+
+test("a move State already records on the Worker is history, in a code-only release too", async (context) => {
+  // The upstream declares `transferredFrom` on classes that moved long ago; Alchemy keeps it inert.
+  const moved = await planned(context, {
     declared: { ledger: { className: "PoolLedger", transferredFrom: "ArtifactsCredentials" } },
   });
-  assert.deepEqual((await refused(plan)).rules, ["durable-object-class-transferred PoolWorker"]);
+  const { plan } = await planned(context);
+  assert.deepEqual(await admitted(moved.plan), await admitted(plan));
+  const codeOnly = await Effect.runPromiseExit(
+    checkPlan(moved.plan, await policy({ mode: "code-only" })),
+  );
+  const violations = Exit.isFailure(codeOnly)
+    ? (Cause.squash(codeOnly.cause) as PlanRefused).violations
+    : [];
+  assert.deepEqual(
+    violations.filter((violation) => violation.rule === "durable-object-class-transferred"),
+    [],
+  );
 });
 
 test("a root container declared by build context is refused", async (context) => {
