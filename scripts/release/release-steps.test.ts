@@ -6,14 +6,20 @@ import { test } from "node:test";
 import * as Output from "alchemy/Output";
 import { Cause, Effect, Exit, Redacted } from "effect";
 import { failureReport } from "./public-report.ts";
-import { everyReleaseSteps, ReleaseStepFailed, runReleaseStep } from "./release-steps.ts";
+import {
+  buildSteps,
+  everyReleaseSteps,
+  ReleaseStepFailed,
+  runReleaseStep,
+} from "./release-steps.ts";
 
 /** A plan node as Alchemy hands it: the declaration's props, and the row the last apply recorded. */
 const node = (
   action: string,
   props: Record<string, unknown>,
   recorded: Record<string, unknown> = props,
-) => ({ action, resource: { Props: props }, state: { props: recorded } });
+  type = "Command.Exec",
+) => ({ action, resource: { Type: type, Props: props }, state: { props: recorded } });
 const plan = (resources: Record<string, unknown>) =>
   ({ resources, deletions: {} }) as unknown as Parameters<typeof everyReleaseSteps>[0];
 
@@ -54,6 +60,7 @@ test("a noop every-release command runs before apply, with its env from the decl
   assert.deepEqual(steps, [
     {
       fqn: "PreviewPoolSize",
+      kind: "check",
       command: "node scripts/database-pool-budget.ts",
       cwd: "/checkout/.upstream/apps/hosted/cloud",
       env: {
@@ -65,6 +72,7 @@ test("a noop every-release command runs before apply, with its env from the decl
     },
     {
       fqn: "AppSourceNamespace",
+      kind: "check",
       command: "node ensure-artifacts.ts",
       cwd: "/checkout/scripts",
       env: { CLOUD_SOURCE_NAMESPACE: "basalt-preview-rehearsal-1-apps" },
@@ -109,6 +117,7 @@ test("a failing check stops with its id and exit in public, and both streams onl
   );
   const step = {
     fqn: "RuntimeDatabaseBudget",
+    kind: "check" as const,
     command: "node scripts/database-pool-budget.ts",
     cwd: directory,
     env: { STEP_VISIBLE: "yes" },
@@ -131,4 +140,54 @@ test("a failing check stops with its id and exit in public, and both streams onl
     'process.exit(process.env.STEP_VISIBLE === "yes" && process.env.STEP_SECRET === "passed-through" ? 0 : 4);\n',
   );
   assert.ok(Exit.isSuccess(await Effect.runPromiseExit(runReleaseStep(step))));
+});
+
+test("a build the plan updates runs before the checked plan; one it never recorded is the apply's", async () => {
+  const site = {
+    command: "bun run site:build",
+    cwd: "../../..",
+    outdir: "site",
+    env: { ORIGIN: "x" },
+  };
+  const steps = await Effect.runPromise(
+    buildSteps(
+      plan({
+        // Its output is missing in a fresh job, so Alchemy plans it as changed.
+        Site: node("update", site, site, "Command.Build"),
+        Built: node("noop", site, site, "Command.Build"),
+        Fresh: { ...node("create", site, site, "Command.Build"), state: undefined },
+        Migrations: node("update", { command: "node src/migrate.ts", cwd: "/x" }),
+      }),
+    ),
+  );
+  assert.deepEqual(
+    steps.map(({ fqn, kind, command, cwd, env }) => ({ fqn, kind, command, cwd, env })),
+    [
+      {
+        fqn: "Site",
+        kind: "build",
+        command: "bun run site:build",
+        cwd: "../../..",
+        env: { ORIGIN: "x" },
+      },
+    ],
+  );
+});
+
+test("a failed build stops before anything is planned, saying so", async () => {
+  const exit = await Effect.runPromiseExit(
+    runReleaseStep({
+      fqn: "Site",
+      kind: "build",
+      command: "node -e process.exit(2)",
+      cwd: tmpdir(),
+      env: {},
+      secrets: {},
+      timeoutMs: 30_000,
+    }),
+  );
+  assert.ok(Exit.isFailure(exit));
+  const error = Cause.squash(exit.cause) as ReleaseStepFailed;
+  assert.equal(error.exit, "exit 2");
+  assert.match(error.why, /build the plan depends on/u);
 });
