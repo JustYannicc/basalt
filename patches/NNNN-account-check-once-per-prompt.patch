@@ -8,8 +8,8 @@ diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/con
 +const revalidateAppAccount = Atom.family((key: AppAccountKey) =>
 +  HostedClient.runtime.fn((_: void, get) => {
 +    const account = new AccountKey({ organization: key.organization, account: key.account });
-+    // A new account's naming prompt starts its check as it opens, before this app's links list the
-+    // account. While the page holds that check, running or done, it is this one too.
++    // A new account's naming prompt starts its check as it opens, before the links listing the new
++    // row arrive. A check the page holds, running or done, serves instead of a second request.
 +    const held = get.registry.get(checkAccount(account));
 +    return (
 +      AsyncResult.isInitial(held) && !held.waiting
