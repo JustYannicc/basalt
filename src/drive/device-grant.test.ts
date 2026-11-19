@@ -326,9 +326,7 @@ test("devices() lists the vault's Connect Obsidian devices, never an agent's gra
   // The vault itself recorded every grant that made a sync call.
   assert.ok(recorded.ok, JSON.stringify(recorded));
   assert.deepEqual(
-    (await Effect.runPromise(devicesOf(recorded.value)))
-      .devices.map((row) => row.agent)
-      .sort(),
+    (await Effect.runPromise(devicesOf(recorded.value))).devices.map((row) => row.agent).sort(),
     Object.values(ids).sort(),
   );
   assert.deepEqual(listed.devices, [
