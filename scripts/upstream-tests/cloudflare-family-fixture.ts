@@ -24,6 +24,13 @@ const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
 /** An upstream module, or undefined when the carried tree has no such file. */
 export const loadOptional = (path: string): Promise<unknown> => load(path).catch(() => undefined);
+/** A tagged failure as the tests read it: its tag, its message and a refusal's code. */
+type Failure = { readonly _tag: string; readonly message: string; readonly reasonCode?: string };
+/**
+ * How the hosted modules loaded at runtime fail. Naming their own error unions would bring those
+ * modules into root types; every one is a tagged error, and a link refusal also names its reason.
+ */
+export type HostedFailure = Failure & { readonly reason?: string };
 type Operated = {
   readonly action: string;
   readonly changes?: number;
@@ -32,11 +39,13 @@ type Operated = {
   readonly repeated?: boolean;
 };
 export type Migration = {
-  readonly inspect: (request: unknown) => Effect.Effect<unknown, unknown, SqlClient.SqlClient>;
+  readonly inspect: (
+    request: unknown,
+  ) => Effect.Effect<unknown, HostedFailure, SqlClient.SqlClient>;
   readonly apply: (
     request: unknown,
     plan: unknown,
-  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
+  ) => Effect.Effect<void, HostedFailure, SqlClient.SqlClient>;
 };
 export const { productionMigrations } = (await load(
   "apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
@@ -47,7 +56,7 @@ const { runProductionOperation } = (await load(
   runProductionOperation: (
     settings: unknown,
     operation: unknown,
-  ) => Effect.Effect<Operated, unknown, SqlClient.SqlClient>;
+  ) => Effect.Effect<Operated, HostedFailure, SqlClient.SqlClient>;
 };
 const { openArtifact } = (await load(
   "apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts",
@@ -57,14 +66,14 @@ const { addLink } = (await load("apps/hosted/server/src/implementation/app-accou
     sql: SqlClient.SqlClient,
     webhooks: unknown,
     input: unknown,
-  ) => Effect.Effect<boolean, unknown, SqlClient.SqlClient>;
+  ) => Effect.Effect<boolean, HostedFailure, SqlClient.SqlClient>;
 };
 type Deployed = {
   readonly app: { readonly id: string };
   readonly version: { readonly id: string };
 };
 type Apps = {
-  readonly deploy: (input: unknown) => Effect.Effect<Deployed, unknown, SqlClient.SqlClient>;
+  readonly deploy: (input: unknown) => Effect.Effect<Deployed, HostedFailure, SqlClient.SqlClient>;
 };
 const { makeApps } = (await load("packages/sdk/src/implementation/apps.ts")) as {
   makeApps: (...dependencies: unknown[]) => Apps;
@@ -247,11 +256,7 @@ export const link = (app: string, account: string, subject = "user-a") =>
       )
       .pipe(
         Effect.as("linked"),
-        Effect.catch((error) =>
-          Effect.succeed(
-            `${(error as { _tag?: string })._tag}:${(error as { reason?: string }).reason}`,
-          ),
-        ),
+        Effect.catch((error) => Effect.succeed(`${error._tag}:${error.reason}`)),
       );
   });
 /** The provider filter `appAccounts.userGet` lists a requirement's saved accounts with. */
@@ -455,15 +460,10 @@ export const dryRun = (request: unknown) =>
   });
 export const apply = (go: unknown) => runProductionOperation(settings, go);
 /** The refusal reason an operation failed with, or what it returned instead. */
-export const reasonOf = <A>(work: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
+export const reasonOf = <A, E extends Failure>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   work.pipe(
     Effect.map(() => "succeeded"),
-    Effect.catch((error) =>
-      Effect.succeed(
-        (error as { reasonCode?: string }).reasonCode ??
-          `${(error as { _tag?: string })._tag}: ${(error as { message?: string }).message}`,
-      ),
-    ),
+    Effect.catch((error) => Effect.succeed(error.reasonCode ?? `${error._tag}: ${error.message}`)),
   );
 /** Every watched table's rows, so a comparison shows every row that changed. */
 export const everything = Effect.gen(function* () {

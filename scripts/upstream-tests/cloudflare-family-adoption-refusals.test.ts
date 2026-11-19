@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect } from "effect";
-import { SqlClient } from "effect/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 import {
   apply,
   catalogSource,
@@ -16,6 +16,7 @@ import {
   teamA,
   teamB,
   world,
+  type HostedFailure,
   type World,
 } from "./cloudflare-family-fixture.ts";
 
@@ -27,7 +28,7 @@ const refuses = (
   arrange: (
     w: World,
     sql: SqlClient.SqlClient,
-  ) => Effect.Effect<unknown, unknown, SqlClient.SqlClient>,
+  ) => Effect.Effect<unknown, HostedFailure | SqlError.SqlError, SqlClient.SqlClient>,
 ) => {
   tested.add(reason);
   test(`family adoption refuses: ${reason}`, () =>

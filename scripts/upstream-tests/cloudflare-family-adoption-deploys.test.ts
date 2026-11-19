@@ -17,6 +17,7 @@ import {
   run,
   teamA,
   world,
+  type HostedFailure,
 } from "./cloudflare-family-fixture.ts";
 
 // Deploys of the catalog app around the GO, through the real deploy path. The operator's two
@@ -150,7 +151,7 @@ type Guard = {
     sql: SqlClient.SqlClient,
     target: { readonly app: string; readonly requirement: string },
     account: { readonly owner: string; readonly provider: string },
-  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
+  ) => Effect.Effect<void, HostedFailure, SqlClient.SqlClient>;
 };
 test("a token account saved for a requirement after the GO cannot land on the retained ref", () =>
   run(
