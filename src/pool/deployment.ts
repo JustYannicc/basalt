@@ -33,6 +33,19 @@ export const masterCrashBinding = Effect.gen(function* () {
   return binding;
 });
 
+/**
+ * Rehearsal-only fault commands (runtime-slots/rehearsal-fault.ts) run only where the Worker names a
+ * `test-rehearsal-<n>` stage. Production's stage is `production`, so it never carries the binding.
+ * Mirrors rehearsalStagePattern there; deployment.test.ts holds the two together.
+ */
+export const rehearsalStageBinding = Effect.gen(function* () {
+  const stage = yield* Stage;
+  const binding: { POOL_REHEARSAL_STAGE?: string } = /^test-rehearsal-[1-9][0-9]{0,9}$/u.test(stage)
+    ? { POOL_REHEARSAL_STAGE: stage }
+    : {};
+  return binding;
+});
+
 export const poolWorker = Effect.gen(function* () {
   const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
   if (probeTarget && !validProbeTarget(probeTarget))
@@ -67,6 +80,7 @@ export const poolWorker = Effect.gen(function* () {
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       POOL_PRESERVE_LEGACY_IMAGE: "true",
       ...(yield* masterCrashBinding),
+      ...(yield* rehearsalStageBinding),
       POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
       ...(imageRelease?.candidateConfiguration
         ? {

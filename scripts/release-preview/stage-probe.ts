@@ -167,7 +167,7 @@ const fields = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
 // The instance id is the controller's own Durable Object id; only a fingerprint leaves the run.
-const fingerprint = (value: string) =>
+export const fingerprint = (value: string) =>
   createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 /** The root's unsigned status read: its live boot, or why there is none. */
@@ -305,11 +305,10 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
   }
 }
 
-async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortController) {
+/** A lane's stage, its derived deployment key, redactor and the code that answers, for stage clients. */
+export async function stageContext(tool: string, laneText: string, env: NodeJS.ProcessEnv) {
   const { redactor, describeError } = await import("./redact.ts");
-  const [laneText, outFile] = args;
-  if (!laneText || !outFile) throw new Error("Usage: stage-probe.ts <lane> <outFile>");
-  if (env.GITHUB_ACTIONS !== "true") throw new Error("The stage probe runs only in GitHub Actions");
+  if (env.GITHUB_ACTIONS !== "true") throw new Error(`The ${tool} runs only in GitHub Actions`);
   const accountId = env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const token = env.CLOUDFLARE_API_TOKEN ?? "";
   const stateKey = env.PREVIEW_STATE_KEY ?? "";
@@ -333,20 +332,6 @@ async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortCont
   // The release state stack picks its Alchemy stack name from this at import.
   process.env.ALCHEMY_STAGE = stage;
   const stateEnv = { ...env, ...derived, ALCHEMY_STAGE: stage };
-
-  const [
-    { openPoolOperations },
-    { signEnvelope },
-    { decodeRuntimeHandoffCommand, runtimeHandoffCommandPrefix, runtimeHandoffPath },
-    { runtimeRecoveryPath },
-    { runtimeResponseDiagnostic },
-  ] = await Promise.all([
-    import("../pool-operations.ts"),
-    import("../../src/pool/token.ts"),
-    import("../../src/pool/runtime-slots/handoff-command.ts"),
-    import("../../src/pool/recovery-approval.ts"),
-    import("../../src/pool/runtime-route-diagnostic.ts"),
-  ]);
   const root = fileURLToPath(new URL("../../", import.meta.url));
   let stateFailure: string | undefined;
   const follower = codeFollower([
@@ -358,10 +343,65 @@ async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortCont
       }),
   ]);
   await follower.refused();
+  return {
+    stage,
+    key,
+    redact,
+    describeError,
+    follower,
+    stateFailure: () => stateFailure,
+    worker: () => stagePoolWorker(accountId, token, stage),
+    open: async (worker: string) =>
+      (await import("../pool-operations.ts")).openPoolOperations({ accountId, worker }),
+  };
+}
 
-  const worker = await stagePoolWorker(accountId, token, stage);
+type Bridge = { service: { fetch(request: Request): Promise<Response> } };
+
+/** One signed handoff command over the bridge, timed so a runner clock a little ahead still passes. */
+export async function signedHandoff(
+  bridge: Bridge,
+  key: string,
+  command: { controllerCode: ControllerCode; action: string } & Record<string, unknown>,
+  signal: AbortSignal,
+  timeoutMs = 10_000,
+) {
+  const [
+    { signEnvelope },
+    { decodeRuntimeHandoffCommand, runtimeHandoffCommandPrefix, runtimeHandoffPath },
+  ] = await Promise.all([
+    import("../../src/pool/token.ts"),
+    import("../../src/pool/runtime-slots/handoff-command.ts"),
+  ]);
+  const at = Date.now() - 2_000;
+  const decoded = decodeRuntimeHandoffCommand(
+    { ...command, at, expiresAt: at + 25_000 },
+    Date.now(),
+  );
+  const envelope = await signEnvelope(key, runtimeHandoffCommandPrefix, decoded);
+  return bridge.service.fetch(
+    new Request(`http://pool-operations${runtimeHandoffPath}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ envelope }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+    }),
+  );
+}
+
+async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortController) {
+  const [laneText, outFile] = args;
+  if (!laneText || !outFile) throw new Error("Usage: stage-probe.ts <lane> <outFile>");
+  const context = await stageContext("stage probe", laneText, env);
+  const { key, redact, follower } = context;
+  const [{ runtimeRecoveryPath }, { runtimeResponseDiagnostic }] = await Promise.all([
+    import("../../src/pool/recovery-approval.ts"),
+    import("../../src/pool/runtime-route-diagnostic.ts"),
+  ]);
+
+  const worker = await context.worker();
   // One bridge for the whole run, so every sample times the controller and not bridge setup.
-  const opening = openPoolOperations({ accountId, worker });
+  const opening = context.open(worker);
   const stopped = new Promise<"stopped">((done) =>
     stop.signal.aborted
       ? done("stopped")
@@ -378,27 +418,8 @@ async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortCont
   }
   const bridge = opened;
   const bounded = (signal: AbortSignal) => AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
-  const signed = async (
-    action: "inspect" | "active-health",
-    code: ControllerCode,
-    signal: AbortSignal,
-  ) => {
-    // A runner clock a little ahead must not sign a command in the controller's future.
-    const at = Date.now() - 2_000;
-    const command = decodeRuntimeHandoffCommand(
-      { controllerCode: code, action, at, expiresAt: at + 25_000 },
-      Date.now(),
-    );
-    const envelope = await signEnvelope(key, runtimeHandoffCommandPrefix, command);
-    return bridge.service.fetch(
-      new Request(`http://pool-operations${runtimeHandoffPath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ envelope }),
-        signal: bounded(signal),
-      }),
-    );
-  };
+  const signed = (action: "inspect" | "active-health", code: ControllerCode, signal: AbortSignal) =>
+    signedHandoff(bridge, key, { controllerCode: code, action }, signal);
   const failure = (error: unknown) =>
     error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")
       ? error.name === "TimeoutError"
@@ -494,6 +515,7 @@ async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortCont
       new Promise((resolve) => setTimeout(resolve, 10_000).unref()),
     ]);
   }
+  const stateFailure = context.stateFailure();
   if (stateFailure) process.stderr.write(`stage state code read failed: ${stateFailure}\n`);
   process.stdout.write(`${redact(JSON.stringify(summarize(samples)))}\n`);
 }
