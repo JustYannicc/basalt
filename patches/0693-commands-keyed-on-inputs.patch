@@ -1,11 +1,51 @@
+diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
+--- a/apps/hosted/cloud/scripts/database-pool-budget.ts
++++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
+@@ -16,15 +16,33 @@
+ const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
+ const Changes = Schema.Struct({ data: Schema.Array(Change) });
+ 
++/**
++ * Whether a database and branch are the stage's own. A disposable test stage owns one database,
++ * named after it, and the two branches named after it; every other stage owns only `main`. The
++ * script decides this itself, before any request: it runs as a child process, where nothing
++ * outside it can see or refuse what it sends, and test stages share the organization and its
++ * credentials with production.
++ */
++export function ownPoolBudgetTarget(stage: string, database: string, branch: string): boolean {
++  if (!stage.startsWith("test-")) return branch === "main";
++  const slug = /^test-(pr-[1-9][0-9]*|rehearsal-[1-9][0-9]{0,9})$/.exec(stage)?.[1];
++  return (
++    slug !== undefined &&
++    database === `basalt-preview-${slug}` &&
++    (branch === stage || branch === `${stage}-pool`)
++  );
++}
++
+ export const configureDatabasePoolBudget = Effect.gen(function* () {
+   const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
++  const stage = yield* Config.NonEmptyString("POOL_BUDGET_STAGE");
+   const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
+   const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
+   const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
+   const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
+-  if (branch !== "main" && !/^test-[a-z0-9-]+$/.test(branch))
++  if (!ownPoolBudgetTarget(stage, database, branch))
+     return yield* new PoolBudgetFailed({
+-      message: "The database budget requires main or an isolated test branch",
++      message: "The database budget refuses a database or branch that is not its stage's own",
+     });
+   const client = yield* HttpClient.HttpClient;
+   const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
 diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
 --- a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
 +++ b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
-@@ -1,30 +1,27 @@
+@@ -1,30 +1,31 @@
 -import { releaseCommandAttempt } from "./release-command-attempt.ts";
  import * as Command from "alchemy/Command";
  import { fileURLToPath } from "node:url";
  import type { Input } from "alchemy/Input";
++import { Stage } from "alchemy/Stage";
  import { Effect } from "effect";
  
 -/** One execution per production deploy attempt; isolated previews retain their existing behavior. */
@@ -18,10 +58,13 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps
  export const databasePoolBudget = (id: string, database: Input<string>, branch: Input<string>) =>
    Effect.gen(function* () {
 -    const attempt = yield* releaseCommandAttempt;
++    // The script refuses a database or branch that is not this stage's own.
++    const stage = yield* Stage;
      return yield* Command.Exec(id, {
        command: "node scripts/database-pool-budget.ts",
        cwd: fileURLToPath(new URL("../../", import.meta.url)),
        env: {
++        POOL_BUDGET_STAGE: stage,
          POOL_BUDGET_DATABASE: database,
          POOL_BUDGET_BRANCH: branch,
 -        BASALT_RELEASE_ATTEMPT: attempt,

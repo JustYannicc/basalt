@@ -7,7 +7,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ConfigProvider, Effect } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { configureDatabasePoolBudget } from "../../.upstream/apps/hosted/cloud/scripts/database-pool-budget.ts";
+import {
+  configureDatabasePoolBudget,
+  ownPoolBudgetTarget,
+} from "../../.upstream/apps/hosted/cloud/scripts/database-pool-budget.ts";
+import { previewPoolDatabaseBranch } from "../../src/pool/database-settings.ts";
+import { previewIdentity } from "../environment.ts";
 import { databasePoolParameters } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts";
 
 function run(
@@ -183,6 +188,14 @@ test("a test stage reaches the provider only for its own database and its two br
       [`/v1/organizations/fixture/databases/${own.database}/branches/${branch}/parameters`],
     );
   }
+});
+
+test("the script's rule accepts exactly the names the stage tooling gives a stage", () => {
+  const identity = previewIdentity(7, { TEST_STAGE_DOMAIN: "example.invalid" });
+  for (const branch of [identity.stage, previewPoolDatabaseBranch(identity.stage)])
+    assert.equal(ownPoolBudgetTarget(identity.stage, identity.databaseName, branch), true);
+  assert.equal(ownPoolBudgetTarget(identity.stage, identity.databaseName, "main"), false);
+  assert.equal(ownPoolBudgetTarget("production", identity.databaseName, "main"), true);
 });
 
 test("the real script exits non-zero with a closed error and sends nothing", () => {
