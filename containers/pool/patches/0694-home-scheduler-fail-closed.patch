@@ -124,10 +124,10 @@ index 0000000..c575f0e
 +}
 diff --git a/internal/home/scheduler_required_test.go b/internal/home/scheduler_required_test.go
 new file mode 100644
-index 0000000..26ed2ef
+index 0000000..4172319
 --- /dev/null
 +++ b/internal/home/scheduler_required_test.go
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,151 @@
 +package home
 +
 +import (
@@ -136,6 +136,7 @@ index 0000000..26ed2ef
 +	"testing"
 +
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	sdkpluginhost "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginhost"
 +	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
 +	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
@@ -195,7 +196,10 @@ index 0000000..26ed2ef
 +			t.Fatal(errRegister)
 +		}
 +	}
-+	runtime := &Runtime{cfg: schedulerTestConfig(t, required), coreManager: manager, schedulerHost: host}
++	runtime := &Runtime{cfg: schedulerTestConfig(t, required), coreManager: manager}
++	if host != nil {
++		runtime.schedulerHost = host
++	}
 +	manager.SetPluginScheduler(runtime)
 +	return runtime, manager
 +}
@@ -265,4 +269,13 @@ index 0000000..26ed2ef
 +	if errDispatch != nil || auth == nil || auth.ID != "fallback-a" {
 +		t.Fatalf("dispatch = %v, %v; want the built-in selector to pick fallback-a", auth, errDispatch)
 +	}
++}
++
++func TestSchedulerRequiredRefusesThroughTheRealHostWithNoSchedulerLoaded(t *testing.T) {
++	_, manager := schedulerTestRuntime(t, true, nil, "policy-allowed")
++	runtime := &Runtime{cfg: schedulerTestConfig(t, true), coreManager: manager, pluginHost: sdkpluginhost.New()}
++	manager.SetPluginScheduler(runtime)
++
++	auth, errDispatch := dispatchSchedulerTest(t, manager)
++	requireSchedulerUnavailable(t, auth, errDispatch)
 +}

@@ -244,6 +244,12 @@ class Readiness:
             payload.update(self._database_distance)
             if self._location is not None:
                 payload["location"] = self._location
+            if not ready:
+                # Closed and ordered: a fused or unproven policy outranks unhealthy services.
+                fused = self._fused_instance_pending or self._fused_instance_id is not None
+                payload["refusal"] = (
+                    "policy_fused" if fused else "policy_unproven" if not policy_live else "degraded"
+                )
             return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:
