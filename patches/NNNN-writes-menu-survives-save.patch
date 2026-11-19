@@ -1,0 +1,95 @@
+diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability-ui.ts
+--- a/e2e/support/tool-availability-ui.ts
++++ b/e2e/support/tool-availability-ui.ts
+@@ -1,6 +1,7 @@
+ import { expect } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Effect, Fiber } from "effect";
+ import { Browser } from "./browser.ts";
++import { holdQuery } from "./query-transition.ts";
+ 
+ export const openAvailabilityTools = (organization: string, app: string) =>
+   Effect.gen(function* () {
+@@ -175,9 +176,36 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+   yield* browser.use("Reveal all hidden tools with recovery action", (page) =>
+     page.getByRole("button", { name: "Show hidden tools", exact: true }).click(),
+   );
+-  yield* browser.use("Restore read tools and observe the catalog refresh", (page) =>
+-    // The save refreshes the catalog, which unmounts an open writes menu.
+-    Promise.all([
++  // The group's save and the catalog read it starts are both held while the writes menu is open.
++  const saving = yield* holdQuery(/\/tool-availability$/, "continue", { method: "PATCH" });
++  yield* browser.use("Restore read tools", (page) =>
++    page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
++  );
++  yield* saving.requested;
++  yield* browser.use("Open disabled writes menu while the group saves", (page) =>
++    page.getByRole("button", { name: "Writes off", exact: true }).click(),
++  );
++  yield* browser.use("Wait for the open writes menu", (page) =>
++    page.getByRole("menuitem", { name: "Turn on all writes", exact: true }).waitFor(),
++  );
++  const refreshing = yield* holdQuery(/\/tool-availability$/, "continue");
++  yield* saving.release;
++  yield* refreshing.requested;
++  expect(
++    yield* browser.use("The writes menu stays open while the save's catalog read is held", (page) =>
++      page.getByRole("menuitem", { name: "Turn on all writes", exact: true }).isVisible(),
++    ),
++  ).toBe(true);
++  // The open menu hides the rest of the page from assistive technology.
++  expect(
++    yield* browser.use("The save's own catalog read shows no loading state", (page) =>
++      page
++        .getByRole("status", { name: "Loading tools", exact: true, includeHidden: true })
++        .count(),
++    ),
++  ).toBe(0);
++  const answered = yield* Effect.forkChild(
++    browser.use("Wait for the save's catalog read to answer", (page) =>
+       page
+         .waitForResponse(
+           (response) =>
+@@ -186,8 +214,27 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+             response.ok(),
+         )
+         .then((response) => response.finished()),
+-      page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
+-    ]),
++    ),
++  );
++  yield* refreshing.release;
++  yield* Fiber.join(answered);
++  yield* browser.use("The host's answer shows the restored read group behind the menu", (page) =>
++    page
++      .getByRole("checkbox", {
++        name: "Enable all tools in Counter",
++        exact: true,
++        includeHidden: true,
++      })
++      .and(page.locator('[aria-checked="true"]'))
++      .waitFor({ state: "attached" }),
++  );
++  expect(
++    yield* browser.use("The writes menu stays open after the catalog read answers", (page) =>
++      page.getByRole("menuitem", { name: "Turn on all writes", exact: true }).isVisible(),
++    ),
++  ).toBe(true);
++  yield* browser.use("Restore every write", (page) =>
++    page.getByRole("menuitem", { name: "Turn on all writes", exact: true }).click(),
+   );
+   yield* browser.use("Wait for the confirmed restored read tools", (page) =>
+     page
+@@ -195,12 +242,6 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+       .and(page.locator('[aria-checked="true"]:not(:disabled)'))
+       .waitFor(),
+   );
+-  yield* browser.use("Open disabled writes menu", (page) =>
+-    page.getByRole("button", { name: "Writes off", exact: true }).click(),
+-  );
+-  yield* browser.use("Restore every write", (page) =>
+-    page.getByRole("menuitem", { name: "Turn on all writes", exact: true }).click(),
+-  );
+   yield* browser.use("Wait for all write tools restored", (page) =>
+     page.getByRole("button", { name: "Writes on", exact: true }).waitFor(),
+   );
