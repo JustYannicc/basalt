@@ -145,6 +145,7 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "    basalt-native-policy:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
+        "      scheduler-required: true\n"
         "    typesafe:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
@@ -298,7 +299,8 @@ def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
             "dir": "/opt/pool/plugins",
             "configs": {
                 "gemini-cli": {"enabled": True, "load-in-home": True},
-                "basalt-native-policy": {"enabled": True, "load-in-home": True},
+                # The account veto lives in this scheduler: Home refuses picks while it is not active.
+                "basalt-native-policy": {"enabled": True, "load-in-home": True, "scheduler-required": True},
                 "typesafe": {"enabled": True, "load-in-home": True},
             },
         },

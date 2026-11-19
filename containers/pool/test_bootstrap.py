@@ -142,6 +142,18 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertNotIn("codex-api-key", patch)
         self.assertNotIn("secret-key", patch["management"])
 
+    def test_native_policy_scheduler_is_required_on_every_boot(self) -> None:
+        # Without it Home would fall back to its built-in selector once the veto plugin fuses.
+        self.assertIn(
+            "    basalt-native-policy:\n      enabled: true\n      load-in-home: true\n      scheduler-required: true\n",
+            bootstrap_yaml(False),
+        )
+        self.assertEqual(bootstrap_yaml(False).count("scheduler-required"), 1)
+        patched = pool_config_patch(False)["plugins"]["configs"]["basalt-native-policy"]
+        self.assertEqual(patched, {"enabled": True, "load-in-home": True, "scheduler-required": True})
+        for other in ("gemini-cli", "typesafe"):
+            self.assertNotIn("scheduler-required", pool_config_patch(False)["plugins"]["configs"][other])
+
     def test_child_logs_allow_only_audit_counts(self) -> None:
         self.assertIsNone(privacy_audit_line("node", "prompt=private auth=secret"))
         self.assertIsNone(privacy_audit_line("home", "upstream failure body=private"))
