@@ -1,4 +1,5 @@
 import { PoolDependencyFailure } from "./dependency-failure.ts";
+import { runtimeFailureCode, runtimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import {
   BackendFailure,
   diagnosePoolFailure,
@@ -23,6 +24,9 @@ function diagnostic(error: unknown): Omit<PoolFailureDiagnostic, "guard"> {
       return { failure: "timeout" };
     return { failure: "transport" };
   }
+  // A selected runtime's refusal crosses the private binding with its closed code; keep it.
+  const runtime = runtimeRouteDiagnostic(error);
+  if (runtime) return { failure: "runtime_refused", runtime: runtimeFailureCode(runtime) };
   return { failure: "unknown" };
 }
 
