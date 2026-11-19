@@ -1,4 +1,5 @@
 import type { Account, UsageWindow } from "../contract.ts";
+import { formatMoment, readerFormat } from "./moments.ts";
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -15,12 +16,16 @@ export function duration(milliseconds: number): string {
   return `${minutes}m`;
 }
 
-/** "resets in 2d 20h", or null when the backend gave no reset time. */
+/** "in 2d 20h · 21.11.2026 14:30": the countdown and its exact moment, so touch screens see both. */
+export const countdown = (iso: string, now: number) =>
+  `in ${duration(Date.parse(iso) - now)} · ${exactTime(iso)}`;
+
+/** "resets in 2d 20h · 21.11.2026 14:30", or null when the backend gave no reset time. */
 export function resetsIn(window: Pick<UsageWindow, "resetAt">, now: number): string | null {
   if (!window.resetAt) return null;
   const at = Date.parse(window.resetAt);
   if (Number.isNaN(at)) return null;
-  return at <= now ? "resetting now" : `resets in ${duration(at - now)}`;
+  return at <= now ? "resetting now" : `resets ${countdown(window.resetAt, now)}`;
 }
 
 /**
@@ -45,7 +50,8 @@ export function clamp(value: number): number {
 /** Shortest window first, so a 5-hour limit reads before a weekly one. */
 export function orderedWindows(windows: readonly UsageWindow[]): UsageWindow[] {
   return [...windows].sort(
-    (a, b) => (a.windowSeconds ?? Number.MAX_SAFE_INTEGER) - (b.windowSeconds ?? Number.MAX_SAFE_INTEGER),
+    (a, b) =>
+      (a.windowSeconds ?? Number.MAX_SAFE_INTEGER) - (b.windowSeconds ?? Number.MAX_SAFE_INTEGER),
   );
 }
 
@@ -94,26 +100,29 @@ export function capacity(accounts: readonly Account[]): ProviderCapacity[] {
       }
       return clamp(window.remainingRatio ?? 0);
     });
-    return { provider, accounts: members.length, serving, measured, left, segments, nextReset, windowLabel };
+    return {
+      provider,
+      accounts: members.length,
+      serving,
+      measured,
+      left,
+      segments,
+      nextReset,
+      windowLabel,
+    };
   });
 }
 
 /** The newest usage reading across the pool. */
 export function lastReading(accounts: readonly Account[]): number | null {
-  const times = accounts.flatMap((account) => (account.observedAt ? [Date.parse(account.observedAt)] : []));
+  const times = accounts.flatMap((account) =>
+    account.observedAt ? [Date.parse(account.observedAt)] : [],
+  );
   const valid = times.filter((time) => !Number.isNaN(time));
   return valid.length ? Math.max(...valid) : null;
 }
 
-const exact = new Intl.DateTimeFormat(undefined, {
-  weekday: "short",
-  day: "numeric",
-  month: "short",
-  hour: "numeric",
-  minute: "2-digit",
-});
-
+/** A moment in the reader's own time zone, such as "21.11.2026 14:30". */
 export function exactTime(iso: string): string {
-  const at = Date.parse(iso);
-  return Number.isNaN(at) ? iso : exact.format(at);
+  return Number.isNaN(Date.parse(iso)) ? iso : formatMoment(iso, readerFormat);
 }
