@@ -185,3 +185,32 @@ test(
     assert.deepEqual(f.old.calls.signals, [15]);
   },
 );
+
+for (const [answer, readiness] of [
+  ["503", async () => new Response(null, { status: 503 })],
+  ["a refused connection", async () => Promise.reject(new TypeError("connection refused"))],
+  ["no answer in time", () => new Promise<Response>(() => {})],
+] as const)
+  test(
+    `the stuck record heals when the old container answers readiness with ${answer}`,
+    { timeout: 30_000 },
+    async (context) => {
+      let now = Date.now();
+      context.mock.method(Date, "now", () => now);
+      const f = await fleetWorkerFixture();
+      context.after(f.cleanup);
+      context.mock.method(console, "info", () => {});
+      context.mock.method(console, "error", () => {});
+      const { previous, epoch } = await stuckOverRunningContainer(f);
+      f.old.hooks.health = async () =>
+        f.old.identity().bootId === previous.bootId ? readiness() : undefined;
+      // Hours later, past any start the admitted restart could still have in progress.
+      now += 3_600_000;
+      await f.send("recovery-reset", { operationId: "incident-release" });
+      await passes(f, 1);
+      await assertStuck(f, previous, epoch);
+      now += unservingBoundMs;
+      await assertHealed(f, previous, epoch);
+      assert.deepEqual(f.old.calls.signals, [15]);
+    },
+  );

@@ -4,7 +4,7 @@ import type { RuntimeWitnessStore, WitnessRecord } from "./witness-store.ts";
 import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
 import type { RuntimeConfiguration } from "./configuration.ts";
-import type { PoolStatus } from "../lifecycle.ts";
+import { poolLifecycle, type PoolStatus } from "../lifecycle.ts";
 
 const stopsKey = "runtime-endpoint-v1:forced-stops";
 const Stops = Schema.Array(Schema.Number);
@@ -15,6 +15,11 @@ const hourMs = 3_600_000;
 export const servingReadMs = 10_000;
 /** Streams counted active only stop a forced stop until their count has stood still this long. */
 export const leakedStreamsMs = 300_000;
+/**
+ * A restart's own start answers readiness, or meets its startup deadline, well within this of its
+ * admission. Past it, a container under that restart that doesn't answer is not its start.
+ */
+export const restartStartBoundMs = poolLifecycle.startupTimeoutMs + 60_000;
 
 const pause = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -82,8 +87,9 @@ export class RuntimeForcedStop {
   }
   /**
    * The running container is the selected boot's: the record names it, or a restart admitted over it
-   * left no identity, and the container answers readiness with another launch than that restart's.
-   * A restart's own boot that is still starting can't prove that, and is left to its start.
+   * left no identity, and the container isn't that restart's start. A container answers readiness
+   * only with the launch it was started with, so another launch, or none, is the old container. One
+   * that doesn't answer is the restart's own start only while that start can still be in progress.
    */
   private async ownsRunningBoot(
     record: WitnessRecord,
@@ -112,7 +118,7 @@ export class RuntimeForcedStop {
         status.launch.tokenHash !== launch.tokenHash
       );
     } catch {
-      return false;
+      return Date.now() - authorization.at > restartStartBoundMs;
     }
   }
   /** Active streams that may block the stop, or undefined while they still do. */

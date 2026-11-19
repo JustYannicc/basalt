@@ -4,6 +4,7 @@ import { test, type TestContext } from "node:test";
 import {
   RuntimeForcedStop,
   forcedStopGraceMs,
+  restartStartBoundMs,
   runtimeStopTiming,
   supervisorStopGraceMs,
 } from "./runtime-slots/forced-stop.ts";
@@ -77,10 +78,13 @@ function stopper(
   } as unknown as ConstructorParameters<typeof RuntimeForcedStop>[0]);
   return { stop, signals };
 }
-const restartOver = (witness?: unknown) => ({
-  authorization: { kind: "restart", previous: selected },
+const restartOver = (witness?: unknown, at = Date.now()) => ({
+  authorization: { kind: "restart", previous: selected, at },
   ...(witness ? { witness } : {}),
 });
+const notAnswering = async () => {
+  throw new Error("readiness refused, late or unreachable");
+};
 
 test("a restart's own boot is never stopped, while the old container under it is", async (context) => {
   const cases: [string, Record<string, unknown>, () => Promise<unknown>, boolean][] = [
@@ -105,10 +109,14 @@ test("a restart's own boot is never stopped, while the old container under it is
     [
       "started, and readiness doesn't answer yet (a cold start)",
       restartOver({ launch }),
-      async () => {
-        throw new Error("not listening yet");
-      },
+      notAnswering,
       false,
+    ],
+    [
+      "started past any startup, and the container doesn't answer (503, late or refused)",
+      restartOver({ launch }, Date.now() - restartStartBoundMs - 1),
+      notAnswering,
+      true,
     ],
     [
       "the restart recorded its own boot",
