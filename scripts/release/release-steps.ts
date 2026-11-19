@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { isResolved } from "alchemy/Diff";
 import type * as AlchemyPlan from "alchemy/Plan";
 import { Data, Effect, Redacted } from "effect";
@@ -130,7 +131,8 @@ export const runReleaseStep = (step: ReleaseStep, inherited: NodeJS.ProcessEnv =
   Effect.callback<void, ReleaseStepFailed>((resume) => {
     const [program, ...args] = step.command.split(/\s+/u);
     const child = spawn(program!, args, {
-      cwd: step.cwd,
+      // Resolved as Alchemy resolves a command's cwd: from the directory the entry runs it from.
+      cwd: resolve(step.cwd),
       env: {
         ...inherited,
         ...step.env,
