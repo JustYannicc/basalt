@@ -439,6 +439,21 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
           ),
         };
       }
+      // The same plan without a policy: every changed row with its changedProps, refused or not.
+      let all: unknown;
+      try {
+        const planned = await runEntry("plan", subject, source, env, outputs, { policy: null });
+        all = (planned.record as { changes?: unknown }).changes ?? [];
+      } catch (error) {
+        all = { failed: redactor(source)(error instanceof Error ? error.message : String(error)) };
+      }
+      await writeFile(
+        join(outputs, `settle-${label}-rows.json`),
+        `${JSON.stringify(all, null, 2)}\n`,
+        {
+          mode: 0o600,
+        },
+      );
       await writeFile(join(outputs, `settle-${label}.json`), `${JSON.stringify(rows, null, 2)}\n`, {
         mode: 0o600,
       });
