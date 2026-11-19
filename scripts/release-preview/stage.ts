@@ -41,6 +41,7 @@ export const stageModes = [
   "apply",
   "code",
   "settle",
+  "heal",
   "destroy",
 ] as const;
 export type StageMode = (typeof stageModes)[number];
@@ -65,7 +66,6 @@ export const declaration = {
 } as const;
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const entry = join(root, "scripts/release/deploy.ts");
 const cloud = join(root, ".upstream/apps/hosted/cloud");
 
 async function runEntry(
@@ -78,14 +78,23 @@ async function runEntry(
     policy = "cutover-classes",
     args = [],
     include = "PoolWorker",
-  }: { policy?: string | null; args?: readonly string[]; include?: string | null } = {},
+    tree = root,
+  }: {
+    policy?: string | null;
+    args?: readonly string[];
+    include?: string | null;
+    /** Another prepared checkout whose own entry, policies and stack release onto the stage. */
+    tree?: string;
+  } = {},
 ) {
+  const entry = join(tree, "scripts/release/deploy.ts");
+  const cloud = join(tree, ".upstream/apps/hosted/cloud");
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
   const config = stageEnvironment(subject, source);
   const seed = join(outputs, `seed-${command}-${Date.now()}.json`);
   const log = join(outputs, `entry-${command}-${Date.now()}.log`);
-  await rm(join(root, ".local/release", `${command}.json`), { force: true });
+  await rm(join(tree, ".local/release", `${command}.json`), { force: true });
   const code = await new Promise<number>((done) => {
     const child = spawn(
       "bun",
@@ -98,7 +107,7 @@ async function runEntry(
         "alchemy.run.ts",
         // The step's own allow-list, include and wire rules, exactly as production will run it.
         ...((command === "plan" || command === "deploy") && policy
-          ? ["--policy", join(root, `scripts/release/policies/${policy}.json`)]
+          ? ["--policy", join(tree, `scripts/release/policies/${policy}.json`)]
           : []),
         // Without a policy, the cutover's include still scopes the plan to PoolWorker and its inputs.
         ...((command === "plan" || command === "deploy") && !policy && include
@@ -139,7 +148,7 @@ async function runEntry(
   }
   const record = (
     command === "plan" || command === "deploy"
-      ? JSON.parse(await readFile(join(root, ".local/release", `${command}.json`), "utf8"))
+      ? JSON.parse(await readFile(join(tree, ".local/release", `${command}.json`), "utf8"))
       : undefined
   ) as unknown;
   return { record, highlights: planHighlights(redact(text)) };
@@ -229,6 +238,166 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
         : { unavailable: redactor(source)(stderr.split("\n").slice(-20).join("\n")) };
     },
   };
+}
+
+/**
+ * The release a healing production pool needs, rehearsed: the stage is deployed with the
+ * rehearsal-only fault command, the fault leaves the root running but refusing exactly as
+ * production did, then a code-only release of the fix candidate (a branch without the fault
+ * command) must plan zero changes on the root container application, and the Worker's own bounded
+ * restart must replace the old instance before acceptance. The probe samples the whole time.
+ */
+export const healCandidateBranch = "rehearse/heal-candidate";
+
+async function healRelease(
+  lane: number,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+  hooks: ReturnType<typeof nativeHooks>,
+) {
+  const result: Record<string, unknown> = {};
+  const fault = (args: string[], out: string) =>
+    new Promise<number | null>((done) => {
+      const child = spawn(
+        "node",
+        [join(root, "scripts/release-preview/stage-fault.ts"), String(lane), out, ...args],
+        {
+          cwd: root,
+          env: source,
+          stdio: ["ignore", "ignore", "ignore"],
+        },
+      );
+      child.once("close", done);
+    });
+  const read = async (label: string, args: string[]) => {
+    const out = join(outputs, `heal-${label}.json`);
+    const code = await fault(args, out);
+    const state = JSON.parse(await readFile(out, "utf8").catch(() => "null")) as Record<
+      string,
+      unknown
+    > | null;
+    if (code !== 0 || !state) throw new Error(`The fault client's ${label} exited ${code}`);
+    return state;
+  };
+  const probe = startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
+  try {
+    // 1. The fault, then production's stuck state, field for field (the client checks and reports).
+    result.fault = await read("fault", []);
+    const stuck = await read("stuck", ["--read-only"]);
+    result.stuck = stuck;
+    if (stuck.stuck !== true)
+      throw new Error(
+        `The stage is not in production's stuck state: ${JSON.stringify(stuck.mismatches ?? stuck)}`,
+      );
+    // 2. The fix candidate in its own prepared checkout, built as the stage is built.
+    const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
+    await rm(candidate, { recursive: true, force: true });
+    execFileSync("git", ["fetch", "-q", "--depth", "1", "origin", healCandidateBranch], {
+      cwd: root,
+    });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
+      cwd: root,
+    });
+    result.candidate = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: candidate,
+      encoding: "utf8",
+    }).trim();
+    if (existsSync(join(candidate, "scripts/release-preview/stage-fault.ts")))
+      throw new Error("The heal candidate still carries the rehearsal-only fault command");
+    execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+    const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
+    const started = Date.now();
+    await withStageBuild(candidate, subject, source, async () => {
+      // 3. The plan must not touch the root container application.
+      const planned = await runEntry("plan", subject, source, env, outputs, {
+        policy: "code",
+        tree: candidate,
+      });
+      const rows =
+        (planned.record as { changes?: { fqn: string; type: string; action: string }[] }).changes ??
+        [];
+      const onRoot = rows.filter(
+        (row) => row.fqn === "PoolContainer" || row.type === "Cloudflare.Container",
+      );
+      result.rootRows = onRoot;
+      if (onRoot.length)
+        throw new Error(
+          `The healing release plans changes on the root container: ${JSON.stringify(onRoot)}`,
+        );
+      result.release = await runEntry("deploy", subject, source, env, outputs, {
+        policy: "code",
+        tree: candidate,
+      });
+    });
+    result.releaseSeconds = Math.round((Date.now() - started) / 1000);
+    // 4. Recovery: wait, bounded, for the Worker's own restart to bring a new boot that answers.
+    const deadline = Date.now() + 10 * 60_000;
+    let healed: Record<string, unknown> | undefined;
+    while (Date.now() < deadline) {
+      const state = await read("after", ["--read-only"]).catch(() => undefined);
+      if (state?.healthy === true) {
+        healed = state;
+        break;
+      }
+      await new Promise((done) => setTimeout(done, 5_000));
+    }
+    if (!healed) throw new Error("Recovery did not report ready within 10 minutes of the release");
+    result.healed = healed;
+    result.secondsToReady = Math.round((Date.now() - started) / 1000);
+    result.stopPath = await forcedStopPath(subject, source, started).catch((error: unknown) => ({
+      unavailable: error instanceof Error ? error.message : String(error),
+    }));
+  } finally {
+    result.interruption = await probe.stop();
+    await writeFile(join(outputs, "stage-heal.json"), `${JSON.stringify(result, null, 2)}\n`, {
+      mode: 0o600,
+    });
+  }
+  return result;
+}
+
+/** The fix's `POOL_RUNTIME_FORCED_STOP` line for this stage's PoolWorker since `from`, read from Workers Logs. */
+async function forcedStopPath(subject: StageSubject, source: NodeJS.ProcessEnv, from: number) {
+  const scripts = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "")}/workers/scripts`,
+    { headers: { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` } },
+  ).then((response) => response.json() as Promise<{ result?: { id: string; tags?: string[] }[] }>);
+  const { stage } = stageNames(subject);
+  const script = (scripts.result ?? []).find(
+    (item) =>
+      item.tags?.includes(`alchemy:stage:${stage}`) && item.tags.includes("alchemy:id:PoolWorker"),
+  )?.id;
+  if (!script || !script.includes(stage.replace(/^test-/u, "")))
+    throw new Error("No PoolWorker of this stage to read logs from");
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "")}/workers/observability/telemetry/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        queryId: `rehearsal-heal-${Date.now()}`,
+        timeframe: { from, to: Date.now() },
+        view: "events",
+        limit: 20,
+        parameters: {
+          filters: [{ key: "$metadata.service", operation: "eq", type: "string", value: script }],
+          needle: { value: "POOL_RUNTIME_FORCED_STOP", isRegex: false, matchCase: true },
+        },
+      }),
+    },
+  );
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Workers Logs query refused with HTTP ${response.status}`);
+  const paths = [
+    ...text.matchAll(
+      /\\?"path\\?":\\?"(graceful_exit|destroy_after_grace|destroy_without_signal)/gu,
+    ),
+  ].map((match) => match[1]);
+  return { paths: [...new Set(paths)], lines: paths.length };
 }
 
 /** The commit the stage last deployed, from its readiness command's recorded input; refuse any other HEAD. */
@@ -527,16 +696,26 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
           `// Rehearsal-only marker: a new file where migrations live. Never committed.\nexport const marker = ${marker};\n`,
         "new-migration-file",
       );
+    } else if (mode === "heal") {
+      Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "destroy") {
       await destroyStage(root, subject, source);
       await verifyStageAbsent(root, subject, source);
       result.absent = true;
     }
   };
-  if (mode === "plan" || mode === "apply" || mode === "code" || mode === "settle") {
+  if (
+    mode === "plan" ||
+    mode === "apply" ||
+    mode === "code" ||
+    mode === "settle" ||
+    mode === "heal"
+  ) {
     // A plan measures the deployed commit only if it is that commit, built as the stage is built.
+    // The heal release builds its own candidate checkout, so it only checks the deployed commit.
     result.deployedCommit = await requireDeployedHead(subject, source);
-    await withStageBuild(root, subject, source, run);
+    if (mode === "heal") await run();
+    else await withStageBuild(root, subject, source, run);
   } else await run();
   result.seconds = Math.round((Date.now() - started) / 1000);
   await writeFile(join(outputs, `stage-${mode}.json`), `${JSON.stringify(result, null, 2)}\n`, {
