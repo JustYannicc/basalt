@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
-import {
-  capturePoolMonitor,
-  poolMonitorConfig,
-  startPoolMonitor,
-} from "../telemetry/pool-monitor.ts";
+import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
 import { availabilityCron } from "./availability-config.ts";
 
 const env = {
@@ -105,7 +101,6 @@ test("healthy monitoring sends paired check-ins with one identity, the first def
     failure_issue_threshold: 3,
     recovery_threshold: 1,
   });
-  assert.equal(poolMonitorConfig.schedule.value, availabilityCron, "the monitor follows the cron");
   assert.equal(messages[1]!.payload.monitor_config, undefined, "only the opening check-in upserts");
   assert.doesNotMatch(JSON.stringify(messages), /fixture-pool/);
 });
@@ -166,7 +161,7 @@ test("monitor error text and fields reject unbounded or private diagnostic input
     messages.push(unpack(init));
     return new Response(null, { status: 202 });
   });
-  const receipt = await startPoolMonitor(env);
+  const receipt = await startPoolMonitor(env, availabilityCron);
   await capturePoolMonitor(env, receipt, {
     ok: false,
     failures: Array.from({ length: 20 }, () => ({
@@ -188,7 +183,7 @@ test("missing request reliability emits its own incident while availability rema
     messages.push(unpack(init));
     return new Response(null, { status: 202 });
   });
-  const receipt = await startPoolMonitor(env);
+  const receipt = await startPoolMonitor(env, availabilityCron);
   await capturePoolMonitor(env, receipt, {
     ok: true,
     failures: [{ guard: "request_reliability", reason: "collection_unavailable" }],

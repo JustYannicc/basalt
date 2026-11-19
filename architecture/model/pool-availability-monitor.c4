@@ -1,7 +1,0 @@
-model {
-  extend basalt.telemetry {
-    metadata {
-      constraint "The pool availability check-in owns the definition of its cron monitor in the observability adapter: the opening check-in of every run sends the full monitor configuration (every-minute crontab in UTC, one-minute margin and runtime, an incident after three failed check-ins in a row, recovery after one success), so a release restores it and a hand edit lasts one minute. The schedule matches the Worker's availability cron. Who is notified, and how, stays in the adapter's alert rules."
-    }
-  }
-}

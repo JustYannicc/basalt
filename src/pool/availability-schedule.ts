@@ -1,7 +1,7 @@
 import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { awaitProbe, type ProbeResult } from "./availability.ts";
-import { validProbeTarget } from "./availability-config.ts";
+import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { notifyPercentageFailure } from "./reliability-notifications.ts";
 
@@ -12,7 +12,7 @@ export async function runAvailabilityProbe(
   release?: string,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
-  const receipt = await startPoolMonitor(env);
+  const receipt = await startPoolMonitor(env, availabilityCron);
   const target = env.POOL_AVAILABILITY_TARGET;
   let result: ProbeResult;
   try {
