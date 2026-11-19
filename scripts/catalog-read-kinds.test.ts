@@ -385,6 +385,170 @@ test("an operationId declared more than once refuses, wherever the copy is liste
   ]);
 });
 
+/** The delta review's minimal map read: a POST whose body takes a referenced component schema. */
+const mapDocument = () => ({
+  openapi: "3.0.0",
+  servers: [{ url: "https://api.firecrawl.dev/v2" }],
+  security: [{ bearerAuth: [] }],
+  components: {
+    securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
+    schemas: {
+      MapOptions: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  paths: {
+    "/map": {
+      post: {
+        operationId: "mapUrls",
+        tags: ["Mapping"],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/MapOptions" } },
+          },
+        },
+        responses: { 200: { description: "ok" } },
+      },
+    },
+  },
+});
+const mapHash = (value: ReturnType<typeof mapDocument>) =>
+  operationInputSha256(value, findOperation(value, "mapUrls")!);
+const mapPin = (value: ReturnType<typeof mapDocument>) => ({
+  source: "https://api.firecrawl.dev/openapi.json",
+  openapi: "3.0.0",
+  operations: {
+    mapUrls: { method: "post", path: "/map", tags: ["Mapping"], inputSha256: mapHash(value) },
+  },
+});
+const mapBody = (value: ReturnType<typeof mapDocument>) =>
+  value.paths["/map"].post.requestBody.content;
+
+test("a media type written as a reference refuses, since the framework serves it as written", () => {
+  // The framework resolves no reference into component schemas outside a schema value, and media
+  // types get no schema-style second pass, so it would serve this body as `{}`.
+  const media = mapDocument();
+  Object.assign(media.components.schemas, { MapMedia: mapBody(media)["application/json"] });
+  Object.assign(mapBody(media), { "application/json": { $ref: "#/components/schemas/MapMedia" } });
+  // Its object resolver skips the value of any key named `schema`, so a media type named so is
+  // never resolved, wherever its reference points.
+  const inline = mapDocument();
+  const named = mapDocument();
+  for (const value of [inline, named]) {
+    const { "application/json": json } = mapBody(value);
+    Object.assign(value.paths["/map"].post.requestBody, { content: { schema: json } });
+    Object.assign(value, { "x-media": json });
+  }
+  Object.assign(named.paths["/map"].post.requestBody, {
+    content: { schema: { $ref: "#/x-media" } },
+  });
+  for (const [before, after, reference] of [
+    [mapDocument(), media, "#/components/schemas/MapMedia"],
+    [inline, named, "#/x-media"],
+  ] as const) {
+    const pin = mapPin(before);
+    assert.deepEqual(readKindDrift("firecrawl", pin, after), [
+      `firecrawl/mapUrls: its media type is a reference, ${JSON.stringify(reference)}, which the framework would serve as written, so the hash would not cover its schema`,
+    ]);
+    assert.throws(() => mapHash(after), /^Error: post \/map: its media type is a reference/);
+  }
+});
+
+test("a reference into component schemas outside a schema value refuses, since the framework leaves it", () => {
+  const pin = mapPin(mapDocument());
+  const refusal = (reference: string) =>
+    `firecrawl/mapUrls: its input reference ${JSON.stringify(reference)} names a component schema outside a schema value, where the framework does not resolve it, so the hash would not cover what it serves`;
+  // A whole content map, a request body, a parameter and a server written as such a reference.
+  const content = mapDocument();
+  Object.assign(content.components.schemas, { MapContent: mapBody(content) });
+  Object.assign(content.paths["/map"].post.requestBody, {
+    content: { $ref: "#/components/schemas/MapContent" },
+  });
+  const body = mapDocument();
+  Object.assign(body.components.schemas, { MapBody: body.paths["/map"].post.requestBody });
+  Object.assign(body.paths["/map"].post, { requestBody: { $ref: "#/components/schemas/MapBody" } });
+  const parameter = mapDocument();
+  Object.assign(parameter.components.schemas, {
+    Limit: { name: "limit", in: "query", schema: { type: "integer" } },
+  });
+  Object.assign(parameter.paths["/map"].post, {
+    parameters: [{ $ref: "#/components/schemas/Limit" }],
+  });
+  const server = mapDocument();
+  Object.assign(server.components.schemas, { Server: server.servers[0] });
+  Object.assign(server, { servers: [{ $ref: "#/components/schemas/Server" }] });
+  for (const [value, reference] of [
+    [content, "#/components/schemas/MapContent"],
+    [body, "#/components/schemas/MapBody"],
+    [parameter, "#/components/schemas/Limit"],
+    [server, "#/components/schemas/Server"],
+  ] as const) {
+    assert.deepEqual(readKindDrift("firecrawl", pin, value), [refusal(reference)], reference);
+    assert.throws(() => mapHash(value), /names a component schema outside a schema value/);
+  }
+  // Inside a schema value the framework resolves them, as the check does.
+  const inside = mapDocument();
+  Object.assign(inside.components.schemas, { Url: { type: "string" } });
+  Object.assign(inside.components.schemas.MapOptions.properties, {
+    url: { $ref: "#/components/schemas/Url" },
+  });
+  assert.deepEqual(readKindDrift("firecrawl", pin, inside), []);
+});
+
+test("a parameter whose content lists more than one media type refuses, since the framework reads only the first", () => {
+  const pin = mapPin(mapDocument());
+  const strict = {
+    schema: {
+      type: "object",
+      properties: { url: { type: "string" } },
+      additionalProperties: false,
+    },
+  };
+  const loose = { schema: { type: "object" } };
+  const options = (content: Record<string, typeof strict | typeof loose>) => {
+    const value = mapDocument();
+    Object.assign(value.paths["/map"].post, {
+      parameters: [{ name: "opts", in: "query", content }],
+    });
+    return value;
+  };
+  // The hash sorts keys, so these two read alike, while the framework serves the strict schema
+  // for the first and the loose one for the second. A media type named like wording counts too.
+  for (const [value, types] of [
+    [
+      options({ "application/json": strict, "application/x-www-form-urlencoded": loose }),
+      '"application/json", "application/x-www-form-urlencoded"',
+    ],
+    [
+      options({ "application/x-www-form-urlencoded": loose, "application/json": strict }),
+      '"application/x-www-form-urlencoded", "application/json"',
+    ],
+    [
+      options({ description: loose, "application/json": strict }),
+      '"description", "application/json"',
+    ],
+  ] as const) {
+    assert.deepEqual(readKindDrift("firecrawl", pin, value), [
+      `firecrawl/mapUrls: a parameter's content lists 2 media types (${types}), and the framework reads only the first, so the hash would not cover which one it serves`,
+    ]);
+    assert.throws(() => mapHash(value), /reads only the first/);
+  }
+  // One media type is an input like any other.
+  assert.notEqual(mapHash(options({ "application/json": strict })), mapHash(mapDocument()));
+});
+
+test("a request body's media type named like wording is an input, since the framework serves it", () => {
+  const pin = mapPin(mapDocument());
+  const worded = mapDocument();
+  Object.assign(mapBody(worded), { description: { schema: { type: "object" } } });
+  assert.notDeepEqual(readKindDrift("firecrawl", pin, worded), []);
+});
+
 test("a missing operationId refuses with the operation it left", () => {
   const pin = pinned(document());
   const absent = document();
