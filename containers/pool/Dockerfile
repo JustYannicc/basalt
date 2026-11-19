@@ -97,7 +97,7 @@ COPY pool_contract.py /opt/pool/pool_contract.py
 COPY home_identity.py home_peer.py home_peer_wire.py /opt/pool/
 COPY billing_policy.py billing-settings.json /opt/pool/
 COPY readiness.py service_health.py policy_diagnostic.py /opt/pool/
-COPY db_distance.py db_signals.py /opt/pool/
+COPY db_distance.py db_signals.py output.py /opt/pool/
 COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY policy_check.py /opt/pool/policy_check.py
 COPY healthcheck.py /opt/pool/healthcheck.py

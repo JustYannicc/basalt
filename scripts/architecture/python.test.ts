@@ -182,6 +182,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "readiness.py",
       "db_distance.py",
       "db_signals.py",
+      "output.py",
       "service_health.py",
       "policy_diagnostic.py",
       "healthcheck.py",
