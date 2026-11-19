@@ -126,6 +126,20 @@ test("a move State already records on the Worker is history, in a code-only rele
   );
 });
 
+test("a root attachment that resolves to another namespace is refused, path by path", async (context) => {
+  const rows = productionRows();
+  // State recorded another namespace than the one PoolWorker now hosts the class in.
+  const root = rows.PoolContainer as unknown as { bindings: { sid: string; data: unknown }[] };
+  root.bindings = [
+    { sid: "PoolContainer", data: { durableObjects: { namespaceId: "namespace-elsewhere" } } },
+  ];
+  const { plan } = await planned(context, { rows });
+  const { rules, message } = await refused(plan);
+  assert.deepEqual(rules, ["pool-container-attachment-change PoolContainer"]);
+  assert.match(message, /bindings\.PoolContainer\.durableObjects\.namespaceId/u);
+  assert.match(message, /restart then refuses for good/u);
+});
+
 test("a root container declared by build context is refused", async (context) => {
   const { plan } = await planned(context, { declared: { container: { context: buildContext } } });
   const { rules, message } = await refused(plan);
