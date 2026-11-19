@@ -9,7 +9,7 @@ import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
 // must reach a real object with the whole body, through workerd's own clone and tee.
 const fixture = `
 import { DurableObject } from "cloudflare:workers";
-import { fetchController } from "./src/pool/controller-reset.ts";
+import { controllerHeldBytes, fetchController } from "./src/pool/controller-reset.ts";
 export class Echo extends DurableObject {
   async fetch(request) {
     const bytes = new Uint8Array(await request.arrayBuffer());
@@ -20,12 +20,32 @@ export class Echo extends DurableObject {
     });
   }
 }
+async function settles(condition, waitingFor) {
+  for (let index = 0; index < 10_000; index++) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw Error("Never saw " + waitingFor);
+}
 export default {
   fetch(request, env, ctx) {
     let attempt = 0;
     const echo = () => env.ECHO.get(env.ECHO.idFromName("echo"));
-    // With this header the first send is the real one, to prove the copy giving up never touches it.
-    if (request.headers.has("x-send-first")) return fetchController(request, { controller: echo, env: {}, defer: (work) => ctx.waitUntil(work), wait: async () => {} });
+    // With this header the first send is the real one. It reads nothing until the copy has given
+    // up past 4 MiB, to prove that cancelling the copy mid-stream never touches the real body.
+    if (request.headers.has("x-send-first"))
+      return fetchController(request, {
+        controller: () => ({
+          fetch: async (first) => {
+            await settles(() => controllerHeldBytes() > 0, "the copy holding");
+            await settles(() => controllerHeldBytes() === 0, "the copy giving up");
+            return echo().fetch(first);
+          },
+        }),
+        env: {},
+        defer: (work) => ctx.waitUntil(work),
+        wait: async () => {},
+      });
     return fetchController(request, {
       controller: () =>
         ++attempt === 1
