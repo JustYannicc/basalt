@@ -276,6 +276,9 @@ export const handle = async (request: Request, user: object) => {
   const payload = body;
   users.push(payload); // expect: basalt/no-echo-stub
   requests.push(body);
+  const call = { rpc: "" };
+  call.rpc = body.method;
+  user.name = body.name; // expect: basalt/no-echo-stub
   Object.assign(user, body); // expect: basalt/no-echo-stub
   latest = structuredClone(body); // expect: basalt/no-echo-stub
   const { delay = 0 } = body;
