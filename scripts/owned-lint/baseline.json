@@ -1914,7 +1914,7 @@
     "scripts/import-usage.ts": 1,
     "scripts/owned-lint/baseline.test.ts": 1,
     "scripts/owned-lint/baseline.ts": 2,
-    "scripts/owned-lint/check.ts": 5,
+    "scripts/owned-lint/check.ts": 2,
     "scripts/pool-acceptance/pool-acceptance.test.ts": 1,
     "scripts/pool-acceptance/preview-accounts.ts": 3,
     "scripts/pool-acceptance/preview-client.ts": 3,

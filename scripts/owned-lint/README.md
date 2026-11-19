@@ -13,7 +13,8 @@ node scripts/owned-lint/check.ts <files> # only these files, against their own e
 The check lints the exact `git ls-files` list, new untracked files included, and fails when
 oxlint checks fewer files than it was given: an ignored path reports nothing and would look
 clean. Named files must exist. It refuses `oxlint-disable` and `eslint-disable` comments that
-are bare, hold anything but plain rule names, or name an owned rule, including the built-in
+are not a `//` comment on a line of their own, are bare, hold anything but plain rule names, or
+name an owned rule, including the built-in
 rules the configuration enables under any plugin prefix, which oxlint accepts for them. oxlint
 reads Unicode spaces such as U+0085 as separators, so a comment that looks like one name to
 JavaScript can name none and disable every rule.

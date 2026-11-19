@@ -9,17 +9,17 @@ import {
   basePolicy,
   compare,
   configProblems,
-  directiveProblems,
   nativeRules,
   recordable,
   severity,
   total,
   type Allowlist,
-  type BaseState,
   type Config,
   type Counts,
   type Diagnostic,
 } from "./baseline.ts";
+import { baseState } from "./base-state.ts";
+import { directiveProblems } from "./directives.ts";
 import { bareImports, resolutionProblems } from "./toolchain.ts";
 import {
   MANIFEST,
@@ -32,7 +32,6 @@ import {
   upstreamFile,
   vendorPolicy,
   vendorProblems,
-  vendorState,
   vendored,
 } from "./vendor.ts";
 
@@ -57,14 +56,6 @@ const readJson = <T>(path: string, fallback: T) => {
 };
 const writeJson = (path: string, value: unknown) =>
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
-// Changing these may change what the rules find, so a rise against the base is listed for
-// review instead of failing; the rule cases in rules.test.ts guard the change.
-const LINT_INPUTS = [
-  "scripts/owned-lint/plugin",
-  VENDOR,
-  "scripts/owned-lint/package.json",
-  "scripts/owned-lint/bun.lock",
-];
 export const inScope = (file: string) => SCOPE.test(file) && !OUTSIDE.test(file) && !vendored(file);
 const listFiles = (cwd: string, keep: (file: string) => boolean, ...paths: string[]) =>
   execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", ...paths], {
@@ -75,7 +66,7 @@ const listFiles = (cwd: string, keep: (file: string) => boolean, ...paths: strin
     .split("\0")
     .filter((file) => file !== "" && keep(file) && existsSync(join(cwd, file)))
     .sort();
-export const scopedFiles = (cwd = root) => listFiles(cwd, inScope);
+const scopedFiles = () => listFiles(root, inScope);
 
 export function lint(
   files: readonly string[],
@@ -124,7 +115,8 @@ export function lint(
   );
 }
 
-function writeBaseline(files: readonly string[] = scopedFiles()) {
+function writeBaseline() {
+  const files = scopedFiles();
   const config = readJson<Config>(configPath, { rules: {} });
   const unlimited = { ...config, rules: { ...config.rules } };
   for (const rule of NATIVE_ALLOWLIST)
@@ -166,62 +158,6 @@ function writeVendor() {
   console.log(
     `Vendored manifest written: ${files.length} files${changes.length ? `; ${changes.join("; ")}` : ""}.`,
   );
-}
-
-function baseState(base: string) {
-  if (
-    !/^[0-9a-f]{40}$/u.test(base) ||
-    spawnSync("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: root }).status !== 0
-  )
-    throw new Error(`BASE_SHA ${base} is not a commit in this repository.`);
-  const git = (args: string[]) =>
-    execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).split(
-      "\0",
-    );
-  const tracked = new Set(
-    git(["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"]),
-  );
-  // Absence comes from the base's tree: a failed read must not look absent, which skips the ratchet.
-  const showText = (file: string) =>
-    tracked.has(file)
-      ? execFileSync("git", ["show", `${base}:${file}`], {
-          cwd: root,
-          encoding: "utf8",
-          maxBuffer: 32 * 1024 * 1024,
-        })
-      : undefined;
-  const show = (path: string) => {
-    const text = showText(relative(root, path));
-    return text === undefined ? undefined : JSON.parse(text);
-  };
-  // The working tree against the base, with renames: a renamed file keeps its old count.
-  const renamed = new Map<string, string>();
-  const changed = new Set<string>();
-  // Renames from anywhere under scripts/ and src/, so code moved out of the release layer is found.
-  const entries = git(["diff", "-z", "--name-status", "-M", base, "--", "scripts", "src"]);
-  for (let index = 0; index < entries.length - 1;) {
-    const status = entries[index++]!;
-    if (status.startsWith("R")) {
-      const from = entries[index++]!;
-      const to = entries[index++]!;
-      renamed.set(to, from);
-      changed.add(to);
-    } else changed.add(entries[index++]!);
-  }
-  const lintChanged =
-    spawnSync("git", ["diff", "--quiet", base, "--", ...LINT_INPUTS], { cwd: root }).status !== 0;
-  return {
-    policy: {
-      baseline: show(baselinePath) as Counts | undefined,
-      config: show(configPath) as Config | undefined,
-      allowlist: (show(allowlistPath) ?? {}) as Allowlist,
-      basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
-      enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
-      changed: (file: string) => changed.has(file) || !tracked.has(file),
-      lintChanged,
-    } satisfies BaseState,
-    vendor: vendorState(showText),
-  };
 }
 
 // Only the named files' entries, for a check of the files an agent just edited.
@@ -329,7 +265,7 @@ function checkAll(base: string | undefined): Checked {
       problems: [...problems, ...configProblems(entries.config, undefined)],
       notices: [],
     };
-  const state = baseState(base);
+  const state = baseState(root, base, (file) => OUTSIDE.test(file));
   const policies = [basePolicy(entries, state.policy), vendorPolicy(currentVendor(), state.vendor)];
   return {
     ...result,

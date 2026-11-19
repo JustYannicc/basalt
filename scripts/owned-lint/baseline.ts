@@ -1,4 +1,5 @@
-// How lint findings compare with the recorded baseline, the allowlist and the base commit.
+// How lint findings compare with the recorded baseline, the allowlist and the base commit, and
+// what the configuration may hold.
 const regenerate = "npm run lint:owned -- --write-baseline";
 // landmines keeps these counts itself, in the rule's options, and reports a stale count.
 export const NATIVE_ALLOWLIST = new Set([
@@ -23,7 +24,6 @@ export const PLUGINS = [
   { name: "anti-slop-effect", specifier: "./vendor/anti-slop/effect/index.ts" },
 ];
 const CONFIG_KEYS = new Set(["$schema", "plugins", "categories", "jsPlugins", "rules"]);
-const OWNED_RULE = /^(?:basalt|landmines-[\w-]+|anti-slop(?:-effect)?)\//u;
 const JS_PLUGIN = new Set(PLUGINS.map(({ name }) => name));
 
 const builtIn = (rule: string) => !JS_PLUGIN.has(rule.split("/")[0]!);
@@ -76,45 +76,6 @@ const validEntry = (entry: unknown) => {
 const exempt = (allowlist: Allowlist, { rule, file, message }: Diagnostic) =>
   validEntry(allowlist[rule]?.[file]) && !message.startsWith(NEVER_ALLOWED);
 const counted = (rule: string) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlint/parse";
-
-/**
- * A disable comment would hide a finding from the baseline. The only form allowed is a `//`
- * comment that names upstream rules and nothing else; any other mention is refused. `native`
- * holds the bare names of the built-in rules the owned configuration enables, which are owned
- * rules too under any prefix.
- */
-export function directiveProblems(
-  file: string,
-  text: string,
-  native: ReadonlySet<string> = new Set(),
-) {
-  const problems: string[] = [];
-  for (const match of text.matchAll(/(?:oxlint|eslint)-disable/gu)) {
-    // A `//` comment ends at any JavaScript line terminator, not only \n.
-    const lineStart = text.slice(0, match.index).search(/[\n\r\u2028\u2029][^\n\r\u2028\u2029]*$/u) + 1;
-    const rest = text.slice(match.index + match[0].length);
-    const lineEnd = rest.search(/[\n\r\u2028\u2029]/u);
-    const before = text.slice(lineStart, match.index);
-    const after = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
-    const names = after
-      .replace(/^(?:-next-line|-line)?/u, "")
-      .replace(/--.*$/u, "")
-      .split(/[\s,]+/u)
-      .filter(Boolean);
-    // oxlint splits names on Unicode whitespace such as U+0085, which \s leaves inside a name, so
-    // only plain rule names count; anything else, a wildcard included, is refused.
-    const upstreamOnly =
-      /^\s*\/\/\s*$/u.test(before) &&
-      names.length > 0 &&
-      names.every((name) => /^[@\w./-]+$/u.test(name)) &&
-      !names.some((name) => OWNED_RULE.test(name) || native.has(bare(name)));
-    if (upstreamOnly) continue;
-    problems.push(
-      `${file}:${text.slice(0, match.index).split("\n").length} has a disable comment that is not a single \`//\` comment naming only upstream rules. Owned rules take no disable comments: fix the finding, or for a reasoned exception use scripts/owned-lint/allowlist.json.`,
-    );
-  }
-  return problems;
-}
 
 export function count(diagnostics: readonly Diagnostic[]) {
   const counts: Counts = {};
