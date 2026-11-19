@@ -18,11 +18,14 @@ from .home_peer import HomePeers
 from .child_signals import (
     NativePolicyFuseParser,
     NativePolicyProbeParser,
+    home_message,
     safe_child_output_line,
 )
 from .child_signals import (
     privacy_audit_line as privacy_audit_line,
 )
+from . import db_distance, db_signals
+from .db_signals import DatabasePoolPoll
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
 from .policy_monitor import PolicyHealthMonitor
 from .pool_contract import (
@@ -70,8 +73,10 @@ class Child:
         cwd: pathlib.Path,
         on_policy_fused: Callable[[], None] | None = None,
         on_policy_probe: Callable[[str], None] | None = None,
+        on_slow_statement: Callable[[int], None] | None = None,
     ) -> None:
         self.name = name
+        self._on_slow_statement = on_slow_statement
         self.diagnostics = HomeCrashTail() if name == "home" else None
         self._on_policy_fused = on_policy_fused
         self._on_policy_probe = on_policy_probe
@@ -99,6 +104,9 @@ class Child:
         oversized = False
         while line := stream.readline(MAX_INPUT_CHARS):
             if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
+                if not oversized:
+                    # Big multi-row writes are often the slowest; their first chunk names the shape.
+                    self._report_slow_statement(line, truncated=True)
                 oversized = not line.endswith("\n")
                 continue
             if self.diagnostics is not None:
@@ -116,10 +124,21 @@ class Child:
                 if self._on_policy_probe is not None:
                     self._on_policy_probe(probe_nonce)
                 continue
+            if self._report_slow_statement(line):
+                continue
             # Provider errors can contain full responses. Do not forward them.
             safe = safe_child_output_line(self.name, line)
             if safe is not None:
                 print(safe, flush=True)
+
+    def _report_slow_statement(self, line: str, truncated: bool = False) -> bool:
+        slow = db_signals.slow_statement(home_message(self.name, line), truncated)
+        if slow is None:
+            return False
+        print(db_signals.slow_statement_line(*slow), flush=True)
+        if self._on_slow_statement is not None:
+            self._on_slow_statement(slow[0])
+        return True
 
 
 def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:
@@ -240,6 +259,7 @@ def main(stop: threading.Event | None = None) -> int:
     recovery_cleanup_done = False
     try:
         management_key = env_required("POOL_MANAGEMENT_KEY")
+        location = db_distance.location(os.environ)
         database_url = env_required("POOL_DATABASE_URL")
         allow_remote = boolean_env("POOL_MANAGEMENT_ALLOW_REMOTE", False)
         home_identity = HomeIdentity.parse(os.environ.get("POOL_HOME_PEER_ORDINAL"))
@@ -250,6 +270,7 @@ def main(stop: threading.Event | None = None) -> int:
             management_key,
             launch_generation=os.environ.get("POOL_LAUNCH_GENERATION"),
             launch_token=os.environ.get("POOL_LAUNCH_TOKEN"),
+            location=location,
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
@@ -265,6 +286,16 @@ def main(stop: threading.Event | None = None) -> int:
 
         for signum in (signal.SIGTERM, signal.SIGINT):
             original_signals[signum] = signal.signal(signum, request_stop)
+
+        with startup_phase(StartupPhase.DB_DISTANCE, supervisor_started_ns):
+            distance = db_distance.measure_database()
+        readiness.set_database_distance(distance)
+        db_distance.report(distance, location)
+        if distance.state == "held":
+            # The controller asked for a redraw if this start landed far; Home never runs here.
+            stop.wait()
+        if stop.is_set():
+            raise RecoveryCancelled()
 
         atomic_write(
             ROOT / "cluster.yaml",
@@ -293,6 +324,7 @@ def main(stop: threading.Event | None = None) -> int:
                     lambda nonce, generation=generation: readiness.note_policy_probe(
                         nonce, generation
                     ),
+                    readiness.note_slow_statement,
                 )
                 children.append(home_child)
                 readiness.enable_policy_observations()
@@ -322,6 +354,7 @@ def main(stop: threading.Event | None = None) -> int:
                         lambda nonce, generation=generation: (
                             readiness.note_policy_probe(nonce, generation)
                         ),
+                        readiness.note_slow_statement,
                     )
                     children[-1] = home_child
                     readiness.enable_policy_observations()
@@ -391,6 +424,9 @@ def main(stop: threading.Event | None = None) -> int:
         health = ServiceHealth(management_key, node_id)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
+        threading.Thread(
+            target=DatabasePoolPoll(readiness, management_key).run, args=(stop,), daemon=True
+        ).start()
         while not stop.wait(2):
             observed_at = time.monotonic()
             failed = [(child, child.process.poll()) for child in children]

@@ -18,6 +18,7 @@ MAX_STARTUP_PHASE_MS = 86_400_000
 
 
 class StartupPhase(str, Enum):
+    DB_DISTANCE = "db_distance"
     HOME_BOOT = "home_boot"
     BOOTSTRAP_IMPORT = "bootstrap_import"
     CONFIG_APPLY = "config_apply"

@@ -97,7 +97,7 @@ class BootstrapContractTests(unittest.TestCase):
             {**urllib.parse.parse_qs(expected.query), "application_name": ["basalt-home"]},
         )
         config = cluster_yaml(dsn)
-        for field in ("max-open-conns: 6", "max-idle-conns: 6", "conn-max-idle-time: 5m", "conn-max-lifetime: 30m"):
+        for field in ("max-open-conns: 6", "max-idle-conns: 6", "conn-max-idle-time: 5m", "conn-max-lifetime: 30m", "coordination-max-open-conns: 2"):
             self.assertIn(field, config)
 
     def test_cluster_overrides_only_home_application_name(self) -> None:
@@ -413,11 +413,11 @@ class BootstrapContractTests(unittest.TestCase):
         ]
         self.assertEqual(self.read_child_output("home", [prefix + message + "\n" for message in invalid]), [])
 
-    def test_readiness_payload_contains_only_boot_identity(self) -> None:
+    def test_readiness_payload_contains_only_boot_identity_and_distance_state(self) -> None:
         readiness = Readiness("fixture-management-key")
         ready, payload = readiness.snapshot()
         self.assertFalse(ready)
-        self.assertEqual(set(payload), {"boot_id", "started_at"})
+        self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
         self.assertTrue(readiness.authorized("Bearer fixture-management-key"))
         self.assertFalse(readiness.authorized("Bearer wrong"))
         readiness.set_ready(True)

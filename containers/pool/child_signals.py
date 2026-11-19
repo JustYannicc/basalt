@@ -107,7 +107,7 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _extract_home_message(name: str, line: str) -> str | None:
+def home_message(name: str, line: str) -> str | None:
     if name != "home":
         return None
 
@@ -282,7 +282,7 @@ class NativePolicyProbeParser:
 
 def safe_child_output_line(name: str, line: str) -> str | None:
     """Return closed Home worker signals and quota window metadata."""
-    message = _extract_home_message(name, line)
+    message = home_message(name, line)
     timing = dispatch_signal_line(name, node_dispatch_message(line) if name == "node" else message)
     if timing is not None:
         return timing
@@ -339,7 +339,7 @@ def safe_child_output_line(name: str, line: str) -> str | None:
 def privacy_audit_line(name: str, line: str) -> str | None:
     """Keep the existing audit-only helper available to callers and tests."""
     return _privacy_signal_line(
-        _extract_home_message(name, line),
+        home_message(name, line),
         PRIVACY_AUDIT_MARKER,
         PRIVACY_AUDIT_FIELDS,
     )

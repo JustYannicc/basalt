@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,7 @@ RESPONSE_SENTINEL = "private-response-sentinel"
 TOKEN_SENTINEL = "private-token-sentinel"
 CLASS_SENTINEL = "PrivateExceptionSentinel"
 STARTUP_PHASE_NAMES = (
+    "db_distance",
     "home_boot",
     "bootstrap_import",
     "config_apply",
@@ -356,6 +358,11 @@ class OutputPrivacyTests(unittest.TestCase):
 
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()
+        distances = [line for line in lines if line.startswith("POOL_DB_DISTANCE ")]
+        self.assertEqual(len(distances), int("db_distance" in expected))
+        for line in distances:
+            self.assert_closed_distance(line.split(" ", 1)[1])
+        lines = [line for line in lines if not line.startswith("POOL_DB_DISTANCE ")]
         self.assertEqual(len(lines), len(expected), "unexpected supervisor stdout line count")
         observed = []
         fields = ("phase", "start_ms", "end_ms", "duration_ms")
@@ -392,6 +399,19 @@ class OutputPrivacyTests(unittest.TestCase):
             )
             observed.append(phase)
         self.assertTrue(observed == expected, "startup phase sequence changed")
+
+    def assert_closed_distance(self, payload: str) -> None:
+        record = json.loads(payload, object_pairs_hook=unique_json_object)
+        self.assertEqual(set(record), {"state", "rtt_ms", "max_ms", "samples", "location"})
+        self.assertIn(record["state"], {"measured", "failed", "held"})
+        for field in ("rtt_ms", "max_ms"):
+            self.assertTrue(record[field] is None or type(record[field]) is int)
+        self.assertIs(type(record["samples"]), int)
+        self.assertTrue(0 <= record["samples"] <= 7)
+        self.assertTrue(
+            record["location"] is None
+            or re.fullmatch(r"[a-z]{3}[0-9]{2}", record["location"]) is not None
+        )
 
     def assert_closed_output(
         self,
@@ -476,6 +496,7 @@ class OutputPrivacyTests(unittest.TestCase):
             patch.object(supervisor, "apply_pool_config"),
             patch.object(supervisor, "create_node_jwt", return_value=("fixture-node", TOKEN_SENTINEL)),
             patch.object(supervisor, "check_services", side_effect=[True, failure]) as health,
+            patch.object(supervisor, "DatabasePoolPoll", create=True),
             patch.object(probe_owner, "check_liveness", side_effect=failure, create=True) as fast_health,
             patch.object(supervisor, "terminate_children"),
             redirect_stdout(stdout),
@@ -487,7 +508,7 @@ class OutputPrivacyTests(unittest.TestCase):
             stdout.getvalue(),
             stderr.getvalue(),
             [5],
-            ["home_boot", "config_apply", "node_launch", "initial_health"],
+            ["db_distance", "home_boot", "config_apply", "node_launch", "initial_health"],
         )
 
     def test_supervisor_names_the_child_that_exits_before_or_after_readiness(self) -> None:
@@ -525,6 +546,7 @@ class OutputPrivacyTests(unittest.TestCase):
                         patch.object(supervisor, "apply_pool_config"),
                         patch.object(supervisor, "create_node_jwt", return_value=("fixture-node", TOKEN_SENTINEL)),
                         patch.object(supervisor, "check_services", return_value=True),
+                        patch.object(supervisor, "DatabasePoolPoll", create=True),
                         patch.object(supervisor, "terminate_children"),
                         redirect_stdout(stdout),
                         redirect_stderr(stderr),
@@ -535,7 +557,7 @@ class OutputPrivacyTests(unittest.TestCase):
                     self.assertEqual(marker, "POOL_CHILD_EXIT")
                     self.assertEqual(json.loads(payload), {"child": name, "exit_code": exit_code, "category": category})
                     self.assert_closed_output(stdout.getvalue(), "\n".join(lines[1:]), [category],
-                        ["home_boot", "config_apply", "node_launch", "initial_health"])
+                        ["db_distance", "home_boot", "config_apply", "node_launch", "initial_health"])
 
     def test_child_exit_diagnostic_rejects_unbounded_names_and_statuses(self) -> None:
         from . import runtime_signals
