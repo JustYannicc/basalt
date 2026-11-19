@@ -52,7 +52,7 @@ concurrency:
 jobs:
   plan:
     if: github.ref == 'refs/heads/main' && inputs.recovery_mode != 'recorded-versions'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     outputs:
       candidate: ${{ steps.report.outputs.candidate_git_commit }}
@@ -73,7 +73,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       - name: Fetch the selected release source into RUNNER_TEMP
@@ -150,7 +150,7 @@ jobs:
     outputs:
       environment_sha256: ${{ steps.archive.outputs.sha256 }}
     if: github.ref == 'refs/heads/main' && inputs.recovery_mode == 'recorded-versions'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -164,10 +164,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Select this run's isolated preparation cache
@@ -204,7 +204,7 @@ jobs:
     if: always() && github.ref == 'refs/heads/main' && ((inputs.recovery_mode == 'recorded-versions' && needs.plan.result == 'skipped' && needs.recorded-prepare.result == 'success') || (inputs.recovery_mode != 'recorded-versions' && needs.plan.result == 'success' && needs.plan.outputs.candidate == inputs.release_sha))
     name: Deploy previous production release
     environment: production-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       GITHUB_TOKEN: ${{ github.token }}
@@ -267,10 +267,10 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Recreate the exact selected-release and previous-source worktrees
