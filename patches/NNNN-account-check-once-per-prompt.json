@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-check-once-per-prompt",
+  "file": "NNNN-account-check-once-per-prompt.patch",
+  "content_sha256": "b37099e6da99dee46aca07c049792542caee2a66a34d385cdd518a572aa40474",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

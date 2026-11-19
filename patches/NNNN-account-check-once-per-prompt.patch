@@ -1,0 +1,78 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9012,7 +9012,7 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "app-account-sections.spec.ts",
+     title:
+-      "Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
++      "Continue anyway saves a rejected key and checks it once, closes the Connect dialog and the next click opens the new row's menu",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("The hosted Connect dialog is the same on cloud; self-host proves it."),
+diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
+--- a/e2e/tests/app-account-sections.spec.ts
++++ b/e2e/tests/app-account-sections.spec.ts
+@@ -6,7 +6,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+ import { randomUUID } from "node:crypto";
+-import type { Page } from "playwright";
++import type { Page, Request } from "playwright";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { connectionsPath } from "../support/app-accounts.ts";
+@@ -261,6 +261,25 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+             ),
+         );
+         yield* browser.checkpoint("The check rejected the key");
++        // Every check of a saved account from here on: the naming prompt checks the new account
++        // as it opens, and the new row behind it shows that result instead of checking again.
++        const checks: string[] = [];
++        const watch = (request: Request) => {
++          const path = new URL(request.url()).pathname;
++          if (request.method() === "POST" && /\/accounts\/[^/]+\/health$/.test(path))
++            checks.push(path);
++        };
++        yield* Effect.acquireRelease(
++          browser.use("Watch the account checks", (page) =>
++            Promise.resolve(void page.on("request", watch)),
++          ),
++          () =>
++            browser
++              .use("Stop watching the account checks", (page) =>
++                Promise.resolve(void page.off("request", watch)),
++              )
++              .pipe(Effect.orDie),
++        );
+         yield* browser.use("Continue anyway", () =>
+           connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
+         );
+@@ -289,6 +308,18 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+         );
+         yield* browser.checkpoint("The name prompt replaces the Connect dialog");
+         expect(behindPrompt).toEqual(["open"]);
++        // The new row renders behind the open prompt and shows its check's current result.
++        const rowCheck = yield* browser.use("The new row shows the prompt's check", (page) => {
++          const checked = page
++            .locator(
++              'section[aria-label="Your accounts"] [data-account-health-cell][data-check-current="true"]',
++            )
++            .first();
++          return checked
++            .waitFor({ state: "attached" })
++            .then(() => checked.getAttribute("data-check-status"));
++        });
++        expect(rowCheck).toBe("credentials_rejected");
+         yield* browser.use("Name the saved account", (page) =>
+           nameConnectedAccount(page, "Rejected key"),
+         );
+@@ -314,6 +345,8 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+           page.setViewportSize({ width: 390, height: 844 }),
+         );
+         yield* browser.checkpoint("The row menu on a phone");
++        // One check per prompt: the row reused the prompt's result rather than sending its own.
++        expect(checks, "account checks after Continue anyway").toHaveLength(1);
+       }),
+     ),
+   );
