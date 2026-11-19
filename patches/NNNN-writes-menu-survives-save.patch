@@ -1,3 +1,66 @@
+diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/web/src/contracts/tool-availability.ts
+--- a/apps/hosted/web/src/contracts/tool-availability.ts
++++ b/apps/hosted/web/src/contracts/tool-availability.ts
+@@ -35,10 +35,23 @@ const lists = Atom.family((key: AvailabilityKey) =>
+   ).pipe(revalidated, protectedQuery),
+ );
+ 
++/**
++ * List values this page published from its own confirmed saves. The read a save starts only
++ * reconciles the setting against the catalog already on screen, so that catalog stays; every
++ * other read, such as a return to the page or a linked-account change, shows none until it answers.
++ */
++const acknowledgedLists = new WeakSet<object>();
++
++const ownSave = <A extends object, E>(
++  result: AsyncResult.AsyncResult<A, E>,
++): AsyncResult.AsyncResult<A, E> =>
++  AsyncResult.isSuccess(result) && result.waiting && acknowledgedLists.has(result.value)
++    ? AsyncResult.success<A, E>(result.value, { timestamp: result.timestamp })
++    : result;
++
+ const catalogs = Atom.family((key: AvailabilityKey) =>
+-  Atom.map(
+-    lists(key),
+-    AsyncResult.map((list): ToolCatalog => ({
++  Atom.map(lists(key), (result) =>
++    AsyncResult.map(ownSave(result), (list): ToolCatalog => ({
+       tools: list.catalog.items,
+       routers: list.catalog.routers,
+     })),
+@@ -110,17 +123,21 @@ const updates = Atom.family((key: AvailabilityKey) =>
+       Effect.tap((saved) =>
+         Effect.sync(() => {
+           // Show the confirmed save at once; the read that follows replaces it with the host's.
+-          acknowledge(get, lists(key), (current) => ({
+-            ...current,
+-            revision: saved.revision,
+-            defaultMode: saved.defaultMode,
+-            overrides: saved.overrides,
+-            enabledTools: enabledToolNames(
+-              current.catalog.items,
+-              saved.defaultMode,
+-              saved.overrides,
+-            ).map((name) => ToolName.make(name)),
+-          }));
++          acknowledge(get, lists(key), (current) => {
++            const confirmed = {
++              ...current,
++              revision: saved.revision,
++              defaultMode: saved.defaultMode,
++              overrides: saved.overrides,
++              enabledTools: enabledToolNames(
++                current.catalog.items,
++                saved.defaultMode,
++                saved.overrides,
++              ).map((name) => ToolName.make(name)),
++            };
++            acknowledgedLists.add(confirmed);
++            return confirmed;
++          });
+           // Ordinary discovery, on this page and in connection pickers, lists only enabled tools.
+           get.refresh(toolsAtom(key));
+           get.refresh(toolsAtom({ organization: key.organization, app: key.app }));
 diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability-ui.ts
 --- a/e2e/support/tool-availability-ui.ts
 +++ b/e2e/support/tool-availability-ui.ts
