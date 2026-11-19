@@ -6,6 +6,7 @@ import { Effect, Option, Redacted } from "effect";
 
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
+import { organization } from "better-auth/plugins/organization";
 import { authOptions } from "../../.upstream/apps/hosted/server/src/implementation/auth.ts";
 import { provisionHostedOAuthResources } from "../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
 const origin = "http://localhost:3000";
@@ -15,6 +16,8 @@ export async function fixture(
   control?: (request: Request) => Promise<Response>,
   signingKey = "ab".repeat(32),
   database?: DatabaseSync,
+  /** Adds organizations, as every host has, so a device can be approved for a team's tools. */
+  { organizations = false }: { organizations?: boolean } = {},
 ) {
   const key = Option.some(Redacted.make(signingKey));
   const db: Record<string, Record<string, unknown>[]> = {
@@ -34,17 +37,19 @@ export async function fixture(
     mcpGrant: [],
     mcpConnection: [],
   };
+  const base = authOptions(
+    {
+      url: origin,
+      issuer: `${origin}/api/auth`,
+      resourceOrigins: { api: [origin], mcp: [origin] },
+      oauthRedirectUri: Option.none(),
+      nativeSigningKey: key,
+    },
+    [],
+  );
   const settings = {
-    ...authOptions(
-      {
-        url: origin,
-        issuer: `${origin}/api/auth`,
-        resourceOrigins: { api: [origin], mcp: [origin] },
-        oauthRedirectUri: Option.none(),
-        nativeSigningKey: key,
-      },
-      [],
-    ),
+    ...base,
+    plugins: [...(organizations ? [organization()] : []), ...base.plugins],
     secret: "synthetic-native-approval-auth-secret",
     database: database ?? memoryAdapter(db),
     ...(database ? {} : { rateLimit: { enabled: false } }),
@@ -155,6 +160,8 @@ export async function fixture(
     },
     /** Server-only endpoints, as a host calls them. */
     api: auth.api,
+    /** The host's own storage, for changing rows the way other endpoints would. */
+    adapter,
     userId: signupUser.id as string,
     raw: (path: string, init: RequestInit) =>
       auth.handler(new Request(`${origin}/api/auth${path}`, init)),
