@@ -6,12 +6,7 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
-import {
-  fleetBindings,
-  fleetClasses,
-  fleetInfrastructure,
-  PoolDeclarationRefused,
-} from "./fleet-deployment.ts";
+import { fleetBindings, fleetClasses, fleetInfrastructure } from "./fleet-deployment.ts";
 import { desiredPoolImageInput } from "./image-release-plan.ts";
 import { bindPoolObservation } from "./fleet-observation.ts";
 import { rootContainer } from "./root-image-pin.ts";
@@ -22,26 +17,6 @@ import { inventoryCron } from "./inventory.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { ArtifactsCredentials } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
-
-/**
- * POOL_WORKER_VERSION_TRAFFIC uploads PoolWorker as a Worker version instead of a full script PUT.
- * Below 100 Alchemy uses the versions API: 0 uploads without deploying, 1-99 splits against the
- * live version. 100 (or unset) is the full PUT. A version cannot carry a class migration, so
- * Alchemy refuses one below 100.
- */
-export const poolWorkerVersion = Effect.gen(function* () {
-  const traffic = yield* Config.option(Config.Int("POOL_WORKER_VERSION_TRAFFIC"));
-  if (Option.isNone(traffic)) return {};
-  if (traffic.value < 0 || traffic.value > 100)
-    return yield* Effect.die(
-      new PoolDeclarationRefused({
-        reason: "worker-version-traffic-out-of-range",
-        why: `POOL_WORKER_VERSION_TRAFFIC is a percentage of PoolWorker's traffic, got ${traffic.value}.`,
-        fix: "Set an integer from 0 to 100, or unset it for a full deploy.",
-      }),
-    );
-  return { version: { traffic: traffic.value } };
-});
 
 /**
  * Killing the elected Home master can lose a provider token rotation, which logs an account out.
@@ -83,7 +58,6 @@ export const poolWorker = Effect.gen(function* () {
     compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     crons: ["*/5 * * * *", inventoryCron, ...(probeTarget ? [availabilityCron] : [])],
     observability: workerObservability,
-    ...(yield* poolWorkerVersion),
     env: {
       PoolContainer: image,
       ...fleetBindings(fleet, yield* fleetClasses),

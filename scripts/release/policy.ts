@@ -23,7 +23,6 @@ export const ReleasePolicy = Schema.Struct({
   env: Schema.Struct({
     POOL_FLEET_BUILD: Schema.optional(Schema.Literal("true")),
     POOL_FLEET_CLASSES: Schema.optional(Schema.Literal("absent")),
-    POOL_WORKER_VERSION_TRAFFIC: Schema.optional(Schema.String),
   }),
 });
 export type ReleasePolicy = typeof ReleasePolicy.Type;

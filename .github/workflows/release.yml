@@ -22,7 +22,6 @@ on:
         description: Plan policy in scripts/release/policies (release, or a cutover step)
         required: true
         type: choice
-        # cutover-code is also the mode for any code-only PoolWorker release: a rollbackable Worker version.
         # code: any code-only release (every changed Worker, rollbackable); cutover-*: the two cutover steps.
         options: [release, code, cutover-code, cutover-classes]
         default: code
@@ -40,6 +39,10 @@ on:
         type: string
       override_reason:
         description: Lets a stopped line release (the first cutover); printed in the run name and summary
+        required: false
+        type: string
+      candidate:
+        description: An exact main commit to release instead of main's head (the class change runs on the commit the code-only release deployed)
         required: false
         type: string
 
@@ -80,10 +83,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+          CANDIDATE_INPUT: ${{ inputs.candidate }}
+          PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$CANDIDATE_INPUT" ]; then
+              # A named commit must already be on main: the class change re-uploads the serving code.
+              if ! printf '%s' "$CANDIDATE_INPUT" | grep -Eq '^[0-9a-f]{40}$' || ! git merge-base --is-ancestor "$CANDIDATE_INPUT" "$CANDIDATE"; then
+                echo "::error::candidate must be a full commit on main."
+                exit 1
+              fi
+              CANDIDATE="$CANDIDATE_INPUT"
+            fi
             printf 'sha=%s\nrelease=true\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # While the hold is set an automatic run releases nothing: skipped, not a red run per push.
+          if [ -n "$PRODUCTION_RELEASE_HOLD" ]; then
+            echo "The release hold is set; $CANDIDATE waits for a dispatch under a coordinator GO." >> "$GITHUB_STEP_SUMMARY"
+            printf 'sha=%s\nrelease=false\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           GITHUB_OUTPUT="$RUNNER_TEMP/newer" MAIN_RELEASE_CANDIDATE="$CANDIDATE" node scripts/release-merge/main-candidate.ts newer
@@ -288,6 +307,11 @@ jobs:
         if: env.MODE == 'apply'
         # A code-only release changes no data by itself; skip the multi-million-row count then.
         run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code') && '--light' || '' }}
+      # No release may restart the root: its boot is read now and must still serve after the apply.
+      - name: Record the root's boot before the apply
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json
       - name: What was verified before the irreversible step
         if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
         run: |
@@ -317,7 +341,7 @@ jobs:
         # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
         # release may change the hosted app's Workers too.
         run: |
-          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance.json
+          bun scripts/release/deploy.ts accept --stage production --expect ${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }} --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
           node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
@@ -325,8 +349,11 @@ jobs:
         if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
         run: |
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
-          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json || true
-          echo "::error::Release rolled back (every Worker the plan updated): $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          # The release is red either way; this says whether the version rolled back to still serves.
+          if ! bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json; then
+            echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
+          fi
+          echo "::error::Release rolled back (every Worker the plan updated); the cause is in the step above and in the sealed detail."
           exit 1
       - name: Stop on a failed class change
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')

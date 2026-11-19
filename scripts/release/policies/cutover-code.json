@@ -1,5 +1,5 @@
 {
-  "description": "Cutover step P2-pre: the new controller code alone, as a Worker version, with the fleet classes still absent. Rollbackable with a Worker rollback.",
+  "description": "Cutover step P2-pre: the new controller code alone, with the fleet classes still absent. Rollbackable with a Worker rollback.",
   "check": {
     "mode": "code-only",
     "protected": {
@@ -44,7 +44,6 @@
     "sqliteClasses": {}
   },
   "env": {
-    "POOL_FLEET_CLASSES": "absent",
-    "POOL_WORKER_VERSION_TRAFFIC": "100"
+    "POOL_FLEET_CLASSES": "absent"
   }
 }
