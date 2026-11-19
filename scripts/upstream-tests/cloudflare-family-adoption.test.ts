@@ -1,358 +1,234 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
-import { defineProvider, oauth2, object, secrets, string } from "apps";
-import { Crypto, Effect } from "effect";
+import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { cloudflareOAuthScopes } from "../../src/pool/provider-accounts/cloudflare-scopes.ts";
-import { providers } from "../../src/pool/provider-accounts/definitions.ts";
-import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
-import { providerDeclaration } from "../../.upstream/packages/apps/src/implementation/host.ts";
-import { identifyProvider } from "../../.upstream/packages/sdk/src/implementation/provider.ts";
-import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
+import {
+  apply,
+  catalogProvider,
+  catalogSource,
+  changed,
+  dryRun,
+  everything,
+  identify,
+  link,
+  listed,
+  productionMigrations,
+  providers,
+  reasonOf,
+  run,
+  world,
+} from "./cloudflare-family-fixture.ts";
 
-// Cloud and hosted-server modules load at runtime, as the other production-operations tests do,
-// so root types never compile the whole hosted product.
-const upstream = new URL("../../.upstream/", import.meta.url);
-const load = (path: string) => import(new URL(path, upstream).href);
-type Operated = {
-  readonly action: string;
-  readonly artifact: { readonly sha256: string };
-  readonly backupSha256: string;
-  readonly repeated?: boolean;
-};
-type Migration = {
-  readonly inspect: (request: unknown) => Effect.Effect<unknown, unknown, SqlClient.SqlClient>;
-};
-const { productionMigrations } = (await load(
-  "apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
-)) as { productionMigrations: Readonly<Record<string, Migration | undefined>> };
-const { runProductionOperation } = (await load(
-  "apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
-)) as {
-  runProductionOperation: (
-    settings: unknown,
-    operation: unknown,
-  ) => Effect.Effect<Operated, unknown, SqlClient.SqlClient>;
-};
-const { openArtifact } = (await load(
-  "apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts",
-)) as { openArtifact: (artifact: unknown, key: string, target: string) => Promise<unknown> };
-const { addLink } = (await load("apps/hosted/server/src/implementation/app-accounts.ts")) as {
-  addLink: (
-    sql: SqlClient.SqlClient,
-    webhooks: unknown,
-    input: unknown,
-  ) => Effect.Effect<boolean, unknown, SqlClient.SqlClient>;
-};
-
-const crypto = Crypto.make({
-  randomBytes: (size) => new Uint8Array(size),
-  digest: (_algorithm, data) =>
-    Effect.succeed(new Uint8Array(createHash("sha256").update(data).digest())),
-});
-const identify = (provider: Parameters<typeof providerDeclaration>[0]) =>
-  providerDeclaration(provider).pipe(
-    Effect.flatMap((definition) => identifyProvider(definition, crypto)),
-  );
-const mcpUrl = "https://mcp.cloudflare.com/mcp";
-/** The catalog Cloudflare app's provider; its first published version discovered its scopes. */
-const catalogCloudflare = (scopes?: readonly string[]) =>
-  defineProvider({
-    name: "Cloudflare",
-    hosts: ["mcp.cloudflare.com", "api.cloudflare.com"],
-    auth: {
-      oauth: oauth2(scopes === undefined ? { discover: mcpUrl } : { discover: mcpUrl, scopes }),
-      apiToken: secrets({
-        label: "User API token",
-        fields: object({ token: string({ minLength: 1 }) }),
-      }),
-      accountToken: secrets({
-        label: "Account API token",
-        fields: object({ accountId: string({ minLength: 1 }), token: string({ minLength: 1 }) }),
-      }),
-    },
-  });
-const jira = defineProvider({
-  name: "Jira",
-  auth: { token: secrets({ label: "API token", fields: object({ token: string() }) }) },
-});
-
-const organization = "team-a";
-const owner = `organization:${organization}`;
-const slot = (provider: string, definition: unknown) => ({
-  accounts: { cloudflare: { provider, scope: "user", cardinality: "many", definition } },
-});
-const runnerTables = [
-  'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
-  "create table organization (id text primary key, metadata text)",
-  "create table hosted_organization_removal (organization_id text)",
-  "create table hosted_app_account_links (app text, requirement text, subject text, account text, linked_by text, created_at timestamptz)",
-  "create table production_ops_database_identity (id uuid)",
-  "insert into production_ops_database_identity values ('00000000-0000-4000-8000-000000000001')",
-  "create table private_production_ops_receipts (plan_sha256 text primary key, organization_id text, migration text, revision text, release text, backup_sha256 text, verification jsonb, applied_at timestamptz default now())",
-];
-
-const setup = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* (yield* makeExecutorStorage({ provider: "postgresql" })).migrate;
-  for (const ddl of runnerTables) yield* sql.unsafe(ddl);
-  const first = yield* identify(catalogCloudflare());
-  const current = yield* identify(catalogCloudflare(cloudflareOAuthScopes));
-  const family = yield* identify(providers.cloudflare);
-  const other = yield* identify(jira);
-  // A deploy keeps an app's provider ref when a version only adds OAuth scopes, so the catalog
-  // app still holds the ref its first definition derived. The stored row has its current definition.
-  const retained = first.identity;
-  yield* sql`insert into executor_providers (id,definition) values
-    (${retained},${JSON.stringify(current.shared)}), (${family.identity},${JSON.stringify(family.shared)}),
-    (${other.identity},${JSON.stringify(other.shared)})`;
-  yield* sql`insert into organization values (${organization},'{}')`;
-  yield* sql`insert into member values ('member-a',${organization},'user-a','owner')`;
-  yield* sql`insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation)
-    values ('acc_cloudflare',${owner},${retained},'apiToken','Cloudflare',${new Uint8Array([1])},now(),3),
-      ('acc_jira',${owner},${other.identity},'token','Jira',${new Uint8Array([2])},now(),1)`;
-  const deployment = (id: string, code: string, requirements: unknown) =>
-    sql`insert into executor_deployments (id,code,owner,build,requirements,created_at,source_commit,file_count)
-      values (${id},${code},${owner},${`bld_${id}`},${JSON.stringify(requirements)},now(),null,1)`;
-  yield* deployment("dpl_tool_1", "code_tool", slot(retained, first.shared));
-  yield* deployment("dpl_tool_2", "code_tool", slot(retained, current.shared));
-  // A second app copies the catalog app's current declaration, so it derives a fresh ref.
-  yield* deployment("dpl_pipeline", "code_pipeline", slot(current.identity, current.shared));
-  yield* sql`insert into executor_apps (id,code,owner,name,slug,active_deployment,created_at) values
-    ('app_tool','code_tool',${owner},'Cloudflare','cloudflare','dpl_tool_2',now()),
-    ('app_pipeline','code_pipeline',${owner},'Pipeline','pipeline','dpl_pipeline',now())`;
-  yield* sql`insert into hosted_app_account_links values
-    ('app_tool','cloudflare','user-a','acc_cloudflare','user-a',now())`;
-  yield* sql`insert into executor_account_connections (id,owner,provider,reconnect_account,state,revision,oauth_attempt,created_at,expires_at,target)
-    values ('con_cloudflare',${owner},${retained},null,${JSON.stringify({
-      status: "completed",
-      account: { id: "acc_cloudflare", owner, provider: retained, method: "apiToken" },
-    })},'r1',null,now(),now(),${JSON.stringify({ app: "app_tool", requirement: "cloudflare" })})`;
-  return {
-    retained,
-    current: current.identity,
-    family: family.identity,
-    other: other.identity,
-  };
-});
-
-const webhooks = {
-  sources: () => Effect.succeed([]),
-  link: () => Effect.void,
-  unlink: () => Effect.void,
-};
-/** `appAccounts.userLink` and `userLinkSource` write through this after their access checks. */
-const link = (app: string, account: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    return yield* sql
-      .withTransaction(
-        addLink(sql, webhooks, {
-          app,
-          requirement: "cloudflare",
-          subject: "user-a",
-          account,
-          linkedBy: "user-a",
-        }),
-      )
-      .pipe(
-        Effect.as("linked"),
-        Effect.catch((error) =>
-          Effect.succeed(
-            `${(error as { _tag?: string })._tag}:${(error as { reason?: string }).reason}`,
-          ),
-        ),
-      );
-  });
-/** The accounts `appAccounts.userGet` lists for the requirement: its provider's saved accounts. */
-const listed = (app: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{ id: string }>`select a.id from executor_accounts a
-      join executor_apps app on app.owner = a.owner
-      join executor_deployments d on d.id = app.active_deployment
-      where app.id = ${app}
-        and a.provider = d.requirements::jsonb -> 'accounts' -> 'cloudflare' ->> 'provider'
-      order by a.id`;
-    return rows.map((row) => row.id);
+const ids = (rows: readonly Record<string, unknown>[], key = "id") =>
+  rows.map((row) => row[key]).sort();
+/** The fields that differ between a row's before and after values. */
+const fieldsChanged = (
+  entry: { gone: Record<string, unknown>[]; added: Record<string, unknown>[] },
+  key = "id",
+) =>
+  entry.gone.map((before) => {
+    const after = entry.added.find((row) => row[key] === before[key]);
+    assert.ok(after, `row ${String(before[key])} was updated, not removed`);
+    return Object.keys(before).filter(
+      (field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]),
+    );
   });
 
-const recipient = generateKeyPairSync("rsa", { modulusLength: 3072 })
-  .publicKey.export({ type: "spki", format: "der" })
-  .toString("base64");
-const settings = {
-  target: "https://fixture.invalid",
-  release: "fixture-release",
-  databaseOrigin: { host: "fixture.invalid", port: 5432, database: "template1" },
-  encryptionKey: "ab".repeat(32),
-  preparations: {},
-};
-const run = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-  Effect.runPromise(work.pipe(Effect.provide(pgliteLayer())));
-
-test("a Cloudflare account connected under the first catalog definition links to a second app after family adoption", () =>
+test("accounts connected under the catalog app's first declaration link to a second app after the GO, and nothing else moves", () =>
   run(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const ids = yield* setup;
-      assert.notEqual(ids.retained, ids.current, "the first definition derived another ref");
-      assert.equal(ids.current, ids.family, "the catalog's declaration derives the family ref");
+      const w = yield* world;
+      // The catalog app's own sources, deployed through the real deploy path, retained the ref
+      // its first declaration derived; its current declaration derives the family's.
+      assert.notEqual(w.retained, w.family, "the catalog app kept its first ref");
+      assert.equal(
+        (yield* identify(catalogProvider(catalogSource("cloudflare")))).identity,
+        w.family,
+      );
+      assert.equal((yield* identify(providers.cloudflare)).identity, w.family);
       // Existing app lineages keep their ref when this declaration changes, so a change needs an
       // explicit adoption of the refs it leaves behind before new apps can share those accounts.
       assert.equal(
-        ids.family,
+        w.family,
         "prv_723ba6038ee84547f30e619eae5d182081e413ff4088bf26c8d567c45facfa47",
         "the Cloudflare family's provider ref changed; ship an adoption for the previous ref",
       );
-      assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "RequirementMismatch:provider");
-      assert.deepEqual(yield* listed("app_pipeline"), []);
+      assert.equal(yield* w.requirement(w.versionsB[1]!), w.retained, "team B kept the same ref");
+      assert.equal(yield* link(w.pipeline, "acc_token"), "RequirementMismatch:provider");
+      assert.deepEqual(yield* listed(w.pipeline), []);
 
-      assert.ok(
-        productionMigrations["cloudflare-family-adoption-v1"],
-        "the Cloudflare family adoption is a registered production migration",
-      );
-      const reasons = (yield* Effect.promise(() =>
-        load(
-          "apps/hosted/cloud/src/infrastructure/production-ops/migrations/cloudflare-family-adoption-v1.ts",
-        ),
-      )) as { cloudflareFamilyAdoptionReasons: readonly string[] };
-      const operator = yield* Effect.promise(
-        () => import("../production-ops/cloudflare-family-adoption-reasons.ts"),
-      );
-      assert.deepEqual(
-        operator.cloudflareFamilyAdoptionReasons,
-        reasons.cloudflareFamilyAdoptionReasons,
-        "the operator decodes every refusal reason the runtime reports",
-      );
-      const input = {
-        action: "dry-run" as const,
-        selection: "cloudflare-family-adoption-v1",
-        recipient,
-        request: {
-          organization,
-          from: ids.retained,
-          to: ids.family,
-          accounts: [{ account: "acc_cloudflare", generation: 3 }],
-        },
-      };
-      const dry = yield* runProductionOperation(settings, input);
-      assert.ok(dry.action === "dry-run");
-      assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "RequirementMismatch:provider");
-      const reviewed = (yield* Effect.promise(() =>
-        openArtifact(dry.artifact, settings.encryptionKey, settings.target),
-      )) as { plan: { changes: { table: string; key: unknown; action: string }[]; data: unknown } };
-      const plan = reviewed.plan;
+      const before = yield* everything;
+      const reviewedB = yield* dryRun(w.requestB);
+      const { dry, plan, go } = yield* dryRun(w.requestA);
+      assert.deepEqual(yield* everything, before, "dry runs write nothing");
+      assert.equal(yield* link(w.pipeline, "acc_token"), "RequirementMismatch:provider");
+      assert.equal(dry.changes, 6);
       assert.deepEqual(
         plan.changes.map((change) => [change.table, change.key, change.action]),
         [
-          ["executor_accounts", { id: "acc_cloudflare" }, "update"],
-          ["executor_deployments", { id: "dpl_tool_1" }, "update"],
-          ["executor_deployments", { id: "dpl_tool_2" }, "update"],
-          ["executor_account_connections", { id: "con_cloudflare" }, "update"],
+          ["executor_accounts", { id: "acc_oauth" }, "update"],
+          ["executor_accounts", { id: "acc_token" }, "update"],
+          ...[...w.versionsA].sort().map((id) => ["executor_deployments", { id }, "update"]),
+          ["executor_account_connections", { id: "con_token" }, "update"],
+          ["executor_account_acquisitions", { account: "acc_oauth" }, "update"],
         ],
-        "only the retained ref's rows move; links, other providers and the second app stay",
+        "only team A's rows on the retained ref move",
       );
-      assert.deepEqual(
-        (plan.data as { joining: unknown }).joining,
-        [{ app: "app_pipeline", version: "dpl_pipeline" }],
-        "the dry run names the apps that start offering the moved accounts",
-      );
-      assert.deepEqual(
-        (plan.data as { apps: unknown }).apps,
-        [{ app: "app_tool", version: "dpl_tool_2" }],
-        "the dry run names the apps whose versions move",
-      );
-      const apply = {
-        ...input,
-        action: "apply" as const,
-        artifact: dry.artifact,
-        backupSha256: dry.backupSha256,
-        planSha256: dry.artifact.sha256,
-        go: `GO ${dry.artifact.sha256}`,
-      };
-      const applied = yield* runProductionOperation(settings, apply);
-      assert.ok(applied.action === "apply" && applied.repeated === false);
+      assert.deepEqual(plan.data.apps, [{ app: w.toolA, version: w.versionsA[1] }]);
+      assert.deepEqual(plan.data.joining, [{ app: w.pipeline, version: w.pipelineVersion }]);
+      assert.deepEqual(plan.data.accounts, [
+        { account: "acc_oauth", method: "oauth", generation: 1 },
+        { account: "acc_token", method: "apiToken", generation: 3 },
+      ]);
+      assert.deepEqual(plan.data.links, [
+        { app: w.toolA, requirement: "cloudflare", subject: "user-b", account: "acc_oauth" },
+        { app: w.toolA, requirement: "cloudflare", subject: "user-a", account: "acc_token" },
+      ]);
 
-      assert.equal(yield* link("app_pipeline", "acc_cloudflare"), "linked");
-      assert.deepEqual(yield* listed("app_pipeline"), ["acc_cloudflare"]);
-      assert.deepEqual(yield* listed("app_tool"), ["acc_cloudflare"], "the catalog app keeps it");
+      const applied = yield* apply(go);
+      assert.ok(applied.action === "apply" && applied.repeated === false);
+      const after = yield* everything;
+      const moved = changed(before, after);
       assert.deepEqual(
-        yield* sql`select app, requirement, subject, account from hosted_app_account_links order by app`,
+        Object.keys(moved).sort(),
+        [
+          "executor_account_acquisitions",
+          "executor_account_connections",
+          "executor_accounts",
+          "executor_deployments",
+          "private_production_ops_receipts",
+        ],
+        "providers, apps, links, access, identities, grants, clients and the queue are untouched",
+      );
+      assert.deepEqual(ids(moved.executor_accounts!.gone), ["acc_oauth", "acc_token"]);
+      assert.deepEqual(fieldsChanged(moved.executor_accounts!), [["provider"], ["provider"]]);
+      assert.deepEqual(ids(moved.executor_deployments!.gone), [...w.versionsA].sort());
+      assert.deepEqual(fieldsChanged(moved.executor_deployments!), [
+        ["requirements"],
+        ["requirements"],
+      ]);
+      assert.deepEqual(ids(moved.executor_account_connections!.gone), ["con_token"]);
+      assert.deepEqual(ids(moved.executor_account_acquisitions!.gone, "account"), ["acc_oauth"]);
+      assert.deepEqual(fieldsChanged(moved.executor_account_acquisitions!, "account"), [
+        ["provider"],
+      ]);
+      assert.equal(moved.private_production_ops_receipts!.added.length, 1);
+      assert.deepEqual(
+        yield* sql`select id, provider, credential_generation, identity_id, oauth_grant_id from executor_accounts order by id`,
         [
           {
-            app: "app_pipeline",
-            requirement: "cloudflare",
-            subject: "user-a",
-            account: "acc_cloudflare",
+            id: "acc_jira",
+            provider: w.other,
+            credential_generation: 1,
+            identity_id: null,
+            oauth_grant_id: null,
           },
           {
-            app: "app_tool",
-            requirement: "cloudflare",
-            subject: "user-a",
-            account: "acc_cloudflare",
+            id: "acc_oauth",
+            provider: w.family,
+            credential_generation: 1,
+            identity_id: "aid_oauth",
+            oauth_grant_id: "grt_oauth",
+          },
+          {
+            id: "acc_team_b",
+            provider: w.retained,
+            credential_generation: 1,
+            identity_id: null,
+            oauth_grant_id: null,
+          },
+          {
+            id: "acc_token",
+            provider: w.family,
+            credential_generation: 3,
+            identity_id: null,
+            oauth_grant_id: null,
           },
         ],
+        "accounts keep their IDs, credentials, identity and grant; team B's stays on its ref",
       );
+
+      // The step right after the GO: nothing in team A names the retained ref any more.
+      const settled = yield* dryRun({ ...w.requestA, accounts: [] });
+      assert.equal(settled.dry.changes, 0, "a dry run with no accounts plans zero changes");
+
+      assert.equal(yield* link(w.pipeline, "acc_token"), "linked");
+      assert.deepEqual(yield* listed(w.pipeline), ["acc_oauth", "acc_token"]);
       assert.deepEqual(
-        yield* sql`select id, provider, credential_generation from executor_accounts order by id`,
-        [
-          { id: "acc_cloudflare", provider: ids.family, credential_generation: 3 },
-          { id: "acc_jira", provider: ids.other, credential_generation: 1 },
-        ],
-        "accounts keep their IDs and credentials; none is duplicated",
+        yield* listed(w.toolA),
+        ["acc_oauth", "acc_token"],
+        "the catalog app keeps them",
       );
+      assert.deepEqual(yield* listed(w.toolB), ["acc_team_b"], "team B's app still offers its own");
       assert.equal(
-        yield* link("app_pipeline", "acc_jira"),
+        yield* link(w.pipeline, "acc_jira"),
         "RequirementMismatch:provider",
         "a different provider still refuses",
       );
-      const replay = yield* runProductionOperation(settings, apply);
+      assert.deepEqual(
+        yield* sql`select app, subject from hosted_app_account_links where account = 'acc_oauth'`,
+        [{ app: w.toolA, subject: "user-b" }],
+        "the second person's account is linked only for them",
+      );
+
+      // Team B's own adoption still plans exactly what it did before team A's GO.
+      const laterB = yield* dryRun(w.requestB);
+      assert.deepEqual(laterB.plan.changes, reviewedB.plan.changes);
+      assert.deepEqual(laterB.plan.data, reviewedB.plan.data);
+
+      const replay = yield* apply(go);
       assert.ok(
         replay.action === "apply" && replay.repeated === true,
-        "replay verifies without writing, after people link the moved account",
+        "replay verifies without writing",
       );
       assert.equal((yield* sql`select * from private_production_ops_receipts`).length, 1);
+      assert.equal(
+        yield* reasonOf(dryRun(w.requestA)),
+        "account-set-changed",
+        "a second GO cannot be planned",
+      );
     }),
   ));
 
-test("family adoption refuses other providers, changed selections and work in progress", () =>
+test("a run stopped between the dry run and the GO leaves everything as it was", () =>
+  run(
+    Effect.gen(function* () {
+      const w = yield* world;
+      const before = yield* everything;
+      const { go } = yield* dryRun(w.requestA);
+      // The operator stops here; the database is exactly as it was and no receipt exists.
+      assert.deepEqual(yield* everything, before);
+      const applied = yield* apply(go);
+      assert.ok(
+        applied.action === "apply" && applied.repeated === false,
+        "the reviewed GO still applies",
+      );
+    }),
+  ));
+
+test("an error inside the GO leaves nothing behind, and the same GO applies once it is gone", () =>
   run(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const ids = yield* setup;
-      const migration = productionMigrations["cloudflare-family-adoption-v1"];
-      assert.ok(migration, "the Cloudflare family adoption is a registered production migration");
-      const refusal = (request: unknown) =>
-        Effect.flip(migration.inspect(request)).pipe(
-          Effect.map((error) => (error as { reasonCode?: string }).reasonCode),
-        );
-      const base = {
-        organization,
-        from: ids.retained,
-        to: ids.family,
-        accounts: [{ account: "acc_cloudflare", generation: 3 }],
-      };
-      assert.equal(
-        yield* refusal({
-          ...base,
-          from: ids.other,
-          accounts: [{ account: "acc_jira", generation: 1 }],
-        }),
-        "retained-provider-not-family",
+      const w = yield* world;
+      const before = yield* everything;
+      const { go } = yield* dryRun(w.requestA);
+      // Accounts and versions are written before connections, so this fails after the first writes.
+      yield* sql.unsafe(`create function refuse_connection_write() returns trigger language plpgsql as $$
+        begin raise exception 'connection write refused'; end $$`);
+      yield* sql.unsafe(`create trigger refuse_connection_write before update on executor_account_connections
+        for each row execute function refuse_connection_write()`);
+      const failed = yield* reasonOf(apply(go));
+      assert.notEqual(failed, "succeeded");
+      assert.deepEqual(
+        yield* everything,
+        before,
+        "accounts and versions are unchanged and no receipt exists",
       );
-      assert.equal(yield* refusal({ ...base, from: ids.family }), "already-family");
-      assert.equal(yield* refusal({ ...base, to: ids.retained }), "family-ref-changed");
-      assert.equal(
-        yield* refusal({ ...base, accounts: [{ account: "acc_cloudflare", generation: 2 }] }),
-        "account-set-changed",
-      );
-      yield* sql`insert into executor_account_acquisitions (account,owner,provider,method,driver,driver_revision,generation,revision)
-        values ('acc_jira',${owner},${ids.retained},'apiToken','fixture','1',1,'r1')`;
-      assert.equal(yield* refusal(base), "acquisition-outside-selection");
-      yield* sql`delete from executor_account_acquisitions`;
-      yield* sql`insert into executor_account_connections (id,owner,provider,reconnect_account,state,revision,oauth_attempt,created_at,expires_at,target)
-        values ('con_pending',${owner},${ids.retained},null,${JSON.stringify({ status: "pending" })},'r1',null,now(),now() + interval '1 hour',${JSON.stringify({ app: "app_tool", requirement: "cloudflare" })})`;
-      assert.equal(yield* refusal(base), "connection-in-progress");
+      yield* sql.unsafe("drop trigger refuse_connection_write on executor_account_connections");
+      const applied = yield* apply(go);
+      assert.ok(applied.action === "apply" && applied.repeated === false);
+      assert.equal((yield* dryRun({ ...w.requestA, accounts: [] })).dry.changes, 0);
     }),
   ));
