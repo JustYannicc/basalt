@@ -4,13 +4,8 @@ import { accountReadings, latestReading, type AccountReading } from "./account-l
 import { Button, Dialog } from "./controls.tsx";
 import { ObservationReadingsTable } from "./observation-readings.ts";
 import { orderedWindows, windowView } from "./observation-text.ts";
+import { readerFormat as format } from "./moments.ts";
 import { duration, exactTime } from "./usage.ts";
-
-// The reader's own locale and time zone, as the rest of the pool formats times.
-const format = (() => {
-  const options = new Intl.DateTimeFormat().resolvedOptions();
-  return { locale: options.locale, timeZone: options.timeZone };
-})();
 
 const ago = (at: string, now: number) =>
   now - Date.parse(at) < 60_000 ? "just now" : `${duration(now - Date.parse(at))} ago`;
