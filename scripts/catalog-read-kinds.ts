@@ -47,39 +47,70 @@ const schemaMaps = new Set([
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/**
+ * The value a local reference names, where the framework would find the same one: a `#/` pointer
+ * through the document's own object keys. The framework also decodes percent-encoding, indexes
+ * arrays and resolves a reference on the way first; the check refuses those rather than repeat
+ * its rules.
+ */
 const pointer = (document: JsonObject, reference: string): Json | undefined => {
-  if (!reference.startsWith("#/")) return undefined;
+  if (!reference.startsWith("#/") || reference.includes("%")) return undefined;
   let value: Json | undefined = document;
   for (const token of reference.slice(2).split("/")) {
     const key = token.replaceAll("~1", "/").replaceAll("~0", "~");
-    value = isObject(value) ? value[key] : undefined;
+    if (!isObject(value) || typeof value.$ref === "string" || !Object.hasOwn(value, key))
+      return undefined;
+    value = value[key];
   }
   return value;
 };
 
-/** Inline local references, dropping wording; a cycle keeps its reference rather than recursing. */
-const surface = (
-  document: JsonObject,
-  value: Json | undefined,
-  stack: readonly string[] = [],
-  names = false,
-): Json => {
-  if (Array.isArray(value)) return value.map((item) => surface(document, item, stack));
-  if (!isObject(value)) return value ?? null;
-  const reference = value.$ref;
-  if (!names && typeof reference === "string") {
-    const target = pointer(document, reference);
-    if (target === undefined || stack.includes(reference)) return { $ref: reference };
-    return surface(document, target, [...stack, reference]);
-  }
-  const entries = Object.keys(value)
-    .filter((key) => names || !documentation.has(key))
-    .sort()
-    .map((key) => [key, surface(document, value[key], stack, !names && schemaMaps.has(key))]);
-  return Object.fromEntries(entries);
+/**
+ * Everything a caller can send, with local references inlined and wording dropped, and the
+ * references the hash cannot stand for. Beside a reference only wording may sit: a schema adds
+ * its other siblings to the target. A cycle keeps its reference rather than recursing.
+ */
+const operationInput = (document: JsonObject, found: Declared) => {
+  const refused = new Set<string>();
+  const inline = (value: Json | undefined, stack: readonly string[] = [], names = false): Json => {
+    if (Array.isArray(value)) return value.map((item) => inline(item, stack));
+    if (!isObject(value)) return value ?? null;
+    const reference = value.$ref;
+    if (!names && typeof reference === "string") {
+      const siblings = Object.keys(value).filter(
+        (key) => key !== "$ref" && !documentation.has(key),
+      );
+      if (siblings.length > 0)
+        refused.add(
+          `its input reference ${JSON.stringify(reference)} has ${siblings.join(", ")} beside it, which the hash would leave out`,
+        );
+      if (stack.includes(reference)) return { $ref: reference };
+      const target = pointer(document, reference);
+      if (target !== undefined) return inline(target, [...stack, reference]);
+      refused.add(
+        `its input reference ${JSON.stringify(reference)} cannot be followed by the check, so the hash would not cover its target`,
+      );
+      return null;
+    }
+    const entries = Object.keys(value)
+      .filter((key) => names || !documentation.has(key))
+      .sort()
+      .map((key) => [key, inline(value[key], stack, !names && schemaMaps.has(key))]);
+    return Object.fromEntries(entries);
+  };
+  const parameters = [
+    ...(Array.isArray(found.item.parameters) ? found.item.parameters : []),
+    ...(Array.isArray(found.operation.parameters) ? found.operation.parameters : []),
+  ];
+  const input = inline({
+    parameters,
+    requestBody: found.operation.requestBody ?? null,
+    servers: found.operation.servers ?? found.item.servers ?? document.servers ?? null,
+  });
+  return { input, refused: [...refused] };
 };
+const sha256 = (input: Json) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
 
-/** Follow local references, as the framework does; it refuses any other reference itself. */
 /** Each path item's operation slots, OpenAPI 3.2's `additionalOperations` included, unresolved. */
 const pathItems = (document: JsonObject) =>
   Object.entries(isObject(document.paths) ? document.paths : {}).flatMap(([path, item]) => {
@@ -133,21 +164,14 @@ export const findOperation = (document: JsonObject, operationId: string) => {
   return found.length === 1 ? found[0] : undefined;
 };
 
-/** A hash of everything a caller can send: parameters, request body and servers. */
-export const operationInputSha256 = (
-  document: JsonObject,
-  found: NonNullable<ReturnType<typeof findOperation>>,
-) => {
-  const parameters = [
-    ...(Array.isArray(found.item.parameters) ? found.item.parameters : []),
-    ...(Array.isArray(found.operation.parameters) ? found.operation.parameters : []),
-  ];
-  const input = surface(document, {
-    parameters,
-    requestBody: found.operation.requestBody ?? null,
-    servers: found.operation.servers ?? found.item.servers ?? document.servers ?? null,
-  });
-  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+/**
+ * A hash of everything a caller can send: parameters, request body and servers. Throws, naming
+ * them, when the input holds references the hash cannot stand for.
+ */
+export const operationInputSha256 = (document: JsonObject, found: Declared) => {
+  const { input, refused } = operationInput(document, found);
+  if (refused.length > 0) throw new Error(`${where(found)}: ${refused.join("; ")}`);
+  return sha256(input);
 };
 
 const pinDrift = (
@@ -174,8 +198,10 @@ const pinDrift = (
     const problems: string[] = [];
     if (found.method !== pin.method) problems.push(`${at}: method ${pin.method} → ${found.method}`);
     if (found.path !== pin.path) problems.push(`${at}: path ${pin.path} → ${found.path}`);
-    const inputSha256 = operationInputSha256(document, found);
-    if (inputSha256 !== pin.inputSha256)
+    const { input, refused } = operationInput(document, found);
+    const inputSha256 = sha256(input);
+    if (refused.length > 0) problems.push(...refused.map((reason) => `${at}: ${reason}`));
+    else if (inputSha256 !== pin.inputSha256)
       problems.push(`${at}: input sha256 ${pin.inputSha256} → ${inputSha256}`);
     return problems;
   });
