@@ -176,7 +176,7 @@ test(
             .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
             .join(" "),
         )
-        .filter((line) => !/^POOL_RUNTIME_ENDPOINT_FAILURE/u.test(line))
+        .filter((line) => !line.startsWith("POOL_RUNTIME_ENDPOINT_FAILURE"))
         .slice(-20)
         .join("\n");
       throw new Error(`${String(error)}\n${lines}`, { cause: error });
