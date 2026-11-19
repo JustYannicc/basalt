@@ -135,7 +135,8 @@ export class Extra extends DurableObject {
        if(new URL(request.url).pathname==='/v1/responses')this.socketRequest=request.clone();
        return this.env.NODE.getByName('fixture').fetch(request);
       }
-      this.calls=(this.calls??0)+1;if(fault==='model-port-dispatch')throw Error(marker);return Response.json({ok:true});}};
+      this.calls=(this.calls??0)+1;if(fault==='model-port-dispatch')throw Error(marker);
+      if(fault==='model-port-exit'){this.ctx.container.running=false;throw Error(marker);}return Response.json({ok:true});}};
     }},configurable:true});
    const storage={get:key=>this.ctx.storage.get(key),put:(key,value)=>this.ctx.storage.put(key,value),
     transaction:async work=>{const result=await this.ctx.storage.transaction(work);if((await activity.inspect(identity))?.active===0)this.notifyDrained?.();return result;}};
