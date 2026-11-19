@@ -120,7 +120,7 @@ export async function handoffRuntime(
     },
     container: {
       signal(signal: number) {
-        assert.equal(signal, 9);
+        assert.ok(signal === 9 || signal === 15, `unexpected signal ${signal}`);
         calls.signals.push(signal);
         running = false;
         for (const stop of stops) stop();
@@ -315,6 +315,10 @@ export async function handoffRuntime(
     signingKey,
     crash: () => {
       running = false;
+    },
+    // The same container process reads as running again: same boot, same launch settings.
+    revive: () => {
+      running = true;
     },
     replaceBoot: () => {
       bootId = crypto.randomUUID();
