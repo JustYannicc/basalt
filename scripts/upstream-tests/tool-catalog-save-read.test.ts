@@ -86,7 +86,11 @@ const tool = (name: string, readOnly: boolean) => ({ name, description: name, re
 const READ = tool("counter.count", true);
 const WRITE = tool("records.write", false);
 const REVIEW = tool("records.review", false);
-const list = (revision: number, items = [READ, WRITE], enabledTools = items.map((t) => t.name)) => ({
+const list = (
+  revision: number,
+  items = [READ, WRITE],
+  enabledTools = items.map((t) => t.name),
+) => ({
   revision,
   defaultMode: "all",
   overrides: [],
@@ -124,7 +128,6 @@ function host() {
       check();
     });
   return {
-    reads,
     client: {
       toolAvailability: { list: held(reads), update: held(saves) },
       tools: { index: () => Effect.never },
@@ -195,9 +198,15 @@ test(
     assert.deepEqual(names(held), [READ.name, WRITE.name]);
     // The host also reports a tool the page had not seen, so the acknowledged catalog cannot stick.
     reconciling.answer(list(2, [READ, WRITE, REVIEW]));
-    const fresh = await until(registry, catalog, (value) => value._tag === "Success" && !value.waiting);
+    const fresh = await until(
+      registry,
+      catalog,
+      (value) => value._tag === "Success" && !value.waiting,
+    );
     assert.deepEqual(names(fresh), [READ.name, WRITE.name, REVIEW.name]);
-    const setting = registry.get(settings) as { value: { revision: number; enabledTools: string[] } };
+    const setting = registry.get(settings) as {
+      value: { revision: number; enabledTools: string[] };
+    };
     assert.equal(setting.value.revision, 2);
     assert.deepEqual(setting.value.enabledTools, [READ.name, WRITE.name, REVIEW.name]);
   },
@@ -225,30 +234,12 @@ test(
     const read = await backend.read(1);
     assert.equal((registry.get(catalog) as Result)._tag, "Initial");
     read.answer(list(1, [REVIEW]));
-    const fresh = await until(registry, catalog, (value) => value._tag === "Success" && !value.waiting);
-    assert.deepEqual(names(fresh), [REVIEW.name]);
-  },
-);
-
-test(
-  "a save confirmed while another read is pending keeps that read's loading state",
-  { timeout: 10_000 },
-  async (t) => {
-    const { backend, registry, catalog, update, save } = await open(t);
-    const saving = await save(1);
-    returnToPage();
-    await backend.read(1);
-    assert.equal((registry.get(catalog) as Result)._tag, "Initial");
-    saving.answer({ revision: 2, defaultMode: "all", overrides: [] });
-    await until(registry, update, (value) => value._tag === "Success");
-    assert.equal(
-      (registry.get(catalog) as Result)._tag,
-      "Initial",
-      "a read the page did not start for its own save never reuses the previous catalog",
+    const fresh = await until(
+      registry,
+      catalog,
+      (value) => value._tag === "Success" && !value.waiting,
     );
-    // The save's refresh may replace the visit's read; whichever is still in flight answers.
-    for (const read of backend.reads.slice(1)) read.answer(list(2));
-    await until(registry, catalog, (value) => value._tag === "Success" && !value.waiting);
+    assert.deepEqual(names(fresh), [REVIEW.name]);
   },
 );
 

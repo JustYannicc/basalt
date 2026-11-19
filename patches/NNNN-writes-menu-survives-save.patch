@@ -10,7 +10,7 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
  
  export const openAvailabilityTools = (organization: string, app: string) =>
    Effect.gen(function* () {
-@@ -175,9 +176,36 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+@@ -175,9 +176,34 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
    yield* browser.use("Reveal all hidden tools with recovery action", (page) =>
      page.getByRole("button", { name: "Show hidden tools", exact: true }).click(),
    );
@@ -40,9 +40,7 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
 +  // The open menu hides the rest of the page from assistive technology.
 +  expect(
 +    yield* browser.use("The save's own catalog read shows no loading state", (page) =>
-+      page
-+        .getByRole("status", { name: "Loading tools", exact: true, includeHidden: true })
-+        .count(),
++      page.getByRole("status", { name: "Loading tools", exact: true, includeHidden: true }).count(),
 +    ),
 +  ).toBe(0);
 +  const answered = yield* Effect.forkChild(
@@ -50,7 +48,7 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
        page
          .waitForResponse(
            (response) =>
-@@ -186,8 +214,27 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+@@ -186,8 +212,27 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
              response.ok(),
          )
          .then((response) => response.finished()),
@@ -80,7 +78,7 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
    );
    yield* browser.use("Wait for the confirmed restored read tools", (page) =>
      page
-@@ -195,12 +242,6 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+@@ -195,12 +240,6 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
        .and(page.locator('[aria-checked="true"]:not(:disabled)'))
        .waitFor(),
    );

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-writes-menu-survives-save",
   "file": "NNNN-writes-menu-survives-save.patch",
-  "content_sha256": "35c8cc7461d5d4294e7544c0ec18e66aebf5a0e124bf3cc23930dc755f271627",
+  "content_sha256": "890813c7cfca1d59b8e2fa7bc9d93680cfb60ca317aed449438e0a65d84b362e",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
