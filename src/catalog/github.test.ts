@@ -95,10 +95,7 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
     // Checking a token and resetting it answer with the same shape; only the reset mints one.
     assert.deepEqual(
       credentialPaths(results),
-      [
-        "$.api.actions.createRegistrationTokenForRepo.token",
-        "$.api.apps.resetToken.token",
-      ],
+      ["$.api.actions.createRegistrationTokenForRepo.token", "$.api.apps.resetToken.token"],
       "only the tools that mint a credential return one",
     );
     // Everything else GitHub sent arrives unchanged.
