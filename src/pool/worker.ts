@@ -52,8 +52,8 @@ import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
 import { isPoolAcquisitionPath } from "./connection-policy.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
-import { failureResponse, poolFailureDiagnostic, unavailable } from "./json.ts";
-import { pendingFields } from "./runtime-route-diagnostic.ts";
+import { failureResponse, unavailable } from "./json.ts";
+import { pendingFields } from "./pending-failure.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeResponse, nativeSession, nativeControlPair } from "./native-response.worker.ts";
@@ -633,10 +633,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const work = trace
       .run("home", () => this.homeUpkeep(trace))
       .catch(async (error: unknown) => {
-        console.error(
-          "POOL_HOME_UPKEEP_PENDING",
-          JSON.stringify({ ...pendingFields(error), ...poolFailureDiagnostic(error) }),
-        );
+        console.error("POOL_HOME_UPKEEP_PENDING", JSON.stringify(pendingFields(error)));
         await this.alarms.schedule("home", Date.now() + membershipRefreshMs);
       })
       .finally(() => {

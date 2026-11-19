@@ -21,6 +21,10 @@ async function root(context: TestContext) {
     },
     forcedStops: () =>
       errors.mock.calls.filter((call) => call.arguments[0] === "POOL_RUNTIME_FORCED_STOP").length,
+    stopPaths: () =>
+      errors.mock.calls
+        .filter((call) => call.arguments[0] === "POOL_RUNTIME_FORCED_STOP")
+        .map((call) => (JSON.parse(String(call.arguments[1])) as { path: string }).path),
     lines: () =>
       errors.mock.calls
         .map((call) =>
@@ -56,7 +60,7 @@ test(
   "a root that refuses while its container keeps running is restarted and serving within the bound",
   { timeout: 20_000 },
   async (context) => {
-    const { f, advance, forcedStops } = await root(context);
+    const { f, advance, forcedStops, stopPaths } = await root(context);
     const boot = refuseCurrentBoot(f);
     for (let elapsed = 0; elapsed < unservingBoundMs; elapsed += 2_000) {
       await pass(f);
@@ -67,6 +71,7 @@ test(
     await pass(f);
     assert.deepEqual(f.old.calls.signals, [15], "a graceful stop, never a hard one first");
     assert.equal(forcedStops(), 1);
+    assert.deepEqual(stopPaths(), ["graceful_exit"]);
     assert.equal(f.old.calls.destroy, 0);
     assert.equal(f.old.calls.start, 1);
     assert.notEqual(f.old.identity().bootId, boot);
@@ -138,7 +143,7 @@ test(
   "a SIGTERM that doesn't stop the container within its grace ends in a recorded hard stop",
   { timeout: 20_000 },
   async (context) => {
-    const { f, advance, forcedStops } = await root(context);
+    const { f, advance, forcedStops, stopPaths } = await root(context);
     f.old.ctx.container.signal = () => {};
     refuseCurrentBoot(f);
     await pass(f);
@@ -146,6 +151,7 @@ test(
     await pass(f);
     assert.equal(f.old.calls.destroy, 1);
     assert.equal(forcedStops(), 1);
+    assert.deepEqual(stopPaths(), ["destroy_after_grace"]);
     assert.equal(f.old.calls.start, 1);
     assert.equal(await serves(f), true);
   },

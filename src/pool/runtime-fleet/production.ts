@@ -39,7 +39,7 @@ import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
 import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
-import { pendingFields } from "../runtime-route-diagnostic.ts";
+import { pendingFields } from "../pending-failure.ts";
 
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;

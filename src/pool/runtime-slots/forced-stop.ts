@@ -12,12 +12,19 @@ const hourMs = 3_600_000;
 
 const pause = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+/**
+ * After SIGTERM the supervisor gives its children 15 s, then kills them and waits 1 s
+ * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step.
+ */
+export const supervisorStopGraceMs = 16_000;
+/** Longer than the supervisor's grace, so a Home finishing a token write-back is never cut short. */
+export const forcedStopGraceMs = 30_000;
 /** The waits around stopping a container; tests replace them instead of sleeping. */
 export const runtimeStopTiming = {
   /** Between the two "not running" reads that admit a restart. */
   confirmExit: () => pause(2_000),
   /** How long SIGTERM gets before `destroy()`. */
-  stopGrace: () => pause(30_000),
+  stopGrace: () => pause(forcedStopGraceMs),
   /** Whether Home is mid token refresh. The image doesn't report it yet; the Home owner adds it. */
   refreshInFlight: async (): Promise<boolean> => false,
 };
@@ -60,20 +67,18 @@ export class RuntimeForcedStop {
     );
     if (recent.length >= forcedStopsPerHour) throw new SlotRefused("uncertain");
     await ctx.storage.put(stopsKey, [...recent, now]);
-    let hard = false;
+    let path: "graceful_exit" | "destroy_after_grace" | "destroy_without_signal" = "graceful_exit";
     if (container.signal) {
       container.signal(15);
       await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
-    }
-    if (container.running) {
-      hard = true;
-      await container.destroy();
-    }
+      if (container.running) path = "destroy_after_grace";
+    } else path = "destroy_without_signal";
+    if (container.running) await container.destroy();
     console.error(
       "POOL_RUNTIME_FORCED_STOP",
-      JSON.stringify({ slot: identity.slotId, hard, activeStreams: active, forced: force }),
+      JSON.stringify({ slot: identity.slotId, path, activeStreams: active, forced: force }),
     );
-    return { stopped: !container.running, hard };
+    return { stopped: !container.running, hard: path !== "graceful_exit" };
   }
   private async serving(identity: SlotIdentity, signal: AbortSignal) {
     try {

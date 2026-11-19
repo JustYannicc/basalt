@@ -72,14 +72,6 @@ export function runtimeRouteDiagnostic(error: unknown) {
     ? { ...diagnostic, runtimeEndpointRequestId: requestId }
     : diagnostic;
 }
-/** Closed fields for a line that reports a failed background pass; never the error's text. */
-export function pendingFields(error: unknown) {
-  const remembered = runtimeRouteDiagnostic(error);
-  return {
-    reason: remembered?.runtimeReason ?? reason(error),
-    ...(remembered ? { step: remembered.runtimeStep } : {}),
-  };
-}
 export function rememberRuntimeFailure(
   step: RuntimeRouteDiagnostic["runtimeStep"],
   error: unknown,
