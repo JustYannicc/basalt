@@ -13,31 +13,78 @@ const bounded = async <A>(items: readonly A[], run: (item: A) => Promise<void>) 
   );
 };
 
-/** Exercise the catalog's public handler, including this revision's carried app sources. */
-export async function catalogSourceEvidence(reviews: readonly OAuthReview[]) {
-  const official = await readCatalogJson("https://catalog.executor.sh/index.json");
+const compose = async (official: unknown): Promise<Feed> => {
   const response = await handleCatalog(
     new Request(`https://${brand.host}/catalog/index.json`),
     async () => Response.json(official),
   );
   if (!response.ok) throw new Error("The composed catalog is unavailable");
-  const feed: Feed = await response.json();
+  return response.json();
+};
+
+/**
+ * The published index as the reviews last saw it: every reviewed entry with exactly its reviewed
+ * methods. Entries this revision adds itself come from the revision, never from the stand-in.
+ */
+async function reviewedIndex(reviews: readonly OAuthReview[]): Promise<Feed> {
+  const added = new Set((await compose({ version: 1, apps: [] })).apps.map((entry) => entry.id));
+  return {
+    version: 1,
+    apps: reviews
+      .filter((review) => !added.has(review.entry))
+      .map((review) => ({
+        id: review.entry,
+        package: review.package,
+        name: review.entry,
+        description: review.entry,
+        auth: Object.keys(review.methods).map((method) => ({ method, kind: "oauth2" })),
+        icons: [],
+        source: `apps/${review.entry}.json`,
+      })),
+  };
+}
+
+/**
+ * Exercise the catalog's public handler, including this revision's carried app sources. Offline,
+ * the reviewed index stands in for the published one and sources only the publisher serves keep
+ * their pins: both are outside state the scheduled drift workflow checks.
+ */
+export async function catalogSourceEvidence(
+  reviews: readonly OAuthReview[],
+  { offline = false } = {},
+) {
+  const feed = await compose(
+    offline
+      ? await reviewedIndex(reviews)
+      : await readCatalogJson("https://catalog.executor.sh/index.json"),
+  );
   const sources = new Map<string, string>();
   const failures: string[] = [];
-  const positiveClaims = new Set(
+  const positiveClaims = new Map(
     reviews
       .filter((review) =>
         Object.values(review.methods).some((method) => method.kind !== "deferred"),
       )
-      .map((review) => review.entry),
+      .map((review) => [review.entry, review.sourceSha256]),
   );
   await bounded(
     feed.apps.filter((entry) => positiveClaims.has(entry.id)),
     async (entry) => {
+      let published = false;
       try {
         const source = await handleCatalog(
           new Request(`https://${brand.host}/catalog/apps/${encodeURIComponent(entry.id)}.json`),
+          offline
+            ? async () => {
+                published = true;
+                throw new Error("The offline check never contacts the publisher");
+              }
+            : fetch,
         );
+        if (published) {
+          sources.set(entry.id, positiveClaims.get(entry.id)!);
+          return;
+        }
         if (!source.ok) {
           failures.push(`${entry.id}: catalog source returned HTTP ${source.status}`);
           return;

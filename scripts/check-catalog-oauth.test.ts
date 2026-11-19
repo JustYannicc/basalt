@@ -137,3 +137,35 @@ test("a re-pinned snapshot still has to support the reviewed protocol", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("an OAuth method this revision adds still needs a reviewed decision offline", () => {
+  const edit = (change: (registry: { entries: { entry: string; methods: object }[] }) => void) =>
+    catalogCopy((root) => {
+      const registry = JSON.parse(readFileSync(join(root, "oauth-reviews.json"), "utf8"));
+      change(registry);
+      writeFileSync(join(root, "oauth-reviews.json"), JSON.stringify(registry));
+    });
+  for (const [change, problem] of [
+    [
+      (registry: { entries: { entry: string }[] }) => {
+        registry.entries = registry.entries.filter((review) => review.entry !== "aws");
+      },
+      "aws: OAuth methods have no reviewed availability decision",
+    ],
+    [
+      (registry: { entries: { entry: string; methods: object }[] }) => {
+        const review = registry.entries.find((item) => item.entry === "zoho-people")!;
+        const { oauthEu: _unreviewed, ...methods } = review.methods as Record<string, unknown>;
+        review.methods = methods;
+      },
+      "zoho-people/oauthEu: OAuth method is unclassified",
+    ],
+  ] as const) {
+    const directory = edit(change);
+    try {
+      assert.deepEqual(check("--catalog", directory), { status: 1, problems: [problem] });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});

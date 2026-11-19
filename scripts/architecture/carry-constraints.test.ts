@@ -9,6 +9,7 @@ import {
   architectureChangeErrors,
   hasConstraint,
   repositoryArchitectureErrors,
+  withoutMetadataRepins,
 } from "./carry-constraints.ts";
 
 const patch = "patches/0245-example.patch";
@@ -79,6 +80,19 @@ test("runtime and stack changes still require architecture, and unrelated change
     expect(check([path], new Set())).not.toEqual([]);
   expect(check(["src/router.ts", "architecture/model/basalt.c4"], new Set())).toEqual([]);
   expect(check(["scripts/ci/gate.ts"], new Set())).toEqual([]);
+});
+
+test("a metadata re-pin needs no architecture change, but any other registry edit does", () => {
+  const snapshot = "src/catalog/example.oauth-metadata.json";
+  const registry = "src/catalog/oauth-reviews.json";
+  const header = `diff --git a/${registry} b/${registry}\n--- a/${registry}\n+++ b/${registry}\n@@ -9 +9 @@\n`;
+  const repin = `${header}-          "metadataSha256": "${"a".repeat(64)}"\n+          "metadataSha256": "${"b".repeat(64)}"\n`;
+  expect(check(withoutMetadataRepins([snapshot, registry], repin), new Set())).toEqual([]);
+  const decision = `${header}-          "kind": "deferred",\n+          "kind": "hosted",\n`;
+  expect(check(withoutMetadataRepins([snapshot, registry], decision), new Set())).not.toEqual([]);
+  expect(check(withoutMetadataRepins([snapshot, "src/router.ts"], repin), new Set())).not.toEqual(
+    [],
+  );
 });
 
 test("actual PR changes retain the runtime and carry placement gate", () => {

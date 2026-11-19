@@ -6,15 +6,10 @@ import { ConfigProvider, Effect } from "effect";
 import { optionalConnectorClients } from "./environment.ts";
 import { catalogSourceEvidence } from "./catalog-oauth-evidence.ts";
 import { committedOAuthMetadata } from "./catalog-oauth-metadata.ts";
-import {
-  oauthFitness,
-  oauthMethods,
-  oauthPinProblems,
-  oauthReviews,
-} from "../src/catalog/oauth-policy.ts";
+import { oauthFitness, oauthMethods, oauthReviews } from "../src/catalog/oauth-policy.ts";
 
 // The default reads only this commit, so the result can't change while the commit doesn't.
-// `--live` also composes today's published catalog; the scheduled drift workflow runs it.
+// `--live` composes today's published catalog instead; the scheduled drift workflow runs it.
 const { values } = parseArgs({
   options: { live: { type: "boolean", default: false }, catalog: { type: "string" } },
 });
@@ -47,19 +42,15 @@ const evidence = {
   hostedClients: new Set(clients.map((client) => client.id)),
   ...committedOAuthMetadata(reviews, directory),
 };
-let problems: string[];
-let catalog: { entries: number; methods: number } | undefined;
-if (values.live) {
-  const { feed, sources, failures } = await catalogSourceEvidence(reviews);
-  problems = [...failures, ...oauthFitness(feed, reviews, { ...evidence, sources })];
-  catalog = {
-    entries: feed.apps.filter((entry) => oauthMethods(entry).length > 0).length,
-    methods: feed.apps.reduce((count, entry) => count + oauthMethods(entry).length, 0),
-  };
-} else problems = oauthPinProblems(reviews, evidence);
+const { feed, sources, failures } = await catalogSourceEvidence(reviews, { offline: !values.live });
+// A reviewed method can appear twice where carried code adds it to the reviewed stand-in entry.
+const problems = [
+  ...new Set([...failures, ...oauthFitness(feed, reviews, { ...evidence, sources })]),
+];
 const summary = {
   mode: values.live ? "live catalog" : "committed",
-  ...catalog,
+  entries: feed.apps.filter((entry) => oauthMethods(entry).length > 0).length,
+  methods: feed.apps.reduce((count, entry) => count + oauthMethods(entry).length, 0),
   decisions: reviews
     .flatMap((review) => Object.values(review.methods))
     .reduce<Record<string, number>>(

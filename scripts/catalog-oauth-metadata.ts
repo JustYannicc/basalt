@@ -73,8 +73,16 @@ export function committedOAuthMetadata(
   for (const [url, entries] of owners) {
     const [entry] = [...entries];
     const file = metadataSnapshotFile(entry!);
-    if (entries.size > 1 || documents.get(entry!)!.size > 1)
-      evidence.metadataFailures.set(url, "the document needs exactly one owning entry");
+    if (entries.size > 1)
+      evidence.metadataFailures.set(
+        url,
+        `reviewed by ${[...entries].join(", ")}; one entry owns it`,
+      );
+    else if (documents.get(entry!)!.size > 1)
+      evidence.metadataFailures.set(
+        url,
+        `${entry} names several documents; one snapshot per entry`,
+      );
     else if (!existsSync(join(directory, file)))
       evidence.metadataFailures.set(url, `no committed snapshot ${file}`);
     else {

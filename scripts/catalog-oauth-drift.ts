@@ -42,7 +42,8 @@ export function signInValues(document: unknown, protocol: "dcr" | "cimd"): Field
     issuer: server.issuer,
     authorization_endpoint: server.authorization_endpoint,
     token_endpoint: server.token_endpoint,
-    registration_endpoint: server.registration_endpoint,
+    // Registration only runs while metadata documents aren't used; that flag alerts on its own.
+    ...(protocol === "dcr" ? { registration_endpoint: server.registration_endpoint } : {}),
     client_id_metadata_document_supported: server.client_id_metadata_document_supported,
     // The callback check requires `iss` exactly when the server advertises it.
     authorization_response_iss_parameter_supported:
@@ -104,7 +105,11 @@ export function metadataDrift(
 ): { drift: Drift[]; unavailable: string[] } {
   const drift: Drift[] = [];
   const unavailable: string[] = [];
+  const seen = new Set<string>();
   for (const decision of automaticDecisions(reviews)) {
+    // Methods sharing one document share its snapshot, so they share one re-pin.
+    if (seen.has(`${decision.entry} ${decision.metadata}`)) continue;
+    seen.add(`${decision.entry} ${decision.metadata}`);
     const live = published.metadata.get(decision.metadata);
     if (live === undefined) {
       unavailable.push(
@@ -182,7 +187,8 @@ const prBody = (drift: Drift) =>
     driftReport(drift),
     "The scheduled OAuth metadata drift job opened this re-pin. Merging it accepts the new document",
     `as reviewed: it replaces \`src/catalog/${metadataSnapshotFile(drift.entry)}\` and its pin in`,
-    "`src/catalog/oauth-reviews.json`. Close it instead if the change needs a different decision.",
+    "`src/catalog/oauth-reviews.json`. A different decision has to land in that registry on main;",
+    "while the published document still differs from the pin, the next run reopens this re-pin.",
     "",
   ].join("\n");
 
