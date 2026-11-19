@@ -77,6 +77,7 @@ export class FleetHandoffCell implements FleetCell {
   async healthy(identity: SlotIdentity) {
     const health = await this.deps.driver.health(identity, AbortSignal.timeout(2_000));
     if (!sameIdentity(health.identity, identity)) throw new SlotRefused("identity");
+    return health.database;
   }
   selected() {
     return this.deps.handoff.selected();

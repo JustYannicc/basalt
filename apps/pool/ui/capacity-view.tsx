@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { utcMoment } from "./moments.ts";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { Account, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
@@ -674,7 +675,7 @@ function Daily({
               {line.forecast.points.map((point) => (
                 <tr key={point.at}>
                   <th scope="row" className="border-b border-border p-2 text-left font-normal">
-                    {new Date(point.at).toUTCString()}
+                    {utcMoment(point.at)}
                   </th>
                   <td className="border-b border-border p-2">{amount(point.median)}</td>
                   <td className="border-b border-border p-2">
@@ -695,7 +696,7 @@ function Daily({
         <ul className="mt-3 pl-4 text-xs text-muted-foreground" aria-label="Refill events">
           {refills.map((event, index) => (
             <li key={`${event.at}-${event.kind}-${index}`}>
-              {new Date(event.at).toUTCString()}:{" "}
+              {utcMoment(event.at)}:{" "}
               {event.kind === "banked" ? "recorded banked reset" : `${event.kind} refill`},{" "}
               {event.amountIsLowerBound ? "at least " : ""}
               {amount(event.amount)} {line.unit.label} restored.
