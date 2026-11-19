@@ -33,9 +33,10 @@ const hooks = registerHooks({
 const require = createRequire(contractPath);
 
 // One page, in happy-dom, which the hosted web package already depends on: the dashboard's
-// revalidated reads listen for its visibility events. It is registered before those modules load.
+// revalidated reads listen for its visibility events. It is registered before those modules load,
+// at a dashboard origin, because the browser's auth client is addressed through the page's.
 const { GlobalRegistrator } = await import(require.resolve("@happy-dom/global-registrator"));
-GlobalRegistrator.register();
+GlobalRegistrator.register({ url: "https://dashboard.invalid/" });
 after(() => GlobalRegistrator.unregister());
 // The browser fires this at the visible document, and it bubbles to the window.
 const returnToPage = () => document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
