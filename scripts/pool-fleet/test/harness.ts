@@ -241,6 +241,8 @@ export async function harness(options: HarnessOptions = {}) {
         controllerCode: code,
       }),
     },
+    // A refused command logs the Home pool counters with it; this double has none to report.
+    databasePool: () => null,
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
   const connect: PoolOperationsTarget["connect"] = async () => ({
     env: {
