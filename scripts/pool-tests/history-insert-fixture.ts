@@ -8,10 +8,14 @@ import {
   activateModelHistoryJournal,
 } from "../../src/pool/model-history/schema.ts";
 import { historyRecordLayout, recordValues } from "../../src/pool/model-history/store.ts";
+import { historyChangeOnceVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import type { ModelRequest } from "../../src/pool/model-history/record.ts";
 import { historySchemaFixture } from "./history-fixture.ts";
 
 export const rowVersion = "model_request_history_v11_indexed_row_invalidation";
+/** Retained pre-v11 state: neither row-invalidation migration has run yet. */
+export const beforeRowInvalidation = (migration: { name: string }) =>
+  migration.name !== rowVersion && migration.name !== historyChangeOnceVersion;
 export const insertPools = [
   "app_fixture_history_a",
   "app_fixture_history_b",
@@ -54,7 +58,7 @@ export async function historyInsertFixture<T>(
         auth_id text,deleted_at timestamptz);
       CREATE TABLE basalt_model_history_migrations(name text PRIMARY KEY,
         completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
-    for (const migration of historySchemaMigrations.filter((item) => item.name !== rowVersion)) {
+    for (const migration of historySchemaMigrations.filter(beforeRowInvalidation)) {
       for (const statement of migration.statements) await a.query(statement);
       await a.query("INSERT INTO basalt_model_history_migrations(name) VALUES($1)", [
         migration.name,

@@ -1,6 +1,7 @@
 import {
   refuseRuntime,
   runtimeRouteDiagnostic,
+  runtimeResponseCause,
   runtimeResponseDiagnostic,
   stripRuntimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
@@ -39,6 +40,7 @@ import { endpointMetadata } from "./model-history/record.ts";
 import { terminalSocket } from "./terminal-socket.worker.ts";
 import { captureRefusalModel } from "./refusal-model.ts";
 import { endpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
+import type { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
 import type { PoolArrival } from "./pool-arrival.ts";
 import { startPoolRequestEvent, type PoolRequestOutcome } from "../telemetry/pool-request.ts";
 import { pageTemplate } from "../telemetry/privacy.ts";
@@ -64,6 +66,7 @@ interface Dependencies {
     legacy: () => Promise<import("./lifecycle.ts").PoolStatus>,
   ) => Promise<import("./lifecycle.ts").PoolStatus>;
   protection: RuntimeProtection;
+  databasePool?: Pick<HomeDatabasePoolMonitor, "observation">;
   fetch(request: Request, port: 8317 | 8327): Promise<Response>;
   defer(work: Promise<unknown>): void;
   /** When the Durable Object received the request, and what the Worker measured before it. */
@@ -145,6 +148,8 @@ export async function forwardPoolRequest(
     );
   let dispatched = false;
   let guard: GatewayFailureDiagnostic["guard"] = "native_identity";
+  // Refusals carry Home's last pool counters; reading Home here would queue behind the same pool.
+  const databasePool = () => deps.databasePool?.observation() ?? null;
   try {
     if (request.headers.has(nativeModelHeader)) {
       native = await deps.computers.nativeModel(request);
@@ -228,6 +233,7 @@ export async function forwardPoolRequest(
       : await legacy(outbound);
     guard = "upstream_response";
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    const runtimeCause = runtimeResponseCause(upstream);
     // Routing builds a refusal itself when a runtime never answered: that is not a first byte.
     if (!runtimeRefusal) event?.firstByte();
     const runtimeRequestId = endpointRequestId(upstream) ?? requestId;
@@ -237,6 +243,8 @@ export async function forwardPoolRequest(
         code: "runtime-refused",
         status: upstream.status,
         ...runtimeRefusal,
+        ...(runtimeCause ? { runtimeCause } : {}),
+        homeDatabasePool: databasePool(),
       });
     event?.home(logDispatchTiming(upstream.headers.get(dispatchTimingHeader)));
     // A runtime's refusal answers under the runtime's own request ID.
@@ -355,6 +363,7 @@ export async function forwardPoolRequest(
                   : error instanceof Error
                     ? "Error"
                     : "unknown",
+      homeDatabasePool: databasePool(),
     };
     event?.set({
       guard: diagnostic.guard,
