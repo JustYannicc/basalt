@@ -158,6 +158,74 @@ test("drift names the app, the operation and the change", () => {
   ]);
 });
 
+const bodySchema = (value: ReturnType<typeof document>) =>
+  value.paths["/scrape"].post.requestBody.content["application/json"].schema;
+const webhook = { webhook: { type: "string" } };
+
+test("a reference with more than wording beside it refuses, since a schema adds it to the target", () => {
+  const pin = pinned(document());
+  const worded = document();
+  Object.assign(bodySchema(worded), { description: "The options.", title: "Options" });
+  assert.deepEqual(readKindDrift("example", pin, worded), []);
+  // JSON Schema 2020-12 applies a reference's siblings too, so the served body gains `webhook`.
+  const sibling = document();
+  Object.assign(bodySchema(sibling), { properties: webhook });
+  assert.deepEqual(readKindDrift("example", pin, sibling), [
+    'example/scrape: its input reference "#/components/schemas/Options" has properties beside it, which the hash would leave out',
+  ]);
+  assert.throws(() => hash(sibling), /^Error: post \/scrape: its input reference .* properties/);
+});
+
+test("a reference the check cannot follow refuses, rather than hash the reference itself", () => {
+  const pin = pinned(document());
+  // The framework decodes percent-encoding: this names Options, which gains `webhook`.
+  const encoded = document();
+  bodySchema(encoded).$ref = "#/components/schemas/Opti%6Fns";
+  Object.assign(encoded.components.schemas.Options.properties, webhook);
+  // It also indexes arrays, for a schema and for a request body.
+  const indexed = document();
+  bodySchema(indexed).$ref = "#/x-schemas/0";
+  const options = indexed.components.schemas.Options;
+  Object.assign(indexed, {
+    "x-schemas": [{ ...options, properties: { ...options.properties, ...webhook } }],
+  });
+  const body = document();
+  const content = body.paths["/scrape"].post.requestBody.content;
+  Object.assign(body.paths["/scrape"].post, { requestBody: { $ref: "#/x-bodies/0" } });
+  Object.assign(body, { "x-bodies": [{ content }] });
+  Object.assign(body.components.schemas.Options.properties, webhook);
+  // It resolves Scrape to Other before following the pointer, keeping only wording beside it, so
+  // it serves Other's schema while a walk of the document as written reads the copy.
+  const through = document();
+  bodySchema(through).$ref = "#/components/requestBodies/Scrape/content/application~1json/schema";
+  Object.assign(through.components, {
+    requestBodies: {
+      Scrape: {
+        $ref: "#/components/requestBodies/Other",
+        content: { "application/json": { schema: { $ref: "#/components/schemas/Options" } } },
+      },
+      Other: {
+        content: { "application/json": { schema: { type: "object", properties: webhook } } },
+      },
+    },
+  });
+  // An inherited key is no part of the document.
+  const inherited = document();
+  bodySchema(inherited).$ref = "#/components/schemas/constructor";
+  for (const [value, reference] of [
+    [encoded, "#/components/schemas/Opti%6Fns"],
+    [indexed, "#/x-schemas/0"],
+    [body, "#/x-bodies/0"],
+    [through, "#/components/requestBodies/Scrape/content/application~1json/schema"],
+    [inherited, "#/components/schemas/constructor"],
+  ] as const) {
+    assert.deepEqual(readKindDrift("example", pin, value), [
+      `example/scrape: its input reference ${JSON.stringify(reference)} cannot be followed by the check, so the hash would not cover its target`,
+    ]);
+    assert.throws(() => hash(value), /^Error: post \/scrape: .* cannot be followed/, reference);
+  }
+});
+
 test("an operationId declared more than once refuses, wherever the copy is listed", () => {
   const original = document();
   const pin = pinned(original);
