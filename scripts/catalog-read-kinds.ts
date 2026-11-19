@@ -54,6 +54,30 @@ const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
+ * Where a value sits in an operation's input, which decides how the framework reads it. Its
+ * object resolver keeps component schemas apart and leaves the value of every `schema` key as
+ * written, so only a schema value resolves references into them. A `content` map's keys are media
+ * types, never wording; a media type gets no second, schema-style pass, and a parameter reads only
+ * its first.
+ */
+type Place =
+  | "object"
+  | "parameter"
+  | "content"
+  | "parameter content"
+  | "media type"
+  | "schema"
+  | "names";
+const within = (place: Place, key: string): Place => {
+  if (place === "schema") return schemaMaps.has(key) ? "names" : "schema";
+  if (place === "names") return "schema";
+  if (place === "content" || place === "parameter content") return "media type";
+  if (key === "schema") return "schema";
+  if (key === "content") return place === "parameter" ? "parameter content" : "content";
+  return key === "parameters" ? "parameter" : "object";
+};
+
+/**
  * The value a local reference names, where the framework would find the same one: a `#/` pointer
  * through the document's own object keys. The framework also decodes percent-encoding, indexes
  * arrays and resolves a reference on the way first, and reads `#/components` and
@@ -108,11 +132,16 @@ const operationInput = (document: JsonObject, found: Declared) => {
   for (const server of Array.isArray(servers) ? servers : [])
     if (isObject(server) && typeof server.url === "string" && server.url.includes("{"))
       refused.add(`its server ${JSON.stringify(server.url)} has variables, ${address}`);
-  const inline = (value: Json | undefined, stack: readonly string[] = [], names = false): Json => {
-    if (Array.isArray(value)) return value.map((item) => inline(item, stack));
+  const inline = (
+    value: Json | undefined,
+    stack: readonly string[] = [],
+    place: Place = "object",
+  ): Json => {
+    if (Array.isArray(value))
+      return value.map((item) => inline(item, stack, place === "names" ? "schema" : place));
     if (!isObject(value)) return value ?? null;
     const reference = value.$ref;
-    if (!names && typeof reference === "string") {
+    if (place !== "names" && typeof reference === "string") {
       const siblings = Object.keys(value).filter(
         (key) => key !== "$ref" && !documentation.has(key),
       );
@@ -120,18 +149,36 @@ const operationInput = (document: JsonObject, found: Declared) => {
         refused.add(
           `its input reference ${JSON.stringify(reference)} has ${siblings.join(", ")} beside it, which the hash would leave out`,
         );
+      if (place === "media type") {
+        refused.add(
+          `its media type is a reference, ${JSON.stringify(reference)}, which the framework would serve as written, so the hash would not cover its schema`,
+        );
+        return null;
+      }
+      if (place !== "schema" && reference.startsWith("#/components/schemas/")) {
+        refused.add(
+          `its input reference ${JSON.stringify(reference)} names a component schema outside a schema value, where the framework does not resolve it, so the hash would not cover what it serves`,
+        );
+        return null;
+      }
       if (stack.includes(reference)) return { $ref: reference };
       const target = pointer(document, reference);
-      if (target !== undefined) return inline(target, [...stack, reference]);
+      if (target !== undefined) return inline(target, [...stack, reference], place);
       refused.add(
         `its input reference ${JSON.stringify(reference)} cannot be followed by the check, so the hash would not cover its target`,
       );
       return null;
     }
-    const entries = Object.keys(value)
-      .filter((key) => names || !documentation.has(key))
+    const keys = Object.keys(value);
+    if (place === "parameter content" && keys.length > 1)
+      refused.add(
+        `a parameter's content lists ${keys.length} media types (${keys.map((key) => JSON.stringify(key)).join(", ")}), and the framework reads only the first, so the hash would not cover which one it serves`,
+      );
+    const named = place === "names" || place === "content" || place === "parameter content";
+    const entries = keys
+      .filter((key) => named || !documentation.has(key))
       .sort()
-      .map((key) => [key, inline(value[key], stack, !names && schemaMaps.has(key))]);
+      .map((key) => [key, inline(value[key], stack, within(place, key))]);
     return Object.fromEntries(entries);
   };
   const parameters = [
