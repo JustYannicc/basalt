@@ -137,10 +137,9 @@ test("each OAuth method needs an exact reviewed decision and the reviewed source
   const deferredSource = evidence();
   deferredSource.sources.delete("deferred");
   assert.deepEqual(oauthFitness(feed, reviews, deferredSource), []);
-  assert.match(
-    oauthFitness(feed, reviews, changedSource).join("\n"),
-    /hosted: published source changed/,
-  );
+  assert.deepEqual(oauthFitness(feed, reviews, changedSource), [
+    `hosted: published source changed (sourceSha256: ${sha} -> ${"b".repeat(64)})`,
+  ]);
   assert.match(
     oauthFitness(
       { ...feed, apps: [{ ...feed.apps[0]!, package: "@other/automatic" }, ...feed.apps.slice(1)] },
@@ -355,7 +354,7 @@ test("account endpoint reviews bind source without inventing fixed OAuth metadat
   assert.deepEqual(withOAuthDeferrals({ version: 1, apps: [app] }, classified).apps, [app]);
   assert.match(
     oauthFitness({ version: 1, apps: [app] }, classified, { ...data, sources: new Map() }).join(),
-    /published source changed/,
+    /private-endpoint: published source is unavailable \(no document\)/,
   );
   assert.throws(
     () => oauthReviews({ version: 1, entries: [{ ...input.entries[0], sourceSha256: undefined }] }),

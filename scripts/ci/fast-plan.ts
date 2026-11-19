@@ -21,6 +21,8 @@ function environment(value: unknown, context: FastContext): Record<string, strin
           "${{ github.event.pull_request.head.sha || github.sha }}": context.head,
           "${{ github.event.pull_request.base.sha }}": context.base,
           "${{ needs.select.outputs.base_sha }}": context.base,
+          // The local plan replays the pull request lane; full-lane-only steps are skipped below.
+          "${{ needs.select.outputs.full_suite }}": "false",
         };
         if (text.includes("${{")) {
           if (!(text in known)) throw new Error(`Unsupported fast environment expression: ${key}`);

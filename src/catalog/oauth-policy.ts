@@ -88,16 +88,23 @@ export interface OAuthEvidence {
   sources: ReadonlyMap<string, string>;
   hostedClients: ReadonlySet<string>;
   metadata: ReadonlyMap<string, { sha256: string; document: unknown }>;
+  sourceFailures?: ReadonlyMap<string, string>;
   metadataFailures?: ReadonlyMap<string, string>;
 }
 
-/** Source content binds manual review to the declaration that a person will actually install. */
+/**
+ * Source content binds manual review to the declaration that a person will actually install.
+ * Evidence that could not be fetched is not drift: a caller that passes `unavailable` receives
+ * those findings there to apply its own rule, and without it they fail like every other problem.
+ */
 export function oauthFitness(
   feed: Feed,
   reviews: readonly OAuthReview[],
   evidence: OAuthEvidence,
+  unavailable?: string[],
 ): string[] {
   const problems: string[] = [];
+  const missing = unavailable ?? problems;
   const reviewed = new Map(reviews.map((review) => [review.entry, review]));
   const entries = new Map(feed.apps.map((entry) => [entry.id, entry]));
   for (const entry of feed.apps) {
@@ -109,11 +116,17 @@ export function oauthFitness(
       continue;
     }
     if (review.package !== entry.package) problems.push(`${entry.id}: reviewed package changed`);
-    if (
-      Object.values(review.methods).some((method) => method.kind !== "deferred") &&
-      evidence.sources.get(entry.id) !== review.sourceSha256
-    )
-      problems.push(`${entry.id}: published source changed or could not be verified`);
+    if (Object.values(review.methods).some((method) => method.kind !== "deferred")) {
+      const source = evidence.sources.get(entry.id);
+      if (source === undefined)
+        missing.push(
+          `${entry.id}: published source is unavailable (${evidence.sourceFailures?.get(entry.id) ?? "no document"})`,
+        );
+      else if (source !== review.sourceSha256)
+        problems.push(
+          `${entry.id}: published source changed (sourceSha256: ${review.sourceSha256} -> ${source})`,
+        );
+    }
     for (const method of methods) {
       const decision = review.methods[method];
       if (decision === undefined)
@@ -125,7 +138,7 @@ export function oauthFitness(
       else if (decision.kind === "automatic") {
         const proof = evidence.metadata.get(decision.metadata);
         if (proof === undefined) {
-          problems.push(
+          missing.push(
             `${entry.id}/${method}: automatic client metadata is unavailable (${decision.metadata}: ${evidence.metadataFailures?.get(decision.metadata) ?? "no document"})`,
           );
           continue;
