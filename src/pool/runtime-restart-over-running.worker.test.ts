@@ -55,10 +55,12 @@ async function assertStuck(f: Fixture, previous: { bootId: string }, epoch: numb
   const { selection } = (await f.send("inspect")) as Inspected;
   assert.equal(selection.epoch, epoch);
   assert.equal(selection.active.identity.bootId, previous.bootId);
+  // Production's code answered `pool_protection_unavailable` (`runtime_endpoint_route_slot_identity`);
+  // since #1407 the request ends in the native retry advice once its attempts are spent.
   const model = await f.model();
   assert.equal(model.status, 503);
-  // Production's steady refusal: recovery joins the admitted restart and its start refuses identity.
-  assert.match(await model.text(), /runtime_endpoint_route_slot_identity/u);
+  assert.equal(model.headers.get("Retry-After") !== null, true);
+  await model.body?.cancel();
 }
 
 async function assertHealed(f: Fixture, previous: { bootId: string }, epoch: number) {
