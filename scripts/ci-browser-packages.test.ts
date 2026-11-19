@@ -150,7 +150,10 @@ if (name === 'apt-get') {
   if (refresh === 'hang' || (refresh === 'hang-once' && tries === 1)) setInterval(() => {}, 1000);
   else if (refresh === 'fail') process.exit(100);
   else if (refresh === 'security-down' || refresh === 'archive-down') {
-    if (refresh === 'archive-down') failed('mirror+file:/etc/apt/apt-mirrors.txt/dists/resolute/InRelease');
+    if (refresh === 'archive-down') {
+      failed('mirror+file:/etc/apt/apt-mirrors.txt/dists/resolute/InRelease');
+      failed('http://archive.ubuntu.com/ubuntu/dists/resolute-updates/InRelease');
+    }
     else writeFileSync(join(root, 'indexes-ready'), 'yes');
     failed('http://security.ubuntu.com/ubuntu/dists/resolute-security/InRelease');
     console.error('E: Some index files failed to download. They have been ignored, or old ones used instead.');

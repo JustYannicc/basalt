@@ -7,11 +7,14 @@ shopt -s nullglob
 install_cached_deps() {
   debs=("$archives/"*.deb)
   if ((${#debs[@]})); then
-    # A cache restored from an older runner image may hold older debs; never downgrade the image.
-    sudo dpkg --refuse-downgrade --install "${debs[@]}"
+    # All or nothing, offline. With no sources apt sees only the installed packages and these debs,
+    # plans the whole set before dpkg runs, and stops if a dependency is missing or a package would
+    # be downgraded or removed. dpkg alone would leave a package unpacked but unconfigured, and every
+    # later apt call, and job, would fail on it. (--no-download refuses local debs outright.)
+    mkdir -p "$RUNNER_TEMP/apt-no-sources"
+    sudo apt-get install -y --no-install-recommends --no-remove -o Dir::Etc::SourceList=/dev/null \
+      -o Dir::Etc::SourceParts="$RUNNER_TEMP/apt-no-sources" "${debs[@]}"
   fi
-  # The dry-run counts only installs, so a package left unpacked but unconfigured would pass it.
-  sudo dpkg --configure --pending
   # A partial cache must fail offline rather than silently starting downloads.
   "$playwright" install-deps --dry-run chromium
 }
@@ -62,7 +65,8 @@ missing=()
 if ((${#restored[@]})); then
   for name in "${restored[@]}"; do
     fresh=("$archives/${name}_"*.deb)
-    if ((${#fresh[@]} == 0)) && apt-cache show --no-all-versions "$name" > /dev/null 2>&1; then
+    # madison lists only what the archive offers, so a package it no longer has is skipped.
+    if ((${#fresh[@]} == 0)) && [[ -n "$(apt-cache madison "$name")" ]]; then
       missing+=("$name")
     fi
   done

@@ -17,7 +17,7 @@ refresh() {
 only_security_failed() {
   local line failed=0
   while IFS= read -r line; do
-    if [[ "$line" =~ ^E:\ Failed\ to\ fetch\ [a-z+]+://[^[:space:]]+/dists/[^/[:space:]]+-security/ ]]; then
+    if [[ "$line" =~ ^E:\ Failed\ to\ fetch\ [a-z+]+:[^[:space:]]+/dists/[^/[:space:]]+-security/ ]]; then
       failed=1
     elif [[ "$line" != "E: Some index files failed to download. They have been ignored, or old ones used instead." ]]; then
       return 1
@@ -37,7 +37,7 @@ try() {
 status=0
 try || status=$?
 if ((status)); then
-  echo "::warning::The apt index refresh failed with status $status (124 is the ${bound}s bound); retrying once after ${pause}s."
+  echo "::warning::The apt index refresh failed with status $status (124 or 137 is the ${bound}s bound); retrying once after ${pause}s."
   sleep "$pause"
   try
 fi

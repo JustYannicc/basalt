@@ -61,14 +61,16 @@ if (name === 'sudo') {
   } else execute(args[0], args.slice(1));
 } else if (name === 'bunx') {
   execute(join(root, '.upstream/node_modules/.bin/playwright'), args.slice(1));
-} else if (name === 'dpkg' && args[0] === '--configure') {
-  record('configure', args);
-} else if (name === 'dpkg') {
-  record(name, args);
-  assert.ok(args.includes('--refuse-downgrade'), 'cached debs must never downgrade the image');
-  assert.ok(args.filter((arg) => !arg.startsWith('-')).every((path) => existsSync(path)), 'local install requires downloaded debs');
-  record('installed-debs', args.filter((arg) => !arg.startsWith('-')).map((path) => basename(path)));
-  if (mode === 'partial') process.exit(1);
+} else if (name === 'apt-get' && args[0] === 'install') {
+  record('install', args);
+  for (const flag of ['-y', '--no-remove', '--no-install-recommends', 'Dir::Etc::SourceList=/dev/null', 'Dir::Etc::SourceParts=' + join(root, 'tmp/apt-no-sources')])
+    assert.ok(args.includes(flag), 'the cached install must stay offline and all or nothing: ' + flag);
+  assert.ok(!args.includes('--no-download'), '--no-download refuses local debs');
+  const debs = args.filter((arg) => arg.endsWith('.deb'));
+  assert.ok(debs.length > 0 && debs.every((path) => existsSync(path)), 'local install requires downloaded debs');
+  // apt refuses the whole set before dpkg runs, so nothing is installed.
+  if (mode === 'partial') process.exit(100);
+  record('installed-debs', debs.map((path) => basename(path)));
   if (mode === 'slow') {
     const progress = setInterval(() => { record('unpack-progress', []); console.log('Unpacking fixture package...'); }, 5000);
     setTimeout(() => { clearInterval(progress); writeFileSync(join(root, 'installed'), 'yes'); }, 62000);
@@ -89,7 +91,9 @@ if (name === 'sudo') {
   else writeFileSync(join(root, 'installed'), 'yes');
 } else if (name === 'apt-cache') {
   record(name, args);
-  if (args.at(-1) === 'libgone') process.exit(100);
+  assert.equal(args[0], 'madison');
+  // The archive no longer offers libgone, though the offline install may have left it installed.
+  if (args.at(-1) !== 'libgone') console.log(' ' + args.at(-1) + ' | 2 | http://archive.ubuntu.com/ubuntu resolute/universe amd64 Packages');
 } else if (name === 'apt-get') {
   record(name, args);
   assert.equal(args[0], 'download');
@@ -97,7 +101,7 @@ if (name === 'sudo') {
   for (const name of args.slice(1)) writeFileSync(name + '_2_amd64.deb', 'current ' + name);
 } else throw new Error('Unexpected fixture command ' + name);
 `;
-  for (const name of ["sudo", "bunx", "dpkg", "apt-cache", "apt-get"])
+  for (const name of ["sudo", "bunx", "apt-cache", "apt-get"])
     writeFileSync(join(bin, name), mock, { mode: 0o755 });
   writeFileSync(join(root, ".upstream/node_modules/.bin/playwright"), mock, { mode: 0o755 });
   // macOS names GNU timeout gtimeout; the production runner names it timeout.
@@ -148,7 +152,7 @@ test("a restored package cache installs offline without an index refresh or mirr
       !result.calls.some((call) => call.name === "playwright" && !call.args.includes("--dry-run")),
       "a cache hit must not invoke the network installer",
     );
-    assert.ok(result.calls.some((call) => call.name === "dpkg"));
+    assert.ok(result.calls.some((call) => call.name === "install"));
     assert.deepEqual(
       result.calls
         .filter((call) => call.name === "playwright")
@@ -196,7 +200,7 @@ test("two failed mirrors exhaust the fixed attempt count", async () => {
     const attempts = result.calls.filter((call) => call.name === "playwright");
     assert.equal(attempts.length, 2);
     assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
-    assert.ok(!result.calls.some((call) => call.name === "dpkg"));
+    assert.ok(!result.calls.some((call) => call.name === "install"));
     assert.ok(attempts[0]!.args.at(-1)!.includes("http://archive.ubuntu.com/"));
     assert.ok(attempts[1]!.args.at(-1)!.includes("http://azure.archive.ubuntu.com/"));
     assert.equal(
@@ -221,7 +225,7 @@ for (const hit of [true, false]) {
         assert.equal(result.code, 0, result.output);
         assert.ok(seconds >= 62, `local installation ended after ${seconds}s`);
         assert.ok(result.calls.filter((call) => call.name === "unpack-progress").length >= 12);
-        assert.ok(result.calls.some((call) => call.name === "dpkg"));
+        assert.ok(result.calls.some((call) => call.name === "install"));
         assert.equal(
           result.calls.filter((call) => call.name === "download-only").length,
           hit ? 0 : 1,
@@ -259,8 +263,7 @@ test(
       );
       assert.equal(attempts.length, 2);
       assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
-      assert.equal(result.calls.filter((call) => call.name === "dpkg").length, 1);
-      assert.equal(result.calls.filter((call) => call.name === "configure").length, 1);
+      assert.equal(result.calls.filter((call) => call.name === "install").length, 1);
       assert.equal(
         result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
           .length,
@@ -303,7 +306,9 @@ test("a download after a partial offline install still caches every restored pac
       const installed = result.calls.filter((call) => call.name === "installed-debs");
       assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
       // A package the archive no longer has isn't needed, so it's skipped, not fetched.
-      const downloads = result.calls.filter((call) => call.name === "apt-get");
+      const downloads = result.calls.filter(
+        (call) => call.name === "apt-get" && call.args[0] === "download",
+      );
       assert.deepEqual(
         downloads.map((call) => call.args),
         [["download", "libkept"]],
