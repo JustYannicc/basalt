@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Catalog instance proofs run as one case per service family: tracker, pool and mail. Each case acquires only the fixtures its family uses. Only the pool case declares legacy storage and runs the pool product, and its verified-owner write shares the pool product's restart. The pool case installs another service by default beside the retained legacy pool and requires a different instance, so a default install that resolves to the pool fails. The mail case renames another service's app for the committed revision its stale-inventory read needs. Test-body, hook and job deadlines are unchanged."
+      constraint "Catalog instance proofs run as one case per service family: tracker, pool and mail. Each case acquires only the fixtures its family uses. Only the pool case declares legacy storage and runs the pool product, and its verified-owner write shares the pool product's restart. The pool case installs another service by default beside the retained legacy pool and requires a different instance, so the case fails if a default install of another service resolves to the pool. The mail case renames another service's app for the committed revision its stale-inventory read needs. No case sets its own test-body or hook deadline."
     }
   }
 }
