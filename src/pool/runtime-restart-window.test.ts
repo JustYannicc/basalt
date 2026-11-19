@@ -69,8 +69,8 @@ test("admission refuses a pool whose policy is dirty and serves one whose policy
   // Part of what makes the restart window safe: recovery commits a restarted boot after installing
   // every current policy on it, and a dirty policy refuses admission. A newer clean revision is
   // saved before it is installed; until then the boot's plugin refuses its revision assertion.
-  const installed = await routerWith(false, 7);
-  const response = await installed.router.forward(
+  const clean = await routerWith(false, 7);
+  const response = await clean.router.forward(
     "pool",
     new Request("http://pool/v1/responses", { method: "POST", body: "{}" }),
     8327,
@@ -78,11 +78,11 @@ test("admission refuses a pool whose policy is dirty and serves one whose policy
       new Request("http://pool/v1/responses", { method: "POST", body: "{}", signal }),
   );
   assert.equal(await response.text(), "served");
-  assert.equal(installed.sent.length, 1);
+  assert.equal(clean.sent.length, 1);
 
-  const pending = await routerWith(true, 8);
+  const dirty = await routerWith(true, 8);
   await assert.rejects(
-    pending.router.forward(
+    dirty.router.forward(
       "pool",
       new Request("http://pool/v1/responses", { method: "POST", body: "{}" }),
       8327,
@@ -91,5 +91,5 @@ test("admission refuses a pool whose policy is dirty and serves one whose policy
     ),
     (error) => runtimeRouteDiagnostic(error)?.runtimeReason === "slot_policy",
   );
-  assert.equal(pending.sent.length, 0, "never sent to a boot without the current revision");
+  assert.equal(dirty.sent.length, 0, "a dirty policy is never sent");
 });

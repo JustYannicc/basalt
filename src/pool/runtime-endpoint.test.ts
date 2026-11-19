@@ -410,3 +410,19 @@ test("every model send reads readiness again, so a readiness refusal right after
   assert.equal(f.calls.health, reads + 2, "the send read readiness again");
   assert.equal(f.calls.model, 0);
 });
+
+test("readiness is read after the keep-alive, so a lease spent during it never admits the send", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await f.endpoint.health(identity, AbortSignal.timeout(2_000));
+  // Readiness turns to 503 while the keep-alive call is in progress, as when the plugin fuses then.
+  f.hooks.keepAlive = async () => {
+    f.hooks.health = async () => new Response("policy unavailable", { status: 503 });
+  };
+  await assert.rejects(
+    f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
+    PoolRuntimeUnhealthy,
+  );
+  assert.equal(f.calls.model, 0, "nothing reached the model port");
+});
