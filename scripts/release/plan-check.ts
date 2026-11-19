@@ -171,6 +171,17 @@ const wire = (data: unknown): WireBinding[] =>
   record(data) && Array.isArray(data.bindings) ? data.bindings.filter(record) : [];
 const durable = (binding: WireBinding) => binding.type === "durable_object_namespace";
 const local = (binding: WireBinding) => durable(binding) && binding.scriptName === undefined;
+/**
+ * Whether the Worker's last apply recorded a namespace of this class on it: Alchemy writes
+ * `durableObjectNamespaces` from Cloudflare's own read-back of the script after each upload.
+ */
+const hosted = (node: Node, className: unknown) => {
+  const attr = (recorded(node) as { attr?: unknown } | undefined)?.attr;
+  const namespaces =
+    record(attr) && record(attr.durableObjectNamespaces) ? attr.durableObjectNamespaces : {};
+  const id = typeof className === "string" ? namespaces[className] : undefined;
+  return typeof id === "string" && id.length > 0;
+};
 
 function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
   const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
@@ -219,16 +230,19 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
       if (
         durable(entry) &&
         entry.transferredFrom !== undefined &&
-        !(Array.isArray(entry.transferredFrom) && entry.transferredFrom.length === 0)
+        !(Array.isArray(entry.transferredFrom) && entry.transferredFrom.length === 0) &&
+        // Alchemy ships a transfer only for a class new to this Worker. Once State records the
+        // class's namespace here, the move is done and the declaration is inert history.
+        !hosted(node, entry.className)
       )
         violations.push({
           ...at,
           rule: "durable-object-class-transferred",
           change: [
-            `bindings.${binding.sid}.transferredFrom: absent -> declared for class ${structural(entry.className)}`,
+            `bindings.${binding.sid}.transferredFrom: declared for class ${structural(entry.className)}, and State records no namespace of it on this Worker`,
           ],
-          why: "transferredFrom makes Alchemy upload transferred_classes, which moves every object of the class to another Worker.",
-          fix: "Remove transferredFrom. Moving a class between Workers is its own reviewed change.",
+          why: "For a class new to this Worker, transferredFrom makes Alchemy upload transferred_classes when a listed former host still holds it, which moves every object of the class here.",
+          fix: "Moving a class between Workers is its own reviewed change. If the class already lives on this Worker, its State row is missing the namespace: settle that first.",
         });
     if (binding.action !== "update") continue;
     const before = wire(old.get(binding.sid));
