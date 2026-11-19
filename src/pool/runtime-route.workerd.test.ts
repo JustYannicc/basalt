@@ -202,15 +202,15 @@ test(
             body: "{}",
           });
           assert.equal(response.status, 502);
-          assert.equal(response.headers.get("Retry-After"), null);
+          assert.equal(response.headers.get("Retry-After"), "1");
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), null);
           const text = await response.text();
           assert.equal(text.includes("synthetic-private-exception-body"), false);
           const value = JSON.parse(text);
           assert.equal(value.error.code, "upstream_outcome_unknown");
-          assert.equal(value.error.retryable, false);
-          assert.equal(response.headers.get("x-should-retry"), "false");
+          assert.equal(value.error.retryable, true);
+          assert.equal(response.headers.get("x-should-retry"), null);
           assert.ok(response.headers.get("X-Request-Id"));
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, count);
