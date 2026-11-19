@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -61,6 +61,8 @@ if (name === 'sudo') {
   } else execute(args[0], args.slice(1));
 } else if (name === 'bunx') {
   execute(join(root, '.upstream/node_modules/.bin/playwright'), args.slice(1));
+} else if (name === 'dpkg' && args[0] === '--configure') {
+  record('configure', args);
 } else if (name === 'dpkg') {
   record(name, args);
   assert.ok(args.includes('--refuse-downgrade'), 'cached debs must never downgrade the image');
@@ -85,9 +87,17 @@ if (name === 'sudo') {
     execute('curl', ['--silent', '--show-error', '--max-time', '75', ${JSON.stringify(url)}]);
   if (config) writeFileSync(join(root, 'tmp/playwright-apt/libfixture_1_amd64.deb'), 'downloaded fixture');
   else writeFileSync(join(root, 'installed'), 'yes');
+} else if (name === 'apt-cache') {
+  record(name, args);
+  if (args.at(-1) === 'libgone') process.exit(100);
+} else if (name === 'apt-get') {
+  record(name, args);
+  assert.equal(args[0], 'download');
+  if (mode === 'top-up-fail') process.exit(100);
+  for (const name of args.slice(1)) writeFileSync(name + '_2_amd64.deb', 'current ' + name);
 } else throw new Error('Unexpected fixture command ' + name);
 `;
-  for (const name of ["sudo", "bunx", "dpkg"])
+  for (const name of ["sudo", "bunx", "dpkg", "apt-cache", "apt-get"])
     writeFileSync(join(bin, name), mock, { mode: 0o755 });
   writeFileSync(join(root, ".upstream/node_modules/.bin/playwright"), mock, { mode: 0o755 });
   // macOS names GNU timeout gtimeout; the production runner names it timeout.
@@ -250,6 +260,7 @@ test(
       assert.equal(attempts.length, 2);
       assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
       assert.equal(result.calls.filter((call) => call.name === "dpkg").length, 1);
+      assert.equal(result.calls.filter((call) => call.name === "configure").length, 1);
       assert.equal(
         result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
           .length,
@@ -277,5 +288,32 @@ test("a download never installs debs left from an older image's cache", async ()
     assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
   } finally {
     fixture_.dispose();
+  }
+});
+
+test("a download after a partial offline install still caches every restored package", async () => {
+  for (const mode of ["success", "top-up-fail"]) {
+    const fixture_ = fixture(mode);
+    try {
+      // The offline step already applied libkept, so the download fetches only libfixture.
+      for (const name of ["libkept", "libgone"])
+        writeFileSync(join(fixture_.root, `tmp/playwright-apt/${name}_1_amd64.deb`), "older image");
+      const result = await fixture_.run(false);
+      assert.equal(result.code, 0, result.output);
+      const installed = result.calls.filter((call) => call.name === "installed-debs");
+      assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
+      // A package the archive no longer has isn't needed, so it's skipped, not fetched.
+      const downloads = result.calls.filter((call) => call.name === "apt-get");
+      assert.deepEqual(downloads.map((call) => call.args), [["download", "libkept"]]);
+      // A failed top-up saves nothing rather than a partial set.
+      assert.deepEqual(
+        readdirSync(join(fixture_.root, "tmp/playwright-apt"))
+          .filter((file) => file.endsWith(".deb"))
+          .sort(),
+        mode === "success" ? ["libfixture_1_amd64.deb", "libkept_2_amd64.deb"] : [],
+      );
+    } finally {
+      fixture_.dispose();
+    }
   }
 });

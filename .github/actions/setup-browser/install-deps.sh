@@ -2,13 +2,16 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../../.upstream"
 playwright=./node_modules/.bin/playwright
+archives="$RUNNER_TEMP/playwright-apt"
+shopt -s nullglob
 install_cached_deps() {
-  shopt -s nullglob
-  debs=("$RUNNER_TEMP/playwright-apt/"*.deb)
+  debs=("$archives/"*.deb)
   if ((${#debs[@]})); then
     # A cache restored from an older runner image may hold older debs; never downgrade the image.
     sudo dpkg --refuse-downgrade --install "${debs[@]}"
   fi
+  # The dry-run counts only installs, so a package left unpacked but unconfigured would pass it.
+  sudo dpkg --configure --pending
   # A partial cache must fail offline rather than silently starting downloads.
   "$playwright" install-deps --dry-run chromium
 }
@@ -16,9 +19,17 @@ if [[ "${1:-false}" == true ]]; then
   install_cached_deps
   exit
 fi
-mkdir -p "$RUNNER_TEMP/playwright-apt"
+mkdir -p "$archives"
 # Debs restored from an older image's cache failed the offline install; download a fresh set.
-rm -f "$RUNNER_TEMP/playwright-apt/"*.deb
+stale=("$archives/"*.deb)
+restored=()
+if ((${#stale[@]})); then
+  for deb in "${stale[@]}"; do
+    base="${deb##*/}"
+    restored+=("${base%%_*}")
+  done
+  rm -f "${stale[@]}"
+fi
 sudo tee /etc/apt/apt.conf.d/99-playwright-ci > /dev/null <<EOF_APT
 Dir::Cache::archives "$RUNNER_TEMP/playwright-apt";
 APT::Keep-Downloaded-Packages "true";
@@ -44,3 +55,21 @@ if ! download_deps; then
   download_deps
 fi
 install_cached_deps
+# The download skips packages the failed offline install already applied. Fetch their current debs
+# too, or the saved cache lacks them and every later job, on this image and the next, goes back to
+# the archive.
+missing=()
+if ((${#restored[@]})); then
+  for name in "${restored[@]}"; do
+    fresh=("$archives/${name}_"*.deb)
+    if ((${#fresh[@]} == 0)) && apt-cache show --no-all-versions "$name" > /dev/null 2>&1; then
+      missing+=("$name")
+    fi
+  done
+fi
+if ((${#missing[@]})); then
+  if ! (cd "$archives" && timeout --kill-after=5s 30s apt-get download "${missing[@]}"); then
+    echo "::warning::Couldn't fetch ${missing[*]} for the deb cache, so this job saves none."
+    rm -f "$archives/"*.deb
+  fi
+fi
