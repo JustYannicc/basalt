@@ -79,7 +79,11 @@ async function routerWith(dirty: boolean, revision: number) {
     streams: new SlotStreams(),
     clock: { now: Date.now, monotonic: () => performance.now() },
     defer: () => {},
-    wrap: (response) => response,
+    // The body is read in the test; releasing here ends the protection watcher with the stream.
+    wrap: (response, lease) => {
+      lease.release();
+      return response;
+    },
   });
   return { router, sent };
 }
