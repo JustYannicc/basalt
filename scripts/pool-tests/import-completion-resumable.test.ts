@@ -7,7 +7,17 @@ import {
   completionRefusal,
   importCompletionScope,
 } from "../../src/pool/model-history/import-completion-contract.ts";
+import {
+  historySchemaMigrations,
+  historySchemaVersion,
+} from "../../src/pool/model-history/schema.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
+
+// The schema operator applies the registry up to the reported version, so a version that is not the
+// last registered migration would silently drop every migration after it.
+test("the reported history version is the last registered migration", () => {
+  assert.equal(historySchemaMigrations.at(-1)!.name, historySchemaVersion);
+});
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const source = "11111111-2222-4333-8444-555555555555";
