@@ -44,6 +44,7 @@ export const restoreRefusals = [
   "arm-expired",
   "not-before-current",
   "expected-current-mismatch",
+  "restore-pending",
 ] as const;
 export type RestoreRefusal = (typeof restoreRefusals)[number];
 /** Keeps the wire reason every handoff refusal has, and names the restore rule that refused. */
@@ -97,6 +98,11 @@ export class StorageBookmarks {
   /** Current bookmarks this session handed out, with when. */
   private issued = new Map<string, number>();
   private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * Set once a restore is handed to the platform. Until the session ends, a second restore would
+   * replace the first while the first caller's reply and audit line still name its target.
+   */
+  private scheduled = false;
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
@@ -105,6 +111,7 @@ export class StorageBookmarks {
   }
   async read(time?: string) {
     const now = this.now();
+    if (this.scheduled) throw new StorageRestoreRefused("restore-pending");
     if (time === undefined) {
       const bookmark = await this.deps.port.current();
       this.issued.delete(bookmark);
@@ -137,6 +144,7 @@ export class StorageBookmarks {
   }
   private async apply(value: StorageRestoreCommand) {
     const { storage, port } = this.deps;
+    if (this.scheduled) throw new StorageRestoreRefused("restore-pending");
     const command = currentRestoreCommand(value, this.now());
     const key = storageRestoreNonceKey(command.nonce);
     if (await storage.get(key)) throw new StorageRestoreRefused("replayed");
@@ -155,6 +163,7 @@ export class StorageBookmarks {
       await transaction.put(key, { command, live, at: this.now(), status: "submitted" });
     });
     const undo = await port.restoreOnNextSession(command.target);
+    this.scheduled = true;
     this.issued.clear();
     // The restore discards the stored record, so this line is the audit that survives it.
     console.info(
