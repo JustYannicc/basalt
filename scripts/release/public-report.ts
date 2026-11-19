@@ -10,7 +10,7 @@ export interface FailureReport {
   readonly detail: string;
 }
 
-const PUBLIC_FIELDS = ["check", "rule", "field", "why", "fix"] as const;
+const PUBLIC_FIELDS = ["check", "rule", "field", "exit", "why", "fix"] as const;
 const PRIVATE_FIELDS = ["resource", "script", "method", "path", "value"] as const;
 const CHAIN = ["cause", "reason", "error", "defect", "failures", "reasons", "issue"] as const;
 
