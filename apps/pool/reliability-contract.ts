@@ -23,7 +23,7 @@ export interface UnknownOutcomes {
   readonly unavailable: number;
   /** A Home row with no finished start. */
   readonly unmatched: number;
-  /** Not among the window's counted requests: no Home attempt of theirs is in the window. */
+  /** Not among the window's counted requests: no Home attempt of theirs is recorded. */
   readonly uncounted: number;
   /** Not already counted as failed, so their unknown outcome could still be a failure. */
   readonly couldFail: number;

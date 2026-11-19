@@ -19,8 +19,8 @@ const latestHome = (id: string) => `SELECT attempt.timestamp,attempt.failed
  * - pending: a start older than ten minutes with no finish,
  * - unavailable: a finish recorded with an unavailable outcome,
  * - unmatched: a Home row since the terminal cutover with no finished start.
- * Each also says whether its latest Home attempt is among the window's counted requests, and whether
- * that attempt already failed. Every read goes through a time index or a key.
+ * A request with a Home attempt is weighed where the window read counts its latest one, already counted
+ * there, failed if that attempt failed. Every read goes through a time index or a key.
  */
 export async function readUnknownOutcomes(
   db: HistoryDatabase,
@@ -60,11 +60,13 @@ export async function readUnknownOutcomes(
       WHERE f.outcome='unavailable' AND f.finished_at >= $4::timestamptz
         AND f.finished_at < $5::timestamptz ${real("s.client_key")}
       UNION ALL
-      SELECT 'unmatched',COALESCE(h.request_id,'row:'||h.id),h.timestamp,
+      -- A Home row in the windows also finds a request that finished unavailable outside them.
+      SELECT CASE WHEN evidence.outcome='unavailable' THEN 'unavailable' ELSE 'unmatched' END,
+        COALESCE(h.request_id,'row:'||h.id),h.timestamp,
         COALESCE(latest.timestamp,h.timestamp),COALESCE(latest.failed,h.failed)
       FROM basalt_model_requests h
       -- Only a canonical lowercase UUID names a start; any other id stays unmatched.
-      LEFT JOIN LATERAL (SELECT true AS found FROM basalt_model_terminal_starts s
+      LEFT JOIN LATERAL (SELECT f.outcome FROM basalt_model_terminal_starts s
         JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
         WHERE s.pool=h.pool AND s.request_id=CASE WHEN h.request_id ~ ${canonicalUuid}
           THEN h.request_id::uuid END LIMIT 1) evidence ON true
@@ -72,15 +74,18 @@ export async function readUnknownOutcomes(
       WHERE h.pool=$1 AND h.source=$2 AND h.timestamp >= $4::timestamptz
         AND h.timestamp < $5::timestamptz
         AND h.timestamp >= (SELECT completed_at FROM basalt_model_history_migrations WHERE name=$3)
-        AND evidence.found IS NULL ${real("h.client_key")}
+        AND (evidence.outcome IS NULL OR evidence.outcome='unavailable') ${real("h.client_key")}
     ), per_request AS (
       SELECT ranges.ordinal,u.id,
         bool_or(u.class='pending') AS pending,
         bool_or(u.class='unavailable') AS unavailable,
         bool_or(u.class='unmatched') AS unmatched,
-        COALESCE(bool_or(u.home_at >= ranges.from_at AND u.home_at < ranges.to_at),false) AS counted,
+        bool_or(u.home_at IS NOT NULL) AS counted,
         COALESCE(bool_or(u.home_failed),false) AS failed
-      FROM ranges JOIN unknown u ON u.at >= ranges.from_at AND u.at < ranges.to_at
+      -- The window that counts the request's latest Home attempt weighs it; one with no Home row sits
+      -- at its start or finish.
+      FROM ranges JOIN unknown u
+        ON COALESCE(u.home_at,u.at) >= ranges.from_at AND COALESCE(u.home_at,u.at) < ranges.to_at
       GROUP BY ranges.ordinal,u.id
     )
     SELECT ranges.ordinal,
