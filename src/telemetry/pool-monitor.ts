@@ -1,6 +1,6 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
-import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import type { PoolReliabilitySlo, UnknownOutcomes } from "../../apps/pool/reliability-contract.ts";
 import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
 const guards = new Set([
@@ -93,6 +93,9 @@ export async function capturePoolMonitor(
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
+  // Unknown outcomes are a recording defect even when the objective is decided without them.
+  const unknown = input.reliability && unknownWindows(input.reliability);
+  if (unknown) console.warn("POOL_REQUEST_OUTCOMES_UNKNOWN", unknown);
   // Missing evidence is a reliability incident, independently of synthetic availability.
   if (reliability.some((failure) => failure.reason === "collection_unavailable")) {
     const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
@@ -150,6 +153,7 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
     failed: count(value.real.failed),
     proof_requests: count(value.proof.requests),
     proof_failed: count(value.proof.failed),
+    ...(value.unknown ? { unknown: unknownOutcomes(value.unknown) } : {}),
   });
   return {
     target: 99,
@@ -167,5 +171,25 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
     ].includes(slo.reason ?? "")
       ? slo.reason
       : null,
+  };
+}
+
+function unknownOutcomes(value: UnknownOutcomes) {
+  const count = (item: number) => (Number.isSafeInteger(item) && item >= 0 ? item : null);
+  return {
+    requests: count(value.requests),
+    pending: count(value.pending),
+    unavailable: count(value.unavailable),
+    unmatched: count(value.unmatched),
+  };
+}
+
+/** Counts per window and class, only when some outcome in the hour or day is unknown. */
+function unknownWindows(slo: PoolReliabilitySlo) {
+  if (!slo.hour.unknown?.requests && !slo.day.unknown?.requests) return undefined;
+  return {
+    state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
+    ...(slo.hour.unknown ? { hour: unknownOutcomes(slo.hour.unknown) } : {}),
+    ...(slo.day.unknown ? { day: unknownOutcomes(slo.day.unknown) } : {}),
   };
 }

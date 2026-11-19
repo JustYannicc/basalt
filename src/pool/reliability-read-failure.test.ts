@@ -57,15 +57,14 @@ test("every statement of the reliability read has its own step name", async () =
     "cursor",
     "usage_table",
     "lagging",
-    "terminal_pending",
-    "terminal_evidence",
+    "unknown_outcomes",
     "commit",
   ]);
 });
 
 test("a statement that times out is reported with its step, and the read still fails", async (t) => {
   const { read, statements } = idlePool((text) =>
-    text.includes("AS unmatched_home")
+    text.includes("unknown(class,id,at)")
       ? Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" })
       : undefined,
   );
@@ -76,13 +75,13 @@ test("a statement that times out is reported with its step, and the read still f
     [
       [
         "POOL_REQUEST_RELIABILITY_READ_FAILED",
-        { read: "standalone", step: "terminal_evidence", failure: "statement_timeout" },
+        { read: "standalone", step: "unknown_outcomes", failure: "statement_timeout" },
       ],
     ],
     "one line for the failing statement",
   );
   // The session stops at its first timeout; closing the connection rolls the transaction back.
-  assert.equal(reliabilityStep(statements.at(-1) ?? ""), "terminal_evidence");
+  assert.equal(reliabilityStep(statements.at(-1) ?? ""), "unknown_outcomes");
   assert.doesNotMatch(JSON.stringify(errors.mock.calls), /canceling statement|fixture/);
 });
 

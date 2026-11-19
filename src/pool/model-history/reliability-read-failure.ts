@@ -13,8 +13,7 @@ const statements = [
   ["FROM basalt_model_history_cursor", "cursor"],
   ["to_regclass('usage')", "usage_table"],
   ["FROM usage WHERE", "lagging"],
-  ["AS pending", "terminal_pending"],
-  ["AS unmatched_home", "terminal_evidence"],
+  ["unknown(class,id,at)", "unknown_outcomes"],
   ["COMMIT", "commit"],
   ["ROLLBACK", "rollback"],
 ] as const;

@@ -1,19 +1,23 @@
-import type { PoolReliabilitySlo } from "../../../apps/pool/reliability-contract.ts";
+import type {
+  PoolReliability,
+  PoolReliabilitySlo,
+} from "../../../apps/pool/reliability-contract.ts";
 import { digest } from "../backend-users.ts";
 import { reportingReliabilityStatements } from "./reliability-read-failure.ts";
-import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
+import type { HistoryDatabase } from "./schema.ts";
 import { readPoolReliabilityWindows, terminalCollectionReady } from "./reliability.ts";
 import { HistoryInputError } from "./record.ts";
+import { readUnknownOutcomes, windowVerdict } from "./reliability-unknown.ts";
 
+/** A breach in either window wins; otherwise a window the unknown outcomes decide leaves it open. */
 export function reliabilityState(
   hour: PoolReliabilitySlo["hour"],
   day: PoolReliabilitySlo["day"],
-): "ok" | "breached" | "no_traffic" {
-  const windows = [hour, day];
-  // Compare integer counts: rounding 98.999... to 99 must never suppress an alarm.
-  if (windows.some(({ real }) => BigInt(real.failed) * 100n > BigInt(real.requests)))
-    return "breached";
-  return windows.every(({ real }) => real.requests === 0) ? "no_traffic" : "ok";
+): PoolReliabilitySlo["state"] {
+  const verdicts = [hour, day].map(windowVerdict);
+  if (verdicts.includes("breached")) return "breached";
+  if (verdicts.includes("undecided")) return "unavailable";
+  return verdicts.every((verdict) => verdict === "empty") ? "no_traffic" : "ok";
 }
 
 /** Capture runs every five minutes. An old or unfinished capture cannot prove an SLO. */
@@ -65,79 +69,46 @@ export async function readPoolReliabilitySlo(
           row.forward_id,
         ])
       ).rows[0]?.lagging === true;
-    const terminalPending = terminalReady
-      ? (
-          await db.query(
-            `SELECT EXISTS (
-            SELECT 1 FROM basalt_model_terminal_starts s
-            LEFT JOIN basalt_model_terminal_finishes f USING (request_id)
-            WHERE s.pool=$1 AND f.request_id IS NULL
-              AND s.started_at >= $2::timestamptz - interval '24 hours'
-              AND s.started_at <= $2::timestamptz - interval '10 minutes'
-          ) AS pending`,
-            [(await digest(pool)).slice(0, 16), to],
-          )
-        ).rows[0]?.pending === true
-      : false;
-    const homeSource = await digest("home-local-v1");
-    const terminalUnavailable = terminalReady
-      ? (
-          await db.query(
-            `SELECT
-            EXISTS (
-              SELECT 1 FROM basalt_model_terminal_starts s
-              JOIN basalt_model_terminal_finishes f USING (request_id)
-              WHERE s.pool=$1 AND f.outcome='unavailable'
-                AND f.finished_at >= $2::timestamptz - interval '24 hours'
-                AND f.finished_at < $2::timestamptz
-            ) AS unavailable_finish,
-            -- v7 is the correlation cutover; each newer Home row must have one finished receipt.
-            EXISTS (
-              SELECT 1 FROM basalt_model_requests h
-              WHERE h.pool=$1 AND h.source=$3
-                AND h.timestamp >= GREATEST($2::timestamptz - interval '24 hours', m.completed_at)
-                AND h.timestamp < $2::timestamptz
-                -- Probe the start by its key, so the cost follows the window's Home rows, not all
-                -- retained evidence. Only a canonical lowercase UUID names a start; any other id
-                -- stays unmatched and never reaches the cast.
-                AND NOT EXISTS (
-                  SELECT 1 FROM basalt_model_terminal_starts s
-                  JOIN basalt_model_terminal_finishes f USING (request_id)
-                  WHERE s.pool=h.pool AND s.request_id=CASE
-                    WHEN h.request_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-                    THEN h.request_id::uuid END
-                )
-            ) AS unmatched_home
-          FROM basalt_model_history_migrations m WHERE m.name=$4`,
-            [(await digest(pool)).slice(0, 16), to, homeSource, historyTerminalIntegrityVersion],
-          )
-        ).rows[0]
-      : undefined;
-    const terminalHasGap =
-      terminalUnavailable?.unavailable_finish === true ||
-      terminalUnavailable?.unmatched_home === true;
-    const reason = terminalPending
-      ? "terminal_collection_pending"
-      : !terminalReady || terminalHasGap
-        ? "terminal_collection_unavailable"
-        : !row || !sourceExists || row.backfill_complete !== true
-          ? "history_inactive"
-          : !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 10 * 60_000
-            ? "capture_stale"
-            : lagging
-              ? "capture_lagging"
-              : hour.classification !== "ready" || day.classification !== "ready"
-                ? "classification_pending"
-                : undefined;
+    const unknown = terminalReady
+      ? await readUnknownOutcomes(db, pool, [hour, day, current], to)
+      : [];
+    const withUnknown = (window: PoolReliability, index: number): PoolReliability => {
+      const outcomes = unknown[index];
+      return outcomes ? { ...window, unknown: outcomes } : window;
+    };
+    const hourOutcomes = withUnknown(hour, 0),
+      dayOutcomes = withUnknown(day, 1),
+      currentOutcomes = withUnknown(current, 2);
+    const reason = !terminalReady
+      ? "terminal_collection_unavailable"
+      : !row || !sourceExists || row.backfill_complete !== true
+        ? "history_inactive"
+        : !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 10 * 60_000
+          ? "capture_stale"
+          : lagging
+            ? "capture_lagging"
+            : hour.classification !== "ready" || day.classification !== "ready"
+              ? "classification_pending"
+              : undefined;
+    const state = reason ? "unavailable" : reliabilityState(hourOutcomes, dayOutcomes);
+    // Unknown outcomes leave the objective undecided only while they could tip it either way.
+    const undecided = !reason && state === "unavailable";
+    const pending = [hourOutcomes, dayOutcomes].some(
+      (window) => windowVerdict(window) === "undecided" && (window.unknown?.pending ?? 0) > 0,
+    );
     if (transaction === "owned") await db.query("COMMIT");
     return {
       target: 99,
-      state: reason ? "unavailable" : reliabilityState(hour, day),
+      state,
       captureAt,
-      ...(reason ? { reason } : {}),
-      current,
-      hour,
-      day,
+      ...(reason
+        ? { reason }
+        : undecided
+          ? { reason: pending ? "terminal_collection_pending" : "terminal_collection_unavailable" }
+          : {}),
+      current: currentOutcomes,
+      hour: hourOutcomes,
+      day: dayOutcomes,
     };
   } catch (error) {
     if (transaction === "owned") await db.query("ROLLBACK").catch(() => {});

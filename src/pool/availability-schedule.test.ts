@@ -250,3 +250,50 @@ test("a failed reliability read logs its closed cause and still reports collecti
     /request_reliability:collection_unavailable/,
   );
 });
+
+test("unknown outcomes are logged every check-in, even when the objective is decided without them", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const warnings = t.mock.method(console, "warn", () => {});
+  const counts = {
+    requests: 200,
+    failed: 0,
+    unassignedFailures: 0,
+    successRate: 100,
+    failures: [],
+  };
+  const window = (unknown: number) => ({
+    from: "2026-11-18T11:00:00Z",
+    to: "2026-11-18T12:00:00Z",
+    classification: "ready" as const,
+    real: counts,
+    proof: { ...counts, requests: 0, successRate: null },
+    unknown: { requests: unknown, pending: 0, unavailable: unknown, unmatched: 0 },
+  });
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => ({
+      target: 99,
+      state: "ok",
+      captureAt: null,
+      current: window(0),
+      hour: window(1),
+      day: window(1),
+    }),
+  );
+  const unknown = { requests: 1, pending: 0, unavailable: 1, unmatched: 0 };
+  assert.deepEqual(
+    warnings.mock.calls.map((call) => call.arguments),
+    [["POOL_REQUEST_OUTCOMES_UNKNOWN", { state: "ok", hour: unknown, day: unknown }]],
+  );
+  assert.equal(
+    messages.filter((item) => item.type === "event").length,
+    0,
+    "no page for a decided objective",
+  );
+  assertNoPrivateDiagnostics(messages);
+});

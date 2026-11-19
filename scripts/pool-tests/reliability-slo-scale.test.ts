@@ -111,7 +111,7 @@ test(
       let statement: { text: string; values?: unknown[] } | undefined;
       const recorded: HistoryDatabase = {
         query: (text, values) => {
-          if (text.includes("AS unmatched_home")) statement = { text, values };
+          if (text.includes("unknown(class,id,at)")) statement = { text, values };
           return db.query(text, values);
         },
       };
@@ -132,7 +132,7 @@ test(
       // Comparing each Home row's id as text against every start read about 6.4 million rows here.
       assert.ok(read < 5 * requests, `terminal evidence rows read: ${read}`);
 
-      // One Home row in the window without evidence still makes the figure unavailable.
+      // One Home row in the window without evidence is shown, and cannot tip 3,200 clean requests.
       await insertHome(
         1,
         "missing",
@@ -140,8 +140,8 @@ test(
         "md5('missing')::uuid::text",
       );
       const gap = await readPoolReliabilitySlo(db, "fixture", now);
-      assert.equal(gap.state, "unavailable");
-      assert.equal(gap.reason, "terminal_collection_unavailable");
+      assert.equal(gap.state, "ok");
+      assert.equal(gap.day.unknown?.unmatched, 1);
     } finally {
       await database.close();
     }
