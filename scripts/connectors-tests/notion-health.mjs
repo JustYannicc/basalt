@@ -23,12 +23,13 @@ const peer = Bun.serve({
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
-    calls.push({
+    const call = {
       path,
       method: request.method,
       authorization: request.headers.get("authorization"),
       version: request.headers.get("mcp-protocol-version"),
-    });
+    };
+    calls.push(call);
     if (request.headers.get("authorization") !== "Bearer synthetic-good")
       return new Response("Unauthorized", { status: 401 });
     if (path === "/v1/users/me") return Response.json(rest);
@@ -45,6 +46,7 @@ const peer = Bun.serve({
     }
     if (request.method === "GET") return new Response(null, { status: 405 });
     const body = await request.json();
+    call.rpc = body.method;
     if (body.id === undefined)
       return new Response(null, { status: mode === "notify-rejected" ? 400 : 202 });
     const session =
@@ -298,16 +300,24 @@ try {
     mode = "structured";
     serverVersion = "2025-03-26";
     setup();
-    strictness[name] = await lookup();
+    calls = [];
+    const info = await lookup();
+    // The requests show where the lookup ended and which version closed its session.
+    strictness[name] = [info, calls.map((call) => call.rpc ?? `${call.method} ${call.version}`)];
   }
   mode = "structured";
   const workspace = { externalId: person.id, displayName: "Design workspace" };
+  const answered = ["initialize", "notifications/initialized", "tools/call", "DELETE 2025-03-26"];
   assert.deepEqual(strictness, {
-    "server request reusing the lookup id": workspace,
-    "batched JSON answer": workspace,
-    "rejected initialized notification": undefined,
-    "unsupported protocol version": undefined,
-    "no protocol version": undefined,
+    "server request reusing the lookup id": [workspace, answered],
+    "batched JSON answer": [workspace, answered],
+    "rejected initialized notification": [
+      undefined,
+      ["initialize", "notifications/initialized", "DELETE 2025-03-26"],
+    ],
+    // A server that declined the requested version would refuse to close under it.
+    "unsupported protocol version": [undefined, ["initialize", "DELETE 1999-01-01"]],
+    "no protocol version": [undefined, ["initialize", "DELETE 2025-03-26"]],
   });
   // Another version the library accepts still names the account, and later requests carry it.
   serverVersion = "2025-06-18";
