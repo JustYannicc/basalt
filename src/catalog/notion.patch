@@ -16,7 +16,7 @@
  **Known gaps**
 --- /dev/null
 +++ b/health.ts
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,232 @@
 +import { decodeJson, json, object, string, type AccountCheckContext, type AuthMethods } from "apps";
 +
 +const botUser = object({
@@ -74,7 +74,7 @@
 +
 +const protocolVersion = "2025-03-26";
 +
-+/** The versions the MCP client library accepts in a server's `initialize` answer. */
++/** What `@modelcontextprotocol/sdk` 1.32.1 accepts as a server's `initialize` protocol version. */
 +const protocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 +
 +/** No usable answer to a lookup request; the account stays healthy and unnamed. */
@@ -180,13 +180,16 @@
 +    if (!initialized.ok) return void (await initialized.body?.cancel());
 +    session = initialized.headers.get("mcp-session-id") ?? undefined;
 +    const started = await answer(initialized, 1);
-+    const negotiated =
-+      started !== null && typeof started === "object" && "protocolVersion" in started
++    version =
++      started !== null &&
++      typeof started === "object" &&
++      "protocolVersion" in started &&
++      typeof started.protocolVersion === "string"
 +        ? started.protocolVersion
 +        : undefined;
-+    // As the MCP client library does, end the lookup when the server picks an unsupported version.
-+    if (typeof negotiated !== "string" || !protocolVersions.includes(negotiated)) return;
-+    version = negotiated;
++    // As the MCP client library does, end the lookup when the server picks an unsupported version;
++    // the session still closes under the version the server chose.
++    if (version === undefined || !protocolVersions.includes(version)) return;
 +    const notified = await post({ method: "notifications/initialized" });
 +    await notified.body?.cancel();
 +    if (!notified.ok) return;
