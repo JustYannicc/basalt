@@ -16,18 +16,55 @@ const labelSets = Array.from({ length: 1 << fullLabels.length }, (_, mask) =>
   fullLabels.filter((_, bit) => mask & (1 << bit)),
 );
 
-const pullRequest = (action: string, labels: string[], branch: string, fork = false) => ({
+const otherLabel = "documentation";
+// Only labeled and unlabeled payloads carry the changed label, as on GitHub; reading it on another
+// event throws here instead of reading null.
+const pullRequest = (
+  action: string,
+  labels: string[],
+  branch: string,
+  fork = false,
+  label?: string,
+) => ({
   repository,
   event_name: "pull_request",
   head_ref: branch,
   event: {
     action,
+    ...(label === undefined ? {} : { label: { name: label } }),
     pull_request: {
       head: { repo: { full_name: fork ? "fork/repository" : repository } },
       labels: labels.map((name) => ({ name })),
     },
   },
 });
+// Every event the workflow runs on, from every full label set. labeled and unlabeled add or remove
+// each full label and one that selects nothing; the payload lists the labels after the change.
+const pullRequestEvents = () => {
+  assert.deepEqual(workflow.on.pull_request.types, [
+    "opened",
+    "synchronize",
+    "reopened",
+    "labeled",
+    "unlabeled",
+  ]);
+  return workflow.on.pull_request.types.flatMap((action: string) =>
+    labelSets.flatMap((labels) =>
+      (action === "labeled" || action === "unlabeled"
+        ? [...fullLabels, otherLabel]
+        : [undefined]
+      ).map((label) => ({
+        action,
+        label,
+        labels:
+          action === "labeled"
+            ? [...new Set(labels.concat(label ?? []))]
+            : labels.filter((name) => name !== label),
+        name: `${action}${label === undefined ? "" : ` ${label}`} [${labels}]`,
+      })),
+    ),
+  );
+};
 const push = (branch: string) => ({
   repository,
   event_name: "push",
@@ -73,29 +110,35 @@ test("a batch push with an open PR selects one full Check, named check", () => {
   assert.deepEqual(workflow.on.push, { branches: ["main", "batch/**"] });
   const batchPush = push("batch/proof");
   assert.equal(checkName(batchPush), "check");
-  for (const action of workflow.on.pull_request.types)
-    for (const labels of labelSets) {
-      const pr = pullRequest(action, labels, "batch/proof");
-      assert.deepEqual(
-        [batchPush, pr].filter(fullSuite).map((run) => run.event_name),
-        ["push"],
-        `${action} [${labels}]`,
-      );
-      assert.equal(checkName(pr), "check (fast-only)");
-    }
+  for (const { action, label, labels, name } of pullRequestEvents()) {
+    const pr = pullRequest(action, labels, "batch/proof", false, label);
+    assert.deepEqual(
+      [batchPush, pr].filter(fullSuite).map((run) => run.event_name),
+      ["push"],
+      name,
+    );
+    assert.equal(checkName(pr), "check (fast-only)", name);
+  }
 });
 
 test("Checks without a batch push for the same head keep their lanes", () => {
   assert.equal(fullSuite(push("main")), true);
-  for (const action of workflow.on.pull_request.types)
-    for (const labels of labelSets) {
-      const name = `${action} [${labels}]`;
-      assert.equal(fullSuite(pullRequest(action, labels, "batch/proof", true)), true, name);
-      for (const fork of [false, true])
-        assert.equal(
-          fullSuite(pullRequest(action, labels, "feature/proof", fork)),
-          labels.length > 0,
-          name,
-        );
-    }
+  for (const { action, label, labels, name } of pullRequestEvents())
+    assert.equal(fullSuite(pullRequest(action, labels, "batch/proof", true, label)), true, name);
+});
+
+test("ci:full selects the full suite only on the event that applies it", () => {
+  // ci:boat and release-update keep every event of their PR full.
+  const sticky = ["ci:boat", "release-update"];
+  for (const { action, label, labels, name } of pullRequestEvents()) {
+    const full =
+      (action === "labeled" && label === "ci:full") ||
+      labels.some((carried) => sticky.includes(carried));
+    for (const fork of [false, true])
+      assert.equal(
+        fullSuite(pullRequest(action, labels, "feature/proof", fork, label)),
+        full,
+        `${name} fork=${fork}`,
+      );
+  }
 });
