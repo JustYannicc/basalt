@@ -6,6 +6,15 @@ import * as Response from "effect/http/HttpClientResponse";
 export const digest = (c) => `sha256:${c.repeat(64)}`;
 export const image = (d) => `registry.cloudflare.com/fixture/fixture-pool@${d}`;
 
+// The platform fills these in on readback. A declaration that leaves them out never sends them.
+const stored = (configuration) => ({
+  command: [],
+  entrypoint: [],
+  network: { assign_ipv4: "none", assign_ipv6: "none", mode: "private" },
+  runtime: "firecracker",
+  ...configuration,
+});
+
 export function containerDriftApi({ rolloutOnly = false } = {}) {
   const state = {
     publishedDigest: digest("2"),
@@ -14,7 +23,7 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
       name: "fixture-pool",
       account_id: "fixture",
       version: 1,
-      configuration: { image: image(digest("2")) },
+      configuration: stored({ image: image(digest("2")) }),
       scheduling_policy: "default",
       max_instances: 1,
       instances: 1,
@@ -59,7 +68,7 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
         const previous = state.app.configuration;
         const target = {
           ...state.app,
-          configuration: body.target_configuration,
+          configuration: stored(body.target_configuration),
           version: currentVersion + 1,
         };
         state.manualRollout = body.kind === "full_manual" ? target : undefined;
@@ -71,7 +80,7 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
           current_version: currentVersion,
           target_version: target.version,
           current_configuration: previous,
-          target_configuration: target.configuration,
+          target_configuration: body.target_configuration,
           kind: body.kind,
           status: body.kind === "full_manual" ? "pending" : "completed",
         };
@@ -120,6 +129,7 @@ export function containerDriftApi({ rolloutOnly = false } = {}) {
         delete body.configuration.instance_type;
         Object.assign(body.configuration, resources);
       }
+      if (body.configuration) body.configuration = stored(body.configuration);
       if (rolloutOnly && request.method === "PATCH") {
         const { configuration: _configuration, ...settings } = body;
         state.app = { ...state.app, ...settings };

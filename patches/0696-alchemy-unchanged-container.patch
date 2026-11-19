@@ -1,0 +1,144 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -7954,3 +7954,140 @@
+  }) => (importPath: string) => string;
+  /**
+   * The default source provider: bundle `props.main` with rolldown.
++diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
++index 75ee7f1..4c0b78e 100644
++--- a/src/Cloudflare/Workers/WorkerProvider.ts
+++++ b/src/Cloudflare/Workers/WorkerProvider.ts
++@@ -5116,13 +5116,18 @@ export const LiveWorkerProvider = () =>
++                 workerName,
++               ).sort()
++             : [];
++-          const oldDoClassNames = Object.keys(
++-            output.durableObjectNamespaces ?? {},
++-          ).sort();
+++          // The recorded map also holds classes another Worker hosts: a settings
+++          // read returns a namespace id for those bindings too. An id is permanent
+++          // for a Worker and class, so the map stays readable while every class
+++          // this Worker hosts is recorded, whatever else it holds.
+++          const recordedDoNamespaces = output.durableObjectNamespaces ?? {};
++           const doNamespacesStable =
++             oldWorkerName === workerName &&
++-            newDoClassNames.length === oldDoClassNames.length &&
++-            newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
+++            (Array.isArray(newBindings)
+++              ? newDoClassNames.every(
+++                  (name) => recordedDoNamespaces[name] !== undefined,
+++                )
+++              : Object.keys(recordedDoNamespaces).length === 0);
++           // Rows persisted by older releases carried the script *name* in
++           // `workerId` (interrupted precreates a provisional ""). Plan one
++           // update even when nothing else changed, so reconcile re-records
++diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
++index 9f1bdc5..fb0474e 100644
++--- a/lib/Cloudflare/Workers/WorkerProvider.js
+++++ b/lib/Cloudflare/Workers/WorkerProvider.js
++@@ -3769,10 +3769,15 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++             const newDoClassNames = Array.isArray(newBindings)
++                 ? getExpectedDurableObjectClassNames(newBindings.flatMap((b) => b.data.bindings ?? []), workerName).sort()
++                 : [];
++-            const oldDoClassNames = Object.keys(output.durableObjectNamespaces ?? {}).sort();
+++            // The recorded map also holds classes another Worker hosts: a settings
+++            // read returns a namespace id for those bindings too. An id is permanent
+++            // for a Worker and class, so the map stays readable while every class
+++            // this Worker hosts is recorded, whatever else it holds.
+++            const recordedDoNamespaces = output.durableObjectNamespaces ?? {};
++             const doNamespacesStable = oldWorkerName === workerName &&
++-                newDoClassNames.length === oldDoClassNames.length &&
++-                newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
+++                (Array.isArray(newBindings)
+++                    ? newDoClassNames.every((name) => recordedDoNamespaces[name] !== undefined)
+++                    : Object.keys(recordedDoNamespaces).length === 0);
++             // Rows persisted by older releases carried the script *name* in
++             // `workerId` (interrupted precreates a provisional ""). Plan one
++             // update even when nothing else changed, so reconcile re-records
++diff --git a/src/Cloudflare/Containers/ContainerConfiguration.ts b/src/Cloudflare/Containers/ContainerConfiguration.ts
++index a791444..6f788f1 100644
++--- a/src/Cloudflare/Containers/ContainerConfiguration.ts
+++++ b/src/Cloudflare/Containers/ContainerConfiguration.ts
++@@ -14,10 +14,25 @@ const instanceResources: Record<string, readonly [number, number, number]> = {
++   "standard-4": [4, 12288, 20],
++ };
++ 
++-const comparableValue = (value: unknown) => {
++-  if (value === null || typeof value !== "object" ||
++-    !("image" in value) || typeof value.image !== "string" ||
++-    !("instanceType" in value) || typeof value.instanceType !== "string") return value;
+++// Cloudflare fills these in on readback when a declaration leaves them out.
+++const privateNetwork = { assign_ipv4: "none", assign_ipv6: "none", mode: "private" };
+++const emptyList = (value: unknown) => Array.isArray(value) && value.length === 0;
+++const withoutReadbackDefaults = (value: Record<string, unknown>) => {
+++  const { command, entrypoint, network, runtime, ...rest } = value;
+++  return {
+++    ...rest,
+++    ...(emptyList(command) ? {} : { command }),
+++    ...(emptyList(entrypoint) ? {} : { entrypoint }),
+++    ...(deepEqual(network, privateNetwork) ? {} : { network }),
+++    ...(runtime === "firecracker" ? {} : { runtime }),
+++  };
+++};
+++
+++const comparableValue = (input: unknown) => {
+++  if (input === null || typeof input !== "object" ||
+++    !("image" in input) || typeof input.image !== "string") return input;
+++  const value = withoutReadbackDefaults(input as Record<string, unknown>);
+++  if (!("instanceType" in value) || typeof value.instanceType !== "string") return value;
++   const resources = instanceResources[value.instanceType];
++   if (resources === undefined) return value;
++   const [vcpu, memoryMib, diskGB] = resources;
++@@ -32,7 +47,7 @@ const comparableValue = (value: unknown) => {
++   });
++ };
++ 
++-// Attachment and development-image values retain exact comparison.
+++// Attachment values retain exact comparison.
++ export const equalContainerValues = (left: unknown, right: unknown) =>
++   deepEqual(comparableValue(left), comparableValue(right));
++ 
++diff --git a/lib/Cloudflare/Containers/ContainerConfiguration.js b/lib/Cloudflare/Containers/ContainerConfiguration.js
++index 98d9763..73441b7 100644
++--- a/lib/Cloudflare/Containers/ContainerConfiguration.js
+++++ b/lib/Cloudflare/Containers/ContainerConfiguration.js
++@@ -12,10 +12,25 @@ const instanceResources = {
++     "standard-3": [2, 8192, 16],
++     "standard-4": [4, 12288, 20],
++ };
++-const comparableValue = (value) => {
++-    if (value === null || typeof value !== "object" ||
++-        !("image" in value) || typeof value.image !== "string" ||
++-        !("instanceType" in value) || typeof value.instanceType !== "string")
+++// Cloudflare fills these in on readback when a declaration leaves them out.
+++const privateNetwork = { assign_ipv4: "none", assign_ipv6: "none", mode: "private" };
+++const emptyList = (value) => Array.isArray(value) && value.length === 0;
+++const withoutReadbackDefaults = (value) => {
+++    const { command, entrypoint, network, runtime, ...rest } = value;
+++    return {
+++        ...rest,
+++        ...(emptyList(command) ? {} : { command }),
+++        ...(emptyList(entrypoint) ? {} : { entrypoint }),
+++        ...(deepEqual(network, privateNetwork) ? {} : { network }),
+++        ...(runtime === "firecracker" ? {} : { runtime }),
+++    };
+++};
+++const comparableValue = (input) => {
+++    if (input === null || typeof input !== "object" ||
+++        !("image" in input) || typeof input.image !== "string")
+++        return input;
+++    const value = withoutReadbackDefaults(input);
+++    if (!("instanceType" in value) || typeof value.instanceType !== "string")
++         return value;
++     const resources = instanceResources[value.instanceType];
++     if (resources === undefined)
++@@ -31,7 +46,7 @@ const comparableValue = (value) => {
++         disk: ("disk" in value ? value.disk : undefined) ?? { size: `${diskGB}GB`, size_mb: diskGB * 1000 },
++     });
++ };
++-// Attachment and development-image values retain exact comparison.
+++// Attachment values retain exact comparison.
++ export const equalContainerValues = (left, right) => deepEqual(comparableValue(left), comparableValue(right));
++ const comparableSettings = (value) => normalizeNulls({
++     instances: value.instances ?? 0,
