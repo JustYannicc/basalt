@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The app framework's mapResults lets an app change what each operation of a router returns, including tools a protocol router resolves later, before the host checks the result against the operation's output schema. It walks routers the same way withApprovals does, through one shared walk. Only successful results pass through it; a failing map fails the call. The host protocol, catalogs and descriptions are unchanged."
+    }
+  }
+}

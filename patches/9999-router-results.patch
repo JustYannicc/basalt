@@ -1,0 +1,101 @@
+diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/implementation/router.ts
+--- a/packages/apps/src/implementation/router.ts
++++ b/packages/apps/src/implementation/router.ts
+@@ -248,25 +248,16 @@ export const declaredOperations = (
+   });
+ 
+ /**
+- * Choose an approval for each operation a router contains, including tools a dynamic router
+- * resolves later. `policy` receives the operation and its name relative to this router; returning
+- * undefined keeps the operation's own approval. Read hints with `toolAnnotations(operation)`.
+- * Apply it to each account's router before `accountRouter` combines them, so every account keeps
+- * its own tools' hints.
++ * Replace each operation a router contains, including tools a dynamic router resolves later.
++ * `operation` receives the operation and its name relative to this router.
+  */
+-export const withApprovals = <Query, Mutation>(
++const eachOperation = <Query, Mutation>(
+   source: RouterDeclaration<Query, Mutation>,
+-  policy: (
+-    operation: OperationDeclaration<"query" | "mutation", never>,
+-    name: string,
+-  ) => Approval | undefined,
++  combinator: string,
++  operation: (node: AppOperation, name: string) => AppOperation,
+ ): RouterDeclaration<Query, Mutation> => {
+   const native = nativeRouter(source);
+-  if (native === undefined) throw new Error("withApprovals expects a router");
+-  const operation = (node: AppOperation, name: string): AppOperation => {
+-    const approval = policy(operationDeclaration(node), name);
+-    return approval === undefined ? node : approvedOperation(node, approval);
+-  };
++  if (native === undefined) throw new Error(`${combinator} expects a router`);
+   const child = (node: AppNode, name: string): AppNode => {
+     switch (node.kind) {
+       case "query":
+@@ -305,6 +296,54 @@ export const withApprovals = <Query, Mutation>(
+   return routerDeclaration(walk(native, ""));
+ };
+ 
++/**
++ * Choose an approval for each operation a router contains, including tools a dynamic router
++ * resolves later. `policy` receives the operation and its name relative to this router; returning
++ * undefined keeps the operation's own approval. Read hints with `toolAnnotations(operation)`.
++ * Apply it to each account's router before `accountRouter` combines them, so every account keeps
++ * its own tools' hints.
++ */
++export const withApprovals = <Query, Mutation>(
++  source: RouterDeclaration<Query, Mutation>,
++  policy: (
++    operation: OperationDeclaration<"query" | "mutation", never>,
++    name: string,
++  ) => Approval | undefined,
++): RouterDeclaration<Query, Mutation> =>
++  eachOperation(source, "withApprovals", (node, name) => {
++    const approval = policy(operationDeclaration(node), name);
++    return approval === undefined ? node : approvedOperation(node, approval);
++  });
++
++/**
++ * Change what each operation a router contains returns, including tools a dynamic router resolves
++ * later. `map` receives a successful result and the operation's name relative to this router, and
++ * what it returns is the result the host checks against the operation's output schema. Apply it
++ * to each account's router before `accountRouter` combines them, as with `withApprovals`.
++ */
++export const mapResults = <Query, Mutation>(
++  source: RouterDeclaration<Query, Mutation>,
++  map: (result: unknown, name: string) => unknown,
++): RouterDeclaration<Query, Mutation> =>
++  eachOperation(source, "mapResults", (node, name) => {
++    // SAFETY: the copy has every own property of `node`, with only `run` replaced below.
++    const copy = Object.defineProperties(
++      {},
++      Object.getOwnPropertyDescriptors(node),
++    ) as AppOperation;
++    return Object.defineProperty(copy, "run", {
++      enumerable: true,
++      value: (context: Parameters<AppOperation["run"]>[0], input: unknown) =>
++        node
++          .run(context, input)
++          .pipe(
++            Effect.flatMap((result) =>
++              Effect.try({ try: () => map(result, name), catch: (error) => error }),
++            ),
++          ),
++    });
++  });
++
+ /**
+  * Expose a protocol router's tools under other names, such as the names an earlier client used.
+  * `rename` receives each tool's name relative to this router and returns the name to expose, or
+diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
+--- a/packages/apps/src/index.ts
++++ b/packages/apps/src/index.ts
+@@ -138,6 +138,7 @@ export {
+   router,
+   dynamicRouter,
+   withApprovals,
++  mapResults,
+   renameTools,
+   type OperationChild,
+   type OperationDeclaration,

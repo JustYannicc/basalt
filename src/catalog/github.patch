@@ -1,108 +1,81 @@
+diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
-@@ -11,6 +11,10 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
+@@ -11,6 +11,15 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
  
  Health check: `GET https://api.github.com/user`.
  
 +## Results
 +
-+REST results drop `temp_clone_token` and `temp_download_token`, the short-lived credentials GitHub adds to repository and runner-download reads, wherever a field has one of those names. GitHub's description says to keep the clone token out of logs, and tool results reach agent transcripts. MCP results are unchanged.
++Tool results reach agent transcripts, so they don't carry the credentials GitHub puts in some responses. REST and MCP results go through the same filter in `results.ts`:
++
++- `temp_clone_token` and `temp_download_token`, the short-lived credentials on repository and runner-download reads, are dropped wherever they appear.
++- A link to a private file's raw content, such as its `download_url`, loses its `token` query parameter. Read the file through the tools instead.
++- A secret-scanning alert's `secret`, the leaked value itself, is dropped.
++- A credential minted because a person asked for one, such as a runner registration token or an installation token, is returned only by the REST tools `results.ts` lists as minting it. Every other result drops those fields, so a token checked with `api.apps.checkToken` is not repeated back.
 +
  ## Known gaps
  
  - Release asset upload (`uploads.github.com`) is skipped.
+diff --git a/index.ts b/index.ts
 --- a/index.ts
 +++ b/index.ts
-@@ -67,6 +67,71 @@ type Account =
+@@ -3,6 +3,7 @@ import {
+   decodeJson,
+   defineApp,
+   defineProvider,
++  mapResults,
+   number,
+   oauth2,
+   object,
+@@ -17,6 +18,7 @@ import { always } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { mcpResult, restResult } from "./results.js";
  
- const token = (account: Account) => (account.method === "oauth" ? account.fields.access_token : account.fields.token);
+ const User = object({ id: number(), login: string(), avatar_url: string(), html_url: string() });
  
-+type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-+
-+// GitHub puts short-lived credentials in some read responses: `temp_clone_token` on every
-+// repository shape, which GitHub's description says to keep out of logs, and the
-+// `temp_download_token` bearer token on runner downloads. Tool results land in agent transcripts,
-+// so the REST tools drop every field with either name.
-+const credentialFields = ["temp_clone_token", "temp_download_token"];
-+// The router reads at most this much of a body and refuses the rest; a larger body passes through
-+// unread so the router refuses it as before, instead of being held in memory here.
-+const routerBodyLimit = 16_777_216;
-+
-+const withoutCredentialFields =
-+  (fetch: Fetch): Fetch =>
-+  async (input, init) => {
-+    const response = await fetch(input, init);
-+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-+    const type = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
-+    if (
-+      !response.ok ||
-+      response.body === null ||
-+      new URL(url).origin !== "https://api.github.com" ||
-+      !/^application\/(?:[\w.-]+\+)?json$/i.test(type) ||
-+      Number(response.headers.get("content-length")) > routerBodyLimit
-+    )
-+      return response;
-+    const { status, statusText } = response;
-+    const reader = response.body.getReader();
-+    const decoder = new TextDecoder();
-+    const chunks: Uint8Array[] = [];
-+    let size = 0;
-+    let text = "";
-+    for (let read = await reader.read(); !read.done; read = await reader.read()) {
-+      chunks.push(read.value);
-+      size += read.value.byteLength;
-+      if (size > routerBodyLimit) {
-+        const unread = new ReadableStream<Uint8Array>({
-+          start: (controller) => chunks.forEach((chunk) => controller.enqueue(chunk)),
-+          pull: async (controller) => {
-+            const next = await reader.read();
-+            if (next.done) controller.close();
-+            else controller.enqueue(next.value);
-+          },
-+          cancel: (reason) => reader.cancel(reason),
-+        });
-+        return new Response(unread, { status, statusText, headers: response.headers });
-+      }
-+      text += decoder.decode(read.value, { stream: true });
-+    }
-+    text += decoder.decode();
-+    let body = text;
-+    if (credentialFields.some((field) => text.includes(`"${field}"`)))
-+      try {
-+        body = JSON.stringify(
-+          JSON.parse(text, (key, value) => (credentialFields.includes(key) ? undefined : value)),
-+        );
-+      } catch {
-+        // Not JSON after all: the router reports the unreadable body as it would have.
-+      }
-+    const headers = new Headers(response.headers);
-+    // The body is already decoded and may be shorter now.
-+    headers.delete("content-encoding");
-+    headers.delete("content-length");
-+    return new Response(body, { status, statusText, headers });
-+  };
-+
- export default defineApp(
-   { user: { accounts: { github: github.many() } }, icons },
-   async ({ user, cache, fetch, signal }) => {
-@@ -100,8 +165,15 @@ export default defineApp(
+@@ -79,13 +81,16 @@ export default defineApp(
+               accounts,
+               async (account) =>
+                 withApprovals(
+-                  await mcpRouter({
+-                    url: mcpUrl,
+-                    account,
+-                    headers: { Authorization: `Bearer ${token(account)}` },
+-                    cache,
+-                    signal,
+-                  }),
++                  mapResults(
++                    await mcpRouter({
++                      url: mcpUrl,
++                      account,
++                      headers: { Authorization: `Bearer ${token(account)}` },
++                      cache,
++                      signal,
++                    }),
++                    mcpResult,
++                  ),
+                   (tool) => (toolAnnotations(tool)?.readOnlyHint === true ? undefined : always()),
+                 ),
+               { signal },
+@@ -100,8 +105,12 @@ export default defineApp(
              await accountRouter(
                accounts,
                (account) =>
 -                withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
 -                  tool.kind === "mutation" ? always() : undefined,
 +                withApprovals(
-+                  liveOpenapiRouter({
-+                    ...options,
-+                    cache,
-+                    fetch: withoutCredentialFields(fetch),
-+                    signal,
-+                    account,
-+                  }),
++                  mapResults(
++                    liveOpenapiRouter({ ...options, cache, fetch, signal, account }),
++                    restResult,
++                  ),
 +                  (tool) => (tool.kind === "mutation" ? always() : undefined),
                  ),
                { signal },
              ),
+diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
 @@ -7,7 +7,7 @@
@@ -114,3 +87,112 @@
      "@modelcontextprotocol/sdk": "1.32.1"
    }
  }
+diff --git a/results.ts b/results.ts
+new file mode 100644
+--- /dev/null
++++ b/results.ts
+@@ -0,0 +1,104 @@
++// Tool results land in agent transcripts, so they never carry a credential GitHub puts in a
++// response unless the tool exists to mint it. REST and MCP results go through the same filter.
++
++/** Short-lived credentials GitHub adds to ordinary reads, dropped from every result. */
++const incidental = new Set(["temp_clone_token", "temp_download_token"]);
++
++/**
++ * The REST tools, named under `api`, that mint a credential because a person asked for one, and
++ * the fields that carry it. Only these tools return those fields; every other result drops them.
++ */
++export const mintingTools: Readonly<Record<string, readonly string[]>> = {
++  "actions.createRegistrationTokenForOrg": ["token"],
++  "actions.createRegistrationTokenForRepo": ["token"],
++  "actions.createRemoveTokenForOrg": ["token"],
++  "actions.createRemoveTokenForRepo": ["token"],
++  "actions.generateRunnerJitconfigForOrg": ["encoded_jit_config"],
++  "actions.generateRunnerJitconfigForRepo": ["encoded_jit_config"],
++  "apps.createFromManifest": ["client_secret", "pem", "webhook_secret"],
++  "apps.createInstallationAccessToken": ["token"],
++  "apps.resetToken": ["token"],
++  "apps.scopeToken": ["token"],
++};
++const minted = new Set(Object.values(mintingTools).flat());
++const none: ReadonlySet<string> = new Set();
++
++// A link to a private file's raw content carries a `token` that reads the file without the
++// account, such as a file's `download_url` or the link GitHub's MCP server gives for a large file.
++const contentLink = /https:\/\/[\w-]+\.githubusercontent\.com\/[^\s"'<>\\]*/g;
++const withoutLinkTokens = (text: string) =>
++  text.includes("token=")
++    ? text.replace(contentLink, (link) => {
++        const url = new URL(link);
++        if (!url.searchParams.has("token")) return link;
++        url.searchParams.delete("token");
++        return url.href;
++      })
++    : text;
++
++/** `value` without credentials, other than the minted fields in `keep`; `value` itself if none. */
++const clean = (value: unknown, keep: ReadonlySet<string>): unknown => {
++  if (typeof value === "string") return withoutLinkTokens(value);
++  if (typeof value !== "object" || value === null) return value;
++  if (Array.isArray(value)) {
++    const items = value.map((item) => clean(item, keep));
++    return items.every((item, index) => item === value[index]) ? value : items;
++  }
++  // A secret-scanning alert's `secret` is the leaked credential itself.
++  const alert = "secret_type" in value;
++  let changed = false;
++  const entries = Object.entries(value).flatMap(([key, item]) => {
++    if (incidental.has(key) || (minted.has(key) && !keep.has(key)) || (alert && key === "secret")) {
++      changed = true;
++      return [];
++    }
++    const cleaned = clean(item, keep);
++    if (cleaned !== item) changed = true;
++    return [[key, cleaned] as const];
++  });
++  return changed ? Object.fromEntries(entries) : value;
++};
++
++/** A REST tool's result, keeping only the credential the tool mints, if it is listed. */
++export const restResult = (result: unknown, tool: string) =>
++  clean(result, Object.hasOwn(mintingTools, tool) ? new Set(mintingTools[tool]) : none);
++
++const isMcpResult = (value: unknown): value is { readonly content: readonly unknown[] } =>
++  typeof value === "object" && value !== null && "content" in value && Array.isArray(value.content);
++
++const isText = (block: unknown): block is { readonly type: "text"; readonly text: string } =>
++  typeof block === "object" &&
++  block !== null &&
++  "type" in block &&
++  block.type === "text" &&
++  "text" in block &&
++  typeof block.text === "string";
++
++const json = (text: string): unknown => {
++  try {
++    return JSON.parse(text);
++  } catch {
++    return undefined;
++  }
++};
++
++/**
++ * GitHub's MCP server writes GitHub's objects as JSON text, so a text block that is JSON is
++ * filtered as that value. Any other text is a message, such as a large file's download link.
++ */
++const textBlock = (block: { readonly type: "text"; readonly text: string }) => {
++  const parsed = json(block.text);
++  if (parsed === undefined) return { ...block, text: withoutLinkTokens(block.text) };
++  const cleaned = clean(parsed, none);
++  return cleaned === parsed ? block : { ...block, text: JSON.stringify(cleaned) };
++};
++
++/** An MCP tool's result. No MCP tool mints a credential. */
++export const mcpResult = (result: unknown) => {
++  if (!isMcpResult(result)) return clean(result, none);
++  const { content, ...rest } = result;
++  return {
++    ...Object.fromEntries(Object.entries(rest).map(([key, value]) => [key, clean(value, none)])),
++    content: content.map((block) => (isText(block) ? textBlock(block) : clean(block, none))),
++  };
++};
