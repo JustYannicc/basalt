@@ -10,6 +10,7 @@ import { Badge, Button } from "./controls.tsx";
 import { PriceNote } from "./price-note.tsx";
 import type { MemberDirectoryEntry } from "./series-model.ts";
 import type { PublicHistoryRecord } from "./history-model.ts";
+import { utcMoment } from "./moments.ts";
 
 const visibleRows = 10;
 
@@ -21,13 +22,7 @@ function count(value: string | null): string {
 function timestamp(value: string): string {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) return "Time unavailable";
-  return (
-    new Intl.DateTimeFormat("en", {
-      dateStyle: "medium",
-      timeStyle: "medium",
-      timeZone: "UTC",
-    }).format(parsed) + " UTC"
-  );
+  return utcMoment(value, { dateStyle: "medium", timeStyle: "medium" });
 }
 
 function personName(
