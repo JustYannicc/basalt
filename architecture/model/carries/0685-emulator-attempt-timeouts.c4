@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Emulator setup and cleanup abandon and repeat a request that hangs for 6 seconds, because their instance, keyed-credential and reset calls converge when repeated. Four attempts and their backoff fit the unchanged 30-second budget, every retry is logged without addresses or secrets, and billing catalog seeding never retries a timeout."
+    }
+  }
+}

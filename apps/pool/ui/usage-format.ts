@@ -1,4 +1,5 @@
 import type { AccountsNeeded, DayUsage, ModelUsage, UsageSlice } from "../contract.ts";
+import { formatMoment, utc } from "./moments.ts";
 import { clamp } from "./usage.ts";
 
 export type Metric = "tokens" | "cost";
@@ -41,16 +42,10 @@ export function credits(amount: number): string {
   return `${Math.max(0, amount).toLocaleString("en", { maximumFractionDigits: 2 })} credits`;
 }
 
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  timeZone: "UTC",
-});
-
-/** "3 Oct", for a `YYYY-MM-DD` UTC day. */
+/** "03.10.2026", for a `YYYY-MM-DD` UTC day. */
 export function dayLabel(day: string): string {
   const at = Date.parse(`${day}T00:00:00Z`);
-  return Number.isNaN(at) ? day : dayFormat.format(at);
+  return Number.isNaN(at) ? day : formatMoment(at, utc, { dateStyle: "short" });
 }
 
 /** Every UTC day from `from` up to `to`, so the chart keeps its gaps. */

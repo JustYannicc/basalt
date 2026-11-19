@@ -8,7 +8,9 @@ import { test } from "node:test";
 import { carryTargets, changedInputs, jobRoutes, selectPaths } from "./ci/affected.ts";
 import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
+import { activeSteps } from "./ci/e2e-workflow.ts";
 import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { declaredMatrices } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 
@@ -308,6 +310,8 @@ test("explicit fast selection never schedules heavy work even without comparison
       assert.deepEqual(selected.hostedJobs, selected.jobs);
       assert.deepEqual(selected.boatJobs, []);
       assert.equal(selected.full, lane === "--all");
+      // Shard rows, not one row per file; the fast lane plans no declared work at all.
+      assert.deepEqual(selected.matrices, declaredMatrices(lane === "--all" ? null : []));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -502,4 +506,44 @@ test("a selected image requires successful workerd warming and an unselected ima
       ),
     );
   assert.ok(gateErrors(needs, []).some((error) => error.startsWith("workerd-assets:")));
+});
+
+test("coverage counts a matrix-gated step only when some shard carries its value", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const names = (job: string) =>
+    activeSteps(workflow.jobs[job]).map(
+      (step: { name?: string; run: string }) => step.name ?? step.run,
+    );
+  for (const check of [
+    "Verify the Cloud inventory and exact-ID token retirement tooling",
+    "Verify authorized native pool removal intent",
+    "Verify native pool recipe journeys with synthetic observations",
+    "Verify banked reset recovery with a synthetic provider",
+    "Verify the banked reset control in a browser with a synthetic provider",
+    "Verify scoped account and pool updates without idle polling",
+    "Verify the pool usage overview in a browser with synthetic usage",
+  ])
+    assert.ok(names("pool-inventory").includes(check), check);
+  for (const step of [
+    "Prove committed change locks and account source read contention on PostgreSQL",
+    "Verify Home connection limits and concurrent liveness on Postgres",
+    "Check the pool runtime and database contracts",
+    "Verify usage imports through the pool app and database",
+  ])
+    assert.ok(names("pool-runtime").includes(step), step);
+  const job = {
+    strategy: { matrix: { shard: [1, 2], include: [{ shard: 1, checks: ["a"] }] } },
+    steps: [
+      { run: "node one.mjs", if: "contains(matrix.checks, 'a')" },
+      { run: "node two.mjs", if: "contains(matrix.checks, 'b')" },
+      { run: "node three.mjs", if: "matrix.shard == 2" },
+      { run: "node four.mjs", if: "matrix.shard == 3" },
+    ],
+  };
+  assert.deepEqual(
+    activeSteps(job).map((step) => step.run),
+    ["node one.mjs", "node three.mjs"],
+  );
 });

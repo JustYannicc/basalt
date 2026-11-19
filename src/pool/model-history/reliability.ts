@@ -66,10 +66,10 @@ export async function readPoolReliabilityWindows(
     WHERE t.pool=r.pool AND t.source=r.source AND t.client_key=r.client_key AND t.purpose='proof')`
     : "false";
   const finalAttempt = terminalReady
-    ? "(COALESCE(last.id=r.id,false) AND f.outcome IS NOT NULL AND f.outcome <> 'unavailable')"
+    ? "(r.latest AND f.outcome IS NOT NULL AND f.outcome <> 'unavailable')"
     : "false";
   const terminalFailure = terminalReady
-    ? "(COALESCE(last.id=r.id,false) AND COALESCE(f.outcome IN ('truncated','client_closed','provider_failed'),false))"
+    ? "(r.latest AND COALESCE(f.outcome IN ('truncated','client_closed','provider_failed'),false))"
     : "false";
   const statusCode = terminalReady
     ? `CASE WHEN r.failed THEN r.status_code
@@ -80,53 +80,68 @@ export async function readPoolReliabilityWindows(
     AND r.timestamp_exact >= $4 AND r.timestamp_exact < $5`;
   const finishedTimeRange = `f.finished_at >= $4::text::timestamptz
     AND f.finished_at < $5::text::timestamptz`;
-  const candidateFinished = terminalReady
-    ? `OR EXISTS (
-        SELECT 1 FROM basalt_model_terminal_starts s
-        JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
-        WHERE s.pool=r.pool AND s.request_id::text=r.request_id
-          AND f.outcome <> 'unavailable' AND ${finishedTimeRange}
-      )`
-    : "";
   const homeTimeRange = terminalReady
     ? `((${finalAttempt} AND ${finishedTimeRange}) OR (NOT ${finalAttempt} AND ${rawTimeRange}))`
     : rawTimeRange;
-  const latestHomeCtes = terminalReady
-    ? `ranged_home_ids AS (
-      SELECT DISTINCT r.request_id FROM basalt_model_requests r
-      WHERE r.pool=$1 AND r.source=$3 AND r.request_id IS NOT NULL
-        AND (${rawTimeRange} ${candidateFinished})
-    ), latest_home AS (
-      SELECT DISTINCT ON (r.pool,r.request_id) r.pool,r.request_id,r.id
-      FROM basalt_model_requests r
-      JOIN ranged_home_ids ids ON ids.request_id=r.request_id
-      WHERE r.pool=$1 AND r.source=$3
-      ORDER BY r.pool,r.request_id,r.timestamp_exact DESC,r.id DESC
+  const windowStart = "$4::text::timestamptz - interval '1 microsecond'";
+  const homeColumns =
+    "r.id,r.pool,r.source,r.request_id,r.client_key,r.failed,r.status_code,r.account,r.timestamp,r.timestamp_exact";
+  // Any attempt later than a window row has a later time, so one time-index read plus a ranking finds
+  // each request's latest attempt. An OR across the time and request indexes scans the pool's whole
+  // history. Only a request that finished in the window with every Home attempt before it is looked up
+  // by its identity.
+  const homeCtes = terminalReady
+    ? `recent_home AS (
+      SELECT ${homeColumns} FROM basalt_model_requests r
+      WHERE r.pool=$1 AND r.source=$3 AND r.timestamp >= ${windowStart}
+      UNION ALL
+      SELECT earlier_attempt.* FROM (
+        SELECT s.request_id::text AS request_id FROM basalt_model_terminal_finishes f
+        CROSS JOIN LATERAL (SELECT s.request_id FROM basalt_model_terminal_starts s
+          WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+        WHERE f.outcome <> 'unavailable' AND ${finishedTimeRange}
+          AND NOT EXISTS (SELECT 1 FROM basalt_model_requests h
+            WHERE h.pool=$1 AND h.source=$3 AND h.request_id IS NOT NULL
+              AND h.request_id=s.request_id::text AND h.timestamp >= ${windowStart})
+        OFFSET 0
+      ) earlier
+      CROSS JOIN LATERAL (
+        SELECT ${homeColumns} FROM basalt_model_requests r
+        WHERE r.pool=$1 AND r.source=$3 AND r.request_id IS NOT NULL AND r.request_id=earlier.request_id
+        ORDER BY r.timestamp_exact DESC,r.id DESC LIMIT 1
+      ) earlier_attempt
+    ), home_attempts AS (
+      SELECT r.*,r.request_id IS NOT NULL AND row_number() OVER (
+        PARTITION BY r.request_id ORDER BY r.timestamp_exact DESC,r.id DESC) = 1 AS latest
+      FROM recent_home r
     ),`
     : "";
-  const result = await db.query(
-    `WITH ranges(ordinal,from_at,to_at) AS (VALUES ${ranges
-      .map((_, index) => `(${index},$${6 + index * 2}::text,$${7 + index * 2}::text)`)
-      .join(",")}),
-    ${latestHomeCtes} selected AS ${ranges.length > 1 ? "MATERIALIZED " : ""}(
-      SELECT r.pool,r.source,r.client_key,
+  // Only a canonical UUID can equal a start's id as text; the cast lets the start's key serve the join.
+  const startId = `CASE WHEN r.request_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    THEN r.request_id::uuid END`;
+  const homeRows = `SELECT r.pool,r.source,r.client_key,
         (r.failed OR ${terminalFailure}) AS failed,
         ${statusCode} AS status_code,
         ((r.failed OR ${terminalFailure})
           AND r.account IS NULL) AS unassigned,
         ${terminalReady ? `CASE WHEN ${finalAttempt} THEN NULL ELSE r.timestamp_exact END` : "r.timestamp_exact"} AS raw_at,
         ${terminalReady ? `CASE WHEN ${finalAttempt} THEN f.finished_at ELSE NULL END` : "NULL::timestamptz"} AS finished_at
-      FROM basalt_model_requests r
-      ${terminalReady ? "LEFT JOIN latest_home last ON last.pool=r.pool AND last.request_id=r.request_id AND last.id=r.id" : ""}
       ${
         terminalReady
-          ? `LEFT JOIN basalt_model_terminal_starts s
-        ON s.pool=r.pool AND s.request_id::text=r.request_id
-        LEFT JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id`
-          : ""
-      }
-      WHERE r.pool=$1 AND r.source=$3
-        AND ${homeTimeRange}
+          ? `FROM home_attempts r
+      LEFT JOIN LATERAL (SELECT f.outcome,f.status,f.finished_at FROM basalt_model_terminal_starts s
+        JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
+        WHERE r.latest AND s.pool=r.pool AND s.request_id=${startId} LIMIT 1) f ON true
+      WHERE ${homeTimeRange}`
+          : `FROM basalt_model_requests r
+      WHERE r.pool=$1 AND r.source=$3 AND ${homeTimeRange}`
+      }`;
+  const result = await db.query(
+    `WITH ranges(ordinal,from_at,to_at) AS (VALUES ${ranges
+      .map((_, index) => `(${index},$${6 + index * 2}::text,$${7 + index * 2}::text)`)
+      .join(",")}),
+    ${homeCtes} selected AS ${ranges.length > 1 ? "MATERIALIZED " : ""}(
+      ${homeRows}
       UNION ALL
       SELECT r.pool,r.source,r.client_key,r.failed,r.status_code,
         (r.failed AND r.account IS NULL) AS unassigned,r.timestamp_exact AS raw_at,NULL::timestamptz AS finished_at
@@ -139,15 +154,20 @@ export async function readPoolReliabilityWindows(
       SELECT s.pool,$3::character(64) AS source,s.client_key,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS failed,f.status AS status_code,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS unassigned,NULL::text AS raw_at,f.finished_at
-      FROM basalt_model_terminal_starts s
-      JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
-      WHERE s.pool=$1
-        AND ${finishedTimeRange}
+      FROM basalt_model_terminal_finishes f
+      CROSS JOIN LATERAL (SELECT s.pool,s.request_id,s.client_key FROM basalt_model_terminal_starts s
+        WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+      -- A Home attempt or a gateway refusal with this id already counts the request. A keyed probe:
+      -- as a NOT EXISTS the planner anti-joins the pool's whole history.
+      LEFT JOIN LATERAL (SELECT true AS counted FROM basalt_model_requests h
+        WHERE h.pool=s.pool AND h.source=ANY($2::character(64)[]) AND h.source<>$3
+          AND h.request_id IS NOT NULL AND h.request_id=s.request_id::text LIMIT 1) refusal ON true
+      WHERE ${finishedTimeRange}
         AND f.outcome <> 'unavailable'
-        AND NOT EXISTS (
-          SELECT 1 FROM basalt_model_requests h
-          WHERE h.pool=s.pool AND h.source=$3 AND h.request_id=s.request_id::text
-        )`
+        AND refusal.counted IS NULL
+        -- recent_home holds at least one Home attempt of every request that finished in the window
+        -- and has one.
+        AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)`
           : ""
       }
     )
