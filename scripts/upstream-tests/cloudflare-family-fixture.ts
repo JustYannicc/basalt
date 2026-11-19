@@ -22,6 +22,8 @@ import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementa
 // tests do, so root types never compile the whole hosted product.
 const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
+/** An upstream module, or undefined when the carried tree has no such file. */
+export const loadOptional = (path: string): Promise<unknown> => load(path).catch(() => undefined);
 type Operated = {
   readonly action: string;
   readonly changes?: number;

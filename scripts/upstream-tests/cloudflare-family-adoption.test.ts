@@ -16,6 +16,7 @@ import {
   providers,
   reasonOf,
   run,
+  teamA,
   world,
 } from "./cloudflare-family-fixture.ts";
 
@@ -257,6 +258,19 @@ test("after the GO, a replay stays quiet while people keep using the moved accou
       yield* sql`update executor_account_acquisitions set revision = 'r2' where account = 'acc_oauth'`;
       yield* sql`update executor_account_connections set expires_at = now() + interval '1 day' where id = 'con_token'`;
       assert.equal(yield* reasonOf(apply(go)), "succeeded", "the replay verifies the moved refs");
+      // The catalog app later moves to a provider of its own; its links no longer resolve to the
+      // family ref, but nothing names the retained one.
+      const renamed = catalogSource("cloudflare").map((file) =>
+        file.path === "index.ts"
+          ? {
+              ...file,
+              content: file.content.replace('name: "Cloudflare",', 'name: "Cloudflare staging",'),
+            }
+          : file,
+      );
+      const moved = yield* w.redeploy(teamA, w.toolA, renamed);
+      assert.notEqual(yield* w.requirement(moved.version.id), w.family);
+      assert.equal(yield* reasonOf(apply(go)), "succeeded", "the replay still verifies");
       // A moved row that names the retained ref again still fails it.
       yield* sql`update executor_account_connections set provider = ${w.retained} where id = 'con_token'`;
       assert.equal(

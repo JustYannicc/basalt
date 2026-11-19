@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect, Exit, Fiber } from "effect";
+import { SqlClient } from "effect/sql";
 import { CurrentTransformer } from "effect/sql/Statement";
 import {
   apply,
@@ -10,6 +11,8 @@ import {
   holdNextBuild,
   link,
   listed,
+  loadOptional,
+  ownerOf,
   reasonOf,
   run,
   teamA,
@@ -130,7 +133,7 @@ test("the GO locks every app that owns a version it moves", () =>
         Effect.provideService(CurrentTransformer, (statement) =>
           Effect.sync(() => {
             const [text, params] = statement.compile();
-            if (/for update nowait/iu.test(text)) locked.push(...params.map(String));
+            if (/for (?:no key )?update nowait/iu.test(text)) locked.push(...params.map(String));
             return statement;
           }),
         ),
@@ -139,5 +142,55 @@ test("the GO locks every app that owns a version it moves", () =>
       // Activating that older version or deploying the app waits for the GO and reads moved rows.
       assert.ok(locked.includes(other.app.id), "the GO holds the app's row lock");
       assert.equal(yield* settled(w.requestA), 0);
+    }),
+  ));
+
+type Guard = {
+  readonly requireRequirementProvider: (
+    sql: SqlClient.SqlClient,
+    target: { readonly app: string; readonly requirement: string },
+    account: { readonly owner: string; readonly provider: string },
+  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
+};
+test("a token account saved for a requirement after the GO cannot land on the retained ref", () =>
+  run(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const w = yield* world;
+      const guard = (yield* Effect.promise(() =>
+        loadOptional("apps/hosted/server/src/implementation/requirement-account-guard.ts"),
+      )) as Guard | undefined;
+      assert.ok(
+        guard,
+        "saving an account for a requirement checks the requirement's provider again",
+      );
+      // The request read the requirement before the GO; its insert transaction runs after it.
+      const { go } = yield* dryRun(w.requestA);
+      yield* apply(go);
+      const statements: string[] = [];
+      const save = (provider: string) =>
+        reasonOf(
+          sql.withTransaction(
+            guard.requireRequirementProvider(
+              sql,
+              { app: w.toolA, requirement: "cloudflare" },
+              { owner: ownerOf(teamA), provider },
+            ),
+          ),
+        ).pipe(
+          Effect.provideService(CurrentTransformer, (statement) =>
+            Effect.sync(() => {
+              statements.push(statement.compile()[0]);
+              return statement;
+            }),
+          ),
+        );
+      assert.notEqual(yield* save(w.retained), "succeeded", "the retained ref is refused");
+      assert.match(
+        statements.find((text) => /executor_apps/iu.test(text)) ?? "",
+        /^\s*update executor_apps/iu,
+        "it takes the app's row lock as deploys do before it reads the requirement",
+      );
+      assert.equal(yield* save(w.family), "succeeded");
     }),
   ));
