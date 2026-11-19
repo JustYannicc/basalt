@@ -64,6 +64,7 @@ function evaluate(
   options: {
     manualCron?: true;
     settingsProof?: true;
+    rootContainerProof?: true;
     candidateProof?: CandidateProof;
     releaseProof?: true;
     connectionProof?: true;
@@ -87,6 +88,7 @@ function evaluate(
       BUN_INSTALL_CACHE_DIR: join(scratch, "cache"),
       NATIVE_STACK_ROOT: realpathSync(root),
       NATIVE_STACK_SETTINGS_PROOF: String(options.settingsProof ?? false),
+      NATIVE_STACK_ROOT_CONTAINER_PROOF: String(options.rootContainerProof ?? false),
       NATIVE_STACK_CANDIDATE_PROOF: options.candidateProof ?? "",
       NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
       NATIVE_STACK_RELEASE_PROOF: String(options.releaseProof ?? false),
@@ -281,4 +283,24 @@ export function discoverScriptSettings(root: string): unknown {
 
 export function discoverCandidateSettings(root: string, candidateProof: CandidateProof): unknown {
   return evaluate(root, { candidateProof });
+}
+
+/**
+ * Deploys the real stack into empty state and plans it again unchanged. The pool Worker's answer
+ * comes from the installed Worker provider. A failed phase is named by its phase and error class.
+ */
+export function discoverRootContainerPlanProof(root: string): {
+  failed?: string;
+  error?: string;
+  resources: number;
+  /** Classes the pool Worker hosts, and every class it has a recorded namespace for. */
+  hosted: string[];
+  recorded: string[];
+  /** Whether the provider keeps the recorded namespaces readable while the Worker updates. */
+  readable?: boolean;
+  afterApply: { id: string; type: string; action: string }[];
+} {
+  return evaluate(root, { rootContainerProof: true }) as ReturnType<
+    typeof discoverRootContainerPlanProof
+  >;
 }
