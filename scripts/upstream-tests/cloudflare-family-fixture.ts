@@ -14,6 +14,7 @@ import {
   BuiltApp,
   RuntimeBuildFailed,
 } from "../../.upstream/packages/sdk/src/contracts/runtime.ts";
+import { ProviderDefinition } from "../../.upstream/packages/sdk/src/contracts/provider.ts";
 import { identifyProvider } from "../../.upstream/packages/sdk/src/implementation/provider.ts";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
 
@@ -85,6 +86,12 @@ const crypto = Crypto.make({
 export const identify = (provider: Parameters<typeof providerDeclaration>[0]) =>
   providerDeclaration(provider).pipe(
     Effect.flatMap((definition) => identifyProvider(definition, crypto)),
+  );
+
+/** The identity of a provider definition as a deploy stored it. */
+export const identifyStored = (definition: unknown) =>
+  Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
+    Effect.flatMap((decoded) => identifyProvider(decoded, crypto)),
   );
 
 type Files = readonly { readonly path: string; readonly content: string }[];

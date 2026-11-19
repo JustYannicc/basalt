@@ -10,9 +10,9 @@ import {
   dryRun,
   everything,
   identify,
+  identifyStored,
   link,
   listed,
-  productionMigrations,
   providers,
   reasonOf,
   run,
@@ -54,6 +54,17 @@ test("accounts connected under the catalog app's first declaration link to a sec
         "prv_723ba6038ee84547f30e619eae5d182081e413ff4088bf26c8d567c45facfa47",
         "the Cloudflare family's provider ref changed; ship an adoption for the previous ref",
       );
+      assert.equal(
+        (yield* identify(catalogProvider(catalogSource("cloudflare.published")))).identity,
+        w.retained,
+        "the retained ref is the one the first published declaration derived",
+      );
+      // The deciding input: what the deploys stored under the retained ref is the merge of both
+      // declarations, and it derives the family's identity.
+      const [stored] = yield* sql<{
+        definition: unknown;
+      }>`select definition from executor_providers where id = ${w.retained}`;
+      assert.equal((yield* identifyStored(stored!.definition)).identity, w.family);
       assert.equal(yield* w.requirement(w.versionsB[1]!), w.retained, "team B kept the same ref");
       assert.equal(yield* link(w.pipeline, "acc_token"), "RequirementMismatch:provider");
       assert.deepEqual(yield* listed(w.pipeline), []);
