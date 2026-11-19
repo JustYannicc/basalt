@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Cause, Clock, Effect, Exit, Fiber, Logger, Redacted } from "effect";
+import { Cause, Clock, Effect, Exit, Fiber, Logger, Option, Redacted } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
-
-const upstream = new URL("../../.upstream/", import.meta.url);
-const load = (path: string) => import(new URL(path, upstream).href);
-const { billingCatalogDeclaration, freeMembers } = await load(
-  "apps/hosted/cloud/src/contracts/billing-catalog.ts",
-);
-const { memberAllowance } = await load("apps/hosted/cloud/src/implementation/member-allowance.ts");
+import {
+  billingCatalogDeclaration,
+  freeMembers,
+} from "../../.upstream/apps/hosted/cloud/src/contracts/billing-catalog.ts";
+import type { MemberAllowanceUnavailable } from "../../.upstream/apps/hosted/cloud/src/contracts/billing-meter.ts";
+import { memberAllowance } from "../../.upstream/apps/hosted/cloud/src/implementation/member-allowance.ts";
 
 const { catalog } = billingCatalogDeclaration("ci", "sandbox");
 const customerId = `${catalog.namespace}:organization:org_fixture`;
@@ -134,7 +133,7 @@ const check = async (replies: Record<string, ReadonlyArray<Reply>>) => {
       while (fiber.pollUnsafe() === undefined && clock.currentTimeMillisUnsafe() - started < 30_000)
         yield* TestClock.adjust("100 millis");
       return {
-        exit: (yield* Fiber.join(fiber)) as Exit.Exit<number, unknown>,
+        exit: yield* Fiber.join(fiber),
         elapsed: clock.currentTimeMillisUnsafe() - started,
       };
     }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([capture]))),
@@ -153,11 +152,12 @@ const allowed = (exit: Exit.Exit<number, unknown>) => {
   );
   return exit.value;
 };
-const refused = (exit: Exit.Exit<number, unknown>) => {
+const refused = (exit: Exit.Exit<number, MemberAllowanceUnavailable>) => {
   assert.ok(Exit.isFailure(exit), "the allowance check must fail closed");
-  const error = Cause.squash(exit.cause) as Record<string, unknown>;
-  assert.equal(error._tag, "MemberAllowanceUnavailable");
-  return error;
+  const error = Cause.findErrorOption(exit.cause);
+  assert.ok(Option.isSome(error), `the check must fail, not die: ${Cause.pretty(exit.cause)}`);
+  assert.equal(error.value._tag, "MemberAllowanceUnavailable");
+  return error.value;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -188,10 +188,13 @@ test("a transient Autumn failure then the existing customer admits the invitatio
 });
 
 test("persistent Autumn failure fails closed with its safe reason and the logged reference", async () => {
-  for (const [failure, category] of [
-    [unavailable, { operation: "getCustomer", reason: "status", status: 503 }],
-    [transport, { operation: "getCustomer", reason: "transport", status: undefined }],
-  ] as const) {
+  for (const { failure, category } of [
+    { failure: unavailable, category: { operation: "getCustomer", reason: "status", status: 503 } },
+    {
+      failure: transport,
+      category: { operation: "getCustomer", reason: "transport", status: undefined },
+    },
+  ]) {
     const result = await check({ "customers.get": [failure, failure, failure] });
     const error = refused(result.exit);
     assert.deepEqual(
