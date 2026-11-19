@@ -106,7 +106,7 @@ const succeeded: Record<string, unknown> = {
 };
 
 /** Run Cloud management setup through the real session client against one scripted product response. */
-const setup = (failing: string, response: () => Response) => {
+const setup = (failing: string, response: (path: string) => Response) => {
   const records: ManagementSetupRecord[] = [];
   const sent: string[] = [];
   const http = HttpClient.make((request) =>
@@ -117,7 +117,7 @@ const setup = (failing: string, response: () => Response) => {
       sent.push(`${request.method} ${url.pathname}`);
       return HttpClientResponse.fromWeb(
         request,
-        url.pathname === failing ? response() : Response.json(succeeded[url.pathname]),
+        url.pathname === failing ? response(url.pathname) : Response.json(succeeded[url.pathname]),
       );
     }),
   );
@@ -149,6 +149,11 @@ const gatewayBodies = [
       }),
   },
   { kind: "JSON", response: () => Response.json({ error: "Bad gateway" }, { status: 502 }) },
+  // Only a status check, not the schema, can reject a failed read whose body would decode.
+  {
+    kind: "schema-valid",
+    response: (path: string) => Response.json(succeeded[path], { status: 502 }),
+  },
 ] as const;
 
 for (const read of reads)

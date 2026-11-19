@@ -48,7 +48,8 @@ diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/managemen
 --- a/e2e/support/management-setup-diagnostics.ts
 +++ b/e2e/support/management-setup-diagnostics.ts
 @@ -1,16 +1,68 @@
- /** Setup runs before case Evidence exists. These records contain no response values. */
+-/** Setup runs before case Evidence exists. These records contain no response values. */
++/** Setup runs before case Evidence exists, so its failures and records carry closed fields, never response values. */
  import { Cause, Effect, Exit, Schema } from "effect";
 -import { RequestFailed } from "./api.ts";
 +import { RequestFailed, body } from "./api.ts";
