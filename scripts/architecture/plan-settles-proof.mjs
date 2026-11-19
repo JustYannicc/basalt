@@ -42,7 +42,7 @@ export const provePlanSettles = (stack, recompile) =>
       origin,
       pooledOrigin: origin,
       connectionUrl: Redacted.make("postgresql://fixture:fixture@fixture.invalid/postgres"),
-      text: "fixture",
+      text: Redacted.make("fixture"),
       enabled: true,
       mtlsCertificateId: "fixture",
       workerId: fqn,
