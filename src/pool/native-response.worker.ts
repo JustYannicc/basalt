@@ -1,5 +1,6 @@
 import { bindModelLifetime } from "./model-lifetime.worker.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
+import { connectionEnded, reportStreamBroken } from "./stream-broken.ts";
 
 export function nativeControlPair(headers: Headers) {
   const pair = new WebSocketPair();
@@ -61,7 +62,7 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
           if (ended || failing) return;
           finish();
           void reader.cancel().catch(() => {});
-          controller.error(new Error("Connection ended"));
+          controller.error(connectionEnded());
         };
         lease.signal.addEventListener("abort", close, { once: true });
         detach = () => lease.signal.removeEventListener("abort", close);
@@ -78,6 +79,7 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
           } else controller.enqueue(value.value);
         } catch (error) {
           if (ended) return;
+          reportStreamBroken("native", error);
           failing = true;
           try {
             await lease.failed?.(error);

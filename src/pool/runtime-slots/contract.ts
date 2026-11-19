@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import type { RuntimeDistance } from "../runtime-distance.ts";
 
 const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 const Counter = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
@@ -90,6 +91,7 @@ export interface SlotHealth {
   identity: SlotIdentity;
   // Uses the controller's monotonic clock, like RuntimeProtection.
   policyLeaseUntil: number;
+  database?: RuntimeDistance;
 }
 export interface SlotDriver {
   start(target: SlotTarget, signal: AbortSignal): Promise<SlotHealth>;
