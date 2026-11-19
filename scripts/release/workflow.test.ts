@@ -279,7 +279,7 @@ test("a healing release waits for the root's new boot within its policy's bound,
   );
   assert.match(
     step("Accept the release through the live pool"),
-    /expect=\(--expect restart --within "\$within"\)/u,
+    /expect=\(--expect restart --within "\$within" --serving \.local\/release\/serving\.json\)/u,
   );
   assert.match(
     step("Accept the release through the live pool"),
