@@ -509,12 +509,15 @@ jobs:
       - run: bun install --cwd clients/desktop --frozen-lockfile
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
-      - name: Verify the cached Electron release against its locked checksums
-        run: node scripts/ci/desktop-release-assets.ts dist
-      # Bash on every runner: Windows PowerShell splits a native argument like -c.electronDist at its dot.
+      # The generated config is package.json's build plus the locked Electron checksums, so packaging
+      # fetches no SHASUMS256.txt; DEBUG logs where @electron/get found the zip.
       - name: Package the unsigned development client
         shell: bash
-        run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.electronDist="$ELECTRON_DIST_ZIP"
+        env:
+          DEBUG: "@electron/get*"
+        run: |
+          node scripts/ci/desktop-release-assets.ts builder-config "$RUNNER_TEMP/electron-builder.json"
+          bun run --cwd clients/desktop package:${{ matrix.platform }} --config "$RUNNER_TEMP/electron-builder.json"
       - uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/basalt-desktop-release-assets

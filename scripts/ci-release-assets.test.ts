@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
@@ -21,7 +20,7 @@ import {
   omitReleaseLifecycles,
   releaseOnlyDependencies,
 } from "./ci/dependency-lifecycles.ts";
-import { desktopAssetKey, verifiedElectronZip } from "./ci/desktop-release-assets.ts";
+import { desktopAssetKey, electronBuilderConfig } from "./ci/desktop-release-assets.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 
 test("Check and release preparations reuse only their own dependency generations", async () => {
@@ -224,37 +223,86 @@ test("the CI guard refuses release hosts for fetch, HTTP and direct socket resol
   );
 });
 
-test("desktop packaging uses only an Electron zip whose bytes match the locked checksum", () => {
-  const cache = mkdtempSync(join(tmpdir(), "basalt-electron-cache-"));
+const desktopManifest = new URL("../clients/desktop/package.json", import.meta.url);
+
+test("the electron-builder config is package.json's build plus only the Electron checksums", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "basalt-builder-config-"));
   try {
-    const name = "electron-v1.0.0-linux-x64.zip";
-    const bytes = Buffer.from("electron zip bytes");
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
-    assert.equal(verifiedElectronZip(cache, name, sha256), undefined);
-    mkdirSync(join(cache, "stale"), { recursive: true });
-    writeFileSync(join(cache, "stale", name), "other bytes");
-    assert.equal(verifiedElectronZip(cache, name, sha256), undefined);
-    mkdirSync(join(cache, "mirror-hash"), { recursive: true });
-    writeFileSync(join(cache, "mirror-hash", name), bytes);
-    assert.equal(verifiedElectronZip(cache, name, sha256), join(cache, "mirror-hash", name));
+    const checksums = { "electron-v1.0.0-linux-x64.zip": "a".repeat(64) };
+    mkdirSync(join(fixture, "node_modules", "electron"), { recursive: true });
+    writeFileSync(join(fixture, "package.json"), readFileSync(desktopManifest));
+    writeFileSync(join(fixture, "node_modules/electron/checksums.json"), JSON.stringify(checksums));
+    const { build } = JSON.parse(readFileSync(desktopManifest, "utf8"));
+    // With mirrorOptions instead, ElectronFramework keeps only the mirror and drops the checksums.
+    assert.deepEqual(electronBuilderConfig(createRequire(join(fixture, "package.json"))), {
+      ...build,
+      electronDownload: { unsafelyDisableChecksums: false, checksums },
+    });
   } finally {
-    rmSync(cache, { recursive: true, force: true });
+    rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+const installedElectron = new URL(
+  "../clients/desktop/node_modules/electron/checksums.json",
+  import.meta.url,
+);
+test(
+  "the generated electron-builder config carries the locked electron's checksums",
+  { skip: !existsSync(installedElectron) && "needs clients/desktop dependencies" },
+  () => {
+    const fixture = mkdtempSync(join(tmpdir(), "basalt-builder-config-"));
+    try {
+      const output = join(fixture, "electron-builder.json");
+      const script = new URL("./ci/desktop-release-assets.ts", import.meta.url).pathname;
+      execFileSync(process.execPath, [script, "builder-config", output], { stdio: "pipe" });
+      const config = JSON.parse(readFileSync(output, "utf8"));
+      const checksums = JSON.parse(readFileSync(installedElectron, "utf8"));
+      assert.deepEqual(config, {
+        ...JSON.parse(readFileSync(desktopManifest, "utf8")).build,
+        electronDownload: { unsafelyDisableChecksums: false, checksums },
+      });
+      const lock = readFileSync(new URL("../clients/desktop/bun.lock", import.meta.url), "utf8");
+      const version = /^    "electron": \["electron@([^"\s]+)"/m.exec(lock)![1];
+      for (const platform of ["linux-x64", "win32-x64"])
+        assert.match(checksums[`electron-v${version}-${platform}.zip`], /^[0-9a-f]{64}$/);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+test("both Electron packaging steps package from the generated config in bash", () => {
   const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
-  // Every Electron packaging step, in Check and in the release, takes the verified zip.
-  for (const [workflow, id, step] of [
-    ["ci.yml", "client-desktop", "Package the unsigned development client"],
-    ["clients-release.yml", "desktop", "Package the app"],
+  const config = '"$RUNNER_TEMP/electron-builder.json"';
+  for (const { workflow, job, step, overrides } of [
+    {
+      workflow: "ci.yml",
+      job: "client-desktop",
+      step: "Package the unsigned development client",
+      overrides: "",
+    },
+    {
+      workflow: "clients-release.yml",
+      job: "desktop",
+      step: "Package the app",
+      // Published builds carry the permanent identifiers; -c values merge over the --config file.
+      overrides: " -c.appId=run.signalbox.client -c.productName=Signalbox",
+    },
   ]) {
     const path = new URL("../.github/workflows/" + workflow, import.meta.url);
-    const job = parse(readFileSync(path, "utf8")).jobs[id!];
-    const names = job.steps.map((entry: { name?: string }) => entry.name);
-    const verify = names.indexOf("Verify the cached Electron release against its locked checksums");
-    const packaging = names.indexOf(step);
-    assert.ok(verify >= 0 && verify < packaging, workflow);
-    assert.equal(job.steps[verify].if, job.steps[packaging].if, workflow);
-    // PowerShell would split -c.electronDist at its dot on Windows.
-    assert.equal(job.steps[packaging].shell, "bash", workflow);
-    assert.match(job.steps[packaging].run, /-c\.electronDist="\$ELECTRON_DIST_ZIP"$/, workflow);
+    const steps: { name?: string; shell?: string; run?: string }[] = parse(
+      readFileSync(path, "utf8"),
+    ).jobs[job].steps;
+    const packaging = steps.find((entry) => entry.name === step);
+    assert.ok(packaging?.run, workflow);
+    // PowerShell would split a native argument like -c.appId at its dot on Windows.
+    assert.equal(packaging.shell, "bash", workflow);
+    assert.deepEqual(packaging.run.trim().split("\n"), [
+      `node scripts/ci/desktop-release-assets.ts builder-config ${config}`,
+      `bun run --cwd clients/desktop package:\${{ matrix.platform }} --config ${config}${overrides}`,
+    ]);
+    const electronBuilderSteps = steps.filter((entry) => /\bpackage:/.test(entry.run ?? ""));
+    assert.deepEqual(electronBuilderSteps, [packaging], workflow);
   }
 });
