@@ -226,7 +226,11 @@ for (const [reading, start] of otherReads)
       setting,
       (value) => value.value?.revision === ANSWER.revision,
     );
-    assert.equal(show(answered), "Success revision 3", "the read's answer replaces the saved value");
+    assert.equal(
+      show(answered),
+      "Success revision 3",
+      "the read's answer replaces the saved value",
+    );
     assert.deepEqual(answered.value?.enabledTools, [READ.name, WRITE.name, REVIEW.name]);
     await until(
       registry,
@@ -260,5 +264,9 @@ test("a read that fails after a save was confirmed during it keeps the saved set
   const failed = await until(registry, setting, (value) => value._tag === "Failure");
   assert.equal(failed.waiting, false, "the failed read is no longer in flight");
   const kept = AsyncResult.value(failed) as { _tag: string; value?: { revision: number } };
-  assert.equal(kept.value?.revision, SAVED.revision, "a transport failure keeps the confirmed save");
+  assert.equal(
+    kept.value?.revision,
+    SAVED.revision,
+    "a transport failure keeps the confirmed save",
+  );
 });
