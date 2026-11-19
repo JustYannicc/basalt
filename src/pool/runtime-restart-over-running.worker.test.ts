@@ -162,6 +162,8 @@ test(
     // Production's six-account pool: clean, expired since a few seconds after the latch, never
     // renewed, because every install and Home call since was refused.
     now += 3_600_000;
+    // The new code's clock first sees the refusal after its release, as production's will.
+    await f.send("recovery-reset", { operationId: "incident-release" });
     await passes(f, 1);
     await assertStuck(f, previous, epoch);
     now += unservingBoundMs;
