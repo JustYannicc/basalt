@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   changedRows,
   destroyTargets,
+  plannedReasons,
   remainingRows,
   updatesWorkerWithoutReadiness,
   type Snapshot,
@@ -59,7 +60,46 @@ test("what remains after apply is named with the properties that differ, never t
       action: "update",
       changedProps: ["bindings", "compatibility"],
       bindings: ["POOL"],
+      // Resolved resources inside props refer back to each other; the diff stops a few levels down.
+      reasons: [
+        "props.bindings.POOL.worker.container: changed",
+        "props.bindings.POOL.worker.name: changed",
+        "props.compatibility: absent -> <withheld>",
+      ],
     },
+  ]);
+});
+
+test("a row left after apply says why Alchemy plans it, binding path by binding path", () => {
+  const binding = (hash: string) => ({
+    bindings: [
+      { type: "durable_object_namespace", name: "PoolContainer", className: "PoolContainer" },
+    ],
+    containers: [{ className: "PoolContainer", hash }],
+  });
+  const node = (data: unknown, recorded: unknown) => ({
+    action: "update",
+    props: { image: "same" },
+    state: {
+      status: "updated",
+      props: { image: "same" },
+      bindings: [{ sid: "PoolContainer", data: recorded }],
+    },
+    bindings: [{ sid: "PoolContainer", action: "update", data }],
+  });
+  const plan = {
+    resources: {
+      Changed: node(binding("b".repeat(16)), binding("a".repeat(16))),
+      Same: node(binding("a".repeat(16)), binding("a".repeat(16))),
+    },
+    deletions: {},
+  } as never;
+  assert.deepEqual(plannedReasons(plan, "Changed"), [
+    `bindings.PoolContainer.containers.0.hash: ${"a".repeat(16)} -> ${"b".repeat(16)}`,
+  ]);
+  // Planned as an update with nothing that differs: the provider's own diff asked for it.
+  assert.deepEqual(plannedReasons(plan, "Same"), [
+    "bindings.PoolContainer: update, no leaf differs",
   ]);
 });
 
@@ -99,8 +139,16 @@ test("a command that re-runs on every deploy is not a change left after apply", 
         action: "update",
         changedProps: [],
         bindings: [],
+        reasons: [],
       },
-      { fqn: "Seed", type: "Command.Exec", action: "create", changedProps: [], bindings: [] },
+      {
+        fqn: "Seed",
+        type: "Command.Exec",
+        action: "create",
+        changedProps: [],
+        bindings: [],
+        reasons: [],
+      },
     ],
   );
 });
@@ -186,7 +234,7 @@ test("a plan that did not settle says which rows and which properties still diff
   const report = failureReport(ChangesRemainAfterApply.of(remainingRows(after)));
   assert.match(
     report.publicText,
-    /ChangesRemainAfterApply: check=read-back .*remaining=Api \(Cloudflare\.Worker update: env, binding DB\)/u,
+    /ChangesRemainAfterApply: check=read-back .*remaining=Api \(Cloudflare\.Worker update: env, binding DB; why: props\.env\.A: <withheld> -> <withheld>\)/u,
   );
   assert.doesNotMatch(report.publicText, /Migrations/u, "a command that re-runs is not a leftover");
 });
