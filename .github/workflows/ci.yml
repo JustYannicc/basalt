@@ -818,7 +818,7 @@ jobs:
   catalog-compat:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'catalog-compat')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'catalog-compat') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'catalog-compat') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -853,7 +853,7 @@ jobs:
   host-managed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -906,7 +906,7 @@ jobs:
   host-managed-accounts-adopted:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-adopted')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-adopted') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-adopted') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -943,7 +943,7 @@ jobs:
   host-managed-accounts-pool:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-pool')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-pool') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-pool') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -989,7 +989,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-local') && 'boat-large' || vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1030,7 +1030,7 @@ jobs:
   host-managed-accounts-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-cloud') && 'boat-large' || vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1075,7 +1075,7 @@ jobs:
   host-managed-accounts-cloud-actions:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud-actions')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-cloud-actions') && 'boat-large' || vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1420,7 +1420,7 @@ jobs:
   production-ops:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1623,7 +1623,7 @@ jobs:
   compiler-diagnostics:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'compiler-diagnostics')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'compiler-diagnostics') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'compiler-diagnostics') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1820,7 +1820,7 @@ jobs:
   contributed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'contributed-accounts') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'contributed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1948,6 +1948,17 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # Seven independent checks, about 22 minutes in a row; three shards of about 7 minutes each.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            checks: [inventory, reset-control]
+          - shard: 2
+            checks: [recipes, scoped-changes]
+          - shard: 3
+            checks: [overview, removal-intent, reset-recovery]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -1963,19 +1974,26 @@ jobs:
       - name: Install the suite's browser engine
         uses: ./.github/actions/setup-browser
       - name: Verify the Cloud inventory and exact-ID token retirement tooling
+        if: contains(matrix.checks, 'inventory')
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling)" --workers 1
       - name: Verify authorized native pool removal intent
+        if: contains(matrix.checks, 'removal-intent')
         run: node e2e/pool-removal-intent.mjs .generated/pool-removal-intent/ci
       - name: Verify native pool recipe journeys with synthetic observations
+        if: contains(matrix.checks, 'recipes')
         run: node e2e/pool-recipe-checks.mjs .generated/pool-recipe-checks/ci
       - name: Verify banked reset recovery with a synthetic provider
+        if: contains(matrix.checks, 'reset-recovery')
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
       - name: Verify the banked reset control in a browser with a synthetic provider
+        if: contains(matrix.checks, 'reset-control')
         run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
       - name: Verify scoped account and pool updates without idle polling
+        if: contains(matrix.checks, 'scoped-changes')
         run: node e2e/scoped-change-consumers.mjs .generated/scoped-change-consumers/ci
       - name: Verify the pool usage overview in a browser with synthetic usage
+        if: contains(matrix.checks, 'overview')
         run: node e2e/pool-overview-ui.mjs .generated/pool-overview-ui/ci
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -1984,7 +2002,7 @@ jobs:
         if: always()
         with:
           include-hidden-files: true
-          name: pool-inventory-e2e
+          name: pool-inventory-e2e-${{ matrix.shard }}
           path: |
             .generated/pool-removal-intent/**/report.json
             .generated/pool-removal-intent/**/partial-checks.json
@@ -2554,7 +2572,14 @@ jobs:
   pool-runtime:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-runtime')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    # The longest job of a full Check, in two shards that each build the candidate image. The
+    # compatibility shard also loads the frozen compatibility images and runs the files that read
+    # them plus the one-off proofs; the contracts shard runs every other pool test file.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [contracts, compatibility]
     services:
       postgres:
         image: postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
@@ -2580,6 +2605,7 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Prove committed change locks and account source read contention on PostgreSQL
+        if: matrix.shard == 'compatibility'
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
         run: node --experimental-transform-types --test --test-concurrency=1 scripts/upstream-tests/account-change-postgres.test.ts scripts/upstream-tests/change-serializable-postgres.test.ts scripts/upstream-tests/account-source-read-locks-postgres.test.ts
@@ -2590,51 +2616,33 @@ jobs:
         run: |
           echo "Runner disk before cleanup (bytes)"
           df -B1 /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          # The builds peak near 15 GB; deleting the preinstalled SDKs takes over a minute, so only small disks pay it.
+          if [ "$(df --output=avail -B1G / | tail -n 1 | tr -d ' ')" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          fi
           docker builder prune --all --force
           echo "Runner disk after cleanup (bytes)"
           df -B1 /
-      - name: Restore the pinned pool compatibility archives
-        uses: ./.github/actions/pool-release-assets
+      - name: Load the compatibility images
+        if: matrix.shard == 'compatibility'
+        uses: ./.github/actions/pool-compatibility-images
       - name: Build the pinned pool image
-        shell: bash
         run: |
-          build_pool_image() {
-            local attempt status log
-            for attempt in 1 2 3; do
-              log=$(mktemp "$RUNNER_TEMP/pool-build.XXXXXX")
-              if docker build "$@" 2>&1 | tee "$log"; then
-                return 0
-              else
-                status=$?
-              fi
-              if (( attempt == 3 )) || ! grep -F 'read "https://proxy.golang.org/' "$log" | grep -E '[.]zip": stream error: stream ID [0-9]+; INTERNAL_ERROR; received from peer' > /dev/null; then
-                return "$status"
-              fi
-              echo "::warning::Go module proxy reset the download stream; retrying pool build after attempt $attempt/3"
-              sleep "$((attempt * 5))"
-            done
-          }
-          mkdir -p "$RUNNER_TEMP/pool-usage-privacy-baseline"
-          git archive b35314687e8972f64d7c1c3c73a1492a50fb7bac containers/pool | tar -x -C "$RUNNER_TEMP/pool-usage-privacy-baseline"
-          node scripts/ci/pool-release-assets.ts context "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
-          build_pool_image --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
-          build_pool_image --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           echo "Runner disk before compatibility build cache cleanup (bytes)"
           df -B1 /
           docker builder prune --all --force
-          docker image inspect basalt-1409-pool:usage-privacy-baseline basalt-1409-pool:privacy-legacy > /dev/null
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
-          build_pool_image --target runtime --tag basalt-1409-pool:test containers/pool
-      - name: Allow pool fixture HTTP from Docker bridges on Boat
-        if: contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime')
+          bash scripts/ci/pool-image-build.sh --target runtime --tag basalt-1409-pool:test containers/pool
+      - name: Allow pool fixture HTTP from Docker bridges on self-hosted runners
+        if: runner.environment == 'self-hosted'
         run: |
           sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
           sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
       - name: Verify containers can reach the host fixture listeners
         run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
       - name: Start the isolated transaction pooler
+        if: matrix.shard == 'compatibility'
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
@@ -2668,6 +2676,7 @@ jobs:
           docker exec --user postgres "$POSTGRES_CONTAINER" pgbouncer -d /tmp/budget-pgbouncer.ini
           node scripts/pool-tests/database-budget/setup.ts
       - name: Verify Home connection limits and concurrent liveness on Postgres
+        if: matrix.shard == 'compatibility'
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
         run: |
@@ -2678,24 +2687,32 @@ jobs:
           docker rm "$proof"
           node scripts/pool-tests/database-budget/setup.ts cleanup
       - name: Prove the shared budget across independent Home processes
+        if: matrix.shard == 'compatibility'
         run: node --test --test-concurrency=1 scripts/pool-tests/shared-database-budget.test.ts scripts/pool-tests/database-direct-control.test.ts scripts/pool-tests/database-retirement.test.ts scripts/pool-tests/database-verification.test.ts
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
           POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
       - name: Compile and serve the SQLite upload worker assets
+        if: matrix.shard == 'contracts'
         run: node scripts/pool-tests/sqlite-compiler-proof.mjs "${{ runner.temp }}/sqlite-upload-compiled"
       - name: Check the pool runtime and database contracts
-        run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
+        run: |
+          list=$(node scripts/ci/pool-test-shard.ts "$POOL_TEST_SHARD")
+          mapfile -t files <<< "$list"
+          node --test --test-concurrency=1 "${files[@]}"
         env:
+          POOL_TEST_SHARD: ${{ matrix.shard }}
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           SQLITE_COMPILED_OUTPUT: ${{ runner.temp }}/sqlite-upload-compiled
           POOL_TEST_IMAGE: basalt-1409-pool:test
           POOL_TEST_LEGACY_IMAGE: basalt-1409-pool:privacy-legacy
           POOL_TEST_USAGE_PRIVACY_IMAGE: basalt-1409-pool:usage-privacy-baseline
       - name: Set up the import flow's browser
+        if: matrix.shard == 'compatibility'
         uses: ./.github/actions/setup-browser
       - name: Verify usage imports through the pool app and database
+        if: matrix.shard == 'compatibility'
         run: node --test scripts/pool-ui-tests/usage-import.test.mjs
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
@@ -2914,7 +2931,7 @@ jobs:
   account-acquisition:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-acquisition') && 'boat-large' || 'ubuntu-latest' }}
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-acquisition') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
