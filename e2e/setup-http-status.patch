@@ -1,0 +1,173 @@
+diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
+--- a/e2e/support/management-app.ts
++++ b/e2e/support/management-app.ts
+@@ -1,13 +1,14 @@
+ /** Cloud setup waits for committed provisioning before checking the public inventory. */
+ import { Effect, Schedule, Schema } from "effect";
+ import { Actors } from "./actors.ts";
+-import { Api, SessionClients, body, type RequestFailed, type Session } from "./api.ts";
++import { Api, SessionClients, type RequestFailed, type Session } from "./api.ts";
+ import { Inventory } from "./contracts.ts";
+ import { fixtureRequest, FixtureFailed } from "../sdk/fixtures.ts";
+ import { Target } from "./platform.ts";
+ import type { Response } from "./platform.ts";
+ import {
+   managementSetupDiagnostics,
++  setupBody,
+   type ManagementSetupRecord,
+ } from "./management-setup-diagnostics.ts";
+ 
+@@ -45,15 +46,13 @@ export const prepareManagementApp = (
+     yield* diagnostic.step("prepare", (response) =>
+       clients.request(actor, "POST", "/api/onboarding/prepare").pipe(
+         Effect.tap((value) => Effect.sync(() => response(value))),
+-        Effect.flatMap((value) => body(Schema.Struct({ status: Schema.Literal("ready") }), value)),
++        setupBody("prepare", Schema.Struct({ status: Schema.Literal("ready") })),
+       ),
+     );
+     const session = yield* diagnostic.step("session", (response) =>
+       clients.request(actor, "GET", "/api/auth/get-session").pipe(
+         Effect.tap((value) => Effect.sync(() => response(value))),
+-        Effect.flatMap((value) =>
+-          body(Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }), value),
+-        ),
++        setupBody("session", Schema.Struct({ user: Schema.Struct({ id: Schema.String }) })),
+       ),
+     );
+     yield* diagnostic.step("provisioning", () =>
+@@ -88,7 +87,7 @@ const readManagementApp = (
+ ) =>
+   Effect.gen(function* () {
+     const root = `/api/organizations/${organizationId}`;
+-    const inventory = yield* body(Inventory, yield* request(`${root}/inventory`));
++    const inventory = yield* request(`${root}/inventory`).pipe(setupBody("inventory", Inventory));
+     const app = inventory.apps.find((app) => app.slug === "executor");
+     if (app === undefined)
+       return yield* new FixtureFailed({ operation: "Executor app provisioning" });
+diff --git a/e2e/support/management-setup-diagnostics.ts b/e2e/support/management-setup-diagnostics.ts
+--- a/e2e/support/management-setup-diagnostics.ts
++++ b/e2e/support/management-setup-diagnostics.ts
+@@ -1,16 +1,66 @@
+ /** Setup runs before case Evidence exists. These records contain no response values. */
+ import { Cause, Effect, Exit, Schema } from "effect";
+-import { RequestFailed } from "./api.ts";
++import { RequestFailed, body } from "./api.ts";
+ import type { Response } from "./platform.ts";
+ 
+-type Step = "prepare" | "session" | "provisioning" | "inventory";
++const requests = {
++  prepare: { method: "POST", route: "/api/onboarding/prepare" },
++  session: { method: "GET", route: "/api/auth/get-session" },
++  provisioning: { method: "POST", route: "/management-provisioned" },
++  inventory: { method: "GET", route: "/api/organizations/:organization/inventory" },
++} as const;
++type Step = keyof typeof requests;
++
++/** A failed setup status names its fixed operation only: no IDs, URLs, bodies or headers. */
++export class SetupRequestFailed extends Schema.TaggedError<SetupRequestFailed>()(
++  "SetupRequestFailed",
++  {
++    operation: Schema.Literals(["prepare", "session", "inventory"]),
++    method: Schema.Literals(["GET", "POST"]),
++    status: Schema.Number,
++  },
++) {
++  override get message() {
++    return `setup ${this.method} ${this.operation} → ${this.status}`;
++  }
++}
++
++const succeeded = (status: number) => status >= 200 && status < 300;
++
++/** Check a setup response's status before any schema sees its body. */
++export const setupBody =
++  <A>(operation: SetupRequestFailed["operation"], schema: Schema.ConstraintDecoder<A, never>) =>
++  <E, R>(response: Effect.Effect<Response, E, R>) => {
++    const failed = (status: number) =>
++      new SetupRequestFailed({ operation, method: requests[operation].method, status });
++    return response.pipe(
++      // A non-JSON error page fails in the client with its status; name the same closed fields.
++      Effect.mapError((error) =>
++        Schema.is(RequestFailed)(error) && error.status !== undefined && !succeeded(error.status)
++          ? failed(error.status)
++          : error,
++      ),
++      Effect.flatMap((value) =>
++        succeeded(value.status) ? body(schema, value) : Effect.fail(failed(value.status)),
++      ),
++    );
++  };
++
+ export interface ManagementSetupRecord {
+   readonly step: Step;
+   readonly method: "GET" | "POST";
+   readonly route: string;
+   readonly startedAt: number;
+   finishedAt?: number;
+-  outcome: "started" | "completed" | "schema" | "request" | "fixture" | "interrupted" | "other";
++  outcome:
++    | "started"
++    | "completed"
++    | "schema"
++    | "status"
++    | "request"
++    | "fixture"
++    | "interrupted"
++    | "other";
+   response?: {
+     readonly status: number;
+     readonly shape: "object" | "array" | "null" | "string" | "number" | "boolean" | "other";
+@@ -27,15 +77,9 @@ export const managementSetupDiagnostics = (
+     work: (response: (response: Response) => void) => Effect.Effect<A, E, R>,
+   ) =>
+     Effect.suspend(() => {
+-      const request = {
+-        prepare: { method: "POST", route: "/api/onboarding/prepare" },
+-        session: { method: "GET", route: "/api/auth/get-session" },
+-        provisioning: { method: "POST", route: "/management-provisioned" },
+-        inventory: { method: "GET", route: "/api/organizations/:organization/inventory" },
+-      } as const;
+       const record: ManagementSetupRecord = {
+         step: name,
+-        ...request[name],
++        ...requests[name],
+         startedAt: Date.now(),
+         outcome: "started",
+       };
+@@ -91,14 +135,16 @@ export const managementSetupDiagnostics = (
+               ? "interrupted"
+               : Schema.isSchemaError(error)
+                 ? "schema"
+-                : Schema.is(RequestFailed)(error)
+-                  ? "request"
+-                  : typeof error === "object" &&
+-                      error !== null &&
+-                      "_tag" in error &&
+-                      error._tag === "FixtureFailed"
+-                    ? "fixture"
+-                    : "other";
++                : Schema.is(SetupRequestFailed)(error)
++                  ? "status"
++                  : Schema.is(RequestFailed)(error)
++                    ? "request"
++                    : typeof error === "object" &&
++                        error !== null &&
++                        "_tag" in error &&
++                        error._tag === "FixtureFailed"
++                      ? "fixture"
++                      : "other";
+           }),
+         ),
+       );
+diff --git a/e2e/tests/import-runtime-evidence.spec.ts b/e2e/tests/import-runtime-evidence.spec.ts
+--- a/e2e/tests/import-runtime-evidence.spec.ts
++++ b/e2e/tests/import-runtime-evidence.spec.ts
+@@ -112,7 +112,7 @@ layer(HostedLive, { excludeTestServices: true })("Import runtime evidence", (it)
+           expect(Exit.isFailure(rejected)).toBe(true);
+           expect(setup).toHaveLength(1);
+           expect(setup[0]!.step).toBe("prepare");
+-          expect(setup[0]!.outcome).toBe("schema");
++          expect(setup[0]!.outcome).toBe("status");
+           expect(setup[0]!.response?.status).toBe(401);
+           expect(setup[0]!.response?.statusField).toBe("missing");
+           expect(JSON.stringify(setup)).not.toContain(actors.organization.id);
