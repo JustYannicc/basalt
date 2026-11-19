@@ -34,6 +34,7 @@ import {
 import { hostedMcpBackend } from "../../.upstream/apps/hosted/server/src/implementation/mcp.ts";
 import { obsidianConnectionInput } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
 import { cloudVaultDrives } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts";
+import { vaultDevicesOnly } from "../../.upstream/apps/hosted/server/src/implementation/vault-device-grants.ts";
 import { storageFixture } from "./fixture.ts";
 import { grantStore } from "./grant-fixture.ts";
 import { vaultObject, type ArtifactsNamespace } from "./object.ts";
@@ -142,8 +143,8 @@ const hostPath = (vaultOf: (app: string) => ReturnType<typeof vaultObject>) =>
     yield* database.migrate;
     const grants = yield* grantStore(organization);
     for (const ddl of policyTables) yield* sql.unsafe(ddl);
-    // Grant storage is the request's own database, as in the cloud's composition.
-    const drives = cloudVaultDrives(coordinator, Effect.succeed(sql));
+    // Grant storage is the request's own database, as in the cloud executor's composition.
+    const drives = vaultDevicesOnly(cloudVaultDrives(coordinator), Effect.succeed(sql));
     const executor = yield* createExecutor({
       database,
       secret: Redacted.make("b".repeat(64)),
@@ -277,7 +278,11 @@ test("devices() lists the vault's Connect Obsidian devices, never an agent's gra
       yield* mcp(tablet, tool(heartbeat));
       // The agents make every sync call shape: the heartbeat, a change range and an import call.
       clock.now += 1000;
-      const changes = { operation: "drive", method: "changes", input: { from: null, to: listing.at } };
+      const changes = {
+        operation: "drive",
+        method: "changes",
+        input: { from: null, to: listing.at },
+      };
       for (const grant of [agent, scoped, reader]) {
         yield* mcp(grant, tool(heartbeat));
         yield* mcp(grant, tool(changes));
@@ -286,13 +291,20 @@ test("devices() lists the vault's Connect Obsidian devices, never an agent's gra
       yield* mcp(
         agent,
         tool(
-          { operation: "drive", method: "planImport", input: { id, page: 0, entries: [], final: true } },
+          {
+            operation: "drive",
+            method: "planImport",
+            input: { id, page: 0, entries: [], final: true },
+          },
           "mutation",
         ),
       );
       yield* mcp(
         agent,
-        tool({ operation: "drive", method: "runImport", input: { id, request: heartbeat } }, "mutation"),
+        tool(
+          { operation: "drive", method: "runImport", input: { id, request: heartbeat } },
+          "mutation",
+        ),
       );
       // Disconnecting a device revokes its grant; revoking a connection ends every grant through it.
       yield* grants.revokeGrant(phone);

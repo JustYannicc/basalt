@@ -105,7 +105,12 @@ export const grantStore = (organization: string) =>
       });
       await context.adapter.create({
         model: "member",
-        data: { organizationId: organization, userId: user.id, role: "member", createdAt: new Date() },
+        data: {
+          organizationId: organization,
+          userId: user.id,
+          role: "member",
+          createdAt: new Date(),
+        },
       });
     });
     const owner = { userId: user.id, resource: organization };
@@ -150,7 +155,10 @@ export const grantStore = (organization: string) =>
       if (target.pathname === "/.well-known/oauth-protected-resource/mcp") {
         const address = requestedMcpAddress(new URL(`${origin}/mcp${target.search}`));
         assert.ok(address !== undefined, url);
-        return document({ resource: mcpResource(origin, address), authorization_servers: [issuer] });
+        return document({
+          resource: mcpResource(origin, address),
+          authorization_servers: [issuer],
+        });
       }
       if (target.pathname === "/.well-known/oauth-authorization-server/api/auth")
         return document(await auth.api.getOAuthServerConfig());
