@@ -35,7 +35,13 @@ const reasons = new Set([
   "failing_now",
 ]);
 
-export async function startPoolMonitor(env: SentryEnv) {
+/**
+ * The opening check-in defines the monitor; who is notified, and how, stays in Sentry's alert rules.
+ * The check-in upsert is the one route open to the connected accounts, which cannot edit a cron
+ * monitor. All six settings are sent because Sentry does not document what happens to one left
+ * out. One failed minute is a blip; three in a row open an incident.
+ */
+export async function startPoolMonitor(env: SentryEnv, schedule: string) {
   const receipt = { id: eventId(), started: performance.now() };
   const accepted = await sendEnvelope(env, {
     id: receipt.id,
@@ -44,12 +50,19 @@ export async function startPoolMonitor(env: SentryEnv) {
       check_in_id: receipt.id,
       monitor_slug: "pool-availability",
       status: "in_progress",
+      monitor_config: {
+        schedule: { type: "crontab", value: schedule },
+        timezone: "UTC",
+        checkin_margin: 1,
+        max_runtime: 1,
+        failure_issue_threshold: 3,
+        recovery_threshold: 1,
+      },
     },
   });
   return { ...receipt, accepted };
 }
 
-/** Check-ins use an existing monitor. Runtime code never creates or configures alert routing. */
 export async function capturePoolMonitor(
   env: SentryEnv,
   receipt: Awaited<ReturnType<typeof startPoolMonitor>>,
