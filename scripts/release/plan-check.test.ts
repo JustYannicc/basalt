@@ -456,3 +456,42 @@ test("a policy with an unknown key or an unpinned image is not decoded", async (
   await assert.rejects(policy({ removal: [] }));
   await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: "pool:latest" } }));
 });
+
+test("a Worker binding whose value waits on another row is not a removal", async () => {
+  const { literal } = await import("alchemy/Output");
+  const recorded = {
+    bindings: [{ type: "plain_text", name: "EXECUTOR_SITE_BUILD", text: "built" }],
+  };
+  const node = (data: unknown) => ({
+    action: "update",
+    resource: { FQN: "Dashboard", Type: "Cloudflare.Worker", Props: {} },
+    props: {},
+    state: {
+      status: "updated",
+      props: {},
+      bindings: [{ sid: "EXECUTOR_SITE_BUILD", data: recorded }],
+    },
+    bindings: [{ sid: "EXECUTOR_SITE_BUILD", action: "update", data }],
+  });
+  const plan = (data: unknown) =>
+    ({
+      resources: { Dashboard: node(data) },
+      deletions: {},
+      actions: {},
+      actionDeletions: {},
+    }) as never;
+  // The site build's hash is not known until the build row resolves.
+  const exit = await Effect.runPromiseExit(
+    checkPlan(plan({ bindings: literal([]) }), await policy({ mode: "code-only" })),
+  );
+  const rules = Exit.isFailure(exit)
+    ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => v.rule)
+    : [];
+  assert.ok(!rules.includes("worker-binding-removed"), rules.join(", "));
+  // Resolved to nothing, it is still the removal it always was.
+  assert.ok(
+    (await refused(plan({ bindings: [] }), { mode: "code-only" })).rules.includes(
+      "worker-binding-removed Dashboard",
+    ),
+  );
+});

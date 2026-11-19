@@ -253,6 +253,10 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
           fix: "Moving a class between Workers is its own reviewed change. If the class already lives on this Worker, its State row is missing the namespace: settle that first.",
         });
     if (binding.action !== "update") continue;
+    // A binding whose value waits on another row (a command's hash, a build's output) is not
+    // known yet: it keeps its sid and gets its data at apply. Only a `delete` removes it, and a
+    // class it hosted is still refused at the wire as `deleted_classes`.
+    if (!isResolved(binding.data)) continue;
     const before = wire(old.get(binding.sid));
     for (const entry of before) {
       const same = next.find((candidate) => candidate.name === entry.name);
