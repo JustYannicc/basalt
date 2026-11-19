@@ -1,0 +1,164 @@
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -443,7 +443,7 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+           }),
+         ),
+-      vault: (app: string, command: unknown, caller?: string) =>
++      vault: (app: string, command: unknown, identity?: unknown) =>
+         Effect.gen(function* () {
+           // Refuse a vault command on any object not named for that vault, including app code ones.
+           if (state.raw.id.name !== vaultObjectName(app))
+@@ -467,7 +467,7 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+             vault = vaultObject({ app, storage: state.raw.storage, bucket, artifacts });
+           }
+           const opened = vault;
+-          return yield* Effect.promise(() => opened.request(command, caller));
++          return yield* Effect.promise(() => opened.request(command, identity));
+         }),
+       alarm: () =>
+         Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -100,11 +100,14 @@ interface Coordinator extends Cloudflare.DurableObjectShape {
+     trace: TraceContext | undefined,
+   ) => Effect.Effect<typeof envelope.Type | null, SourceError, RuntimeContext>;
+   readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
+-  /** One drive command on the vault object named for `app`; the reply is plain JSON. */
++  /**
++   * One drive command on the vault object named for `app`; the reply is plain JSON. `identity`
++   * names the MCP grant the command's request authenticated with; the vault ignores any other value.
++   */
+   readonly vault: (
+     app: string,
+     command: unknown,
+-    caller?: string,
++    identity?: { readonly grant: string },
+   ) => Effect.Effect<unknown, never, RuntimeContext>;
+ }
+ 
+@@ -139,11 +142,11 @@ const VaultReply = Schema.Union([
+ export const cloudVaultDrives = (
+   coordinator: Cloudflare.DurableObject<ArtifactsTokenCoordinator>,
+ ): DriveBackend => ({
+-  // The caller names the device grant, so the vault can record each device's last sync.
+-  request: ({ app, command, caller }) =>
++  // The request's grant names the device, so the vault can record each device's last sync.
++  request: ({ app, command, grant }) =>
+     coordinator
+       .getByName(vaultObjectName(app))
+-      .vault(app, command, caller)
++      .vault(app, command, grant === undefined ? undefined : { grant })
+       .pipe(
+         Effect.flatMap(Schema.decodeUnknownEffect(VaultReply)),
+         Effect.mapError(() => new DriveRequestFailed({ reason: "invalid_response" })),
+diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
+--- a/apps/hosted/server/src/contracts/mcp.ts
++++ b/apps/hosted/server/src/contracts/mcp.ts
+@@ -10,6 +10,7 @@ import type { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-au
+ import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
+ import type { AppSandboxAddress } from "@executor-js/mcp";
+ import { AuthorizationPolicy } from "@executor-js/authorization";
++import { CurrentClientGrant } from "@executor-js/sdk/core";
+ import { Context, Schema } from "effect";
+ import type { Effect } from "effect";
+ import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
+@@ -26,17 +27,16 @@ export const McpAccess = /* @__PURE__ */ (() =>
+   }))();
+ export type McpAccess = typeof McpAccess.Type;
+ 
+-/**
+- * The grant an MCP request authenticated with. Event subscriptions belong to it, so revoking the
+- * grant stops them. Unset outside MCP requests.
+- */
+ export const McpAppSandbox = Context.Reference<AppSandboxAddress | undefined>(
+   "hosted/McpAppSandbox",
+   { defaultValue: () => undefined },
+ );
+-export const CurrentMcpGrant = Context.Reference<GrantId | undefined>("hosted/CurrentMcpGrant", {
+-  defaultValue: () => undefined,
+-});
++/**
++ * The grant an MCP request authenticated with. Event subscriptions belong to it, so revoking the
++ * grant stops them. It is the SDK's client grant, just as the request's user is the SDK's actor, so
++ * the drive records a device's sync under it. Unset outside MCP requests.
++ */
++export const CurrentMcpGrant = CurrentClientGrant;
+ 
+ /** Invalid/revoked bearer grants need a fresh OAuth connection. */
+ export class McpUnauthorized extends Schema.TaggedError<McpUnauthorized>()("McpUnauthorized", {}) {}
+diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
+--- a/apps/hosted/server/src/implementation/mcp.ts
++++ b/apps/hosted/server/src/implementation/mcp.ts
+@@ -90,6 +90,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
+             : {}),
+         }),
+         Effect.provideContext(context),
++        // Calls run after the request that built this adapter; the drive needs the grant then.
++        Effect.provideService(CurrentMcpGrant, grant),
+       );
+     });
+   // A single metadata snapshot feeds this request's catalog. Each call still checks the app and
+diff --git a/packages/sdk/src/contracts/drive.ts b/packages/sdk/src/contracts/drive.ts
+--- a/packages/sdk/src/contracts/drive.ts
++++ b/packages/sdk/src/contracts/drive.ts
+@@ -8,6 +8,8 @@ export interface DriveBackend {
+     readonly app: string;
+     readonly build: string;
+     readonly caller?: string;
++    /** The invocation's `CurrentClientGrant`, such as the grant of a device that is syncing. */
++    readonly grant?: string;
+     readonly command: DriveCommand;
+   }) => Effect.Effect<Json, DriveRequestFailed>;
+ }
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -73,6 +73,18 @@ export const CurrentActor = Context.Reference<string | undefined>("executor/Curr
+   defaultValue: () => undefined,
+ });
+ 
++/**
++ * The product's identifier for the client grant a request authenticated with, such as an MCP OAuth
++ * grant; event subscriptions call the same value their `principal`. Products provide it beside
++ * `CurrentActor` around a client's requests, and work those requests run inherits it. The SDK passes
++ * it only to the drive backend, so storage can tell apart the clients one person connected. Never
++ * supplied by authored code.
++ */
++export const CurrentClientGrant = Context.Reference<string | undefined>(
++  "executor/CurrentClientGrant",
++  { defaultValue: () => undefined },
++);
++
+ /**
+  * An account an app requirement uses: the product authorizes it by the app link of that account to
+  * that requirement. Requirement names are unique across scopes.
+diff --git a/packages/sdk/src/implementation/drive.ts b/packages/sdk/src/implementation/drive.ts
+--- a/packages/sdk/src/implementation/drive.ts
++++ b/packages/sdk/src/implementation/drive.ts
+@@ -1,6 +1,7 @@
+ import { Effect, Schema } from "effect";
+ import { DriveRequestFailed, driveWrites, type DriveHost } from "apps/contracts";
+ import type { DriveBackend } from "../contracts/drive.ts";
++import { CurrentClientGrant } from "../contracts/executor.ts";
+ import { AppId } from "../contracts/shared.ts";
+ import { storedApp, storedVersion } from "./apps.ts";
+ import type { Query } from "./database.ts";
+@@ -18,6 +19,7 @@ export const driveForInvocation = (
+ ): Effect.Effect<DriveHost> =>
+   Effect.gen(function* () {
+     const services = yield* Effect.context<never>();
++    const grant = yield* CurrentClientGrant;
+     return (command) =>
+       Effect.gen(function* () {
+         if (backend === undefined) return yield* new DriveRequestFailed({ reason: "unavailable" });
+@@ -31,6 +33,7 @@ export const driveForInvocation = (
+           app: identity.app,
+           build: identity.build,
+           ...(identity.caller === undefined ? {} : { caller: identity.caller }),
++          ...(grant === undefined ? {} : { grant }),
+           command,
+         });
+       }).pipe(

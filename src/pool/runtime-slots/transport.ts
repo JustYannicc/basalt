@@ -18,6 +18,7 @@ import {
 } from "./contract.ts";
 import { RuntimeEndpoint } from "./endpoint.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import { RuntimeDistance } from "../runtime-distance.ts";
 
 export interface RuntimeStub {
   fetch(request: Request): Promise<Response>;
@@ -33,7 +34,13 @@ const Policy = Schema.Struct({
 const Health = Schema.Struct({
   identity: SlotIdentity,
   leaseMs: Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1500)),
+  // An older runtime omits it; a malformed one is dropped below rather than failing the read.
+  database: Schema.optional(Schema.Unknown),
 });
+const distance = (value: unknown) => {
+  const decoded = Schema.decodeUnknownOption(RuntimeDistance)(value);
+  return decoded._tag === "Some" ? { database: decoded.value } : {};
+};
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
@@ -83,7 +90,7 @@ export class BoundSlotDriver implements SlotDriver {
       const health = Schema.decodeUnknownSync(Health)(await response.json());
       const policyLeaseUntil = requestedAt + health.leaseMs;
       if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
-      return { identity: health.identity, policyLeaseUntil };
+      return { identity: health.identity, policyLeaseUntil, ...distance(health.database) };
     } catch (error) {
       failEndpointResponse(response, error);
       throw error;
