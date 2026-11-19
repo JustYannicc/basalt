@@ -1,4 +1,5 @@
 import { isModelLifetimePath } from "./model-lifetime-contract.ts";
+import type { RuntimeDistance } from "./runtime-distance.ts";
 export const poolLifecycle = {
   idleTimeoutMs: 2 * 60 * 60_000,
   refreshMs: 5 * 60_000,
@@ -10,6 +11,7 @@ export interface PoolStatus {
   started_at: string;
   policyLeaseUntil?: number;
   launch?: { generation: number; tokenHash: string };
+  database?: RuntimeDistance;
 }
 
 /** A warm runtime lost readiness. The caller can retry after its protection recovers. */

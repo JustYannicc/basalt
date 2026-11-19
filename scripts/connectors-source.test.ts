@@ -49,6 +49,8 @@ function verifyFixture(declaredPlans: boolean) {
         "export const source = 'original';\n",
       ".upstream/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx":
         'export { source } from "./account-observation-text.ts";\n',
+      ".upstream/packages/ui/src/implementation/dashboard/moment-format.ts":
+        "export const formatMoment = () => '';\n",
     }))
       write(path, content);
     const inventorySource = ".upstream/e2e/tests/hitl-intent-scope.spec.ts";
