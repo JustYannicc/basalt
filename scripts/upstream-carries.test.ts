@@ -22,7 +22,7 @@ import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { digest, prepareUpstreamCheckout } from "./upstream-cache.ts";
 import { collectPatchedTrees } from "./upstream-cache-gc.ts";
-import { patchedTreeKey } from "./upstream-carries.ts";
+import { patchedTreeKey, readsRecordedTrees } from "./upstream-carries.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -30,11 +30,21 @@ const git = (cwd: string, ...args: string[]) =>
 function fixture(t: TestContext) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "basalt-carries-")));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const previous = process.env.BASALT_UPSTREAM_CACHE;
+  // Each test runs as a local preparation, whichever workflow runs the suite.
+  const saved = Object.fromEntries(
+    ["BASALT_UPSTREAM_CACHE", "GITHUB_ACTIONS", "GITHUB_WORKFLOW_REF"].map((name) => [
+      name,
+      process.env[name],
+    ]),
+  );
   process.env.BASALT_UPSTREAM_CACHE = join(directory, "cache");
+  delete process.env.GITHUB_ACTIONS;
+  delete process.env.GITHUB_WORKFLOW_REF;
   t.after(() => {
-    if (previous === undefined) delete process.env.BASALT_UPSTREAM_CACHE;
-    else process.env.BASALT_UPSTREAM_CACHE = previous;
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   });
   const repository = join(directory, "repository");
   const write = (root: string, path: string, content: string) => {
@@ -469,4 +479,36 @@ test("collection keeps the most recently used patched trees", async (t) => {
   assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "restored");
   assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit, links, crlf]), "restored");
   assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit, links]), "replayed");
+});
+
+test("only local preparations and Check read recorded trees; every run still records", async (t) => {
+  const { directory, pin, edit, refs } = fixture(t);
+  const upstream = join(directory, "one/.upstream");
+  const workflow = (file?: string) => {
+    if (file === undefined) {
+      delete process.env.GITHUB_ACTIONS;
+      delete process.env.GITHUB_WORKFLOW_REF;
+    } else {
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_WORKFLOW_REF = `owner/repo/.github/workflows/${file}@refs/heads/main`;
+    }
+  };
+  workflow("release-main.yml");
+  assert.equal(readsRecordedTrees(), false);
+  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "replayed");
+  assert.equal(refs().length, 1, "a release run still records for later Checks");
+  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "replayed");
+  for (const file of ["release-rollback.yml", "deploy.yml", "other-ci.yml"])
+    assert.equal(
+      readsRecordedTrees({
+        GITHUB_ACTIONS: "true",
+        GITHUB_WORKFLOW_REF: `o/r/.github/workflows/${file}@refs/heads/main`,
+      }),
+      false,
+    );
+  assert.equal(readsRecordedTrees({ GITHUB_ACTIONS: "true" }), false);
+  workflow("ci.yml");
+  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "restored");
+  workflow();
+  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "restored");
 });

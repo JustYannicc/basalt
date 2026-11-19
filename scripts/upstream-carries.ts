@@ -300,6 +300,15 @@ function patchedTree(upstream: string, repository: string, pin: Pin, carries: re
 }
 
 /**
+ * Code under test shares the cache and could record a tree under any key, so a run that prepares
+ * trusted release code after a candidate must not read recorded trees. Only local machines and the
+ * Check workflow read them; every other workflow replays, and still records for later Checks.
+ */
+export const readsRecordedTrees = (environment = process.env) =>
+  environment.GITHUB_ACTIONS !== "true" ||
+  /^[^/]+\/[^/]+\/\.github\/workflows\/ci\.yml@/.test(environment.GITHUB_WORKFLOW_REF ?? "");
+
+/**
  * Leaves the carries applied to a checkout at the pin, with HEAD and the index still at the pin.
  * The caller holds the checkout's lock, so no other preparation writes the worktree meanwhile.
  */
@@ -323,7 +332,7 @@ export async function applyCarries(options: {
     file: join(directory, `${String(index).padStart(5, "0")}.patch`),
   }));
   const cache = patchedTree(upstream, repository, pin, carries);
-  if (cache?.restore()) return "restored" as const;
+  if (readsRecordedTrees() && cache?.restore()) return "restored" as const;
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { mode: 0o700 });
   try {
