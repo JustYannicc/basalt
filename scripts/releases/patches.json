@@ -3,6 +3,6 @@
   "repository": "UsefulSoftwareCo/executor",
   "pool_carries": {
     "manifest": "containers/pool/sources.json",
-    "content_sha256": "8ebf0bc22f3fa7ed495658953990691f6d89120c0a729e7aa8cb6ba935d9bdd4"
+    "content_sha256": "27c47266d976050131508287877b5a703d10753f9603de8ff8df9791f6502bdb"
   }
 }
