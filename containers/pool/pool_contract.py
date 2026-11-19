@@ -11,6 +11,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from .billing_policy import provision_billing_policy
@@ -384,13 +385,26 @@ def home_database_distance(management_key: str) -> int | None:
     return rtt
 
 
-def check_liveness(management_key: str) -> bool:
+def check_liveness(
+    management_key: str, observe: Callable[[int | None], None] | None = None
+) -> bool:
     if not _node_healthy(management_key):
         return False
     home_status, home_payload = request_json(
         f"{HOME_URL}/healthz", "GET", management_key, timeout=2
     )
-    return home_status == 200 and home_payload.get("status") == "ok"
+    healthy = home_status == 200 and home_payload.get("status") == "ok"
+    if observe is not None:
+        observe(home_refresh_in_flight(home_payload) if healthy else None)
+    return healthy
+
+
+def home_refresh_in_flight(payload: dict[str, Any]) -> int | None:
+    """Carry 0695's count on Home's /healthz; None for an old Home or anything malformed."""
+    count = payload.get("refresh_in_flight")
+    if type(count) is not int or not 0 <= count < 1 << 63:
+        return None
+    return count
 
 
 def check_services(management_key: str, node_id: str) -> bool:

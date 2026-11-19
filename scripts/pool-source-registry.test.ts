@@ -509,6 +509,15 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
         );
+      } else if (patch.identity === "cliproxy-home-safe-stop") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0695-home-safe-stop.patch");
+        assert.match(patch.retirement.requires, /never cancels a claimed provider refresh call/);
+        assert.match(patch.retirement.requires, /refresh_in_flight on its database-free \/healthz/);
+        assert.match(
+          patch.retirement.requires,
+          /cancelled-caller, drain, refused-while-draining and rejection-line regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-scheduler-fail-closed") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0694-home-scheduler-fail-closed.patch");

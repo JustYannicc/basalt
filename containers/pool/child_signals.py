@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .quota_signals import quota_signal_line
+from .refresh_signals import refresh_rejection_line
 from .dispatch_signals import dispatch_signal_line, node_dispatch_message
 
 MAX_HOME_SIGNAL_INTEGER = (1 << 63) - 1
@@ -289,6 +290,9 @@ def safe_child_output_line(name: str, line: str) -> str | None:
     quota = quota_signal_line(message)
     if quota is not None:
         return quota
+    rejection = refresh_rejection_line(message)
+    if rejection is not None:
+        return rejection
     for marker, fields in (
         (PRIVACY_AUDIT_MARKER, PRIVACY_AUDIT_FIELDS),
         (PRIVACY_PROGRESS_MARKER, PRIVACY_PROGRESS_FIELDS),

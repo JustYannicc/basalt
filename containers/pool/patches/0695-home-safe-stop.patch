@@ -1,0 +1,496 @@
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+index 306f693..5d09459 100644
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -109,6 +109,10 @@ func newRuntimeConcurrencyAdmitter(repo concurrencyAdmissionRepository, currentH
+ 	})
+ }
+ 
++// refreshDrainTimeout bounds the wait for claimed refreshes on stop: 30 s for the provider call
++// plus 10 s for the write-back, with margin. The supervisor's stop grace must exceed it.
++const refreshDrainTimeout = 45 * time.Second
++
+ // run executes the home command and returns the process exit code.
+ func run() int {
+ 	// Keep validation before state changes so failures leave existing data intact.
+@@ -515,6 +519,12 @@ func run() int {
+ 			}
+ 		}()
+ 	}
++	// Runs before the retire above: a claimed refresh finishes its write-back before Home stops.
++	defer func() {
++		if !cluster.DrainRefreshes(refreshDrainTimeout) {
++			log.Warnf("credential refresh drain timed out in_flight=%d", cluster.RefreshesInFlight())
++		}
++	}()
+ 
+ 	baseListener, errListen := net.Listen("tcp", addr)
+ 	if errListen != nil {
+diff --git a/internal/cluster/refresh.go b/internal/cluster/refresh.go
+index f602498..011f0f0 100644
+--- a/internal/cluster/refresh.go
++++ b/internal/cluster/refresh.go
+@@ -283,6 +283,11 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+ 	if ctx == nil {
+ 		ctx = context.Background()
+ 	}
++	finishRefresh, errBegin := beginRefresh()
++	if errBegin != nil {
++		return nil, errBegin
++	}
++	defer finishRefresh()
+ 	refreshCtx, cancelRefresh := context.WithTimeout(ctx, credentialRefreshTimeout)
+ 	defer cancelRefresh()
+ 	core := c.runtime.CoreManager()
+@@ -360,7 +365,12 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+ 	}
+ 	updated := leased
+ 	if !skipRefresh && leaseClaimed {
+-		refreshed, errRefresh := core.RefreshAuthCredential(refreshCtx, leased.Clone())
++		// Once claimed, a stop must not abort the provider call: the provider may already have
++		// rotated the refresh token, and only this call's write-back keeps the new one.
++		providerDeadline, _ := refreshCtx.Deadline()
++		providerCtx, cancelProvider := context.WithDeadline(context.WithoutCancel(refreshCtx), providerDeadline)
++		refreshed, errRefresh := core.RefreshAuthCredential(providerCtx, leased.Clone())
++		cancelProvider()
+ 		refreshErr = errRefresh
+ 		if refreshed == nil {
+ 			refreshed = leased.Clone()
+@@ -370,7 +380,11 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+ 		finalized, finalizedLease, refreshSuperseded, disabledTarget, errFinalize := c.retryRefreshFinalize(finalizeCtx, targetUUID, leaseID, leased, beforeClaim, refreshed, refreshErr)
+ 		cancelFinalize()
+ 		if errFinalize != nil {
+-			go c.continueRefreshFinalize(targetUUID, leaseID, leased.Clone(), beforeClaim.Clone(), refreshed.Clone(), refreshErr, now.Add(refreshLeaseDuration))
++			finishContinued := holdRefresh()
++			go func() {
++				defer finishContinued()
++				c.continueRefreshFinalize(targetUUID, leaseID, leased.Clone(), beforeClaim.Clone(), refreshed.Clone(), refreshErr, now.Add(refreshLeaseDuration))
++			}()
+ 			return nil, errFinalize
+ 		}
+ 		updated = finalized
+@@ -384,6 +398,10 @@ func (c *RefreshController) refreshLocalWithLock(ctx context.Context, authIndex,
+ 			refreshErr = nil
+ 		case !finalizedLease:
+ 			refreshErr = coreauth.NewTransientRefreshError()
++		case refreshErr != nil && updated != nil && (updated.Disabled || updated.Status == coreauth.StatusDisabled):
++			// The provider rejected this refresh and the credential is now disabled: one closed line
++			// an operator can act on, naming the credential only by an opaque reference.
++			log.Warnf("credential refresh rejected credential=%s reason=%s", credentialReference(targetUUID), terminalRefreshReason(refreshErr))
+ 		}
+ 	}
+ 
+diff --git a/internal/cluster/refresh_drain.go b/internal/cluster/refresh_drain.go
+new file mode 100644
+index 0000000..8540a18
+--- /dev/null
++++ b/internal/cluster/refresh_drain.go
+@@ -0,0 +1,110 @@
++package cluster
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"errors"
++	"fmt"
++	"regexp"
++	"strings"
++	"sync/atomic"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++// A provider may rotate a refresh token before Home writes the new one back. Stopping between
++// those two steps loses the token, so a stopping Home first waits for claimed refreshes.
++var (
++	refreshesInFlight atomic.Int64
++	refreshDraining   atomic.Bool
++)
++
++// A refused refresh reads as cancelled, so the refresh loop logs it as a stop and not a failure.
++var errRefreshDraining = fmt.Errorf("cluster refresh: Home is stopping: %w", context.Canceled)
++
++var credentialUUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
++
++// RefreshesInFlight reports refreshes this process has started and not yet written back.
++func RefreshesInFlight() int64 {
++	return refreshesInFlight.Load()
++}
++
++// DrainRefreshes refuses new refresh claims and waits up to timeout for claimed ones to finish.
++func DrainRefreshes(timeout time.Duration) bool {
++	refreshDraining.Store(true)
++	deadline := time.Now().Add(timeout)
++	for refreshesInFlight.Load() > 0 {
++		if !time.Now().Before(deadline) {
++			return false
++		}
++		time.Sleep(50 * time.Millisecond)
++	}
++	return true
++}
++
++// beginRefresh counts a refresh before its claim, so a concurrent drain either waits for it or
++// the refresh sees the drain and does not start.
++func beginRefresh() (func(), error) {
++	done := holdRefresh()
++	if refreshDraining.Load() {
++		done()
++		return nil, errRefreshDraining
++	}
++	return done, nil
++}
++
++// holdRefresh counts work that continues a refresh already counted, so a drain in progress still
++// waits for it.
++func holdRefresh() func() {
++	refreshesInFlight.Add(1)
++	var done atomic.Bool
++	return func() {
++		if done.CompareAndSwap(false, true) {
++			refreshesInFlight.Add(-1)
++		}
++	}
++}
++
++// credentialReference names a credential without its identifying text: native UUIDs as they
++// are, any other identifier only as its SHA-256.
++func credentialReference(id string) string {
++	id = strings.TrimSpace(id)
++	if credentialUUID.MatchString(id) {
++		return id
++	}
++	digest := sha256.Sum256([]byte(id))
++	return "sha256:" + hex.EncodeToString(digest[:])
++}
++
++// terminalRefreshReason maps a provider refresh rejection onto a closed reason.
++func terminalRefreshReason(errRefresh error) string {
++	if errRefresh == nil {
++		return "unauthorized"
++	}
++	texts := []string{errRefresh.Error()}
++	var authErr *coreauth.Error
++	if errors.As(errRefresh, &authErr) && authErr != nil {
++		texts = append(texts, authErr.Code, authErr.Message)
++	}
++	type oauthResponseDiagnostics interface {
++		OAuthError() string
++		Code() string
++		ErrorDescription() string
++	}
++	var upstream oauthResponseDiagnostics
++	if errors.As(errRefresh, &upstream) && upstream != nil {
++		texts = append(texts, upstream.OAuthError(), upstream.Code(), upstream.ErrorDescription())
++	}
++	joined := strings.ToLower(strings.Join(texts, " "))
++	for _, reason := range []string{"refresh_token_reused", "refresh_token_revoked", "refresh_token_expired", "invalid_grant"} {
++		if strings.Contains(joined, reason) {
++			return reason
++		}
++	}
++	if strings.Contains(joined, "reused") {
++		return "refresh_token_reused"
++	}
++	return "unauthorized"
++}
+diff --git a/internal/cluster/refresh_drain_test.go b/internal/cluster/refresh_drain_test.go
+new file mode 100644
+index 0000000..8bacd2c
+--- /dev/null
++++ b/internal/cluster/refresh_drain_test.go
+@@ -0,0 +1,132 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"regexp"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func TestADrainWaitsForAClaimedRefreshToWriteBack(t *testing.T) {
++	t.Cleanup(func() { refreshDraining.Store(false) })
++	const authID = "antigravity-draining"
++	ctx := context.Background()
++	repo := newRefreshTestRepository(t)
++	auth := newInvalidGrantRefreshAuth(authID)
++	if _, errUpsert := repo.UpsertAuth(ctx, auth, "register"); errUpsert != nil {
++		t.Fatalf("UpsertAuth() error = %v", errUpsert)
++	}
++	transport := &blockingRefreshRoundTripper{started: make(chan struct{}), release: make(chan struct{}), secondCall: make(chan struct{}, 1)}
++	runtime := newRefreshTestRuntime(t, repo, auth, transport)
++	coordinator := NewCoordinator(repo, NodeIdentity{IP: "127.0.0.1", Port: 9313, Secret: "master-secret"}, CoordinatorOptions{})
++	markRefreshTestMaster(t, repo, coordinator)
++	controller := NewRefreshController(coordinator, runtime, repo, nil)
++
++	result := make(chan error, 1)
++	go func() {
++		_, errRefresh := controller.RefreshNow(ctx, authID)
++		result <- errRefresh
++	}()
++	select {
++	case <-transport.started:
++	case <-time.After(5 * time.Second):
++		t.Fatal("provider refresh did not start")
++	}
++	if got := RefreshesInFlight(); got != 1 {
++		t.Fatalf("RefreshesInFlight() = %d, want 1", got)
++	}
++	drained := make(chan bool, 1)
++	go func() { drained <- DrainRefreshes(5 * time.Second) }()
++	select {
++	case <-drained:
++		t.Fatal("drain returned while a claimed refresh was still out")
++	case <-time.After(100 * time.Millisecond):
++	}
++	close(transport.release)
++	if !<-drained {
++		t.Fatal("drain timed out after the refresh finished")
++	}
++	if errRefresh := <-result; errRefresh != nil {
++		t.Fatalf("RefreshNow() error = %v", errRefresh)
++	}
++	persisted, _, errAuth := repo.GetAuth(ctx, authID)
++	if errAuth != nil {
++		t.Fatalf("GetAuth() error = %v", errAuth)
++	}
++	if got := persisted.Metadata["refresh_token"]; got != "new-refresh-token" {
++		t.Fatalf("persisted refresh token = %v, want the rotated one written back before the drain ended", got)
++	}
++	if got := RefreshesInFlight(); got != 0 {
++		t.Fatalf("RefreshesInFlight() = %d after the drain, want 0", got)
++	}
++}
++
++func TestADrainingHomeStartsNoNewRefresh(t *testing.T) {
++	t.Cleanup(func() { refreshDraining.Store(false) })
++	const authID = "antigravity-refused"
++	ctx := context.Background()
++	repo := newRefreshTestRepository(t)
++	auth := newInvalidGrantRefreshAuth(authID)
++	if _, errUpsert := repo.UpsertAuth(ctx, auth, "register"); errUpsert != nil {
++		t.Fatalf("UpsertAuth() error = %v", errUpsert)
++	}
++	transport := &refreshTestRoundTripper{statusCode: 200, body: `{"access_token":"a","refresh_token":"b","expires_in":3600}`}
++	runtime := newRefreshTestRuntime(t, repo, auth, transport)
++	coordinator := NewCoordinator(repo, NodeIdentity{IP: "127.0.0.1", Port: 9314, Secret: "master-secret"}, CoordinatorOptions{})
++	markRefreshTestMaster(t, repo, coordinator)
++	controller := NewRefreshController(coordinator, runtime, repo, nil)
++
++	if !DrainRefreshes(time.Second) {
++		t.Fatal("drain with nothing in flight timed out")
++	}
++	_, errRefresh := controller.RefreshNow(ctx, authID)
++	if !errors.Is(errRefresh, errRefreshDraining) || !errors.Is(errRefresh, context.Canceled) {
++		t.Fatalf("RefreshNow() while draining = %v, want a refusal that reads as cancelled", errRefresh)
++	}
++	if transport.calls != 0 {
++		t.Fatalf("provider refresh calls = %d while draining, want 0", transport.calls)
++	}
++}
++
++func TestADrainGivesUpAtItsBound(t *testing.T) {
++	t.Cleanup(func() { refreshDraining.Store(false) })
++	done := holdRefresh()
++	if DrainRefreshes(50 * time.Millisecond) {
++		t.Fatal("drain reported done with a refresh still held")
++	}
++	done()
++	done()
++	if !DrainRefreshes(time.Second) || RefreshesInFlight() != 0 {
++		t.Fatalf("drain after release: in flight %d, want 0", RefreshesInFlight())
++	}
++}
++
++func TestRefreshRejectionsMapOntoClosedReasonsAndReferences(t *testing.T) {
++	for _, tc := range []struct {
++		err  error
++		want string
++	}{
++		{errors.New(`{"error":"refresh_token_reused","error_description":"Your refresh token has already been used"}`), "refresh_token_reused"},
++		{&coreauth.Error{Code: "authentication_error", Message: "invalid_grant: token revoked"}, "invalid_grant"},
++		{errors.New("token was REUSED by another client"), "refresh_token_reused"},
++		{errors.New("401 person@example.com"), "unauthorized"},
++		{nil, "unauthorized"},
++	} {
++		if got := terminalRefreshReason(tc.err); got != tc.want {
++			t.Errorf("terminalRefreshReason(%v) = %q, want %q", tc.err, got, tc.want)
++		}
++	}
++	accountRef := regexp.MustCompile(`^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|sha256:[a-f0-9]{64})$`)
++	const uuid = "11111111-2222-4333-8444-555555555555"
++	if got := credentialReference(uuid); got != uuid {
++		t.Errorf("credentialReference(uuid) = %q, want it unchanged", got)
++	}
++	for _, id := range []string{"claude-person@example.com.json", "", " 11111111-2222-4333-8444-555555555555x"} {
++		if got := credentialReference(id); !accountRef.MatchString(got) || got == id {
++			t.Errorf("credentialReference(%q) = %q, want an opaque reference", id, got)
++		}
++	}
++}
+diff --git a/internal/cluster/refresh_stop_test.go b/internal/cluster/refresh_stop_test.go
+new file mode 100644
+index 0000000..926e09e
+--- /dev/null
++++ b/internal/cluster/refresh_stop_test.go
+@@ -0,0 +1,128 @@
++package cluster
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++)
++
++// stoppableRefreshRoundTripper answers once released and loses its answer when the request's
++// context ended first, as a real provider call does after the provider already rotated the token.
++type stoppableRefreshRoundTripper struct {
++	started chan struct{}
++	release chan struct{}
++	once    sync.Once
++}
++
++func (rt *stoppableRefreshRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
++	rt.once.Do(func() { close(rt.started) })
++	select {
++	case <-rt.release:
++	case <-req.Context().Done():
++	}
++	if errCtx := req.Context().Err(); errCtx != nil {
++		return nil, errCtx
++	}
++	return &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     make(http.Header),
++		Body:       io.NopCloser(strings.NewReader(`{"access_token":"rotated-access-token","refresh_token":"rotated-refresh-token","expires_in":3600,"token_type":"Bearer"}`)),
++	}, nil
++}
++
++func TestAClaimedRefreshWritesBackAfterItsCallerIsCancelled(t *testing.T) {
++	const authID = "antigravity-stopping"
++	repo := newRefreshTestRepository(t)
++	auth := newInvalidGrantRefreshAuth(authID)
++	if _, errUpsert := repo.UpsertAuth(context.Background(), auth, "register"); errUpsert != nil {
++		t.Fatalf("UpsertAuth() error = %v", errUpsert)
++	}
++	transport := &stoppableRefreshRoundTripper{started: make(chan struct{}), release: make(chan struct{})}
++	runtime := newRefreshTestRuntime(t, repo, auth, transport)
++	coordinator := NewCoordinator(repo, NodeIdentity{IP: "127.0.0.1", Port: 9311, Secret: "master-secret"}, CoordinatorOptions{})
++	markRefreshTestMaster(t, repo, coordinator)
++	controller := NewRefreshController(coordinator, runtime, repo, nil)
++
++	ctx, cancel := context.WithCancel(context.Background())
++	result := make(chan error, 1)
++	go func() {
++		_, errRefresh := controller.RefreshNow(ctx, authID)
++		result <- errRefresh
++	}()
++	select {
++	case <-transport.started:
++	case <-time.After(5 * time.Second):
++		t.Fatal("provider refresh did not start")
++	}
++	// Home stops while the provider call is out: the caller's context ends before the answer.
++	cancel()
++	close(transport.release)
++	select {
++	case errRefresh := <-result:
++		if errRefresh != nil {
++			t.Fatalf("RefreshNow() error = %v, want the claimed refresh to finish", errRefresh)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("claimed refresh did not finish")
++	}
++	persisted, _, errAuth := repo.GetAuth(context.Background(), authID)
++	if errAuth != nil {
++		t.Fatalf("GetAuth() error = %v", errAuth)
++	}
++	if got := persisted.Metadata["refresh_token"]; got != "rotated-refresh-token" {
++		t.Fatalf("persisted refresh token = %v, want the provider's rotated one", got)
++	}
++}
++
++func TestARejectedRefreshNamesTheCredentialOnlyByAnOpaqueReference(t *testing.T) {
++	const authID = "antigravity-person@example.com"
++	var logs bytes.Buffer
++	previous := log.StandardLogger().Out
++	previousFormatter := log.StandardLogger().Formatter
++	log.SetOutput(&logs)
++	log.SetFormatter(&log.JSONFormatter{})
++	t.Cleanup(func() { log.SetOutput(previous); log.SetFormatter(previousFormatter) })
++
++	ctx := context.Background()
++	repo := newRefreshTestRepository(t)
++	auth := newInvalidGrantRefreshAuth(authID)
++	if _, errUpsert := repo.UpsertAuth(ctx, auth, "register"); errUpsert != nil {
++		t.Fatalf("UpsertAuth() error = %v", errUpsert)
++	}
++	transport := &refreshTestRoundTripper{body: `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`}
++	runtime := newRefreshTestRuntime(t, repo, auth, transport)
++	coordinator := NewCoordinator(repo, NodeIdentity{IP: "127.0.0.1", Port: 9312, Secret: "master-secret"}, CoordinatorOptions{})
++	markRefreshTestMaster(t, repo, coordinator)
++	controller := NewRefreshController(coordinator, runtime, repo, nil)
++	_, errRefresh := controller.RefreshNow(ctx, authID)
++	requireTerminalRefreshError(t, errRefresh)
++
++	digest := sha256.Sum256([]byte(authID))
++	want := "credential refresh rejected credential=sha256:" + hex.EncodeToString(digest[:]) + " reason=invalid_grant"
++	found := false
++	for _, line := range bytes.Split(logs.Bytes(), []byte("\n")) {
++		var entry struct {
++			Msg string `json:"msg"`
++		}
++		if json.Unmarshal(line, &entry) != nil || !strings.HasPrefix(entry.Msg, "credential refresh rejected") {
++			continue
++		}
++		if entry.Msg != want {
++			t.Fatalf("rejection line = %q, want %q", entry.Msg, want)
++		}
++		found = true
++	}
++	if !found {
++		t.Fatalf("no rejection line in the refresh log, want %q", want)
++	}
++}
+diff --git a/internal/managementhttp/health_test.go b/internal/managementhttp/health_test.go
+index 12d132d..6afa51c 100644
+--- a/internal/managementhttp/health_test.go
++++ b/internal/managementhttp/health_test.go
+@@ -53,7 +53,7 @@ func TestHealthRouteRemainsDatabaseFreeWithClosedDatabase(t *testing.T) {
+ 	for range 30 {
+ 		response := httptest.NewRecorder()
+ 		server.Engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+-		if response.Code != http.StatusOK || response.Body.String() != `{"status":"ok"}` {
++		if response.Code != http.StatusOK || response.Body.String() != `{"refresh_in_flight":0,"status":"ok"}` {
+ 			t.Fatalf("health response = %d %s", response.Code, response.Body.String())
+ 		}
+ 	}
+diff --git a/internal/managementhttp/server.go b/internal/managementhttp/server.go
+index b19f995..c604d04 100644
+--- a/internal/managementhttp/server.go
++++ b/internal/managementhttp/server.go
+@@ -637,7 +637,7 @@ func Build(configFilePath string, opts ...RouteOption) (*BuildResult, error) {
+ 	engine.Use(corsMiddleware())
+ 	// Process responsiveness must remain observable while the database is down.
+ 	engine.GET("/healthz", func(c *gin.Context) {
+-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
++		c.JSON(http.StatusOK, gin.H{"status": "ok", "refresh_in_flight": cluster.RefreshesInFlight()})
+ 	})
+ 
+ 	if clusterEnabled {
