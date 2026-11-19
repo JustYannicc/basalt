@@ -143,7 +143,7 @@ const template = (path: string) =>
   path.replace(/[^/]+/g, (segment) => (WORDS.has(segment) ? segment : "{id}"));
 // Strip any base prefix (/client/v4, /v1) so local test servers and production match alike.
 const apiPath = (pathname: string) =>
-  pathname.slice(Math.max(0, pathname.search(/\/(accounts|organizations)\//)));
+  pathname.slice(Math.max(0, pathname.search(/\/(accounts|organizations|user)\//)));
 
 const UPLOAD =
   /^\/accounts\/[^/]+\/workers\/(?:scripts|workers|services)\/([^/]+)(?:\/environments\/[^/]+)?(?:\/(?:versions|content|settings|edge-preview|previews(?:\/[^/]+\/deployments)?))?$/;

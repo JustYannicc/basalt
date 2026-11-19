@@ -306,7 +306,7 @@ jobs:
         env: *release-secrets
         if: env.MODE == 'apply'
         # A code-only release changes no data by itself; skip the multi-million-row count then.
-        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code') && '--light' || '' }}
+        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
       # No release may restart the root: its boot is read now and must still serve after the apply.
       - name: Record the root's boot before the apply
         env: *release-secrets
@@ -380,7 +380,7 @@ jobs:
         env: *release-secrets
         if: env.MODE == 'apply' && steps.apply.outcome == 'success'
         run: |
-          bun scripts/release/deploy.ts snapshot --stage production --out .local/release/after.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code') && '--light' || '' }}
+          bun scripts/release/deploy.ts snapshot --stage production --out .local/release/after.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
           bun scripts/release/deploy.ts compare --before .local/release/before.json --after .local/release/after.json
       - name: Finish the deployment record
         if: always() && steps.deployment.outputs.id != ''

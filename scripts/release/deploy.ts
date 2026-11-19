@@ -319,9 +319,19 @@ if (stage === "production") {
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
 
+// Alchemy captures the working directory once, when its first module loads (alchemy/Util/Node.ts
+// `initialCwd`), and resolves every command's relative cwd from it. The stack's commands are
+// declared relative to the cloud app, so the entry moves there before anything loads Alchemy.
+const policyPath = values.policy ? resolve(values.policy) : undefined;
+process.chdir(cloud);
 const { decodeReleasePolicy } = await import("./policy.ts");
-const policy = values.policy
-  ? decodeReleasePolicy(JSON.parse(await readFile(resolve(values.policy), "utf8")))
+const { initialCwd } = await import("alchemy/Util/Node");
+if (initialCwd !== process.cwd())
+  throw new Error(
+    "Alchemy loaded before the entry moved into the cloud app, so the stack's command directories would resolve elsewhere",
+  );
+const policy = policyPath
+  ? decodeReleasePolicy(JSON.parse(await readFile(policyPath, "utf8")))
   : undefined;
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;
@@ -330,8 +340,7 @@ const include: string[] = values.include?.length ? values.include : [...(policy?
 if (stage === "production" && !policy && ["plan", "apply"].includes(command))
   throw new Error("Production plans and applies only under a policy");
 
-process.chdir(cloud);
-const { Effect } = await import("effect");
+const { Effect, Logger } = await import("effect");
 const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
@@ -424,11 +433,17 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               ...target,
             } as never) as unknown as Fx.Effect<StateService, unknown, never>;
             const stack = yield* stackName();
+            const label = stage.replace(/^test-/u, "");
             wire.stage = {
               stack,
               stage,
-              label: stage.replace(/^test-/u, ""),
-              databases: process.env.TEST_STAGE_DATABASE ? [process.env.TEST_STAGE_DATABASE] : [],
+              label,
+              ...(process.env.TEST_STAGE_DOMAIN ? { domain: process.env.TEST_STAGE_DOMAIN } : {}),
+              // Only the stage's own database, by the name its stack derives; anything else none.
+              databases:
+                process.env.TEST_STAGE_DATABASE === `basalt-preview-${label}`
+                  ? [process.env.TEST_STAGE_DATABASE]
+                  : [],
               owned: ownIdentities(
                 yield* stageRows(store as never, stack, stage) as Fx.Effect<
                   unknown[],
@@ -472,6 +487,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
         return yield* guarded.pipe(
           Effect.provide(Alchemist.layer()),
           Effect.provide(guard.layer),
+          // Effect's default console logger would print Alchemy's own lines (script names, hosts)
+          // into the public log. Replaced by none: Alchemy's session merges its private file log in.
+          Effect.provide(Logger.layer([])),
         ) as Fx.Effect<A, unknown, never>;
       }),
     ) as Fx.Effect<A, unknown, never>,
@@ -742,14 +760,28 @@ try {
             new Error("rollback needs --from <serving.json> or --fqn and --to"),
           );
         const rolledBack: { fqn: string; version: string }[] = [];
+        // Every Worker is tried: one that fails must not leave the rest on the failed release.
+        const failed: { fqn: string; cause: unknown }[] = [];
         for (const target of targets) {
-          yield* rollbackTo(
-            at(yield* scriptName(target.fqn)),
-            target.version,
-            `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+          const exit = yield* Effect.exit(
+            Effect.gen(function* () {
+              yield* rollbackTo(
+                at(yield* scriptName(target.fqn)),
+                target.version,
+                `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+              );
+            }),
           );
-          rolledBack.push(target);
+          if (exit._tag === "Success") rolledBack.push(target);
+          else failed.push({ fqn: target.fqn, cause: exit.cause });
         }
+        if (failed.length)
+          return yield* Effect.die(
+            new Error(
+              `Rollback failed for ${failed.map(({ fqn }) => fqn).join(", ")}; rolled back ${rolledBack.map(({ fqn }) => fqn).join(", ") || "none"}`,
+              { cause: failed },
+            ),
+          );
         return { workers: rolledBack, rolledBack: true };
       }),
     );
