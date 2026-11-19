@@ -482,6 +482,15 @@ test("a complete stream passes through unchanged and records nothing", async (co
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** Fails with what it waited for instead of spinning until the suite's timeout. */
+async function eventually(condition: () => boolean, waitingFor: string) {
+  for (let index = 0; index < 1_000; index++) {
+    if (condition()) return;
+    await turn();
+  }
+  assert.fail(`Never saw ${waitingFor}`);
+}
+
 test("a held body is dropped as soon as the controller answers", async (context) => {
   const h = harness(context, [async (request) => new Response(await request.text())]);
   const response = await fetchController(
@@ -499,7 +508,7 @@ test("a reservation whose request never cleaned up stops counting when its windo
     new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
     h.hop,
   );
-  while (controllerHeldBytes() === 0) await turn();
+  await eventually(() => controllerHeldBytes() > 0, "the body held");
   assert.equal(controllerHeldBytes(), 4096);
   // Only the clock moves: neither the request's own release nor its timer runs, as when the
   // platform cancels a request whose client left.
@@ -520,7 +529,7 @@ test("a held body is dropped when the replay window closes, and the cut gets adv
     new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
     h.hop,
   );
-  while (controllerHeldBytes() === 0) await turn();
+  await eventually(() => controllerHeldBytes() > 0, "the body held");
   context.mock.timers.tick(controllerReplayWindowMs);
   assert.equal(controllerHeldBytes(), 0);
   fail(reset());
@@ -555,7 +564,7 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
     }),
     holding.hop,
   );
-  while (controllerHeldBytes() < 768 * 1024) await turn();
+  await eventually(() => controllerHeldBytes() >= 768 * 1024, "the first body held whole");
   const received: number[] = [];
   const unheld = controllerHop(
     [
