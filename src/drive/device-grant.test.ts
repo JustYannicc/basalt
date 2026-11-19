@@ -1,14 +1,15 @@
 // A device's sync takes the host's own path to its vault: the hosted MCP backend's tool call, the
-// SDK's tool call and drive host, the cloud drive backend and the vault object. The app's code, the
-// Durable Object hop and the Artifacts control plane are stand-ins; the Git data plane is real.
+// SDK's tool call and drive host, the cloud drive backend and the vault object. Grant storage is
+// written by the grant store itself (see grant-fixture.ts). The app's code, the Durable Object hop
+// and the Artifacts control plane are stand-ins; the Git data plane is real.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { test, type TestContext } from "node:test";
-import { Crypto, Effect, Redacted, Schema } from "effect";
+import { Cause, Crypto, Effect, Exit, Option, Redacted, Schema, type Scope } from "effect";
 import { SqlClient } from "effect/sql";
 import { DriveCommand } from "apps/contracts";
 import { GrantId } from "@executor-js/mcp-auth";
-import { ConnectionId } from "@executor-js/mcp-auth/connections";
+import { ConnectionId, type ConnectionInput } from "@executor-js/mcp-auth/connections";
 import {
   BuildId,
   OwnerId,
@@ -34,14 +35,12 @@ import { hostedMcpBackend } from "../../.upstream/apps/hosted/server/src/impleme
 import { obsidianConnectionInput } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
 import { cloudVaultDrives } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts";
 import { storageFixture } from "./fixture.ts";
+import { grantStore } from "./grant-fixture.ts";
 import { vaultObject, type ArtifactsNamespace } from "./object.ts";
 import { backend, git, token } from "./artifacts/test/backend.ts";
 
 const owner = OwnerId.make("fixture-owner"),
-  organization = OrganizationId.make("org_device_sync"),
-  person = "user-person",
-  mac = GrantId.make("grant-mac"),
-  phone = GrantId.make("grant-phone");
+  organization = OrganizationId.make("org_device_sync");
 // The plugin's heartbeat: a one-entry listing at the start of every pull and checkpoint.
 const heartbeat = { operation: "drive", method: "list", input: { limit: 1 } } as const;
 const devicesCommand = { operation: "drive", method: "devices", input: {} } as const;
@@ -53,21 +52,13 @@ const crypto = Crypto.make({
       new Uint8Array(createHash(algorithm.replace("-", "").toLowerCase()).update(data).digest()),
     ),
 });
-// The hosted policy rows a tool call reads: the caller's membership and the app's audience.
+// The hosted policy rows a tool call reads beside membership: the app's audience.
 const policyTables = [
-  'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
   "create table hosted_app_access (id text primary key, organization_id text, creator_id text, audience text, revision text)",
   "create table hosted_app_groups (app_id text, group_id text)",
   "create table hosted_group_members (group_id text, member_id text)",
   "create table hosted_tool_availability (organization_id text, app_id text, definition jsonb)",
 ];
-// Grant storage: the MCP OAuth plugin's grant and connection models.
-const grantTables = [
-  'create table "mcpConnection" (id text primary key, "userId" text not null, resource text not null, name text not null, policy text not null, revoked boolean not null default false, "createdAt" timestamptz not null default now(), "updatedAt" timestamptz not null default now())',
-  'create table "mcpGrant" (id text primary key, "userId" text not null, "clientId" text not null, resource text not null, policy text not null, revoked boolean not null default false, connection text)',
-];
-// A connection's grant stores no authority of its own; it reads its connection's.
-const connectionGrantPolicy = JSON.stringify({ kind: "tools", apps: [], approval: "client" });
 
 const artifactsOf = (server: Awaited<ReturnType<typeof backend>>): ArtifactsNamespace => ({
   create: async () => ({ remote: server.url }),
@@ -149,23 +140,24 @@ const hostPath = (vaultOf: (app: string) => ReturnType<typeof vaultObject>) =>
     });
     const database = yield* makeExecutorStorage({ provider: "postgresql" });
     yield* database.migrate;
-    for (const ddl of [...policyTables, ...grantTables]) yield* sql.unsafe(ddl);
+    const grants = yield* grantStore(organization);
+    for (const ddl of policyTables) yield* sql.unsafe(ddl);
+    // Grant storage is the request's own database, as in the cloud's composition.
+    const drives = cloudVaultDrives(coordinator, Effect.succeed(sql));
     const executor = yield* createExecutor({
       database,
       secret: Redacted.make("b".repeat(64)),
       git: memoryRepositories(),
       blobs: memoryBlobStore(),
       runtime,
-      // Grant storage is the request's own database, as in the cloud's composition.
-      drives: cloudVaultDrives(coordinator, Effect.succeed(sql)),
+      drives,
     });
     const { app } = yield* executor.apps.deploy({
       owner,
       name: "Device sync",
       files: [{ path: "index.ts", content: "export default {};\n" }],
     });
-    yield* sql`insert into member values ('member-person', ${organization}, ${person}, 'member')`;
-    yield* sql`insert into hosted_app_access values (${app.id}, ${organization}, ${person}, 'everyone', 'revision-1')`;
+    yield* sql`insert into hosted_app_access values (${app.id}, ${organization}, ${grants.userId}, 'everyone', 'revision-1')`;
     const tool = (command: Schema.Json, kind: "query" | "mutation" = "query") => ({
       app: app.id,
       tool: ToolName.make("sync"),
@@ -180,43 +172,52 @@ const hostPath = (vaultOf: (app: string) => ReturnType<typeof vaultObject>) =>
           Effect.provideService(GroupDatabase, Effect.succeed(sql)),
           Effect.provideService(CurrentOrganization, { organization, owner, role: "member" }),
           Effect.provideService(CurrentAuthorization, fullAuthority),
-          Effect.provideService(CurrentUserId, person),
+          Effect.provideService(CurrentUserId, grants.userId),
           Effect.provideService(CurrentMcpGrant, grant),
         );
         const result = yield* backend.callTool(call);
         assert.equal(result.status, "completed", JSON.stringify(result));
         return result.status === "completed" ? result.value : null;
       });
-    return { sql, executor, app, tool, mcp };
+    return { sql, executor, drives, grants, app, tool, mcp };
   });
 
 type Devices = {
   head: string;
   devices: { agent: string; lastSyncAt: string; lastHead: string }[];
 };
+const run = <A, E>(
+  effect: Effect.Effect<A, E, SqlClient.SqlClient | Crypto.Crypto | Scope.Scope>,
+) =>
+  Effect.runPromise(
+    Effect.scoped(effect).pipe(
+      Effect.provide(pgliteLayer()),
+      Effect.provideService(Crypto.Crypto, crypto),
+    ),
+  );
 
 test("a device's sync through the hosted MCP backend is recorded under its grant, never its user", async (t) => {
   const { clock, vaultOf } = await vaultFixture(t);
-  const devices = await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { executor, app, tool, mcp } = yield* hostPath(vaultOf);
-        yield* mcp(mac, tool(heartbeat));
-        // A Connect Obsidian connection runs as the app, with no caller, and is a device all the same.
-        clock.now += 1000;
-        const appScope = yield* executor.tools
-          .call({ ...tool(heartbeat), accounts: { app: {} } })
-          .pipe(Effect.provideService(CurrentMcpGrant, phone));
-        assert.equal(appScope.status, "completed", JSON.stringify(appScope));
-        // The same person without a device grant, such as a dashboard or API call, is no device.
-        clock.now += 1000;
-        const signedIn = yield* executor.tools
-          .call(tool(heartbeat))
-          .pipe(Effect.provideService(CurrentUserId, person));
-        assert.equal(signedIn.status, "completed", JSON.stringify(signedIn));
-        return yield* Effect.promise(() => vaultOf(app.id).request(devicesCommand));
-      }),
-    ).pipe(Effect.provide(pgliteLayer()), Effect.provideService(Crypto.Crypto, crypto)),
+  const mac = GrantId.make("grant-mac"),
+    phone = GrantId.make("grant-phone");
+  const devices = await run(
+    Effect.gen(function* () {
+      const { executor, grants, app, tool, mcp } = yield* hostPath(vaultOf);
+      yield* mcp(mac, tool(heartbeat));
+      // A Connect Obsidian connection runs as the app, with no caller, and is a device all the same.
+      clock.now += 1000;
+      const appScope = yield* executor.tools
+        .call({ ...tool(heartbeat), accounts: { app: {} } })
+        .pipe(Effect.provideService(CurrentMcpGrant, phone));
+      assert.equal(appScope.status, "completed", JSON.stringify(appScope));
+      // The same person without a device grant, such as a dashboard or API call, is no device.
+      clock.now += 1000;
+      const signedIn = yield* executor.tools
+        .call(tool(heartbeat))
+        .pipe(Effect.provideService(CurrentUserId, grants.userId));
+      assert.equal(signedIn.status, "completed", JSON.stringify(signedIn));
+      return yield* Effect.promise(() => vaultOf(app.id).request(devicesCommand));
+    }),
   );
   assert.equal(devices.ok, true, JSON.stringify(devices));
   const recorded = (devices.ok ? devices.value : undefined) as Devices;
@@ -226,76 +227,111 @@ test("a device's sync through the hosted MCP backend is recorded under its grant
   ]);
 });
 
-test("devices() lists the vault's Connect Obsidian grants, never an agent's grant making the same sync calls", async (t) => {
+/** An agent's own connection to the vault app, run as the app, with the tools it chose. */
+const agentConnection = (
+  app: { readonly id: ConnectionInput["apps"][number]["app"] },
+  id: string,
+  tools: ConnectionInput["apps"][number]["tools"],
+): ConnectionInput => ({
+  id: ConnectionId.make(id),
+  name: `Agent ${id}`,
+  apps: [{ app: app.id, runsAs: [{ kind: "app" }], tools }],
+});
+
+test("devices() lists the vault's Connect Obsidian devices, never an agent's grant making the same sync calls", async (t) => {
   const { clock, vaultOf } = await vaultFixture(t);
-  const agent = GrantId.make("grant-agent"),
-    scoped = GrantId.make("grant-scoped-agent");
-  const { listed, recorded } = await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { sql, app, tool, mcp } = yield* hostPath(vaultOf);
-        // Connect Obsidian's connection for this vault, and an agent's own connection to the same app.
-        const vault = ConnectionId.make("obsidian-vault"),
-          tools = ConnectionId.make("agent-tools");
-        const vaultPolicy = JSON.stringify({ apps: obsidianConnectionInput(app, vault).apps });
-        const agentPolicy = JSON.stringify({
-          apps: [{ app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "all" } }],
-        });
-        yield* sql`insert into "mcpConnection" (id, "userId", resource, name, policy) values
-        (${vault}, ${person}, ${organization}, 'Obsidian · Device sync', ${vaultPolicy}),
-        (${tools}, ${person}, ${organization}, 'Agent tools', ${agentPolicy})`;
-        // Two devices connected through it, a full-access agent and an agent on its own connection.
-        yield* sql`insert into "mcpGrant" (id, "userId", "clientId", resource, policy, connection) values
-        (${mac}, ${person}, 'obsidian-plugin', ${organization}, ${connectionGrantPolicy}, ${vault}),
-        (${phone}, ${person}, 'obsidian-plugin', ${organization}, ${connectionGrantPolicy}, ${vault}),
-        (${agent}, ${person}, 'agent-client', ${organization}, '{"kind":"all"}', null),
-        (${scoped}, ${person}, 'agent-client', ${organization}, ${connectionGrantPolicy}, ${tools})`;
-        const listing = (yield* mcp(mac, tool(heartbeat))) as { at: string };
-        clock.now += 1000;
-        yield* mcp(phone, tool(heartbeat));
-        // The agent makes every sync call shape: the heartbeat, a change range and an import call.
-        clock.now += 1000;
-        yield* mcp(agent, tool(heartbeat));
-        yield* mcp(
-          agent,
-          tool({ operation: "drive", method: "changes", input: { from: null, to: listing.at } }),
-        );
-        const id = "agent-import";
-        yield* mcp(
-          agent,
-          tool(
-            {
-              operation: "drive",
-              method: "planImport",
-              input: { id, page: 0, entries: [], final: true },
-            },
-            "mutation",
-          ),
-        );
-        yield* mcp(
-          agent,
-          tool(
-            { operation: "drive", method: "runImport", input: { id, request: heartbeat } },
-            "mutation",
-          ),
-        );
-        yield* mcp(scoped, tool(heartbeat));
-        // Disconnecting a device revokes its grant.
-        yield* sql`update "mcpGrant" set revoked = true where id = ${phone}`;
-        return {
-          listed: (yield* mcp(agent, tool(devicesCommand))) as Devices,
-          recorded: yield* Effect.promise(() => vaultOf(app.id).request(devicesCommand)),
-        };
-      }),
-    ).pipe(Effect.provide(pgliteLayer()), Effect.provideService(Crypto.Crypto, crypto)),
+  const { listed, recorded, ids } = await run(
+    Effect.gen(function* () {
+      const { grants, app, tool, mcp } = yield* hostPath(vaultOf);
+      // Connect Obsidian's connection for this vault; two devices connect through it.
+      const vault = yield* grants.connection(
+        obsidianConnectionInput(app, ConnectionId.make("obsidian-vault")),
+      );
+      const mac = yield* grants.connectDevice(vault, "MacBook");
+      const phone = yield* grants.connectDevice(vault, "iPhone");
+      // An earlier Connect Obsidian connection, which the person revokes below.
+      const earlier = ConnectionId.make("obsidian-earlier");
+      const tablet = yield* grants.connectDevice(
+        yield* grants.connection(obsidianConnectionInput(app, earlier)),
+        "iPad",
+      );
+      // Agents: full access, their own connection with every tool, and one limited to sync tools,
+      // which has exactly the shape of a device's connection.
+      const agent = yield* grants.connectAgent(grants.mcpUrl, "Agent");
+      const scoped = yield* grants.connectAgent(
+        (yield* grants.connection(agentConnection(app, "agent-tools", { kind: "all" }))).url,
+        "Agent",
+      );
+      const reader = yield* grants.connectAgent(
+        (yield* grants.connection(
+          agentConnection(app, "vault-reader", {
+            kind: "selected",
+            names: [ToolName.make("listNotes"), ToolName.make("readNote")],
+          }),
+        )).url,
+        "Reader",
+      );
+      const listing = (yield* mcp(mac, tool(heartbeat))) as { at: string };
+      clock.now += 1000;
+      yield* mcp(phone, tool(heartbeat));
+      yield* mcp(tablet, tool(heartbeat));
+      // The agents make every sync call shape: the heartbeat, a change range and an import call.
+      clock.now += 1000;
+      const changes = { operation: "drive", method: "changes", input: { from: null, to: listing.at } };
+      for (const grant of [agent, scoped, reader]) {
+        yield* mcp(grant, tool(heartbeat));
+        yield* mcp(grant, tool(changes));
+      }
+      const id = "agent-import";
+      yield* mcp(
+        agent,
+        tool(
+          { operation: "drive", method: "planImport", input: { id, page: 0, entries: [], final: true } },
+          "mutation",
+        ),
+      );
+      yield* mcp(
+        agent,
+        tool({ operation: "drive", method: "runImport", input: { id, request: heartbeat } }, "mutation"),
+      );
+      // Disconnecting a device revokes its grant; revoking a connection ends every grant through it.
+      yield* grants.revokeGrant(phone);
+      yield* grants.revokeConnection(earlier);
+      return {
+        ids: { mac, phone, tablet, agent, scoped, reader },
+        listed: (yield* mcp(agent, tool(devicesCommand))) as Devices,
+        recorded: yield* Effect.promise(() => vaultOf(app.id).request(devicesCommand)),
+      };
+    }),
   );
   // The vault itself recorded every grant that made a sync call.
   assert.equal(recorded.ok, true, JSON.stringify(recorded));
   assert.deepEqual(
     (recorded.ok ? (recorded.value as Devices) : undefined)?.devices.map((row) => row.agent).sort(),
-    [agent, mac, phone, scoped].sort(),
+    Object.values(ids).sort(),
   );
   assert.deepEqual(listed.devices, [
-    { agent: mac, lastSyncAt: "2026-11-18T09:00:00.000Z", lastHead: listed.head },
+    { agent: ids.mac, lastSyncAt: "2026-11-18T09:00:00.000Z", lastHead: listed.head },
   ]);
+});
+
+test("devices() fails when it cannot read a grant's record, rather than leave a device out", async (t) => {
+  const { vaultOf } = await vaultFixture(t);
+  const exit = await run(
+    Effect.gen(function* () {
+      const { sql, drives, grants, app, tool, mcp } = yield* hostPath(vaultOf);
+      const vault = yield* grants.connection(
+        obsidianConnectionInput(app, ConnectionId.make("obsidian-vault")),
+      );
+      yield* mcp(yield* grants.connectDevice(vault, "MacBook"), tool(heartbeat));
+      // A policy this reader cannot decode, as an unannounced change to the record could leave it.
+      yield* sql`update "mcpConnection" set policy = ${JSON.stringify({ apps: [{ app: app.id }] })} where id = ${vault.id}`;
+      return yield* drives
+        .request({ app: app.id, build: "bld_device_sync", command: devicesCommand })
+        .pipe(Effect.exit);
+    }),
+  );
+  assert.ok(Exit.isFailure(exit), `devices() answered ${JSON.stringify(exit)}`);
+  const failure = Cause.findErrorOption(exit.cause);
+  assert.equal(Option.isSome(failure) ? failure.value.reason : undefined, "integrity");
 });
