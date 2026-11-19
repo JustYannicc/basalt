@@ -23,11 +23,10 @@ const sampleSkew = 2 * 60_000;
 // The release runners are self-hosted too, so a broad label could hand CI work to them.
 const sharedLabels = ["self-hosted", "basalt-release"];
 
-/** Jobs that stay hosted, with their leg counts. Desktop packaging has a Windows leg; signed
- * migration proofs need hosted Cloud startup to finish their unchanged five-minute steps. */
+/** Jobs that can't run on one Linux label, with their leg counts: desktop packaging has a
+ * Windows leg. */
 export const hostedOnly: Record<string, number> = {
   "client-desktop": 2,
-  "production-ops-migrations": 1,
 };
 /** Matrix jobs route as one job, every leg together; tests pin these counts to the workflow. */
 export const matrixLegs: Record<string, number> = {

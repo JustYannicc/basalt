@@ -85,7 +85,7 @@ const route = (overrides: Partial<BoxInput> = {}, box = observer().box) =>
 
 test("a healthy fresh heartbeat with hosted over its cap routes longest first within the budget", async () => {
   // 3 slots give 30 hosted minutes: pool-runtime's two 19-minute legs overrun it, the 18-minute
-  // pool job fits, the 16- and 15-minute jobs would overrun, and production-ops fills the rest.
+  // pool job fits, the 16-, 15- and 14-minute jobs would overrun, and production-ops fills the rest.
   const routed = await route();
   assert.deepEqual(routed.jobs, ["host-managed-accounts-pool", "production-ops"]);
   assert.match(routed.summary, /^Box routing: 2 jobs \(30 of 30 budgeted hosted minutes\)/);
@@ -111,7 +111,7 @@ test("routing never takes more jobs than hosted is over its cap", async () => {
     "host-managed-accounts-pool",
     "account-acquisition",
     "catalog-compat",
-    "production-ops",
+    "production-ops-migrations",
   ]);
   // One over: pool-runtime's two legs would overshoot, so the next single job goes alone.
   assert.deepEqual(
@@ -369,7 +369,6 @@ test("every routable and shard job uses exactly the router expression; nothing e
     assert.equal(workflow.jobs[id].name, "${{ matrix.shard }}", id);
   }
   assert.equal(workflow.jobs["client-desktop"]["runs-on"], "${{ matrix.os }}");
-  assert.equal(workflow.jobs["production-ops-migrations"]["runs-on"], "ubuntu-latest");
   for (const [id, job] of Object.entries<{ "runs-on": string }>(workflow.jobs))
     if (!heavyJobs.includes(id)) assert.equal(job["runs-on"], "ubuntu-latest", id);
   for (const id of Object.keys(readJobDurations()))
@@ -518,10 +517,9 @@ test("pool fixture networking is scoped to self-hosted runners and checked befor
   assert.match(steps[contracts].run, /^node --test --test-concurrency=1 "\$\{files\[@\]\}"$/m);
 });
 
-test("signed migration proofs stay hosted with both bounded adoption shards", () => {
+test("signed migration proofs keep both bounded adoption shards wherever they run", () => {
   const job = workflow.jobs["production-ops-migrations"];
-  assert.equal(job["runs-on"], "ubuntu-latest");
-  assert.ok(!routableJobs.includes("production-ops-migrations"));
+  assert.equal(job["runs-on"], routerExpression("production-ops-migrations"));
   assert.equal(job["timeout-minutes"], 25);
   const adoption = job.steps.filter((step: { run?: string }) =>
     step.run?.startsWith("node scripts/production-ops/prove-provider-adoption.ts"),
