@@ -270,10 +270,10 @@
         {
           "identity": "cliproxy-home-scheduler-fail-closed",
           "file": "0694-home-scheduler-fail-closed.patch",
-          "sha256": "7baebf3ac95021f6a5de5a3e3b30ca15fd3db388e5feaa9641fd62215a2a8ec0",
+          "sha256": "e19fe1df4bbbbaa13398f71090490dbfa8412e2a79e399d602c019c622833ef6",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0694 is offered to Home upstream as an opt-in fail-closed scheduler. Retire when the pinned Home refuses auth picks with a closed code while an enabled plugin instance sets scheduler-required and no scheduler plugin is active, never falling back to the built-in selector, and passes the fused, fused-during-pick, never-loaded and unchanged-veto regressions."
+            "requires": "Carry 0694 adds an opt-in fail-closed scheduler to Home; it is to be offered upstream. Retire when the pinned Home refuses auth picks with a closed code while an enabled plugin instance sets scheduler-required and no scheduler plugin is active, never falling back to the built-in selector, and passes the fused, fused-during-pick, never-loaded and unchanged-veto regressions."
           }
         }
       ]

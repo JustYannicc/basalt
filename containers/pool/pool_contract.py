@@ -318,6 +318,15 @@ def apply_pool_config(management_key: str, allow_remote: bool) -> None:
     )
     if status != 200:
         raise StartupError(f"Home routing configuration failed (HTTP {status})")
+    # Without the key Home falls back to its built-in selector once the veto plugin fuses.
+    status, policy = request_json(
+        f"{HOME_URL}/v8/management/config/plugins/configs/basalt-native-policy",
+        "GET",
+        management_key,
+        timeout=10,
+    )
+    if status != 200 or not isinstance(policy, dict) or policy.get("scheduler-required") is not True:
+        raise StartupError(f"Home did not keep scheduler-required on the native-policy plugin (HTTP {status})")
     provision_billing_policy(
         lambda method, payload: request_json(
             f"{HOME_URL}/v8/management/billing/settings",
