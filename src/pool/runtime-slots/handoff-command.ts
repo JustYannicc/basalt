@@ -95,6 +95,8 @@ export const RuntimeHandoffCommand = Schema.Union([
     operationId: OperationId,
   }),
   Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe", "active-health"]) }),
+  // Refused unless the Worker's POOL_REHEARSAL_STAGE is a rehearsal stage (rehearsal-fault.ts).
+  Schema.Struct({ ...fields, action: Schema.Literal("rehearsal-restart-over-running") }),
   Schema.Struct({
     ...fields,
     action: Schema.Literals(["receipt", "retirement", "drain", "discard"]),

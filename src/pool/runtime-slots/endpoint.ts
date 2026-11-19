@@ -56,6 +56,8 @@ export interface EndpointEnvironment extends RuntimeEnvironment {
    * declaration binds it, which only disposable stages with test accounts should.
    */
   POOL_ALLOW_MASTER_CRASH?: string;
+  /** The Alchemy stage, bound only on `test-rehearsal-<n>` stages (deployment.ts). */
+  POOL_REHEARSAL_STAGE?: string;
 }
 /** How long the target may take to prove it still serves, right before it is signalled. */
 const crashHealthTimeoutMs = 1_000;

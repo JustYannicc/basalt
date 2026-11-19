@@ -1,4 +1,5 @@
 import { RuntimeSlotRecovery } from "./recovery.ts";
+import { restartOverRunning } from "./rehearsal-fault.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
 import { observeUnattestedAdoption } from "./adoption-observation.ts";
@@ -167,6 +168,16 @@ export class RuntimeHandoff {
   }
   legacyActive() {
     return this.legacyActivity.active();
+  }
+  rehearseRestartOverRunning() {
+    return restartOverRunning({
+      ctx: this.ctx,
+      env: this.env,
+      code: this.controllerCode,
+      storage: this.storage,
+      provider: this.options.recovery?.provider,
+      wrap: this.options.wrap,
+    });
   }
   async retireDrained() {
     const { selection } = await this.storage.inspect();
