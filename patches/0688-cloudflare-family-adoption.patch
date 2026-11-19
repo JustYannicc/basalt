@@ -582,16 +582,16 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
            const createdAt = new Date(yield* Clock.currentTimeMillis);
            const promote = existing === undefined || sequence > existing.activatedSequence;
 -          const storedEntries = yield* storeProviders(tx, crypto, entries);
-+          // Refs continue from the active version as it is under this lock, not as the build read
-+          // it: a production migration may have moved the lineage's ref meanwhile.
++          // Refs continue from the version the build read, as it is under this lock: a production
++          // migration may have moved that version's refs in place since the build read them.
 +          const chosen =
-+            existing === undefined
++            before === null
 +              ? entries
 +              : yield* chooseProviderIds(
 +                  tx,
 +                  crypto,
 +                  entries,
-+                  (yield* project(tx, existing)).requirements.accounts,
++                  (yield* project(tx, before)).requirements.accounts,
 +                );
 +          const storedEntries = yield* storeProviders(tx, crypto, chosen);
            const accounts = yield* Effect.forEach(storedEntries, ({ slot, provider }) => {
