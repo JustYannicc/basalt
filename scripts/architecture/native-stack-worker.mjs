@@ -27,8 +27,20 @@ try {
   const { brand } = await load("brand.ts");
   if (setupRequestDenied) throw new Error();
   const previewConnection = process.env.NATIVE_STACK_PREVIEW_CONNECTION_PROOF === "true";
-  const http = declarationFetch(previewConnection ? "preview.fixture.invalid" : brand.zone);
+  const settlesProof = process.env.NATIVE_STACK_SETTLES_PROOF;
+  const previewStack = previewConnection || settlesProof === "preview";
+  const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
+  if (settlesProof)
+    // A test stage seeds its private billing instance while its declaration is resolved. The plan
+    // proof answers that one request; every other request still meets the declaration fixtures.
+    globalThis.fetch = (input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      return (init?.method ?? request?.method) === "POST" &&
+        /^https:\/\/emulators\.dev\/[^?#]+\/_emulate\/seed$/.test(String(request?.url ?? input))
+        ? Promise.resolve(Response.json({}))
+        : http.fetch(input, init);
+    };
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
     await load("scripts/environment.ts");
   const synthetic = Object.fromEntries(
@@ -59,7 +71,7 @@ try {
     delete synthetic.BASALT_POOL_IMAGE_RECEIPT;
     delete synthetic.GITHUB_SHA;
   }
-  const settings = previewConnection
+  const settings = previewStack
     ? {
         ...previewEnvironment(1, {
           ...synthetic,
@@ -76,6 +88,8 @@ try {
     : deployEnvironment(synthetic);
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
+  // The release entry gives every stage an attempt id, test stages included.
+  if (settlesProof) process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
   if (candidateProof) {
     if (
@@ -183,7 +197,8 @@ try {
     process.env.NATIVE_STACK_SETTINGS_PROOF === "true"
       ? await load("scripts/release-barrier/candidate-settings.ts")
       : undefined;
-  const inspect = settingsProof
+  const planSettles = settlesProof ? await import("./plan-settles-proof.mjs") : undefined;
+  const inspectDeclarations = settingsProof
     ? (stack) =>
         settingsProof.settingsFromDeclarations(
           stack,
@@ -228,6 +243,13 @@ try {
                     Output.isOutput,
                   ),
                 );
+  const inspect = planSettles
+    ? (stack) =>
+        planSettles.provePlanSettles(stack, (inspectNext) => {
+          process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+          return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+        })
+    : inspectDeclarations;
   const program = evalStack(
     actualRoot,
     (stack) =>

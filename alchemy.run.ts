@@ -120,7 +120,12 @@ export default Alchemy.Stack(
         CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
         CLOUD_SOURCE_NAMESPACE: preview?.sourceNamespace ?? deployment.sourceNamespace,
       },
-      memo: false,
+      // The Router reads this command's outcome. A plan cannot know the outcome of a command that
+      // runs on every plan, so the Router would plan as an update forever. Keyed on what the
+      // command reads, it runs when that changes. The brand file is not in the key: the script
+      // takes only its namespace name from it, and that name is passed above. A test stage builds
+      // under its own brand, which would otherwise change the key between a deploy and a plan.
+      memo: { include: ["ensure-artifacts.ts", "artifacts-http-failure.ts"] },
       timeout: "1 minute",
     });
     yield* cloudDeployment;
