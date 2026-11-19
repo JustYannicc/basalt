@@ -41,7 +41,17 @@ export function recoveryState(result: unknown) {
   const identity = active && record(active.identity) ? active.identity : undefined;
   const recovery = record(result) && record(result.recovery) ? result.recovery : undefined;
   const needsPerson = recovery?.needsPerson;
+  const present = Object.entries(recovery ?? {})
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key]) => key)
+    .filter((key) => /^[A-Za-z][A-Za-z0-9]{0,40}$/u.test(key))
+    .sort();
   return {
+    // Field names only, never values: what the last read said, for a stop that has to name it.
+    fields: present,
+    // A forced stop waits while the stuck runtime counts in-flight streams, until the count stands
+    // still (`leakedStreamsMs`).
+    waitingForStreams: present.some((key) => /stream/iu.test(key)),
     bootId: typeof identity?.bootId === "string" ? identity.bootId : undefined,
     // The forced stop sets it, and recovery clears it when it reports `ready`.
     restarting: recovery?.restartedAt !== undefined && recovery.restartedAt !== null,
@@ -90,11 +100,14 @@ export async function awaitRecoveryReady(options: {
         });
       if (state.bootId && state.bootId !== options.before && !state.restarting)
         return { boot: state.bootId, waitedMs: now() - started, reads };
-      last = !state.bootId
-        ? "no active boot"
-        : state.bootId === options.before
-          ? "still the stuck boot"
-          : "a new boot, recovery not ready";
+      last = state.waitingForStreams
+        ? "waiting for in-flight streams to stand still (up to 5 min)"
+        : !state.bootId
+          ? "no active boot"
+          : state.bootId === options.before
+            ? "still the stuck boot"
+            : "a new boot, recovery not ready";
+      if (state.fields.length) last += `; recovery fields: ${state.fields.join(", ")}`;
     } catch (error) {
       if (error instanceof RootRestartFailed) throw error;
       // A refusal or a dropped read while the runtime restarts; messages can name hosts.

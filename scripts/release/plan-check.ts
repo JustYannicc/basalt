@@ -58,7 +58,19 @@ export const PlanPolicy = Schema.Struct({
   poolWorker: exactFqn,
   artifactsCredentials: exactFqn,
   /** `cutover-classes` only: every non-noop node, with its action. */
-  allow: Schema.Array(Schema.Struct({ fqn: exactFqn, action: Schema.String })),
+  allow: Schema.Array(
+    Schema.Struct({
+      fqn: exactFqn,
+      action: Schema.String,
+      /**
+       * Admitted only while every property that differs is not known yet: a connection whose origin
+       * waits on a database command's hash. A resolved difference, such as another database, refuses.
+       */
+      unresolvedOnly: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
+  /** `code-only`: when set, only these commands may run; any other Command row refuses. */
+  commands: Schema.optional(Schema.Array(exactFqn)),
   /** Present exactly when the plan is filtered: the FQNs handed to `include`. */
   include: Schema.optional(Schema.Array(exactFqn)),
 });
@@ -561,6 +573,17 @@ export const checkPlan = (
         why,
         fix,
       });
+    // Every property that differs on this row is still unknown at plan time.
+    const onlyUnresolved = (fqn: string) => {
+      const node = nodes.find((candidate) => candidate.resource.FQN === fqn);
+      if (!node || !("props" in node)) return false;
+      const differences = propChanges(recorded(node)?.props, node.props);
+      return (
+        differences.length > 0 &&
+        differences.every((line) => line.includes("<unresolved>")) &&
+        node.bindings.every((binding) => binding.action === "noop")
+      );
+    };
     if (policy.mode === "code-only")
       for (const change of changes)
         if (
@@ -568,13 +591,17 @@ export const checkPlan = (
           // Worker but the bulk-import store's (binding and class changes are refused above), the
           // pinned root's hash, and Command runs such as a migration step (the backup covers those).
           !policy.allow.some(
-            (entry) => entry.fqn === change.fqn && entry.action === change.action,
+            (entry) =>
+              entry.fqn === change.fqn &&
+              entry.action === change.action &&
+              (!entry.unresolvedOnly || onlyUnresolved(change.fqn)),
           ) &&
           !(
             change.action === "update" &&
             ((change.type === "Cloudflare.Worker" && change.fqn !== policy.artifactsCredentials) ||
               change.fqn === policy.poolContainer.fqn ||
-              change.type.startsWith("Command."))
+              (change.type.startsWith("Command.") &&
+                (!policy.commands || policy.commands.includes(change.fqn))))
           )
         )
           outside(
