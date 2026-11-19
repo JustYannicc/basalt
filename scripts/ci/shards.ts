@@ -88,8 +88,9 @@ export function planShards(
       .sort((a, b) => (runKey(a) < runKey(b) ? -1 : 1))
       .map(runKey)
       .join(" "),
-    // Room for slow setup, slower files and one file that runs to its own deadline.
-    timeout: Math.ceil(setupMinutes + (bin.seconds / 60) * 1.5 + fileDeadlineMinutes),
+    // Room for slow setup, slower files, and one file that runs to its own deadline, fails and
+    // runs to it again on its retry.
+    timeout: Math.ceil(setupMinutes + (bin.seconds / 60) * 1.5 + 2 * fileDeadlineMinutes),
   }));
 }
 

@@ -20,7 +20,9 @@ After changing `upstream.json`, fetch its exact commit into `.upstream` and run 
 
 ## Declared e2e shards
 
-`select` plans the declared e2e files into shards of about eight minutes, using `scripts/ci/declared-durations.json`. That file holds the mean measured seconds per `<group> <file>`, taken from recent full Checks. A file it doesn't list costs only balance, never coverage. To refresh it, read the per-file seconds from the `declared-run.json` records in a full Check's declared shard artifacts and write the means back. The planner tests check the result.
+`select` plans the declared e2e files into shards of about eight minutes, using `scripts/ci/declared-durations.json`. That file holds the mean measured seconds per `<group> <file>`, taken from recent full Checks. A file it doesn't list costs only balance, never coverage. To refresh it, read the per-file seconds from the `declared-run.json` records in a full Check's declared shard artifacts and write the means back. A retried file's `seconds` covers both attempts, so take `attempts[0].seconds` instead. The planner tests check the result.
+
+A file that fails runs once more in the same job; one that times out or is cancelled does not. A pass on the retry passes the job but leaves a warning, and both attempts keep their evidence. The `check` job publishes each run's count in its `e2e retries` notice and its `check-e2e-retries-<run attempt>` artifact, which covers every attempt so far. The notice says `incomplete` when a planned shard left no record. `node scripts/ci/retries.ts --since <YYYY-MM-DD>` ranks the retried files over a range and marks `fix-or-quarantine` on any file retried on more than half of the runs it ran in.
 
 ## Keep e2e coverage explicit
 
