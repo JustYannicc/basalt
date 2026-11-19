@@ -2,6 +2,7 @@ import { vaultAttachments } from "./attachment-service.ts";
 import {
   createDrive,
   createChangeReader,
+  DriveError,
   openCloudflareStorage,
   type Drive,
   type Bucket,
@@ -149,20 +150,44 @@ export async function openVault(input: {
       sql.exec("UPDATE vault_authors SET durable=1 WHERE operation=?", operation);
       return actual;
     };
-    const make = (timestamp: number) =>
+    const make = (timestamp: number, store: RefStore = refs) =>
       createDrive({
         objects: usage.objects,
-        refs,
+        refs: store,
         author: { name: "Basalt", email: "drive@example.invalid", timestamp, timezoneOffset: 0 },
       });
+    /**
+     * One write. The engine retries a refused push as a lost race and drops its reason, so a write
+     * that runs out of retries names the repository's last bounded reason.
+     */
+    const write = async <T>(operation: string, use: (drive: Drive) => Promise<T>) => {
+      let refused: string | undefined;
+      const store: RefStore = {
+        ...refs,
+        async publish(transaction) {
+          const result = await refs.publish(transaction);
+          if (!result.applied && "refused" in result && typeof result.refused === "string")
+            refused = result.refused;
+          return result;
+        },
+      };
+      try {
+        return await use(make(await author(operation), store));
+      } catch (error) {
+        // Other failures, QuotaExceeded included, keep their own identity and fields.
+        if (refused === undefined || !(error instanceof DriveError) || error.code !== "contended")
+          throw error;
+        throw new DriveError(error.code, `${error.message} (last refusal: ${refused})`);
+      }
+    };
     const reader = make(0);
     const drive: Drive = {
       ...reader,
-      initialize: async (op) => make(await author(op)).initialize(op),
-      openWriter: async (request) => make(await author(request.operation)).openWriter(request),
-      commit: async (request) => make(await author(request.operation)).commit(request),
-      land: async (request) => make(await author(request.operation)).land(request),
-      resolve: async (request) => make(await author(request.operation)).resolve(request),
+      initialize: (op) => write(op, (writer) => writer.initialize(op)),
+      openWriter: (request) => write(request.operation, (writer) => writer.openWriter(request)),
+      commit: (request) => write(request.operation, (writer) => writer.commit(request)),
+      land: (request) => write(request.operation, (writer) => writer.land(request)),
+      resolve: (request) => write(request.operation, (writer) => writer.resolve(request)),
     };
     const root = await drive.initialize("initialize");
     const changes = createChangeReader(cache.objects),
