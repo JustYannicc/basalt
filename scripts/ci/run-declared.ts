@@ -4,7 +4,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBounded, type Bounds } from "./bounded-process.ts";
 import { collectNewE2eEvidence, runNames } from "./collect-e2e-evidence.mjs";
+import {
+  annotation,
+  conclusion,
+  duration,
+  overflowAnnotation,
+  retryAnnotations,
+  row,
+} from "./declared-report.ts";
 import { patternForGroup, readDeclarations } from "./declarations.ts";
+import {
+  failedTitles,
+  retryCounts,
+  shardRecord,
+  type Outcome,
+  type RetriedFile,
+} from "./retry-records.ts";
 import { fileDeadlineMinutes, runKey, shardRuns, type DeclaredRun } from "./shards.ts";
 
 const flags: Record<string, string[]> = {
@@ -23,15 +38,29 @@ export type Options = Omit<Bounds, "log"> & {
   log?: Bounds["log"];
   /** The step summary, which gets each file's row as soon as that file finishes. */
   summary?: string;
+  /** Name the shard's retry record; the workflow passes its job id, matrix shard and run attempt. */
+  job?: string;
+  shard?: string;
+  runAttempt?: number;
   /** Set only where this run owns the whole Docker daemon, so leftover e2e databases may go. */
   ownsDocker?: boolean;
 };
 
+export type Attempt = { attempt: number; outcome: Outcome; seconds: number; code: number | null };
+/** Outcome and exit code are the last attempt's; `seconds` sums every attempt. */
 export type DeclaredResult = DeclaredRun & {
-  outcome: "passed" | "failed" | "timed-out" | "cancelled";
+  outcome: Outcome;
   seconds: number;
   code: number | null;
+  attempts: Attempt[];
+  first_failure: string[];
 };
+
+/**
+ * Only a plain failure gets one more attempt. A file that hangs stays a failure rather than
+ * spending another deadline, and a cancelled shard has no time left for one.
+ */
+const retryable = (attempt: Attempt) => attempt.attempt === 1 && attempt.outcome === "failed";
 
 /** Resolve every pair before anything runs, so a bad row fails without a partial shard. */
 export function resolveRuns(runs: readonly DeclaredRun[], root: string) {
@@ -70,25 +99,23 @@ async function environmentFor(run: Resolved, root: string) {
 export const evidenceDirectory = (run: DeclaredRun) =>
   run.file + "-" + run.group.replaceAll(":", "-");
 
-/**
- * Run one declared (group, file) as its own `e2e:<target>` process, stop everything it started
- * before the next file, and collect only the evidence its runs left.
- */
-export async function runDeclaredFile(run: Resolved, options: Options): Promise<DeclaredResult> {
+/** Each attempt keeps its own evidence, so a pass on retry never replaces the first failure's. */
+export const attemptDirectory = (attempt: number) => "attempt-" + attempt;
+
+async function runAttempt(
+  run: Resolved,
+  attempt: number,
+  environment: NodeJS.ProcessEnv,
+  options: Options,
+  destination: string,
+): Promise<Attempt> {
   const log = options.log ?? console.log;
-  const destination = join(options.evidence, evidenceDirectory(run));
-  const record = (state: object) => {
-    mkdirSync(destination, { recursive: true, mode: 0o700 });
-    const text = JSON.stringify({ group: run.group, file: run.file, ...state }) + "\n";
-    writeFileSync(join(destination, "declared-run.json"), text);
-  };
   const roots = [
     join(options.root, ".generated/e2e-evidence"),
     join(options.root, ".upstream/.local/e2e"),
   ];
   const before = await runNames(roots);
   const started = Date.now();
-  record({ outcome: "running", startedAt: new Date(started).toISOString() });
   const exit = options.signal?.aborted
     ? { code: null, stopped: "cancelled" as const }
     : await runBounded(
@@ -102,26 +129,67 @@ export async function runDeclaredFile(run: Resolved, options: Options): Promise<
           "1",
           ...flags[run.mode]!,
         ],
-        { cwd: join(options.root, ".upstream"), env: await environmentFor(run, options.root) },
+        { cwd: join(options.root, ".upstream"), env: environment },
         { ...options, log },
       );
-  const result: DeclaredResult = {
-    group: run.group,
-    file: run.file,
+  const result: Attempt = {
+    attempt,
     outcome: exit.stopped ?? (exit.code === 0 ? "passed" : "failed"),
     seconds: Math.round((Date.now() - started) / 1000),
     code: exit.code,
   };
   try {
-    await collectNewE2eEvidence(roots, before, destination);
+    await collectNewE2eEvidence(roots, before, join(destination, attemptDirectory(attempt)));
   } catch (error) {
     // Missing evidence fails the file, so a pass always comes with its record.
     log(`::error::Could not collect evidence for ${runKey(run)}: ${String(error)}`);
     if (result.outcome === "passed") result.outcome = "failed";
   }
   // A file stopped at its deadline can leave its database containers to the harness's own
-  // five-minute sweep; the next file starts without them.
+  // five-minute sweep; the next attempt or file starts without them.
   if (result.outcome !== "passed" && options.ownsDocker) removeLeftoverDatabases(log);
+  return result;
+}
+
+/**
+ * Run one declared (group, file) as its own `e2e:<target>` process, stop everything it started
+ * before the next file, and collect only the evidence its runs left. A plain failure runs once
+ * more, immediately, with the same invocation and environment.
+ */
+export async function runDeclaredFile(run: Resolved, options: Options): Promise<DeclaredResult> {
+  const log = options.log ?? console.log;
+  const destination = join(options.evidence, evidenceDirectory(run));
+  const record = (state: object) => {
+    mkdirSync(destination, { recursive: true, mode: 0o700 });
+    const text = JSON.stringify({ group: run.group, file: run.file, ...state }) + "\n";
+    writeFileSync(join(destination, "declared-run.json"), text);
+  };
+  const started = new Date().toISOString();
+  const attempts: Attempt[] = [];
+  let firstFailure: string[] = [];
+  record({ outcome: "running", startedAt: started, attempts });
+  const environment = await environmentFor(run, options.root);
+  for (let attempt = 1; ; attempt++) {
+    log(`::group::${runKey(run)}${attempt > 1 ? " (retry after a failure)" : ""}`);
+    const result = await runAttempt(run, attempt, environment, options, destination);
+    log("::endgroup::");
+    attempts.push(result);
+    if (attempt === 1 && result.outcome === "failed")
+      firstFailure = failedTitles(join(destination, attemptDirectory(1)));
+    if (!retryable(result) || options.signal?.aborted) break;
+    log(`${runKey(run)}: failed after ${duration(result.seconds)}; retrying once`);
+    record({ outcome: "running", startedAt: started, attempts, first_failure: firstFailure });
+  }
+  const last = attempts.at(-1)!;
+  const result: DeclaredResult = {
+    group: run.group,
+    file: run.file,
+    outcome: last.outcome,
+    seconds: attempts.reduce((sum, attempt) => sum + attempt.seconds, 0),
+    code: last.code,
+    attempts,
+    first_failure: firstFailure,
+  };
   record(result);
   return result;
 }
@@ -134,37 +202,51 @@ function removeLeftoverDatabases(log: (line: string) => void) {
     log("::warning::Could not remove leftover e2e database containers");
 }
 
-const duration = (seconds: number) =>
-  `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-
-const row = (result: DeclaredResult) =>
-  `| ${result.file} | ${result.group} | ${result.outcome} | ${duration(result.seconds)} |\n`;
-
-/** Every file runs even after one fails; the shard fails if any file did not pass. */
+/**
+ * Every file runs even after one fails; the shard fails if any file did not pass. Retried files
+ * also land in the shard's retries.json, rewritten after each one so an interrupted shard keeps it.
+ */
 export async function runDeclaredShard(runs: readonly DeclaredRun[], options: Options) {
   const log = options.log ?? console.log;
   const resolved = resolveRuns(runs, options.root);
+  const job = options.job ?? "local";
+  const retried: RetriedFile[] = [];
+  const saveRetries = () => {
+    mkdirSync(options.evidence, { recursive: true, mode: 0o700 });
+    const record = shardRecord(job, options.shard ?? job, options.runAttempt ?? 1, retried);
+    writeFileSync(join(options.evidence, "retries.json"), JSON.stringify(record) + "\n");
+  };
+  saveRetries();
   if (options.summary)
     appendFileSync(
       options.summary,
       "### Declared E2E files\n\n| File | Group | Result | Time |\n| --- | --- | --- | ---: |\n",
     );
   const results: DeclaredResult[] = [];
+  const unannotated: DeclaredResult[] = [];
   for (const run of resolved) {
-    log(`::group::${runKey(run)}`);
     const result = await runDeclaredFile(run, options);
-    log("::endgroup::");
-    log(`${runKey(run)}: ${result.outcome} after ${duration(result.seconds)}`);
-    if (result.outcome !== "passed")
-      log(
-        `::error title=Declared E2E ${result.outcome}::${runKey(run)} ${result.outcome}` +
-          (result.outcome === "timed-out" ? " at its per-file deadline" : "") +
-          (result.code === null ? "" : ` (exit ${result.code})`) +
-          ` after ${duration(result.seconds)}`,
-      );
+    log(`${runKey(run)}: ${conclusion(result)} after ${duration(result.seconds)}`);
+    const line = annotation(result);
+    if (result.attempts.length > 1) {
+      retried.push({
+        group: result.group,
+        file: result.file,
+        attempts: result.attempts.length,
+        conclusion: result.outcome === "passed" ? "passed" : "failed",
+        retry_outcome: result.outcome,
+        first_failure: result.first_failure,
+      });
+      saveRetries();
+      if (retried.length > retryAnnotations) unannotated.push(result);
+      else log(line!);
+    } else if (line) log(line);
     if (options.summary) appendFileSync(options.summary, row(result));
     results.push(result);
   }
+  if (unannotated.length) log(overflowAnnotation(unannotated));
+  log(`Retries: ${retryCounts(retried)}`);
+  if (options.summary) appendFileSync(options.summary, `\nRetries: ${retryCounts(retried)}.\n`);
   return results;
 }
 
@@ -181,6 +263,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     deadlineMs: fileDeadlineMinutes * 60_000,
     graceMs: 30_000,
     signal: controller.signal,
+    ...(process.env.GITHUB_JOB ? { job: process.env.GITHUB_JOB } : {}),
+    ...(process.env.BASALT_E2E_SHARD ? { shard: process.env.BASALT_E2E_SHARD } : {}),
+    runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT ?? 1),
     ...(process.env.GITHUB_STEP_SUMMARY ? { summary: process.env.GITHUB_STEP_SUMMARY } : {}),
     ownsDocker: process.env.GITHUB_ACTIONS === "true",
   });
