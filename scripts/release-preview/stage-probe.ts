@@ -296,6 +296,16 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
   const abort = () => stop.abort();
   process.once("SIGTERM", abort);
   process.once("SIGINT", abort);
+  // A pending bridge open holds no handle of its own; without this Node exits mid-await on a stop.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await probeMain(args, env, stop);
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
+async function probeMain(args: string[], env: NodeJS.ProcessEnv, stop: AbortController) {
   const { redactor, describeError } = await import("./redact.ts");
   const [laneText, outFile] = args;
   if (!laneText || !outFile) throw new Error("Usage: stage-probe.ts <lane> <outFile>");
@@ -351,7 +361,22 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
 
   const worker = await stagePoolWorker(accountId, token, stage);
   // One bridge for the whole run, so every sample times the controller and not bridge setup.
-  const bridge = await openPoolOperations({ accountId, worker });
+  const opening = openPoolOperations({ accountId, worker });
+  const stopped = new Promise<"stopped">((done) =>
+    stop.signal.aborted
+      ? done("stopped")
+      : stop.signal.addEventListener("abort", () => done("stopped"), { once: true }),
+  );
+  const opened = await Promise.race([opening, stopped]);
+  if (opened === "stopped") {
+    // Stopped before the bridge opened: no samples, but the summary still says so.
+    void opening.then((late) => late.close()).catch(() => {});
+    process.stdout.write(
+      `${JSON.stringify({ ...summarize([]), note: "stopped before the bridge opened" })}\n`,
+    );
+    return;
+  }
+  const bridge = opened;
   const bounded = (signal: AbortSignal) => AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
   const signed = async (
     action: "inspect" | "active-health",
