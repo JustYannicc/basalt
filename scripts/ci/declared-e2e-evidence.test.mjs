@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { finalizeE2e } from "../e2e-finalize.ts";
 import { collectNewE2eEvidence, runNames } from "./collect-e2e-evidence.mjs";
-import { evidenceDirectory } from "./run-declared.ts";
+import { attemptDirectory, evidenceDirectory } from "./run-declared.ts";
 
 test("declared shards upload each file's forced-failure reports apart, plus an interrupted run", async (t) => {
   const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
@@ -84,19 +84,28 @@ test("declared shards upload each file's forced-failure reports apart, plus an i
         "basalt-e2e-evidence",
         evidenceDirectory({ group: `declared:${target}`, file }),
       );
-      await collectNewE2eEvidence(roots, before, destination);
+      const attempt = join(destination, attemptDirectory(1));
+      await collectNewE2eEvidence(roots, before, attempt);
       await writeFile(join(destination, "declared-run.json"), JSON.stringify({ file }));
       assert.ok(
         uploaded(join(destination, "declared-run.json")),
         `${name} uploads the file record`,
       );
-      assert.deepEqual(await readdir(destination), ["declared-run.json", run].sort(), file);
+      assert.deepEqual(
+        await readdir(destination),
+        [attemptDirectory(1), "declared-run.json"].sort(),
+      );
+      assert.deepEqual(await readdir(attempt), [run], file);
       for (const [evidence, content] of expected) {
-        const path = join(destination, run, target, "report/diagnostics", evidence);
+        const path = join(attempt, run, target, "report/diagnostics", evidence);
         assert.equal(await readFile(path, "utf8"), content, `${name} ${file}`);
         assert.ok(uploaded(path), `${name} uploads ${evidence}`);
       }
     }
+    assert.ok(
+      uploaded(join(runnerTemp, "basalt-e2e-evidence/retries.json")),
+      `${name} uploads the shard's retry record`,
+    );
     // A file the job's deadline interrupts never finalizes; the fallback step keeps its run alone.
     const interrupted = await start("interrupted-run");
     const command = job.steps[collectIndex].run

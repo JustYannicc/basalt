@@ -2236,7 +2236,8 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    # Planned per shard: its files' measured time plus setup, with room for one file's deadline
+    # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -2256,6 +2257,8 @@ jobs:
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
       - name: Run this shard's declared files, each in its own process
+        env:
+          BASALT_E2E_SHARD: ${{ matrix.shard }}
         run: bun scripts/ci/run-declared.ts "${{ matrix.runs }}"
       # Each finished file's evidence is already in its own directory; this keeps what a run
       # interrupted by the job's deadline or cancellation left behind.
@@ -2267,18 +2270,29 @@ jobs:
         with:
           name: ${{ matrix.shard }}
           path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/retries.json
             ${{ runner.temp }}/basalt-e2e-evidence/*/declared-run.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
+      # The check job counts retries from these alone instead of downloading every shard's evidence.
+      # Each run attempt keeps its own, and a failed upload only makes the count incomplete.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
+          if-no-files-found: ignore
   declared-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    # Planned per shard: its files' measured time plus setup, with room for one file's deadline
+    # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -2298,6 +2312,8 @@ jobs:
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
       - name: Run this shard's declared files, each in its own process
+        env:
+          BASALT_E2E_SHARD: ${{ matrix.shard }}
         run: bun scripts/ci/run-declared.ts "${{ matrix.runs }}"
       # Each finished file's evidence is already in its own directory; this keeps what a run
       # interrupted by the job's deadline or cancellation left behind.
@@ -2309,18 +2325,29 @@ jobs:
         with:
           name: ${{ matrix.shard }}
           path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/retries.json
             ${{ runner.temp }}/basalt-e2e-evidence/*/declared-run.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
+      # The check job counts retries from these alone instead of downloading every shard's evidence.
+      # Each run attempt keeps its own, and a failed upload only makes the count incomplete.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
+          if-no-files-found: ignore
   declared-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    # Planned per shard: its files' measured time plus setup, with room for one file's deadline
+    # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -2340,6 +2367,8 @@ jobs:
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
       - name: Run this shard's declared files, each in its own process
+        env:
+          BASALT_E2E_SHARD: ${{ matrix.shard }}
         run: bun scripts/ci/run-declared.ts "${{ matrix.runs }}"
       # Each finished file's evidence is already in its own directory; this keeps what a run
       # interrupted by the job's deadline or cancellation left behind.
@@ -2351,12 +2380,22 @@ jobs:
         with:
           name: ${{ matrix.shard }}
           path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/retries.json
             ${{ runner.temp }}/basalt-e2e-evidence/*/declared-run.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
+      # The check job counts retries from these alone instead of downloading every shard's evidence.
+      # Each run attempt keeps its own, and a failed upload only makes the count incomplete.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
+          if-no-files-found: ignore
   workerd-assets:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')
@@ -2942,6 +2981,35 @@ jobs:
           path: ${{ runner.temp }}/check-receipt.json
           if-no-files-found: error
           retention-days: 1
+      # Informational: continue-on-error keeps the retry count from changing the gate's verdict.
+      # A reused Check ran no shards, so it has nothing to count.
+      - name: Download each declared shard's retry record
+        if: always() && needs.reuse.outputs.reused != 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-retries-*
+          path: ${{ runner.temp }}/e2e-retries
+      - name: Count declared E2E files that passed only on retry
+        if: always() && needs.reuse.outputs.reused != 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The planned shards, so a missing record makes the count incomplete rather than zero.
+          CI_MATRICES: ${{ needs.select.outputs.matrices }}
+          CI_JOBS: ${{ needs.select.outputs.jobs }}
+        run: node scripts/ci/aggregate-retries.ts "$RUNNER_TEMP/e2e-retries" "$RUNNER_TEMP/check-e2e-retries/retries.json"
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.reuse.outputs.reused != 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          name: check-e2e-retries-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/check-e2e-retries/retries.json
+          if-no-files-found: warn
+          retention-days: 90
 
   account-acquisition:
     needs: select
