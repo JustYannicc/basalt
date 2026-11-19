@@ -135,6 +135,10 @@ export const provePlanSettles = (stack, recompile) =>
     );
     if (Exit.isSuccess(exit)) return exit.value;
     // Messages and causes can hold paths and settings; only the phase and the error's class leave.
-    const error = /^[A-Za-z]{1,60}/.exec(Cause.pretty(exit.cause))?.[0] ?? "unknown";
-    return { failed: phase, error };
+    const cause = Cause.pretty(exit.cause);
+    const error = /^[A-Za-z]{1,60}/.exec(cause)?.[0] ?? "unknown";
+    // A maintainer debugging locally opts in to the full cause; no workflow sets this.
+    return process.env.NATIVE_STACK_PROOF_DETAIL === "1"
+      ? { failed: phase, error, detail: cause.slice(0, 1500) }
+      : { failed: phase, error };
   }).pipe(Effect.provideContext(stack.services));

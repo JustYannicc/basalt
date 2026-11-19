@@ -97,6 +97,9 @@ function evaluate(
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
       NATIVE_STACK_CONTAINER_PROOF: options.containerProof ?? "",
       NATIVE_STACK_SETTLES_PROOF: options.settlesProof ?? "",
+      NATIVE_STACK_PROOF_DETAIL: options.settlesProof
+        ? (process.env.NATIVE_STACK_PROOF_DETAIL ?? "")
+        : "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -205,7 +208,6 @@ export interface ReleasePhaseProof {
   failed: string[];
   applied: string[];
   dbSecondPass: { id: string; action: string }[];
-  nextAttempt: { id: string; action: string }[];
 }
 
 /** Uses the real root declarations, Alchemy selection and the installed Exec provider. */
@@ -274,6 +276,7 @@ export function discoverPlanSettlesProof(
 ): {
   failed?: string;
   error?: string;
+  detail?: string;
   resources: number;
   afterApply: PlannedRow[];
   nextAttempt: PlannedRow[];
