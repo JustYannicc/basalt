@@ -209,7 +209,7 @@ test("the real script exits non-zero with a closed error and sends nothing", () 
        throw new TypeError("fixture network");
      };`,
   )}`;
-  const script = (name: string, target: { stage: string; database: string; branch: string }) => {
+  const script = (name: string, target: { stage?: string; database: string; branch: string }) => {
     const marker = join(directory, `${name}.sent`);
     const result = spawnSync(
       process.execPath,
@@ -225,7 +225,7 @@ test("the real script exits non-zero with a closed error and sends nothing", () 
           PLANETSCALE_ORGANIZATION: "fixture",
           PLANETSCALE_API_TOKEN_ID: "fixture",
           PLANETSCALE_API_TOKEN: "fixture",
-          POOL_BUDGET_STAGE: target.stage,
+          ...(target.stage === undefined ? {} : { POOL_BUDGET_STAGE: target.stage }),
           POOL_BUDGET_DATABASE: target.database,
           POOL_BUDGET_BRANCH: target.branch,
         },
@@ -238,13 +238,21 @@ test("the real script exits non-zero with a closed error and sends nothing", () 
   try {
     const refused = script("refused", notItsOwn["production's database and branch"]);
     assert.equal(refused.status, 1, refused.stderr);
-    assert.match(refused.stderr, /refuses a database or branch that is not its stage's own/);
+    // The deploy reports a command's stderr only, so the whole reason has to be there.
+    assert.equal(
+      refused.stderr,
+      "The database budget refuses a database or branch that is not its stage's own\n",
+    );
     assert.doesNotMatch(refused.stdout + refused.stderr, /fixture-production/);
     assert.equal(refused.sent, false);
+    const unnamed = script("unnamed", notItsOwn["no stage at all"]);
+    assert.equal(unnamed.status, 1, unnamed.stderr);
+    assert.match(unnamed.stderr, /^The database budget failed: [A-Za-z]+\n$/);
+    assert.equal(unnamed.sent, false);
     // The same harness lets a stage's own target through, so the refusal above is the guard's.
     const allowed = script("allowed", own);
     assert.equal(allowed.status, 1, allowed.stderr);
-    assert.match(allowed.stderr, /PlanetScale request failed/);
+    assert.equal(allowed.stderr, "PlanetScale request failed\n");
     assert.equal(allowed.sent, true);
   } finally {
     rmSync(directory, { recursive: true, force: true });

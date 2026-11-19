@@ -37,6 +37,51 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
      });
    const client = yield* HttpClient.HttpClient;
    const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
+@@ -74,11 +92,11 @@
+     Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
+     Effect.flatMap(({ data }) => {
+       const state = data.find((entry) => entry.id === change.id)?.state;
+-      return state === "completed"
+-        ? Effect.void
+-        : Effect.fail(
+-            new PoolBudgetFailed({ message: `PgBouncer change is ${state ?? "missing"}` }),
+-          );
++      if (state === "completed") return Effect.void;
++      // Only a plain state word reaches the failure text; anything else is provider data.
++      const word =
++        state === undefined ? "missing" : /^[a-z_]{1,32}$/.test(state) ? state : "unreadable";
++      return Effect.fail(new PoolBudgetFailed({ message: `PgBouncer change is ${word}` }));
+     }),
+     Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
+   );
+@@ -86,10 +104,27 @@
+     return yield* new PoolBudgetFailed({ message: "PgBouncer budget readback did not match" });
+ });
+ 
++/** Fixed text only: this script's own failure messages, or the class of any other error. */
++const failureText = (error: unknown) =>
++  error instanceof PoolBudgetFailed
++    ? error.message
++    : `The database budget failed: ${
++        typeof error === "object" &&
++        error !== null &&
++        "_tag" in error &&
++        typeof error._tag === "string"
++          ? error._tag
++          : "error"
++      }`;
++
+ if (import.meta.main)
+   NodeRuntime.runMain(
+     configureDatabasePoolBudget.pipe(
+       Effect.timeout("6 minutes"),
+       Effect.provide(FetchHttpClient.layer),
++      // A deploy reports only a command's stderr, and the runtime logs failures to stdout.
++      Effect.tapError((error) =>
++        Effect.sync(() => void process.stderr.write(`${failureText(error)}\n`)),
++      ),
+     ),
+   );
 diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
 --- a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
 +++ b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
