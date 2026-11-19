@@ -30,18 +30,21 @@ const dryRun = () => {
 };
 
 /**
- * The deb cache key, computed offline: the OS release, the pinned Playwright and the runner image.
+ * The deb cache key, computed offline: the OS release, the pinned Playwright, the architecture and
+ * the runner image, which self-hosted runners may leave unset.
  * The prefix without the image version lets a new image start from the last one's packages.
  */
 export function packageCacheKey(
   osRelease: string,
   playwright: string,
+  architecture: string,
   image: string,
   version: string,
 ) {
   const base = createHash("sha256")
     .update(osRelease)
     .update(playwright)
+    .update(architecture)
     .update(image)
     .digest("hex");
   const prefix = `playwright-debs-v2-${base.slice(0, 32)}-`;
@@ -54,7 +57,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
   if (process.argv[2] === "key") {
-    // Before any index refresh, so this reads only dpkg's status: no network.
+    // Before any index refresh: installed state and the image's existing apt lists, no network.
     const complete =
       result.status === 0 &&
       result.stdout === "All system dependencies are installed.\n" &&
@@ -62,6 +65,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const { prefix, key } = packageCacheKey(
       readFileSync("/etc/os-release", "utf8"),
       readFileSync("node_modules/playwright/package.json", "utf8"),
+      process.arch,
       process.env.ImageOS ?? "",
       process.env.ImageVersion ?? "",
     );

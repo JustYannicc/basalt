@@ -63,7 +63,9 @@ if (name === 'sudo') {
   execute(join(root, '.upstream/node_modules/.bin/playwright'), args.slice(1));
 } else if (name === 'dpkg') {
   record(name, args);
-  assert.ok(args.slice(1).every((path) => existsSync(path)), 'local install requires downloaded debs');
+  assert.ok(args.includes('--refuse-downgrade'), 'cached debs must never downgrade the image');
+  assert.ok(args.filter((arg) => !arg.startsWith('-')).every((path) => existsSync(path)), 'local install requires downloaded debs');
+  record('installed-debs', args.filter((arg) => !arg.startsWith('-')).map((path) => basename(path)));
   if (mode === 'partial') process.exit(1);
   if (mode === 'slow') {
     const progress = setInterval(() => { record('unpack-progress', []); console.log('Unpacking fixture package...'); }, 5000);
@@ -264,3 +266,16 @@ test(
     }
   },
 );
+
+test("a download never installs debs left from an older image's cache", async () => {
+  const fixture_ = fixture();
+  try {
+    writeFileSync(join(fixture_.root, "tmp/playwright-apt/libstale_0_amd64.deb"), "older image");
+    const result = await fixture_.run(false);
+    assert.equal(result.code, 0, result.output);
+    const installed = result.calls.filter((call) => call.name === "installed-debs");
+    assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
+  } finally {
+    fixture_.dispose();
+  }
+});

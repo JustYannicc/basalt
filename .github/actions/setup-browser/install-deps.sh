@@ -6,7 +6,8 @@ install_cached_deps() {
   shopt -s nullglob
   debs=("$RUNNER_TEMP/playwright-apt/"*.deb)
   if ((${#debs[@]})); then
-    sudo dpkg --install "${debs[@]}"
+    # A cache restored from an older runner image may hold older debs; never downgrade the image.
+    sudo dpkg --refuse-downgrade --install "${debs[@]}"
   fi
   # A partial cache must fail offline rather than silently starting downloads.
   "$playwright" install-deps --dry-run chromium
@@ -16,6 +17,8 @@ if [[ "${1:-false}" == true ]]; then
   exit
 fi
 mkdir -p "$RUNNER_TEMP/playwright-apt"
+# Debs restored from an older image's cache failed the offline install; download a fresh set.
+rm -f "$RUNNER_TEMP/playwright-apt/"*.deb
 sudo tee /etc/apt/apt.conf.d/99-playwright-ci > /dev/null <<EOF_APT
 Dir::Cache::archives "$RUNNER_TEMP/playwright-apt";
 APT::Keep-Downloaded-Packages "true";

@@ -249,12 +249,12 @@ test("a crawling refresh is cut at its bound and retried once", () => {
 });
 
 test("the deb cache key follows the image, and its prefix survives an image update", () => {
-  const key = packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "ubuntu26", "20261111.1");
+  const key = packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "x64", "ubuntu26", "20261111.1");
   assert.deepEqual(
-    packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "ubuntu26", "20261111.1"),
+    packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "x64", "ubuntu26", "20261111.1"),
     key,
   );
-  const update = packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "ubuntu26", "20261118.1");
+  const update = packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "x64", "ubuntu26", "20261118.1");
   assert.equal(update.prefix, key.prefix);
   assert.notEqual(update.key, key.key);
   assert.ok(update.key.startsWith(update.prefix));
@@ -262,11 +262,13 @@ test("the deb cache key follows the image, and its prefix survives an image upda
     packageCacheKey(
       "ID=ubuntu\nVERSION_ID=26.10\n",
       '{"version":"1.63.0"}',
+      "x64",
       "ubuntu26",
       "20261111.1",
     ),
-    packageCacheKey("ID=ubuntu\n", '{"version":"1.64.0"}', "ubuntu26", "20261111.1"),
-    packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "ubuntu24", "20261111.1"),
+    packageCacheKey("ID=ubuntu\n", '{"version":"1.64.0"}', "x64", "ubuntu26", "20261111.1"),
+    packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "x64", "ubuntu24", "20261111.1"),
+    packageCacheKey("ID=ubuntu\n", '{"version":"1.63.0"}', "arm64", "ubuntu26", "20261111.1"),
   ])
     assert.notEqual(changed.prefix, key.prefix);
 });
