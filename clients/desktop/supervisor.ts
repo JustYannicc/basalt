@@ -6,6 +6,9 @@ import { control, controlApps } from "../cli/ipc.ts";
 import { ipcPath, operatorToken, runtimeOrigin } from "../cli/profile.ts";
 import { ConnectionLog, connectionLogName } from "./connection-log.ts";
 
+/** Stopping waits this long at most for the log: quit must not hang on a stalled disk. */
+const logWaitMs = 2_000;
+
 /** Another process's connection answered but never wrote its local address within the bound. */
 export class ConnectionStartingError extends Error {
   static readonly copy =
@@ -151,16 +154,22 @@ export class ConnectionSupervisor {
     this.attaching?.abort();
     const child = this.child,
       finished = this.finished;
-    if (!child || !finished) return this.log.flushed();
-    child.kill("SIGTERM");
-    const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
-    try {
-      await finished;
-    } finally {
-      clearTimeout(timer);
+    if (child && finished) {
+      child.kill("SIGTERM");
+      const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      try {
+        await finished;
+      } finally {
+        clearTimeout(timer);
+      }
+      this.finished = undefined;
     }
-    this.finished = undefined;
-    await this.log.flushed();
+    const waited = new AbortController();
+    await Promise.race([
+      this.log.flushed(),
+      delay(logWaitMs, undefined, { signal: waited.signal }).catch(() => undefined),
+    ]);
+    waited.abort();
   }
   async command(command: "disconnect" | "reconnect" | "sign-out" | "revoke") {
     return control(ipcPath(this.home), await operatorToken(this.home), command);

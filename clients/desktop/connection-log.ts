@@ -4,14 +4,30 @@ import { redactLogText } from "../../src/telemetry/log-redaction.ts";
 
 export const connectionLogName = "connection.log";
 const lineLength = 1024;
+const cutMark = " [cut]";
 const appendFlags =
   constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
 
 /**
+ * A longer line is cut before redaction, which is quadratic on long runs without spaces. The cut
+ * drops the word it divides, back to the last space: a piece of a token is too short to be
+ * recognised as one.
+ */
+function shorten(line: string) {
+  const long = line.length > lineLength;
+  const text = redactLogText(
+    long ? line.slice(0, line.lastIndexOf(" ", lineLength - 1) + 1) : line,
+  ).trimEnd();
+  if (!long && text.length <= lineLength) return text;
+  const kept = text.slice(0, lineLength - cutMark.length).trimEnd();
+  return kept ? kept + cutMark : cutMark.trim();
+}
+
+/**
  * Keeps the connection process's warnings on the device, so a tunnel failure leaves a trace.
  * Lines pass the shared credential redaction and are cut to 1,024 characters. The file rotates
- * before a write would pass `maxBytes`, to one previous copy. A failed write is dropped: keeping
- * the log must never stop the connection.
+ * before a line would take it past `maxBytes`, to one previous copy. A failed write is dropped:
+ * keeping the log must never stop the connection.
  */
 export class ConnectionLog {
   private readonly path: string;
@@ -65,27 +81,43 @@ export class ConnectionLog {
 
   private keep(lines: readonly string[]) {
     const at = new Date().toISOString();
-    const text = lines
-      .filter((line) => line.trim())
-      .map((line) => `${at} ${redactLogText(line).slice(0, lineLength)}\n`)
-      .join("");
-    if (text) this.queue = this.queue.then(() => this.append(text));
+    const kept = lines.filter((line) => line.trim()).map((line) => `${at} ${shorten(line)}\n`);
+    if (kept.length) this.queue = this.queue.then(() => this.append(kept));
   }
 
-  private async append(text: string) {
+  private async append(lines: readonly string[]) {
     try {
-      const bytes = Buffer.byteLength(text);
       const current = await lstat(this.path).catch(() => undefined);
-      if (current?.isFile() && current.size > 0 && current.size + bytes > this.maxBytes)
-        await rename(this.path, `${this.path}.1`);
-      // Like the profile's other private files: never through a symlink, readable only by its owner.
-      const handle = await open(this.path, appendFlags, 0o600);
-      try {
-        await handle.chmod(0o600);
-        await handle.write(text);
-      } finally {
-        await handle.close();
+      let size = current?.isFile() ? current.size : 0;
+      // Checked per line, not per read, so neither file ever passes `maxBytes`.
+      for (let start = 0; start < lines.length; ) {
+        let end = start,
+          bytes = 0;
+        for (; end < lines.length; end++) {
+          const next = Buffer.byteLength(lines[end]!);
+          if (size + bytes + next > this.maxBytes) break;
+          bytes += next;
+        }
+        if (end > start) {
+          await this.write(lines.slice(start, end).join(""));
+          size += bytes;
+          start = end;
+        } else if (size > 0) {
+          await rename(this.path, `${this.path}.1`);
+          size = 0;
+        } else start++; // A line larger than a whole file: unreachable with the default size.
       }
     } catch {}
+  }
+
+  private async write(text: string) {
+    // Like the profile's other private files: never through a symlink, readable only by its owner.
+    const handle = await open(this.path, appendFlags, 0o600);
+    try {
+      await handle.chmod(0o600);
+      await handle.write(text);
+    } finally {
+      await handle.close();
+    }
   }
 }

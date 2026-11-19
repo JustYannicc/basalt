@@ -23,13 +23,14 @@ async function profile(context: TestContext) {
   return home;
 }
 
-/** A stand-in connection: ready first, then `onStop` written to stderr when it is stopped. */
+/** A stand-in connection: ready, then `onStop` written to stderr when it is stopped. */
 async function connection(home: string, onStop = "Connection stopping.\n") {
   const entry = join(home, "connection-fixture.mjs");
+  // The handler comes first: stop() can signal as soon as the ready line arrives.
   await writeFile(
     entry,
-    `process.stderr.write("Connection ready at http://127.0.0.1:4242.\\n");
-process.once("SIGTERM", () => process.stderr.write(${JSON.stringify(onStop)}, () => process.exit(0)));
+    `process.once("SIGTERM", () => process.stderr.write(${JSON.stringify(onStop)}, () => process.exit(0)));
+process.stderr.write("Connection ready at http://127.0.0.1:4242.\\n");
 setInterval(() => {}, 60_000);
 `,
   );

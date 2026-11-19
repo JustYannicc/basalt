@@ -65,13 +65,12 @@ Signalbox Sync for Obsidian has its own release. Install it from **Connect Obsid
 
 ## If the connection drops
 
-The Mac, Windows and Linux apps keep a private log of connection warnings. Attach it when you report a problem:
+The Mac and Linux apps keep a private log of connection warnings, `connection.log`. When it fills up, the earlier part moves to `connection.log.1` next to it. Attach both when you report a problem:
 
-- Mac: `~/Library/Application Support/Signalbox Client/connection/connection.log`
-- Windows: `%APPDATA%\Signalbox Client\connection\connection.log`
-- Linux: `~/.config/Signalbox Client/connection/connection.log`
+- Mac: `~/Library/Application Support/Signalbox Client/connection/`
+- Linux: `~/.config/Signalbox Client/connection/`
 
-It holds no sign-in tokens, keys or request contents, and it stays under about 1 MB.
+They hold no sign-in tokens, keys or request contents, and together they stay under about 1 MB.
 
 ## Known issue in this release
 
