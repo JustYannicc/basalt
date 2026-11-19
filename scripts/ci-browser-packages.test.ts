@@ -55,7 +55,7 @@ const timeout = ["timeout", "gtimeout"].flatMap((command) =>
     : [],
 )[0];
 
-type Refresh = "complete" | "ok" | "fail" | "hang-once" | "hang";
+type Refresh = "complete" | "ok" | "fail" | "hang-once" | "hang" | "security-down" | "archive-down";
 
 // Runs the action's real identify step against shims; the refresh bound is two seconds here.
 function runSteps(ids: string[], refresh: Refresh) {
@@ -144,8 +144,18 @@ if (name === 'apt-get') {
   }
   const tries = readFileSync(${JSON.stringify(receipt)}, 'utf8').split('\\n').filter((line) => line.includes('"name":"apt-get"')).length;
   // A crawling download that never finishes on its own, as a slow mirror does.
+  // Real apt output, captured with the security host, then the archive too, pointed at an unroutable
+  // address.
+  const failed = (url) => console.error('E: Failed to fetch ' + url + '  Connection failed [IP: 10.255.255.1 80]');
   if (refresh === 'hang' || (refresh === 'hang-once' && tries === 1)) setInterval(() => {}, 1000);
   else if (refresh === 'fail') process.exit(100);
+  else if (refresh === 'security-down' || refresh === 'archive-down') {
+    if (refresh === 'archive-down') failed('mirror+file:/etc/apt/apt-mirrors.txt/dists/resolute/InRelease');
+    else writeFileSync(join(root, 'indexes-ready'), 'yes');
+    failed('http://security.ubuntu.com/ubuntu/dists/resolute-security/InRelease');
+    console.error('E: Some index files failed to download. They have been ignored, or old ones used instead.');
+    process.exit(100);
+  }
   else writeFileSync(join(root, 'indexes-ready'), 'yes');
 } else if (name === 'bunx' || name === 'playwright') {
   if (!args.includes('--dry-run')) process.exit(2);
@@ -248,6 +258,22 @@ test("a crawling refresh is cut at its bound and retried once", () => {
   assert.ok(always.seconds < 20, `the bounded refresh took ${always.seconds}s`);
 });
 
+test("a security index that can't be fetched keeps the image's copy, and nothing else does", () => {
+  const security = runSteps(["packages", refreshStep], "security-down");
+  assert.equal(security.result.status, 0, security.result.stdout + security.result.stderr);
+  assert.equal(named(security.calls, "apt-get"), 1);
+  assert.match(security.result.stdout, /::warning::Ubuntu's security index couldn't be fetched/);
+  assert.deepEqual(
+    security.calls.map((call) => call.name),
+    ["sudo", "bunx", "sudo", "apt-get", "bunx"],
+  );
+  // A release pocket failing alongside it still fails after one retry, before the probe.
+  const archive = runSteps(["packages", refreshStep], "archive-down");
+  assert.notEqual(archive.result.status, 0);
+  assert.equal(named(archive.calls, "apt-get"), 2);
+  assert.equal(named(archive.calls, "bunx"), 1);
+});
+
 test("the deb cache key follows the image, and its prefix survives an image update", () => {
   const key = packageCacheKey(
     "ID=ubuntu\n",
@@ -332,4 +358,36 @@ test("the fast lane requires an actual browser installation", () => {
         error.startsWith("browser-install:"),
       ),
     );
+});
+
+test("main warms the browser package cache that Check restores", () => {
+  const read = (name: string) =>
+    parse(readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8"));
+  const ci = read("ci.yml");
+  const warm = read("ci-cache-warm.yml");
+  const job = warm.jobs["browser-packages"];
+  // A cache saved on main is the one every branch and pull request can restore.
+  assert.deepEqual(warm.on.push.branches, ["main"]);
+  assert.ok(warm.on.schedule.length > 0);
+  for (const path of [
+    ".github/actions/setup-browser/**",
+    "scripts/ci-browser-packages.ts",
+    "upstream.json",
+  ])
+    assert.ok(warm.on.push.paths.includes(path), path);
+  // The same image and pinned runtime as Check's browser jobs, so the key matches.
+  assert.equal(job["runs-on"], ci.jobs["browser-install"]["runs-on"]);
+  const uses = (steps: { uses?: string; with?: Record<string, string> }[], action: string) =>
+    steps.find((step) => step.uses === action)?.with;
+  assert.deepEqual(uses(job.steps, "./.github/actions/setup-browser"), {
+    "prepare-upstream": "true",
+  });
+  assert.equal(
+    uses(job.steps, "./.github/actions/setup-bun")?.["bun-version"],
+    ci.env.E2E_BUN_VERSION,
+  );
+  assert.equal(
+    uses(job.steps, "./.github/actions/setup-node")?.["node-version"],
+    uses(ci.jobs["browser-install"].steps, "./.github/actions/setup-node")?.["node-version"],
+  );
 });

@@ -304,7 +304,10 @@ test("a download after a partial offline install still caches every restored pac
       assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
       // A package the archive no longer has isn't needed, so it's skipped, not fetched.
       const downloads = result.calls.filter((call) => call.name === "apt-get");
-      assert.deepEqual(downloads.map((call) => call.args), [["download", "libkept"]]);
+      assert.deepEqual(
+        downloads.map((call) => call.args),
+        [["download", "libkept"]],
+      );
       // A failed top-up saves nothing rather than a partial set.
       assert.deepEqual(
         readdirSync(join(fixture_.root, "tmp/playwright-apt"))
