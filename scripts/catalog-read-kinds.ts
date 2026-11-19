@@ -41,14 +41,22 @@ const documentation = new Set([
   "examples",
   "externalDocs",
 ]);
-// Values of these keys are maps from names to schemas, so their own keys are never wording.
+// Values of these keys are maps keyed by property or definition names, never by wording.
 const schemaMaps = new Set([
   "properties",
   "patternProperties",
   "$defs",
   "definitions",
   "dependentSchemas",
+  "dependentRequired",
+  "dependencies",
 ]);
+// Values of these keys are data the framework applies as written: every key counts.
+const dataKeys = new Set(["enum", "const", "default"]);
+// A 3.0 upgrade leaves these values as written unless the key names a member of a map of
+// schemas, which only these maps and the component schemas are to the upgrader.
+const upgradeSkips = new Set(["default", "const", "enum", "example", "examples"]);
+const upgradeNames = new Set(["properties", "patternProperties", "$defs", "definitions"]);
 
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,9 +75,12 @@ type Place =
   | "parameter content"
   | "media type"
   | "schema"
-  | "names";
+  | "names"
+  | "data";
 const within = (place: Place, key: string): Place => {
-  if (place === "schema") return schemaMaps.has(key) ? "names" : "schema";
+  if (place === "data") return "data";
+  if (place === "schema")
+    return schemaMaps.has(key) ? "names" : dataKeys.has(key) ? "data" : "schema";
   if (place === "names") return "schema";
   if (place === "content" || place === "parameter content") return "media type";
   if (key === "schema") return "schema";
@@ -81,8 +92,9 @@ const within = (place: Place, key: string): Place => {
  * The value a local reference names, where the framework would find the same one: a `#/` pointer
  * through the document's own object keys. The framework also decodes percent-encoding, indexes
  * arrays and resolves a reference on the way first, and reads `#/components` and
- * `#/components/schemas` with component schemas kept apart, so empty; the check refuses those
- * rather than repeat its rules.
+ * `#/components/schemas` with component schemas kept apart, so empty. It upgrades a 3.0 document
+ * before it follows references, which leaves a schema inside a data value un-upgraded. The check
+ * refuses those rather than repeat its rules.
  */
 const pointer = (document: JsonObject, reference: string): Json | undefined => {
   if (!reference.startsWith("#/") || reference.includes("%")) return undefined;
@@ -95,6 +107,10 @@ const pointer = (document: JsonObject, reference: string): Json | undefined => {
     (keys.length === 1 || (keys.length === 2 && keys[1] === "schemas"))
   )
     return undefined;
+  const member = (index: number) =>
+    upgradeNames.has(keys[index - 1] ?? "") ||
+    (index === 2 && keys[0] === "components" && keys[1] === "schemas");
+  if (keys.some((key, index) => upgradeSkips.has(key) && !member(index))) return undefined;
   let value: Json | undefined = document;
   for (const key of keys) {
     if (!isObject(value) || typeof value.$ref === "string" || !Object.hasOwn(value, key))
@@ -129,9 +145,6 @@ const operationInput = (document: JsonObject, found: Declared) => {
     if (value !== undefined && value !== null && !Array.isArray(value))
       refused.add(`its ${level} servers are not a list, ${address}`);
   const servers = found.operation.servers ?? found.item.servers ?? document.servers ?? null;
-  for (const server of Array.isArray(servers) ? servers : [])
-    if (isObject(server) && typeof server.url === "string" && server.url.includes("{"))
-      refused.add(`its server ${JSON.stringify(server.url)} has variables, ${address}`);
   const inline = (
     value: Json | undefined,
     stack: readonly string[] = [],
@@ -141,7 +154,15 @@ const operationInput = (document: JsonObject, found: Declared) => {
       return value.map((item) => inline(item, stack, place === "names" ? "schema" : place));
     if (!isObject(value)) return value ?? null;
     const reference = value.$ref;
-    if (place !== "names" && typeof reference === "string") {
+    // Outside a `schema` value the framework's object resolver follows every string `$ref`.
+    if ((place === "names" || place === "data") && typeof reference === "string") {
+      const where = place === "names" ? "a map of names" : "an enum, const or default value";
+      refused.add(
+        `its input has the reference ${JSON.stringify(reference)} inside ${where}, which the framework would follow, so the hash would not cover its target`,
+      );
+      return null;
+    }
+    if (typeof reference === "string") {
       const siblings = Object.keys(value).filter(
         (key) => key !== "$ref" && !documentation.has(key),
       );
@@ -174,7 +195,7 @@ const operationInput = (document: JsonObject, found: Declared) => {
       refused.add(
         `a parameter's content lists ${keys.length} media types (${keys.map((key) => JSON.stringify(key)).join(", ")}), and the framework reads only the first, so the hash would not cover which one it serves`,
       );
-    const named = place === "names" || place === "content" || place === "parameter content";
+    const named = ["names", "data", "content", "parameter content"].includes(place);
     const entries = keys
       .filter((key) => named || !documentation.has(key))
       .sort()
@@ -186,6 +207,11 @@ const operationInput = (document: JsonObject, found: Declared) => {
     ...(Array.isArray(found.operation.parameters) ? found.operation.parameters : []),
   ];
   const input = inline({ parameters, requestBody: found.operation.requestBody ?? null, servers });
+  // Read as inlined, since a variable can sit behind a server reference too.
+  const sent = isObject(input) && Array.isArray(input.servers) ? input.servers : [];
+  for (const server of sent)
+    if (isObject(server) && typeof server.url === "string" && server.url.includes("{"))
+      refused.add(`its server ${JSON.stringify(server.url)} has variables, ${address}`);
   return { input, refused: [...refused] };
 };
 const sha256 = (input: Json) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
