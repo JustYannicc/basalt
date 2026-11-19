@@ -385,7 +385,7 @@ test("an operationId declared more than once refuses, wherever the copy is liste
   ]);
 });
 
-/** The delta review's minimal map read: a POST whose body takes a referenced component schema. */
+/** A small OpenAPI 3.0 map read, like Firecrawl's: a POST whose body is a component schema. */
 const mapDocument = () => ({
   openapi: "3.0.0",
   servers: [{ url: "https://api.firecrawl.dev/v2" }],
@@ -547,6 +547,155 @@ test("a request body's media type named like wording is an input, since the fram
   const worded = mapDocument();
   Object.assign(mapBody(worded), { description: { schema: { type: "object" } } });
   assert.notDeepEqual(readKindDrift("firecrawl", pin, worded), []);
+});
+
+test("a server behind a reference refuses its variables too, since the framework fills them", () => {
+  const pin = pinned(document());
+  const address = "so the hash would not cover the address it is sent to";
+  // Only the variable's default would change next, and the hash drops a variable named like
+  // wording; the framework sends the read to wherever the default points.
+  const operation = document();
+  Object.assign(operation, {
+    "x-server": {
+      url: "https://api.example.test/{description}",
+      variables: { description: { default: "v2" } },
+    },
+  });
+  Object.assign(operation.paths["/scrape"].post, { servers: [{ $ref: "#/x-server" }] });
+  // A path item's server takes undeclared variables from the document's server.
+  const item = document();
+  Object.assign(item, {
+    servers: [{ url: "https://api.example.test/{v}", variables: { v: { default: "v2" } } }],
+    "x-server": { url: "https://api.example.test/{v}" },
+  });
+  Object.assign(item.paths["/scrape"], { servers: [{ $ref: "#/x-server" }] });
+  for (const [value, url] of [
+    [operation, "https://api.example.test/{description}"],
+    [item, "https://api.example.test/{v}"],
+  ] as const) {
+    const reason = `its server ${JSON.stringify(url)} has variables, ${address}`;
+    assert.deepEqual(readKindDrift("example", pin, value), [`example/scrape: ${reason}`]);
+    assert.throws(() => hash(value), /has variables/);
+  }
+});
+
+test("a reference where the check reads a name or data refuses, since the framework follows it", () => {
+  const pin = mapPin(mapDocument());
+  // The framework's object resolver follows any string `$ref` outside a `schema` value, a map of
+  // property names included, and the schema is then read from what it resolved.
+  const names = mapDocument();
+  Object.assign(names.components, {
+    requestShapes: {
+      MapOptions: {
+        type: "object",
+        properties: { $ref: "#/components/requestShapes/MapFields" },
+        required: ["url"],
+        additionalProperties: false,
+      },
+      MapFields: { url: { type: "string" } },
+    },
+  });
+  Object.assign(mapBody(names), {
+    "application/json": { schema: { $ref: "#/components/requestShapes/MapOptions" } },
+  });
+  // It reads a media type named `paths` as a map of path items and walks even its schema.
+  const paths = mapDocument();
+  Object.assign(paths, { "x-fields": { url: { type: "string" } } });
+  Object.assign(paths.paths["/map"].post, {
+    parameters: [
+      {
+        name: "opts",
+        in: "query",
+        content: {
+          paths: {
+            schema: {
+              type: "object",
+              properties: { $ref: "#/x-fields" },
+              additionalProperties: false,
+            },
+          },
+        },
+      },
+    ],
+  });
+  // It follows one inside an enum value as well, where the check reads data.
+  const data = mapDocument();
+  Object.assign(data, { "x-kind": { kind: "read" } });
+  Object.assign(data.components.schemas.MapOptions.properties, {
+    kind: { enum: [{ $ref: "#/x-kind" }] },
+  });
+  for (const [value, reference, where] of [
+    [names, "#/components/requestShapes/MapFields", "a map of names"],
+    [paths, "#/x-fields", "a map of names"],
+    [data, "#/x-kind", "an enum, const or default value"],
+  ] as const) {
+    assert.deepEqual(readKindDrift("firecrawl", pin, value), [
+      `firecrawl/mapUrls: its input has the reference ${JSON.stringify(reference)} inside ${where}, which the framework would follow, so the hash would not cover its target`,
+    ]);
+    assert.throws(() => mapHash(value), /which the framework would follow/);
+  }
+});
+
+test("a schema reference through a data value refuses, since a 3.0 upgrade skips those", () => {
+  const pin = mapPin(mapDocument());
+  // The framework upgrades a 3.0 document before it follows references and leaves data values as
+  // written, so this schema would be served un-upgraded: `nullable` and `binary` keep their 3.0
+  // reading, while the same schema written in place reads `null` and any file.
+  const shape = {
+    type: "object",
+    properties: {
+      url: { type: "string" },
+      limit: { type: "integer", nullable: true },
+      file: { type: "string", format: "binary" },
+    },
+    required: ["url"],
+    additionalProperties: false,
+  };
+  const shapes = mapDocument();
+  Object.assign(shapes.components, { shapes: { default: shape } });
+  Object.assign(mapBody(shapes), {
+    "application/json": { schema: { $ref: "#/components/shapes/default" } },
+  });
+  const nested = mapDocument();
+  Object.assign(nested.components.schemas, { Holder: { type: "object", default: shape } });
+  Object.assign(mapBody(nested), {
+    "application/json": { schema: { $ref: "#/components/schemas/Holder/default" } },
+  });
+  for (const [value, reference] of [
+    [shapes, "#/components/shapes/default"],
+    [nested, "#/components/schemas/Holder/default"],
+  ] as const) {
+    assert.deepEqual(readKindDrift("firecrawl", pin, value), [
+      `firecrawl/mapUrls: its input reference ${JSON.stringify(reference)} cannot be followed by the check, so the hash would not cover its target`,
+    ]);
+    assert.throws(() => mapHash(value), /cannot be followed/);
+  }
+  // A component or property that is only named like a data keyword is no data value.
+  const named = mapDocument();
+  Object.assign(named.components.schemas, { default: shape });
+  Object.assign(mapBody(named), {
+    "application/json": { schema: { $ref: "#/components/schemas/default" } },
+  });
+  assert.doesNotThrow(() => mapHash(named));
+});
+
+test("data values and maps of names keep every key, since the framework applies them", () => {
+  // An enum literal's member named like wording is part of what it accepts.
+  const literal = (description: string) => {
+    const value = document();
+    Object.assign(value.components.schemas.Options.properties, {
+      mode: { enum: [{ kind: "read", description }] },
+    });
+    return value;
+  };
+  assert.notEqual(hash(literal("cached")), hash(literal("live")));
+  // So is a requirement keyed by a property named like wording.
+  const required = (map: Record<string, string[]>) => {
+    const value = document();
+    Object.assign(value.components.schemas.Options, { dependentRequired: map });
+    return value;
+  };
+  assert.notEqual(hash(required({ title: ["dryRun"], url: [] })), hash(required({ url: [] })));
 });
 
 test("a missing operationId refuses with the operation it left", () => {
