@@ -102,3 +102,14 @@ test("only the healing release declares a root restart, bounded, and it is other
     { check: code.check, include: code.include, wire: code.wire, env: code.env },
   );
 });
+
+test("the class change adopts the shared Secrets Store and expects the pool database command settled", async () => {
+  const policy = await read("cutover-classes");
+  assert.ok(
+    policy.check.allow.some(
+      (entry) => entry.fqn === "PoolObservationSecrets" && entry.action === "adopted",
+    ),
+  );
+  // Keyed on what it reads, the command no longer re-runs: an update would be a change to review.
+  assert.ok(!policy.check.allow.some((entry) => entry.fqn === "PoolDatabase"));
+});
