@@ -9,7 +9,7 @@ type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 async function root(context: TestContext) {
   let now = Date.now();
   context.mock.method(Date, "now", () => now);
-  context.mock.method(console, "info", () => {});
+  const infos = context.mock.method(console, "info", () => {});
   const errors = context.mock.method(console, "error", () => {});
   const f = await fleetWorkerFixture();
   context.after(f.cleanup);
@@ -19,6 +19,10 @@ async function root(context: TestContext) {
     advance: (milliseconds: number) => {
       now += milliseconds;
     },
+    phases: () =>
+      infos.mock.calls
+        .filter((call) => call.arguments[0] === "POOL_SELECTED_RECOVERY")
+        .map((call) => (call.arguments[1] as { phase: string }).phase),
     forcedStops: () =>
       errors.mock.calls.filter((call) => call.arguments[0] === "POOL_RUNTIME_FORCED_STOP").length,
     stopPaths: () =>
@@ -209,24 +213,26 @@ test(
 );
 
 test(
-  "a slow but healthy cold start that commits after 120 s passes untouched",
+  "a slow but healthy forced restart that commits after 120 s passes untouched",
   { timeout: 60_000 },
   async (context) => {
-    const { f, advance } = await root(context);
-    const old = f.old.identity().bootId;
-    let ready = false;
-    f.old.hooks.health = async () =>
-      !ready && f.old.identity().bootId !== old ? new Response(null, { status: 503 }) : undefined;
-    f.old.crash();
-    for (let elapsed = 0; elapsed < 120_000; elapsed += 2_000) {
+    const { f, advance, stopPaths } = await root(context);
+    const old = refuseCurrentBoot(f);
+    let stoppedAt: number | undefined;
+    // The new boot answers, but its pre-commit steps take 120 s, as a cold start's can.
+    f.old.hooks.install = async () => {
+      if (f.old.identity().bootId === old) return;
+      stoppedAt ??= Date.now();
+      if (Date.now() - stoppedAt < 120_000) throw new Error("synthetic: not ready yet");
+    };
+    await pass(f);
+    advance(unservingBoundMs);
+    await pass(f);
+    for (let elapsed = 0; elapsed <= 130_000; elapsed += 2_000) {
       await pass(f);
       advance(2_000);
     }
-    assert.equal(f.old.ctx.container.running, true, "the new boot is still starting");
-    ready = true;
-    await pass(f);
-    await pass(f);
-    assert.deepEqual(f.old.calls.signals, []);
+    assert.deepEqual(stopPaths(), ["graceful_exit"], "one stop, of the old boot only");
     assert.equal(f.old.calls.start, 1);
     assert.equal(await serves(f), true);
   },
@@ -258,20 +264,21 @@ test(
   "a forced restart that commits but never reaches ready ends in needs-a-person",
   { timeout: 60_000 },
   async (context) => {
-    const { f, advance } = await root(context);
+    const { f, advance, phases } = await root(context);
     refuseCurrentBoot(f);
+    // Installs after the restart attested fail: the commit lands, its final proof never passes.
+    f.old.hooks.install = async () => {
+      if (phases().includes("attesting")) throw new Error("synthetic post-commit failure");
+    };
     await pass(f);
     advance(unservingBoundMs);
-    // The peer bootstrap after the commit fails, so the restart never reports ready.
-    f.old.ctx.container.exec = async () => {
-      throw new Error("synthetic peer bootstrap failure");
-    };
     for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 2_000) {
       await pass(f);
       advance(2_000);
     }
     assert.deepEqual(f.old.calls.signals, [15]);
     assert.equal(f.old.calls.start, 1);
+    assert.ok(!phases().includes("ready"), "the restart never reported ready");
     assert.equal((await recoveryState(f)).needsPerson?.reason, "restart_failed");
   },
 );
