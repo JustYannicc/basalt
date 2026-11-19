@@ -160,18 +160,19 @@ export class ChangesRemainAfterApply extends Data.TaggedError("ChangesRemainAfte
   readonly why: string;
   readonly fix: string;
   readonly remaining: readonly string[];
+  /** Why each row is planned: values a reason shows can be names, so they stay private. */
+  readonly detail: readonly { readonly row: string; readonly reasons: readonly string[] }[];
 }> {
   static of(rows: ReturnType<typeof remainingRows>) {
     return new ChangesRemainAfterApply({
       check: "read-back",
       why: "A fresh plan right after the apply still changes these rows, so the apply did not settle.",
       fix: "Find the input that differs on every plan (a per-run value, or a command that always re-runs) and settle it at its source.",
-      remaining: rows.map((row) =>
-        `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"}${row.reasons.length ? `; why: ${row.reasons.slice(0, 6).join(" | ")}` : ""})`.slice(
-          0,
-          1_200,
-        ),
+      remaining: rows.map(
+        (row) =>
+          `${row.fqn} (${row.type} ${row.action}: ${[...row.changedProps, ...row.bindings.map((sid) => `binding ${sid}`)].join(", ") || "no named property"})`,
       ),
+      detail: rows.map((row) => ({ row: row.fqn, reasons: row.reasons })),
     });
   }
 }
