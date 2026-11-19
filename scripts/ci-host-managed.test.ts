@@ -214,7 +214,7 @@ test("both halves prepare independently, retain evidence and keep the 20-minute 
     assert.equal(job.needs, "select");
     assert.equal(
       job["runs-on"],
-      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${ids[index]}') && 'boat-large' || 'ubuntu-latest' }}`,
+      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${ids[index]}') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}`,
     );
     assert.equal(job["timeout-minutes"], 20);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
