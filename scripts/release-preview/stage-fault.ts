@@ -70,7 +70,14 @@ export function confirmedState(reads: Reads) {
                   ? value
                   : typeof value === "string"
                     ? hashed(value)
-                    : "object",
+                    : key === "streams"
+                      ? // #1471 adfb37db+: { active, stillSince }, kept by name.
+                        Object.fromEntries(
+                          Object.entries(record(value)).filter(
+                            ([, item]) => typeof item === "number" || item === null,
+                          ),
+                        )
+                      : "object",
               ]),
             ),
             clean: !Object.keys(record(inspected.recovery)).some((key) =>

@@ -352,6 +352,10 @@ async function healRelease(
         recovery:
           (state?.recovery as { values?: Record<string, unknown> } | null | undefined)?.values ??
           null,
+        // #1471 adfb37db+: recovery.streams, { active, stillSince }, by name.
+        streams:
+          ((state?.recovery as { values?: { streams?: unknown } } | null | undefined)?.values
+            ?.streams as { active?: number; stillSince?: number | null } | undefined) ?? null,
       });
       const streams = Object.entries(
         (state?.recovery as { values?: Record<string, unknown> } | null | undefined)?.values ?? {},
@@ -597,13 +601,29 @@ async function forcedStopPath(subject: StageSubject, source: NodeJS.ProcessEnv, 
   const paths = lines
     .map((line) => line.path)
     .filter((path): path is string => typeof path === "string");
+  // Zero or more declined stops (POOL_SELECTED_RECOVERY phase stop_declined) may come first.
+  const recovery = await workerLogLines(subject, source, from, "POOL_SELECTED_RECOVERY").catch(
+    () => [] as Record<string, unknown>[],
+  );
+  const phases: Record<string, number> = {};
+  for (const line of recovery) {
+    const phase =
+      typeof line.phase === "string"
+        ? line.phase
+        : /"phase":"([a-z_]+)"/u.exec(JSON.stringify(line))?.[1];
+    if (phase) phases[phase] = (phases[phase] ?? 0) + 1;
+  }
   const green =
     paths.length === 1 && (paths[0] === "graceful_exit" || paths[0] === "destroy_after_grace");
-  return { paths, count: lines.length, lines, green };
+  return { paths, count: lines.length, lines, phases, recoveryLines: recovery.slice(0, 20), green };
 }
 
 /** The commit the stage last deployed, from its readiness command's recorded input; refuse any other HEAD. */
-async function requireDeployedHead(subject: StageSubject, source: NodeJS.ProcessEnv) {
+async function requireDeployedHead(
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  { clientOnly = false }: { clientOnly?: boolean } = {},
+) {
   const config = stageEnvironment(subject, source);
   const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(config.stage);
   const row = (stacks[stageNames(subject).stack] ?? []).find((entry) =>
@@ -623,6 +643,24 @@ async function requireDeployedHead(subject: StageSubject, source: NodeJS.Process
     throw new Error(
       `The stage records ${recorded.length} deployed commits; run stage-baseline from this head first`,
     );
+  // fault and heal deploy nothing from this checkout: a head that differs from the deployed commit
+  // only in the rehearsal's own client scripts (never deployed) measures the same stage.
+  if (recorded[0] !== head && clientOnly) {
+    execFileSync("git", ["fetch", "-q", "--depth", "1", "origin", recorded[0]!], { cwd: root });
+    const changed = execFileSync("git", ["diff", "--name-only", recorded[0]!, head], {
+      cwd: root,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter(Boolean);
+    if (changed.every((path) => path.startsWith("scripts/release-preview/"))) return recorded[0]!;
+    throw new Error(
+      `The stage last deployed ${recorded[0]!.slice(0, 12)}; this head changes deployed code too: ${changed
+        .filter((path) => !path.startsWith("scripts/release-preview/"))
+        .slice(0, 5)
+        .join(", ")}`,
+    );
+  }
   if (recorded[0] !== head)
     throw new Error(
       `The stage last deployed ${recorded[0]!.slice(0, 12)}, not this head ${head.slice(0, 12)}; run stage-baseline from this head first`,
@@ -936,7 +974,9 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   ) {
     // A plan measures the deployed commit only if it is that commit, built as the stage is built.
     // The heal release builds its own candidate checkout, so it only checks the deployed commit.
-    result.deployedCommit = await requireDeployedHead(subject, source);
+    result.deployedCommit = await requireDeployedHead(subject, source, {
+      clientOnly: mode === "fault" || mode === "heal",
+    });
     if (mode === "heal" || mode === "fault") await run();
     else await withStageBuild(root, subject, source, run);
   } else await run();
