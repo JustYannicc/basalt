@@ -348,7 +348,16 @@ async function healRelease(
         health: health.status ?? null,
         reason: health.reason ?? null,
         running: (state?.container as { running?: boolean } | undefined)?.running ?? null,
+        // #1471 3eff0045+: the active-stream count and since when the stop waits for streams.
+        recovery:
+          (state?.recovery as { values?: Record<string, unknown> } | null | undefined)?.values ??
+          null,
       });
+      const streams = Object.entries(
+        (state?.recovery as { values?: Record<string, unknown> } | null | undefined)?.values ?? {},
+      ).filter(([key, value]) => /stream/iu.test(key) && typeof value === "number" && value > 0);
+      if (streams.length)
+        result.nonZeroStreams = { atSeconds: Math.round((at - started) / 1000), streams };
       if (bootSeenAt === undefined && witness.boot) bootSeenAt = at;
       if (committedAt === undefined && selection.boot && selection.boot !== pre.boot)
         committedAt = at;

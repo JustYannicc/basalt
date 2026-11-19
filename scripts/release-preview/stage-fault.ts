@@ -62,6 +62,17 @@ export function confirmedState(reads: Reads) {
         ? null
         : {
             keys: Object.keys(record(inspected.recovery)).sort(),
+            // Plain values only (counts, flags, times); strings are hashed, nested objects named.
+            values: Object.fromEntries(
+              Object.entries(record(inspected.recovery)).map(([key, value]) => [
+                key,
+                typeof value === "number" || typeof value === "boolean" || value === null
+                  ? value
+                  : typeof value === "string"
+                    ? hashed(value)
+                    : "object",
+              ]),
+            ),
             clean: !Object.keys(record(inspected.recovery)).some((key) =>
               /fail|error|needs|refus/iu.test(key),
             ),
