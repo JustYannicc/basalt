@@ -37,8 +37,10 @@ To add or tighten a rule, change `plugin/` with a case in `rules.test.ts` and ru
 `--write-baseline`. While the rules or their pins differ from the base, a count that rises in
 a file this change does not touch is listed for review instead of failing, and
 `rules.test.ts` guards the change. The configuration loads exactly the pinned plugins and
-takes no `extends`, `overrides` or other keys. With `BASE_SHA`, changed options of a rule the
-base enforced are listed for review, since options decide what a rule finds.
+takes no `extends`, `overrides` or other keys, and every enabled built-in rule names a plugin
+listed in `plugins`: oxlint silently skips a rule whose plugin is off. With `BASE_SHA`, changed
+options of a rule the base enforced are listed for review, since options decide what a rule
+finds.
 
 ## Basalt rules
 
@@ -77,17 +79,21 @@ plugins:
   - `no-comments` would remove comments that say why.
 
 [anti-slop](https://github.com/dmmulroy/anti-slop), vendored in `vendor/anti-slop/` as its
-README asks (commit and license in `vendor/anti-slop/UPSTREAM.md`): the generic plugin, the
-Effect plugin, and `oxc/no-accumulating-spread`, the built-in rule it pairs with. The copy is
-kept byte-identical to upstream, so neither the owned rules nor the fast lane's oxfmt and oxlint
-check it.
+README asks (commit, license and update steps in `vendor/anti-slop/UPSTREAM.md`): the generic
+plugin, the Effect plugin, and `oxc/no-accumulating-spread`, the built-in rule it pairs with.
+The copy is byte-identical to upstream, and `vendor/manifest.json` records each file's hash.
+The full check fails when a recorded file differs, and treats any other file under `vendor/`
+as Basalt code, so new code there is linted like the rest. Recorded files are left to upstream:
+neither the owned rules nor the fast lane's oxfmt and oxlint check them.
 
-- **Enabled:** every rule but one. `no-runtime-typeof` allows `typeof` inside a type predicate,
-  Ultracite's setting: a named predicate is the boundary the rule asks for.
-- **Off, because formatting is oxfmt's:** `require-readable-spacing` inserts blank lines, a
-  second layout rule that fails code oxfmt accepts (33,000 findings here).
-- **Never fire here:** `no-module-mocking` needs `vi.mock` or `jest.mock`; `node:test`'s
-  `mock.module` is `basalt/no-node-test-doubles`'.
+- **Enabled:** every rule but one, all five Effect rules included. `no-runtime-typeof` allows
+  `typeof` inside a type predicate, Ultracite's setting: a named predicate is the boundary the
+  rule asks for.
+- **Off, because layout is oxfmt's:** `require-readable-spacing` requires blank lines oxfmt
+  neither adds nor checks (32,581 whitespace-only findings here).
+- **Never fire today:** `no-module-mocking` needs `vi.mock` or `jest.mock`, and the only Vitest
+  suites here, in `scripts/architecture/`, mock no modules; `node:test`'s `mock.module` is
+  `basalt/no-node-test-doubles`'.
 
 ## Ultracite
 
@@ -95,15 +101,21 @@ check it.
 taken from it.
 
 - **Presets, not used:** `ultracite/oxlint/anti-slop` is a bundled build of the same anti-slop
-  commit without the Effect plugin or `oxc/no-accumulating-spread`, and
-  `ultracite/oxlint/landmines` turns on the landmines rules listed as off above. Both are
-  JavaScript configs that need `oxlint.config.ts` and `extends`, while this configuration stays
-  JSON that the check pins.
-- **Agent rules:** the ones that fit this repository are in `AGENTS.md`.
+  commit without the Effect plugin or `oxc/no-accumulating-spread`, with
+  `require-readable-spacing` on. `ultracite/oxlint/landmines` turns on the landmines rules
+  listed as off above. Both are JavaScript configs that need `oxlint.config.ts` and `extends`,
+  while this configuration stays JSON that the check pins.
+- **Agent rules:** the ones that fit this repository are in `AGENTS.md`: narrowing over
+  assertions, input parsed at its boundary, and a fix that changes the code rather than its
+  wording. Its formatting, React, accessibility and framework rules are left to oxfmt and to
+  upstream's guidance.
 - **Post-edit hook:** `.claude/settings.json` and `.codex/hooks.json` use Ultracite's events and
   matchers to run `hook.ts` after each edit. It formats the edited file with oxfmt, then runs
   upstream oxlint and this check on it, as the fast lane will, and hands any failure back to the
-  agent. Ultracite's own hook runs its pinned tools instead of the repository's. Codex runs it
-  once the hook is trusted (`/hooks`).
-- **Versions:** Ultracite needs oxlint 1.90 and oxfmt 0.71 or later. This package pins oxlint
-  1.91; upstream's oxlint and oxfmt are upstream's to move.
+  agent. Ultracite's own hook runs its pinned tools instead of the repository's. Codex reads a
+  linked worktree's project hooks from the main checkout, and runs them once a person trusts
+  them with `/hooks`.
+- **Versions:** Ultracite needs oxlint 1.90 and oxfmt 0.71 or later; this package pins oxlint
+  1.91. Upstream's oxlint 1.83 and oxfmt 0.68 move with a carry. On this tree that bump changes
+  nothing: oxfmt 0.71 reformats no file 0.68 leaves alone, and oxlint 1.90 reports the same
+  findings with upstream's configuration.

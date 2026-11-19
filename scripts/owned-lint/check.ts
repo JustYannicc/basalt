@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,8 @@ import {
   recordable,
   severity,
   total,
+  VENDOR,
+  vendorProblems,
   type Allowlist,
   type BaseState,
   type Config,
@@ -31,18 +34,6 @@ const oxlint = join(here, "node_modules/oxlint/bin/oxlint");
 // Alchemy and is not gated; everything else in scripts/ and src/ is, including new files.
 const SCOPE = /^(?:scripts|src)\/.+\.(?:[cm]?[jt]s|[jt]sx)$/u;
 const OUTSIDE = /^scripts\/release-barrier\/|(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
-// Vendored rules keep their upstream form so an update stays a diff against upstream; no
-// formatter or linter rewrites them.
-export const vendored = (file: string) => file.startsWith("scripts/owned-lint/vendor/");
-// Changing these may change what the rules find, so a rise against the base is listed for
-// review instead of failing; the rule cases in rules.test.ts guard the change.
-const LINT_INPUTS = [
-  "scripts/owned-lint/plugin",
-  "scripts/owned-lint/vendor",
-  "scripts/owned-lint/package.json",
-  "scripts/owned-lint/bun.lock",
-];
-export const inScope = (file: string) => SCOPE.test(file) && !OUTSIDE.test(file) && !vendored(file);
 const readJson = <T>(path: string, fallback: T) => {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -53,16 +44,37 @@ const readJson = <T>(path: string, fallback: T) => {
 };
 const writeJson = (path: string, value: unknown) =>
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
-export function scopedFiles(cwd = root) {
-  return execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+const vendorPath = join(root, VENDOR, "manifest.json");
+// Vendored rules keep their upstream form so an update stays a diff against upstream; no
+// formatter or linter rewrites them. Only the files under vendor/ recorded with their upstream
+// hash count as vendored: any other file there is Basalt code and is checked like the rest.
+const VENDORED = new Map<string, string>(Object.entries(readJson<object>(vendorPath, {})));
+export const vendored = (file: string) => file.startsWith(VENDOR) && VENDORED.has(file);
+const sha256 = (file: string) => {
+  const path = join(root, file);
+  return existsSync(path)
+    ? createHash("sha256").update(readFileSync(path)).digest("hex")
+    : undefined;
+};
+// Changing these may change what the rules find, so a rise against the base is listed for
+// review instead of failing; the rule cases in rules.test.ts guard the change.
+const LINT_INPUTS = [
+  "scripts/owned-lint/plugin",
+  VENDOR,
+  "scripts/owned-lint/package.json",
+  "scripts/owned-lint/bun.lock",
+];
+export const inScope = (file: string) => SCOPE.test(file) && !OUTSIDE.test(file) && !vendored(file);
+const listFiles = (cwd: string, keep: (file: string) => boolean, ...paths: string[]) =>
+  execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", ...paths], {
     cwd,
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
   })
     .split("\0")
-    .filter((file) => inScope(file) && existsSync(join(cwd, file)))
+    .filter((file) => keep(file) && existsSync(join(cwd, file)))
     .sort();
-}
+export const scopedFiles = (cwd = root) => listFiles(cwd, inScope);
 
 export function lint(files: readonly string[], config = configPath, cwd = root) {
   if (!existsSync(oxlint))
@@ -113,7 +125,7 @@ export function lint(files: readonly string[], config = configPath, cwd = root) 
   );
 }
 
-function writeBaseline(files: readonly string[]) {
+function writeBaseline(files: readonly string[] = scopedFiles()) {
   const config = readJson<Config>(configPath, { rules: {} });
   const unlimited = { ...config, rules: { ...config.rules } };
   for (const rule of NATIVE_ALLOWLIST)
@@ -145,6 +157,13 @@ function writeBaseline(files: readonly string[]) {
   console.log(
     `Owned lint baseline written: ${sum(baseline)} findings in baseline.json, ${sum(native)} in landmines allowlists.`,
   );
+}
+
+// Records the vendored code files with their hashes, after copying in an upstream update.
+function writeVendor() {
+  const files = listFiles(root, (file) => SCOPE.test(file), VENDOR);
+  writeJson(vendorPath, Object.fromEntries(files.map((file) => [file, sha256(file)])));
+  console.log(`Vendored manifest written: ${files.length} files.`);
 }
 
 function baseState(base: string) {
@@ -187,6 +206,10 @@ function baseState(base: string) {
     baseline: show(baselinePath) as Counts | undefined,
     config: show(configPath) as Config | undefined,
     allowlist: (show(allowlistPath) ?? {}) as Allowlist,
+    vendor: new Map<string, string>(Object.entries(show(vendorPath) ?? {})),
+    upstreamRecorded: git(["diff", "-z", "--name-only", base, "--", VENDOR]).some((file) =>
+      file.endsWith("/UPSTREAM.md"),
+    ),
     basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
     enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
     changed: (file: string) => changed.has(file) || !tracked.has(file),
@@ -204,15 +227,18 @@ const only = <T>(byRule: Record<string, Record<string, T>>, files: ReadonlySet<s
   );
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const named = process.argv.slice(2).filter((argument) => argument !== "--write-baseline");
+  const writers = { "--write-baseline": writeBaseline, "--write-vendor": writeVendor };
+  const named = process.argv.slice(2).filter((argument) => !Object.hasOwn(writers, argument));
   const unknown = named.filter((argument) => argument.startsWith("-"));
   if (unknown.length)
     throw new Error(
-      `Unknown option ${unknown.join(" ")}; the only option is --write-baseline, or name files to check.`,
+      `Unknown option ${unknown.join(" ")}; the options are --write-baseline and --write-vendor, or name files to check.`,
     );
-  if (process.argv.includes("--write-baseline")) {
-    if (named.length) throw new Error("--write-baseline records every file; name none.");
-    writeBaseline(scopedFiles());
+  const chosen = Object.entries(writers).filter(([option]) => process.argv.includes(option));
+  if (chosen.length > 1) throw new Error("Run --write-baseline and --write-vendor one at a time.");
+  for (const [option, write] of chosen) {
+    if (named.length) throw new Error(`${option} records every file; name none.`);
+    write();
     process.exit(0);
   }
   const files = named.length
@@ -244,11 +270,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       directiveProblems(file, readFileSync(join(root, file), "utf8"), native),
     ),
     ...compare(diagnostics, baseline, allowlist),
+    ...(named.length ? [] : vendorProblems(VENDORED, sha256)),
   ];
   const notices: string[] = [];
   // The base ratchet reads the whole baseline, so a check of named files leaves it to the full run.
   if (process.env.BASE_SHA && !named.length) {
-    const policy = basePolicy({ config, baseline, allowlist }, baseState(process.env.BASE_SHA));
+    const policy = basePolicy(
+      { config, baseline, allowlist, vendor: VENDORED },
+      baseState(process.env.BASE_SHA),
+    );
     problems.push(...policy.problems);
     notices.push(...policy.notices);
   } else problems.push(...configProblems(config, undefined));

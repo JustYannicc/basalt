@@ -10,6 +10,8 @@ import {
   nativeRules,
   optionChanges,
   ratchet,
+  vendorChanges,
+  vendorProblems,
 } from "./baseline.ts";
 
 const finding = (rule: string, file: string, line = 1) => ({
@@ -108,6 +110,8 @@ const state = (lintChanged = false, changed = (file: string) => file === "src/to
   changed,
   enteredScope: (file: string) => file === "src/moved.ts",
   lintChanged,
+  vendor: new Map<string, string>(),
+  upstreamRecorded: false,
 });
 const enforced = new Set([spread]);
 
@@ -203,6 +207,80 @@ test("the configuration loads the pinned plugins, keeps what the base enforced, 
   assert.match(
     configProblems({ jsPlugins: plugins.slice(0, 4), rules: {} }, undefined)[0]!,
     /must load exactly the pinned plugins/u,
+  );
+});
+
+test("a built-in rule runs only with its plugin enabled, so one without it is refused", () => {
+  const rules = { "oxc/no-accumulating-spread": "error", "basalt/no-echo-stub": "error" };
+  assert.deepEqual(configProblems({ jsPlugins: plugins, plugins: ["oxc"], rules }, undefined), []);
+  for (const config of [
+    { jsPlugins: plugins, plugins: [], rules },
+    { jsPlugins: plugins, rules },
+    { jsPlugins: plugins, plugins: ["oxc"], rules: { "no-accumulating-spread": "error" } },
+  ])
+    assert.match(
+      configProblems(config, undefined).join("\n"),
+      /does not run unless it is written <plugin>\/<rule> and its plugin is listed in "plugins"/u,
+      JSON.stringify(config),
+    );
+  for (const off of ["off", "allow", 0])
+    assert.deepEqual(
+      configProblems(
+        { jsPlugins: plugins, plugins: [], rules: { "oxc/no-accumulating-spread": off } },
+        undefined,
+      ),
+      [],
+    );
+  assert.deepEqual(
+    configProblems(
+      { jsPlugins: plugins, plugins: [], rules: { "eslint/no-debugger": 2 } },
+      undefined,
+    ),
+    [],
+  );
+});
+
+test("only the recorded upstream copy of a vendored file passes, and changes are listed", () => {
+  const manifest = new Map([
+    ["scripts/owned-lint/vendor/a.ts", "1"],
+    ["scripts/owned-lint/vendor/b.ts", "2"],
+  ]);
+  const onDisk = new Map([
+    ["scripts/owned-lint/vendor/a.ts", "1"],
+    ["scripts/owned-lint/vendor/b.ts", "edited"],
+  ]);
+  const problems = vendorProblems(manifest, (file) => onDisk.get(file));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0]!, /^scripts\/owned-lint\/vendor\/b\.ts is not the upstream copy/u);
+  assert.match(vendorProblems(manifest, () => undefined)[0]!, /vendor\/a\.ts is not the upstream/u);
+  const outside = new Map([["src/pool/x.ts", "1"]]);
+  assert.match(
+    vendorProblems(outside, () => "1")[0]!,
+    /records src\/pool\/x\.ts, which is outside/u,
+  );
+  const base = new Map([
+    ["scripts/owned-lint/vendor/a.ts", "1"],
+    ["scripts/owned-lint/vendor/gone.ts", "3"],
+  ]);
+  assert.deepEqual(vendorChanges(manifest, base), [
+    "scripts/owned-lint/vendor/b.ts",
+    "scripts/owned-lint/vendor/gone.ts",
+  ]);
+  const current = {
+    config: { jsPlugins: plugins, rules: {} },
+    baseline: {},
+    allowlist: {},
+    vendor: manifest,
+  };
+  const update = basePolicy(current, { ...state(), vendor: base, upstreamRecorded: true });
+  assert.deepEqual(update.problems, []);
+  assert.match(
+    update.notices.join("\n"),
+    /Vendored code changed, review it against upstream: 2 file\(s\): scripts\/owned-lint\/vendor\/b\.ts, scripts\/owned-lint\/vendor\/gone\.ts/u,
+  );
+  assert.match(
+    basePolicy(current, { ...state(), vendor: base }).problems.join("\n"),
+    /Vendored code changed without an upstream update: scripts\/owned-lint\/vendor\/b\.ts/u,
   );
 });
 
@@ -310,6 +388,7 @@ test("against the base, policy combines the config, allowlist and both ratchets"
     config: { jsPlugins: plugins, rules: { [spread]: "error" } },
     baseline: { [spread]: { "src/a.ts": 2 } },
     allowlist: {},
+    vendor: new Map<string, string>(),
   };
   const base = {
     ...state(),

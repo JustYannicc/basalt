@@ -58,6 +58,8 @@ export const total = (counts: Record<string, number> = {}) =>
   Object.values(counts).reduce((sum, value) => sum + value, 0);
 export const severity = (setting: unknown): unknown =>
   Array.isArray(setting) ? setting[0] : (setting ?? "off");
+// Every way oxlint accepts to switch a rule off.
+const OFF = new Set<unknown>(["off", "allow", 0]);
 // An entry exempts findings only with an exact count and a reason someone can review.
 const validEntry = (entry: unknown) => {
   const { count, reason } = (entry ?? {}) as { count?: unknown; reason?: unknown };
@@ -199,6 +201,15 @@ export function configProblems(current: Config, base: Config | undefined) {
     problems.push(
       `.oxlintrc.json: jsPlugins must load exactly the pinned plugins: ${PLUGINS.map(({ name }) => name).join(", ")}.`,
     );
+  // oxlint silently skips a built-in rule whose plugin is not in "plugins"; eslint's always run.
+  const enabled = new Set(["eslint", ...(Array.isArray(current.plugins) ? current.plugins : [])]);
+  for (const [rule, setting] of Object.entries(current.rules)) {
+    const plugin = rule.includes("/") ? rule.split("/")[0]! : "";
+    if (!OFF.has(severity(setting)) && !JS_PLUGIN.has(plugin) && !enabled.has(plugin))
+      problems.push(
+        `.oxlintrc.json: ${rule} does not run unless it is written <plugin>/<rule> and its plugin is listed in "plugins".`,
+      );
+  }
   for (const [rule, setting] of Object.entries(base?.rules ?? {}))
     if (severity(setting) === "error" && severity(current.rules[rule]) !== "error")
       problems.push(
@@ -263,6 +274,10 @@ export type BaseState = {
   changed: (file: string) => boolean;
   /** Whether the rules or their pins differ from the base. */
   lintChanged: boolean;
+  /** The base commit's vendored files and their hashes. */
+  vendor: ReadonlyMap<string, string>;
+  /** Whether this change also changes an UPSTREAM.md under vendor/, as an upstream update does. */
+  upstreamRecorded: boolean;
 };
 
 /**
@@ -303,14 +318,58 @@ export function ratchet(
   return { problems, notices };
 }
 
+/** Where vendored upstream code lives; only its recorded files are left to upstream. */
+export const VENDOR = "scripts/owned-lint/vendor/";
+
+/** Recorded vendored files whose content is no longer the upstream copy, or that sit outside vendor/. */
+export const vendorProblems = (
+  manifest: ReadonlyMap<string, string>,
+  hashOf: (file: string) => string | undefined,
+) =>
+  [...manifest].flatMap(([file, hash]) => {
+    if (!file.startsWith(VENDOR))
+      return [
+        `${VENDOR}manifest.json records ${file}, which is outside ${VENDOR}; only vendored upstream code is recorded there.`,
+      ];
+    return hashOf(file) === hash
+      ? []
+      : [
+          `${file} is not the upstream copy recorded in ${VENDOR}manifest.json. Vendored code stays byte-identical to upstream: put Basalt code outside vendor/, or record an upstream update as vendor/anti-slop/UPSTREAM.md says.`,
+        ];
+  });
+
+/** Vendored files added, removed or changed against the base. */
+export const vendorChanges = (
+  current: ReadonlyMap<string, string>,
+  base: ReadonlyMap<string, string>,
+) =>
+  [...new Set([...current.keys(), ...base.keys()])]
+    .filter((file) => current.get(file) !== base.get(file))
+    .sort();
+
 export function basePolicy(
-  current: { config: Config; baseline: Counts; allowlist: Allowlist },
+  current: {
+    config: Config;
+    baseline: Counts;
+    allowlist: Allowlist;
+    vendor: ReadonlyMap<string, string>;
+  },
   base: BaseState,
 ) {
   const problems = configProblems(current.config, base.config);
   const notices = allowlistAdditions(current.allowlist, base.allowlist).map(
     (line) => `Allowlist addition, review its reason: ${line}`,
   );
+  // Vendored code changes only as an upstream update, which records its new commit.
+  const vendor = vendorChanges(current.vendor, base.vendor);
+  if (vendor.length && base.upstreamRecorded)
+    notices.push(
+      `Vendored code changed, review it against upstream: ${vendor.length} file(s): ${vendor.join(", ")}`,
+    );
+  else if (vendor.length)
+    problems.push(
+      `Vendored code changed without an upstream update: ${vendor.join(", ")}. Put Basalt code outside vendor/; an upstream update records its commit in that copy's UPSTREAM.md.`,
+    );
   if (base.config)
     notices.push(
       ...optionChanges(current.config, base.config).map(

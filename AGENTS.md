@@ -71,12 +71,18 @@ enforce boundaries. For behavior, read [pools](docs/pools.md) or
 
 ## Lint as you edit
 
-The repository's Claude Code and Codex hooks run oxfmt, upstream oxlint and the
-[owned rules](scripts/owned-lint/README.md) on each file you edit. Fix each finding in the
-code as its message says: narrow types instead of asserting them, and use Effect's tagged
-errors, `catchTag`, `Match` and Layers instead of `_tag` checks and service constructors. A
-boilerplate `SAFETY:` comment or a renamed symbol that only quiets a rule is not a fix. After
-fixing findings or rebasing, run `npm run lint:owned -- --write-baseline` and commit it.
+After each edit, the repository's Claude Code and Codex hooks format the file with oxfmt and
+report upstream oxlint and [owned rule](scripts/owned-lint/README.md) findings; without them,
+run `node scripts/owned-lint/check.ts <files>`. Fix a finding by changing the code it names:
+
+- Parse input at its boundary into a named type with Effect Schema, then narrow. A `SAFETY:`
+  comment states the check that proves its assertion.
+- In Effect code, fail with tagged errors handled by `catchTag` or `Match`, and provide
+  services as Layers.
+- Change the shape the message names; renaming, commenting or wrapping the same code keeps
+  the defect.
+
+After fixing findings or rebasing, run `npm run lint:owned -- --write-baseline` and commit it.
 
 ## Prove the outcome
 

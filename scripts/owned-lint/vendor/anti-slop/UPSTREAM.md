@@ -5,12 +5,16 @@
 - Copied: `skills/install-anti-slop/assets/anti-slop/` at that commit, which is `src/` without its
   `*.test.ts` files, plus the repository `LICENSE`. `vendor/eslint-stylistic/` keeps its own
   `LICENSE` and `UPSTREAM.md`.
+- Checked: `diff -r` against that commit's assets finds nothing but this file and `LICENSE`, which
+  matches the repository's `LICENSE` byte for byte.
 - Entry points: `index.ts` (plugin `anti-slop`) and `effect/index.ts` (plugin `anti-slop-effect`),
   loaded by `../../.oxlintrc.json`. `@oxlint/plugins` is pinned to the owned oxlint version in
   `../../package.json`.
-- Deviations: none. The files are byte-identical to upstream, and neither oxfmt nor oxlint
-  rewrites them (`vendored` in `../../check.ts`). Configuration choices are recorded in
-  `../../README.md`.
+- Deviations: none. The code files are byte-identical to upstream, recorded with their sha256 in
+  `../manifest.json`; the check fails when one differs, and lints any other file under `vendor/`
+  as Basalt code. Neither oxfmt nor oxlint rewrites the recorded files. Configuration choices are
+  recorded in `../../README.md`.
 
 To update, copy the assets of the new upstream commit over this directory, record the commit
-here, run `npm run lint:owned -- --write-baseline`, and review the baseline diff.
+here, run `node scripts/owned-lint/check.ts --write-vendor` and
+`npm run lint:owned -- --write-baseline`, and review both diffs against upstream.
