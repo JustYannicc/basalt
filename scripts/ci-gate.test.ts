@@ -79,3 +79,31 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
     assert.match(refused.stderr, /workerd-assets: expected (?:success|skipped), got missing/);
   }
 });
+
+test("the retry count runs after every gate verdict but can never change it", () => {
+  const job = workflow.jobs.check;
+  const gate = job.steps.findIndex(
+    (step: { run?: string }) => step.run === "node scripts/ci/gate.ts",
+  );
+  const download = job.steps.findIndex((step: { uses?: string; with?: { pattern?: string } }) =>
+    step.uses?.startsWith("actions/download-artifact@"),
+  );
+  const count = job.steps.findIndex((step: { run?: string }) =>
+    step.run?.startsWith("node scripts/ci/aggregate-retries.ts "),
+  );
+  const upload = job.steps.findIndex((step: { with?: { name?: string } }) =>
+    step.with?.name?.startsWith("check-e2e-retries-"),
+  );
+  assert.ok(gate >= 0 && gate < download && download < count && count < upload);
+  // Downloads within the run need no token scope beyond the workflow's read-only default.
+  assert.equal(job.permissions, undefined);
+  assert.equal(job.steps[gate].if, undefined);
+  assert.equal(job.steps[gate]["continue-on-error"], undefined);
+  for (const step of [job.steps[download], job.steps[count], job.steps[upload]]) {
+    assert.equal(step.if, "always() && needs.reuse.outputs.reused != 'true'", step.name);
+    assert.equal(step["continue-on-error"], true, step.name);
+    assert.ok(step["timeout-minutes"] > 0 && step["timeout-minutes"] <= 5, step.name);
+  }
+  const output = job.steps[count].run.split(" ").at(-1).replaceAll('"', "");
+  assert.equal(job.steps[upload].with.path, output.replace("$RUNNER_TEMP", "${{ runner.temp }}"));
+});

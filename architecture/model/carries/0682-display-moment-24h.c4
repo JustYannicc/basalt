@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountReadings {
+    metadata {
+      constraint "Every date and time the host's carried screens and the pool app print goes through dashboard/moment-format.ts, apart from the pool capacity chart's compact UTC tick labels (weekday and day): day-month-year on a 24-hour clock, such as 21.11.2026 14:30, whatever order or clock the reader's locale would pick. Intl does the calendar and time-zone work and Intl options choose only which parts show. Reset moments on the usage bars and every reset or expiry in Details carry their countdown and exact moment as visible text; none is left only in a hover title, which touch screens cannot show."
+    }
+  }
+}
