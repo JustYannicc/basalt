@@ -133,7 +133,7 @@ test("ci:full selects the full suite only on the event that applies it", () => {
   for (const { action, label, labels, name } of pullRequestEvents()) {
     const full =
       (action === "labeled" && label === "ci:full") ||
-      labels.some((carried) => sticky.includes(carried));
+      labels.some((carried: string) => sticky.includes(carried));
     for (const fork of [false, true])
       assert.equal(
         fullSuite(pullRequest(action, labels, "feature/proof", fork, label)),
