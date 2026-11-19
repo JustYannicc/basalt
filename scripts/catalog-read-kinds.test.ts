@@ -113,6 +113,7 @@ const hash = (value: ReturnType<typeof document>) =>
   operationInputSha256(value, findOperation(value, "scrape")!);
 const pinned = (value: ReturnType<typeof document>) => ({
   source: "https://api.example.test/openapi.json",
+  openapi: "3.1.0",
   operations: { scrape: { method: "post", path: "/scrape", tags: null, inputSha256: hash(value) } },
 });
 
@@ -212,12 +213,20 @@ test("a reference the check cannot follow refuses, rather than hash the referenc
   // An inherited key is no part of the document.
   const inherited = document();
   bodySchema(inherited).$ref = "#/components/schemas/constructor";
+  // The framework follows these where component schemas are kept apart, so it reads them empty
+  // and the body accepts anything.
+  const schemas = document();
+  bodySchema(schemas).$ref = "#/components/schemas";
+  const components = document();
+  bodySchema(components).$ref = "#/components";
   for (const [value, reference] of [
     [encoded, "#/components/schemas/Opti%6Fns"],
     [indexed, "#/x-schemas/0"],
     [body, "#/x-bodies/0"],
     [through, "#/components/requestBodies/Scrape/content/application~1json/schema"],
     [inherited, "#/components/schemas/constructor"],
+    [schemas, "#/components/schemas"],
+    [components, "#/components"],
   ] as const) {
     assert.deepEqual(readKindDrift("example", pin, value), [
       `example/scrape: its input reference ${JSON.stringify(reference)} cannot be followed by the check, so the hash would not cover its target`,
@@ -247,21 +256,37 @@ test("a server the hash cannot stand for refuses: variables, servers not in a li
   // The framework skips path item servers that are not a list and uses the document's.
   const unlisted = document();
   Object.assign(unlisted.paths["/scrape"], { servers: {} });
-  // Swagger 2.0 builds the address from host, basePath and schemes instead.
+  // A `swagger` version makes the framework convert the document as Swagger 2.0, whatever its
+  // `openapi` says: the address comes from host, basePath and schemes, and its schemas move.
   const swagger = document();
-  Reflect.deleteProperty(swagger, "openapi");
   Object.assign(swagger, { swagger: "2.0", host: "api.example.test", basePath: "/v2" });
+  const address = "so the hash would not cover the address it is sent to";
   for (const [value, reason] of [
-    [wordlike, 'its server "https://api.example.test/{description}" has variables'],
-    [inherited, 'its server "https://api.example.test/{v}" has variables'],
-    [unlisted, "its path item servers are not a list"],
-    [swagger, "its document is not OpenAPI 3.x"],
+    [wordlike, `its server "https://api.example.test/{description}" has variables, ${address}`],
+    [inherited, `its server "https://api.example.test/{v}" has variables, ${address}`],
+    [unlisted, `its path item servers are not a list, ${address}`],
+    [
+      swagger,
+      'its document is not plain OpenAPI 3.x (openapi "3.1.0", swagger "2.0"), so the hash would not cover how it is sent',
+    ],
   ] as const) {
-    assert.deepEqual(readKindDrift("example", pin, value), [
-      `example/scrape: ${reason}, so the hash would not cover the address it is sent to`,
-    ]);
+    assert.deepEqual(readKindDrift("example", pin, value), [`example/scrape: ${reason}`]);
     assert.throws(() => hash(value), /^Error: post \/scrape: its /, reason);
   }
+});
+
+test("each app pins its OpenAPI version, which picks how its schemas are read", () => {
+  const pin = pinned(document());
+  const older = document();
+  older.openapi = "3.0.3";
+  assert.deepEqual(readKindDrift("example", pin, older), ['example: openapi "3.1.0" → "3.0.3"']);
+  const swagger = document();
+  Reflect.deleteProperty(swagger, "openapi");
+  Object.assign(swagger, { swagger: "2.0" });
+  assert.deepEqual(readKindDrift("example", pin, swagger), [
+    'example: openapi "3.1.0" → null',
+    'example/scrape: its document is not plain OpenAPI 3.x (openapi null, swagger "2.0"), so the hash would not cover how it is sent',
+  ]);
 });
 
 test("a reviewed read's tags are pinned, since they name its tool", () => {
@@ -271,7 +296,13 @@ test("a reviewed read's tags are pinned, since they name its tool", () => {
   const tagged = document();
   Object.assign(tagged.paths["/scrape"].post, { tags: ["Scrape"] });
   assert.deepEqual(readKindDrift("example", pin, tagged), [
-    'example/scrape: tags null → ["Scrape"]',
+    'example/scrape: tags null → ["Scrape"]; they name its tool, so check that its approval policy still recognises it',
+  ]);
+  // Naming reads tags as a list; anything else drops the operationId from the name outright.
+  const unlisted = document();
+  Object.assign(unlisted.paths["/scrape"].post, { tags: "Scrape" });
+  assert.deepEqual(readKindDrift("example", pin, unlisted), [
+    "example/scrape: its tags are not a list, so the framework would name its tool without its operationId",
   ]);
 });
 
