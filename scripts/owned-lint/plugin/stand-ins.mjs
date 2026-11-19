@@ -31,7 +31,7 @@ const STORES = new Set(["push", "unshift", "set", "splice"]);
 const ANSWERS = new Set(["end", "write", "send", "json"]);
 // A request kept to assert on later is the honest pattern, not an echo.
 const RECORDER =
-  /(?:calls|requests|writes|posted|posts|events|seen|received|captured|recorded|sent|logs?|history|bodies|payloads|updates|envelopes|messages)$/iu;
+  /(?:calls?|requests|writes|posted|posts|events|seen|received|captured|recorded|sent|logs?|history|bodies|payloads|updates|envelopes|messages)$/iu;
 const RESPONDER = /^(?:res|response|reply)$/u;
 // A collection that keeps what it was sent: `users.push(...)`, not `requests.push(...)`.
 const store = (call) =>
@@ -166,6 +166,9 @@ export const noEchoStub = {
       // `app = body` or `state.app.policy = body.policy`: what was sent is what a later read returns.
       AssignmentExpression(node) {
         if (node.left.type === "ObjectPattern" || !bodyName(node.right)) return;
+        // `call.rpc = body.method` records the request for an assertion, like `calls.push(body)`.
+        if (node.left.type === "MemberExpression" && RECORDER.test(memberRoot(node.left) ?? ""))
+          return;
         if (node.left.type !== "Identifier" || !variableInit(context, node.left)?.init)
           context.report({ node, message });
       },
