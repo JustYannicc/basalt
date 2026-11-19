@@ -49,8 +49,8 @@ export interface Declaration {
   renamedScratch?: boolean;
   /** Declares the retained scratch bucket under its own id, in this jurisdiction. */
   scratchJurisdiction?: "eu" | "default";
-  /** Adds a binding that State has never recorded. */
-  newClass?: boolean;
+  /** Adds a binding that State has never recorded, optionally declared as moved from a Worker. */
+  newClass?: boolean | { transferredFrom: string };
   /** Binds the two fleet classes (PoolRuntimeBlue, PoolRuntimeGreen), as the cutover declares them. */
   fleetClasses?: boolean;
   /** Declares the retained Secrets Store; when false its seeded row has no declaration. */
@@ -341,6 +341,7 @@ const program = (declared: Declaration) =>
           ? {
               PoolRuntimeBlue: Cloudflare.DurableObject("PoolRuntimeBlue", {
                 className: "PoolRuntimeBlue",
+                ...(typeof declared.newClass === "object" ? declared.newClass : {}),
               }),
             }
           : {}),
