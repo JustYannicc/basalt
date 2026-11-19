@@ -13,6 +13,7 @@ import {
   fetchController,
   type ControllerHop,
 } from "./controller-reset.ts";
+import { controllerUnsentHeader, unsentAttemptHeader } from "./controller-unsent.ts";
 
 // Verbatim from production Workers Observability, 2026-11-18T20:01:07.410Z.
 const resetMessage =
@@ -586,4 +587,142 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
     [["retry_advised", "hold_budget_full"]],
   );
   assert.equal(sentry.length, 1);
+});
+
+/** The controller's answer when it proved no byte of the call reached a runtime. */
+const unsent = (attempt: string) =>
+  Response.json(
+    { type: "error", error: { type: "api_error", message: "unavailable" } },
+    { status: 503, headers: { [controllerUnsentHeader]: attempt, "Retry-After": "1" } },
+  );
+const post = (path: string, body: BodyInit = "{}", headers: HeadersInit = {}) =>
+  new Request(`https://pool.example${path}`, { method: "POST", headers, body });
+
+test("an allow-listed call the controller never sent is sent once more, under the refused attempt's id", async (context) => {
+  const attempt = crypto.randomUUID();
+  const received: { body: string; attempt: string | null }[] = [];
+  const h = harness(context, [
+    async () => unsent(attempt),
+    async (request) => {
+      received.push({
+        body: await request.text(),
+        attempt: request.headers.get(unsentAttemptHeader),
+      });
+      return Response.json({ ok: true });
+    },
+  ]);
+  const response = await fetchController(post("/v1/messages", '{"turn":1}'), h.hop);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get(controllerUnsentHeader), null);
+  assert.deepEqual(received, [{ body: '{"turn":1}', attempt }]);
+  assert.deepEqual(h.waits, [controllerReplayDelayMs]);
+  const { lines, sentry } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.requestId, line.outcome, line.saved, line.cause]),
+    [[attempt, "replayed", true, "unsent"]],
+  );
+  // A call that was saved and never reached a runtime alerts nobody.
+  assert.deepEqual(sentry, []);
+});
+
+test("a call is replayed at most once, whichever answer triggered it", async (context) => {
+  const observed = observe(context);
+  const first = crypto.randomUUID();
+  const twice = controllerHop(
+    [async () => unsent(first), async () => unsent(crypto.randomUUID())],
+    observed.deferred,
+  );
+  const again = await fetchController(post("/v1/responses"), twice.hop);
+  assert.equal(twice.resolved, 2);
+  assert.equal(again.status, 503);
+  assert.equal(again.headers.get(controllerUnsentHeader), null);
+  const afterReset = controllerHop(
+    [fails(reset), async () => unsent(crypto.randomUUID())],
+    observed.deferred,
+  );
+  const cut = await fetchController(post("/v1/messages"), afterReset.hop);
+  assert.equal(afterReset.resolved, 2);
+  assert.equal(cut.status, 503);
+  assert.equal(cut.headers.get(controllerUnsentHeader), null);
+  const { lines, sentry } = await observed.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.saved, line.cause]),
+    [
+      ["replayed", false, "unsent"],
+      ["replayed", false, "instance_ended"],
+    ],
+  );
+  assert.equal(sentry.length, 2);
+});
+
+test("a socket or a job answered unsent is not replayed and keeps the controller's answer", async (context) => {
+  const observed = observe(context);
+  for (const request of [
+    new Request("https://pool.example/v1/responses", { headers: { Upgrade: "websocket" } }),
+    post("/v1/images/generations"),
+    post("/v1/messages", "{}", { Upgrade: "websocket" }),
+  ]) {
+    const attempt = crypto.randomUUID();
+    const h = controllerHop([async () => unsent(attempt)], observed.deferred);
+    const response = await fetchController(request, h.hop);
+    assert.equal(h.resolved, 1, request.url);
+    assert.equal(response.status, 503, request.url);
+    assert.equal(response.headers.get("Retry-After"), "1", request.url);
+    assert.equal(response.headers.get(controllerUnsentHeader), null, request.url);
+  }
+  const { lines, sentry } = await observed.events();
+  assert.deepEqual(
+    lines.map((line) => [line.outcome, line.reason, line.cause]),
+    Array(3).fill(["retry_advised", "not_replayable", "unsent"]),
+  );
+  assert.equal(sentry.length, 3);
+});
+
+test("an unsent call whose body was not held gets retry advice under its attempt id", async (context) => {
+  const attempt = crypto.randomUUID();
+  const h = harness(context, [async () => unsent(attempt)]);
+  const response = await fetchController(
+    post("/v1/messages", new Uint8Array(controllerHoldBytes + 1)),
+    h.hop,
+  );
+  assert.equal(h.resolved, 1);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("Retry-After"), "1");
+  assert.equal(response.headers.get("X-Request-Id"), attempt);
+  const { lines } = await h.events();
+  assert.deepEqual(
+    lines.map((line) => [line.requestId, line.outcome, line.reason, line.cause]),
+    [[attempt, "retry_advised", "body_too_large", "unsent"]],
+  );
+});
+
+test("a client cannot choose the attempt id, and a mark on any other answer changes nothing", async (context) => {
+  const observed = observe(context);
+  const attempt = crypto.randomUUID();
+  const seen: (string | null)[] = [];
+  const h = controllerHop(
+    [
+      async (request) => (seen.push(request.headers.get(unsentAttemptHeader)), unsent(attempt)),
+      async (request) => (seen.push(request.headers.get(unsentAttemptHeader)), Response.json({})),
+    ],
+    observed.deferred,
+  );
+  const forged = crypto.randomUUID();
+  await fetchController(post("/v1/messages", "{}", { [unsentAttemptHeader]: forged }), h.hop);
+  assert.deepEqual(seen, [null, attempt]);
+  for (const answer of [
+    new Response("ok", { headers: { [controllerUnsentHeader]: crypto.randomUUID() } }),
+    new Response("busy", { status: 503, headers: { [controllerUnsentHeader]: "1" } }),
+  ]) {
+    const passed = controllerHop([async () => answer], observed.deferred);
+    const response = await fetchController(post("/v1/messages"), passed.hop);
+    assert.equal(passed.resolved, 1);
+    assert.equal(response.status, answer.status);
+    assert.equal(response.headers.get(controllerUnsentHeader), null);
+  }
+  // Only the replay is recorded, under the controller's id; the other answers pass untouched.
+  assert.deepEqual(
+    (await observed.events()).lines.map((line) => [line.requestId, line.outcome]),
+    [[attempt, "replayed"]],
+  );
 });

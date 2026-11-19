@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "When the controller answers 503 with its unsent mark, which states that no byte of the call reached a runtime and names that attempt's identifier, the model gateway entry sends an allow-listed call it still holds once more after one second. The replay carries the attempt identifier, so the controller records both attempts as one request. The same hold, replay window and allow-list apply, and a call is replayed at most once, whichever answer triggered it. A call whose body is not held gets the native retry advice under the attempt identifier; a model socket, a read or a route off the allow-list keeps the controller's own answer. The entry removes the mark from every answer and the attempt identifier from every caller request, so a client never sees either and cannot choose the identifier. Each unsent answer writes one POOL_CONTROLLER_INTERRUPTED line with cause unsent under the attempt identifier; only an unsaved one raises an observability adapter event."
+    }
+  }
+}
