@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
  * Carried catalog apps reclassify some POST operations as reads by operationId. That decision
  * holds only for the request those operations accepted when it was reviewed: a vendor that later
  * adds a webhook or a background option would otherwise ride the read classification silently.
- * Each reviewed read pins a hash of its input surface; the live check compares the vendor's
- * current document with those pins.
+ * Each reviewed read pins its method, path, tags and a hash of its input surface; the live check
+ * compares the vendor's current document with those pins.
  */
 export type ReadKindPins = Readonly<
   Record<
@@ -15,7 +15,12 @@ export type ReadKindPins = Readonly<
       readonly operations: Readonly<
         Record<
           string,
-          { readonly method: string; readonly path: string; readonly inputSha256: string }
+          {
+            readonly method: string;
+            readonly path: string;
+            readonly tags: Json;
+            readonly inputSha256: string;
+          }
         >
       >;
     }
@@ -66,12 +71,29 @@ const pointer = (document: JsonObject, reference: string): Json | undefined => {
 };
 
 /**
- * Everything a caller can send, with local references inlined and wording dropped, and the
- * references the hash cannot stand for. Beside a reference only wording may sit: a schema adds
- * its other siblings to the target. A cycle keeps its reference rather than recursing.
+ * Everything a caller can send, with local references inlined and wording dropped, and what the
+ * hash cannot stand for. Beside a reference only wording may sit: a schema adds its other
+ * siblings to the target. Servers count only as lists without variables in an OpenAPI 3
+ * document: the framework fills variables, skips servers that are not a list and converts
+ * Swagger 2.0. A cycle keeps its reference rather than recursing.
  */
 const operationInput = (document: JsonObject, found: Declared) => {
   const refused = new Set<string>();
+  const address = "so the hash would not cover the address it is sent to";
+  if (typeof document.openapi !== "string" || !document.openapi.startsWith("3."))
+    refused.add(`its document is not OpenAPI 3.x, ${address}`);
+  const levels = [
+    ["operation", found.operation.servers],
+    ["path item", found.item.servers],
+    ["document", document.servers],
+  ] as const;
+  for (const [level, value] of levels)
+    if (value !== undefined && value !== null && !Array.isArray(value))
+      refused.add(`its ${level} servers are not a list, ${address}`);
+  const servers = found.operation.servers ?? found.item.servers ?? document.servers ?? null;
+  for (const server of Array.isArray(servers) ? servers : [])
+    if (isObject(server) && typeof server.url === "string" && server.url.includes("{"))
+      refused.add(`its server ${JSON.stringify(server.url)} has variables, ${address}`);
   const inline = (value: Json | undefined, stack: readonly string[] = [], names = false): Json => {
     if (Array.isArray(value)) return value.map((item) => inline(item, stack));
     if (!isObject(value)) return value ?? null;
@@ -102,11 +124,7 @@ const operationInput = (document: JsonObject, found: Declared) => {
     ...(Array.isArray(found.item.parameters) ? found.item.parameters : []),
     ...(Array.isArray(found.operation.parameters) ? found.operation.parameters : []),
   ];
-  const input = inline({
-    parameters,
-    requestBody: found.operation.requestBody ?? null,
-    servers: found.operation.servers ?? found.item.servers ?? document.servers ?? null,
-  });
+  const input = inline({ parameters, requestBody: found.operation.requestBody ?? null, servers });
   return { input, refused: [...refused] };
 };
 const sha256 = (input: Json) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
@@ -198,6 +216,10 @@ const pinDrift = (
     const problems: string[] = [];
     if (found.method !== pin.method) problems.push(`${at}: method ${pin.method} → ${found.method}`);
     if (found.path !== pin.path) problems.push(`${at}: path ${pin.path} → ${found.path}`);
+    // Tags name the tool, and an approval policy may recognise a read by its name.
+    const tags = JSON.stringify(found.operation.tags ?? null);
+    if (tags !== JSON.stringify(pin.tags))
+      problems.push(`${at}: tags ${JSON.stringify(pin.tags)} → ${tags}`);
     const { input, refused } = operationInput(document, found);
     const inputSha256 = sha256(input);
     if (refused.length > 0) problems.push(...refused.map((reason) => `${at}: ${reason}`));

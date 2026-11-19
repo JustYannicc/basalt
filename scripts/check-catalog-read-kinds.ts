@@ -43,7 +43,11 @@ for (const [app, pin] of Object.entries(pins)) {
         if (found === undefined)
           throw new Error(`${app}/${operationId} is not declared by exactly one operation`);
         const { method, path } = found;
-        return [operationId, { method, path, inputSha256: operationInputSha256(document, found) }];
+        const tags = found.operation.tags ?? null;
+        return [
+          operationId,
+          { method, path, tags, inputSha256: operationInputSha256(document, found) },
+        ];
       }),
     );
     next[app] = { source: pin.source, operations };
