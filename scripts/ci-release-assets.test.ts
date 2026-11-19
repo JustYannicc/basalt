@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
@@ -20,7 +21,7 @@ import {
   omitReleaseLifecycles,
   releaseOnlyDependencies,
 } from "./ci/dependency-lifecycles.ts";
-import { desktopAssetKey } from "./ci/desktop-release-assets.ts";
+import { desktopAssetKey, verifiedElectronZip } from "./ci/desktop-release-assets.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 
 test("Check and release preparations reuse only their own dependency generations", async () => {
@@ -221,4 +222,30 @@ test("the CI guard refuses release hosts for fetch, HTTP and direct socket resol
     ],
     { stdio: "pipe" },
   );
+});
+
+test("desktop packaging uses only an Electron zip whose bytes match the locked checksum", () => {
+  const cache = mkdtempSync(join(tmpdir(), "basalt-electron-cache-"));
+  try {
+    const name = "electron-v1.0.0-linux-x64.zip";
+    const bytes = Buffer.from("electron zip bytes");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    assert.equal(verifiedElectronZip(cache, name, sha256), undefined);
+    mkdirSync(join(cache, "stale"), { recursive: true });
+    writeFileSync(join(cache, "stale", name), "other bytes");
+    assert.equal(verifiedElectronZip(cache, name, sha256), undefined);
+    mkdirSync(join(cache, "mirror-hash"), { recursive: true });
+    writeFileSync(join(cache, "mirror-hash", name), bytes);
+    assert.equal(verifiedElectronZip(cache, name, sha256), join(cache, "mirror-hash", name));
+  } finally {
+    rmSync(cache, { recursive: true, force: true });
+  }
+  const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const job = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"))
+    .jobs["client-desktop"];
+  const names = job.steps.map((step: { name?: string }) => step.name);
+  const verify = names.indexOf("Verify the cached Electron release against its locked checksums");
+  const packaging = names.indexOf("Package the unsigned development client");
+  assert.ok(verify >= 0 && verify < packaging);
+  assert.match(job.steps[packaging].run, /-c\.electronDist="\$\{\{ env\.ELECTRON_DIST_ZIP \}\}"$/);
 });

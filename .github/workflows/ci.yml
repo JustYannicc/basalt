@@ -509,8 +509,10 @@ jobs:
       - run: bun install --cwd clients/desktop --frozen-lockfile
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
+      - name: Verify the cached Electron release against its locked checksums
+        run: node scripts/ci/desktop-release-assets.ts dist
       - name: Package the unsigned development client
-        run: bun run --cwd clients/desktop package:${{ matrix.platform }}
+        run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.electronDist="${{ env.ELECTRON_DIST_ZIP }}"
       - uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/basalt-desktop-release-assets
