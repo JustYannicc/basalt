@@ -10,6 +10,7 @@ let rest = { id: "bot-synthetic", bot: { workspace_name: "Design workspace" } };
 const person = { type: "person", id: "user-synthetic", name: "Ada", email: "ada@example.test" };
 let self = { workspace: { id: "ws-synthetic", name: "Design workspace" }, user: person };
 let mode = "structured";
+let serverVersion = "2025-03-26";
 let calls = [];
 const opened = new Set();
 const closed = new Set();
@@ -26,6 +27,7 @@ const peer = Bun.serve({
       path,
       method: request.method,
       authorization: request.headers.get("authorization"),
+      version: request.headers.get("mcp-protocol-version"),
     });
     if (request.headers.get("authorization") !== "Bearer synthetic-good")
       return new Response("Unauthorized", { status: 401 });
@@ -43,7 +45,8 @@ const peer = Bun.serve({
     }
     if (request.method === "GET") return new Response(null, { status: 405 });
     const body = await request.json();
-    if (body.id === undefined) return new Response(null, { status: 202 });
+    if (body.id === undefined)
+      return new Response(null, { status: mode === "notify-rejected" ? 400 : 202 });
     const session =
       body.method === "initialize"
         ? `synthetic-session-${++sequence}`
@@ -52,7 +55,7 @@ const peer = Bun.serve({
     if (body.method === "initialize") {
       opened.add(session);
       result = {
-        protocolVersion: "2025-03-26",
+        ...(serverVersion === undefined ? {} : { protocolVersion: serverVersion }),
         capabilities: { tools: {} },
         serverInfo: { name: "synthetic-notion", version: "1" },
       };
@@ -129,6 +132,18 @@ const peer = Bun.serve({
         { headers: { "content-type": "text/event-stream", "mcp-session-id": session } },
       );
     }
+    // A server request may reuse the id of the request it interrupts; it is never the answer.
+    if (mode === "server-request")
+      return new Response(
+        [{ jsonrpc: "2.0", id: body.id, method: "ping" }, message]
+          .map((event) => `event: message\ndata: ${JSON.stringify(event)}\n\n`)
+          .join(""),
+        { headers: { "content-type": "text/event-stream", "mcp-session-id": session } },
+      );
+    if (mode === "batch")
+      return Response.json([{ jsonrpc: "2.0", id: body.id + 100, result: {} }, message], {
+        headers: { "mcp-session-id": session },
+      });
     if (mode === "stream")
       return new Response(`event: message\ndata: ${JSON.stringify(message)}\n\n`, {
         headers: { "content-type": "text/event-stream", "mcp-session-id": session },
@@ -264,6 +279,42 @@ try {
   abortOnCall = new AbortController();
   await assert.rejects(check("oauth", "synthetic-good", { signal: abortOnCall.signal }));
   const { readMcpSelf } = await import(join(directory, "health.ts"));
+  // Where the MCP client library ends a lookup or reads past a message, the plain lookup does too.
+  self = { workspace: { id: "ws-synthetic", name: "Design workspace" }, user: person };
+  const lookup = () =>
+    readMcpSelf(
+      { signal: new AbortController().signal, deadline: Date.now() + 10_000, fetch },
+      `${peer.url}mcp`,
+      { Authorization: "Bearer synthetic-good" },
+    );
+  const strictness = {};
+  for (const [name, setup] of [
+    ["server request reusing the lookup id", () => (mode = "server-request")],
+    ["batched JSON answer", () => (mode = "batch")],
+    ["rejected initialized notification", () => (mode = "notify-rejected")],
+    ["unsupported protocol version", () => (serverVersion = "1999-01-01")],
+    ["no protocol version", () => (serverVersion = undefined)],
+  ]) {
+    mode = "structured";
+    serverVersion = "2025-03-26";
+    setup();
+    strictness[name] = await lookup();
+  }
+  mode = "structured";
+  const workspace = { externalId: person.id, displayName: "Design workspace" };
+  assert.deepEqual(strictness, {
+    "server request reusing the lookup id": workspace,
+    "batched JSON answer": workspace,
+    "rejected initialized notification": undefined,
+    "unsupported protocol version": undefined,
+    "no protocol version": undefined,
+  });
+  // Another version the library accepts still names the account, and later requests carry it.
+  serverVersion = "2025-06-18";
+  calls = [];
+  assert.deepEqual(await lookup(), workspace);
+  assert.deepEqual([...new Set(calls.slice(1).map((call) => call.version))], ["2025-06-18"]);
+  serverVersion = "2025-03-26";
   assert.equal(
     await readMcpSelf(
       {
