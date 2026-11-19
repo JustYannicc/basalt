@@ -1,0 +1,43 @@
+diff --git a/e2e/support/contributed-app.ts b/e2e/support/contributed-app.ts
+--- a/e2e/support/contributed-app.ts
++++ b/e2e/support/contributed-app.ts
+@@ -41,8 +41,8 @@ class PendingContributions extends Schema.TaggedError<PendingContributions>()(
+ export const contributedApp = Effect.gen(function* () {
+   const fixture = yield* appLinksFixture([{ path: "index.ts", content: contributedSource }]);
+   const { api, actors, path, ids } = fixture;
+-  const readLinks = (actor: Session = actors.owner) =>
+-    api.request(actor, "GET", `${path}/accounts/app`).pipe(
++  const readLinks = (actor: Session = actors.owner, app = path) =>
++    api.request(actor, "GET", `${app}/accounts/app`).pipe(
+       Effect.tap(ok),
+       Effect.flatMap((response) => body(Schema.Array(Contribution), response)),
+     );
+@@ -66,12 +66,12 @@ export const contributedApp = Effect.gen(function* () {
+         }),
+       );
+     });
+-  const waitForLinks = (expected: readonly string[]) =>
++  const waitForLinks = (expected: readonly string[], app = path) =>
+     // Cloud wakes queued cleanup on API writes or cron. This read-only query's POST
+     // drives the real retry without waiting for the minute boundary.
+     fixture.call(actors.owner, "accounts").pipe(
+       Effect.tap(ok),
+-      Effect.andThen(readLinks()),
++      Effect.andThen(readLinks(actors.owner, app)),
+       Effect.flatMap((links) => {
+         const ids = links.map((link) => link.account.id).sort();
+         return JSON.stringify(ids) === JSON.stringify([...expected].sort())
+diff --git a/e2e/tests/contributed-app-access.spec.ts b/e2e/tests/contributed-app-access.spec.ts
+--- a/e2e/tests/contributed-app-access.spec.ts
++++ b/e2e/tests/contributed-app-access.spec.ts
+@@ -99,7 +99,10 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+         yield* ok(yield* f.link(actors.member, "shared", shared));
+         yield* ok(yield* otherLink(shared));
+         yield* accountGroup.set([ids.owner]);
++        // One departure detaches each app's link in its own transaction, in app ID order. The
++        // saved list keeps an account any readable app still links, so both apps must settle.
+         yield* f.waitForLinks([ordinary, personal]);
++        yield* f.waitForLinks([personal], other);
+         expect((yield* savedRows()).some((row) => row.id === shared)).toBe(false);
+         expect((yield* otherCall()).body).toMatchObject({ shared: [personal] });
+         expect(
