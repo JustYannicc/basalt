@@ -130,7 +130,7 @@ test("signed migration proofs stay hosted with both bounded adoption shards", ()
   const job = workflow.jobs["production-ops-migrations"];
   assert.equal(job["runs-on"], "ubuntu-latest");
   assert.ok(!boatJobs.includes("production-ops-migrations"));
-  assert.equal(job["timeout-minutes"], 20);
+  assert.equal(job["timeout-minutes"], 25);
   const adoption = job.steps.filter((step: { run?: string }) =>
     step.run?.startsWith("node scripts/production-ops/prove-provider-adoption.ts"),
   );

@@ -112,7 +112,11 @@ test("HITL partitions retain every target scenario exactly once behind required 
           : "human-in-the-loop";
     assert.equal(group.job, expectedJob, id);
     const job = workflow.jobs[group.job];
-    assert.equal(job["timeout-minutes"], 15, group.job);
+    assert.equal(
+      job["timeout-minutes"],
+      group.job === "human-in-the-loop-cloud" ? 25 : 15,
+      group.job,
+    );
     assert.equal(job.needs, "select");
     assert.ok(heavyJobs.includes(group.job));
     assert.ok(workflow.jobs.check.needs.includes(group.job));
