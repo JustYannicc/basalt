@@ -4,6 +4,7 @@ import { DurableObject } from 'cloudflare:workers';
 export { ModelLifetimeNode } from './scripts/pool-tests/model-lifetime-node.mjs';
 import { forwardPoolRequest } from './src/pool/forward.worker.ts';
 import { RuntimeFleet } from './src/pool/runtime-fleet/controller.ts';
+import { forwardRecoverably } from './src/pool/runtime-fleet/retry.ts';
 import { RuntimeFleetState } from './src/pool/runtime-fleet/state.ts';
 import { RuntimeSlotRouter } from './src/pool/runtime-slots/router.ts';
 import { RuntimeSlotStorage } from './src/pool/runtime-slots/storage.ts';
@@ -61,7 +62,10 @@ export class Root extends DurableObject {
    lifecycle:Promise.resolve({warm:async()=>{throw Error('Must select ready extra')}}),
    protection:new RuntimeProtection(streams,{check:async()=>{throw Error('Unused primary health')},
     defer:work=>this.ctx.waitUntil(work),unavailable(){}}),
-   route:(request,port,pool,legacy,before)=>fleet.forward(request,pool,()=>legacy(request),before),
+   // The exit fault runs through the crash boundary production wraps around the fleet.
+   route:(request,port,pool,legacy,before)=>fault==='model-port-exit'
+    ?forwardRecoverably(request,(current,dispatch)=>fleet.forward(current,pool,()=>legacy(current),dispatch),before)
+    :fleet.forward(request,pool,()=>legacy(request),before),
    fetch:async()=>{throw Error('Must select ready extra')},defer:work=>this.ctx.waitUntil(work)});
   return response;
  }
