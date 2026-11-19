@@ -70,9 +70,7 @@ function fixture(
         strategy: {
           matrix: "${{ fromJSON(needs.select.outputs.matrices)['declared-self-host'] }}",
         },
-        steps: [
-          { run: 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"' },
-        ],
+        steps: [{ run: 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"' }],
       },
     },
   };
@@ -136,18 +134,47 @@ test("deleted runner steps, disabled steps and disconnected matrices lose covera
     step.if = false;
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
     delete step.if;
-    step.run = 'echo \'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"\'';
-    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
-    step.run =
-      'node --version # bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
-    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
-    step.run = 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
+    for (const run of [
+      "echo 'bun scripts/ci/run-declared.ts \"${{ matrix.runs }}\"'",
+      'node --version # bun scripts/ci/run-declared.ts "${{ matrix.runs }}"',
+      // The per-file form no longer matches what select emits, and an extra word could filter.
+      'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"',
+      'bun scripts/ci/run-declared.ts "${{ matrix.runs }}" declared:self-host',
+      "bun scripts/ci/run-declared.ts ${{ matrix.runs }}",
+    ]) {
+      step.run = run;
+      assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/, run);
+    }
+    step.run = 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"';
+    assert.deepEqual(coverageErrors(inventory(), []), []);
     for (const condition of [false, "false", "${{ false }}", "${{ 1 == 2 }}"]) {
       job.if = condition;
       assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
     }
     delete job.if;
     job.strategy!.matrix = { include: [] };
+    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
+  }));
+
+test("a sharded step covers only pairs the planner hands to one of its own job's shards", () =>
+  fixture((root, workflow, inventory) => {
+    assert.deepEqual(coverageErrors(inventory(), []), []);
+    // The same step in another matrix job runs that job's shards, which never carry this pair.
+    writeFileSync(
+      join(root, "scripts/ci/e2e-groups.json"),
+      JSON.stringify({
+        "declared:self-host": {
+          job: "declared-local",
+          target: "self-host",
+          mode: "managed",
+          matrix: true,
+        },
+      }),
+    );
+    workflow.jobs["declared-local"] = {
+      ...workflow.jobs["declared-self-host"]!,
+      strategy: { matrix: "${{ fromJSON(needs.select.outputs.matrices)['declared-local'] }}" },
+    };
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
   }));
 

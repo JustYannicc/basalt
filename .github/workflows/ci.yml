@@ -2234,8 +2234,10 @@ jobs:
   declared-self-host:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
+    name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-self-host'] }}
@@ -2253,16 +2255,19 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
-      - name: Run this file's declared scenarios
-        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
-      - name: Collect bounded E2E evidence with original-run fallback
+      - name: Run this shard's declared files, each in its own process
+        run: bun scripts/ci/run-declared.ts "${{ matrix.runs }}"
+      # Each finished file's evidence is already in its own directory; this keeps what a run
+      # interrupted by the job's deadline or cancellation left behind.
+      - name: Collect bounded E2E evidence from an interrupted file
         if: always()
-        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence/interrupted" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: declared-self-host-${{ matrix.file }}-${{ matrix.key }}
+          name: ${{ matrix.shard }}
           path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/*/declared-run.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
@@ -2271,8 +2276,10 @@ jobs:
   declared-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
+    name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-local'] }}
@@ -2290,16 +2297,19 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
-      - name: Run this file's declared scenarios
-        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
-      - name: Collect bounded E2E evidence with original-run fallback
+      - name: Run this shard's declared files, each in its own process
+        run: bun scripts/ci/run-declared.ts "${{ matrix.runs }}"
+      # Each finished file's evidence is already in its own directory; this keeps what a run
+      # interrupted by the job's deadline or cancellation left behind.
+      - name: Collect bounded E2E evidence from an interrupted file
         if: always()
-        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence/interrupted" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: declared-local-${{ matrix.file }}-${{ matrix.key }}
+          name: ${{ matrix.shard }}
           path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/*/declared-run.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
@@ -2308,8 +2318,10 @@ jobs:
   declared-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
+    name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Planned per shard: its files' measured time plus setup, with room for one file's own deadline.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-cloud'] }}
@@ -2327,16 +2339,19 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
-      - name: Run this file's declared scenarios
-        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
-      - name: Collect bounded E2E evidence with original-run fallback
+      - name: Run this shard's declared files, each in its own process
+        run: bun scripts/ci/run-declared.ts "${{ matrix.runs }}"
+      # Each finished file's evidence is already in its own directory; this keeps what a run
+      # interrupted by the job's deadline or cancellation left behind.
+      - name: Collect bounded E2E evidence from an interrupted file
         if: always()
-        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence/interrupted" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: declared-cloud-${{ matrix.file }}-${{ matrix.key }}
+          name: ${{ matrix.shard }}
           path: |
+            ${{ runner.temp }}/basalt-e2e-evidence/*/declared-run.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
