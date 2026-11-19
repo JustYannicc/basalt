@@ -154,7 +154,10 @@ export async function handleRuntimeHandoff(
         result = await fleet.replace(value.operationId, value.identity);
         break;
       case "inspect":
-        result = await handoff.slots.inspect();
+        result = { ...(await handoff.slots.inspect()), recovery: await handoff.recoveryState() };
+        break;
+      case "recovery-reset":
+        result = await handoff.resetRecovery();
         break;
       case "active-health":
         result = await handoff.activeHealth();

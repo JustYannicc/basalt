@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
+import { unservingBoundMs } from "./runtime-slots/unserving-clock.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Inspected {
@@ -124,5 +125,25 @@ test(
     await crash.body?.cancel();
     assert.deepEqual(f.old.calls.signals, []);
     await assertStuck(f, previous, epoch);
+  },
+);
+
+test(
+  "the stuck record heals by itself once it has refused for the bound, with a graceful stop",
+  { timeout: 20_000 },
+  async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    context.mock.method(console, "info", () => {});
+    context.mock.method(console, "error", () => {});
+    const { previous, epoch } = await stuckOverRunningContainer(f);
+    await assertStuck(f, previous, epoch);
+    assert.deepEqual(f.old.calls.signals, [], "never stopped before the bound");
+    now += unservingBoundMs;
+    await assertHealed(f, previous, epoch);
+    assert.deepEqual(f.old.calls.signals, [15]);
+    assert.equal(f.old.calls.destroy, 0);
   },
 );

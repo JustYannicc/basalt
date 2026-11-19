@@ -1,4 +1,5 @@
 import { RuntimeSlotRecovery } from "./recovery.ts";
+import { UnservingClock } from "./unserving-clock.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
 import { observeUnattestedAdoption } from "./adoption-observation.ts";
@@ -149,6 +150,13 @@ export class RuntimeHandoff {
   }
   available() {
     return this.recovery?.available() ?? true;
+  }
+  /** The forced-restart clock, readable while the runtime refuses: "needs a person" shows here. */
+  recoveryState() {
+    return new UnservingClock(this.storage).inspect();
+  }
+  resetRecovery() {
+    return new UnservingClock(this.storage).reset();
   }
   supervise() {
     if (!this.options.recovery) return Promise.resolve();

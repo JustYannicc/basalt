@@ -92,6 +92,7 @@ export const RuntimeHandoffCommand = Schema.Union([
     operationId: OperationId,
   }),
   Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe", "active-health"]) }),
+  Schema.Struct({ ...fields, action: Schema.Literal("recovery-reset"), operationId: OperationId }),
   Schema.Struct({
     ...fields,
     action: Schema.Literals(["receipt", "retirement", "drain", "discard"]),

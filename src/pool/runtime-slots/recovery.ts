@@ -27,6 +27,8 @@ import { providerDigest } from "../runtime-provider/canonical.ts";
 import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
 import { awaitProbe } from "../availability.ts";
+import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { UnservingClock, unservingDecision, type UnservingState } from "./unserving-clock.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
 const Completion = Schema.Struct({ identity: SlotIdentity, fingerprint: Schema.String });
@@ -50,14 +52,26 @@ interface Dependencies {
   afterCommit?(identity: SlotIdentity, fingerprint: string): Promise<void>;
 }
 export const runtimeRecoveryBudgetMs = 200_000;
+// A running runtime refusing with one of these is not serving. Fence, selection, policy and
+// draining refusals are deliberate states a forced restart must never fight.
+const notServing = new Set([
+  "unhealthy",
+  "timeout",
+  "transport",
+  "slot_identity",
+  "slot_unhealthy",
+  "slot_uncertain",
+]);
 
 /** Reconstructible per-boot recovery joins the endpoint's durable launch witness before changing selection. */
 export class RuntimeSlotRecovery {
   private deps: Dependencies;
   private pending?: Promise<void>;
   private unavailable = false;
+  private clock: UnservingClock;
   constructor(deps: Dependencies) {
     this.deps = deps;
+    this.clock = new UnservingClock(deps.storage);
   }
   available() {
     return !this.unavailable;
@@ -106,6 +120,39 @@ export class RuntimeSlotRecovery {
       slot: identity.slotId,
     });
   }
+  /** Stops the running, refusing container once the clock allows; recovery then restarts it. */
+  private async stopRefusing(previous: SlotIdentity, signal: AbortSignal) {
+    const now = Date.now();
+    const decision = unservingDecision(await this.clock.refusing(previous, now), now);
+    if (decision === "restart_limit") this.report(await this.clock.needsPerson(decision, now), now);
+    if (typeof decision === "string") return false;
+    console.info("POOL_SELECTED_RECOVERY", {
+      phase: "stopping",
+      at: now,
+      slot: previous.slotId,
+      force: decision.force,
+    });
+    let stopped: { stopped: boolean };
+    try {
+      stopped = await this.deps.driver.stopRefusing(previous, decision.force, signal);
+    } catch (error) {
+      // Streams still active or a refresh in flight wait for a later pass; the endpoint's own
+      // hourly limit is the same limit this clock keeps, reached through another controller.
+      if (runtimeFailureDiagnostic(error, "slot_health").runtimeReason === "slot_uncertain")
+        this.report(await this.clock.needsPerson("restart_limit", now), now);
+      return false;
+    }
+    if (!stopped.stopped) {
+      this.report(await this.clock.needsPerson("stop_failed", now), now);
+      return false;
+    }
+    await this.clock.restarted(now);
+    return true;
+  }
+  private report(state: UnservingState, now: number) {
+    if (state.needsPerson?.at === now)
+      console.error("POOL_SELECTED_RECOVERY_NEEDS_PERSON", JSON.stringify(state.needsPerson));
+  }
   private async runWithin(signal: AbortSignal) {
     const { storage, driver, provider, code, key } = this.deps;
     const completion = await storage.transact(async (_, transaction) =>
@@ -150,25 +197,37 @@ export class RuntimeSlotRecovery {
       selection.draining
     )
       throw new SlotRefused("selection");
+    let refusal: unknown;
     try {
       await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(2_000)]));
       this.unavailable = false;
+      await this.clock.serving();
       return;
-    } catch {
+    } catch (error) {
       this.unavailable = true;
+      refusal = error;
     }
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "detected",
       at: Date.now(),
       slot: previous.slotId,
     });
+    const detectedAt = Date.now();
+    this.report(await this.clock.failedSince(detectedAt), detectedAt);
     retiredDenials(snapshot);
-    const retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
+    let retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "witness",
       at: Date.now(),
       slot: previous.slotId,
     });
+    // Restart-on-exit alone left a running, refusing root unrecovered for hours on 19 Nov 2026.
+    if (
+      retained.running &&
+      notServing.has(runtimeFailureDiagnostic(refusal, "slot_health").runtimeReason) &&
+      (await this.stopRefusing(previous, signal))
+    )
+      retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
     const original = retained.authorization;
     const operationId = `restart-${(await providerDigest(previous)).slice(0, 48)}`;
     const joining =

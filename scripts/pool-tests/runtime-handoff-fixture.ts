@@ -32,6 +32,11 @@ import { legacyDrainProgram } from "../../src/pool/runtime-slots/legacy-drain.ts
 import { peerBootstrapInspectionProgram } from "../../src/pool/runtime-slots/peer-bootstrap.ts";
 import peerProgram from "../../src/pool/home-peer-program.json" with { type: "json" };
 import type { HomePeerSource } from "../../src/pool/runtime-slots/peer-access.ts";
+import { runtimeStopTiming } from "../../src/pool/runtime-slots/forced-stop.ts";
+
+// Fixtures never sleep through production's stop waits; a test that needs one mocks it.
+runtimeStopTiming.confirmExit = async () => {};
+runtimeStopTiming.stopGrace = async () => {};
 
 const responseModule = "../../src/pool/native-response.worker.ts";
 const {
@@ -106,7 +111,7 @@ export async function handoffRuntime(
   const policies = new Map<string, NativeMembershipPolicy>();
   const helper = { starts: 0, witness: undefined as object | undefined };
   const hooks = {
-    health: async () => {},
+    health: async (): Promise<Response | void> => {},
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
     connections: async () => 0,
@@ -208,8 +213,9 @@ export async function handoffRuntime(
               );
               if (url.pathname === "/ready") {
                 calls.health++;
-                await hooks.health();
+                const answered = await hooks.health();
                 request.signal.throwIfAborted();
+                if (answered) return answered;
                 const headers = new Headers({ [policyHealthHeader]: "1500" });
                 if (startup.env.POOL_LAUNCH_GENERATION) {
                   headers.set(launchGenerationHeader, startup.env.POOL_LAUNCH_GENERATION);

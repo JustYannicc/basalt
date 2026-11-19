@@ -39,6 +39,7 @@ import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
 import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
+import { pendingFields } from "../runtime-route-diagnostic.ts";
 
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
@@ -452,8 +453,9 @@ export class PoolRuntimeFleet {
   async upkeep() {
     try {
       this.deps.ctx.waitUntil(
-        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(() =>
-          console.error("POOL_SELECTED_RECOVERY_PENDING"),
+        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(
+          (error: unknown) =>
+            console.error("POOL_SELECTED_RECOVERY_PENDING", JSON.stringify(pendingFields(error))),
         ),
       );
       await this.primaryHeadroom();
