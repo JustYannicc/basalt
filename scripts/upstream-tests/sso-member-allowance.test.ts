@@ -86,6 +86,15 @@ const fixture = async (allowance: number | "unavailable") => {
     role: "owner",
     createdAt: created,
   });
+  /** The verified connection row the native callback hands to provisioning. */
+  const connection = {
+    issuer: "https://idp.example.com",
+    userId: owner.id,
+    providerId: "sso-fixture",
+    organizationId: team,
+    domain: "example.com",
+    domainVerified: true,
+  };
   const provisionUser = plugin.options.provisionUser;
   assert.ok(provisionUser, "the hosted SSO plugin provisions membership on login");
   /** What the native SSO callback runs after the bound provider authenticated this person. */
@@ -94,14 +103,7 @@ const fixture = async (allowance: number | "unavailable") => {
       provisionUser({
         user,
         userInfo: { id: `idp-${user.id}`, email: user.email },
-        provider: {
-          issuer: "https://idp.example.com",
-          userId: owner.id,
-          providerId: "sso-fixture",
-          organizationId: team,
-          domain: "example.com",
-          domainVerified: true,
-        },
+        provider: connection,
       }),
     );
   const memberships = (user: { readonly id: string }) =>
