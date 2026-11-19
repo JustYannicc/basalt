@@ -100,8 +100,6 @@ const enclosingFunction = (node) => {
   while (current && !/Function/u.test(current.type)) current = current.parent;
   return current;
 };
-const within = (inner, outer) =>
-  inner.range[0] >= outer.range[0] && inner.range[1] <= outer.range[1];
 // Identifiers in a value, without the functions nested in it.
 const identifiers = (node, found = []) => {
   if (!node || typeof node.type !== "string" || /Function/u.test(node.type)) return found;
@@ -130,6 +128,61 @@ export const noEchoStub = {
         const declarator = variableInit(context, identifier);
         if (declarator) answered.add(declarator);
       }
+    };
+    const variableOf = (identifier) => {
+      for (let scope = context.sourceCode.getScope(identifier); scope; scope = scope.upper) {
+        const variable = scope.set.get(identifier.name);
+        if (variable) return variable;
+      }
+      return undefined;
+    };
+    const inAssertion = (node) => {
+      for (
+        let current = node.parent;
+        current && !/Function/u.test(current.type);
+        current = current.parent
+      )
+        if (current.type === "CallExpression" && asserted(current)) return true;
+      return false;
+    };
+    // `const call = {...}` made inside a function, written field by field, read only by
+    // assertions and pushed whole onto arrays: the arrays, or undefined when it can reach
+    // anything else (an alias, a wrapper, a helper, a store, an answer).
+    const recordedInto = (identifier) => {
+      const variable = variableOf(identifier);
+      const declarator = variable?.defs.at(-1)?.node;
+      if (declarator?.type !== "VariableDeclarator" || declarator.parent.kind !== "const") return;
+      if (unwrap(declarator.init)?.type !== "ObjectExpression" || !enclosingFunction(declarator))
+        return;
+      const stores = [];
+      for (const { identifier: reference } of variable.references) {
+        if (reference === declarator.id || inAssertion(reference)) continue;
+        const parent = reference.parent;
+        if (
+          parent.type === "MemberExpression" &&
+          parent.object === reference &&
+          !parent.computed &&
+          parent.parent.type === "AssignmentExpression" &&
+          parent.parent.left === parent
+        )
+          continue;
+        if (
+          parent.type === "CallExpression" &&
+          parent.arguments.length === 1 &&
+          parent.arguments[0] === reference &&
+          parent.callee.type === "MemberExpression" &&
+          ["push", "unshift"].includes(propertyName(parent.callee)) &&
+          parent.callee.object.type === "Identifier"
+        ) {
+          const store = variableInit(context, parent.callee.object);
+          if (store) {
+            stores.push(store);
+            continue;
+          }
+        }
+        return undefined;
+      }
+      return stores;
     };
     // The request body, or structuredClone of it, or a member of it.
     const bodyName = (input) => {
@@ -199,13 +252,11 @@ export const noEchoStub = {
         if (
           node.left.type === "MemberExpression" &&
           !node.left.computed &&
+          node.left.object.type === "Identifier" &&
           unwrap(node.right)?.type === "MemberExpression"
         ) {
-          const root = memberRootNode(node.left);
-          const declarator = root?.type === "Identifier" ? variableInit(context, root) : undefined;
-          const fn = enclosingFunction(node);
-          if (unwrap(declarator?.init)?.type === "ObjectExpression" && fn && within(declarator, fn))
-            return void records.push([node, declarator]);
+          const stores = recordedInto(node.left.object);
+          if (stores) return void records.push([node, stores]);
         }
         if (node.left.type !== "Identifier" || !variableInit(context, node.left)?.init)
           context.report({ node, message });
@@ -217,8 +268,8 @@ export const noEchoStub = {
         if (fn && handler(fn) && bodyName(node.argument)) context.report({ node, message });
       },
       "Program:exit"() {
-        for (const [node, declarator] of records)
-          if (answered.has(declarator)) context.report({ node, message });
+        for (const [node, stores] of records)
+          if (stores.some((store) => answered.has(store))) context.report({ node, message });
       },
       CallExpression(node) {
         const name = propertyName(node.callee);

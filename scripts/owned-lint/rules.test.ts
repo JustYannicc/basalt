@@ -345,6 +345,69 @@ export const wholeBody = async (request: Request) => {
   return new Response("ok");
 };
 `,
+  // A per-request record may only be written, asserted on and pushed onto a list nothing
+  // answers with; any other way out of the handler is an echo.
+  "scripts/evasions/test/escapes.ts": `
+import type { IncomingMessage, ServerResponse } from "node:http";
+declare function readBody(request: Request): Promise<string>;
+const users: unknown[] = [];
+const calls: unknown[] = [];
+let latest: unknown;
+export const alias = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const reply = { policy: "" };
+  reply.policy = body.policy; // expect: basalt/no-echo-stub
+  const out = reply;
+  return Response.json(out);
+};
+export const postUser = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  users.push(user);
+  return new Response("ok");
+};
+export const listUsers = (_request: Request) => Response.json(users);
+export const putLatest = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const record = { value: "" };
+  record.value = body.value; // expect: basalt/no-echo-stub
+  latest = record;
+  return new Response(String(latest !== undefined));
+};
+export const express = async (request: Request, res: { status(code: number): { json(value: unknown): void } }) => {
+  const body = JSON.parse(await readBody(request));
+  const out = { name: "" };
+  out.name = body.name; // expect: basalt/no-echo-stub
+  res.status(200).json(out);
+};
+export const hono = async (c: { req: { json(): Promise<{ name: string }> }; json(value: unknown): Response }) => {
+  const body = await c.req.json();
+  const out = { name: "" };
+  out.name = body.name; // expect: basalt/no-echo-stub
+  return c.json(out);
+};
+export const nodeRecorder = (request: IncomingMessage, res: ServerResponse) => {
+  const call = { path: request.url, rpc: undefined as unknown };
+  calls.push(call);
+  let raw = "";
+  request.on("data", (chunk) => (raw += chunk));
+  request.on("end", () => {
+    const body = JSON.parse(raw);
+    call.rpc = body.method;
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }));
+  });
+};
+export const nested = async (request: Request) => {
+  const call = { rpc: "" };
+  calls.push(call);
+  const body = JSON.parse(await readBody(request));
+  await Promise.resolve().then(() => {
+    call.rpc = body.method;
+  });
+  return new Response("ok");
+};
+`,
   "src/pool/aliased.test.ts": `
 import { mock as m, test } from "node:test";
 test("aliased", (t) => {
