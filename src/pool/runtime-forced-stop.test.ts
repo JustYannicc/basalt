@@ -101,6 +101,12 @@ test("a restart's own boot is never stopped, while the old container under it is
       true,
     ],
     [
+      "started, and the running container answers with no launch headers (a legacy launch)",
+      restartOver({ launch }),
+      async () => ({}),
+      true,
+    ],
+    [
       "started, and the running container answers with this restart's launch",
       restartOver({ launch }),
       async () => ({ launch }),

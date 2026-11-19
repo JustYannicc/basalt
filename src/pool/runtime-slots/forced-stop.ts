@@ -11,7 +11,10 @@ const Stops = Schema.Array(Schema.Number);
 /** At most this many forced stops per container object in any hour, whatever the controller asks. */
 export const forcedStopsPerHour = 3;
 const hourMs = 3_600_000;
-/** A slow runtime that still answers within this is serving, and is never stopped. */
+/**
+ * The outer bound on the stop's own health and readiness reads. A readiness read gives up after its
+ * 1.5 s lease window whatever this allows, so a runtime slower than that counts as not answering.
+ */
 export const servingReadMs = 10_000;
 /**
  * Streams counted active hold a forced stop until their count has stood still this long: one long

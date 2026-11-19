@@ -50,6 +50,7 @@ export class RuntimeForcedRestart {
   readonly clock: UnservingClock;
   private storage: RuntimeSlotStorage;
   private driver: BoundSlotDriver;
+  private declined?: string;
   constructor(storage: RuntimeSlotStorage, driver: BoundSlotDriver) {
     this.storage = storage;
     this.driver = driver;
@@ -58,11 +59,9 @@ export class RuntimeForcedRestart {
   /** One recovery pass, after its warm refused: returns true once the container was stopped. */
   async consider(pass: Pass, signal: AbortSignal) {
     const reason = runtimeFailureDiagnostic(pass.refusal, "slot_health").runtimeReason;
-    if (
-      !pass.retained.running ||
-      !notServing.has(reason) ||
-      !holdsSelectedBoot(pass.retained, pass.previous)
-    ) {
+    // A single `running: false` read proves nothing, so it neither stops nor restarts the bound.
+    if (!pass.retained.running) return false;
+    if (!notServing.has(reason) || !holdsSelectedBoot(pass.retained, pass.previous)) {
       // The bound counts only an unbroken stretch of a running, refusing selected boot.
       await this.clock.notRefusing();
       return false;
@@ -86,20 +85,25 @@ export class RuntimeForcedRestart {
       );
     });
     if (!unchanged) return false;
-    console.info("POOL_SELECTED_RECOVERY", {
-      phase: "stopping",
-      at: now,
-      slot: pass.previous.slotId,
-      refusal: reason,
-    });
     let result: Awaited<ReturnType<BoundSlotDriver["stopRefusing"]>>;
     try {
       result = await this.driver.stopRefusing(pass.previous, state.since ?? now, signal);
-    } catch {
-      // The endpoint declined for now (streams, a refresh in flight, or it answers health), or
-      // the call didn't land; a later pass asks again, and nothing here marks it failed.
+    } catch (error) {
+      // The endpoint declined for now (a refresh in flight, it answers health, or the container
+      // isn't the selected boot's yet), or the call didn't land. A later pass asks again.
+      const declined = runtimeFailureDiagnostic(error, "slot_health").runtimeReason;
+      if (declined !== this.declined)
+        console.info("POOL_SELECTED_RECOVERY", {
+          phase: "stop_declined",
+          at: now,
+          slot: pass.previous.slotId,
+          refusal: reason,
+          declined,
+        });
+      this.declined = declined;
       return false;
     }
+    this.declined = undefined;
     if (result.waiting) {
       const before = state.streams;
       await this.clock.waitingFor(result.waiting);
@@ -119,6 +123,13 @@ export class RuntimeForcedRestart {
     if (result.limited) this.report(await this.clock.needsPerson("restart_limit", now), now);
     else if (!result.stopped) this.report(await this.clock.needsPerson("stop_failed", now), now);
     if (!result.stopped) return false;
+    console.info("POOL_SELECTED_RECOVERY", {
+      phase: "stopped",
+      at: now,
+      slot: pass.previous.slotId,
+      refusal: reason,
+      hard: result.hard,
+    });
     await this.clock.restarted(now);
     return true;
   }

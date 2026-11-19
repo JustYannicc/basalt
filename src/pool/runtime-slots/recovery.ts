@@ -118,6 +118,9 @@ export class RuntimeSlotRecovery {
     );
     if (completion != null) {
       this.unavailable = true;
+      // A committed forced restart that never reaches ready must end in needs-a-person, whichever
+      // step of this branch keeps failing.
+      await this.forced.refused();
       const value = Schema.decodeUnknownSync(Completion)(completion);
       const current = await storage.inspect();
       if (
@@ -131,13 +134,7 @@ export class RuntimeSlotRecovery {
       );
       if (!sameIdentity(actual.identity, value.identity)) throw new SlotRefused("identity");
       if (actual.running) {
-        // A committed forced restart that never reaches ready must still end in needs-a-person.
-        await this.finish(value.identity, value.fingerprint, signal).catch(
-          async (error: unknown) => {
-            await this.forced.refused();
-            throw error;
-          },
-        );
+        await this.finish(value.identity, value.fingerprint, signal);
         return;
       }
       await storage.transact(async (latest, transaction) => {
