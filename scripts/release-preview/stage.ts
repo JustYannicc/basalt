@@ -170,6 +170,8 @@ async function budgetProbe(subject: StageSubject, source: NodeJS.ProcessEnv, out
     PLANETSCALE_API_TOKEN: source.PLANETSCALE_API_TOKEN,
     POOL_BUDGET_DATABASE: config.deploy.TEST_STAGE_DATABASE,
     POOL_BUDGET_BRANCH: previewPoolDatabaseBranch(config.stage),
+    // The script refuses a target that is not this stage's own (patch 0693's ownPoolBudgetTarget).
+    POOL_BUDGET_STAGE: config.stage,
   };
   const started = Date.now();
   const { code, output } = await new Promise<{ code: number | null; output: string }>((done) => {
