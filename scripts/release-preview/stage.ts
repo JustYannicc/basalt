@@ -28,6 +28,7 @@ import {
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { describeError, redactor } from "./redact.ts";
 import { alchemyPreviewStateReader } from "../preview/inventory.ts";
+import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
@@ -208,12 +209,23 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
         new Promise<"timeout">((done) => setTimeout(() => done("timeout"), 30_000).unref()),
       ]);
       if (code === "timeout") child.kill("SIGKILL");
-      const line = stdout.trim().split("\n").pop() ?? "";
-      try {
-        return JSON.parse(line) as unknown;
-      } catch {
-        return { unavailable: redactor(source)(stderr.split("\n").slice(-20).join("\n")) };
+      // The bridge may print after the summary; the summary is the last line that parses as one.
+      for (const line of stdout.trim().split("\n").toReversed()) {
+        try {
+          const value = JSON.parse(line) as { samples?: unknown };
+          if (value && typeof value === "object" && "samples" in value) return value;
+        } catch {
+          // Not the summary line.
+        }
       }
+      // No summary line: summarize the samples the probe streamed to its file.
+      const samples = (await readFile(out, "utf8").catch(() => ""))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Sample);
+      return samples.length
+        ? { ...summarize(samples), fromFile: true }
+        : { unavailable: redactor(source)(stderr.split("\n").slice(-20).join("\n")) };
     },
   };
 }

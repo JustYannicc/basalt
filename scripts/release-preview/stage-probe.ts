@@ -291,6 +291,11 @@ async function stagePoolWorker(accountId: string, token: string, stage: string) 
 }
 
 async function main(args: string[], env: NodeJS.ProcessEnv) {
+  // Registered before any await: a stop that arrives while the bridge opens still ends in a summary.
+  const stop = new AbortController();
+  const abort = () => stop.abort();
+  process.once("SIGTERM", abort);
+  process.once("SIGINT", abort);
   const { redactor, describeError } = await import("./redact.ts");
   const [laneText, outFile] = args;
   if (!laneText || !outFile) throw new Error("Usage: stage-probe.ts <lane> <outFile>");
@@ -445,10 +450,6 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
     return { ok: true, ...(controllerCode ? { controllerCode } : {}), ...rootResult };
   };
 
-  const stop = new AbortController();
-  const abort = () => stop.abort();
-  process.once("SIGTERM", abort);
-  process.once("SIGINT", abort);
   await writeFile(outFile, "", { mode: 0o600 });
   let samples: Sample[] = [];
   try {
