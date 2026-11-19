@@ -71,7 +71,7 @@ function evaluate(
     connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection";
     connectionChange?: "origin" | "limit" | "tls" | "name";
     containerProof?: string;
-    attemptProof?: "production" | "preview";
+    settlesProof?: "production" | "preview";
   } = {},
 ): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
@@ -96,7 +96,7 @@ function evaluate(
       NATIVE_STACK_PREVIEW_CONNECTION_PROOF: String(options.previewConnectionProof ?? false),
       NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
       NATIVE_STACK_CONTAINER_PROOF: options.containerProof ?? "",
-      NATIVE_STACK_ATTEMPT_PROOF: options.attemptProof ?? "",
+      NATIVE_STACK_SETTLES_PROOF: options.settlesProof ?? "",
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -256,26 +256,29 @@ export function discoverConnectionPlanProof(
   }) as ConnectionPlanProof;
 }
 
-export interface AttemptPlanRow {
+export interface PlannedRow {
   id: string;
   type: string;
   action: string;
+  /** Resources that wait on this row's outcome. */
+  readers: string[];
 }
 
 /**
- * Applies the real stack once, then plans it again with the same attempt id and once more with a
- * new one. A failed phase is named instead of forwarding its cause.
+ * Deploys the real stack into empty state, then plans it again unchanged and once more with a new
+ * release attempt id. A failed phase is named by its phase and error class only.
  */
-export function discoverAttemptPlanProof(
+export function discoverPlanSettlesProof(
   root: string,
   shape: "production" | "preview",
 ): {
   failed?: string;
+  error?: string;
   resources: number;
-  secondPlan: AttemptPlanRow[];
-  nextAttempt: AttemptPlanRow[];
+  afterApply: PlannedRow[];
+  nextAttempt: PlannedRow[];
 } {
-  return evaluate(root, { attemptProof: shape }) as ReturnType<typeof discoverAttemptPlanProof>;
+  return evaluate(root, { settlesProof: shape }) as ReturnType<typeof discoverPlanSettlesProof>;
 }
 
 export function discoverContainerBarrierProof(root: string, scenario: string) {

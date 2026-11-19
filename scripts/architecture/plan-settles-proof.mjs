@@ -1,5 +1,6 @@
 import * as Apply from "alchemy/Apply";
 import * as Command from "alchemy/Command";
+import * as Output from "alchemy/Output";
 import * as Plan from "alchemy/Plan";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
@@ -7,17 +8,24 @@ import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { Cause, Effect, Exit, Layer, Redacted } from "effect";
 
+/** What each provider keeps readable while its resource updates, as the installed providers declare. */
+const stables = {
+  "Cloudflare.Worker": ["workerId", "workerName"],
+  "Cloudflare.Hyperdrive": ["hyperdriveId", "accountId"],
+  "Cloudflare.Container": ["accountId", "applicationId"],
+};
+/** These read deployed state, which the first deploy of an empty state does not have yet. */
+const afterFirstDeploy = ["ToolsBackendBudget"];
+
 /**
- * Real declarations, Plan, Apply and the native command provider with its memoisation. Only
- * provider effects are synthetic, and every other provider uses the engine's default diff: a row
- * is an update exactly when its resolved props differ or hold a value unknown at plan time.
- * Dependencies carried by props are planned; binding payloads are left out, as in the connection
- * proofs.
+ * Real declarations, bindings, Plan, Apply and the native command provider with its memoisation.
+ * Only provider effects are synthetic, and every other provider uses the engine's default diff: a
+ * row is an update exactly when its resolved inputs differ or hold a value unknown at plan time.
  */
-export const proveAttemptPlan = (stack, recompile) =>
+export const provePlanSettles = (stack, recompile) =>
   Effect.gen(function* () {
     let phase = "providers";
-    const isolate = (source) => ({ ...source, bindings: {}, actions: {}, output: {} });
+    const whole = (source) => ({ ...source, actions: {}, output: {} });
     const origin = {
       host: "fixture.invalid",
       port: 6432,
@@ -56,6 +64,7 @@ export const proveAttemptPlan = (stack, recompile) =>
       .filter((type) => type !== "Command.Exec")
       .map((type) =>
         Provider.succeed(Resource(type), {
+          ...(stables[type] ? { stables: stables[type] } : {}),
           reconcile: ({ fqn }) => Effect.sync(() => attributes(type, fqn)),
           delete: () => Effect.void,
         }),
@@ -64,7 +73,7 @@ export const proveAttemptPlan = (stack, recompile) =>
       Command.ExecProvider().pipe(
         Layer.provide(
           Layer.succeed(Command.CommandExecutor, {
-            spawn: () => Effect.die("Attempt plan proof cannot spawn processes"),
+            spawn: () => Effect.die("Plan proof cannot spawn processes"),
             run: () => Effect.succeed({ exitCode: 0, stdout: "", stderr: "" }),
           }),
         ),
@@ -78,28 +87,49 @@ export const proveAttemptPlan = (stack, recompile) =>
         Effect.provide(providers),
         Effect.provideContext(source.services),
       );
-    const rows = (plan) =>
-      Object.values(plan.resources)
+    const rows = (source) => (plan) => {
+      const inputs = (node) =>
+        Object.keys(Output.upstreamAny([node.Props, source.bindings[node.FQN] ?? []]));
+      return Object.values(plan.resources)
         .filter((node) => node.action !== "noop")
-        .map((node) => ({ id: node.resource.FQN, type: node.resource.Type, action: node.action }))
+        .map((node) => ({
+          id: node.resource.FQN,
+          type: node.resource.Type,
+          action: node.action,
+          // A command may run on every plan only while no resource waits on its outcome.
+          readers: Object.values(source.resources)
+            .filter(
+              (other) =>
+                !other.Type.startsWith("Command.") && inputs(other).includes(node.resource.FQN),
+            )
+            .map((other) => other.FQN)
+            .sort(),
+        }))
         .sort((a, b) => a.id.localeCompare(b.id));
+    };
     const exit = yield* Effect.exit(
       Effect.gen(function* () {
-        phase = "first-plan";
-        const first = yield* run(Plan.make(isolate(stack)), stack);
-        phase = "apply";
-        yield* run(Apply.apply(first), stack);
-        phase = "second-plan";
-        const secondPlan = rows(yield* run(Plan.make(isolate(stack)), stack));
+        phase = "first-deploy";
+        const first = {
+          ...whole(stack),
+          resources: Object.fromEntries(
+            Object.entries(stack.resources).filter(([id]) => !afterFirstDeploy.includes(id)),
+          ),
+        };
+        yield* run(Effect.flatMap(Plan.make(first), Apply.apply), stack);
+        phase = "second-deploy";
+        yield* run(Effect.flatMap(Plan.make(whole(stack)), Apply.apply), stack);
+        phase = "plan";
+        const afterApply = rows(stack)(yield* run(Plan.make(whole(stack)), stack));
         phase = "next-attempt-plan";
         const nextAttempt = yield* recompile((next) =>
-          run(Plan.make(isolate(next)), next).pipe(Effect.map(rows)),
+          run(Plan.make(whole(next)), next).pipe(Effect.map(rows(next))),
         );
-        return { resources: Object.keys(stack.resources).length, secondPlan, nextAttempt };
+        return { resources: Object.keys(stack.resources).length, afterApply, nextAttempt };
       }),
     );
-    // The harness never forwards messages or causes; the phase names where to look.
-    return Exit.isSuccess(exit)
-      ? exit.value
-      : { failed: phase, detail: Cause.pretty(exit.cause).slice(0, 700) };
+    if (Exit.isSuccess(exit)) return exit.value;
+    // Messages and causes can hold paths and settings; only the phase and the error's class leave.
+    const error = /^[A-Za-z]{1,60}/.exec(Cause.pretty(exit.cause))?.[0] ?? "unknown";
+    return { failed: phase, error };
   }).pipe(Effect.provideContext(stack.services));

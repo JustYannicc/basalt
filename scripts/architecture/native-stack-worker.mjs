@@ -27,8 +27,8 @@ try {
   const { brand } = await load("brand.ts");
   if (setupRequestDenied) throw new Error();
   const previewConnection = process.env.NATIVE_STACK_PREVIEW_CONNECTION_PROOF === "true";
-  const attemptProof = process.env.NATIVE_STACK_ATTEMPT_PROOF;
-  const previewStack = previewConnection || attemptProof === "preview";
+  const settlesProof = process.env.NATIVE_STACK_SETTLES_PROOF;
+  const previewStack = previewConnection || settlesProof === "preview";
   const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
@@ -78,8 +78,8 @@ try {
     : deployEnvironment(synthetic);
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
-  // A test stage deployed through the release entry carries an attempt id like production.
-  if (attemptProof) process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
+  // The release entry gives every stage an attempt id, test stages included.
+  if (settlesProof) process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
   if (candidateProof) {
     if (
@@ -187,7 +187,7 @@ try {
     process.env.NATIVE_STACK_SETTINGS_PROOF === "true"
       ? await load("scripts/release-barrier/candidate-settings.ts")
       : undefined;
-  const attemptPlan = attemptProof ? await import("./attempt-plan-proof.mjs") : undefined;
+  const planSettles = settlesProof ? await import("./plan-settles-proof.mjs") : undefined;
   const inspectDeclarations = settingsProof
     ? (stack) =>
         settingsProof.settingsFromDeclarations(
@@ -233,9 +233,9 @@ try {
                     Output.isOutput,
                   ),
                 );
-  const inspect = attemptPlan
+  const inspect = planSettles
     ? (stack) =>
-        attemptPlan.proveAttemptPlan(stack, (inspectNext) => {
+        planSettles.provePlanSettles(stack, (inspectNext) => {
           process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
           return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
         })
