@@ -16,6 +16,7 @@ import {
   type ReadinessCalls,
 } from "./database-budget-readiness.ts";
 import { decodeRuntimeReady } from "../src/pool/deployment-readiness.ts";
+import { readinessWaitMs } from "../src/pool/readiness-budget.ts";
 import {
   DatabaseBudgetFailure,
   safeDatabaseError,
@@ -23,13 +24,7 @@ import {
 } from "./database-budget-receipt.ts";
 
 export const databaseVerificationCommandMs = 115_000;
-/**
- * Readiness waits for two things in turn. The platform may keep an active controller object on
- * its previous code for 300 seconds after an upload; 330 covers that with transport margin, the
- * bound the release layer's identity check already uses. The runtime then has its own 180 seconds
- * to start.
- */
-export const databaseReadinessCommandMs = 330_000 + 180_000;
+export const databaseReadinessCommandMs = readinessWaitMs;
 type RuntimeConnection = ReadinessCalls & Pick<DeploymentReadiness, "close">;
 
 function list(value: string | undefined) {
