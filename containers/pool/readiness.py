@@ -27,6 +27,9 @@ POLICY_INSTANCE_ID = re.compile(r"^[A-Za-z0-9_-]{32}$")
 MAX_POLICY_INSTALL_BYTES = 1 << 20
 
 
+REFRESH_READING_MAX_AGE_NS = 3_000_000_000
+
+
 class Readiness:
     def __init__(
         self,
@@ -70,6 +73,7 @@ class Readiness:
         self._slow_statement_max_ms = 0
         self._database_pool: dict[str, int] | None = None
         self._diagnostics: Callable[[int], dict[str, object]] | None = None
+        self._refresh_in_flight: tuple[int, int] | None = None
         self._policy_healthy = False
         self._policy_deadline_ns = 0
         self._policy_instance_id: str | None = None
@@ -228,6 +232,20 @@ class Readiness:
         provider = self._diagnostics
         return None if provider is None else provider(after)
 
+    def note_refresh_in_flight(self, count: int | None) -> None:
+        """Home's count of refreshes it has started and not yet written back; None is unknown."""
+        with self._lock:
+            self._refresh_in_flight = None if count is None else (count, self._monotonic_ns())
+
+    def _refresh_diagnostics(self) -> dict[str, object]:
+        # A reading older than the liveness check's period plus a second is unknown, not quiet.
+        if self._refresh_in_flight is None:
+            return {}
+        count, observed_ns = self._refresh_in_flight
+        if self._monotonic_ns() - observed_ns > REFRESH_READING_MAX_AGE_NS:
+            return {}
+        return {"refresh_in_flight": count}
+
     def set_database_distance(self, distance: Distance) -> None:
         with self._lock:
             self._database_distance = distance.fields()
@@ -271,6 +289,7 @@ class Readiness:
                 **self._database_distance,
                 **({"location": self._location} if self._location else {}),
                 **self._database_diagnostics(),
+                **self._refresh_diagnostics(),
             }
             if not ready:
                 # Closed and ordered: a fused or unproven policy outranks unhealthy services.

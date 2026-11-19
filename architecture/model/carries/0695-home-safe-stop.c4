@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A provider may rotate a refresh token before Home writes the new one back, so a stopping Home must never lose a claimed refresh. Once claimed, the provider call outlives its caller (bounded by its own 30 s deadline); on SIGTERM Home refuses new refreshes and waits up to 45 s for claimed ones to write back, and the supervisor gives Home 60 s before it kills it. Home reports its refreshes in flight on the database-free /healthz, which the supervisor copies onto /ready while it is at most 3 s old. A provider rejection that disables a credential is one closed line naming the credential only by an opaque reference."
+    }
+  }
+}

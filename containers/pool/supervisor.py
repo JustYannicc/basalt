@@ -65,7 +65,9 @@ NODE_BINARY = "/usr/local/bin/cliproxy-node"
 BOOTSTRAP_MARKER = "database config is empty; run with -import first"
 STARTUP_TIMEOUT_SECONDS = 180
 # The Worker's forced-stop bound must stay longer than this grace plus the kill wait.
-CHILD_STOP_GRACE_SECONDS = 15
+# Home drains claimed credential refreshes on SIGTERM for up to 45 s (carry 0695) after a 5 s
+# HTTP shutdown; killing it sooner can lose a refresh token the provider has already rotated.
+CHILD_STOP_GRACE_SECONDS = 60
 # Processing one child line takes microseconds; this long inside one means the reader is stuck.
 READER_STALL_SECONDS = 10
 
@@ -519,7 +521,7 @@ def main(stop: threading.Event | None = None) -> int:
             return node_id, successful_audit_revision
 
         node_id, audit_revision = launch_generation()
-        health = ServiceHealth(management_key, node_id)
+        health = ServiceHealth(management_key, node_id, observe=readiness.note_refresh_in_flight)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         threading.Thread(
@@ -556,7 +558,7 @@ def main(stop: threading.Event | None = None) -> int:
                                 readiness.begin_recovery()
                                 continue
                             episode.recovered()
-                            health = ServiceHealth(management_key, node_id)
+                            health = ServiceHealth(management_key, node_id, observe=readiness.note_refresh_in_flight)
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
