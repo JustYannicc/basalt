@@ -11,6 +11,8 @@ export type NativeReadBack = {
     className?: string;
     image?: string;
     instances?: unknown;
+    /** The application's version: it moves on every modify, so an apply that changes nothing leaves it. */
+    version?: unknown;
     shape: unknown;
     instancesShape?: unknown;
   }[];

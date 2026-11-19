@@ -32,7 +32,12 @@ import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
-import { planHighlights, requireBaselineShape, requireCutoverShape } from "./rehearsal-native.ts";
+import {
+  planHighlights,
+  requireBaselineShape,
+  requireCutoverShape,
+  type NativeReadBack,
+} from "./rehearsal-native.ts";
 
 export const stageModes = [
   "check",
@@ -571,27 +576,45 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   const run = async () => {
     if (mode === "baseline") {
       await budgetProbe(subject, source, outputs);
+      // #1491's acceptance: the root application's version must not move across an apply that changes
+      // nothing on it. Read before (a fresh stage has none) and after.
+      const rootVersion = (read: NativeReadBack) =>
+        read.applications.find((application) => application.className === "PoolContainer")
+          ?.version ?? null;
+      result.rootVersionBefore = await hooks
+        .readBack("before-baseline")
+        .then(rootVersion)
+        .catch(() => null);
       const env: NodeJS.ProcessEnv = { ...source, ...declaration.baseline };
       try {
-        await deployStage(root, subject, env);
-      } catch (error) {
-        // An existing stage: deploy it again with the root pinned, as production's root is. No policy
-        // here, so the root may roll once; every later policy run then sees the pinned form.
-        if (error instanceof Error && /existing remote state/u.test(error.message)) {
-          // A stage whose PoolWorker never deployed has no root identity yet: deploy it unpinned first.
-          const pin = await rootPin(hooks, subject, source).catch(() => undefined);
-          if (pin) Object.assign(env, { POOL_ROOT_IMAGE: pin });
-          result.rootPinned = Boolean(pin);
+        try {
+          await deployStage(root, subject, env);
+        } catch (error) {
+          // An existing stage: deploy it again with the root pinned, as production's root is. No policy
+          // here, so the root may roll once; every later policy run then sees the pinned form.
+          if (error instanceof Error && /existing remote state/u.test(error.message)) {
+            // A stage whose PoolWorker never deployed has no root identity yet: deploy it unpinned first.
+            const pin = await rootPin(hooks, subject, source).catch(() => undefined);
+            if (pin) Object.assign(env, { POOL_ROOT_IMAGE: pin });
+            result.rootPinned = Boolean(pin);
+          }
+          // A standing stage that already has state (a partial or earlier baseline) is deployed again
+          // the ordinary way; Alchemy resumes from its state.
+          if (!(error instanceof Error && /existing remote state/u.test(error.message)))
+            throw error;
+          await withStageBuild(root, subject, env, async () => {});
+          await redeployStage(root, subject, env, {
+            ...declaration.baseline,
+            ...(env.POOL_ROOT_IMAGE ? { POOL_ROOT_IMAGE: env.POOL_ROOT_IMAGE } : {}),
+          });
+          result.redeployed = true;
         }
-        // A standing stage that already has state (a partial or earlier baseline) is deployed again
-        // the ordinary way; Alchemy resumes from its state.
-        if (!(error instanceof Error && /existing remote state/u.test(error.message))) throw error;
-        await withStageBuild(root, subject, env, async () => {});
-        await redeployStage(root, subject, env, {
-          ...declaration.baseline,
-          ...(env.POOL_ROOT_IMAGE ? { POOL_ROOT_IMAGE: env.POOL_ROOT_IMAGE } : {}),
-        });
-        result.redeployed = true;
+      } finally {
+        // Recorded even when the apply stops at its post-apply check.
+        result.rootVersionAfter = await hooks
+          .readBack("after-baseline")
+          .then(rootVersion)
+          .catch(() => null);
       }
       const read = await hooks.readBack("baseline");
       requireBaselineShape(read);

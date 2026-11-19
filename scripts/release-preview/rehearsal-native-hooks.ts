@@ -126,6 +126,7 @@ export function nativeHooks(context: Context): NativeHooks {
         )?.class,
         image: application.configuration?.image?.split("/").slice(2).join("/"),
         instances: application.instances,
+        version: (detail as { version?: unknown } | undefined)?.version,
         shape: shapeOf(detail),
         instancesShape,
       });
