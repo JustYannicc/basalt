@@ -10,7 +10,7 @@
  * Every apply and destroy goes through the release entry (`scripts/release/deploy.ts`), which never
  * lets Alchemy bootstrap the shared State store; nothing here runs the CLI with `--yes`.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -77,7 +77,8 @@ async function runEntry(
   {
     policy = "cutover-classes",
     args = [],
-  }: { policy?: string | null; args?: readonly string[] } = {},
+    include = "PoolWorker",
+  }: { policy?: string | null; args?: readonly string[]; include?: string | null } = {},
 ) {
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
@@ -100,8 +101,8 @@ async function runEntry(
           ? ["--policy", join(root, `scripts/release/policies/${policy}.json`)]
           : []),
         // Without a policy, the cutover's include still scopes the plan to PoolWorker and its inputs.
-        ...((command === "plan" || command === "deploy") && !policy
-          ? ["--include", "PoolWorker"]
+        ...((command === "plan" || command === "deploy") && !policy && include
+          ? ["--include", include]
           : []),
         ...args,
       ],
@@ -230,6 +231,34 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
   };
 }
 
+/** The commit the stage last deployed, from its readiness command's recorded input; refuse any other HEAD. */
+async function requireDeployedHead(subject: StageSubject, source: NodeJS.ProcessEnv) {
+  const config = stageEnvironment(subject, source);
+  const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(config.stage);
+  const row = (stacks[stageNames(subject).stack] ?? []).find((entry) =>
+    entry.path.endsWith("/PoolBackendBudgetRuntimeReady"),
+  )?.value;
+  const found: string[] = [];
+  const walk = (value: unknown, depth: number) => {
+    if (!value || typeof value !== "object" || depth > 6) return;
+    for (const [key, item] of Object.entries(value as Record<string, unknown>))
+      if (key === "GITHUB_SHA" && typeof item === "string") found.push(item);
+      else walk(item, depth + 1);
+  };
+  walk(row, 0);
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const recorded = [...new Set(found)];
+  if (recorded.length !== 1 || !/^[0-9a-f]{40}$/u.test(recorded[0]!))
+    throw new Error(
+      `The stage records ${recorded.length} deployed commits; run stage-baseline from this head first`,
+    );
+  if (recorded[0] !== head)
+    throw new Error(
+      `The stage last deployed ${recorded[0]!.slice(0, 12)}, not this head ${head.slice(0, 12)}; run stage-baseline from this head first`,
+    );
+  return head;
+}
+
 /**
  * The stage's legacy-root pin, read the way production's preflight reads it: the root application's
  * image by digest, and the build input PoolWorker already knows it by (`POOL_IMAGE_HASH`).
@@ -286,208 +315,229 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   const result: Record<string, unknown> = { mode, lane, stage };
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
-  if (mode === "baseline") {
-    await budgetProbe(subject, source, outputs);
-    const env: NodeJS.ProcessEnv = { ...source, ...declaration.baseline };
-    try {
-      await deployStage(root, subject, env);
-    } catch (error) {
-      // An existing stage: deploy it again with the root pinned, as production's root is. No policy
-      // here, so the root may roll once; every later policy run then sees the pinned form.
-      if (error instanceof Error && /existing remote state/u.test(error.message)) {
-        // A stage whose PoolWorker never deployed has no root identity yet: deploy it unpinned first.
-        const pin = await rootPin(hooks, subject, source).catch(() => undefined);
-        if (pin) Object.assign(env, { POOL_ROOT_IMAGE: pin });
-        result.rootPinned = Boolean(pin);
+  const run = async () => {
+    if (mode === "baseline") {
+      await budgetProbe(subject, source, outputs);
+      const env: NodeJS.ProcessEnv = { ...source, ...declaration.baseline };
+      try {
+        await deployStage(root, subject, env);
+      } catch (error) {
+        // An existing stage: deploy it again with the root pinned, as production's root is. No policy
+        // here, so the root may roll once; every later policy run then sees the pinned form.
+        if (error instanceof Error && /existing remote state/u.test(error.message)) {
+          // A stage whose PoolWorker never deployed has no root identity yet: deploy it unpinned first.
+          const pin = await rootPin(hooks, subject, source).catch(() => undefined);
+          if (pin) Object.assign(env, { POOL_ROOT_IMAGE: pin });
+          result.rootPinned = Boolean(pin);
+        }
+        // A standing stage that already has state (a partial or earlier baseline) is deployed again
+        // the ordinary way; Alchemy resumes from its state.
+        if (!(error instanceof Error && /existing remote state/u.test(error.message))) throw error;
+        await withStageBuild(root, subject, env, async () => {});
+        await redeployStage(root, subject, env, {
+          ...declaration.baseline,
+          ...(env.POOL_ROOT_IMAGE ? { POOL_ROOT_IMAGE: env.POOL_ROOT_IMAGE } : {}),
+        });
+        result.redeployed = true;
       }
-      // A standing stage that already has state (a partial or earlier baseline) is deployed again
-      // the ordinary way; Alchemy resumes from its state.
-      if (!(error instanceof Error && /existing remote state/u.test(error.message))) throw error;
-      await withStageBuild(root, subject, env, async () => {});
-      await redeployStage(root, subject, env, {
-        ...declaration.baseline,
-        ...(env.POOL_ROOT_IMAGE ? { POOL_ROOT_IMAGE: env.POOL_ROOT_IMAGE } : {}),
-      });
-      result.redeployed = true;
-    }
-    const read = await hooks.readBack("baseline");
-    requireBaselineShape(read);
-    result.readBack = read;
-  } else if (mode === "plan") {
-    const pin = await rootPin(hooks, subject, source);
-    const env = { ...declaration.cutover, POOL_ROOT_IMAGE: pin };
-    // R0: the cutover's own policy decides. A refusal is the result too; its detail stays private.
-    try {
-      result.plan = await runEntry("plan", subject, source, env, outputs);
-    } catch (error) {
-      result.planRefused = redactor(source)(error instanceof Error ? error.message : String(error));
-    }
-    // Then two plans in a row with nothing applied between them: rows that differ or stay
-    // non-noop across both are the never-settling ones. Each keeps its changedProps privately.
-    for (const label of ["noise-1", "noise-2"]) {
-      const planned = await runEntry("plan", subject, source, env, outputs, { policy: null });
-      await writeFile(
-        join(outputs, `plan-${label}.json`),
-        `${JSON.stringify(planned.record, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-      result[label] = (planned.record as { planned?: unknown }).planned;
-    }
-    if (result.planRefused) {
-      await writeFile(join(outputs, "stage-plan.json"), `${JSON.stringify(result, null, 2)}\n`, {
-        mode: 0o600,
-      });
-      throw new Error(`R0 refused by the cutover policy:\n${String(result.planRefused)}`);
-    }
-  } else if (mode === "apply") {
-    result.before = await hooks.readBack("before-apply");
-    const pin = await rootPin(hooks, subject, source);
-    // Controller availability and the root's identity, sampled every 2 s across the apply.
-    const probe = startProbe(lane, join(outputs, "probe.jsonl"), source);
-    try {
-      result.apply = await runEntry(
-        "deploy",
+      const read = await hooks.readBack("baseline");
+      requireBaselineShape(read);
+      result.readBack = read;
+    } else if (mode === "plan") {
+      const pin = await rootPin(hooks, subject, source);
+      const env = { ...declaration.cutover, POOL_ROOT_IMAGE: pin };
+      // R0: the cutover's own policy decides. A refusal is the result too; its detail stays private.
+      try {
+        result.plan = await runEntry("plan", subject, source, env, outputs);
+      } catch (error) {
+        result.planRefused = redactor(source)(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      // Then two plans in a row with nothing applied between them: rows that differ or stay
+      // non-noop across both are the never-settling ones. Each keeps its changedProps privately.
+      for (const label of ["noise-1", "noise-2"]) {
+        const planned = await runEntry("plan", subject, source, env, outputs, { policy: null });
+        await writeFile(
+          join(outputs, `plan-${label}.json`),
+          `${JSON.stringify(planned.record, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+        result[label] = (planned.record as { planned?: unknown }).planned;
+      }
+      if (result.planRefused) {
+        await writeFile(join(outputs, "stage-plan.json"), `${JSON.stringify(result, null, 2)}\n`, {
+          mode: 0o600,
+        });
+        throw new Error(`R0 refused by the cutover policy:\n${String(result.planRefused)}`);
+      }
+    } else if (mode === "apply") {
+      result.before = await hooks.readBack("before-apply");
+      const pin = await rootPin(hooks, subject, source);
+      // Controller availability and the root's identity, sampled every 2 s across the apply.
+      const probe = startProbe(lane, join(outputs, "probe.jsonl"), source);
+      try {
+        result.apply = await runEntry(
+          "deploy",
+          subject,
+          source,
+          { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
+          outputs,
+        );
+      } finally {
+        result.interruption = await probe.stop();
+      }
+      const after = await hooks.readBack("cutover");
+      requireCutoverShape(after);
+      result.after = after;
+      result.replan = await runEntry(
+        "plan",
         subject,
         source,
         { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
         outputs,
       );
-    } finally {
-      result.interruption = await probe.stop();
-    }
-    const after = await hooks.readBack("cutover");
-    requireCutoverShape(after);
-    result.after = after;
-    result.replan = await runEntry(
-      "plan",
-      subject,
-      source,
-      { ...declaration.cutover, POOL_ROOT_IMAGE: pin },
-      outputs,
-    );
-  } else if (mode === "code") {
-    // P2-pre: a code-only PoolWorker release as a version upload that can be rolled back. The diff is
-    // one exported marker in PoolWorker's entry module: a real bundle change with no behaviour.
-    const pin = await rootPin(hooks, subject, source);
-    const env = { ...declaration.baseline, POOL_ROOT_IMAGE: pin };
-    const serving = join(outputs, "serving.json");
-    await runEntry("serving", subject, source, env, outputs, {
-      args: ["--fqn", "PoolWorker", "--out", serving],
-    });
-    result.serving = JSON.parse(await readFile(serving, "utf8")) as unknown;
-    const workerPath = join(root, "src/pool/worker.ts");
-    const original = await readFile(workerPath, "utf8");
-    await writeFile(
-      workerPath,
-      `${original}\nexport const rehearsalCodeMarker = ${JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`)};\n`,
-    );
-    const probe = startProbe(lane, join(outputs, "probe-code.jsonl"), source);
-    let releaseError: unknown;
-    try {
-      result.release = await runEntry("deploy", subject, source, env, outputs, {
-        policy: "cutover-code",
+    } else if (mode === "code") {
+      // P2-pre: a code-only PoolWorker release as a version upload that can be rolled back. The diff is
+      // one exported marker in PoolWorker's entry module: a real bundle change with no behaviour.
+      const pin = await rootPin(hooks, subject, source);
+      const env = { ...declaration.baseline, POOL_ROOT_IMAGE: pin };
+      const serving = join(outputs, "serving.json");
+      await runEntry("serving", subject, source, env, outputs, {
+        args: ["--fqn", "PoolWorker", "--out", serving],
       });
-    } catch (error) {
-      // The version may be live even when the entry stops after its apply (e.g. a post-apply
-      // check); the rollback below runs either way, then this failure is reported.
-      releaseError = error;
-      result.releaseRefused = redactor(source)(
-        error instanceof Error ? error.message : String(error),
-      );
-    } finally {
-      await writeFile(workerPath, original);
-      result.releaseInterruption = await probe.stop();
-    }
-    const after = join(outputs, "serving-after.json");
-    await runEntry("serving", subject, source, env, outputs, {
-      args: ["--fqn", "PoolWorker", "--out", after],
-    });
-    result.servingAfter = JSON.parse(await readFile(after, "utf8")) as unknown;
-    const back = startProbe(lane, join(outputs, "probe-rollback.jsonl"), source);
-    try {
-      await runEntry("rollback", subject, source, env, outputs, { args: ["--from", serving] });
-    } finally {
-      result.rollbackInterruption = await back.stop();
-    }
-    const final = join(outputs, "serving-final.json");
-    await runEntry("serving", subject, source, env, outputs, {
-      args: ["--fqn", "PoolWorker", "--out", final],
-    });
-    result.servingFinal = JSON.parse(await readFile(final, "utf8")) as unknown;
-    await writeFile(join(outputs, "stage-code.json"), `${JSON.stringify(result, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    if (JSON.stringify(result.servingFinal) !== JSON.stringify(result.serving))
-      throw new Error("The rollback did not restore the version that served before the release");
-    if (releaseError) throw releaseError;
-  } else if (mode === "settle") {
-    // The plan-settles acceptance, plan only: two code-policy plans at the deployed commit (zero
-    // rows), one Worker source change (that Worker only), one new migration file (the migration,
-    // its connection and the Workers bound to it). Each keeps its rows or its refusal privately.
-    const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
-    const plan = async (label: string) => {
-      await rm(join(outputs, "release-failure.txt"), { force: true });
-      let rows: unknown;
-      try {
-        const planned = await runEntry("plan", subject, source, env, outputs, { policy: "code" });
-        const record = planned.record as { changes?: unknown; planned?: unknown };
-        rows = record.changes ?? record.planned ?? [];
-      } catch {
-        rows = {
-          refused: await readFile(join(outputs, "release-failure.txt"), "utf8").catch(
-            () => "no detail",
-          ),
-        };
-      }
-      // The same plan without a policy: every changed row with its changedProps, refused or not.
-      let all: unknown;
-      try {
-        const planned = await runEntry("plan", subject, source, env, outputs, { policy: null });
-        all = (planned.record as { changes?: unknown }).changes ?? [];
-      } catch (error) {
-        all = { failed: redactor(source)(error instanceof Error ? error.message : String(error)) };
-      }
+      result.serving = JSON.parse(await readFile(serving, "utf8")) as unknown;
+      const workerPath = join(root, "src/pool/worker.ts");
+      const original = await readFile(workerPath, "utf8");
       await writeFile(
-        join(outputs, `settle-${label}-rows.json`),
-        `${JSON.stringify(all, null, 2)}\n`,
-        {
-          mode: 0o600,
-        },
+        workerPath,
+        `${original}\nexport const rehearsalCodeMarker = ${JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`)};\n`,
       );
-      await writeFile(join(outputs, `settle-${label}.json`), `${JSON.stringify(rows, null, 2)}\n`, {
+      const probe = startProbe(lane, join(outputs, "probe-code.jsonl"), source);
+      let releaseError: unknown;
+      try {
+        result.release = await runEntry("deploy", subject, source, env, outputs, {
+          policy: "cutover-code",
+        });
+      } catch (error) {
+        // The version may be live even when the entry stops after its apply (e.g. a post-apply
+        // check); the rollback below runs either way, then this failure is reported.
+        releaseError = error;
+        result.releaseRefused = redactor(source)(
+          error instanceof Error ? error.message : String(error),
+        );
+      } finally {
+        await writeFile(workerPath, original);
+        result.releaseInterruption = await probe.stop();
+      }
+      const after = join(outputs, "serving-after.json");
+      await runEntry("serving", subject, source, env, outputs, {
+        args: ["--fqn", "PoolWorker", "--out", after],
+      });
+      result.servingAfter = JSON.parse(await readFile(after, "utf8")) as unknown;
+      const back = startProbe(lane, join(outputs, "probe-rollback.jsonl"), source);
+      try {
+        await runEntry("rollback", subject, source, env, outputs, { args: ["--from", serving] });
+      } finally {
+        result.rollbackInterruption = await back.stop();
+      }
+      const final = join(outputs, "serving-final.json");
+      await runEntry("serving", subject, source, env, outputs, {
+        args: ["--fqn", "PoolWorker", "--out", final],
+      });
+      result.servingFinal = JSON.parse(await readFile(final, "utf8")) as unknown;
+      await writeFile(join(outputs, "stage-code.json"), `${JSON.stringify(result, null, 2)}\n`, {
         mode: 0o600,
       });
-      result[label] = rows;
-    };
-    const edited = async (path: string, change: (text: string) => string, label: string) => {
-      const original = existsSync(path) ? await readFile(path, "utf8") : undefined;
-      await writeFile(path, change(original ?? ""));
-      try {
-        await plan(label);
-      } finally {
-        if (original === undefined) await rm(path, { force: true });
-        else await writeFile(path, original);
-      }
-    };
-    const marker = JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`);
-    await plan("deployed-1");
-    await plan("deployed-2");
-    await edited(
-      join(root, "src/router.ts"),
-      (text) => `${text}\nexport const rehearsalSettleMarker = ${marker};\n`,
-      "one-worker-router",
-    );
-    await edited(
-      join(cloud, "src/infrastructure/production-ops/migrations/zz-rehearsal-settle-marker.ts"),
-      () =>
-        `// Rehearsal-only marker: a new file where migrations live. Never committed.\nexport const marker = ${marker};\n`,
-      "new-migration-file",
-    );
-  } else if (mode === "destroy") {
-    await destroyStage(root, subject, source);
-    await verifyStageAbsent(root, subject, source);
-    result.absent = true;
-  }
+      if (JSON.stringify(result.servingFinal) !== JSON.stringify(result.serving))
+        throw new Error("The rollback did not restore the version that served before the release");
+      if (releaseError) throw releaseError;
+    } else if (mode === "settle") {
+      // The plan-settles acceptance, plan only: two code-policy plans at the deployed commit (zero
+      // rows), one Worker source change (that Worker only), one new migration file (the migration,
+      // its connection and the Workers bound to it). Each keeps its rows or its refusal privately.
+      const env = {
+        ...declaration.baseline,
+        POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
+      };
+      const plan = async (label: string) => {
+        await rm(join(outputs, "release-failure.txt"), { force: true });
+        let rows: unknown;
+        try {
+          const planned = await runEntry("plan", subject, source, env, outputs, { policy: "code" });
+          const record = planned.record as { changes?: unknown; planned?: unknown };
+          rows = record.changes ?? record.planned ?? [];
+        } catch {
+          rows = {
+            refused: await readFile(join(outputs, "release-failure.txt"), "utf8").catch(
+              () => "no detail",
+            ),
+          };
+        }
+        // The same plan without a policy: every changed row with its changedProps, refused or not.
+        let all: unknown;
+        try {
+          const planned = await runEntry("plan", subject, source, env, outputs, {
+            policy: null,
+            include: null,
+          });
+          all = (planned.record as { changes?: unknown }).changes ?? [];
+        } catch (error) {
+          all = {
+            failed: redactor(source)(error instanceof Error ? error.message : String(error)),
+          };
+        }
+        await writeFile(
+          join(outputs, `settle-${label}-rows.json`),
+          `${JSON.stringify(all, null, 2)}\n`,
+          {
+            mode: 0o600,
+          },
+        );
+        await writeFile(
+          join(outputs, `settle-${label}.json`),
+          `${JSON.stringify(rows, null, 2)}\n`,
+          {
+            mode: 0o600,
+          },
+        );
+        result[label] = rows;
+      };
+      const edited = async (path: string, change: (text: string) => string, label: string) => {
+        const original = existsSync(path) ? await readFile(path, "utf8") : undefined;
+        await writeFile(path, change(original ?? ""));
+        try {
+          await plan(label);
+        } finally {
+          if (original === undefined) await rm(path, { force: true });
+          else await writeFile(path, original);
+        }
+      };
+      const marker = JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`);
+      await plan("deployed-1");
+      await plan("deployed-2");
+      await edited(
+        join(root, "src/router.ts"),
+        (text) => `${text}\nexport const rehearsalSettleMarker = ${marker};\n`,
+        "one-worker-router",
+      );
+      await edited(
+        join(cloud, "src/infrastructure/production-ops/migrations/zz-rehearsal-settle-marker.ts"),
+        () =>
+          `// Rehearsal-only marker: a new file where migrations live. Never committed.\nexport const marker = ${marker};\n`,
+        "new-migration-file",
+      );
+    } else if (mode === "destroy") {
+      await destroyStage(root, subject, source);
+      await verifyStageAbsent(root, subject, source);
+      result.absent = true;
+    }
+  };
+  if (mode === "plan" || mode === "apply" || mode === "code" || mode === "settle") {
+    // A plan measures the deployed commit only if it is that commit, built as the stage is built.
+    result.deployedCommit = await requireDeployedHead(subject, source);
+    await withStageBuild(root, subject, source, run);
+  } else await run();
   result.seconds = Math.round((Date.now() - started) / 1000);
   await writeFile(join(outputs, `stage-${mode}.json`), `${JSON.stringify(result, null, 2)}\n`, {
     mode: 0o600,
