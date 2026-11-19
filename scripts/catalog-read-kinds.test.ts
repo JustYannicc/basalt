@@ -275,6 +275,23 @@ test("a reviewed read's tags are pinned, since they name its tool", () => {
   ]);
 });
 
+test("a __proto__ key anywhere refuses, since the framework reads it as inherited fields", () => {
+  const pin = pinned(document());
+  // JSON keeps `__proto__` as a key, as here; an object literal would set the prototype instead.
+  const hidden = (json: string) => {
+    const value = document();
+    Object.assign(value.paths, { "/crawl": JSON.parse(json) });
+    return value;
+  };
+  for (const [value, at] of [
+    [hidden('{"__proto__": {"post": {"operationId": "scrape"}}}'), "#/paths/~1crawl"],
+    [hidden('{"post": {"__proto__": {"operationId": "scrape"}}}'), "#/paths/~1crawl/post"],
+  ] as const)
+    assert.deepEqual(readKindDrift("example", pin, value), [
+      `example: ${at} has a __proto__ key, which the framework would read as inherited fields`,
+    ]);
+});
+
 test("every pin reads the document its package serves", () => {
   const packages = new Map(catalogPackages().map(({ app, code }) => [app, code]));
   for (const [app, pin] of Object.entries(pins))
