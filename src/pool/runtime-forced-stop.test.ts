@@ -16,6 +16,7 @@ import { poolLifecycle } from "./lifecycle.ts";
 import { policyHealthLeaseMs } from "./runtime-health.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { RuntimeActivity } from "./runtime-slots/activity.ts";
+import type { TransactionStorage } from "./runtime-slots/storage.ts";
 
 test("the timing module has no imports and matches the values the runtime enforces", async () => {
   const timing = await readFile(
@@ -188,10 +189,10 @@ test("every stream acquire and release stamps when the count last changed", asyn
   let now = 1_000;
   context.mock.method(Date, "now", () => now);
   const rows = new Map<string, unknown>();
-  const storage = {
-    get: async (key: string) => rows.get(key),
+  const storage: TransactionStorage = {
+    get: async <T>(key: string) => rows.get(key) as T | undefined,
     put: async (key: string, value: unknown) => void rows.set(key, value),
-    transaction: async <T>(work: (transaction: typeof storage) => Promise<T>) => work(storage),
+    transaction: async (work) => work(storage),
   };
   const activity = new RuntimeActivity(storage);
   const release = await activity.acquire(selected);
