@@ -10,10 +10,9 @@ import {
   typeName,
   type PublicCause,
 } from "./cause.ts";
-import { ChildProcessFailure } from "./child.ts";
+import { failedCommand } from "./command.ts";
 import { failureKind, failures } from "./kind.ts";
-import { publicGuidance, publicTail, publicText, redactCredentials } from "./redact.ts";
-import { stackCommand } from "./stack-command.ts";
+import { publicGuidance, publicText, redactCredentials } from "./redact.ts";
 
 /**
  * A failure as an evlog structured error with what happened, why, how to fix it and the cause
@@ -67,9 +66,9 @@ function printed(value: unknown): string {
 
 /** What a failure says of itself: its type and its message, as text nobody here wrote. */
 function said(error: unknown, environment: NodeJS.ProcessEnv): string {
-  // Alchemy's own message for a command it ran ends in that command's whole standard error.
-  const ran = stackCommand(error, environment);
-  if (ran) return ran.what;
+  // A failed command's own message ends in its output, which the report prints once, below.
+  const command = failedCommand(error, environment);
+  if (command) return command.what;
   const type = typeName(error);
   const message = text(typeof error === "string" ? error : field(error, "message"));
   return [
@@ -166,26 +165,18 @@ export function structuredFailure(
   environment: NodeJS.ProcessEnv = process.env,
 ): FailureReport {
   const all = reach(error);
-  // Every command that failed: one run here, with the end of its output, or one Alchemy ran, with
-  // what Alchemy's error keeps of it.
-  const commands = all.flatMap((value): { what: string; tail: string; why?: string }[] => {
-    if (value instanceof ChildProcessFailure)
-      return [
-        {
-          what: publicGuidance(value.message.split("\n")[0]!, environment),
-          // Made public again here: a report built by a caller is not known to be.
-          tail: publicTail(value.report.tail, environment),
-        },
-      ];
-    const ran = stackCommand(value, environment);
-    return ran ? [ran] : [];
-  });
+  const commands = all.flatMap((value) => failedCommand(value, environment) ?? []);
   const subject = all.find(refused);
-  // A command the report is not named after is named above its own output.
-  const headed = commands.length > 1 || subject !== undefined;
+  const kind = failureKind(error, environment);
+  // A failed command names the report and gives its fix, unless a request among the failures may
+  // have reached a service: then what a rerun would do comes first, and the command follows.
+  const named = subject === undefined && kind === "UNEXPECTED" ? commands[0] : undefined;
+  // A command the report is not named after is named above its own output, with the reason when
+  // there is no output to speak for it.
+  const headed = !named || commands.length > 1;
   const output = commands
     .flatMap(({ what, why, tail }) => [
-      ...(headed ? [`--- ${what}${why ? `: ${why}` : ""}`] : []),
+      ...(headed ? [`--- ${what}${tail ? "" : `: ${why}`}`] : []),
       tail,
     ])
     .filter(Boolean)
@@ -204,20 +195,16 @@ export function structuredFailure(
         .slice(0, 8)
         .map((member, index) => `failure ${index + 1}: ${said(member, environment)}`),
     );
-  const [first] = commands;
-  if (first) {
-    const { what, why } = first;
+  if (named) {
+    const { code, what, why, fix } = named;
     return {
-      error: why
-        ? failures.STACK_COMMAND_FAILED({ what, why, ...publicError(causes) })
-        : failures.CHILD_FAILED({ what, ...publicError(causes) }),
+      error: failures[code]({ what, why, fix, ...publicError(causes) }),
       causes,
       details,
       ...tail,
     };
   }
 
-  const kind = failureKind(error, environment);
   const top = chain[0] ?? { type: "unknown" };
   const status = chain.find((entry) => entry.status !== undefined)?.status;
   const stack = kind === "UNEXPECTED" ? field(error, "stack") : undefined;
@@ -235,16 +222,17 @@ export function structuredFailure(
   if (status !== undefined) why = `The service answered HTTP ${status}.`;
   else if (chain.length > 1)
     why = `It was caused by ${causeLine(chain.at(-1)!).replace(/[.!?]$/u, "")}.`;
+  let what = said(error, environment);
+  // A request is named by its method and path, not by what its client says of it.
+  if (top.type === "HttpClientError" || top.request)
+    what = causeLine({ ...top, message: undefined });
+  // Something thrown that is no error has no type to print, and often only a status or codes.
+  else if (top.type === "unknown")
+    what = [what, causeLine({ ...top, type: "", message: undefined })].filter(Boolean).join(": ");
   return {
-    error: failures[kind]({
-      what:
-        top.type === "HttpClientError" || top.request
-          ? causeLine({ ...top, message: undefined })
-          : said(error, environment),
-      why,
-      ...publicError(causes),
-    }),
+    error: failures[kind]({ what, why, ...publicError(causes) }),
     causes,
     details,
+    ...tail,
   };
 }

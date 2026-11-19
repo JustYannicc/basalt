@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ChildProcessFailure } from "./failure/child.ts";
-import { run } from "./process.ts";
+import { run, runBuffered } from "./process.ts";
 
 const node = process.execPath;
 const module = fileURLToPath(new URL("./process.ts", import.meta.url));
@@ -45,17 +45,47 @@ test("a failed command's error carries the end of its output with credentials re
   assert.ok(!error.message.includes('building stage one");'));
 });
 
+// A check that prints its failure through a logger that writes to standard output, writes nothing
+// to standard error and exits 1.
+const stdoutOnly = `console.log('level=ERROR cause="PoolBudgetFailed: 31 of 25 connections, token ${secret}"'); process.exit(1);`;
+const stdoutOnlyMessage =
+  'node failed with exit 1\nLast output lines, credentials removed:\n--- stdout\nlevel=ERROR cause="PoolBudgetFailed: 31 of 25 connections, token [redacted]"';
+
 test("a command that explains its failure on standard output only still carries it and its exit", () => {
-  // 19 November, 00:22Z: a check printed its failure through a logger that writes to standard
-  // output, wrote nothing to standard error and exited 1.
-  const script = `console.log('level=ERROR cause="PoolBudgetFailed: 31 of 25 connections, token ${secret}"'); process.exit(1);`;
-  const error = failure(() => run(node, ["-e", script], undefined, environment));
+  const error = failure(() => run(node, ["-e", stdoutOnly], undefined, environment));
 
   assert.equal(error.report.exitCode, 1);
+  assert.equal(error.message, stdoutOnlyMessage);
+});
+
+test("a short command run with nothing in between fails the same way and passes its output on", () => {
+  const error = failure(() => runBuffered(node, ["-e", stdoutOnly], undefined, environment));
+  assert.equal(error.report.exitCode, 1);
+  assert.equal(error.message, stdoutOnlyMessage);
   assert.equal(
-    error.message,
-    'node failed with exit 1\nLast output lines, credentials removed:\n--- stdout\nlevel=ERROR cause="PoolBudgetFailed: 31 of 25 connections, token [redacted]"',
+    failure(() => runBuffered("basalt-no-such-command", [])).message,
+    "basalt-no-such-command could not start (ENOENT)",
   );
+
+  // Its output still reaches the caller's own, each stream on its own, and it runs where asked.
+  const directory = mkdtempSync(join(tmpdir(), "basalt-run-buffered-"));
+  try {
+    const child = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "-e",
+        `import { runBuffered } from ${JSON.stringify(module)};
+         runBuffered("sh", ["-c", 'echo "out in $(basename "$PWD")"; echo "to stderr" >&2'], ${JSON.stringify(directory)});`,
+      ],
+      bounded,
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, `out in ${basename(directory)}\n`);
+    assert.equal(child.stderr, "to stderr\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("the command's output still reaches the caller's own output, complete and as written", () => {

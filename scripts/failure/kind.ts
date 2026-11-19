@@ -15,16 +15,10 @@ import {
  */
 const what = ({ what }: { what: string }) => what;
 export const failures = defineErrorCatalog("release", {
-  CHILD_FAILED: {
-    message: what,
-    why: "A command this step ran did not succeed. Its last output lines are below.",
-    fix: "Fix what the output names and rerun this step. If the output is empty, run the command alone to see it fail.",
-  },
-  // A command Alchemy ran: its error keeps the exit code and the standard error, nothing else.
-  STACK_COMMAND_FAILED: {
-    message: what,
-    fix: "Fix what the standard error lines below name. If there are none, or they do not explain the failure, run the command alone to see everything it prints. Then rerun this step.",
-  },
+  // A command run here, and one Alchemy ran for a resource. How each ended decides its reason and
+  // its fix: see `command.ts`.
+  CHILD_FAILED: { message: what },
+  STACK_COMMAND_FAILED: { message: what },
   UNREACHABLE: {
     message: what,
     fix: "This attempt could not open a connection, so it sent nothing. Rerun it. If the request was redirected or retried before this attempt, check first whether a write took effect.",
@@ -68,14 +62,20 @@ function requestKind(error: unknown, environment: NodeJS.ProcessEnv): Kind | und
   const all = causeChain(error, environment);
   const status = all.find((entry) => entry.status !== undefined)?.status;
   if (status !== undefined) {
-    if (status === 408 || status === 425 || status === 429 || status >= 500) return "SERVICE_BUSY";
-    // A redirect that was not followed changed nothing: the request went to the wrong place.
-    return status >= 300 ? "REQUEST_REFUSED" : "ANSWER_UNREADABLE";
+    // 501 and 505 say the service will never do this, which waiting does not change.
+    const later = status >= 500 && status !== 501 && status !== 505;
+    if (status === 408 || status === 425 || status === 429 || later) return "SERVICE_BUSY";
+    // Only a redirect that keeps the method says the request was not acted on. Any other answer
+    // below 400, a 303 after a write among them, can follow a write that took effect.
+    return status >= 400 || status === 307 || status === 308
+      ? "REQUEST_REFUSED"
+      : "ANSWER_UNREADABLE";
   }
   const coded = (set: Set<string>) =>
     all.some((entry) => entry.code !== undefined && set.has(entry.code));
-  if (coded(neverSent)) return "UNREACHABLE";
+  // An earlier attempt in the same chain may have been sent, whatever stopped the last one.
   if (coded(interrupted)) return "OUTCOME_UNKNOWN";
+  if (coded(neverSent)) return "UNREACHABLE";
   if (!all.some((entry) => entry.request || entry.type === "HttpClientError")) return undefined;
   // Nothing was sent when the request could not be built or fetch refused its arguments. Any
   // other failure of a request, known or not, leaves the outcome open.
@@ -98,20 +98,30 @@ const leastSafeFirst: Kind[] = [
   "REQUEST_INVALID",
 ];
 
-function kindOf(error: unknown, environment: NodeJS.ProcessEnv, depth: number): Kind | undefined {
+function kindOf(
+  error: unknown,
+  environment: NodeJS.ProcessEnv,
+  depth: number,
+  // A failure held by many collections is read once, however often it is reached.
+  known: Map<unknown, Kind | undefined>,
+): Kind | undefined {
+  if (known.has(error)) return known.get(error);
   const group = rawChain(error)
     .map(members)
     .find((list) => list.length > 1);
-  if (!group) return requestKind(error, environment);
+  let kind: Kind | undefined;
+  if (!group) kind = requestKind(error, environment);
   // Past this depth nothing is claimed about a rerun.
-  if (depth > 4) return undefined;
-  const kinds = group.map((member) => kindOf(member, environment, depth + 1));
-  return (
-    leastSafeFirst.find((kind) => kinds.includes(kind)) ??
-    (kinds.every((kind) => kind === "UNREACHABLE") ? "UNREACHABLE" : undefined)
-  );
+  else if (depth <= 4) {
+    const kinds = group.map((member) => kindOf(member, environment, depth + 1, known));
+    kind =
+      leastSafeFirst.find((unsafe) => kinds.includes(unsafe)) ??
+      (kinds.every((member) => member === "UNREACHABLE") ? "UNREACHABLE" : undefined);
+  }
+  known.set(error, kind);
+  return kind;
 }
 
 /** Collected failures are only as safe to rerun as the least safe of them, however they nest. */
 export const failureKind = (error: unknown, environment: NodeJS.ProcessEnv): Kind =>
-  kindOf(error, environment, 0) ?? "UNEXPECTED";
+  kindOf(error, environment, 0, new Map()) ?? "UNEXPECTED";

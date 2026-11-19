@@ -60,29 +60,42 @@ export async function reportFailure(
     environment?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<FailureReport> {
-  const title = options.title ?? "Failed";
-  const environment = options.environment ?? process.env;
   const write = options.write ?? ((line: string) => console.error(line));
-  let report: FailureReport;
-  try {
-    report = structuredFailure(error, environment);
-  } catch {
-    report = {
-      error: failures.UNEXPECTED({
-        what: "The failure could not be described",
-        why: "Reading the failure raised an error of its own.",
-      }),
-      causes: [],
-      details: [],
-    };
-  }
-  const lines = failureText(report, title, environment);
+  const printed = (report: FailureReport, title: string, environment: NodeJS.ProcessEnv) => ({
+    report,
+    lines: failureText(report, title, environment),
+    heading: publicGuidance(title, environment).replace(/[\r\n:,%]/gu, " "),
+    summary: failureSummary(report, title, environment),
+  });
+  const unreadable = {
+    error: failures.UNEXPECTED({
+      what: "The failure could not be described",
+      why: "Reading the failure raised an error of its own.",
+    }),
+    causes: [],
+    details: [],
+  };
+  const title = typeof options.title === "string" ? options.title : "Failed";
+  // Whatever cannot be read, the failure or the environment, a report is still printed.
+  const described = () => {
+    try {
+      const environment = options.environment ?? process.env;
+      try {
+        return printed(structuredFailure(error, environment), title, environment);
+      } catch {
+        return printed(unreadable, title, environment);
+      }
+    } catch {
+      return printed(unreadable, "Failed", {});
+    }
+  };
+  const { report, lines, heading, summary } = described();
   write(lines);
   write(
-    `::error title=${publicGuidance(title, environment).replace(/[\r\n:,%]/gu, " ")}::${lines.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`,
+    `::error title=${heading}::${lines.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`,
   );
   if (options.summaryPath)
-    await appendFile(options.summaryPath, failureSummary(report, title, environment)).catch(() =>
+    await appendFile(options.summaryPath, summary).catch(() =>
       write("The step summary could not be written."),
     );
   return report;

@@ -34,6 +34,42 @@ export class ChildProcessFailure extends Error {
   }
 }
 
+type Ended = Omit<ChildReport, "command" | "tail">;
+/** How long a stopped or ended command is given to let go, in milliseconds. */
+const handover = 2000;
+
+/** A command that could not be started, with the system's reason when it is one. */
+export function notStarted(error: Error): Ended {
+  const code = String(Reflect.get(error, "code"));
+  return {
+    exitCode: null,
+    signal: null,
+    stopped: "not-started",
+    ...(/^E[A-Z]{2,14}$/u.test(code) ? { code } : {}),
+  };
+}
+
+/**
+ * What is kept of a command that did not succeed. Of its command line only the program's name:
+ * its directory and arguments can carry values no log should repeat. Of its output the end of
+ * each stream it printed on.
+ */
+export function childReport(
+  command: string,
+  ended: Ended,
+  output: Record<"stdout" | "stderr", string>,
+  environment: NodeJS.ProcessEnv,
+): ChildReport {
+  return {
+    command: redactCredentials(basename(command), environment).slice(0, 128),
+    ...ended,
+    tail: (["stdout", "stderr"] as const)
+      .filter((stream) => output[stream].trim())
+      .map((stream) => `--- ${stream}\n${publicTail(output[stream], environment)}`)
+      .join("\n"),
+  };
+}
+
 /**
  * Runs a command and keeps the end of its output for the failure. Settles on exit: a descendant
  * that inherited the pipes cannot hold the caller.
@@ -54,8 +90,6 @@ export function captureChild(
   } = {},
 ): Promise<void> {
   const environment = options.env ?? process.env;
-  // Only the program's name: its directory and arguments can carry values no log should repeat.
-  const name = redactCredentials(basename(command), environment).slice(0, 128);
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...args], {
       cwd: options.cwd,
@@ -70,9 +104,15 @@ export function captureChild(
         tails[stream].push(chunk);
         if (options.forward) process[stream].write(chunk);
         bytes += chunk.length;
-        if (options.maximumOutputBytes !== undefined && bytes > options.maximumOutputBytes) {
-          if (!overLimit) child.kill("SIGTERM");
+        if (
+          options.maximumOutputBytes !== undefined &&
+          bytes > options.maximumOutputBytes &&
+          !overLimit
+        ) {
           overLimit = true;
+          child.kill("SIGTERM");
+          // A command that ignores the request to stop is not waited for.
+          setTimeout(() => child.kill("SIGKILL"), handover).unref();
         }
       });
     const signals = ["SIGINT", "SIGTERM"] as const;
@@ -81,29 +121,17 @@ export function captureChild(
     );
     for (const signal of signals) process.once(signal, pass[signal]!);
     let settled = false;
-    const settle = (failure?: Omit<ChildReport, "command" | "tail">) => {
+    const settle = (failure?: Ended) => {
       if (settled) return;
       settled = true;
       for (const signal of signals) process.removeListener(signal, pass[signal]!);
       child.stdout.destroy();
       child.stderr.destroy();
       if (!failure) return resolve();
-      const output = (["stdout", "stderr"] as const)
-        .map((stream) => [stream, tails[stream].text()] as const)
-        .filter(([, text]) => text.trim())
-        .map(([stream, text]) => `--- ${stream}\n${publicTail(text, environment)}`)
-        .join("\n");
-      reject(new ChildProcessFailure({ command: name, ...failure, tail: output }));
+      const output = { stdout: tails.stdout.text(), stderr: tails.stderr.text() };
+      reject(new ChildProcessFailure(childReport(command, failure, output, environment)));
     };
-    child.once("error", (error) => {
-      const code = String(Reflect.get(error, "code"));
-      settle({
-        exitCode: null,
-        signal: null,
-        stopped: "not-started",
-        ...(/^E[A-Z]{2,14}$/u.test(code) ? { code } : {}),
-      });
-    });
+    child.once("error", (error) => settle(notStarted(error)));
     child.once("exit", (exitCode, signal) => {
       const finish = () =>
         settle(
@@ -115,7 +143,7 @@ export function captureChild(
         );
       // What the command already wrote is in the pipes. A loaded machine needs longer to hand it
       // over than a quiet one, and only a descendant that keeps the pipes open waits this out.
-      const grace = setTimeout(finish, 2000);
+      const grace = setTimeout(finish, handover);
       child.once("close", () => {
         clearTimeout(grace);
         finish();

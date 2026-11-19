@@ -42,32 +42,33 @@ export const neverSent = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
   "ECONNREFUSED",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
   "UND_ERR_CONNECT_TIMEOUT",
   "ConnectionRefused",
   "FailedToOpenSocket",
 ]);
-/** The connection broke or went silent after the request may have been sent. */
+/**
+ * The connection broke or went silent after the request may have been sent. A route can also be
+ * lost on an open connection, so an unreachable host or network counts here.
+ */
 export const interrupted = new Set([
   "ECONNRESET",
   "ETIMEDOUT",
   "EPIPE",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
   "UND_ERR_SOCKET",
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_BODY_TIMEOUT",
   "ConnectionClosed",
 ]);
 /** fetch refused the request's own arguments, so nothing was sent. */
-export const badArguments = new Set([
-  "ERR_INVALID_ARG_VALUE",
-  "ERR_INVALID_ARG_TYPE",
-  "ERR_INVALID_URL",
-]);
+export const badArguments = new Set(["ERR_INVALID_ARG_VALUE", "ERR_INVALID_ARG_TYPE"]);
 const codes = new Set([
   ...neverSent,
   ...interrupted,
   ...badArguments,
+  // Also what fetch raises for a redirect to a bad address, after the request was answered.
+  "ERR_INVALID_URL",
   "MODULE_NOT_FOUND",
   "ERR_MODULE_NOT_FOUND",
   "ENOENT",
@@ -191,30 +192,47 @@ function publicCause(error: unknown, environment: NodeJS.ProcessEnv): PublicCaus
   );
   const request = requestShape(field(httpReason, "request") ?? field(error, "request"));
   const why = field(error, "why");
-  const message = field(error, "message");
+  const message = typeof error === "string" ? error : field(error, "message");
+  // A plain `Error` with no code, or a thrown string, is how a command's own code says what went
+  // wrong, and fetch's TypeErrors explain a failure without quoting a response. A library's own
+  // error classes can quote a response or a row, so of those only the closed diagnostics print.
+  const said =
+    typeof error === "string" ||
+    error instanceof TypeError ||
+    (Object.getPrototypeOf(error) === Error.prototype && typeof code !== "string");
   return {
     type,
     ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
-    ...(typeof status === "number" && Number.isSafeInteger(status) && status >= 100 && status <= 599
+    // A command's exit status reaches 255, and no failed request answers below 200.
+    ...(typeof status === "number" && Number.isSafeInteger(status) && status >= 200 && status <= 599
       ? { status }
       : {}),
     ...(typeof code === "string" && codes.has(code) ? { code } : {}),
     ...(numbers.length ? { codes: [...new Set(numbers)] } : {}),
     ...(request ? { request } : {}),
-    // A refusal's own reason is written for the log. Of the rest only fetch's TypeErrors explain a
-    // failure without quoting a response; parser and server messages can carry bodies.
+    // A refusal's own reason is written for the log; any other message passes the strict rules.
     ...(typeof why === "string"
       ? { message: publicGuidance(why, environment) }
-      : error instanceof TypeError && typeof message === "string"
+      : said && typeof message === "string" && message.trim()
         ? { message: publicText(message, environment) }
         : {}),
   };
 }
 
-/** The failures a collection holds. */
+const memberLimit = 1000;
+
+/**
+ * The failures a collection holds: an `AggregateError`'s errors or an Effect cause's reasons. A
+ * provider's own list of `{ code, message }` entries is not one, so a member is an `Error` or
+ * carries a tag.
+ */
 export function members(error: unknown): unknown[] {
-  const errors = field(error, "errors");
-  return Array.isArray(errors) ? errors.filter((entry) => entry instanceof Error) : [];
+  const held = field(error, "errors") ?? field(error, "reasons");
+  return Array.isArray(held)
+    ? held
+        .slice(0, memberLimit)
+        .filter((entry) => entry instanceof Error || typeof field(entry, "_tag") === "string")
+    : [];
 }
 
 /** What a failure wraps. Effect's HTTP client keeps fetch's error under its reason. */

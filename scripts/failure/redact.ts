@@ -53,14 +53,24 @@ export class OutputTail {
 const stripAnsi = (text: string) =>
   text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
 
-/** The values of credential-named environment variables. They can span lines, so this runs first. */
+/**
+ * The values of credential-named environment variables. They can span lines, so this runs first.
+ * Such a value seldom arrives whole: a tool prefixes each line, a window cuts its start off, JSON
+ * writes its line ends as `\n`. So each of its lines and its JSON form go too.
+ */
 function withoutEnvironmentValues(text: string, environment: NodeJS.ProcessEnv): string {
   const values = Object.entries(environment)
     .filter(([name]) => credentialName.test(name))
-    .flatMap(([, value]) => (typeof value === "string" ? [value, value.trim()] : []))
-    .filter((value) => value.trim().length >= minimumEnvironmentValue)
+    .flatMap(([, value]) =>
+      typeof value === "string"
+        ? [value, JSON.stringify(value).slice(1, -1), ...value.split("\n")].map((part) =>
+            part.trim(),
+          )
+        : [],
+    )
+    .filter((value) => value.length >= minimumEnvironmentValue)
     .sort((left, right) => right.length - left.length);
-  for (const value of values) text = text.split(value).join("[redacted]");
+  for (const value of new Set(values)) text = text.split(value).join("[redacted]");
   return text;
 }
 
@@ -68,12 +78,28 @@ function withoutEnvironmentValues(text: string, environment: NodeJS.ProcessEnv):
 const digest =
   /^(?:sha(?:1|256|384|512)-|[a-z]{2,16}=)?(?:[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{96}|[0-9a-f]{128}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/iu;
 const sourceEnding = /^\.(?:[cm]?[jt]sx?|json|go|rs|py|sh|md|ya?ml|toml|sql|css|html|c4)$/u;
-const named = "(?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|auth[_-]?key)(?:[_-]\\w+)?";
-const value = `("[^"\\n]*"|'[^'\\n]*'|[^\\s"'&,;}]+)`;
-const namedValue = new RegExp(`(${named}["']?\\s*[:=]\\s*)${value}`, "gi");
+// A credential's name, with whatever follows the word: `token`, `password_file`, `secret-access-key`.
+const named = "(?:pass(?:word|wd|phrase)?|pwd|secret|token|api[_-]?key|auth[_-]?key)[\\w-]*";
+// A quoted value, whose quotes can be escaped (JSON inside JSON) and whose end a cut can take; else
+// everything up to a space. A password may hold any punctuation, so none ends the value.
+const quoted = `\\\\?"[^"\\n]*"?|\\\\?'[^'\\n]*'?`;
+const value = `(${quoted}|[^\\s"']+)`;
+const namedValue = new RegExp(`(${named}\\\\?["']?\\s*[:=]\\s*)${value}`, "gi");
 // In a sentence a colon follows a word all the time: only `=` or a quoted value marks a credential.
-const namedValueWritten = new RegExp(`(${named}["']?\\s*(?:=\\s*|:\\s*(?=["'])))${value}`, "gi");
-const flagValue = new RegExp(`(--[\\w-]*${named}[\\s=]+)\\S+`, "gi");
+const namedValueWritten = new RegExp(
+  `(${named}\\\\?["']?\\s*(?:=\\s*|:\\s*(?=\\\\?["'])))${value}`,
+  "gi",
+);
+// Tried only from where a flag starts and over a bounded name, so a long run of dashes and names
+// costs no more than its length. Another flag is never the value.
+const flagValue = new RegExp(
+  `((?<![\\w-])--[\\w-]{0,64}?${named}[\\s=]+)(?!--)(?:${quoted}|\\S+)`,
+  "gi",
+);
+// An environment assignment whose name says it holds a credential: `STRIPE_KEY=…`.
+const assigned = new RegExp(`(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{1,63}=)${value}`, "g");
+// Tokens that say what they are, whatever characters follow: GitHub, Slack, AWS and `sk-` keys.
+const prefixed = /\b(?:gh[pousr]_|github_pat_|xox[abprs]-|sk-|AKIA|ASIA)[A-Za-z0-9_-]{16,}/g;
 
 /** Credentials by shape: userinfo, credential headers, bearer and basic, named values, long mixed runs. */
 function withoutCredentialShapes(text: string, kind: Text): string {
@@ -91,8 +117,12 @@ function withoutCredentialShapes(text: string, kind: Text): string {
     );
   return result
     .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
+    .replace(prefixed, "[redacted]")
     .replace(flagValue, "$1[redacted]")
     .replace(written ? namedValueWritten : namedValue, "$1[redacted]")
+    .replace(assigned, (found, name: string) =>
+      credentialName.test(name) ? `${name}[redacted]` : found,
+    )
     .replace(
       /[A-Za-z0-9+/_=-]{32,}(\.[A-Za-z0-9]{1,5}(?![A-Za-z0-9]))?/g,
       (found, ending: string | undefined) => {
@@ -140,16 +170,20 @@ function scrub(text: string, environment: NodeJS.ProcessEnv, kind: Text, limit: 
         pair !== undefined && pair.slice(1, -1) === "[url]" ? quoted : "[value]",
     );
   result = withoutCredentialShapes(result, kind)
+    // Neither part holds a `/`, `=`, `&` or `|`: a package path such as `effect@4.0.1/dist/x.js`
+    // is no address, and two addresses in one query string are two.
     .replace(
-      /(?<![^\s@<>()[\]"'`,;:])[^\s@<>()[\]"'`,;:]+@[^\s@<>()[\]"'`,;:]+\.[a-z]{2,}/giu,
+      /(?<![^\s@<>()[\]"'`,;:&=/|])[^\s@<>()[\]"'`,;:&=/|]+@[^\s@<>()[\]"'`,;:&=/|]+\.[a-z]{2,}/giu,
       "[email]",
     )
-    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b|\[[0-9a-f:]+\](?::\d+)?/giu, "[address]")
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/gu, "[address]")
     // A clock time is three numbers too: an address has a hex letter, a `::` or five groups.
+    // The same in brackets, so `[00:22:03]` and `items[0]` stay.
     .replace(
       /(?<![\w:.])(?=[0-9a-f:]*(?:[a-f]|::)|(?:[0-9a-f]{1,4}:){4})(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:-])/giu,
       "[address]",
-    );
+    )
+    .replace(/\[\[address\]\](?::\d+)?/gu, "[address]");
   if (kind === "message")
     result = result.replace(dottedName, (name) => {
       const labels = name.split(".");
@@ -174,6 +208,22 @@ export const publicGuidance = (
   text: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): string => scrub(text, environment, "written", 1024);
+
+/**
+ * Output that is one thing over several lines, such as a command line. It is made one line before
+ * the rules run, so a flag and its value on two lines are still read together.
+ */
+export const publicLine = (text: string, environment: NodeJS.ProcessEnv = process.env): string =>
+  scrub(
+    withoutEnvironmentValues(stripAnsi(text), environment)
+      // A shell's line continuation is no part of the value that follows it.
+      .replace(/\\\r?\n/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim(),
+    environment,
+    "output",
+    512,
+  );
 
 /** The last lines of a command's output, each made public on its own. */
 export function publicTail(output: string, environment: NodeJS.ProcessEnv = process.env): string {

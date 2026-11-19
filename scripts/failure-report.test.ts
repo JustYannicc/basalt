@@ -1,26 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { inspect } from "node:util";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  CommandError,
-  CommandExecutor,
-  CommandExecutorLive,
-  CommandTimedOut,
-  UnexpectedExit,
-} from "alchemy/Command/Command";
-import { Cause, Data, Effect, Exit, Layer } from "effect";
+import { Cause, Data, Effect, Exit } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import { SystemError } from "effect/PlatformError";
 import { captureChild } from "./failure/child.ts";
 import { createError, reportFailure, structuredFailure } from "./failure/report.ts";
 
@@ -310,8 +300,16 @@ for (const [status, code, advice] of [
     "release.REQUEST_REFUSED",
     /fix: The service did not accept the request\. Before rerunning, fix the request, its credentials or the state it conflicts with/,
   ],
-  // A redirect that is not followed has changed nothing either.
+  // A redirect that keeps the method says the request was not acted on.
   [307, "release.REQUEST_REFUSED", /fix: The service did not accept the request\./],
+  // Any other answer below 400 can follow a write that took effect.
+  [
+    303,
+    "release.ANSWER_UNREADABLE",
+    /fix: The service answered without an error status, so a write has most likely taken effect\./,
+  ],
+  // Waiting does not change what a service says it will never do.
+  [501, "release.REQUEST_REFUSED", /fix: The service did not accept the request\./],
 ] as const)
   test(`an HTTP ${status} answer is reported as what it is`, async (context) => {
     const origin = await listening(
@@ -590,273 +588,6 @@ test("every failed command among collected failures keeps its output, wherever i
   );
 });
 
-// 19 November, 00:22Z: the database budget check printed its failure through Effect's default
-// logger, which writes to standard output, wrote nothing to standard error and exited 1.
-const budgetFailure = `timestamp=2026-11-19T00:22:03.412Z level=ERROR fiber=#1 cause="PoolBudgetFailed: the runtime login holds 31 of 25 connections on postgres://admin:${token}@db.internal.example.com:5432/pool"`;
-const budgetScript = `console.log(${JSON.stringify(budgetFailure)}); process.exit(1);`;
-const budgetLeaks = [token, "db.internal.example.com", "admin:"];
-
-test("a command that explains its failure on standard output only is reported with its exit and that output", async (context) => {
-  const failure = await captureChild(process.execPath, ["-e", budgetScript], {
-    env: { ...environment, PATH: process.env.PATH },
-  }).then(
-    () => assert.fail("The command was expected to fail"),
-    (error: unknown) => error,
-  );
-  const { line, annotation, summary, all } = await reported(context, failure);
-
-  assert.equal(
-    line,
-    [
-      "Release stopped: node failed with exit 1",
-      "  code: release.CHILD_FAILED",
-      "  why: A command this step ran did not succeed. Its last output lines are below.",
-      "  fix: Fix what the output names and rerun this step. If the output is empty, run the command alone to see it fail.",
-      "  last output lines, credentials removed:",
-      "    --- stdout",
-      '    timestamp=2026-11-19T00:22:03.412Z level=ERROR fiber=#1 cause="PoolBudgetFailed: the runtime login holds 31 of 25 connections on [url]"',
-    ].join("\n"),
-  );
-  assert.ok(annotation.includes("PoolBudgetFailed: the runtime login holds 31 of 25 connections"));
-  assert.ok(summary.includes("PoolBudgetFailed: the runtime login holds 31 of 25 connections"));
-  noLeak(all, budgetLeaks);
-});
-
-/** Alchemy's own command runner, the one `Command.Exec` uses, running a real command that fails. */
-async function stackCommandFailure(context: TestContext, script: string) {
-  const directory = mkdtempSync(join(tmpdir(), "basalt-stack-command-"));
-  context.after(() => rmSync(directory, { recursive: true, force: true }));
-  writeFileSync(join(directory, "verify-database-budget.mjs"), script);
-  const exit = await Effect.runPromiseExit(
-    Effect.gen(function* () {
-      const { run } = yield* CommandExecutor;
-      return yield* run(
-        { command: "node verify-database-budget.mjs", cwd: directory },
-        { emit: () => Effect.void, done: () => Effect.void, note: () => Effect.void },
-      );
-    }).pipe(Effect.provide(CommandExecutorLive().pipe(Layer.provide(NodeServices.layer)))),
-  );
-  assert.ok(Exit.isFailure(exit));
-  return Cause.squash(exit.cause);
-}
-
-test("a command Alchemy ran that explained itself on standard output only is reported with its name, its exit and how to see the rest", async (context) => {
-  const failure = await stackCommandFailure(context, budgetScript);
-  // What Alchemy 2.0.0-beta.80 raises for it: the exit code and an empty standard error. If this
-  // fails, Alchemy keeps more than it did: print that too, and take the gap out of the report.
-  assert.ok(failure instanceof CommandError);
-  assert.ok(failure.reason instanceof UnexpectedExit);
-  assert.deepEqual([failure.reason.exitCode, failure.reason.stderr], [1, ""]);
-  assert.ok(!inspect(failure, { depth: 8, showHidden: true }).includes("PoolBudgetFailed"));
-
-  const { line, annotation, summary } = await reported(context, failure);
-  assert.equal(
-    line,
-    [
-      "Release stopped: node verify-database-budget.mjs failed with exit 1",
-      "  code: release.STACK_COMMAND_FAILED",
-      "  why: Alchemy ran this command for a resource. It printed nothing on standard error, and Alchemy's error keeps no standard output, so what the command said about its failure is not in this report.",
-      "  fix: Fix what the standard error lines below name. If there are none, or they do not explain the failure, run the command alone to see everything it prints. Then rerun this step.",
-    ].join("\n"),
-  );
-  assert.equal(
-    annotation,
-    `::error title=Release stopped::${line.replaceAll("%", "%25").replaceAll("\n", "%0A")}`,
-  );
-  assert.equal(summary, `## Release stopped\n\n\`\`\`text\n${line}\n\`\`\`\n`);
-});
-
-test("a command Alchemy ran is reported with its standard error, cleaned, wherever its error sits", async (context) => {
-  const stderr = [
-    "Migration step (attempt 1): plan the auth schema",
-    `driver: password=${token} relation="pool_accounts" at db.internal.example.com`,
-    `Authorization: Bearer ${token}`,
-  ].join("\n");
-  const failed = new CommandError({
-    command: `node src/migrate.ts --admin-url postgres://admin:${token}@db.internal.example.com/pool`,
-    reason: new UnexpectedExit({ exitCode: 3, stderr }),
-  });
-  const kept = [
-    "    --- stderr",
-    "    Migration step (attempt 1): plan the auth schema",
-    '    driver: password=[redacted] relation="pool_accounts" at db.internal.example.com',
-    "    Authorization: [redacted]",
-  ];
-
-  const direct = await reported(context, failed);
-  assert.equal(
-    direct.line,
-    [
-      "Release stopped: node src/migrate.ts --admin-url [url] failed with exit 3",
-      "  code: release.STACK_COMMAND_FAILED",
-      "  why: Alchemy ran this command for a resource. Its error keeps the command's standard error, whose last lines are below, and none of its standard output.",
-      "  fix: Fix what the standard error lines below name. If there are none, or they do not explain the failure, run the command alone to see everything it prints. Then rerun this step.",
-      "  last output lines, credentials removed:",
-      ...kept,
-    ].join("\n"),
-  );
-  noLeak(direct.all, [token, "admin:"]);
-
-  // Raised inside the entry's own error, the command is still the subject.
-  const wrapped = await reported(context, new Error("The apply failed", { cause: failed }));
-  assert.equal(wrapped.report.error.code, "release.STACK_COMMAND_FAILED");
-  assert.match(
-    wrapped.line,
-    /^Release stopped: node src\/migrate\.ts --admin-url \[url\] failed with exit 3\n/,
-  );
-  assert.match(wrapped.line, /\n {2}cause 1: CommandError\n/);
-  assert.ok(wrapped.line.endsWith(kept.join("\n")));
-
-  // Under a refusal the refusal's author speaks, and the command and what is kept of it follow.
-  const silent = new CommandError({
-    command: "node verify-database-budget.ts",
-    reason: new UnexpectedExit({ exitCode: 1, stderr: "" }),
-  });
-  const refused = await reported(
-    context,
-    new LiveModuleUnavailable({
-      script: "PoolWorker",
-      why: "The database budget could not be verified.",
-      fix: "Do not release until the budget check passes.",
-      cause: silent,
-    }),
-  );
-  assert.equal(
-    refused.line,
-    [
-      "Release stopped: LiveModuleUnavailable",
-      "  why: The database budget could not be verified.",
-      "  fix: Do not release until the budget check passes.",
-      "  script: PoolWorker",
-      "  cause 1: CommandError",
-      "  last output lines, credentials removed:",
-      "    --- node verify-database-budget.ts failed with exit 1: Alchemy ran this command for a resource. It printed nothing on standard error, and Alchemy's error keeps no standard output, so what the command said about its failure is not in this report.",
-    ].join("\n"),
-  );
-});
-
-test("a command Alchemy stopped or could not describe is still named, never reported empty", async (context) => {
-  const timedOut = await reported(
-    context,
-    new CommandError({
-      command: "node verify-database-budget.ts --ready",
-      reason: new CommandTimedOut({ timeout: "3m 5s" }),
-    }),
-  );
-  assert.equal(
-    timedOut.line,
-    [
-      "Release stopped: node verify-database-budget.ts --ready timed out after 3m 5s",
-      "  code: release.STACK_COMMAND_FAILED",
-      "  why: Alchemy ran this command for a resource. Its error for this keeps none of the command's output.",
-      "  fix: Fix what the standard error lines below name. If there are none, or they do not explain the failure, run the command alone to see everything it prints. Then rerun this step.",
-    ].join("\n"),
-  );
-
-  // Only a duration is printed as one, and a command that could not start says so without its path.
-  const first = async (error: unknown) => (await reported(context, error)).line.split("\n")[0];
-  assert.equal(
-    await first(
-      new CommandError({
-        command: "node src/migrate.ts",
-        reason: new CommandTimedOut({ timeout: `after ${token}` }),
-      }),
-    ),
-    "Release stopped: node src/migrate.ts timed out",
-  );
-  assert.equal(
-    await first(
-      new CommandError({
-        command: "basalt-no-such-command --check",
-        reason: new SystemError({
-          _tag: "NotFound",
-          module: "ChildProcess",
-          method: "spawn",
-          pathOrDescriptor: "/Users/alice/bin/basalt-no-such-command",
-        }),
-      }),
-    ),
-    "Release stopped: basalt-no-such-command --check did not succeed (NotFound)",
-  );
-  assert.equal(
-    await first(
-      new CommandError({ command: "", reason: new UnexpectedExit({ exitCode: 1, stderr: "" }) }),
-    ),
-    "Release stopped: A command failed with exit 1",
-  );
-
-  // A command line is not this repository's text: it is cleaned and bounded like output.
-  const long = await reported(
-    context,
-    new CommandError({
-      command: `sh -c "${"echo step; ".repeat(200)}"\n::error::spoofed`,
-      reason: new UnexpectedExit({ exitCode: 2, stderr: "::stop-commands::x\n##[error]y" }),
-    }),
-  );
-  const [head, ...rest] = long.line.split("\n");
-  assert.ok(head!.length < 300, head);
-  assert.ok(head!.endsWith("[cut] failed with exit 2"), head);
-  assert.ok(rest.every((printed) => !/^\s*::|##\[/u.test(printed)));
-
-  // A credential that spans lines goes from the command line whole, before it becomes one line.
-  const key = "made-up-first-half\nmade-up-second-half";
-  const keyed = structuredFailure(
-    new CommandError({
-      command: `sh -c 'echo "${key}" | install-key'`,
-      reason: new UnexpectedExit({ exitCode: 1, stderr: `could not read\n${key}` }),
-    }),
-    { DEPLOY_KEY: key },
-  );
-  assert.equal(keyed.error.message, `sh -c 'echo "[redacted]" | install-key' failed with exit 1`);
-  assert.equal(keyed.tail, "--- stderr\ncould not read\n[redacted]");
-
-  // Alchemy keeps all of a command's standard error; the report keeps its end.
-  const flood = structuredFailure(
-    new CommandError({
-      command: "node flood.mjs",
-      reason: new UnexpectedExit({
-        exitCode: 1,
-        stderr: `${"filler line\n".repeat(200_000)}the last line`,
-      }),
-    }),
-    environment,
-  );
-  const kept = flood.tail!.split("\n");
-  assert.equal(kept.length, 61);
-  assert.deepEqual([kept[0], kept.at(-1)], ["--- stderr", "the last line"]);
-});
-
-test("commands Alchemy ran among collected failures are each named, with what is kept of each", async (context) => {
-  const silent = new CommandError({
-    command: "node verify-database-budget.ts",
-    reason: new UnexpectedExit({ exitCode: 1, stderr: "" }),
-  });
-  const loud = new CommandError({
-    command: "node src/migrate.ts",
-    reason: new UnexpectedExit({ exitCode: 3, stderr: "lock timeout (55P03)" }),
-  });
-  const { line } = await reported(context, new AggregateError([silent, loud], "The apply failed"));
-
-  assert.equal(
-    line,
-    [
-      "Release stopped: node verify-database-budget.ts failed with exit 1",
-      "  code: release.STACK_COMMAND_FAILED",
-      "  why: Alchemy ran this command for a resource. It printed nothing on standard error, and Alchemy's error keeps no standard output, so what the command said about its failure is not in this report.",
-      "  fix: Fix what the standard error lines below name. If there are none, or they do not explain the failure, run the command alone to see everything it prints. Then rerun this step.",
-      "  failures collected: 2; the cause chain follows the first",
-      "  failure 1: node verify-database-budget.ts failed with exit 1",
-      "  failure 2: node src/migrate.ts failed with exit 3",
-      "  cause 1: CommandError",
-      "  last output lines, credentials removed:",
-      "    --- node verify-database-budget.ts failed with exit 1: Alchemy ran this command for a resource. It printed nothing on standard error, and Alchemy's error keeps no standard output, so what the command said about its failure is not in this report.",
-      "    --- node src/migrate.ts failed with exit 3: Alchemy ran this command for a resource. Its error keeps the command's standard error, whose last lines are below, and none of its standard output.",
-      "    --- stderr",
-      "    lock timeout (55P03)",
-    ].join("\n"),
-  );
-});
-
 test("a command that prints past its limit is stopped and says so", async () => {
   const failure = await captureChild(
     process.execPath,
@@ -896,7 +627,7 @@ test("an evlog error is reported with its own fields, and nothing printed reache
   const { line, report } = await reported(context, error);
   assert.match(
     line,
-    /^Release stopped: No backup covers this release\n {2}code: release\.BACKUP_MISSING\n {2}why: The newest backup is older than the candidate; the provider said token=\[redacted\]\n {2}fix: Run the backup step, then plan again\.\n {2}link: https:\/\/developers\.cloudflare\.com\/workers\/configuration\/versions-and-deployments\/\n {2}cause 1: Error$/,
+    /^Release stopped: No backup covers this release\n {2}code: release\.BACKUP_MISSING\n {2}why: The newest backup is older than the candidate; the provider said token=\[redacted\]\n {2}fix: Run the backup step, then plan again\.\n {2}link: https:\/\/developers\.cloudflare\.com\/workers\/configuration\/versions-and-deployments\/\n {2}cause 1: Error: upstream said password=\[redacted\] at \[host\]$/,
   );
   noLeak(
     JSON.stringify([
@@ -922,6 +653,144 @@ test("a failure that cannot be read is still reported", async (context) => {
   assert.match(line, /^Release stopped: /);
   assert.match(line, /\n {2}fix: /);
   noLeak(line, ["private-prototype", "private-keys"]);
+});
+
+test("a failure wrapped in a command's own errors says what each of them said", async (context) => {
+  // The preview cleanup's shape: one collected failure, whose cause says what was wrong.
+  const cause = new Error(
+    `Preview cleanup credentials are missing for ${token} at db.internal.example.com`,
+  );
+  const { line } = await reported(
+    context,
+    new AggregateError(
+      [new Error("Preview artifacts cleanup failed", { cause })],
+      "Preview cleanup did not finish",
+    ),
+    "Preview stopped",
+  );
+  assert.match(
+    line,
+    /^Preview stopped: AggregateError: Preview cleanup did not finish\n {2}code: release\.UNEXPECTED\n {2}why: It was caused by Error: Preview cleanup credentials are missing for \[redacted\] at \[host\]\.\n/,
+  );
+  assert.ok(
+    line.endsWith(
+      "\n  cause 1: Error: Preview artifacts cleanup failed\n  cause 2: Error: Preview cleanup credentials are missing for [redacted] at [host]",
+    ),
+    line,
+  );
+
+  // A library's own error class can quote a row or a response, so it keeps its name only; a
+  // thrown string is the command's own word.
+  class SqlError extends Error {
+    override name = "SqlError";
+  }
+  const quoted = await reported(
+    context,
+    new Error("The migration failed", {
+      cause: new SqlError('duplicate key for row (jane@example.com, "private-row")'),
+    }),
+  );
+  assert.ok(quoted.line.endsWith("\n  cause 1: SqlError"), quoted.line);
+  noLeak(quoted.all, ["jane@example.com", "private-row"]);
+  const worded = await reported(
+    context,
+    new Error("The check stopped", { cause: "the budget check gave up" }),
+  );
+  assert.ok(worded.line.endsWith("\n  cause 1: unknown: the budget check gave up"), worded.line);
+});
+
+test("advice follows the least safe thing the evidence allows", async (context) => {
+  const refused = () => Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
+  const reset = Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+  const code = async (error: unknown) => (await reported(context, error)).report.error.code;
+
+  // An earlier attempt in the same chain may have been sent, whatever stopped the last one.
+  assert.equal(
+    await code(
+      new Error("The retry failed", { cause: Object.assign(refused(), { cause: reset }) }),
+    ),
+    "release.OUTCOME_UNKNOWN",
+  );
+  // A collected failure counts whether or not it is an Error.
+  assert.equal(
+    await code(new AggregateError([refused(), { _tag: "WriteFailed", status: 502 }])),
+    "release.SERVICE_BUSY",
+  );
+  // A route lost on an open connection is not a connection that never opened.
+  assert.equal(
+    await code(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("read EHOSTUNREACH"), { code: "EHOSTUNREACH" }),
+      }),
+    ),
+    "release.OUTCOME_UNKNOWN",
+  );
+});
+
+test("a write answered with a redirect that cannot be followed is not called refused before it was sent", async (context) => {
+  let received = "";
+  const origin = await listening(
+    context,
+    createHttpServer((request, response) => {
+      request.on("data", (chunk: Buffer) => {
+        received += chunk;
+      });
+      request.on("end", () => {
+        response.writeHead(302, { location: "http://[bad" });
+        response.end();
+      });
+    }),
+  );
+  const failure = await requestFailure(
+    HttpClientRequest.post(`${origin}${path}`).pipe(HttpClientRequest.bodyText('{"write":true}')),
+  );
+  const { line, report } = await reported(context, failure);
+
+  assert.equal(received, '{"write":true}');
+  assert.equal(report.error.code, "release.OUTCOME_UNKNOWN", line);
+  assert.doesNotMatch(line, /refused before it was sent|sent nothing/);
+});
+
+test("a failure that holds very many others, or the same ones many times over, is still described", async (context) => {
+  const many = new AggregateError(
+    Array.from({ length: 200_000 }, (_, index) => new Error(`failure ${index}`)),
+    "All of them failed",
+  );
+  assert.match(
+    (await reported(context, many)).line,
+    /^Release stopped: AggregateError: All of them failed\n/,
+  );
+
+  // Six collections, each holding the next one sixty times.
+  let shared = new Error("the innermost failure");
+  for (let level = 0; level < 6; level++) {
+    const inner = shared;
+    shared = new AggregateError(
+      Array.from({ length: 60 }, () => inner),
+      `level ${level}`,
+    );
+  }
+  assert.equal((await reported(context, shared)).report.error.code, "release.UNEXPECTED");
+});
+
+test("a title or an environment that cannot be read does not stop the report", async () => {
+  const lines: string[] = [];
+  const write = (line: string) => lines.push(line);
+  const unreadable = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw new Error("private-keys");
+      },
+    },
+  );
+  await Reflect.apply(reportFailure, undefined, [new Error("it failed"), { title: 42, write }]);
+  await reportFailure(new Error("it failed"), { write, environment: unreadable });
+
+  assert.match(lines[0]!, /^Failed: Error: it failed\n/);
+  assert.match(lines[2]!, /^Failed: The failure could not be described\n/);
+  assert.equal(lines.length, 4);
+  assert.ok(!lines.join("\n").includes("private-keys"));
 });
 
 test("the same transport failure is recognised when the command runs under Bun", () => {
@@ -987,6 +856,14 @@ test("structuredFailure gives the same report without printing", () => {
   assert.equal(
     structuredFailure(undefined, environment).error.message,
     "A failure of an unlisted type",
+  );
+  // A provider's answer thrown as it came has no type and no message, only its codes.
+  assert.equal(
+    structuredFailure(
+      { success: false, errors: [{ code: 10000, message: "Authentication error" }] },
+      environment,
+    ).error.message,
+    "A failure of an unlisted type: provider code 10000",
   );
 
   // A failed command's exit status is not an HTTP status.

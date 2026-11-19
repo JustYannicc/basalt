@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { run } from "./process.ts";
+import { run, runBuffered } from "./process.ts";
 import { currentProcessOwner, processOwnerAlive } from "./process-owner.ts";
 
 export const upstreamCache = () =>
@@ -124,8 +124,8 @@ export async function prepareUpstreamCheckout(
         throw new Error("Invalid patch path");
     }
     // Carries may replace a file another carry created earlier in the replay.
-    if (additions.length) run("git", ["clean", "-f", "--", ...additions], upstream);
-    run("git", ["apply", "--check", patch], upstream);
-    run("git", ["apply", patch], upstream);
+    if (additions.length) runBuffered("git", ["clean", "-f", "--", ...additions], upstream);
+    runBuffered("git", ["apply", "--check", patch], upstream);
+    runBuffered("git", ["apply", patch], upstream);
   }
 }

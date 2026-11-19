@@ -3,9 +3,39 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ChildProcessFailure, type ChildReport } from "./failure/child.ts";
+import { ChildProcessFailure, childReport, notStarted, type ChildReport } from "./failure/child.ts";
 
 const tee = fileURLToPath(new URL("./failure/process-tee.ts", import.meta.url));
+
+/**
+ * The same as `run()` for a command that ends at once and is run many times over, such as each
+ * step of the carry replay. Nothing stands in between, so it costs one process instead of two,
+ * and its output arrives when it ends instead of as it is printed.
+ */
+export function runBuffered(
+  command: string,
+  args: string[],
+  cwd?: string,
+  env = process.env,
+): void {
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ["inherit", "pipe", "pipe"],
+  });
+  const output = { stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  process.stdout.write(output.stdout);
+  process.stderr.write(output.stderr);
+  if (!result.error && result.status === 0) return;
+  const ended = result.error
+    ? Reflect.get(result.error, "code") === "ENOBUFS"
+      ? { exitCode: null, signal: result.signal, stopped: "output-limit" as const }
+      : notStarted(result.error)
+    : { exitCode: result.status, signal: result.signal };
+  throw new ChildProcessFailure(childReport(command, ended, output, env));
+}
 
 /** The command's output stays live; a failure also carries its last lines, credentials removed. */
 export function run(command: string, args: string[], cwd?: string, env = process.env): void {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { publicGuidance, publicTail, publicText } from "./failure/redact.ts";
+import { publicGuidance, publicLine, publicTail, publicText } from "./failure/redact.ts";
 
 const none = {};
 const digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
@@ -146,6 +146,101 @@ test("credentials go by environment value, by shape and across lines", () => {
       "done",
     ].join("\n"),
   );
+});
+
+test("a named credential goes whole, however its value is punctuated, quoted or passed", () => {
+  for (const [input, output] of [
+    // A password may hold any punctuation.
+    [
+      "host=db user=admin password=Xy7,kq9Zt;x&y} next",
+      "host=db user=admin password=[redacted] next",
+    ],
+    // JSON inside JSON, and a line cut before the closing quote.
+    ['{"body":"{\\"password\\":\\"s3cr3tvalue\\"}"}', '{"body":"{\\"password\\":[redacted]}"}'],
+    ['{"password":"s3cr3tvalue cut off', '{"password":[redacted]'],
+    ['gpg --passphrase "correct horse" --sign', "gpg --passphrase [redacted] --sign"],
+    ["tool --password 'correct horse battery' run", "tool --password [redacted] run"],
+    [
+      "aws configure --secret-access-key s3cr3tvalue",
+      "aws configure --secret-access-key [redacted]",
+    ],
+    // Another flag is never the value.
+    ["psql --no-password --password s3cr3tvalue", "psql --no-password --password [redacted]"],
+    [
+      "STRIPE_KEY=s3cr3tvalue SENTRY_DSN=s3cr3tvalue NPM_AUTH=s3cr3tvalue GITHUB_SHA=abc",
+      "STRIPE_KEY=[redacted] SENTRY_DSN=[redacted] NPM_AUTH=[redacted] GITHUB_SHA=abc",
+    ],
+    // A token that says what it is needs no digit to be one.
+    [
+      "pushed with ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ and xoxb-abcdefghijklmnopqrst",
+      "pushed with [redacted] and [redacted]",
+    ],
+  ] as const)
+    assert.equal(publicTail(input, none), output, input);
+  // A command line is one thing: a flag and its value on two lines are read together.
+  assert.equal(
+    publicLine("deploy \\\n  --password \\\n  s3cr3tvalue \\\n  --go", none),
+    "deploy --password [redacted] --go",
+  );
+});
+
+test("an address is one thing at a time, and a path, an index or a clock time is none", () => {
+  for (const clean of kinds) {
+    assert.equal(
+      clean("from=alice@example.com&to=bob@example.com|cc=carol@example.com", none),
+      "from=[email]&to=[email]|cc=[email]",
+    );
+    assert.equal(
+      clean("[00:22:03] step [2] read items[0] at [::1]:8080 and [2001:db8::1]", none),
+      "[00:22:03] step [2] read items[0] at [address] and [address]",
+    );
+  }
+  const frame =
+    "at causeSquash (node_modules/.bun/effect@4.0.1/node_modules/effect/dist/internal/effect.js:149:39)";
+  for (const clean of [publicTail, publicGuidance]) {
+    assert.equal(clean(frame, none), frame);
+    assert.equal(
+      clean("see node_modules/@cloudflare/workers-types/index.d.ts", none),
+      "see node_modules/@cloudflare/workers-types/index.d.ts",
+    );
+  }
+});
+
+test("a credential that spans lines goes line by line and as JSON writes it", () => {
+  const environment = { DEPLOY_KEY: "made-up-first-half\nmade-up-second-half" };
+  // A build tool prefixes every line; another system ends lines its own way.
+  assert.equal(
+    publicTail("#12 0.3 made-up-first-half\n#12 0.3 made-up-second-half", environment),
+    "#12 0.3 [redacted]\n#12 0.3 [redacted]",
+  );
+  assert.equal(
+    publicTail("made-up-first-half\r\nmade-up-second-half", environment),
+    "[redacted]\n[redacted]",
+  );
+  assert.equal(
+    publicGuidance(JSON.stringify({ key: environment.DEPLOY_KEY }), environment),
+    '{"key":"[redacted]"}',
+  );
+  // Only its first line is left once a message is cut to one.
+  assert.equal(
+    publicGuidance("The key could not be read: made-up-first-half", environment),
+    "The key could not be read: [redacted]",
+  );
+});
+
+test("no rule is slow on a line built to make it so", () => {
+  // Each of these once cost seconds for one line; the bound is a hundred times what they cost now.
+  const lines = [
+    "-".repeat(1365) + "pass_".repeat(546),
+    "--" + "pass-".repeat(800),
+    "pwd_".repeat(1000),
+    "A".repeat(2000) + "KEY_".repeat(500),
+    "a@".repeat(2000),
+    ":".repeat(4000),
+  ];
+  const started = performance.now();
+  for (const clean of kinds) for (const line of lines) clean(`${line}\n`.repeat(4), none);
+  assert.ok(performance.now() - started < 2000);
 });
 
 test("a line cut to its limit leaves no part of a credential behind", () => {
