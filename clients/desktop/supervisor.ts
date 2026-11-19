@@ -6,7 +6,7 @@ import { control, controlApps } from "../cli/ipc.ts";
 import { ipcPath, operatorToken, runtimeOrigin } from "../cli/profile.ts";
 import { ConnectionLog, connectionLogName } from "./connection-log.ts";
 
-/** Stopping waits this long at most for the log: quit must not hang on a stalled disk. */
+/** Stopping waits this long at most for the log; a slower write carries on after stop returns. */
 const logWaitMs = 2_000;
 
 /** Another process's connection answered but never wrote its local address within the bound. */

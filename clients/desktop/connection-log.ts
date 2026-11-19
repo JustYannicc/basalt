@@ -5,8 +5,14 @@ import { redactLogText } from "../../src/telemetry/log-redaction.ts";
 export const connectionLogName = "connection.log";
 const lineLength = 1024;
 const cutMark = " [cut]";
+// O_NONBLOCK: a pipe at the path with no reader fails the open at once (ENXIO) instead of holding
+// a threadpool thread, which process.exit would wait for. A regular file is unaffected.
 const appendFlags =
-  constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+  constants.O_WRONLY |
+  constants.O_APPEND |
+  constants.O_CREAT |
+  constants.O_NOFOLLOW |
+  constants.O_NONBLOCK;
 
 /**
  * A longer line is cut before redaction, which is quadratic on long runs without spaces. The cut
