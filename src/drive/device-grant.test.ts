@@ -1,13 +1,13 @@
 // A device's sync takes the host's own path to its vault: the hosted MCP backend's tool call, the
 // SDK's tool call and drive host, the cloud drive backend and the vault object. Grant storage is
-// written by the grant store itself (see grant-fixture.ts). The app's code, the Durable Object hop
+// written by the grant store itself (see test/grant-fixture.ts). The app's code, the Durable Object hop
 // and the Artifacts control plane are stand-ins; the Git data plane is real.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { test, type TestContext } from "node:test";
 import { Cause, Crypto, Effect, Exit, Option, Redacted, Schema, type Scope } from "effect";
 import { SqlClient } from "effect/sql";
-import { DriveCommand } from "apps/contracts";
+import { DriveCommand, DriveDevices } from "apps/contracts";
 import { GrantId } from "@executor-js/mcp-auth";
 import { ConnectionId, type ConnectionInput } from "@executor-js/mcp-auth/connections";
 import {
@@ -36,7 +36,7 @@ import { obsidianConnectionInput } from "../../.upstream/apps/hosted/web/src/con
 import { cloudVaultDrives } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts";
 import { vaultDevicesOnly } from "../../.upstream/apps/hosted/server/src/implementation/vault-device-grants.ts";
 import { storageFixture } from "./fixture.ts";
-import { grantStore } from "./grant-fixture.ts";
+import { grantStore } from "./test/grant-fixture.ts";
 import { vaultObject, type ArtifactsNamespace } from "./object.ts";
 import { backend, git, token } from "./artifacts/test/backend.ts";
 
@@ -183,10 +183,8 @@ const hostPath = (vaultOf: (app: string) => ReturnType<typeof vaultObject>) =>
     return { sql, executor, drives, grants, app, tool, mcp };
   });
 
-type Devices = {
-  head: string;
-  devices: { agent: string; lastSyncAt: string; lastHead: string }[];
-};
+const devicesOf = Schema.decodeUnknownSync(DriveDevices);
+const listingOf = Schema.decodeUnknownSync(Schema.Struct({ at: Schema.String }));
 const run = <A, E>(
   effect: Effect.Effect<A, E, SqlClient.SqlClient | Crypto.Crypto | Scope.Scope>,
 ) =>
@@ -220,8 +218,8 @@ test("a device's sync through the hosted MCP backend is recorded under its grant
       return yield* Effect.promise(() => vaultOf(app.id).request(devicesCommand));
     }),
   );
-  assert.equal(devices.ok, true, JSON.stringify(devices));
-  const recorded = (devices.ok ? devices.value : undefined) as Devices;
+  assert.ok(devices.ok, JSON.stringify(devices));
+  const recorded = devicesOf(devices.value);
   assert.deepEqual(recorded.devices, [
     { agent: phone, lastSyncAt: "2026-11-18T09:00:01.000Z", lastHead: recorded.head },
     { agent: mac, lastSyncAt: "2026-11-18T09:00:00.000Z", lastHead: recorded.head },
@@ -256,9 +254,11 @@ test("devices() lists the vault's Connect Obsidian devices, never an agent's gra
         yield* grants.connection(obsidianConnectionInput(app, earlier)),
         "iPad",
       );
-      // Agents: full access, their own connection with every tool, and one limited to sync tools,
-      // which has exactly the shape of a device's connection.
+      // Agents: full access, their own connection with every tool, one with only listNotes and
+      // readNote, and one connected through Connect Obsidian's own connection, which holds exactly
+      // a device's access. Only how each grant was issued tells them from a device.
       const agent = yield* grants.connectAgent(grants.mcpUrl, "Agent");
+      const borrower = yield* grants.connectAgent(vault.url, "Agent");
       const scoped = yield* grants.connectAgent(
         (yield* grants.connection(agentConnection(app, "agent-tools", { kind: "all" }))).url,
         "Agent",
@@ -272,18 +272,20 @@ test("devices() lists the vault's Connect Obsidian devices, never an agent's gra
         )).url,
         "Reader",
       );
-      const listing = (yield* mcp(mac, tool(heartbeat))) as { at: string };
+      const listing = listingOf(yield* mcp(mac, tool(heartbeat)));
       clock.now += 1000;
       yield* mcp(phone, tool(heartbeat));
       yield* mcp(tablet, tool(heartbeat));
-      // The agents make every sync call shape: the heartbeat, a change range and an import call.
+      // The agents make every sync call shape their tools allow: the heartbeat, which is a listing,
+      // a change range and import calls.
       clock.now += 1000;
       const changes = {
         operation: "drive",
         method: "changes",
         input: { from: null, to: listing.at },
       };
-      for (const grant of [agent, scoped, reader]) {
+      yield* mcp(reader, tool(heartbeat));
+      for (const grant of [agent, scoped, borrower]) {
         yield* mcp(grant, tool(heartbeat));
         yield* mcp(grant, tool(changes));
       }
@@ -310,16 +312,18 @@ test("devices() lists the vault's Connect Obsidian devices, never an agent's gra
       yield* grants.revokeGrant(phone);
       yield* grants.revokeConnection(earlier);
       return {
-        ids: { mac, phone, tablet, agent, scoped, reader },
-        listed: (yield* mcp(agent, tool(devicesCommand))) as Devices,
+        ids: { mac, phone, tablet, agent, borrower, scoped, reader },
+        listed: devicesOf(yield* mcp(agent, tool(devicesCommand))),
         recorded: yield* Effect.promise(() => vaultOf(app.id).request(devicesCommand)),
       };
     }),
   );
   // The vault itself recorded every grant that made a sync call.
-  assert.equal(recorded.ok, true, JSON.stringify(recorded));
+  assert.ok(recorded.ok, JSON.stringify(recorded));
   assert.deepEqual(
-    (recorded.ok ? (recorded.value as Devices) : undefined)?.devices.map((row) => row.agent).sort(),
+    devicesOf(recorded.value)
+      .devices.map((row) => row.agent)
+      .sort(),
     Object.values(ids).sort(),
   );
   assert.deepEqual(listed.devices, [

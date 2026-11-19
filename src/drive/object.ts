@@ -82,7 +82,8 @@ const record = (value: unknown): Record<string, unknown> =>
  * ranges and its import calls. A landed write counts at the heartbeat that follows it. The vault sees
  * only the grant id, not what kind of client holds it, so an agent's ordinary listings, reads and
  * writes record nothing, but an agent making one of these exact calls is recorded too. The host's
- * drive backend lists only the grants grant storage holds as this vault's devices.
+ * drive backend keeps only the grants that grant storage shows were issued to a Connect Obsidian
+ * device.
  */
 export const seenHead = (command: Command, value: unknown): string | null => {
   const out = record(value);

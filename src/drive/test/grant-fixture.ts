@@ -1,9 +1,14 @@
 /**
  * Grant storage as the product writes it, for drive tests: Better Auth with the hosted grant plugins
- * over the test's own PGlite database. Connections come from the grant store's own endpoint and every
- * grant from a device authorization the person approves in the browser, so each row has the shape
- * production stores. Devices connect with the Obsidian plugin's own client code. The two discovery
- * documents the hosted HTTP layer serves are the only stand-ins.
+ * and their migrations over the test's own PGlite database. Connections come from the grant store's
+ * own endpoint and every grant from a device authorization approved on the device page, so the
+ * grant, connection, client and consent rows have the shape production stores. Devices connect with
+ * the Obsidian plugin's own client code.
+ *
+ * Stand-ins: the two discovery documents the hosted HTTP layer serves; a Kysely driver over the SQL
+ * client, which reports no affected-row counts (nothing here reads them); Better Auth's stock
+ * organization plugin and a password sign-in in place of the host's own; and agents approved by
+ * device code rather than the consent page, which records the same grant and consent rows.
  */
 import assert from "node:assert/strict";
 import { betterAuth } from "better-auth";
@@ -22,14 +27,21 @@ import { Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { GrantId, mcpResource, requestedMcpAddress } from "@executor-js/mcp-auth";
 import type { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connections";
-import { authOptions } from "../../.upstream/apps/hosted/server/src/implementation/auth.ts";
-import { provisionHostedOAuthResources } from "../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
-import { beginConnection, pollConnection } from "../../clients/obsidian/auth.ts";
-import type { Http } from "../../clients/obsidian/http.ts";
+import { authOptions } from "../../../.upstream/apps/hosted/server/src/implementation/auth.ts";
+import {
+  type HostedOAuthOrigins,
+  provisionHostedOAuthResources,
+} from "../../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
+import { beginConnection, pollConnection } from "../../../clients/obsidian/auth.ts";
+import type { Http } from "../../../clients/obsidian/http.ts";
 
 const origin = "http://localhost:3000",
-  issuer = `${origin}/api/auth`,
-  origins = { origin, issuer, resourceOrigins: { api: [origin], mcp: [origin] } };
+  issuer = `${origin}/api/auth`;
+const origins: HostedOAuthOrigins = {
+  origin,
+  issuer,
+  resourceOrigins: { api: [origin], mcp: [origin] },
+};
 const deviceCode = "urn:ietf:params:oauth:grant-type:device_code";
 const Registered = Schema.Struct({ client_id: Schema.String });
 const Started = Schema.Struct({ device_code: Schema.String, user_code: Schema.String });

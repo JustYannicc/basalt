@@ -103,7 +103,7 @@ new file mode 100644
 +    rest.length === 0 &&
 +    only.app === app &&
 +    only.runsAs.length === 1 &&
-+    only.runsAs[0]?.kind === "app"
++    only.runsAs[0].kind === "app"
 +  );
 +};
 +
