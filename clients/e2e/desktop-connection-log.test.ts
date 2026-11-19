@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { constants, openSync, watch } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { watch } from "node:fs";
 import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -99,57 +98,60 @@ test(
   },
 );
 
-test(
-  "the supervisor redacts what the connection writes as it stops",
-  { skip },
-  async (context) => {
-    const home = await profile(context);
-    const entry = await connection(
-      home,
-      "retry https://pool.example/v1/models?key=private-query-key Authorization: Bearer private-bearer-0123456789\n",
-    );
-    const supervisor = new ConnectionSupervisor(home, entry, process.execPath);
-    await supervisor.start();
-    await supervisor.stop();
-    const kept = await readFile(join(home, "connection.log"), "utf8");
-    for (const line of kept.trimEnd().split("\n")) assert.match(line, stamp);
-    assert.match(kept, / retry https:\/\/pool\.example\/v1\/models Authorization: \[redacted\]\n/u);
-    assert.match(kept, /Connection process exited \(code 0, signal null\)\./u);
-    assert.doesNotMatch(kept, /private-query-key|private-bearer/u);
-  },
-);
-
-test("a stalled log write can't hold stop past its bound", { skip }, async (context) => {
+test("the supervisor redacts what the connection writes as it stops", { skip }, async (context) => {
   const home = await profile(context);
-  const path = join(home, "connection.log");
-  // A pipe nobody reads: opening it to write waits, like a filesystem that stopped answering.
-  execFileSync("mkfifo", [path]);
-  const supervisor = new ConnectionSupervisor(home, await connection(home), process.execPath);
+  const entry = await connection(
+    home,
+    "retry https://pool.example/v1/models?key=private-query-key Authorization: Bearer private-bearer-0123456789\n",
+  );
+  const supervisor = new ConnectionSupervisor(home, entry, process.execPath);
   await supervisor.start();
+  await supervisor.stop();
+  const kept = await readFile(join(home, "connection.log"), "utf8");
+  for (const line of kept.trimEnd().split("\n")) assert.match(line, stamp);
+  assert.match(kept, / retry https:\/\/pool\.example\/v1\/models Authorization: \[redacted\]\n/u);
+  assert.match(kept, /Connection process exited \(code 0, signal null\)\./u);
+  assert.doesNotMatch(kept, /private-query-key|private-bearer/u);
+});
+
+test("a pipe at the log path can't keep the host from exiting", { skip }, async (context) => {
+  const home = await profile(context);
+  // Nobody reads this pipe. An open that waits for a reader holds a threadpool thread, and
+  // process.exit waits for every threadpool thread.
+  execFileSync("mkfifo", [join(home, "connection.log")]);
+  const host = join(home, "host-fixture.mjs");
+  const supervisorUrl = new URL("../desktop/supervisor.ts", import.meta.url).href;
+  // Like the Mac host on quit: stop the connection, then exit.
+  await writeFile(
+    host,
+    `import { ConnectionSupervisor } from ${JSON.stringify(supervisorUrl)};
+const supervisor = new ConnectionSupervisor(process.argv[2], process.argv[3], process.execPath);
+await supervisor.start();
+await supervisor.stop();
+process.exit(0);
+`,
+  );
+  const child = spawn(process.execPath, [host, home, await connection(home)], {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  context.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  });
+  let errors = "";
+  child.stderr.setEncoding("utf8").on("data", (text: string) => (errors += text));
   const held = new AbortController();
-  const outcome = await Promise.race([
-    supervisor.stop().then(() => "stopped" as const),
-    delay(4_000, "held" as const, { signal: held.signal }).catch(() => "held" as const),
+  const exit = await Promise.race([
+    new Promise<number | null>((resolve) => child.once("exit", resolve)),
+    delay(10_000, "held" as const, { signal: held.signal }).catch(() => "held" as const),
   ]);
   held.abort();
-  // Then read the pipe so the stalled writes finish. Opening it read-write never waits, and the
-  // reader stays open until the test ends so no later write waits again.
-  const reader = new Socket({
-    fd: openSync(path, constants.O_RDWR),
-    readable: true,
-    writable: false,
-  });
-  context.after(() => reader.destroy());
-  reader.setEncoding("utf8");
-  const received = await new Promise<string>((resolve) => {
-    let text = "";
-    reader.on("data", (chunk: string) => {
-      text += chunk;
-      if (text.includes("Connection process exited")) resolve(text);
-    });
-  });
-  assert.equal(outcome, "stopped", "stop() waited on the stalled log for over 4 seconds");
-  assert.match(received, /Connection ready at http:\/\/127\.0\.0\.1:4242\./u);
+  assert.equal(
+    exit,
+    0,
+    exit === "held"
+      ? "the host hadn't exited 10 seconds after it started"
+      : `exit ${exit}: ${errors}`,
+  );
 });
 
 test("the connection log rotates to one previous file and stays bounded", async (context) => {
@@ -185,42 +187,39 @@ test("a long line without spaces is cut before redaction", async (context) => {
   );
 });
 
-test(
-  "no part of a token reaches the log when a cut or a read boundary falls inside it",
-  async (context) => {
-    const home = await profile(context);
-    // Redacted as [token] when whole; a shorter piece matches no pattern. Nothing else in these
-    // lines, or in what the log adds after the timestamp, has a capital letter or a digit above 1.
-    const token = "ZX9QW7LM3RT5YB2NC8VD2PK6HS4JF7GA";
-    const lines = [
-      `retry next ${token} tail`,
-      // Redacting the long query would move a read boundary inside the kept 1,024 characters.
-      `retry https://pool.example/v1/models?${"q=1&".repeat(300)} next ${token} tail`,
-      // The 1,024-character cut falls inside the token.
-      `${"word ".repeat(200)}${token} tail`,
-      `${"word ".repeat(818)}${token} tail`,
-      `retry https://pool.example/v1/models?${"q=1&".repeat(1200)} next ${token} tail`,
-    ];
-    for (const [index, line] of lines.entries()) {
-      const start = line.indexOf(token);
-      for (let offset = 0; offset <= token.length; offset++) {
-        const path = join(home, `split-${index}-${offset}.log`);
-        const log = new ConnectionLog(path);
-        log.output(line.slice(0, start + offset));
-        log.output(`${line.slice(start + offset)}\n`);
-        await log.flushed();
-        const kept = (await readFile(path, "utf8"))
-          .trimEnd()
-          .split("\n")
-          .map((entry) => entry.slice(25))
-          .join("\n");
-        assert.doesNotMatch(kept, /[A-Z2-9]/u, `line ${index}, read split at ${offset}: ${kept}`);
-        // Dropping the whole line would pass the check above.
-        assert.match(kept, /^(?:retry|word) /u);
-      }
+test("no part of a token reaches the log when a cut or a read boundary falls inside it", async (context) => {
+  const home = await profile(context);
+  // Redacted as [token] when whole; a shorter piece matches no pattern. Nothing else in these
+  // lines, or in what the log adds after the timestamp, has a capital letter or a digit above 1.
+  const token = "ZX9QW7LM3RT5YB2NC8VD2PK6HS4JF7GA";
+  const lines = [
+    `retry next ${token} tail`,
+    // Redacting the long query would move a read boundary inside the kept 1,024 characters.
+    `retry https://pool.example/v1/models?${"q=1&".repeat(300)} next ${token} tail`,
+    // The 1,024-character cut falls inside the token.
+    `${"word ".repeat(200)}${token} tail`,
+    `${"word ".repeat(818)}${token} tail`,
+    `retry https://pool.example/v1/models?${"q=1&".repeat(1200)} next ${token} tail`,
+  ];
+  for (const [index, line] of lines.entries()) {
+    const start = line.indexOf(token);
+    for (let offset = 0; offset <= token.length; offset++) {
+      const path = join(home, `split-${index}-${offset}.log`);
+      const log = new ConnectionLog(path);
+      log.output(line.slice(0, start + offset));
+      log.output(`${line.slice(start + offset)}\n`);
+      await log.flushed();
+      const kept = (await readFile(path, "utf8"))
+        .trimEnd()
+        .split("\n")
+        .map((entry) => entry.slice(25))
+        .join("\n");
+      assert.doesNotMatch(kept, /[A-Z2-9]/u, `line ${index}, read split at ${offset}: ${kept}`);
+      // Dropping the whole line would pass the check above.
+      assert.match(kept, /^(?:retry|word) /u);
     }
-  },
-);
+  }
+});
 
 test("a line split across reads is kept whole and an endless line is cut once", async (context) => {
   const home = await profile(context);
