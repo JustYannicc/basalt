@@ -3259,7 +3259,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "d94120acf483046aa26ae0babda755525c4d5ec8369b7f4657443036a724400c",
+      "sourceSha256": "dcafb674e047868aeca46d3047dd8e95e0c34f37febcabe95a52ede6ec4919f2",
       "methods": {
         "oauth": {
           "kind": "hosted",
