@@ -1,34 +1,83 @@
 diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/web/src/contracts/tool-availability.ts
 --- a/apps/hosted/web/src/contracts/tool-availability.ts
 +++ b/apps/hosted/web/src/contracts/tool-availability.ts
-@@ -35,10 +35,23 @@ const lists = Atom.family((key: AvailabilityKey) =>
+@@ -35,13 +35,43 @@ const lists = Atom.family((key: AvailabilityKey) =>
    ).pipe(revalidated, protectedQuery),
  );
  
 +/**
-+ * List values this page published from its own confirmed saves. The read a save starts only
-+ * reconciles the setting against the catalog already on screen, so that catalog stays; every
-+ * other read, such as a return to the page or a linked-account change, shows none until it answers.
++ * A new token whenever a manager asks for the catalog or setting again (Retry, Refresh tools,
++ * Reload). Restarting a read already in flight changes no value a view can see, so the token is
++ * how a save's hold on the catalog ends when the person asks for a fresh answer.
 + */
-+const acknowledgedLists = new WeakSet<object>();
++const viewRequests = Atom.family((key: AvailabilityKey) => Atom.readable(() => Symbol(key.app)));
++
++/**
++ * List values this page published from its own confirmed saves, with the request token each saw.
++ * The read a save starts only reconciles the setting against the catalog already on screen, so
++ * that catalog stays until the read answers. A return to the page, a linked-account change, a
++ * manager's retry or a failed read never uses a save's value this way.
++ */
++const acknowledgedLists = new WeakMap<object, symbol>();
 +
 +const ownSave = <A extends object, E>(
 +  result: AsyncResult.AsyncResult<A, E>,
++  request: symbol,
 +): AsyncResult.AsyncResult<A, E> =>
-+  AsyncResult.isSuccess(result) && result.waiting && acknowledgedLists.has(result.value)
++  AsyncResult.isSuccess(result) && result.waiting && acknowledgedLists.get(result.value) === request
 +    ? AsyncResult.success<A, E>(result.value, { timestamp: result.timestamp })
 +    : result;
++
++/** Asking again ends a save's hold on the catalog; the list is read again either way. */
++const askAgain = (key: AvailabilityKey) => (refresh: <A>(atom: Atom.Atom<A>) => void) => {
++  refresh(viewRequests(key));
++  refresh(lists(key));
++};
 +
  const catalogs = Atom.family((key: AvailabilityKey) =>
 -  Atom.map(
 -    lists(key),
 -    AsyncResult.map((list): ToolCatalog => ({
-+  Atom.map(lists(key), (result) =>
-+    AsyncResult.map(ownSave(result), (list): ToolCatalog => ({
-       tools: list.catalog.items,
-       routers: list.catalog.routers,
-     })),
-@@ -110,17 +123,21 @@ const updates = Atom.family((key: AvailabilityKey) =>
+-      tools: list.catalog.items,
+-      routers: list.catalog.routers,
+-    })),
++  Atom.readable(
++    (get) =>
++      AsyncResult.map(ownSave(get(lists(key)), get(viewRequests(key))), (list): ToolCatalog => ({
++        tools: list.catalog.items,
++        routers: list.catalog.routers,
++      })),
++    askAgain(key),
+   ).pipe(currentQuery),
+ );
+ /** Account changes invalidate the manager's catalog as well as ordinary discovery. */
+@@ -56,15 +86,16 @@ export const toolAvailabilityCatalogAtom = (
+ ) => catalogs(new AvailabilityKey(key));
+ 
+ const settings = Atom.family((key: AvailabilityKey) =>
+-  Atom.map(
+-    lists(key),
+-    AsyncResult.map((list): ToolAvailability => ({
+-      revision: list.revision,
+-      defaultMode: list.defaultMode,
+-      overrides: list.overrides,
+-      enabledTools: list.enabledTools,
+-      groups: list.groups,
+-    })),
++  Atom.readable(
++    (get) =>
++      AsyncResult.map(get(lists(key)), (list): ToolAvailability => ({
++        revision: list.revision,
++        defaultMode: list.defaultMode,
++        overrides: list.overrides,
++        enabledTools: list.enabledTools,
++        groups: list.groups,
++      })),
++    askAgain(key),
+   ),
+ );
+ /** Typed with the whole hosted error union so the setting and its save share one failure view. */
+@@ -110,17 +141,21 @@ const updates = Atom.family((key: AvailabilityKey) =>
        Effect.tap((saved) =>
          Effect.sync(() => {
            // Show the confirmed save at once; the read that follows replaces it with the host's.
@@ -55,7 +104,7 @@ diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/we
 +                saved.overrides,
 +              ).map((name) => ToolName.make(name)),
 +            };
-+            acknowledgedLists.add(confirmed);
++            acknowledgedLists.set(confirmed, get.registry.get(viewRequests(key)));
 +            return confirmed;
 +          });
            // Ordinary discovery, on this page and in connection pickers, lists only enabled tools.
@@ -64,22 +113,47 @@ diff --git a/apps/hosted/web/src/contracts/tool-availability.ts b/apps/hosted/we
 diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability-ui.ts
 --- a/e2e/support/tool-availability-ui.ts
 +++ b/e2e/support/tool-availability-ui.ts
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,10 @@
  import { expect } from "@effect/vitest";
--import { Effect } from "effect";
-+import { Effect, Fiber } from "effect";
+ import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
  import { Browser } from "./browser.ts";
 +import { holdQuery } from "./query-transition.ts";
++import { AvailabilityCatalog } from "./tool-availability-fixture.ts";
  
  export const openAvailabilityTools = (organization: string, app: string) =>
    Effect.gen(function* () {
-@@ -175,9 +176,34 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+@@ -111,8 +115,10 @@ export const hideAvailabilityToolOnPhone = Effect.gen(function* () {
+   );
+ });
+ 
+-export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+-  const browser = yield* Browser;
++export const verifyAvailabilityBulkControls = Effect.fn(function* (path: string) {
++  const browser = yield* Browser,
++    api = yield* Api,
++    actors = yield* Actors;
+   yield* browser.use("Select a tool before hiding it", (page) =>
+     page.getByRole("button", { name: "records.write", exact: true }).click(),
+   );
+@@ -175,19 +181,59 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
    yield* browser.use("Reveal all hidden tools with recovery action", (page) =>
      page.getByRole("button", { name: "Show hidden tools", exact: true }).click(),
    );
 -  yield* browser.use("Restore read tools and observe the catalog refresh", (page) =>
 -    // The save refreshes the catalog, which unmounts an open writes menu.
 -    Promise.all([
+-      page
+-        .waitForResponse(
+-          (response) =>
+-            response.request().method() === "GET" &&
+-            new URL(response.url()).pathname.endsWith("/tool-availability") &&
+-            response.ok(),
+-        )
+-        .then((response) => response.finished()),
+-      page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
+-    ]),
 +  // The group's save and the catalog read it starts are both held while the writes menu is open.
 +  const saving = yield* holdQuery(/\/tool-availability$/, "continue", { method: "PATCH" });
 +  yield* browser.use("Restore read tools", (page) =>
@@ -106,30 +180,25 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
 +      page.getByRole("status", { name: "Loading tools", exact: true, includeHidden: true }).count(),
 +    ),
 +  ).toBe(0);
-+  const answered = yield* Effect.forkChild(
-+    browser.use("Wait for the save's catalog read to answer", (page) =>
-       page
-         .waitForResponse(
-           (response) =>
-@@ -186,8 +212,27 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
-             response.ok(),
-         )
-         .then((response) => response.finished()),
--      page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
--    ]),
++  expect(
++    yield* browser.use("The open menu shows the confirmed save while its read is held", (page) =>
++      page.getByText("0 of 2 write tools on.", { exact: false }).isVisible(),
 +    ),
++  ).toBe(true);
++  // Another session turns one write on before the held read reaches the host, so only that read's
++  // answer can show it; the menu must take the answer without closing.
++  const saved = yield* body(
++    AvailabilityCatalog,
++    yield* api.request(actors.owner, "GET", `${path}/tool-availability`),
 +  );
++  const changed = yield* api.request(actors.owner, "PATCH", `${path}/tool-availability`, {
++    revision: saved.revision,
++    changes: [{ kind: "tool", tool: "records.write", enabled: true }],
++  });
++  expect(changed.status).toBe(200);
 +  yield* refreshing.release;
-+  yield* Fiber.join(answered);
-+  yield* browser.use("The host's answer shows the restored read group behind the menu", (page) =>
-+    page
-+      .getByRole("checkbox", {
-+        name: "Enable all tools in Counter",
-+        exact: true,
-+        includeHidden: true,
-+      })
-+      .and(page.locator('[aria-checked="true"]'))
-+      .waitFor({ state: "attached" }),
++  yield* browser.use("The open menu shows the host's answer", (page) =>
++    page.getByText("1 of 2 write tools on.", { exact: false }).waitFor(),
 +  );
 +  expect(
 +    yield* browser.use("The writes menu stays open after the catalog read answers", (page) =>
@@ -141,7 +210,7 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
    );
    yield* browser.use("Wait for the confirmed restored read tools", (page) =>
      page
-@@ -195,12 +240,6 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
+@@ -195,12 +241,6 @@ export const verifyAvailabilityBulkControls = Effect.gen(function* () {
        .and(page.locator('[aria-checked="true"]:not(:disabled)'))
        .waitFor(),
    );
@@ -154,3 +223,15 @@ diff --git a/e2e/support/tool-availability-ui.ts b/e2e/support/tool-availability
    yield* browser.use("Wait for all write tools restored", (page) =>
      page.getByRole("button", { name: "Writes on", exact: true }).waitFor(),
    );
+diff --git a/e2e/tests/tool-availability-ui.spec.ts b/e2e/tests/tool-availability-ui.spec.ts
+--- a/e2e/tests/tool-availability-ui.spec.ts
++++ b/e2e/tests/tool-availability-ui.spec.ts
+@@ -40,7 +40,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool availability UI", (it) =>
+         );
+         expect(restored.items.map((tool) => tool.name)).toContain("records.write");
+         yield* verifyAvailabilitySaveRecovery(path);
+-        yield* verifyAvailabilityBulkControls;
++        yield* verifyAvailabilityBulkControls(path);
+         yield* browser.checkpoint("tools-1280-restored");
+         yield* hideAvailabilityToolOnPhone;
+         yield* browser.checkpoint("tools-390-hidden");

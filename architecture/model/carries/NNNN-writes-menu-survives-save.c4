@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "A manager's own confirmed availability save keeps the hosted tool catalog on screen while the read it starts reconciles the setting, so an open writes menu survives the save; that read's answer then replaces the catalog. Only a list value the page acknowledged from its own save, with no other read pending, keeps the catalog: a return to the page, a linked-account change, a retry or a failed read still shows loading or the failure and never the previous tools. Browser evidence holds the group save and its catalog read with the writes menu open on every managed target, and a node test drives the real contract atoms through each case."
+      constraint "A manager's own confirmed availability save keeps the hosted tool catalog on screen while the read that save starts is pending, so an open writes menu survives the save; that read's answer then replaces the catalog. The hold applies only to a list value the page acknowledged from its own save and ends when the manager asks again. A return to the page, a linked-account change, a manager's retry, refresh or reload, and a failed read show loading or the failure, never the save's catalog. A save confirmed while another list read is already pending is outside this: the shared acknowledgement settles the list before that read answers. Browser evidence holds the group save and its catalog read with the writes menu open on every managed target, changing the setting from another session so only the read's answer satisfies it; a node test drives the real contract atoms through these cases."
     }
   }
 }
