@@ -19,6 +19,7 @@ import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
+import type { StageScope } from "./stage-writes.ts";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
@@ -271,6 +272,7 @@ const {
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
 const { everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
+const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
@@ -329,12 +331,35 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
           deletable,
+          stage: undefined as StageScope | undefined,
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
         const guarded = Effect.gen(function* () {
           yield* WireGuard.selfTest();
           yield* storeCannotBootstrap;
+          // A disposable stage shares the account, token and State store with production: from here
+          // on every write it sends must target what its own State rows record or this run creates.
+          if (stage !== "production") {
+            const store = yield* Alchemist.State.store({
+              backend: "configured",
+              ...target,
+            } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+            const stack = yield* stackName();
+            wire.stage = {
+              stack,
+              stage,
+              label: stage.replace(/^test-/u, ""),
+              databases: process.env.TEST_STAGE_DATABASE ? [process.env.TEST_STAGE_DATABASE] : [],
+              owned: ownIdentities(
+                yield* stageRows(store as never, stack, stage) as Fx.Effect<
+                  unknown[],
+                  unknown,
+                  never
+                >,
+              ),
+            };
+          }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
             wire.sqliteClasses[yield* scriptName(fqn)] = classes;
           for (const fqn of policy?.wire.expectLiveModule ?? []) {
