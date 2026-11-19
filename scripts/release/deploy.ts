@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
@@ -261,6 +261,7 @@ const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
 const Alchemist = await import("alchemy/Alchemist");
+const Session = await import("alchemy/Alchemist/Session");
 const {
   ChangesRemainAfterApply,
   changedRows,
@@ -375,20 +376,21 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
 const target = { entrypoint: scaleStack ? config : resolve(root, config), stage };
 let loadedStackName: string | undefined;
 /**
- * The stack's own name, as its module declares it: production deploys `basalt`, a rehearsal stage
- * deploys under its own stack name. Every State read keys on it.
+ * The stack's own name, as its module declares it, loaded by Alchemy's own stack loader (the one
+ * `Stack.plan` uses): production deploys `basalt`, a rehearsal stage deploys under its own stack
+ * name. Every State read keys on it.
  */
 const stackName = () =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     if (loadedStackName) return loadedStackName;
-    const loaded = (await import(pathToFileURL(target.entrypoint).href)) as {
-      default?: { stackName?: unknown };
-    };
-    const name = loaded.default?.stackName;
-    if (typeof name !== "string" || !name)
-      throw new Error(`${relative(root, target.entrypoint)} declares no stack name`);
-    loadedStackName = name;
-    return name;
+    // Its FileSystem and Path come from Alchemist.layer(), which every run provides.
+    const stack = yield* Session.importStack(target.entrypoint) as unknown as Fx.Effect<
+      { readonly stackName: string },
+      unknown,
+      never
+    >;
+    loadedStackName = stack.stackName;
+    return stack.stackName;
   });
 /** A Worker's live script name, from its State row (names carry the stage, policies name FQNs). */
 const scriptName = (fqn: string) =>
