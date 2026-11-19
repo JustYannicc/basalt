@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
   chmodSync,
@@ -272,8 +272,14 @@ test(
   },
 );
 
-test("both Electron packaging steps package from the generated config in bash", () => {
+type Step = { name?: string; shell?: string; run?: string };
+const workflowSteps = (workflow: string, job: string): Step[] => {
   const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const path = new URL("../.github/workflows/" + workflow, import.meta.url);
+  return parse(readFileSync(path, "utf8")).jobs[job].steps;
+};
+
+test("both Electron packaging steps package from the generated config in bash", () => {
   const config = '"$RUNNER_TEMP/electron-builder.json"';
   for (const { workflow, job, step, overrides } of [
     {
@@ -290,19 +296,59 @@ test("both Electron packaging steps package from the generated config in bash", 
       overrides: " -c.appId=run.signalbox.client -c.productName=Signalbox",
     },
   ]) {
-    const path = new URL("../.github/workflows/" + workflow, import.meta.url);
-    const steps: { name?: string; shell?: string; run?: string }[] = parse(
-      readFileSync(path, "utf8"),
-    ).jobs[job].steps;
+    const steps = workflowSteps(workflow, job);
     const packaging = steps.find((entry) => entry.name === step);
     assert.ok(packaging?.run, workflow);
     // PowerShell would split a native argument like -c.appId at its dot on Windows.
     assert.equal(packaging.shell, "bash", workflow);
-    assert.deepEqual(packaging.run.trim().split("\n"), [
+    const lines = packaging.run.trim().split("\n");
+    const generate = lines.indexOf(
       `node scripts/ci/desktop-release-assets.ts builder-config ${config}`,
-      `bun run --cwd clients/desktop package:\${{ matrix.platform }} --config ${config}${overrides}`,
-    ]);
+    );
+    const command = `bun run --cwd clients/desktop package:\${{ matrix.platform }} --config ${config}${overrides}`;
+    const packages = lines.findIndex(
+      (line) => line === command || line.startsWith(command + " 2>&1 | tee "),
+    );
+    assert.ok(generate >= 0 && generate < packages, workflow);
     const electronBuilderSteps = steps.filter((entry) => /\bpackage:/.test(entry.run ?? ""));
     assert.deepEqual(electronBuilderSteps, [packaging], workflow);
+  }
+});
+
+test("Check's packaging fails when electron-builder fails or fetches SHASUMS256.txt", () => {
+  const step = workflowSteps("ci.yml", "client-desktop").find(
+    (entry) => entry.name === "Package the unsigned development client",
+  );
+  assert.ok(step?.run);
+  const fixture = mkdtempSync(join(tmpdir(), "basalt-package-guard-"));
+  try {
+    const bin = join(fixture, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\n", { mode: 0o755 });
+    // DEBUG output reaches stderr, so the fake writes there.
+    writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$OUTPUT" >&2\nexit "$STATUS"\n', {
+      mode: 0o755,
+    });
+    const script = join(fixture, "package.sh");
+    writeFileSync(script, step.run.replaceAll("${{ matrix.platform }}", "linux"));
+    // Without pipefail from the runner, so the step must keep electron-builder's status itself.
+    const packaging = (output: string, status: number) =>
+      spawnSync("bash", ["--noprofile", "--norc", "-e", script], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          RUNNER_TEMP: fixture,
+          OUTPUT: output,
+          STATUS: String(status),
+        },
+      }).status;
+    assert.equal(packaging("@electron/get:index Cache hit", 0), 0);
+    assert.equal(
+      packaging("@electron/get:index Downloading https://mirror/v1/SHASUMS256.txt", 0),
+      1,
+    );
+    assert.equal(packaging("build failed", 3), 3);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
   }
 });

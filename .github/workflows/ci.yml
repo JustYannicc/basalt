@@ -510,14 +510,20 @@ jobs:
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
       # The generated config is package.json's build plus the locked Electron checksums, so packaging
-      # fetches no SHASUMS256.txt; DEBUG logs where @electron/get found the zip.
+      # fetches no SHASUMS256.txt. DEBUG logs every @electron/get download, so a fetch that an
+      # electron-builder bump brings back fails the step instead of passing silently.
       - name: Package the unsigned development client
         shell: bash
         env:
           DEBUG: "@electron/get*"
         run: |
+          set -o pipefail
           node scripts/ci/desktop-release-assets.ts builder-config "$RUNNER_TEMP/electron-builder.json"
-          bun run --cwd clients/desktop package:${{ matrix.platform }} --config "$RUNNER_TEMP/electron-builder.json"
+          bun run --cwd clients/desktop package:${{ matrix.platform }} --config "$RUNNER_TEMP/electron-builder.json" 2>&1 | tee "$RUNNER_TEMP/electron-builder.log"
+          if grep -q SHASUMS256 "$RUNNER_TEMP/electron-builder.log"; then
+            echo "::error::electron-builder fetched SHASUMS256.txt instead of using the locked Electron checksums"
+            exit 1
+          fi
       - uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/basalt-desktop-release-assets

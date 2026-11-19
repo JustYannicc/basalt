@@ -23,7 +23,7 @@ export function electronBuilderConfig(desktop: NodeJS.Require) {
     ...desktop("./package.json").build,
     electronDownload: {
       unsafelyDisableChecksums: false,
-      checksums: desktop("electron/checksums.json") as Record<string, string>,
+      checksums: desktop("electron/checksums.json"),
     },
   };
 }
