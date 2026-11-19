@@ -35,10 +35,6 @@
         "action": "update"
       },
       {
-        "fqn": "PoolContainer",
-        "action": "update"
-      },
-      {
         "fqn": "PoolRuntimeBlue",
         "action": "create"
       },
