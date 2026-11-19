@@ -24,13 +24,14 @@ const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
 /** An upstream module, or undefined when the carried tree has no such file. */
 export const loadOptional = (path: string): Promise<unknown> => load(path).catch(() => undefined);
-/** A tagged failure as the tests read it: its tag, its message and a refusal's code. */
-type Failure = { readonly _tag: string; readonly message: string; readonly reasonCode?: string };
+/** A failure as the tests read it: its tag when it has one, its message and a refusal's code. */
+type Failure = { readonly _tag?: string; readonly message: string; readonly reasonCode?: string };
 /**
  * How the hosted modules loaded at runtime fail. Naming their own error unions would bring those
- * modules into root types; every one is a tagged error, and a link refusal also names its reason.
+ * modules into root types. Each failure is an `Error`: most are tagged, a runner diagnostic is
+ * not, and a reason is a string on a link refusal but an object on a database error.
  */
-export type HostedFailure = Failure & { readonly reason?: string };
+export type HostedFailure = Failure & { readonly reason?: unknown };
 type Operated = {
   readonly action: string;
   readonly changes?: number;
