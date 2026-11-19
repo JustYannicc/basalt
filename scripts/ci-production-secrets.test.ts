@@ -41,6 +41,19 @@ const knownExposure: Record<string, string[]> = {
   ],
 };
 
+// The only jobs that hold secrets beside a pull request's run or after another run. Each runs main's
+// code; any new one needs review before it joins this list.
+const baseRunJobs = ["deploy.yml/deploy", "release-cleanup.yml/cleanup", "release-merge.yml/merge"];
+// Events whose secret-holding jobs these rules understand; anything else holding secrets fails.
+const knownEvents = [
+  "push",
+  "schedule",
+  "workflow_dispatch",
+  "workflow_run",
+  "pull_request",
+  "pull_request_target",
+];
+
 const events = (on: unknown) =>
   typeof on === "string"
     ? [on]
@@ -98,15 +111,21 @@ const confinedToMainPush = (condition: string | undefined) =>
     "github.event.workflow_run.head_repository.full_name == github.repository",
   ].every((term) => conjuncts(condition).includes(term));
 
-// Every secret a job can read: named in it or its workflow's env, any form or case; all of them on
-// indirect access; an environment's, which are invisible here, once it names one.
+// Every secret a job can read: named in an expression in it or its workflow's env, in any case or
+// indexing; all of them on any other use of the secrets context; an environment's, which are
+// invisible here, once it names one.
 function secretsOf(workflow: Workflow, job: Job) {
   const text = JSON.stringify([workflow.env ?? null, job]);
-  const named = [
-    ...text.matchAll(/\bsecrets\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*'([^']+)'\s*\])/gi),
-  ].map((match) => (match[1] ?? match[2]!).toUpperCase());
-  const indirect =
-    /toJSON\(\s*secrets\s*\)|\bsecrets\s*\[\s*[^'\s]/i.test(text) || job.secrets === "inherit";
+  const expressions = [...text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((match) => match[1]!);
+  const access = /\bsecrets\b\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*'([^']+)'\s*\])?/gi;
+  const named: string[] = [];
+  let indirect = job.secrets !== undefined;
+  for (const expression of expressions)
+    for (const match of expression.matchAll(access)) {
+      const name = match[1] ?? match[2];
+      if (name) named.push(name.toUpperCase());
+      else indirect = true;
+    }
   return [
     ...new Set([
       ...named,
@@ -147,17 +166,19 @@ function violations(files: File[]) {
         if (extra.length) found.push(`${key}: a pull request's code holds ${extra.join(", ")}`);
       }
       if (!held.length) continue;
+      const unknown = on.filter((event) => !knownEvents.includes(event));
+      if (unknown.length) found.push(`${key}: holds secrets under ${unknown.join(", ")}`);
       // These run the base branch's workflow with secrets, so they must run main's code.
-      if (
-        (on.includes("pull_request_target") || on.includes("workflow_run")) &&
-        !confinedToMainPush(job.if) &&
-        (!checksOutMain(job) || readsPullRequestHead(job))
-      )
-        found.push(`${key}: runs code other than main's with secrets`);
+      if (on.includes("pull_request_target") || on.includes("workflow_run")) {
+        if (!baseRunJobs.includes(key))
+          found.push(`${key}: holds secrets beside another run without review`);
+        else if (!confinedToMainPush(job.if) && (!checksOutMain(job) || readsPullRequestHead(job)))
+          found.push(`${key}: runs code other than main's with secrets`);
+      }
       const otherRefs =
         on.includes("workflow_dispatch") ||
         (on.includes("push") && !(branches.length === 1 && branches[0] === "main"));
-      if (otherRefs && !requiresMain(job.if) && !checksOutMain(job))
+      if (otherRefs && !requiresMain(job.if))
         found.push(`${key}: holds secrets on a ref other than main`);
     }
   }
@@ -170,6 +191,10 @@ test("no job runs code other than main's with a secret, beyond the named exposur
   assert.ok(check);
   for (const job of Object.values(check.workflow.jobs))
     assert.deepEqual(secretsOf(check.workflow, job), []);
+  for (const key of baseRunJobs) {
+    const [name, id = ""] = key.split("/");
+    assert.ok(workflows.find((file) => file.name === name)?.workflow.jobs[id], `stale ${key}`);
+  }
   for (const [key, secrets] of Object.entries(knownExposure)) {
     const [name, id = ""] = key.split("/");
     const file = workflows.find((candidate) => candidate.name === name);
@@ -192,6 +217,7 @@ test("every way a pull-request job can reach a secret is caught", () => {
     ["lower case", run("${{ SECRETS.pool_deployment_key }}")],
     ["workflow env", pr({ a: job({}) }, { TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" })],
     ["toJSON", run("${{ toJSON(secrets) }}")],
+    ["toJSON with parentheses", run("${{ toJSON((secrets)) }}")],
     ["indexed by name", run("${{ secrets['POOL_DEPLOYMENT_KEY'] }}")],
     ["indexed by expression", run("${{ secrets[format('POOL_{0}', 'X')] }}")],
     ["inherited secrets", pr({ a: job({ secrets: "inherit" }) })],
@@ -214,6 +240,12 @@ test("every way a pull-request job can reach a secret is caught", () => {
     }),
   });
   assert.deepEqual(violations([otherEvent]), []);
+  const event = (on: unknown): File => ({
+    name: "fixture.yml",
+    workflow: { on, jobs: { a: job({ steps: [{ run: "${{ secrets.POOL_DEPLOYMENT_KEY }}" }] }) } },
+  });
+  for (const on of [{ pull_request_review: {} }, { merge_group: {} }, { issue_comment: {} }])
+    assert.notDeepEqual(violations([event(on)]), [], JSON.stringify(on));
 });
 
 test("secrets beside a pull request's run or on another ref run only main's code", () => {
@@ -221,9 +253,10 @@ test("secrets beside a pull request's run or on another ref run only main's code
     steps: [step, { run: "${{ secrets.CLOUDFLARE_API_TOKEN }}" }],
     ...extra,
   });
+  // Named as an allowed base-run job, so these fixtures test what such a job may do.
   const file = (on: unknown, job: Job): File => ({
-    name: "fixture.yml",
-    workflow: { on, jobs: { a: job } },
+    name: "deploy.yml",
+    workflow: { on, jobs: { deploy: job } },
   });
   const main = { uses: "actions/checkout@v4", with: { ref: "main" } };
   const head = {
@@ -235,6 +268,8 @@ test("secrets beside a pull request's run or on another ref run only main's code
     for (const step of [
       { uses: "actions/checkout@v4" },
       { uses: "actions/checkout@v4", with: { ref: "${{ github.head_ref }}" } },
+      { uses: "actions/checkout@v4", with: { ref: "${{ github.event.pull_request.head.sha }}" } },
+      { uses: "actions/checkout@v4", with: { ref: "${{ github.event.workflow_run.head_sha }}" } },
       { run: "git fetch origin refs/pull/1/head" },
     ])
       assert.notDeepEqual(violations([file(on, holding(step))]), [], JSON.stringify(step));
@@ -245,11 +280,30 @@ test("secrets beside a pull request's run or on another ref run only main's code
     "github.event.workflow_run.head_repository.full_name == github.repository",
   ].join(" && ");
   assert.deepEqual(violations([file({ workflow_run: {} }, holding(head, { if: mainPush }))]), []);
+  for (const dropped of mainPush.split(" && ")) {
+    const partial = mainPush
+      .split(" && ")
+      .filter((term) => term !== dropped)
+      .join(" && ");
+    assert.notDeepEqual(
+      violations([file({ workflow_run: {} }, holding(head, { if: partial }))]),
+      [],
+      dropped,
+    );
+  }
+  const unreviewed: File = {
+    name: "fixture.yml",
+    workflow: { on: { workflow_run: {} }, jobs: { a: holding(main) } },
+  };
+  assert.notDeepEqual(violations([unreviewed]), []);
   const branchOnly = holding(head, { if: "github.event.workflow_run.head_branch == 'main'" });
   assert.notDeepEqual(violations([file({ workflow_run: {} }, branchOnly)]), []);
   const dispatch = { workflow_dispatch: {} };
   const branch = { uses: "actions/checkout@v4" };
   assert.notDeepEqual(violations([file(dispatch, holding(branch))]), []);
+  // Checking out main is not enough: a later step can still run the dispatching ref's code.
+  assert.notDeepEqual(violations([file(dispatch, holding(main))]), []);
+  assert.notDeepEqual(violations([file(dispatch, { steps: [{ run: "${{ secrets.X }}" }] })]), []);
   const onMain = holding(branch, { if: "github.ref == 'refs/heads/main'" });
   assert.deepEqual(violations([file(dispatch, onMain)]), []);
   const batches = { push: { branches: ["main", "batch/**"] } };
@@ -279,4 +333,7 @@ test("only a condition that requires another event keeps a job off pull requests
     false,
   );
   assert.equal(reachableOnPullRequest("(github.event_name == 'push')"), false);
+  assert.equal(reachableOnPullRequest("github.event_name == 'push' && a || b"), true);
+  // An operator inside a quoted string is text, not logic.
+  assert.equal(reachableOnPullRequest("github.event_name == 'push' && a == '||'"), false);
 });

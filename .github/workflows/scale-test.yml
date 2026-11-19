@@ -35,6 +35,9 @@ jobs:
       SCALE_STAGE: ${{ inputs.stage }}
       SCALE_OUTPUT: .local/scale-results
     steps:
+      # Expressions compare case-insensitively, so a branch named MAIN would pass the job's condition.
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
       - name: Record the job time budget
         run: echo "SCALE_JOB_STARTED_AT=$(date +%s%3N)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
@@ -141,6 +144,9 @@ jobs:
       SCALE_STAGE: scale-180
       SCALE_OUTPUT: .local/scale-results
     steps:
+      # Expressions compare case-insensitively, so a branch named MAIN would pass the job's condition.
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
       - name: Record the job time budget
         run: echo "SCALE_JOB_STARTED_AT=$(date +%s%3N)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
