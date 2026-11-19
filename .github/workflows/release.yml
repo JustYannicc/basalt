@@ -143,6 +143,7 @@ jobs:
       BASALT_RELEASE_CANDIDATE: ${{ needs.candidate.outputs.sha }}
       PLAN_DIGEST_INPUT: ${{ inputs.plan_digest }}
       ATTEMPT_INPUT: ${{ inputs.attempt }}
+      GO_INPUT: ${{ inputs.go }}
       MODE: ${{ inputs.mode || 'apply' }}
       # An automatic release is code-only; anything else needs a dispatch with its policy named.
       POLICY_NAME: ${{ inputs.policy || 'code' }}
@@ -316,6 +317,12 @@ jobs:
         run: |
           within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
           bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
+      # The restore target if the class change fails. Reading it also arms a restore to it for ten
+      # minutes, the window the class change runs in.
+      - name: Take the controller storage bookmark
+        env: *release-secrets
+        if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
+        run: POOL_FLEET_MODE=bookmark POOL_FLEET_GO="$GO_INPUT" POOL_FLEET_OUTPUT_DIRECTORY=.local/release/bookmark node scripts/pool-fleet/dispatch.ts
       - name: What was verified before the irreversible step
         if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
         run: |
@@ -327,7 +334,7 @@ jobs:
             echo "- database load: under 60% (step above)"
             echo "- counts: \`$(jq -c . .local/release/before.json)\`"
             echo "- serving versions recorded: \`${{ steps.serving.outputs.workers }}\`; the live PoolWorker main module digest is pinned by the policy"
-            echo "- controller storage: recoverable for 30 days by point-in-time recovery from this run's start ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            echo "- controller storage bookmark: taken at $(jq -r .result.bookmark.at .local/release/bookmark/result.json); a restore to it is armed for ten minutes, and point-in-time recovery keeps it for 30 days"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Apply the reviewed plan
         id: apply

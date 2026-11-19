@@ -36,7 +36,13 @@ interface Instance {
 
 /** Actual controller and private runtime classes, with only the platform, provider and Home ports doubled. */
 export async function fleetWorkerFixture(
-  options: { candidateColor?: Color; publicProbe?: boolean; adopt?: boolean } = {},
+  options: {
+    candidateColor?: Color;
+    publicProbe?: boolean;
+    adopt?: boolean;
+    /** Extra Worker bindings every fleet cell's runtime starts with. */
+    runtimeBindings?: Readonly<Record<string, string>>;
+  } = {},
 ) {
   const original = await runtimeProofFixture();
   const raw = (["blue", "green"] as const).map((color) => ({
@@ -201,6 +207,7 @@ export async function fleetWorkerFixture(
                         POOL_BLUE_IMAGE_HASH: applications[0]!.imageInput,
                         POOL_GREEN_APPLICATION_ID: applications[1]!.applicationId,
                         POOL_GREEN_IMAGE_HASH: applications[1]!.imageInput,
+                        ...options.runtimeBindings,
                       };
                       const fixture = await handoffRuntime(proof.target, runtimeEnv, {
                         home: old.home,
