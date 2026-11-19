@@ -69,11 +69,11 @@ export async function prepareUpstreamCheckout(
     throw new Error("Prepared upstream must not be a symbolic link");
   const repository = join(upstreamCache(), "repositories", `${digest(pin.repository)}.git`);
   mkdirSync(dirname(upstream), { recursive: true });
-  const checkoutLock = join(
-    upstreamCache(),
-    "checkouts",
-    `${digest(join(realpathSync(dirname(upstream)), basename(upstream)))}.lock`,
-  );
+  // The native resolver returns the on-disk case, so case variants of one checkout share its lock.
+  const identity = existsSync(upstream)
+    ? realpathSync.native(upstream)
+    : join(realpathSync.native(dirname(upstream)), basename(upstream));
+  const checkoutLock = join(upstreamCache(), "checkouts", `${digest(identity)}.lock`);
   // One preparation owns the checkout from its reset until the patched tree is recorded.
   return withCacheLock(checkoutLock, () =>
     prepareLockedCheckout(upstream, repository, pin, patches),
@@ -127,7 +127,10 @@ async function prepareLockedCheckout(
       cwd: upstream,
       encoding: "utf8",
     });
-    if (checkout.status !== 0 || realpathSync(checkout.stdout.trim()) !== realpathSync(upstream))
+    if (
+      checkout.status !== 0 ||
+      realpathSync.native(checkout.stdout.trim()) !== realpathSync.native(upstream)
+    )
       throw new Error("Prepared upstream must be its Git worktree root");
     run("git", ["checkout", "--detach", "--force", pin.commit], upstream);
     // Ignored dependencies and build caches survive; source from dropped carries does not.

@@ -56,9 +56,12 @@ const chunks = <A>(items: readonly A[]) =>
   );
 const lines = (output: string) => output.split("\0").filter(Boolean);
 const additions = (bytes: Buffer) =>
-  [...bytes.toString("utf8").matchAll(/--- \/dev\/null\n\+\+\+ b\/(.+)\n/g)].map(
-    (match) => match[1]!,
-  );
+  [...bytes.toString("utf8").matchAll(/--- \/dev\/null\n\+\+\+ b\/(.+)\n/g)].map((match) => {
+    const path = match[1]!;
+    if (path.startsWith("/") || path.split("/").includes(".."))
+      throw new Error("Invalid patch path");
+    return path;
+  });
 const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 // No git call here reads stdin: a synchronous child fed over a pipe has hung mid-replay.
@@ -122,10 +125,6 @@ export function patchedTreeKey(
 function replay(upstream: string, carries: readonly Carry[]) {
   for (const { name, bytes, file } of carries) {
     const added = additions(bytes);
-    for (const path of added) {
-      if (path.startsWith("/") || path.split("/").includes(".."))
-        throw new Error("Invalid patch path");
-    }
     // Carries may replace a file another carry created earlier in the replay.
     if (added.length) run("git", ["clean", "-f", "--", ...added], upstream);
     try {
@@ -198,9 +197,15 @@ function patchedTree(upstream: string, repository: string, pin: Pin, carries: re
   // A fixed name means an interrupted preparation leaves nothing behind that the next one keeps.
   const scratchIndex = <A>(use: (env: NodeJS.ProcessEnv) => A) => {
     const temporary = `${index}.basalt-patched`;
+    // The caller holds the checkout lock, so this lock can only be a killed git's, and it would block every write.
+    rmSync(`${temporary}.lock`, { force: true });
     copyFileSync(index, temporary);
     try {
-      return use({ ...process.env, GIT_ATTR_NOSYSTEM: "1", GIT_INDEX_FILE: temporary });
+      const env = { ...process.env, GIT_ATTR_NOSYSTEM: "1", GIT_INDEX_FILE: temporary };
+      // Entries come from the pin alone, so nothing another writer staged reaches the tree; matching stat data survives.
+      git(upstream, ["read-tree", "-m", pin.commit], env);
+      git(upstream, ["diff-index", "--cached", "--quiet", pin.commit], env);
+      return use(env);
     } finally {
       rmSync(temporary, { force: true });
     }
@@ -222,20 +227,22 @@ function patchedTree(upstream: string, repository: string, pin: Pin, carries: re
         )
           throw new Error("recorded key or pin differs");
         git(upstream, ["cat-file", "-e", `${tree}^{tree}`]);
-        // The replay refuses to create a carried file over an ignored one; the hit refuses alike.
-        for (const path of lines(
-          git(upstream, [
-            "diff-tree",
-            "-r",
-            "-z",
-            "--name-only",
-            "--diff-filter=A",
-            pin.commit,
-            tree,
-          ]),
-        ))
-          if (lstatSync(join(upstream, path), { throwIfNoEntry: false }))
-            throw new Error(`${path} already exists`);
+        // The replay refuses to create a file over an ignored one or beyond a link, even one a later
+        // carry deletes; after the reset only ignored content is untracked, so the hit refuses alike.
+        const pinned = new Set(
+          lines(git(upstream, ["ls-tree", "-r", "-z", "--name-only", pin.commit])),
+        );
+        for (const path of new Set(carries.flatMap(({ bytes }) => additions(bytes)))) {
+          const parts = path.split("/");
+          for (let depth = 1; depth <= parts.length; depth++) {
+            const at = parts.slice(0, depth).join("/");
+            if (pinned.has(at)) break;
+            const stat = lstatSync(join(upstream, at), { throwIfNoEntry: false });
+            if (!stat) break;
+            if (depth === parts.length || !stat.isDirectory())
+              throw new Error(`${at} already exists`);
+          }
+        }
         scratchIndex((env) => {
           // A two-way merge from the pin writes only the paths the tree changes.
           git(upstream, [...RAW, "read-tree", "-m", "-u", pin.commit, tree], env);

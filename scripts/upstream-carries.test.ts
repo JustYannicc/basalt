@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { digest, prepareUpstreamCheckout } from "./upstream-cache.ts";
@@ -67,7 +67,7 @@ function fixture(t: TestContext) {
   mkdirSync(repository);
   git(repository, "init", "-q");
   write(repository, ".gitattributes", "*.txt text eol=lf\n");
-  write(repository, ".gitignore", "node_modules/\nbuild/\n");
+  write(repository, ".gitignore", "node_modules/\nbuild/\nlinked\n");
   write(repository, "pinned.ts", "export const pinned = 1;\n");
   write(repository, "tool.sh", "#!/bin/sh\necho tool\n");
   write(repository, "retired/old.ts", "export const old = true;\n");
@@ -103,7 +103,7 @@ function fixture(t: TestContext) {
     chmodSync(join(authoring, "packages/run.sh"), 0o755);
     // A file the carried ignore rules hide must still be part of the recorded tree.
     write(authoring, "generated.ts", "export const generated = true;\n");
-    write(authoring, ".gitignore", "node_modules/\nbuild/\ngenerated.ts\n");
+    write(authoring, ".gitignore", "node_modules/\nbuild/\nlinked\ngenerated.ts\n");
   });
   // Checking in would normalize these line endings, so this carry is written by hand.
   const crlf = join(directory, "patches/0003-crlf.patch");
@@ -141,6 +141,37 @@ function fixture(t: TestContext) {
 }
 
 const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+
+function handCarry(directory: string, name: string, body: string) {
+  const patch = join(directory, "patches", name);
+  writeFileSync(patch, body);
+  return patch;
+}
+const creates = (path: string, line: string) =>
+  `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+${line}\n`;
+const deletes = (path: string, line: string) =>
+  `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-${line}\n`;
+
+async function freshReplay(
+  directory: string,
+  pin: { repository: string; commit: string },
+  carries: string[],
+  tree: (cache: string) => string,
+) {
+  const cache = join(directory, `fresh-cache-${carries.length}`);
+  const previous = process.env.BASALT_UPSTREAM_CACHE;
+  process.env.BASALT_UPSTREAM_CACHE = cache;
+  try {
+    const fresh = join(directory, `fresh-${carries.length}/.upstream`);
+    assert.equal(await prepareUpstreamCheckout(fresh, pin, carries), "replayed");
+    return {
+      tree: tree(join(cache, "repositories", `${digest(pin.repository)}.git`)),
+      snapshot: snapshot(fresh),
+    };
+  } finally {
+    process.env.BASALT_UPSTREAM_CACHE = previous;
+  }
+}
 
 /** A git that runs `action` just before the replay checks the second carry. */
 function gitShim(directory: string, name: string, action: string) {
@@ -349,18 +380,24 @@ test("standalone legacy checkouts replay without recording a tree they alone cou
   assert.deepEqual(refs(), []);
 });
 
-test("concurrent preparations of one checkout record exactly a fresh replay's tree", async (t) => {
+async function concurrentPreparations(t: TestContext, variant: (upstream: string) => string) {
   const { directory, pin, edit, links, crlf, refs, tree, cacheRepository } = fixture(t);
   const upstream = join(directory, "one/.upstream");
+  mkdirSync(dirname(upstream));
+  if (!existsSync(dirname(variant(upstream)))) {
+    t.skip("the file system distinguishes these paths");
+    return;
+  }
   const carries = [edit, links, crlf];
   const paused = join(directory, "paused"),
     release = join(directory, "release");
   const pausing = gitShim(
     directory,
     "pause",
-    `: > '${paused}'; while [ ! -e '${release}' ]; do sleep 0.05; done`,
+    // Teardown removes the fixture, which also ends a pause a failed assertion left waiting.
+    `: > '${paused}'; while [ ! -e '${release}' ] && [ -e '${paused}' ]; do sleep 0.05; done`,
   );
-  const prepare = (bin?: string) => {
+  const prepare = (target: string, bin?: string) => {
     const child = spawn(
       process.execPath,
       [
@@ -376,7 +413,7 @@ test("concurrent preparations of one checkout record exactly a fresh replay's tr
           PATH: bin ? `${bin}:${process.env.PATH}` : process.env.PATH,
           BASALT_TEST_ARGS: JSON.stringify([
             new URL("./upstream-cache.ts", import.meta.url).href,
-            upstream,
+            target,
             pin,
             carries,
           ]),
@@ -392,30 +429,76 @@ test("concurrent preparations of one checkout record exactly a fresh replay's tr
       child.once("exit", (code) => resolve({ code, output })),
     );
   };
-  const first = prepare(pausing);
-  let exited = false;
-  void first.then(() => (exited = true));
-  while (!existsSync(paused) && !exited) await delay(20);
+  const first = prepare(upstream, pausing);
+  let firstExited = false;
+  void first.then(() => (firstExited = true));
+  while (!existsSync(paused) && !firstExited) await delay(20);
   assert.ok(existsSync(paused), "the first preparation must pause inside its replay");
-  const second = prepare();
-  // A second preparation that ignored the checkout lock would finish well within this bound.
+  const second = prepare(variant(upstream));
+  let secondExited = false;
+  void second.then(() => (secondExited = true));
+  // Without the checkout lock the second preparation finishes well within this bound.
   await Promise.race([second, delay(2000)]);
+  assert.equal(secondExited, false, "the second preparation must wait for the first");
   writeFileSync(release, "");
   const [one, two] = await Promise.all([first, second]);
   assert.equal(one.code, 0, one.output);
   assert.equal(two.code, 0, two.output);
   assert.match(two.output, /^restored$/m);
   assert.equal(refs().length, 1);
+  const fresh = await freshReplay(directory, pin, carries, tree);
+  assert.equal(tree(cacheRepository()), fresh.tree);
+  assert.deepEqual(snapshot(upstream), fresh.snapshot);
+}
 
-  process.env.BASALT_UPSTREAM_CACHE = join(directory, "fresh-cache");
-  const fresh = join(directory, "fresh/.upstream");
-  assert.equal(await prepareUpstreamCheckout(fresh, pin, carries), "replayed");
-  process.env.BASALT_UPSTREAM_CACHE = join(directory, "cache");
+test("concurrent preparations of one checkout record exactly a fresh replay's tree", (t) =>
+  concurrentPreparations(t, (upstream) => upstream));
+
+test("case variants of one checkout path share its lock", (t) =>
+  concurrentPreparations(t, (upstream) => upstream.replace("/one/", "/ONE/")));
+
+test("index writes during the replay never reach the recorded tree", async (t) => {
+  const { directory, pin, edit, links, crlf, refs, tree, cacheRepository } = fixture(t);
+  const carries = [edit, links, crlf];
+  const path = process.env.PATH;
+  t.after(() => (process.env.PATH = path));
+  const stage = (name: string, file: string, flags: string) => {
+    const upstream = join(directory, `${name}/.upstream`);
+    const add = `mkdir -p '${join(upstream, dirname(file))}'; printf 'foreign\\n' > '${join(upstream, file)}'; '${realGit}' -C '${upstream}' add ${flags} '${file}'`;
+    process.env.PATH = `${gitShim(directory, name, add)}:${path}`;
+    return upstream;
+  };
+  // A staged file the carries never produce is untracked against the pin, so the veto refuses it.
   assert.equal(
-    tree(cacheRepository()),
-    tree(join(directory, "fresh-cache/repositories", `${digest(pin.repository)}.git`)),
+    await prepareUpstreamCheckout(stage("staged", "stray.ts", ""), pin, carries),
+    "replayed",
   );
-  assert.deepEqual(snapshot(upstream), snapshot(fresh));
+  assert.deepEqual(refs(), []);
+  // A staged ignored file escapes the veto, so only a tree built from the pin keeps it out.
+  assert.equal(
+    await prepareUpstreamCheckout(stage("forced", "build/foreign.js", "-f"), pin, carries),
+    "replayed",
+  );
+  process.env.PATH = path;
+  assert.equal(refs().length, 1);
+  const fresh = await freshReplay(directory, pin, carries, tree);
+  assert.equal(tree(cacheRepository()), fresh.tree);
+  const clean = join(directory, "clean/.upstream");
+  assert.equal(await prepareUpstreamCheckout(clean, pin, carries), "restored");
+  assert.equal(existsSync(join(clean, "build/foreign.js")), false);
+  assert.deepEqual(snapshot(clean), fresh.snapshot);
+});
+
+test("a stale scratch index lock does not disable the cache", async (t) => {
+  const { directory, pin, edit, refs } = fixture(t);
+  const upstream = join(directory, "one/.upstream");
+  await prepareUpstreamCheckout(upstream, pin);
+  const index = git(upstream, "rev-parse", "--path-format=absolute", "--git-path", "index");
+  writeFileSync(`${index}.basalt-patched.lock`, "");
+  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "replayed");
+  assert.equal(refs().length, 1);
+  writeFileSync(`${index}.basalt-patched.lock`, "");
+  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit]), "restored");
 });
 
 test("writes the carries did not make block recording", async (t) => {
@@ -450,22 +533,53 @@ test("checkouts without file modes replay without recording", async (t) => {
   assert.equal(lstatSync(join(upstream, "tool.sh")).mode & 0o111, 0o111);
 });
 
-test("a hit refuses an ignored file at a carried path, as the replay does", async (t) => {
+test("a hit refuses ignored content wherever the replay would", async (t) => {
   const { directory, pin, edit, refs } = fixture(t);
   const upstream = join(directory, "one/.upstream");
-  const built = join(directory, "patches/0004-built.patch");
-  writeFileSync(
-    built,
-    "diff --git a/build/out.js b/build/out.js\nnew file mode 100644\n--- /dev/null\n+++ b/build/out.js\n@@ -0,0 +1 @@\n+carried\n",
+  const refuses = async (carries: string[], occupy: () => void, untouched: () => void) => {
+    const before = refs().length;
+    assert.equal(await prepareUpstreamCheckout(upstream, pin, carries), "replayed");
+    assert.equal(refs().length, before + 1);
+    occupy();
+    await assert.rejects(prepareUpstreamCheckout(upstream, pin, carries));
+    untouched();
+  };
+  // The final tree adds this path.
+  const built = handCarry(directory, "0004-built.patch", creates("build/out.js", "carried"));
+  await refuses(
+    [edit, built],
+    () => writeFileSync(join(upstream, "build/out.js"), "built locally\n"),
+    () => assert.equal(readFileSync(join(upstream, "build/out.js"), "utf8"), "built locally\n"),
   );
-  assert.equal(await prepareUpstreamCheckout(upstream, pin, [edit, built]), "replayed");
-  assert.equal(refs().length, 1);
-  writeFileSync(join(upstream, "build/out.js"), "built locally\n");
-  await assert.rejects(
-    prepareUpstreamCheckout(upstream, pin, [edit, built]),
-    /Carry 0004-built\.patch does not apply/,
+  rmSync(join(upstream, "build"), { recursive: true });
+  // One carry creates this path and a later one deletes it, so the final tree never names it.
+  const transient = [
+    handCarry(directory, "0005-tmp.patch", creates("build/tmp.js", "tmp")),
+    handCarry(directory, "0006-tmp.patch", deletes("build/tmp.js", "tmp")),
+  ];
+  await refuses(
+    [edit, ...transient],
+    () => {
+      mkdirSync(join(upstream, "build"));
+      writeFileSync(join(upstream, "build/tmp.js"), "built locally\n");
+    },
+    () => assert.equal(readFileSync(join(upstream, "build/tmp.js"), "utf8"), "built locally\n"),
   );
-  assert.equal(readFileSync(join(upstream, "build/out.js"), "utf8"), "built locally\n");
+  // An ignored link as the parent of an added path would let the hit write outside the checkout.
+  const outside = join(directory, "outside");
+  const linked = handCarry(directory, "0007-linked.patch", creates("linked/out.js", "carried"));
+  await refuses(
+    [edit, linked],
+    () => {
+      rmSync(join(upstream, "linked"), { recursive: true });
+      mkdirSync(outside);
+      symlinkSync(outside, join(upstream, "linked"), "dir");
+    },
+    () => {
+      assert.deepEqual(readdirSync(outside), []);
+      assert.equal(lstatSync(join(upstream, "linked")).isSymbolicLink(), true);
+    },
+  );
 });
 
 test("collection keeps the most recently used patched trees", async (t) => {
