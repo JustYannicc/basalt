@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readDeclarations, declaredMatrices, patternForGroup } from "./ci/declarations.ts";
+import { readDeclarations, declaredRuns, patternForGroup } from "./ci/declarations.ts";
 import { selectPaths } from "./ci/affected.ts";
 
 const owner = "account-acquisition:account-usage-rows-and-cells";
@@ -33,7 +33,7 @@ test("each duplicated account scenario retains one self-host owner and every aff
       assert.ok(selectPaths([input]).jobs.includes("account-usage"), input);
   }
   assert.ok(
-    !declaredMatrices()["declared-self-host"]!.include.some(
+    !declaredRuns()["declared-self-host"]!.some(
       ({ file }) => file === "app-account-traffic.spec.ts",
     ),
   );
