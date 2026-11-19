@@ -112,6 +112,7 @@ export async function handoffRuntime(
   const helper = { starts: 0, witness: undefined as object | undefined };
   const hooks = {
     health: async (): Promise<Response | void> => {},
+    keepAlive: async () => {},
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
     connections: async () => 0,
@@ -200,6 +201,7 @@ export async function handoffRuntime(
       },
       setInactivityTimeout: async () => {
         calls.keepAlive++;
+        await hooks.keepAlive();
       },
       getTcpPort(port: number) {
         return {
