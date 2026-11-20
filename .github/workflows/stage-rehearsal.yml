@@ -6,7 +6,8 @@ name: Stage rehearsal
 # runs the mode again. Every apply and destroy goes through scripts/release/deploy.ts.
 on:
   pull_request:
-    branches: [main]
+    # rehearsal/base: the frozen merge-base #1306 targets while main's release path moves on.
+    branches: [main, rehearsal/base]
     types: [labeled]
 
 permissions:
