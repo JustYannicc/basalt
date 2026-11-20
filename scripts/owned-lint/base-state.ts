@@ -39,7 +39,7 @@ export function baseState(root: string, base: string, outside: (file: string) =>
   // The working tree against the base, with renames: a renamed file keeps its old count.
   const renamed = new Map<string, string>();
   const changed = new Set<string>();
-  // Renames from anywhere under scripts/ and src/, so code moved out of the release layer is found.
+  // Renames from anywhere under scripts/ and src/, so code moved in from outside the gated scope is found.
   const entries = git(["diff", "-z", "--name-status", "-M", base, "--", "scripts", "src"]);
   for (let index = 0; index < entries.length - 1;) {
     const status = entries[index++]!;
