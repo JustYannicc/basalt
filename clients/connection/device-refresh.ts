@@ -1,21 +1,18 @@
 import type { DeviceCredentials } from "../contracts/device.ts";
-import { nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import { untilAborted } from "./abort.ts";
 import { DeviceOAuthError, tokenRequest } from "./device-oauth.ts";
 
-/**
- * How long the server answers a rotated refresh token with the pair it already issued: its
- * refresh-token reuse interval, which it sets to the access-token lifetime and counts from the
- * rotation. A first attempt starts no later than that rotation, so a replay younger than this is
- * still answered. An older one can be refused as token reuse, so the client asks for sign-in
- * instead of sending it. The answer carries only what is left of the pair's first lifetime, so
- * replay stops while that still covers what a token needs before use.
- */
-const refreshReplayLimitMs = 3_600_000 - nativeTunnelReadyTimeoutMs;
-
-/** The saved grant can no longer be renewed. Only a fresh sign-in recovers. */
+/** The server refused the saved grant. Only a fresh sign-in recovers. */
 class RefreshSignInRequiredError extends Error {}
 
+/**
+ * One refresh exchange; an unconfirmed one is sent again whatever its age, and only the server's
+ * refusal asks for sign-in. A refresh that never reached the server is still current there. One
+ * the server rotated is answered with the same pair for an hour, then refused. Reuse later than a
+ * day revokes the token family, which is this device's own grant: each sign-in registers its own
+ * OAuth client. `refreshStartedAt` stays in saved credentials to show how long a renewal has been
+ * unconfirmed; nothing decides on it.
+ */
 export async function refreshDeviceCredentials(
   current: DeviceCredentials,
   signal: AbortSignal,
@@ -23,9 +20,6 @@ export async function refreshDeviceCredentials(
 ) {
   const unknown = current.refreshPending === true;
   const startedAt = unknown ? (current.refreshStartedAt ?? Date.now()) : Date.now();
-  // The start is saved, so sleep, a restart and Reconnect all measure the same elapsed time.
-  if (unknown && Date.now() - startedAt >= refreshReplayLimitMs)
-    throw new RefreshSignInRequiredError("The server no longer replays this refresh.");
   await commit({ ...current, refreshPending: true, refreshStartedAt: startedAt });
   const tokens = await tokenRequest(
     current.origin,
