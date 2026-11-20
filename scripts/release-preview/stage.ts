@@ -80,7 +80,7 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = join(root, ".upstream/apps/hosted/cloud");
 
 async function runEntry(
-  command: "plan" | "deploy" | "serving" | "rollback",
+  command: "plan" | "deploy" | "serving" | "rollback" | "boot" | "accept",
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   extra: NodeJS.ProcessEnv,
@@ -272,6 +272,68 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
 export const healCandidateBranch = "rehearse/heal-candidate";
 
 /**
+ * The expect arguments the candidate's own release.yml gives a declared root restart: the policy's
+ * bound as `--within` on the older form, the apply's outcome as `--apply` on the newer one.
+ */
+export function restartExpectArgs(input: {
+  workflow: string;
+  bound: number | undefined;
+  serving: string;
+  apply: "success" | "failure";
+}) {
+  const line = /expect=\(--expect restart[^)]*\)/u.exec(input.workflow)?.[0];
+  if (!line) throw new Error("The candidate's release.yml declares no root restart acceptance");
+  const args = ["--expect", "restart", "--serving", input.serving];
+  if (line.includes("--apply")) args.push("--apply", input.apply);
+  if (line.includes("--within")) {
+    if (!input.bound) throw new Error("The candidate's policy declares no restart bound");
+    args.push("--within", String(input.bound));
+  }
+  return args;
+}
+
+/** The release's own `accept` step after a heal's apply, recorded whole and never thrown. */
+async function healAcceptance(input: {
+  candidate: string;
+  subject: StageSubject;
+  source: NodeJS.ProcessEnv;
+  env: NodeJS.ProcessEnv;
+  outputs: string;
+  servingFile: string;
+  rootBootFile: string;
+  apply: "success" | "failure";
+}) {
+  const out = join(input.outputs, "heal-acceptance.json");
+  try {
+    const policy = JSON.parse(
+      await readFile(join(input.candidate, "scripts/release/policies/code-restart.json"), "utf8"),
+    ) as { acceptance?: { rootRestart?: { bound?: number } } };
+    const args = restartExpectArgs({
+      workflow: await readFile(join(input.candidate, ".github/workflows/release.yml"), "utf8"),
+      bound: policy.acceptance?.rootRestart?.bound,
+      serving: input.servingFile,
+      apply: input.apply,
+    });
+    let refused: string | undefined;
+    await runEntry("accept", input.subject, input.source, input.env, input.outputs, {
+      args: [...args, "--root-boot", input.rootBootFile, "--out", out],
+      tree: input.candidate,
+    }).catch((error: unknown) => {
+      refused = redactor(input.source)(
+        error instanceof Error ? error.message : String(error),
+      ).slice(0, 2_000);
+    });
+    const record = await readFile(out, "utf8").then(
+      (text) => JSON.parse(redactor(input.source)(text)) as unknown,
+      () => null,
+    );
+    return { ran: true, args: args.filter((arg) => !arg.startsWith("/")), refused, record };
+  } catch (error) {
+    return { ran: false, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * What a stage heal pass does and does not prove, kept with every heal run (pass or fail) so
  * nobody reads it as "serves model calls".
  */
@@ -375,6 +437,29 @@ async function healRelease(
         throw new Error(
           `The healing release plans changes on the root container: ${JSON.stringify(onRoot)}`,
         );
+      // The release's own acceptance, as release.yml runs it from the candidate's own entry: the
+      // serving versions and the root's boot before the apply, `accept` after it either way.
+      const acceptEnv = {
+        ...env,
+        POOL_ACCEPTANCE_ORIGIN: previewStageOrigin(
+          stageNames(subject).slug,
+          source.TEST_STAGE_DOMAIN ?? "",
+        ),
+      };
+      const servingFile = join(outputs, "heal-serving.json");
+      const rootBootFile = join(outputs, "heal-root-boot.json");
+      await runEntry("serving", subject, source, acceptEnv, outputs, {
+        args: ["--fqn", "PoolWorker", "--out", servingFile],
+        tree: candidate,
+      });
+      await runEntry("boot", subject, source, acceptEnv, outputs, {
+        args: ["--out", rootBootFile, "--allow-not-serving"],
+        tree: candidate,
+      }).catch((error: unknown) => {
+        result.rootBootRefused = redactor(source)(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 1_000);
+      });
       // The deploy plans again under the policy and stops in plan on any refusal. A release that
       // uploads and then fails its readiness check is recorded, and recovery is still watched: the
       // pool can heal while the release itself reports failure (the unfixed head's predicted red).
@@ -398,6 +483,16 @@ async function healRelease(
         // A refusal in plan changed nothing, so there is no recovery to watch.
         if (/stopped in plan/u.test(String(result.releaseFailed))) throw error;
       }
+      result.releaseAcceptance = await healAcceptance({
+        candidate,
+        subject,
+        source,
+        env: acceptEnv,
+        outputs,
+        servingFile,
+        rootBootFile,
+        apply: result.releaseFailed ? "failure" : "success",
+      });
     });
     result.releaseSeconds = Math.round((Date.now() - started) / 1000);
     // 4. Recovery: wait, bounded, for the Worker's own restart to bring a new boot that answers.
