@@ -32,7 +32,10 @@ export const ReleasePolicy = Schema.Struct({
    */
   acceptance: Schema.optional(
     Schema.Struct({
-      rootRestart: Schema.Struct({ withinSeconds: Schema.Number, why: Schema.String }),
+      rootRestart: Schema.Struct({
+        bound: Schema.Literal("healingAcceptanceWithinMs"),
+        why: Schema.String,
+      }),
     }),
   ),
   // Only the cutover's declaration switches; a policy never supplies other configuration.

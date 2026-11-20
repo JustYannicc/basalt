@@ -192,20 +192,22 @@ if (command === "boot" || command === "accept") {
         "The pool did not answer before the apply, and this release declares no restart",
       );
     let restart: Record<string, unknown> | undefined;
+    // Which bound a healing release waited within, named in its summary line.
+    let bound: { name: string; seconds: number } | undefined;
     let verdict: Awaited<ReturnType<typeof awaitRecoveryReady>> | undefined;
     // How the stuck runtime was stopped, read from the pool Worker's log when it did not heal.
     let stopPathsOf: (() => Promise<unknown>) | undefined;
     const startedAt = Date.now();
     if (expect === "restart") {
-      // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
-      // controller's recovery starts a new one inside its own startup budget.
-      // The policy's 420 s is a stated bound, not derived: acceptable only because no production
-      // release runs before the release-bounds PR derives it from the pool's named constants.
-      const within = Number(values.within);
-      if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot || !values.serving)
-        throw new Error(
-          "--expect restart needs --root-boot, --serving <serving.json> and --within <60..900 seconds>",
-        );
+      // The bound comes from the controller's own named constants: the fix acts, stops the runtime
+      // gracefully, and the controller's recovery starts a new one inside its own startup budget.
+      const { healingAcceptanceWithinMs } =
+        await import("../../src/pool/runtime-slots/forced-restart-timing.ts");
+      if (values.within !== undefined)
+        throw new Error("--within is gone: a healing release's bound is healingAcceptanceWithinMs");
+      if (!rootBoot || !values.serving)
+        throw new Error("--expect restart needs --root-boot and --serving <serving.json>");
+      bound = { name: "healingAcceptanceWithinMs", seconds: healingAcceptanceWithinMs / 1_000 };
       // `/v1/models` answers while model calls are still refused; the controller's recovery `ready`
       // is the signal. The new controller answers a signed read-only `inspect` once it has adopted
       // its code; until then it refuses on identity, which reads as not ready yet.
@@ -255,9 +257,10 @@ if (command === "boot" || command === "accept") {
             )) as { result?: unknown } | undefined
           )?.result,
         before: rootBoot,
-        withinMs: within * 1000,
+        withinMs: healingAcceptanceWithinMs,
       });
       restart = {
+        bound,
         ready: verdict.ready,
         waitedMs: verdict.waitedMs,
         reads: verdict.reads,
@@ -267,7 +270,9 @@ if (command === "boot" || command === "accept") {
         // No new boot is selected, so no model call could show the release healed the pool.
         const view = { outcome: "not-serving", restart, stopPaths: await stopPathsOf() };
         if (values.out) await output(resolve(values.out), view);
-        await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
+        await summary(
+          `NOT SERVING after the healing release, waited up to ${bound?.seconds} s (${bound?.name}): ${safeJson(view)}`,
+        );
         process.exit(1);
       }
       rootBoot = verdict.boot;
@@ -294,12 +299,13 @@ if (command === "boot" || command === "accept") {
       ...(outcome === "not-serving" && stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
     };
     if (values.out) await output(resolve(values.out), view);
+    const waited = bound ? ` Bound: ${bound.seconds} s (${bound.name}).` : "";
     await summary(
-      outcome === "serving-needs-person"
+      (outcome === "serving-needs-person"
         ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
         : outcome === "not-serving"
           ? `NOT SERVING after the healing release: ${safeJson(view)}`
-          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`,
+          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
     );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
     // Exit 3 is its own result: not green, and not a failure to undo.

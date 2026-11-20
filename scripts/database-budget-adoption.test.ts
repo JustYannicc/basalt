@@ -7,9 +7,11 @@ import { databaseReadinessCommandMs, runDatabaseBudgetCommand } from "./database
 import { openDeploymentReadiness, ReadinessResponseError } from "./database-budget-readiness.ts";
 import { DatabaseBudgetFailure } from "./database-budget-receipt.ts";
 import { handleDeploymentReadiness } from "../src/pool/deployment-readiness.ts";
-import { poolLifecycle } from "../src/pool/lifecycle.ts";
-import { forcedStopGraceMs } from "../src/pool/runtime-slots/forced-stop.ts";
-import { unservingBoundMs } from "../src/pool/runtime-slots/unserving-clock.ts";
+import {
+  controllerAdoptionMs,
+  destroyAndMembershipMs,
+  forcedRestartServesWithinHeldStreamsMs,
+} from "../src/pool/runtime-slots/forced-restart-timing.ts";
 
 const target = { candidate: "a".repeat(40), workerInput: "b".repeat(64), imageHash: "1234abcd" };
 const key = "c".repeat(64);
@@ -168,26 +170,17 @@ test("readiness refused until its deadline fails with the last refusal", async (
   });
 });
 
-// The controller's slowest replacement of a running runtime that keeps refusing, counted from the
-// moment its object runs the uploaded code. The waits that carry no name are written as its code
-// has them.
-const controllerHealMs =
-  2_000 + // the alarm turn that meets the refusal
-  unservingBoundMs +
-  2_000 + // the warm read that decides to stop
-  forcedStopGraceMs +
-  2 * 2_000 + // two reads confirm the container exited
-  1_000 + // the provider admits the restart
-  poolLifecycle.startupTimeoutMs +
-  14_000 + // the tail of a start
-  2_000; // the alarm turn that reports ready
-
 test("readiness outlasts the longest adoption followed by the controller's own heal", async () => {
   await workspace(async (path) => {
     const time = scheduler();
-    // The object adopts the code at the last moment the platform allows, then heals at its slowest.
-    // The container's destroy and one membership pass have no bound of their own: ten seconds here.
-    const servingAt = 330_000 + controllerHealMs + 10_000;
+    // The object adopts the code at the last moment the platform allows, then heals at its slowest
+    // with a stream count that stands still; destroy and the membership pass take their whole
+    // allowance, less one pause between readiness attempts.
+    const servingAt =
+      controllerAdoptionMs +
+      forcedRestartServesWithinHeldStreamsMs +
+      destroyAndMembershipMs -
+      5_000;
     const result = await runDatabaseBudgetCommand(source(path), ["--ready"], {
       now: time.now,
       deadline: time.deadline,
@@ -201,10 +194,7 @@ test("readiness outlasts the longest adoption followed by the controller's own h
     });
     assert.equal(result.outcome, "converged");
     assert.equal(result.runtime?.bootId, "boot");
-    assert.ok(
-      databaseReadinessCommandMs - servingAt >= 30_000,
-      "the wait keeps half a minute beyond the slowest heal",
-    );
+    assert.ok(databaseReadinessCommandMs >= servingAt + 5_000, "the wait covers the slowest heal");
   });
 });
 

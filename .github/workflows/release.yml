@@ -318,7 +318,7 @@ jobs:
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
         # pool that does not answer; every other release needs the root's boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
       # The restore target if the class change fails. Reading it also arms a restore to it for ten
       # minutes, the window the class change runs in.
@@ -349,7 +349,9 @@ jobs:
       - name: Accept the release through the live pool
         env: *release-secrets
         id: accept
-        if: env.MODE == 'apply' && steps.apply.outcome == 'success'
+        # A healing release is accepted after a failed apply too: acceptance only reads, and the run
+        # still reports healed, serving but needing a person, or not serving.
+        if: env.MODE == 'apply' && (steps.apply.outcome == 'success' || (env.POLICY_NAME == 'code-restart' && steps.apply.outcome == 'failure'))
         continue-on-error: true
         # Every request must succeed; the runtimes that served are recorded (a code update may restart the root).
         # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
@@ -357,9 +359,9 @@ jobs:
         # A declared root restart first waits, bounded by the policy, for the root's new boot; then every
         # request must succeed on that one boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
-          if [ -n "$within" ]; then expect=(--expect restart --within "$within" --serving .local/release/serving.json); fi
+          if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json); fi
           bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
           node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
