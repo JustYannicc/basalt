@@ -81,29 +81,17 @@ export const proveReleasePhases = (stack) =>
       });
     const failure = yield* runPhase(true);
     const success = yield* runPhase(false);
-    const dbSecondPass = [],
-      nextAttempt = [];
+    const dbSecondPass = [];
     for (const node of declared.filter(
       (node) => selected.has(node.FQN) && node.Type === "Command.Exec",
     )) {
       const news = yield* Output.evaluate(node.Props, success.outputs);
-      const old = success.props[node.FQN];
       const diff = yield* success.provider.diff({
-        olds: old,
+        olds: success.props[node.FQN],
         news,
         output: success.outputs[node.FQN],
       });
       dbSecondPass.push({ id: node.FQN, action: diff?.action ?? "unknown" });
-      const changed = {
-        ...news,
-        env: { ...news.env, BASALT_RELEASE_ATTEMPT: "00000000-0000-4000-8000-000000000002" },
-      };
-      const retryDiff = yield* success.provider.diff({
-        olds: old,
-        news: changed,
-        output: success.outputs[node.FQN],
-      });
-      nextAttempt.push({ id: node.FQN, action: retryDiff?.action ?? "unknown" });
     }
     return {
       resources,
@@ -111,6 +99,5 @@ export const proveReleasePhases = (stack) =>
       failed: failure.failed,
       applied: failure.applied,
       dbSecondPass,
-      nextAttempt,
     };
   });

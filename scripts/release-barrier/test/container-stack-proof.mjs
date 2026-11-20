@@ -423,6 +423,20 @@ export const proveContainerStack = (source, recompile, scenario) =>
           ...plannedReasons(plan, plan.resources.PoolContainer),
           ...((yield* run(imagePlanReasons(plan))).get("PoolContainer") ?? []),
         ];
+        if (["native-state-drift", "database-dependency-drift"].includes(scenario)) {
+          // A database command runs only when its inputs changed. This release changes them, so
+          // the database phase applies the command and the drift lands in the middle of it.
+          const key = { stack: stack.name, stage: stack.stage, fqn: "PoolDatabase" };
+          const recorded = yield* memory.get(key);
+          assert.ok(recorded && "attr" in recorded);
+          yield* memory.set({
+            ...key,
+            value: {
+              ...recorded,
+              attr: { ...recorded.attr, hash: { input: "inputs-of-an-earlier-release" } },
+            },
+          });
+        }
         api.writes = 0;
         api.rollouts = 0;
         writes = 0;

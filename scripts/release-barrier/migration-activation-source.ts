@@ -7,6 +7,7 @@ import {
   historyJournalActivationMigration,
   historySchemaMigrations,
 } from "../../src/pool/model-history/schema.ts";
+import { poolMigrationSources } from "../../src/pool/model-history/sources.ts";
 import { runHistoryOperator } from "../pool-history-operator.ts";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import type { JournalFunction } from "./migration-activation-database.ts";
@@ -25,21 +26,9 @@ const hostedPath = ".upstream/apps/hosted/server/src/implementation/";
 const cliPath = ".upstream/apps/hosted/cloud/src/migrate.ts";
 const operatorPath = "scripts/pool-history-operator.ts";
 const schemaPath = "src/pool/model-history/schema.ts";
-/**
- * Every file behind this client's own import of the pool history migrations. The client describes
- * production with that import, which is only true while each file equals the candidate's.
- */
-export const poolMigrationSources = [
-  "brand.ts",
-  "src/pool/database-settings.ts",
-  "src/pool/model-history/bulk-schema.ts",
-  "src/pool/model-history/change-journal-schema.ts",
-  "src/pool/model-history/change-schema.ts",
-  "src/pool/model-history/history-row-schema.ts",
-  "src/pool/model-history/import-completion-schema.ts",
-  schemaPath,
-  "src/pool/pool-group.ts",
-] as const;
+// The client describes production with its own import of the pool history migrations, which is
+// only true while each of these files equals the candidate's.
+export { poolMigrationSources };
 const migrations = Schema.Array(
   Schema.Struct({ name: Schema.String, statements: Schema.Array(Schema.String) }),
 );
