@@ -186,8 +186,8 @@ test(
 );
 
 test(
-  "the stuck record heals after a held stream count, and the joined restart's budget never pre-empts its stop",
-  { timeout: 60_000 },
+  "the stuck record heals after a held stream count, with no needs-a-person",
+  { timeout: 30_000 },
   async (context) => {
     let now = Date.now();
     context.mock.method(Date, "now", () => now);
@@ -197,7 +197,7 @@ test(
     context.mock.method(console, "error", () => {});
     const { previous, epoch } = await stuckOverRunningContainer(f);
     // A lease that never moves, unstamped: the stop waits leakedStreamsMs from the first refusal,
-    // exactly the restart budget, while every pass also joins the admitted restart.
+    // exactly the restart budget, while every pass also joins the restart admitted over it.
     const identity = f.old.identity();
     await f.old.storage.put(
       `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`,

@@ -23,17 +23,23 @@ export const UnservingState = Schema.Struct({
   /** Streams counted active that hold the stop, and since when their count has stood still. */
   streams: Schema.optional(Schema.Struct({ active: Schema.Number, stillSince: Schema.Number })),
   /**
-   * When recovery first tried a restart it didn't force, since the runtime last served, and the
-   * boot that restart replaces. It shares the forced restart's budget.
+   * When recovery first admitted a restart it didn't force, since the runtime last served. It shares
+   * the forced restart's budget, and the needs-a-person it records never blocks a forced stop.
    */
-  joined: Schema.optional(Schema.Struct({ boot: Schema.String, at: Schema.Number })),
+  unforcedRestartAt: Schema.optional(Schema.Number),
 });
 export type UnservingState = typeof UnservingState.Type;
 type Decision = "wait" | "needs_person" | "restart_limit" | "stop";
 
 /** What the clock allows for this pass; pure, so the bounds are testable on their own. */
 export function unservingDecision(state: UnservingState, now: number): Decision {
-  if (state.needsPerson) return "needs_person";
+  // A restart recovery started on its own that failed says nothing against stopping a runtime that
+  // runs and refuses: that stop is how such a state heals.
+  if (
+    state.needsPerson &&
+    (state.needsPerson.reason !== "restart_failed" || state.restartedAt !== undefined)
+  )
+    return "needs_person";
   if (state.since === undefined || now - state.since < unservingBoundMs) return "wait";
   if (state.restarts.filter((at) => at > now - hourMs).length >= forcedRestartsPerHour)
     return "restart_limit";
@@ -41,8 +47,9 @@ export function unservingDecision(state: UnservingState, now: number): Decision 
 }
 
 /**
- * How long the selected runtime has been running but not serving, and the forced restarts made for
- * it. Durable, so a controller isolate restart neither resets the bound nor the hourly limit.
+ * How long the selected runtime has been running but not serving, the forced restarts made for it,
+ * and when recovery first restarted it on its own. Durable, so a controller isolate restart resets
+ * neither the bound, the hourly limit nor the restart budget.
  */
 export class UnservingClock {
   private storage: RuntimeSlotStorage;
@@ -70,30 +77,25 @@ export class UnservingClock {
         : { ...state, since: undefined, streams: undefined },
     );
   }
-  /** A refusal of any kind: a forced or joined restart that still hasn't served has failed. */
+  /** A refusal of any kind: a restart, forced or not, that still hasn't served has failed. */
   failedSince(now: number) {
     return this.change((state) => {
-      const began = state.restartedAt ?? state.joined?.at;
+      const began = state.restartedAt ?? state.unforcedRestartAt;
       return began !== undefined && !state.needsPerson && now - began >= forcedRestartBudgetMs
         ? { ...state, needsPerson: { at: now, reason: "restart_failed" as const } }
         : state;
     });
   }
   /**
-   * Recovery tries a restart it didn't force. The budget starts at the first try since the runtime
-   * last served, so a restart that commits, exits and is tried again doesn't start it over.
+   * Recovery admitted a restart it didn't force. The budget runs from the first one since the runtime
+   * last served, so a restart that exits and is admitted again doesn't start it over.
    */
-  joined(identity: SlotIdentity, now: number) {
+  unforcedRestart(now: number) {
     return this.change((state) =>
-      state.restartedAt !== undefined || state.joined
+      state.restartedAt !== undefined || state.unforcedRestartAt !== undefined
         ? state
-        : { ...state, joined: { boot: executionKey(identity), at: now } },
+        : { ...state, unforcedRestartAt: now },
     );
-  }
-  /** The restart runs over the selected boot's own container, so the forced restart times it. */
-  notJoined() {
-    if (this.clean) return Promise.resolve({ restarts: [] });
-    return this.change((state) => (state.joined ? { ...state, joined: undefined } : state));
   }
   /** The stop no longer waits on streams. */
   notWaiting() {
@@ -129,7 +131,7 @@ export class UnservingClock {
       state.restartedAt === undefined &&
       !state.needsPerson &&
       !state.streams &&
-      !state.joined
+      state.unforcedRestartAt === undefined
         ? state
         : { restarts: state.restarts },
     );
