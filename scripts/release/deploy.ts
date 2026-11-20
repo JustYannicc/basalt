@@ -195,6 +195,8 @@ if (command === "boot" || command === "accept") {
     if (expect === "restart") {
       // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
       // controller's recovery starts a new one inside its own startup budget.
+      // The policy's 420 s is a stated bound, not derived: acceptable only because no production
+      // release runs before the release-bounds PR derives it from the pool's named constants.
       const within = Number(values.within);
       if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot || !values.serving)
         throw new Error(
@@ -318,9 +320,19 @@ if (stage === "production") {
 // CI makes every State store bootstrap branch die rather than prompt (StateStore/State.ts:231-238).
 Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: stage, CI: "true" });
 
+// Alchemy captures the working directory once, when its first module loads (alchemy/Util/Node.ts
+// `initialCwd`), and resolves every command's relative cwd from it. The stack's commands are
+// declared relative to the cloud app, so the entry moves there before anything loads Alchemy.
+const policyPath = values.policy ? resolve(values.policy) : undefined;
+process.chdir(cloud);
 const { decodeReleasePolicy } = await import("./policy.ts");
-const policy = values.policy
-  ? decodeReleasePolicy(JSON.parse(await readFile(resolve(values.policy), "utf8")))
+const { initialCwd } = await import("alchemy/Util/Node");
+if (initialCwd !== process.cwd())
+  throw new Error(
+    "Alchemy loaded before the entry moved into the cloud app, so the stack's command directories would resolve elsewhere",
+  );
+const policy = policyPath
+  ? decodeReleasePolicy(JSON.parse(await readFile(policyPath, "utf8")))
   : undefined;
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;
@@ -329,8 +341,7 @@ const include: string[] = values.include?.length ? values.include : [...(policy?
 if (stage === "production" && !policy && ["plan", "apply"].includes(command))
   throw new Error("Production plans and applies only under a policy");
 
-process.chdir(cloud);
-const { Effect } = await import("effect");
+const { Effect, Logger } = await import("effect");
 const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
@@ -348,6 +359,7 @@ const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./releas
 const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
+const { servingBindingShapes } = await import("./fixed-bindings.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -399,6 +411,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
         const wire = {
           sqliteClasses: {} as Record<string, ReadonlyArray<string>>,
           mainModuleSha256: {} as Record<string, string>,
+          fixedBindings: {} as Record<string, ReadonlyArray<string>>,
           // A fresh disposable stage creates every class on its first deploy; production never does.
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
@@ -423,11 +436,17 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               ...target,
             } as never) as unknown as Fx.Effect<StateService, unknown, never>;
             const stack = yield* stackName();
+            const label = stage.replace(/^test-/u, "");
             wire.stage = {
               stack,
               stage,
-              label: stage.replace(/^test-/u, ""),
-              databases: process.env.TEST_STAGE_DATABASE ? [process.env.TEST_STAGE_DATABASE] : [],
+              label,
+              ...(process.env.TEST_STAGE_DOMAIN ? { domain: process.env.TEST_STAGE_DOMAIN } : {}),
+              // Only the stage's own database, by the name its stack derives; anything else none.
+              databases:
+                process.env.TEST_STAGE_DATABASE === `basalt-preview-${label}`
+                  ? [process.env.TEST_STAGE_DATABASE]
+                  : [],
               owned: ownIdentities(
                 yield* stageRows(store as never, stack, stage) as Fx.Effect<
                   unknown[],
@@ -448,6 +467,15 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             });
             wire.mainModuleSha256[script] = digest;
             liveModules.push({ fqn, digest });
+          }
+          // A Worker admitted as code only uploads exactly what its serving version binds.
+          for (const fqn of policy?.wire.fixedBindings ?? []) {
+            const script = yield* scriptName(fqn);
+            wire.fixedBindings[script] = yield* servingBindingShapes({
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+              token: Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""),
+              script,
+            });
           }
           // Every reviewed release leaves the root application as recorded; previews roll it freely.
           if (policy?.check) {
@@ -471,6 +499,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
         return yield* guarded.pipe(
           Effect.provide(Alchemist.layer()),
           Effect.provide(guard.layer),
+          // Effect's default console logger would print Alchemy's own lines (script names, hosts)
+          // into the public log. Replaced by none: Alchemy's session merges its private file log in.
+          Effect.provide(Logger.layer([])),
         ) as Fx.Effect<A, unknown, never>;
       }),
     ) as Fx.Effect<A, unknown, never>,
@@ -741,14 +772,28 @@ try {
             new Error("rollback needs --from <serving.json> or --fqn and --to"),
           );
         const rolledBack: { fqn: string; version: string }[] = [];
+        // Every Worker is tried: one that fails must not leave the rest on the failed release.
+        const failed: { fqn: string; cause: unknown }[] = [];
         for (const target of targets) {
-          yield* rollbackTo(
-            at(yield* scriptName(target.fqn)),
-            target.version,
-            `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+          const exit = yield* Effect.exit(
+            Effect.gen(function* () {
+              yield* rollbackTo(
+                at(yield* scriptName(target.fqn)),
+                target.version,
+                `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+              );
+            }),
           );
-          rolledBack.push(target);
+          if (exit._tag === "Success") rolledBack.push(target);
+          else failed.push({ fqn: target.fqn, cause: exit.cause });
         }
+        if (failed.length)
+          return yield* Effect.die(
+            new Error(
+              `Rollback failed for ${failed.map(({ fqn }) => fqn).join(", ")}; rolled back ${rolledBack.map(({ fqn }) => fqn).join(", ") || "none"}`,
+              { cause: failed },
+            ),
+          );
         return { workers: rolledBack, rolledBack: true };
       }),
     );

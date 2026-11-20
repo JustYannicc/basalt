@@ -31,6 +31,16 @@
     "artifactsCredentials": "ArtifactsCredentials",
     "allow": [
       {
+        "fqn": "ArtifactsCredentials",
+        "action": "update",
+        "codeOnly": {
+          "references": [
+            "env"
+          ],
+          "why": "The release ships main as a whole. Holding the bulk-import store's Worker at older code while the pool Worker and the history schema move is version skew, so its code moves with the rest. Only its code: a changed binding or property refuses here, and its upload must carry the serving version's bindings and no migration (wire.fixedBindings), so its Durable Object classes and their stored jobs stay as they are."
+        }
+      },
+      {
         "fqn": "DatabaseConnection",
         "action": "update",
         "unresolvedOnly": true
@@ -57,12 +67,15 @@
     ]
   },
   "wire": {
-    "sqliteClasses": {}
+    "sqliteClasses": {},
+    "fixedBindings": [
+      "ArtifactsCredentials"
+    ]
   },
   "acceptance": {
     "rootRestart": {
       "withinSeconds": 420,
-      "why": "About 60 s for the fix to act, a graceful stop of up to 30 s, one recovery pass of up to 200 s (startup allows 180 s), and the peer bootstrap and membership pass before the pool serves."
+      "why": "A stated bound, not derived from the pool's constants: acceptable only because no production release runs before the release-bounds PR replaces it with one derived from the pool's named constants (worst case about 555 s plus destroy plus one membership pass when in-flight streams are counted). Until then it is the rehearsal's bound only."
     }
   },
   "env": {

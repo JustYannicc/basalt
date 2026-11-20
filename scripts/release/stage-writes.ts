@@ -10,8 +10,10 @@ import { Effect } from "effect";
 export interface StageScope {
   readonly stack: string;
   readonly stage: string;
-  /** The stage's DNS label (`rehearsal-2`); every hostname it attaches carries it as one label. */
+  /** The stage's DNS label (`rehearsal-2`); every hostname it attaches ends in `.<label>.<domain>`. */
   readonly label: string;
+  /** The stage domain (`TEST_STAGE_DOMAIN`); without it no hostname is the stage's. */
+  readonly domain?: string;
   /** The database-provider databases the stage owns, by name. */
   readonly databases: ReadonlyArray<string>;
   /** The names and ids the stage's own State rows record for the resources they own. */
@@ -25,6 +27,8 @@ export type StageVerdict =
   | { readonly kind: "prove"; readonly family: "Worker" | "Workflow"; readonly name: string };
 
 type Mode = "id" | "worker" | "workflow" | "create" | "free" | "never";
+// Services only a test stage writes to: the billing emulator a preview seeds while it plans.
+const STAGE_SERVICES = new Set(["emulators.dev"]);
 // Paths after `/accounts/{id}`. `id` means the captured segment must be owned.
 const ACCOUNT: ReadonlyArray<readonly [RegExp, string, Mode]> = [
   [/^\/workers\/(?:scripts|services|workers)\/([^/]+)/u, "Worker", "worker"],
@@ -85,7 +89,12 @@ export function stageWriteVerdict(
     resource,
     field,
   });
-  const labelled = (host: string) => host.split(".").includes(scope.label);
+  // A stage name outside the disposable shapes never owns a hostname: `test-app` must not reach
+  // `app.<production zone>`.
+  const labelled = (host: string) =>
+    /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
+    !!scope.domain &&
+    (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
   const path = url.pathname;
   // Alchemy's State store: `/state/stacks/:stack[/stages/:stage/...]`, on its own host.
   const state = /^\/state\/stacks\/([^/]+)(?:\/stages\/([^/]+))?/u.exec(path);
@@ -98,7 +107,11 @@ export function stageWriteVerdict(
       : refuse(`State ${stack}/${stage ?? "every stage"}`, "stage");
   }
   const at = path.search(/\/(?:accounts|zones|organizations|user)\//u);
-  if (at < 0) return { kind: "allow" };
+  if (at < 0)
+    // Not a provider API: the stage's own hosts and the known stage-only services only.
+    return labelled(url.hostname.toLowerCase()) || STAGE_SERVICES.has(url.hostname.toLowerCase())
+      ? { kind: "allow" }
+      : refuse(`host ${url.hostname}`, "host");
   const api = path.slice(at);
   const database = /^\/organizations\/[^/]+\/databases(?:\/([^/]+))?/u.exec(api);
   if (database) {

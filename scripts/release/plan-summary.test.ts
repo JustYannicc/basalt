@@ -234,7 +234,10 @@ test("a plan that did not settle says which rows and which properties still diff
   const report = failureReport(ChangesRemainAfterApply.of(remainingRows(after)));
   assert.match(
     report.publicText,
-    /ChangesRemainAfterApply: check=read-back .*remaining=Api \(Cloudflare\.Worker update: env, binding DB; why: props\.env\.A: <withheld> -> <withheld>\)/u,
+    /ChangesRemainAfterApply: check=read-back .*remaining=Api \(Cloudflare\.Worker update: env, binding DB\)/u,
   );
   assert.doesNotMatch(report.publicText, /Migrations/u, "a command that re-runs is not a leftover");
+  // Why each row is planned can show names and values, so it is in the private detail only.
+  assert.doesNotMatch(report.publicText, /props\.env\.A/u);
+  assert.match(report.detail, /props\.env\.A: <withheld> -> <withheld>/u);
 });

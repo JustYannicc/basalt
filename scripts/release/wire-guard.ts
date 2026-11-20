@@ -25,6 +25,7 @@ import {
   type StageScope,
   type StageVerdict,
 } from "./stage-writes.ts";
+import { bindingShapes, differingBindings } from "./fixed-bindings.ts";
 
 export class WireRefused extends Data.TaggedError("WireRefused")<{
   readonly resource: string;
@@ -78,6 +79,11 @@ export interface WireGuardConfig {
   readonly stage?: StageScope;
   /** A read of production (plan, preflight, counts): every method but GET and HEAD is refused. */
   readonly readOnly?: boolean;
+  /**
+   * Scripts a policy admits as a code-only change, with their serving version's binding shapes
+   * (`fixed-bindings.ts`). An upload of one must carry exactly those bindings and no migration.
+   */
+  readonly fixedBindings?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
 export interface JournalEntry {
   readonly method: string;
@@ -103,6 +109,10 @@ const REASONS = {
     BY_HAND,
   ],
   delete: ["Deleting it loses data or breaks the live service.", BY_HAND],
+  fixed: [
+    "This Worker is released as a code-only change: its upload must carry the serving version's bindings and no migration, or its Durable Object classes and attachments move with code a rollback cannot undo.",
+    "Ship the binding or class change in its own reviewed release.",
+  ],
   root: [
     "Alchemy found a configuration difference on the root application, and a PATCH or rollout restarts the root and its master Home.",
     "Make the declaration match the recorded application, or restart the root in its own named step.",
@@ -143,7 +153,7 @@ const template = (path: string) =>
   path.replace(/[^/]+/g, (segment) => (WORDS.has(segment) ? segment : "{id}"));
 // Strip any base prefix (/client/v4, /v1) so local test servers and production match alike.
 const apiPath = (pathname: string) =>
-  pathname.slice(Math.max(0, pathname.search(/\/(accounts|organizations)\//)));
+  pathname.slice(Math.max(0, pathname.search(/\/(accounts|organizations|user)\//)));
 
 const UPLOAD =
   /^\/accounts\/[^/]+\/workers\/(?:scripts|workers|services)\/([^/]+)(?:\/environments\/[^/]+)?(?:\/(?:versions|content|settings|edge-preview|previews(?:\/[^/]+\/deployments)?))?$/;
@@ -225,6 +235,7 @@ const Metadata = Schema.Struct({
   ),
   exports: nullable(Schema.Record(Schema.String, Export)),
   modules: Schema.optional(Schema.Array(Module)),
+  bindings: Schema.optional(Schema.Array(Schema.Unknown)),
 });
 const Created = Schema.Struct({ result: Schema.Struct({ id: Schema.String }) });
 // The application read (lenient: production carries more keys). `health.instances` counts
@@ -285,6 +296,20 @@ const checkUpload = (config: WireGuardConfig, request: Request, at: At, script: 
           ...(migrations.steps ?? []).map((step, i) => [`migrations.steps[${i}]`, step] as const),
         ]
       : [];
+    const fixed = config.fixedBindings?.[script];
+    if (fixed) {
+      for (const [step, value] of steps)
+        for (const key of [...CHANGES, "new_sqlite_classes"] as const)
+          if (value[key]?.length)
+            return yield* refuse(at, "fixed", `${step}.${key}`, JSON.stringify(value[key]));
+      // An upload without bindings drops them all; a settings write without them leaves them.
+      const settingsOnly = new URL(request.url).pathname.endsWith("/settings");
+      if (!settingsOnly || meta.bindings !== undefined) {
+        // Names only: binding values and the scripts they point at stay out of the refusal.
+        const differ = differingBindings(fixed, bindingShapes(meta.bindings, script));
+        if (differ.length) return yield* refuse(at, "fixed", "bindings", differ.join(","));
+      }
+    }
     const allowed = config.sqliteClasses?.[script] ?? [];
     const anyNew = config.anyNewSqliteClass === true;
     const expected = config.mainModuleSha256?.[script];
