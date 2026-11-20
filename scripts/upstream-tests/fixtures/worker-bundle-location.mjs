@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
@@ -22,7 +22,7 @@ const scratch = mkdtempSync(join(tmpdir(), "worker-bundle-location-"));
 const dependencyPath = "node_modules/.bun/fixture-dependency@1.0.0/node_modules/fixture-dependency";
 // A checkout as a release job has it: the Worker's package, a source beside the package, and one
 // dependency that an install put into a store directory of its own and linked into the package.
-const checkout = (name, store, greeting = "hello") => {
+const checkout = (name, store, note = "first") => {
   const root = join(scratch, name);
   const write = (file, text) => {
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -38,7 +38,8 @@ const checkout = (name, store, greeting = "hello") => {
       "",
     ].join("\n"),
   );
-  write("shared/greeting.ts", `export const greeting = ${JSON.stringify(greeting)};\n`);
+  // The note is a comment: it changes the source and nothing of the code built from it.
+  write("shared/greeting.ts", `// ${note}\nexport const greeting = "hello";\n`);
   const dependency = join(scratch, store, dependencyPath);
   mkdirSync(dependency, { recursive: true });
   writeFileSync(
@@ -53,15 +54,25 @@ const checkout = (name, store, greeting = "hello") => {
   // A body the bundler cannot fold away, so the dependency's file is a source of the bundle.
   writeFileSync(
     join(dependency, "index.js"),
-    "export const decorate = (text) => [...text].reverse().join(String(Date.now() % 2));\n",
+    [
+      'import platform from "./platform.cjs";',
+      "export const decorate = (text) =>",
+      "  [...text].reverse().join(String(Date.now() % 2)) + platform.eol();",
+      "",
+    ].join("\n"),
   );
+  // Requiring a built-in makes the bundler add a module of its own, which is not a file.
+  writeFileSync(join(dependency, "platform.cjs"), 'exports.eol = () => require("node:os").EOL;\n');
   mkdirSync(join(root, "app/node_modules"), { recursive: true });
   symlinkSync(dependency, join(root, "app/node_modules/fixture-dependency"));
   return root;
 };
-const build = (root) =>
+const startedIn = process.cwd();
+// The bundler resolves a module that is not a file against the directory the process runs in.
+const build = (root, runFrom = root) =>
   Effect.runPromise(
     Effect.gen(function* () {
+      process.chdir(runFrom);
       const bundler = yield* WorkerBundle;
       return yield* bundler.build({
         id: "Fixture",
@@ -90,10 +101,13 @@ const mapOf = (files) => {
 };
 
 try {
-  // Two jobs at one commit: another checkout directory, another depth, another store directory.
-  const first = await build(checkout("one/checkout", "one/store/generations/aaaaaaaa"));
+  // Two jobs at one commit: another checkout directory, another depth, another store directory,
+  // and a build started from another place.
+  const firstRoot = checkout("one/checkout", "one/store/generations/aaaaaaaa");
+  const first = await build(firstRoot);
   const second = await build(
     checkout("two/runner/work/checkout", "two/cache/store/generations/bbbbbbbb"),
+    join(scratch, "two/runner"),
   );
   const one = named(first);
   const two = named(second);
@@ -104,25 +118,38 @@ try {
     [],
     "no source path names this machine's directories",
   );
-  for (const source of ["src/worker.ts", "../shared/greeting.ts", `${dependencyPath}/index.js`])
-    assert.ok(map.sources.includes(source), `the map names ${source} where a reader finds it`);
+  // A map's sources are read from the map's own folder, as the bundler writes them. A file of the
+  // checkout stays where a reader finds it there; a dependency is named as if its store sat in the
+  // Worker's package; a module that is not a file keeps its own name.
+  const folder = join(firstRoot, "app/.alchemy/bundles/Fixture");
+  assert.deepEqual(
+    [...map.sources].sort(),
+    [
+      "../../../../shared/greeting.ts",
+      `../../../${dependencyPath}/index.js`,
+      `../../../${dependencyPath}/platform.cjs`,
+      "../../../src/worker.ts",
+      "builtin:esm-external-require-node:os",
+    ].sort(),
+  );
+  for (const source of ["../../../../shared/greeting.ts", "../../../src/worker.ts"])
+    assert.ok(existsSync(resolve(folder, source)), `${source} leads from the map to its file`);
   for (const path of Object.keys(one))
     assert.equal(one[path] === two[path], true, `${path} differs between the two checkouts`);
   assert.equal(first.hash, second.hash, "the provider's hash differs between the two checkouts");
 
-  // Nothing is hidden: a changed source changes the code, the map and the hash.
+  // Nothing is hidden. A changed comment leaves the code as it was, and still changes the map and
+  // the hash: the hash covers the map, and the map carries every source's text.
   const changed = await build(
-    checkout("three/checkout", "three/store/generations/cccccccc", "hello, changed"),
+    checkout("three/checkout", "three/store/generations/cccccccc", "second"),
   );
   const three = named(changed);
-  const code = Object.keys(one).filter((path) => path.endsWith(".js"));
-  assert.ok(
-    code.some((path) => one[path] !== three[path]),
-    "a changed source changes the code",
-  );
+  for (const path of Object.keys(one).filter((path) => path.endsWith(".js")))
+    assert.equal(one[path], three[path], `${path} changed with a comment`);
   assert.notEqual(one[map.name], three[mapOf(three).name], "a changed source changes the map");
   assert.notEqual(first.hash, changed.hash, "a changed source changes the provider's hash");
   console.log(JSON.stringify({ files: Object.keys(one).length, sources: map.sources.length }));
 } finally {
+  process.chdir(startedIn);
   rmSync(scratch, { recursive: true, force: true });
 }
