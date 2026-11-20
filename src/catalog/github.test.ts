@@ -78,8 +78,9 @@ const servedRun = () =>
   })());
 
 // GitHub answers these only for an OAuth or GitHub app's own client ID and secret, sent as Basic
-// credentials: its REST reference marks exactly these five so, and no other operation. A connected
-// account holds a person's token, which they refuse.
+// credentials: its REST reference marks exactly these five as taking Basic authentication. A
+// connected account holds a bearer token, which they refuse. Operations that take a GitHub App's
+// JWT as the bearer token are a different case and stay listed.
 const appCredentialTools = [
   "api.apps.checkToken",
   "api.apps.deleteAuthorization",

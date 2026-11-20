@@ -1,15 +1,7 @@
 diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
-@@ -1,6 +1,6 @@
- # GitHub
- 
--Repositories, code search, issues, pull requests and users through GitHub's official remote MCP server, mounted under `mcp`, plus Actions, releases, organizations and the rest of the GitHub REST API (1,241 tools, 590 of them mutations, which ask for approval), mounted under `api`. Both use the same account.
-+Repositories, code search, issues, pull requests and users through GitHub's official remote MCP server, mounted under `mcp`, plus Actions, releases, organizations and the rest of the GitHub REST API (1,236 tools, 585 of them mutations, which ask for approval), mounted under `api`. Both use the same account.
- 
- **Interface:** GitHub's remote MCP server at https://api.githubcopilot.com/mcp/ (default toolsets; docs at https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md), and OpenAPI from GitHub's own description at https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json. MCP tools are listed live; every tool without `readOnlyHint` asks for approval.
- 
-@@ -11,7 +11,17 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
+@@ -11,7 +11,18 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
  
  Health check: `GET https://api.github.com/user`.
  
@@ -26,6 +18,7 @@ diff --git a/README.md b/README.md
  
  - Release asset upload (`uploads.github.com`) is skipped.
 +- The five operations under `/applications/{client_id}` are left out: checking, resetting, scoping and deleting a token, and deleting an authorization. GitHub answers them only for an OAuth or GitHub app's own client ID and secret, sent as Basic credentials, which a connected account does not have.
++- Operations that act as an app, not a person, are still listed, such as those under `/app` and the Marketplace listing. GitHub answers them for a GitHub App's JWT, so they fail with a connected account's token.
  - The MCP server serves its default toolsets; the REST API covers the rest. MCP tools and annotations were not listed with a real account.
 diff --git a/index.ts b/index.ts
 --- a/index.ts
@@ -88,23 +81,24 @@ diff --git a/index.ts b/index.ts
 diff --git a/openapi.ts b/openapi.ts
 --- a/openapi.ts
 +++ b/openapi.ts
-@@ -1,6 +1,6 @@
+@@ -1,6 +1,7 @@
  import type { OpenapiToolNamesOptions } from "apps/openapi";
  
 -// GitHub's description declares no security schemes; every operation accepts a bearer token.
-+// GitHub's description declares no security schemes; every operation left here accepts a bearer token.
++// GitHub's description declares no security schemes. Every operation left here takes a bearer
++// token: a person's, or a GitHub App's JWT for the operations that act as the app itself.
  export const options = {
    source: {
      url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-@@ -13,4 +13,14 @@ export const options = {
+@@ -13,4 +14,14 @@ export const options = {
      oauth: [{ scheme: "bearer", field: "access_token", part: "value", prefix: "" }],
    },
    oauth: [],
 +  // GitHub answers every operation on these paths only for an OAuth or GitHub app's own client ID
-+  // and secret, sent as Basic credentials, never for a token: checking, resetting, scoping and
-+  // deleting a token, and deleting an authorization. Its REST reference marks exactly these five
-+  // so. A connected account has no such secret and the host's own must not reach a tool call, so
-+  // they are left out.
++  // and secret, sent as Basic credentials, never for a bearer token: checking, resetting, scoping
++  // and deleting a token, and deleting an authorization. Its REST reference marks exactly these
++  // five as taking Basic authentication. A connected account has no such secret and the host's
++  // own must not reach a tool call, so they are left out.
 +  patches: [
 +    { op: "remove", path: "/paths/~1applications~1{client_id}~1grant" },
 +    { op: "remove", path: "/paths/~1applications~1{client_id}~1token" },
