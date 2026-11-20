@@ -1070,16 +1070,19 @@ async function callController(
   const calls: number[] = [];
   let failure: unknown;
   let answered = false;
+  const requestId = crypto.randomUUID();
   const unanswered = (error: unknown, response?: Response) => {
     try {
       const pathname = new URL(request.url).pathname;
       // Cloudflare marks an error the object's own code threw, and one from an object with more
       // work queued than it can take. Only the first means the handler ran.
+      // What the object last failed with, not an abort that ended the wait for a replay.
+      const cut = failure ?? error;
       const flag = (name: string) =>
-        typeof error === "object" && error !== null && Reflect.get(error, name) === true;
+        typeof cut === "object" && cut !== null && Reflect.get(cut, name) === true;
       const event = startPoolRequestEvent(env, () => ({
-        // The Worker's own answer names the request the caller can quote.
-        requestId: response?.headers.get("X-Request-Id") ?? crypto.randomUUID(),
+        // The same ID as the hop's log lines and any answer the Worker gave.
+        requestId,
         method: request.method,
         route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
         port: poolPort(pathname),
@@ -1095,11 +1098,13 @@ async function callController(
         overloaded: flag("overloaded"),
       });
       event?.end({
-        outcome: controllerInstanceEnded(error)
-          ? "controller_reset"
-          : flag("remote")
-            ? "controller_failed"
-            : "controller_unavailable",
+        outcome: request.signal.aborted
+          ? "client_closed"
+          : controllerInstanceEnded(cut)
+            ? "controller_reset"
+            : flag("remote")
+              ? "controller_failed"
+              : "controller_unavailable",
         status: response?.status,
       });
     } catch {
@@ -1136,6 +1141,7 @@ async function callController(
       },
       env,
       defer,
+      requestId,
     });
   } catch (error) {
     unanswered(error);

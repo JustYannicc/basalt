@@ -185,10 +185,13 @@ export function poolRequestEvent(
       // The failed call and the wait before the next one belong to neither the Worker nor the queue.
       if (input.firstCalledAt !== undefined) durations.replay = whole(input.calledAt - firstCall);
       // A call that failed without an answer waited for the Durable Object, unless the object's own
-      // code threw or its instance ended mid-call: then the Worker cannot tell the wait from the work.
+      // code threw, its instance ended mid-call or the caller left: then the Worker cannot tell the
+      // wait from the work.
       if (
         input.arrivedAt === undefined &&
-        (result.outcome === "controller_failed" || result.outcome === "controller_reset")
+        (result.outcome === "controller_failed" ||
+          result.outcome === "controller_reset" ||
+          result.outcome === "client_closed")
       )
         durations.unanswered = whole(finishedAt - input.calledAt);
       else durations.queue = whole((input.arrivedAt ?? finishedAt) - input.calledAt);

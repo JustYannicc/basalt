@@ -480,3 +480,42 @@ test("a reset the Worker answers itself is reported once, by the Worker", async 
     else assert.equal(event.replayMs, undefined, path);
   }
 });
+
+test("a caller who leaves while a reset call waits to be sent again is not a controller failure", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const events = workerEvents(context);
+  const { env, calls } = poolStub(undefined, async () => {
+    throw new Error(instanceEnded);
+  });
+  const caller = new AbortController();
+  const deferred: Promise<unknown>[] = [];
+  const answer = handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      headers: { "X-Api-Key": "valid-home-key" },
+      body: '{"model":"claude-opus-5-5"}',
+      signal: caller.signal,
+    }),
+    env,
+    async () => true,
+    (work) => deferred.push(work),
+  ).catch((error: unknown) => error);
+  // The first call has failed once the hop says so; the caller leaves during the wait.
+  while (!log.mock.calls.some((call) => call.arguments[0] === "POOL_CONTROLLER_CALL_FAILED"))
+    await new Promise((resolve) => setImmediate(resolve));
+  caller.abort();
+  await answer;
+  await Promise.all(deferred);
+  assert.equal(calls.forwarded.length, 1);
+  const [line] = log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_CONTROLLER_INTERRUPTED")
+    .map((call) => JSON.parse(String(call.arguments[1])));
+  assert.equal(line?.outcome, "client_left");
+  assert.equal(events.length, 1);
+  const event = events[0]!;
+  assert.equal(event.outcome, "client_closed");
+  assert.equal(typeof event.unansweredMs, "number");
+  assert.equal(event.queueMs, undefined);
+  // The event and the hop's log line name the same request.
+  assert.equal(event.requestId, line.requestId);
+});
