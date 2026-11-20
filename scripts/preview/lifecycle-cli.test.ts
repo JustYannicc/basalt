@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,11 +9,19 @@ import type { PreviewIdentity } from "../environment.ts";
 import { ChildProcessFailure } from "../failure/child.ts";
 import { liveServices } from "./lifecycle.ts";
 
-test("a failed lifecycle step tells the log why it stopped", () => {
+test("a failed lifecycle step tells the log why it stopped", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "basalt-preview-report-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const report = join(directory, "step.report");
   const result = spawnSync(
     process.execPath,
     [fileURLToPath(new URL("./lifecycle.ts", import.meta.url)), "plan", "not-a-number"],
-    { encoding: "utf8", env: { PATH: process.env.PATH }, timeout: 50_000, killSignal: "SIGKILL" },
+    {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, PREVIEW_FAILURE_REPORT: report },
+      timeout: 50_000,
+      killSignal: "SIGKILL",
+    },
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^Preview lifecycle step failed: Error: /);
@@ -26,6 +34,10 @@ test("a failed lifecycle step tells the log why it stopped", () => {
     /\n::error title=Preview lifecycle step failed::Preview lifecycle step failed/,
   );
   assert.match(result.stderr, /\nRemote provider absence is not established\n$/);
+  // The same report, for a caller that keeps this output private to publish.
+  const written = readFileSync(report, "utf8");
+  assert.match(written, /^## Preview lifecycle step failed\n/u);
+  assert.match(written, /why: It carries no cause, so its message is all that is known\./u);
 });
 
 test("a failed preview deploy keeps the end of what the deploy command printed", async (context) => {

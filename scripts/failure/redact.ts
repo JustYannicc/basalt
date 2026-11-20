@@ -20,7 +20,8 @@ export const tailLines = 60;
 /** The rules run over a bounded line, so none of them can be made slow. */
 const inputLimit = 4096;
 const minimumEnvironmentValue = 8;
-const credentialName =
+/** An environment variable whose value is removed wherever it appears. */
+export const credentialName =
   /SECRET|TOKEN|KEY|PASS|PWD|AUTH|COOKIE|DSN|CLIENT_ID|DATABASE_URL|CREDENTIAL/i;
 
 /** The last output of a command, bounded while it runs. */

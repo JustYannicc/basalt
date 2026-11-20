@@ -356,8 +356,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     await main();
     console.log("Preview lifecycle step passed");
   } catch (error) {
-    // To the error output only: a caller that keeps this step's output private keeps the report.
-    await reportFailure(error, { title: "Preview lifecycle step failed" });
+    // To the error output, and to the file a caller that keeps this output private publishes.
+    await reportFailure(error, {
+      title: "Preview lifecycle step failed",
+      summaryPath: process.env.PREVIEW_FAILURE_REPORT,
+    });
     console.error("Remote provider absence is not established");
     process.exitCode = 1;
   }
