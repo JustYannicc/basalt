@@ -1496,6 +1496,16 @@ test("the root's attachment that waits on the pool Worker settles only as lane 1
     waiting.data = extend(waiting.data as Record<string, unknown>);
     await refuses(deviation, plan);
   }
+  // And on the recorded row: a value beside the namespace there would hide behind the unknown too.
+  const recordedExtra = productionRows();
+  const recordedRoot = recordedExtra.PoolContainer as unknown as {
+    bindings: { sid: string; data: Record<string, unknown> }[];
+  };
+  recordedRoot.bindings = recordedRoot.bindings.map((binding) => ({
+    ...binding,
+    data: { ...binding.data, other: "x" },
+  }));
+  await refuses("a field beside the recorded attachment", (await waits({}, recordedExtra)).plan);
   // An unknown that waits on something other than the pool Worker: the command's own outcome.
   const other = (await waits()).plan;
   const pendingCommand = (
@@ -1594,4 +1604,102 @@ test("the class change admits the root's attachment row too, and nothing else on
     assert.ok(refused.includes("pool-container-not-noop PoolContainer"), `${cause}: ${refused}`);
     assert.ok(refused.includes("outside-cutover-classes PoolContainer"), `${cause}: ${refused}`);
   }
+});
+
+/** A row as an apply that stopped mid-update leaves it: `old` holds the last finished generation. */
+const interrupted = (
+  row: ResourceState,
+  finished: { readonly bindings: readonly unknown[]; readonly attr?: Record<string, unknown> },
+  unfinished: readonly unknown[],
+) => {
+  const current = row as unknown as { props: unknown; attr: Record<string, unknown> };
+  return {
+    ...current,
+    status: "updating",
+    bindings: unfinished,
+    old: {
+      props: current.props,
+      bindings: finished.bindings,
+      attr: { ...current.attr, ...finished.attr },
+    },
+  } as unknown as ResourceState;
+};
+const rulesOf = async (plan: Plan.Plan, changes: Record<string, unknown>) => {
+  const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(changes)));
+  return Exit.isFailure(exit)
+    ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
+    : [];
+};
+type Rows = { bindings: { sid: string; action: string; data: unknown }[] };
+
+test("a row an interrupted apply left updating is judged against its last finished generation", async (context) => {
+  const healing = {
+    mode: "code-only",
+    poolContainer: {
+      fqn: "PoolContainer",
+      image: pinnedImage,
+      recordedHashOnly: true,
+      workerAttachment: true,
+    },
+  };
+  // The root's unfinished generation already holds the planned attachment, so the planner calls the
+  // row noop; the finished one, which the live application runs, is attached elsewhere.
+  const moved = productionRows();
+  moved.PoolContainer = interrupted(
+    moved.PoolContainer!,
+    {
+      bindings: [
+        { sid: "PoolContainer", data: { durableObjects: { namespaceId: "namespace-elsewhere" } } },
+      ],
+      attr: { durableObjects: { namespaceId: "namespace-elsewhere" } },
+    },
+    (moved.PoolContainer as unknown as Rows).bindings,
+  );
+  const root = (await planned(context, { rows: moved })).plan;
+  assert.deepEqual(
+    (root.resources.PoolContainer as unknown as Rows).bindings.map((binding) => binding.action),
+    ["noop"],
+    "the planner compares with the unfinished generation",
+  );
+  assert.ok(
+    (await rulesOf(root, healing)).includes("pool-container-not-noop PoolContainer"),
+    "the root's moved attachment refuses",
+  );
+
+  // The pool Worker's finished generation still binds the ledger class; the unfinished one and the
+  // declaration have dropped it, so no row of the plan deletes it.
+  const dropped = productionRows();
+  const finished = (dropped.PoolWorker as unknown as Rows).bindings;
+  dropped.PoolWorker = interrupted(
+    dropped.PoolWorker!,
+    { bindings: finished },
+    finished.filter((binding) => binding.sid !== "PoolLedger"),
+  );
+  const removal = (await planned(context, { rows: dropped, declared: { ledger: undefined } })).plan;
+  assert.ok(
+    !(removal.resources.PoolWorker as unknown as Rows).bindings.some((b) => b.sid === "PoolLedger"),
+    "no row of the plan names the ledger",
+  );
+  assert.ok(
+    (await rulesOf(removal, healing)).includes("durable-object-class-removed PoolWorker"),
+    "the class the live Worker still binds is removed",
+  );
+
+  // And the other way: the unfinished generation already binds a class the finished one never did.
+  const declared = (await planned(context, { declared: { newClass: true } })).plan;
+  const blue = (declared.resources.PoolWorker as unknown as Rows).bindings.find(
+    (binding) => binding.sid === "PoolRuntimeBlue",
+  );
+  assert.ok(blue, "the declaration adds the class");
+  const added = productionRows();
+  const before = (added.PoolWorker as unknown as Rows).bindings;
+  added.PoolWorker = interrupted(added.PoolWorker!, { bindings: before }, [
+    ...before,
+    { sid: "PoolRuntimeBlue", data: blue.data },
+  ]);
+  const creation = (await planned(context, { rows: added, declared: { newClass: true } })).plan;
+  assert.ok(
+    (await rulesOf(creation, healing)).includes("code-only-binding-change PoolWorker"),
+    "a class new to the live Worker is a binding change",
+  );
 });
