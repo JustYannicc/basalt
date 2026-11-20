@@ -86,6 +86,14 @@ export function confirmedState(reads: Reads) {
                       : "object",
               ]),
             ),
+            // The controller's own forced-restart clock: three an hour, then restart_limit.
+            restartsLastHour: (() => {
+              const restarts = record(inspected.recovery).restarts;
+              return Array.isArray(restarts)
+                ? restarts.filter((at) => typeof at === "number" && at > reads.at - 60 * 60_000)
+                    .length
+                : null;
+            })(),
             clean: !Object.keys(record(inspected.recovery)).some((key) =>
               /fail|error|needs|refus/iu.test(key),
             ),

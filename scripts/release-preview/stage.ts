@@ -94,6 +94,10 @@ export function candidateTreeEnvironment(harness: string, tree: string): NodeJS.
     (JSON.parse(readFileSync(join(at, "upstream.json"), "utf8")) as { commit?: unknown }).commit;
   if (pin(tree) !== pin(harness))
     throw new Error("The candidate tree pins another upstream commit than the stage's harness");
+  // The served framework version also comes from the harness tree (`framework-release.ts`).
+  const served = (at: string) => readFileSync(join(at, "framework-release.ts"), "utf8");
+  if (served(tree) !== served(harness))
+    throw new Error("The candidate tree serves another framework version than the stage's harness");
   return { EXECUTOR_APPS_FRAMEWORK: join(tree, ".upstream/.local/basalt-framework") };
 }
 
@@ -382,7 +386,11 @@ async function requireRestartBudget(
   before: Record<string, unknown>,
   result: Record<string, unknown>,
 ) {
-  const values = (before.recovery as { values?: Record<string, unknown> } | null)?.values ?? {};
+  const recovery = before.recovery as {
+    values?: Record<string, unknown>;
+    restartsLastHour?: number | null;
+  } | null;
+  const values = recovery?.values ?? {};
   const needsPerson = Object.entries(values).find(
     ([key, value]) => /needs/iu.test(key) && value !== null && value !== undefined,
   );
@@ -392,17 +400,20 @@ async function requireRestartBudget(
     Date.now() - 60 * 60_000,
     "POOL_RUNTIME_FORCED_STOP",
   );
+  // The log can drop lines; the controller's own clock cannot. The larger count decides.
+  const restarts = recovery?.restartsLastHour ?? 0;
   result.restartBudget = {
     forcedStopsLastHour: stops.length,
+    controllerRestartsLastHour: recovery?.restartsLastHour ?? null,
     needsPerson: needsPerson?.[0] ?? null,
   };
   if (needsPerson)
     throw new Error(
       `The controller already needs a person (${needsPerson[0]}); no fault runs over it`,
     );
-  if (stops.length >= 3)
+  if (Math.max(stops.length, restarts) >= 3)
     throw new Error(
-      `The pool Worker logged ${stops.length} forced stops in the last hour; the next would end in restart_limit`,
+      `The last hour holds ${stops.length} logged forced stops and ${restarts} controller restarts; the next would end in restart_limit`,
     );
 }
 

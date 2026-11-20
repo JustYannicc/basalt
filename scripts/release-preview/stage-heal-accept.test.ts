@@ -40,6 +40,10 @@ test("a candidate tree uploads its own built framework, and only on the harness'
     const dir = join(at, name);
     await mkdir(dir);
     await writeFile(join(dir, "upstream.json"), JSON.stringify({ commit }));
+    await writeFile(
+      join(dir, "framework-release.ts"),
+      'export const servedFrameworkVersion = "1";\n',
+    );
     return dir;
   };
   const harness = await tree("harness", "a".repeat(40));
@@ -50,6 +54,11 @@ test("a candidate tree uploads its own built framework, and only on the harness'
     EXECUTOR_APPS_FRAMEWORK: join(same, ".upstream/.local/basalt-framework"),
   });
   assert.throws(() => candidateTreeEnvironment(harness, other), /another upstream commit/u);
+  await writeFile(
+    join(same, "framework-release.ts"),
+    'export const servedFrameworkVersion = "2";\n',
+  );
+  assert.throws(() => candidateTreeEnvironment(harness, same), /another framework version/u);
 });
 
 test("a heal record measures the stage-only overlay back to the first unmarked commit", async (t) => {
