@@ -161,6 +161,14 @@ function shown(value: unknown, path: readonly string[]): string {
     : "<withheld>";
 }
 
+/**
+ * A key as a change line prints it: a plain name after a dot, any other key quoted in brackets
+ * (`["api.example.org"]`, `["3"]`), so a key's own dots never read as separators and a record key
+ * never reads as an array position, which prints as `[3]`.
+ */
+const plainKey = /^\$?[A-Za-z_][A-Za-z0-9_]*$/u;
+const keySegment = (key: string) => (plainKey.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
+
 /** Each leaf that differs, as `path: old -> new` with values shown only when safe to print. */
 export function propChanges(
   old: unknown,
@@ -168,9 +176,19 @@ export function propChanges(
   path: readonly string[] = ["props"],
   depth = 16,
 ): string[] {
+  return leafChanges(old, next, path, depth, path.map(keySegment).join("").replace(/^\./u, ""));
+}
+
+function leafChanges(
+  old: unknown,
+  next: unknown,
+  path: readonly string[],
+  depth: number,
+  at: string,
+): string[] {
   if (Object.is(old, next)) return [];
   // An applied plan's props can point back at themselves; past this depth a leaf is just changed.
-  if (path.length > depth) return [`${path.join(".")}: changed`];
+  if (path.length > depth) return [`${at}: changed`];
   if (
     (record(old) || old === undefined) &&
     (record(next) || next === undefined) &&
@@ -180,14 +198,16 @@ export function propChanges(
     isResolved(next)
   ) {
     const keys = [...new Set([...Object.keys(old ?? {}), ...Object.keys(next ?? {})])].sort();
-    return keys.flatMap((key) => propChanges(old?.[key], next?.[key], [...path, key], depth));
+    return keys.flatMap((key) =>
+      leafChanges(old?.[key], next?.[key], [...path, key], depth, at + keySegment(key)),
+    );
   }
   if (Array.isArray(old) && Array.isArray(next) && isResolved(old) && isResolved(next))
     return Array.from({ length: Math.max(old.length, next.length) }, (_, index) =>
-      propChanges(old[index], next[index], [...path, String(index)], depth),
+      leafChanges(old[index], next[index], [...path, String(index)], depth, `${at}[${index}]`),
     ).flat();
   if (!havePropsChanged({ value: old }, { value: next })) return [];
-  return [`${path.join(".")}: ${shown(old, path)} -> ${shown(next, path)}`];
+  return [`${at}: ${shown(old, path)} -> ${shown(next, path)}`];
 }
 
 /** An interrupted update keeps the last settled generation under `old`. */

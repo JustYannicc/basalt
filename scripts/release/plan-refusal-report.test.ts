@@ -21,7 +21,7 @@ import {
 const recordedAccount = "abcdef0123456789".repeat(2);
 const tokenValue = "synthetic-observation-token-value";
 
-const policy = () =>
+const policy = (changes: Record<string, unknown> = {}) =>
   Effect.runPromise(
     decodePlanPolicy({
       mode: "release",
@@ -34,12 +34,17 @@ const policy = () =>
       poolWorker: "PoolWorker",
       artifactsCredentials: "ArtifactsCredentials",
       allow: [],
+      ...changes,
     }),
   );
 
-async function publicText(context: TestContext, input: PlanInput) {
+async function publicText(
+  context: TestContext,
+  input: PlanInput,
+  changes: Record<string, unknown> = {},
+) {
   const { plan } = await makePlan(context, { rows: productionRows(), ...input });
-  const error = await Effect.runPromise(checkPlan(plan, await policy())).then(
+  const error = await Effect.runPromise(checkPlan(plan, await policy(changes))).then(
     () => assert.fail("the plan was admitted"),
     (failure: unknown) => failure,
   );
@@ -113,8 +118,46 @@ test("a record keyed by data prints as {key}: a token's resources never show its
   });
   assert.match(
     text,
-    /protected-resource-destroyed@PoolProviderObservationToken\[\$resource,props\.accountId,props\.policies\.0\.resources\.\{key\}\]/u,
+    /protected-resource-destroyed@PoolProviderObservationToken\[\$resource,props\.accountId,props\.policies\[0\]\.resources\.\{key\}\]/u,
   );
-  // The sealed detail still holds the full lines a reviewer needs.
-  assert.ok(detail.includes(`resources.com.cloudflare.api.account.${recordedAccount}`), detail);
+  // The sealed detail still holds the full lines a reviewer needs, each key whole.
+  assert.ok(
+    detail.includes(String.raw`resources[\"com.cloudflare.api.account.${recordedAccount}\"]`),
+    detail,
+  );
+});
+
+test("a Worker's env value keyed by host prints as {key}: no piece of a host or an address shows", async (context) => {
+  // A JSON env value is a record keyed by whatever the stack puts in it: here a host, and an
+  // address inside it. Its pieces look like names once a key's own dots split it.
+  const rows = productionRows();
+  const worker = rows.ArtifactsCredentials as unknown as {
+    props: { env: Record<string, unknown> };
+  };
+  worker.props.env.ORIGIN_REGION = { "api.example.org": { "ops@example.org": "eu" } };
+  const { text, detail } = await publicText(
+    context,
+    { rows },
+    {
+      mode: "code-only",
+      poolContainer: { fqn: "PoolContainer", image: pinnedImage, imageRelease: true },
+      allow: [
+        {
+          fqn: "ArtifactsCredentials",
+          action: "update",
+          codeOnly: { references: ["env"], why: "skew" },
+        },
+      ],
+    },
+  );
+  assert.match(
+    text,
+    /code-only-allowance-exceeded@ArtifactsCredentials\[props\.env\.ORIGIN_REGION\.\{key\}\]/u,
+  );
+  for (const piece of ["api", "example", "org", "ops"])
+    assert.doesNotMatch(text, new RegExp(String.raw`\b${piece}\b`, "u"));
+  assert.ok(
+    detail.includes(String.raw`ORIGIN_REGION[\"api.example.org\"][\"ops@example.org\"]`),
+    detail,
+  );
 });

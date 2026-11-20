@@ -16,37 +16,68 @@ const PRIVATE_FIELDS = ["resource", "script", "method", "path", "value"] as cons
 const CHAIN = ["cause", "reason", "error", "defect", "failures", "reasons", "issue"] as const;
 
 /**
- * Records keyed by data rather than by names in our source: an API token policy's `resources`
- * (Cloudflare resource names that carry account and zone ids) and observability `headers`. A key's
- * own dots split it into pieces that look like names, and the line cannot say where the key ends,
- * so everything after such a record prints as one `{key}`. A new record keyed by data belongs here.
+ * Records in the providers the stack loads that are keyed by data rather than by names in our
+ * source. Their keys can be shaped like names (a dataset, a tag, a login), which the shape rule
+ * cannot tell from ours, so nothing after one prints. Matched case-insensitively:
+ * - `resources`: an API token policy's Cloudflare resource names, which carry account and zone ids;
+ * - `headers`, `header`: observability destinations, health checks and load balancer monitors;
+ * - `tags`, `labels`: Cloudflare resource tags and a Neon bucket's tags; Docker labels;
+ * - `metadata`, `customMetadata`, `meta`: Neon objects, custom hostnames, Stream live inputs;
+ * - `reverseDns`: a DNS firewall's, keyed by address;
+ * - `datasetCapabilities`: an Axiom token's, keyed by dataset name;
+ * - `variations`, `tools`, `triggers`, `variables`, `entryIds`, `reservations`, `poolWeights`:
+ *   Flagship flags, Zaraz, DLP profiles, Magic Transit LANs (by MAC) and load balancers (by pool).
  */
-const DATA_KEYED = new Set(["resources", "headers"]);
-const NAME = /^\$?[A-Za-z_][A-Za-z0-9_]*$/u;
-const INDEX = /^(?:0|[1-9][0-9]{0,3})$/u;
+const DATA_KEYED = new Set(
+  [
+    "resources",
+    "headers",
+    "header",
+    "tags",
+    "labels",
+    "metadata",
+    "customMetadata",
+    "meta",
+    "reverseDns",
+    "datasetCapabilities",
+    "variations",
+    "tools",
+    "triggers",
+    "variables",
+    "entryIds",
+    "reservations",
+    "poolWeights",
+  ].map((key) => key.toLowerCase()),
+);
+/** A whole segment: the next character ends the path or starts the next segment. */
+const HEAD = /^\$?[A-Za-z_][A-Za-z0-9_]*(?=[.[]|: )/u;
+const SEGMENT = /^(?:\.(\$?[A-Za-z_][A-Za-z0-9_]*)|\[(?:0|[1-9][0-9]{0,3})\])(?=[.[]|: )/u;
 /** Account, zone and namespace ids, hashes and digests are hex runs, which a name never holds. */
 const HEX_ID = /[A-Fa-f0-9]{16,}/u;
 const KEYS_PER_VIOLATION = 8;
 
 /**
- * The key path of a change line (`path: before -> after`, see `propChanges`), never its values:
- * anything that is not one of our names or an array index prints as `{key}`.
+ * The key path of a change line (`path: before -> after`, see `propChanges`), never its values.
+ * It prints segments while each is one whole plain name or an array position (`[3]`). At the first
+ * that is not, such as a quoted key (`["api.example.org"]`, `["3"]`), a hex id or anything after a
+ * record keyed by data, it prints `{key}` and stops: nothing after an unproven key is ours.
  */
 const keyPath = (line: string) => {
-  const end = line.indexOf(": ");
-  if (end < 0) return "{key}";
-  const segments = line.slice(0, end).split(".");
-  const printed: string[] = [];
-  for (const [index, segment] of segments.entries()) {
-    const named = (NAME.test(segment) && !HEX_ID.test(segment)) || INDEX.test(segment);
-    const shown = named ? segment : "{key}";
-    if (shown !== "{key}" || printed.at(-1) !== "{key}") printed.push(shown);
-    if (DATA_KEYED.has(segment) && index < segments.length - 1) {
-      printed.push("{key}");
-      break;
-    }
+  const head = HEAD.exec(line)?.[0];
+  if (head === undefined || HEX_ID.test(head)) return "{key}";
+  let printed = head;
+  let rest = line.slice(head.length);
+  let name: string | undefined = head;
+  while (!rest.startsWith(": ")) {
+    const segment: RegExpExecArray | null = DATA_KEYED.has(name?.toLowerCase() ?? "")
+      ? null
+      : SEGMENT.exec(rest);
+    if (!segment || HEX_ID.test(segment[1] ?? "")) return `${printed}.{key}`;
+    printed += segment[0];
+    rest = rest.slice(segment[0].length);
+    name = segment[1];
   }
-  return printed.join(".");
+  return printed;
 };
 
 const keyPaths = (change: unknown) => {
