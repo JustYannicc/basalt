@@ -60,9 +60,9 @@ test("a failed guard drops cached data and answers from one uncached read, never
       assert.deepEqual(yield* load(), { windows: [1] }, "equal heads reuse the stored result");
       unreadable = true;
       assert.deepEqual(yield* load(), { windows: [2] }, "the stored result is not served");
-      assert.deepEqual(yield* load(), { windows: [3] }, "a read without heads is not stored");
+      assert.deepEqual(yield* load(), { windows: [3] }, "each request without heads reads again");
       unreadable = false;
-      assert.deepEqual(yield* load(), { windows: [4] }, "the earlier stored result is gone");
+      assert.deepEqual(yield* load(), { windows: [4] }, "nothing read without heads was stored");
       assert.deepEqual(yield* load(), { windows: [4] }, "reuse resumes once heads are readable");
       assert.equal(calls, 4);
     }),
@@ -244,15 +244,22 @@ test("an app without a pool registration executes normally without contacting Ho
     Effect.gen(function* () {
       const cache = makePoolViewCache();
       let reads = 0;
+      let guards = 0;
+      // A failing guard would still end in a read, so the contact itself is counted.
+      const guard = Effect.sync(() => {
+        guards++;
+        return { revisions: [] };
+      });
       const load = () =>
         cache(
           "lookalike",
-          Effect.fail("Home must not be contacted"),
+          guard,
           Effect.sync(() => ({ count: ++reads })),
           Effect.succeed(false),
         );
       assert.deepEqual(yield* load(), { count: 1 });
       assert.deepEqual(yield* load(), { count: 2 });
+      assert.equal(guards, 0, "Home was never asked for heads");
     }),
   ));
 

@@ -67,10 +67,12 @@ test("a pool that does not answer its revisions call gets the view's own answer,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* registerPool(sql);
+      // The pool app's own answer to an empty 404; here it stands for whatever the view returns.
       const unavailable = {
         ok: false,
         error: "backend_unavailable",
         message: "The pool didn't answer. Try again in a moment.",
+        status: 404,
       };
       let asked = 0;
       let reads = 0;
