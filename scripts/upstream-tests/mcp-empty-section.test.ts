@@ -111,8 +111,8 @@ test("calling a tool in Sentry's REST section answers with what the section need
     signedIn(),
   );
   assert.ok(result.execution.ok);
-  const [inSection, unknown] = Schema.decodeUnknownSync(Schema.Array(CallOutcome))(
-    result.execution.value,
+  const [inSection, unknown] = await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.Array(CallOutcome))(result.execution.value),
   );
   assert.ok(inSection?.ok === false && unknown?.ok === false);
   assert.ok(!inSection.error.message.startsWith("No tool at"), inSection.error.message);
@@ -132,7 +132,9 @@ test("a program that calls or describes a tool in Sentry's REST section is told 
     signedIn(),
   );
   assert.ok(described.execution.ok, JSON.stringify(described.execution));
-  const { missing } = Schema.decodeUnknownSync(DescribeResult)(described.execution.value);
+  const { missing } = await Effect.runPromise(
+    Schema.decodeUnknownEffect(DescribeResult)(described.execution.value),
+  );
   assert.equal(missing[0]?.path, update);
   explains(missing[0]?.reason);
 });
@@ -143,7 +145,9 @@ test("the host's reason for a tool it hides comes before the section's", async (
   assert.equal(described.missing[0]?.reason, hidden);
   const result = await run(callTools({ calls: { path: update, input: {} } }), signedIn(hidden));
   assert.ok(result.execution.ok);
-  const outcome = Schema.decodeUnknownSync(CallOutcome)(result.execution.value);
+  const outcome = await Effect.runPromise(
+    Schema.decodeUnknownEffect(CallOutcome)(result.execution.value),
+  );
   assert.ok(outcome.ok === false);
   assert.equal(outcome.error.message, hidden);
 });
