@@ -15,7 +15,7 @@ interface Slot {
   identity?: { bootId: string };
 }
 interface Unfenced {
-  result?: { by: string; recovery?: { restarts: number[]; needsPerson?: unknown } };
+  result?: { by: string; cause?: string; recovery?: { restarts: number[]; needsPerson?: unknown } };
 }
 
 async function root(context: TestContext) {
@@ -97,7 +97,10 @@ test(
     await f.send("fence", { identity });
     const { status: code, body } = await unfence(f, identity);
     assert.equal(code, 200);
-    assert.equal(body.result?.by, "recovery");
+    assert.deepEqual(
+      { by: body.result?.by, cause: body.result?.cause },
+      { by: "recovery", cause: "runtime" },
+    );
     assert.deepEqual(body.result?.recovery?.needsPerson, undefined, "the reply shows the recovery");
     const before = await selection(f);
     assert.equal(before.active.fenced, false);
@@ -276,7 +279,11 @@ test(
     await fencedPastLeases(f, advance);
     const { status: code, body } = await unfence(f, identity);
     assert.equal(code, 200);
-    assert.equal(body.result?.by, "recovery", "no proof passes on leases the fence let run out");
+    assert.deepEqual(
+      { by: body.result?.by, cause: body.result?.cause },
+      { by: "recovery", cause: "leases" },
+      "no proof passes on leases the fence let run out",
+    );
     assert.equal((await selection(f)).active.unfenced?.proven, false);
     assert.equal(await status(f.model()), 503, "no model call before current policies reach it");
     const home = f.old.calls.home;
@@ -300,7 +307,7 @@ test(
     await f.send("fence", { identity });
     await fencedPastLeases(f, advance);
     const { body } = await unfence(f, identity);
-    assert.equal(body.result?.by, "recovery");
+    assert.equal(body.result?.cause, "leases");
     for (let elapsed = 0; elapsed <= unservingBoundMs; elapsed += 2_000) {
       await pass(f);
       advance(2_000);
@@ -341,3 +348,33 @@ test(
     assert.equal((await selection(f)).active.unfenced?.proven, false);
   },
 );
+
+for (const [path, refuses] of [
+  ["its proof", false],
+  ["its hand-back to recovery", true],
+] as const)
+  test(
+    `a fence that lands during an unfence's proof wins over ${path}`,
+    { timeout: 20_000 },
+    async (context) => {
+      const { f, identity, advance } = await root(context);
+      await f.send("fence", { identity });
+      const first = (await selection(f)).active.fencedAt;
+      let fenced = false;
+      // A second operator fences while the first one's proof reads health.
+      f.old.hooks.health = async () => {
+        if (!fenced) {
+          fenced = true;
+          advance(1_000);
+          await f.send("fence", { identity });
+        }
+        return refuses ? new Response(null, { status: 503 }) : undefined;
+      };
+      const { status: code } = await unfence(f, identity);
+      assert.equal(code, 409);
+      const { active } = await selection(f);
+      assert.equal(active.fenced, true, "the second fence holds");
+      assert.notEqual(active.fencedAt, first);
+      assert.equal(active.unfenced, undefined);
+    },
+  );

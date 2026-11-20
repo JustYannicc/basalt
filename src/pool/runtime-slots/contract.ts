@@ -50,7 +50,10 @@ export const SlotRecord = Schema.Struct({
   ),
 });
 export type SlotRecord = typeof SlotRecord.Type;
-/** Handed back to recovery by an unfence: it serves nothing until current policies reach its boot. */
+/**
+ * Handed back to recovery by an unfence: no model call, and nothing reports it serving, until
+ * current policies reach its boot. Home calls and installs do reach it; that is how they get there.
+ */
 export const awaitsProof = (slot: SlotRecord | undefined) => slot?.unfenced?.proven === false;
 export const SlotSelection = Schema.Struct({
   epoch: Counter,

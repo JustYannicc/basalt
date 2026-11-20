@@ -209,7 +209,7 @@ export class RuntimeHandoff {
   databasePool() {
     return this.options.databasePool?.() ?? null;
   }
-  /** A slot an unfence handed back serves nothing, and reports nothing as serving, until proven. */
+  /** Nothing reports a slot an unfence handed back as serving until it is proven. */
   private async assertProven() {
     if (awaitsProof((await this.storage.inspect()).selection?.active))
       throw new SlotRefused("selection");

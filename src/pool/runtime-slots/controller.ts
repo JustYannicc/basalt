@@ -300,18 +300,25 @@ export class RuntimeSlots {
 
   /**
    * Ends a fence. A slot that proves its health and takes current policies serves at once. An active
-   * slot that can't goes back to recovery instead, unproven: nothing routes to it until current
-   * policies reach its boot, by recovery's restart or its proof. A fenced boot may still hold clean
+   * slot that can't goes back to recovery instead, unproven: no model call routes to it until current
+   * policies reach its boot, by its proof or recovery's restart. A fenced boot may still hold clean
    * grants from before its fence for the plugin's 24-hour grace, so the gate, not time, is the guard.
+   * A fence that lands while this runs wins.
    */
-  async unfence(identity: SlotIdentity): Promise<{ by: "proof" | "recovery" }> {
+  async unfence(
+    identity: SlotIdentity,
+  ): Promise<{ by: "proof" } | { by: "recovery"; cause: "leases" | "runtime" }> {
     this.identity(identity);
     const before = await this.inspect();
     retiredDenials(before);
+    const fencedAt = (["active", "candidate", "draining"] as const)
+      .map((role) => before.selection?.[role])
+      .find((slot) => sameIdentity(slot?.identity, identity))?.fencedAt;
     // A fence stops membership renewing, so a clean lease runs out a few seconds in and no proof
     // can pass until a Home read renews it. That read needs the slot unfenced: recovery's turn.
     if (staleLeases(before, this.clock)) {
-      if (await this.returnToRecovery(identity)) return { by: "recovery" };
+      if (await this.returnToRecovery(identity, fencedAt))
+        return { by: "recovery", cause: "leases" };
       throw new SlotRefused("policy");
     }
     let proof: Awaited<ReturnType<typeof proveSlot>>;
@@ -320,9 +327,9 @@ export class RuntimeSlots {
     } catch (refusal) {
       // Only a runtime that isn't serving goes back to recovery; a policy or selection refusal, or a
       // defect, stays an error for the operator.
-      if (!proofRefusedByRuntime(refusal) || !(await this.returnToRecovery(identity)))
+      if (!proofRefusedByRuntime(refusal) || !(await this.returnToRecovery(identity, fencedAt)))
         throw refusal;
-      return { by: "recovery" };
+      return { by: "recovery", cause: "runtime" };
     }
     await this.deps.storage.transact(async (snapshot, transaction) => {
       const selection = snapshot.selection;
@@ -330,7 +337,8 @@ export class RuntimeSlots {
       const role = (["active", "candidate", "draining"] as const).find((role) =>
         sameIdentity(selection[role]?.identity, identity),
       );
-      if (!role || selection[role]?.retirement) throw new SlotRefused("selection");
+      if (!role || selection[role]?.retirement || selection[role]?.fencedAt !== fencedAt)
+        throw new SlotRefused("selection");
       currentPolicies(snapshot, this.clock);
       currentPolicies(before, this.clock);
       healthy(proof, identity, this.clock);
@@ -346,7 +354,7 @@ export class RuntimeSlots {
     return { by: "proof" };
   }
   /** Unfences the active slot unproven, for recovery; false when that isn't this slot's case. */
-  private returnToRecovery(identity: SlotIdentity) {
+  private returnToRecovery(identity: SlotIdentity, fencedAt: number | undefined) {
     const now = this.clock.now();
     return this.deps.storage.transact(async ({ selection }, transaction) => {
       const active = selection?.active;
@@ -358,6 +366,7 @@ export class RuntimeSlots {
         active.retirement
       )
         return false;
+      if (active.fencedAt !== fencedAt) throw new SlotRefused("selection");
       await transaction.put(slotSelectionKey, {
         ...selection,
         active: { ...active, fenced: false, unfenced: { by: "recovery", at: now, proven: false } },
