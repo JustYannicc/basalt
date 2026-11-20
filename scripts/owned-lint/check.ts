@@ -42,10 +42,10 @@ const baselinePath = join(here, "baseline.json");
 const allowlistPath = join(here, "allowlist.json");
 const oxlint = join(here, "node_modules/oxlint/bin/oxlint");
 
-// Basalt-owned code. The release layer under scripts/release-barrier is being replaced by
-// Alchemy and is not gated; everything else in scripts/ and src/ is, including new files.
+// Basalt-owned code: everything in scripts/ and src/, including new files, apart from installed
+// and generated code.
 const SCOPE = /^(?:scripts|src)\/.+\.(?:[cm]?[jt]s|[jt]sx)$/u;
-const OUTSIDE = /^scripts\/release-barrier\/|(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
+const OUTSIDE = /(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
 const readJson = <T>(path: string, fallback: T) => {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;

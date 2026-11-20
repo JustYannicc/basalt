@@ -82,7 +82,7 @@ test("landmines keeps its own counts and a parse failure is never baselined", ()
 const state = (lintChanged = false, changed = (file: string) => file === "src/touched.ts") => ({
   allowlist: {},
   basePath: (file: string) =>
-    ({ "src/new-name.ts": "src/old-name.ts", "src/moved.ts": "scripts/release-barrier/moved.ts" })[
+    ({ "src/new-name.ts": "src/old-name.ts", "src/moved.ts": "scripts/architecture/gen/moved.ts" })[
       file
     ] ?? (file.startsWith("src/new") ? undefined : file),
   changed,
@@ -132,7 +132,7 @@ test("code moved into the gated scope keeps its findings, listed for review", ()
   assert.deepEqual(result.problems, []);
   assert.match(
     result.notices[0]!,
-    /moved into the gated scope from scripts\/release-barrier\/moved\.ts/u,
+    /moved into the gated scope from scripts\/architecture\/gen\/moved\.ts/u,
   );
 });
 
