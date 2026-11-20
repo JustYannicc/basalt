@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { startPage } from "../.upstream/e2e/support/start-page.ts";
+import { carriesAppsList, startPage } from "../.upstream/e2e/support/start-page.ts";
 
 const destination = (path: string) => new URL(path, "http://dashboard.invalid");
 
-test("a scenario starts from Connect unless it names another page", () => {
+test("the start page is Connect unless another is named", () => {
   assert.equal(startPage(destination("/org/acme/apps")), "/org/acme/connect");
   assert.equal(startPage(destination("/org/acme/apps"), "connect"), "/org/acme/connect");
   assert.equal(
@@ -15,7 +15,7 @@ test("a scenario starts from Connect unless it names another page", () => {
   assert.equal(startPage(destination("/apps/app-1?view=source")), "/connect");
 });
 
-test("a scenario that holds the Apps list starts from the organization's Settings page", () => {
+test("the settings start page is in the organization the destination names", () => {
   assert.equal(startPage(destination("/org/acme/apps"), "settings"), "/org/acme/organization");
   assert.equal(
     startPage(destination("/org/acme/groups/group-1"), "settings"),
@@ -32,9 +32,32 @@ test("a scenario that holds the Apps list starts from the organization's Setting
   );
 });
 
-test("the local dashboard has no Settings page to start from, so asking for it fails", () => {
-  assert.throws(
-    () => startPage(destination("/apps/app-1"), "settings"),
-    /local dashboard has no settings page/,
+test("a destination that names no organization cannot start from settings", () => {
+  // The local dashboard has no organizations; a hosted account page may leave its one out.
+  for (const path of ["/apps/app-1", "/account/tokens"])
+    assert.throws(
+      () => startPage(destination(path), "settings"),
+      /names no organization to start from its settings page/,
+      path,
+    );
+});
+
+test("only an entry for the Apps list's read counts as a carried list", () => {
+  const entry = (key: string) => `{"key":"${key}","value":{"_tag":"Success"}}`;
+  for (const view of ["available", "managed"])
+    assert.equal(
+      carriesAppsList(
+        `<script>${entry(`AtomHttpApi:resourceAccess:directory:{"query":{"view":"${view}"}}`)}</script>`,
+      ),
+      true,
+      view,
+    );
+  // Every dashboard document carries the shell's reads; they are not the list.
+  assert.equal(
+    carriesAppsList(
+      `<script>${entry("AtomHttpApi:organization:access:{}")}${entry("AtomHttpApi:groups:list:{}")}</script>`,
+    ),
+    false,
   );
+  assert.equal(carriesAppsList("<main>Apps</main>"), false);
 });

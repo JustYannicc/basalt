@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "The e2e helper that opens a page through the browser loads a start page first and takes that page as a parameter; the organization's Connect page is the default. Connect's server render starts the Apps list without waiting for it, so its document carries the list whenever it answers before the render ends, and the browser then uses that list without requesting it. A scenario that holds or replaces the Apps list starts from the organization's Settings page, whose server render starts no Apps list read; the list read the organization sends in the browser goes through the network, where the scenario's hold or replacement applies."
+      constraint "The e2e helper that opens a page through the browser loads a start page first and takes that page as a parameter; the organization's Connect page is the default. Connect's server render starts the Apps list without waiting for it, so its document carries the list whenever it answers before the render ends, and the browser then uses that list without requesting it. A scenario or support helper that holds or replaces the Apps list starts from the organization's Settings page, whose server render starts no Apps list read; the list read the organization sends in the browser goes through the network, where the hold or replacement applies. Starting from Settings fails at once when that document carries the Apps list."
     }
   }
 }

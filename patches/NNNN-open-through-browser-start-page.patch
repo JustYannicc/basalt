@@ -1,3 +1,29 @@
+diff --git a/e2e/support/browser-observability.ts b/e2e/support/browser-observability.ts
+--- a/e2e/support/browser-observability.ts
++++ b/e2e/support/browser-observability.ts
+@@ -1,6 +1,7 @@
+ /** Inject response and document failures through Playwright's real network boundary. */
+ import { Effect, FileSystem, Schedule, Schema } from "effect";
+ import { Browser } from "./browser.ts";
++import { openStartPage } from "./in-app-navigation.ts";
+ import { Target } from "./platform.ts";
+ 
+ const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }));
+@@ -81,9 +82,11 @@ export const injectDashboardResponse = (slug: string, body: string, status: numb
+       ),
+     );
+     // Pages render on the server with their data, so the browser reads resources only when it
+-    // navigates to them itself.
+-    yield* browser.use("Open a page that does not read resources", (page) =>
+-      page.goto(`/org/${slug}/connect`),
++    // navigates to them itself. Connect's document can already carry them; Settings' never does.
++    yield* openStartPage(
++      "Open a page whose document never carries resources",
++      `/org/${slug}/apps`,
++      "settings",
+     );
+     yield* browser.use("Navigate to Apps in the browser", (page) =>
+       page.getByRole("navigation").getByRole("link", { name: /^Apps/ }).click(),
 diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
 --- a/e2e/support/in-app-navigation.ts
 +++ b/e2e/support/in-app-navigation.ts
@@ -5,34 +31,57 @@ diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
  /** Client-side navigation in a running dashboard, as a link click performs it. */
  import { Effect } from "effect";
  import { Browser } from "./browser.ts";
-+import { startPage, type StartPage } from "./start-page.ts";
++import { carriesAppsList, startPage, type StartPage } from "./start-page.ts";
  
  /**
   * A document load arrives with its data rendered on the server, so its loading states are never
-@@ -16,33 +17,25 @@ export const openInApp = (label: string, path: string) =>
-     );
+@@ -17,32 +18,47 @@ export const openInApp = (label: string, path: string) =>
    });
  
--/**
+ /**
 - * A dashboard page that does not render the destination’s app or account list. Organization entry
 - * may prefetch shared resources, so callers install request holds before opening it. Hosted pages start from their
 - * organization's Connect page; account pages name that organization in their `organization`
 - * search parameter, because only dashboard routes are served as dashboard documents (Cloud serves
 - * other paths as static assets). The local dashboard has no organizations and serves `/connect`.
-- */
++ * Load the page a scenario starts from before it opens `path` in the browser; see `StartPage`.
++ * Connect is the default. A scenario that starts from `settings` relies on that document not
++ * carrying the Apps list, so a document that does carry it fails here, by name, instead of as a
++ * hold that never sees its request.
+  */
 -const neutralPage = (destination: URL) => {
 -  const organization =
 -    /^\/org\/([^/?#]+)/.exec(destination.pathname)?.[1] ??
 -    destination.searchParams.get("organization");
 -  return organization === null ? "/connect" : `/org/${organization}/connect`;
 -};
--
++export const openStartPage = (label: string, path: string, start: StartPage = "connect") =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const destination = new URL(path, "http://dashboard.invalid");
++    const local = destination.origin === "http://dashboard.invalid";
++    const startPath = startPage(destination, start);
++    const url = local ? startPath : new URL(startPath, destination).href;
++    if (start === "connect") {
++      yield* browser.use(label, (page) => page.goto(url));
++      return;
++    }
++    const html = yield* browser.use(label, (page) =>
++      page.goto(url).then((response) => {
++        if (response === null) throw new Error("The dashboard did not return a document");
++        return response.text();
++      }),
++    );
++    if (carriesAppsList(html))
++      return yield* Effect.die(`${label}: the ${start} document carries the Apps list`);
++  });
+ 
  /**
   * Load another dashboard page, then navigate to the destination in the browser. Holds and fixtures
   * must already be installed: organization entry can prefetch the destination’s shared resources.
 + * The document starts from Connect unless `start` names another page. Connect's document can
 + * already carry the Apps list, so a scenario that holds or replaces that list starts from
-+ * `settings`; see `StartPage`.
++ * `settings`.
   */
 -export const openThroughBrowser = (label: string, path: string) =>
 +export const openThroughBrowser = (
@@ -41,23 +90,22 @@ diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
 +  options: { readonly start?: StartPage } = {},
 +) =>
    Effect.gen(function* () {
-     const browser = yield* Browser;
+-    const browser = yield* Browser;
      const destination = new URL(path, "http://dashboard.invalid");
      const local = destination.origin === "http://dashboard.invalid";
-+    const start = startPage(destination, options.start);
-     yield* browser.use(`${label}: start from another page`, (page) =>
+-    yield* browser.use(`${label}: start from another page`, (page) =>
 -      page.goto(
 -        local ? neutralPage(destination) : new URL(neutralPage(destination), destination).href,
 -      ),
-+      page.goto(local ? start : new URL(start, destination).href),
-     );
+-    );
++    yield* openStartPage(`${label}: start from another page`, path, options.start);
      yield* openInApp(label, local ? path : destination.pathname + destination.search);
    });
 diff --git a/e2e/support/start-page.ts b/e2e/support/start-page.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/start-page.ts
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,43 @@
 +/** The dashboard page a scenario's document loads before it navigates in the browser. */
 +
 +/**
@@ -90,9 +138,17 @@ new file mode 100644
 +  if (organization !== null) return `/org/${organization}/${routes[start]}`;
 +  // Falling back to `/connect` would hide that the caller's document is not the one it asked for.
 +  if (start !== "connect")
-+    throw new Error(`The local dashboard has no ${start} page to start from`);
++    throw new Error(
++      `${destination.pathname} names no organization to start from its ${start} page`,
++    );
 +  return "/connect";
 +};
++
++/**
++ * Whether a dashboard document carries the Apps list: its streamed data then has an entry for
++ * the list's read. A read the server started but did not finish, or never started, leaves none.
++ */
++export const carriesAppsList = (html: string) => /AtomHttpApi:resourceAccess:directory:/.test(html);
 diff --git a/e2e/tests/empty-states.spec.ts b/e2e/tests/empty-states.spec.ts
 --- a/e2e/tests/empty-states.spec.ts
 +++ b/e2e/tests/empty-states.spec.ts
