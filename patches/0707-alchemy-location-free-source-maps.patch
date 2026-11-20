@@ -1,85 +1,89 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -8257,3 +8257,82 @@
+@@ -8257,3 +8257,86 @@
           return value;
       const resources = instanceResources[value.instanceType];
       if (resources === undefined)
 +diff --git a/src/Cloudflare/Workers/Sources/Rolldown.ts b/src/Cloudflare/Workers/Sources/Rolldown.ts
-+index 1213fa5..a7c55b1 100644
++index 1213fa5..e5a6ab3 100644
 +--- a/src/Cloudflare/Workers/Sources/Rolldown.ts
 ++++ b/src/Cloudflare/Workers/Sources/Rolldown.ts
-+@@ -144,6 +144,22 @@ const configureCloudflarePlugins = (
++@@ -144,6 +144,25 @@ const configureCloudflarePlugins = (
 +   });
 + };
 + 
 ++/**
-++ * Where a source sits, without this machine's directories: a dependency from
-++ * its package directory in the store onward, anything else relative to the
-++ * Worker's own package directory.
+++ * A source's path as the bundler writes it, from the map's own folder, with
+++ * the two parts that depend on this machine replaced. A dependency in the
+++ * store is named as if the store sat in the Worker's package directory. A
+++ * module that is not a file, which the bundler resolves against the directory
+++ * the process runs in, keeps its own name.
 ++ */
 ++const stableSourcePath =
 ++  (cwd: string) =>
 ++  (source: string, sourcemap: string): string => {
-++    const file = path.resolve(path.dirname(sourcemap), source);
+++    const folder = path.dirname(sourcemap);
+++    const file = path.resolve(folder, source);
 ++    const store = file.lastIndexOf("/node_modules/.bun/");
-++    if (store !== -1) return file.slice(store + 1);
-++    const dependency = file.lastIndexOf("/node_modules/");
-++    if (dependency !== -1) return file.slice(dependency + 1);
-++    return path.relative(cwd, file);
+++    if (store !== -1)
+++      return path.relative(folder, path.join(cwd, file.slice(store + 1)));
+++    const name = path.relative(process.cwd(), file);
+++    return /^[a-z][a-z0-9+.-]+:/i.test(name) ? name : source;
 ++  };
 ++
 + export const WorkerBundle = Effect.gen(function* () {
 +   const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
 +   const virtualEntryPlugin = yield* Bundle.virtualEntryPlugin;
-+@@ -233,6 +249,12 @@ export const WorkerBundle = Effect.gen(function* () {
++@@ -233,6 +252,12 @@ export const WorkerBundle = Effect.gen(function* () {
 +     const outputOptions: rolldown.OutputOptions = {
 +       format: "esm",
 +       sourcemap: "hidden",
-++      // Rolldown writes each source's path relative to the output directory,
-++      // so the map spells out where the checkout and the dependency store sit
-++      // on this machine. The bundle hash covers the map: a build from another
-++      // directory differed in nothing but those paths, and every Worker then
-++      // planned as changed.
+++      // Rolldown writes each source's path from the map's folder to the file,
+++      // so the map spells out where the dependency store sits on this machine,
+++      // and where the process was started for a module that is not a file.
+++      // The bundle hash covers the map: a build in another job differed in
+++      // nothing but those paths, and every Worker then planned as changed.
 ++      sourcemapPathTransform: stableSourcePath(cwd),
 +       minify: true,
 +       keepNames: true,
 +       // Rolldown's default chunking can split top-level initializer modules
 +diff --git a/lib/Cloudflare/Workers/Sources/Rolldown.js b/lib/Cloudflare/Workers/Sources/Rolldown.js
-+index 996bf6b..272bf96 100644
++index 996bf6b..8eacf56 100644
 +--- a/lib/Cloudflare/Workers/Sources/Rolldown.js
 ++++ b/lib/Cloudflare/Workers/Sources/Rolldown.js
-+@@ -76,6 +76,21 @@ const configureCloudflarePlugins = (plugins, esmExternalRequirePlugin, aliases)
++@@ -76,6 +76,22 @@ const configureCloudflarePlugins = (plugins, esmExternalRequirePlugin, aliases)
 +         return plugin;
 +     });
 + };
 ++/**
-++ * Where a source sits, without this machine's directories: a dependency from
-++ * its package directory in the store onward, anything else relative to the
-++ * Worker's own package directory.
+++ * A source's path as the bundler writes it, from the map's own folder, with
+++ * the two parts that depend on this machine replaced. A dependency in the
+++ * store is named as if the store sat in the Worker's package directory. A
+++ * module that is not a file, which the bundler resolves against the directory
+++ * the process runs in, keeps its own name.
 ++ */
 ++const stableSourcePath = (cwd) => (source, sourcemap) => {
-++    const file = path.resolve(path.dirname(sourcemap), source);
+++    const folder = path.dirname(sourcemap);
+++    const file = path.resolve(folder, source);
 ++    const store = file.lastIndexOf("/node_modules/.bun/");
 ++    if (store !== -1)
-++        return file.slice(store + 1);
-++    const dependency = file.lastIndexOf("/node_modules/");
-++    if (dependency !== -1)
-++        return file.slice(dependency + 1);
-++    return path.relative(cwd, file);
+++        return path.relative(folder, path.join(cwd, file.slice(store + 1)));
+++    const name = path.relative(process.cwd(), file);
+++    return /^[a-z][a-z0-9+.-]+:/i.test(name) ? name : source;
 ++};
 + export const WorkerBundle = Effect.gen(function* () {
 +     const context = yield* Effect.context();
 +     const virtualEntryPlugin = yield* Bundle.virtualEntryPlugin;
-+@@ -148,6 +163,12 @@ export const WorkerBundle = Effect.gen(function* () {
++@@ -148,6 +164,12 @@ export const WorkerBundle = Effect.gen(function* () {
 +         const outputOptions = {
 +             format: "esm",
 +             sourcemap: "hidden",
-++            // Rolldown writes each source's path relative to the output directory,
-++            // so the map spells out where the checkout and the dependency store sit
-++            // on this machine. The bundle hash covers the map: a build from another
-++            // directory differed in nothing but those paths, and every Worker then
-++            // planned as changed.
+++            // Rolldown writes each source's path from the map's folder to the file,
+++            // so the map spells out where the dependency store sits on this machine,
+++            // and where the process was started for a module that is not a file.
+++            // The bundle hash covers the map: a build in another job differed in
+++            // nothing but those paths, and every Worker then planned as changed.
 ++            sourcemapPathTransform: stableSourcePath(cwd),
 +             minify: true,
 +             keepNames: true,
