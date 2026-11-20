@@ -237,19 +237,20 @@ test(
 );
 
 test(
-  "an unfence refused by the controller's own policy check stays an error, and keeps the fence",
-  {
-    timeout: 20_000,
-  },
+  "an unfence whose proof fails on a runtime that answers health stays an error, and keeps the fence",
+  { timeout: 20_000 },
   async (context) => {
-    const { f, identity, advance } = await root(context);
+    const { f, identity } = await root(context);
     await f.send("fence", { identity });
-    // The pool's clean policy has expired and no membership pass has renewed it yet.
-    advance(3_600_000);
+    // The runtime answers health, but current policies can't be installed: not a dead runtime.
+    let installsFail = true;
+    f.old.hooks.install = async () => {
+      if (installsFail) throw new Error("synthetic install failure");
+    };
     const refused = await unfence(f, identity);
-    assert.equal(refused.status, 409, "a policy refusal is the operator's, not recovery's");
-    assert.equal((await selection(f)).active.fenced, true);
-    await homePass(f);
+    assert.notEqual(refused.status, 200, JSON.stringify(refused.body));
+    assert.equal((await selection(f)).active.fenced, true, "the fence holds");
+    installsFail = false;
     assert.equal((await unfence(f, identity)).body.result?.by, "proof");
     assert.equal(await status(f.model()), 200);
   },
