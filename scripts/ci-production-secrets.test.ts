@@ -23,7 +23,7 @@ type Job = {
   secrets?: unknown;
   steps?: Step[];
 };
-type Workflow = { on?: unknown; env?: unknown; jobs: Record<string, Job> };
+type Workflow = { on?: unknown; env?: unknown; defaults?: unknown; jobs: Record<string, Job> };
 type File = { name: string; workflow: Workflow };
 
 const read = (name: string): Workflow => parse(readFileSync(new URL(name, directory), "utf8"));
@@ -75,7 +75,7 @@ const mainCommitProviders: Record<string, Provider> = {
   // named full commit that is an ancestor of main.
   "release.yml/candidate": {
     output: "sha",
-    sha256: "f4c8a0900365dc590246ea8f69ddfc8176f7e7957e354fee7d8e8707413035d2",
+    sha256: "3c7006be591b510dff6b5147d868897e5d79a0b78680c718ff74e02f0f23dc5b",
   },
 };
 // Events whose secret-holding jobs these rules understand; anything else holding secrets fails.
@@ -208,7 +208,11 @@ const confinedToMain = (condition: string | undefined) =>
     return onMain || confinedToMainPush(part);
   });
 
-const jobHash = (job: Job) => createHash("sha256").update(JSON.stringify(job)).digest("hex");
+// The workflow's own defaults and env reach every step of the job, so they are part of its pin.
+const jobHash = (workflow: Workflow, job: Job) =>
+  createHash("sha256")
+    .update(JSON.stringify([workflow.defaults ?? null, workflow.env ?? null, job]))
+    .digest("hex");
 
 /** Whether a checkout ref is a pinned provider's main commit, read straight from the job's needs. */
 function providedMainCommit(
@@ -235,7 +239,7 @@ function providedMainCommit(
     provider?.output === key &&
     source?.outputs?.[key] !== undefined &&
     confinedToMain(source.if) &&
-    jobHash(source) === provider.sha256
+    jobHash(workflow, source) === provider.sha256
   );
 }
 
@@ -247,7 +251,8 @@ const checksOutMain = (
 ) =>
   (job.steps ?? []).every(
     (step, index) =>
-      !step.uses?.startsWith("actions/checkout") ||
+      // GitHub resolves action names in any case.
+      !step.uses?.toLowerCase().startsWith("actions/checkout") ||
       // Another repository's main is not this one's.
       ([undefined, "${{ github.repository }}"].includes(step.with?.repository as string) &&
         (["main", "refs/heads/main"].includes(String(step.with?.ref)) ||
@@ -314,9 +319,14 @@ test("no job runs code other than main's with a secret, beyond the named exposur
   }
   for (const [key, provider] of Object.entries(mainCommitProviders)) {
     const [name, id = ""] = key.split("/");
-    const job = workflows.find((file) => file.name === name)?.workflow.jobs[id];
-    assert.ok(job?.outputs?.[provider.output], `stale provider ${key}`);
-    assert.equal(jobHash(job), provider.sha256, `${key}: re-review the job, then re-pin it`);
+    const file = workflows.find((candidate) => candidate.name === name);
+    const job = file?.workflow.jobs[id];
+    assert.ok(file && job?.outputs?.[provider.output], `stale provider ${key}`);
+    assert.equal(
+      jobHash(file.workflow, job),
+      provider.sha256,
+      `${key}: re-review the job, then re-pin it`,
+    );
   }
   for (const [key, secrets] of Object.entries(knownExposure)) {
     const [name, id = ""] = key.split("/");
@@ -451,7 +461,9 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
     outputs: { sha: "${{ steps.pick.outputs.sha }}" },
     steps: [pick],
   };
-  const pinned = { "release.yml/candidate": { output: "sha", sha256: jobHash(candidate) } };
+  const pinned = {
+    "release.yml/candidate": { output: "sha", sha256: jobHash({ jobs: {} }, candidate) },
+  };
   const checkout = (ref: string, extra: Record<string, unknown> = {}): Step => ({
     uses: "actions/checkout@v4",
     with: { ref, ...extra },
@@ -478,9 +490,16 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
       },
     },
   });
+  const workflowWide = (extra: Partial<Workflow>): File => {
+    const file = fixture({});
+    return { ...file, workflow: { ...file.workflow, ...extra } };
+  };
   // Pinned to whatever the fixture's provider job is, so only the rule under test can refuse it.
   const pinnedTo = (file: File) => ({
-    "release.yml/candidate": { output: "sha", sha256: jobHash(file.workflow.jobs.candidate!) },
+    "release.yml/candidate": {
+      output: "sha",
+      sha256: jobHash(file.workflow, file.workflow.jobs.candidate!),
+    },
   });
   // The release path as it is: the candidate job's main commit, through the job's env or directly.
   assert.deepEqual(violations([fixture({})], pinned), []);
@@ -520,13 +539,16 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
     ],
     [
       "an output the job doesn't export",
-      fixture({ env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } }, { outputs: {} }),
+      fixture({}, { outputs: {} }),
       "matching",
     ],
     [
       "another output",
-      fixture({ env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } }),
-      "pinned",
+      fixture(
+        { env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } },
+        { outputs: { sha: "${{ steps.pick.outputs.sha }}", ref: "${{ steps.pick.outputs.sha }}" } },
+      ),
+      "matching",
     ],
     ["a job it doesn't need", fixture({ needs: [] }), "pinned"],
     // Each confinement case is pinned to its own provider job, so only the condition refuses it.
@@ -568,7 +590,10 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
     [
       "a step env over the job's",
       fixture({
-        steps: [{ ...checkout("${{ env.CANDIDATE }}"), env: { CANDIDATE: head } }, secret],
+        steps: [
+          { ...checkout("${{ env.CANDIDATE }}"), env: { CANDIDATE: "${{ inputs.candidate }}" } },
+          secret,
+        ],
       }),
       "pinned",
     ],
@@ -576,6 +601,19 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
       "another repository",
       fixture({
         steps: [checkout("${{ env.CANDIDATE }}", { repository: "someone/fork" }), secret],
+      }),
+      "pinned",
+    ],
+    ["a workflow-level shell", workflowWide({ defaults: { run: { shell: "python {0}" } } }), "pinned"],
+    ["a workflow-level env", workflowWide({ env: { BASH_ENV: "./fake-env.sh" } }), "pinned"],
+    [
+      "a second checkout in another case",
+      fixture({
+        steps: [
+          checkout("${{ env.CANDIDATE }}"),
+          { uses: "Actions/Checkout@v4", with: { ref: "${{ inputs.candidate }}" } },
+          secret,
+        ],
       }),
       "pinned",
     ],
