@@ -27,7 +27,7 @@ const base = git("rev-parse", "HEAD");
 renameSync(join(repo, "src/old.ts"), join(repo, "src/new.ts"));
 write("src/added.ts", "export const added = 1;\n");
 git("add", "-A");
-const outside = (file: string) => file.startsWith("scripts/release-barrier/");
+const outside = (file: string) => file.startsWith("scripts/architecture/gen/");
 
 test("a renamed file keeps its base path, and a file the base lacks is new and changed", () => {
   const { policy } = baseState(repo, base, outside);
