@@ -7,12 +7,15 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/actions/setup-browser/**
       - .github/actions/pool-compatibility-images/**
       - .github/actions/pool-release-assets/**
       - .github/workflows/ci-cache-warm.yml
       - containers/pool/fetch_releases.py
       - scripts/ci/pool-image-build.sh
       - scripts/ci/pool-release-assets.ts
+      - scripts/ci-browser-packages.ts
+      - upstream.json
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -37,3 +40,21 @@ jobs:
         with:
           node-version: 24.18.0
       - uses: ./.github/actions/pool-compatibility-images
+  # The browser's system packages, under the key every Check job restores. Without it the first job
+  # on each branch goes to the Ubuntu archive. The daily run picks up a new runner image.
+  browser-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - uses: ./.github/actions/setup-browser
+        with:
+          prepare-upstream: "true"
