@@ -376,3 +376,78 @@ test("an undecided objective pages collection_unavailable with the unknown count
   assert.equal(event?.contexts.request_reliability.reason, "terminal_collection_unavailable");
   assertNoPrivateDiagnostics(messages);
 });
+
+/** A ready window of real requests, all succeeded, optionally with unknown outcomes. */
+const quietWindow = (requests: number, couldFail?: number) => {
+  const counts = { requests, failed: 0, unassignedFailures: 0, successRate: 100, failures: [] };
+  return {
+    from: "2026-11-18T11:00:00Z",
+    to: "2026-11-18T12:00:00Z",
+    classification: "ready" as const,
+    real: counts,
+    proof: { ...counts, requests: 0, successRate: null },
+    ...(couldFail === undefined
+      ? {}
+      : {
+          unknown: {
+            requests: couldFail,
+            pending: 0,
+            unavailable: couldFail,
+            unmatched: 0,
+            uncounted: 0,
+            couldFail,
+          },
+        }),
+  };
+};
+
+async function collectionPages(
+  t: Parameters<Parameters<typeof test>[1] & object>[0],
+  slo: Awaited<ReturnType<NonNullable<Parameters<typeof runAvailabilityProbe>[2]>>>,
+) {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const warnings = t.mock.method(console, "warn", () => {});
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => slo,
+  );
+  return {
+    pages: messages
+      .filter((item) => item.type === "event")
+      .map((item) => item.payload.tags.error_code),
+    logged: warnings.mock.calls.map((call) => call.arguments[0]),
+  };
+}
+
+test("a window too quiet to page is not paged as undecided, and its doubt is still logged", async (t) => {
+  // One unknown outcome among 20 requests leaves the hour undecided; the day of 2,000 holds.
+  const { pages, logged } = await collectionPages(t, {
+    target: 99,
+    state: "unavailable",
+    reason: "terminal_collection_unavailable",
+    captureAt: null,
+    current: quietWindow(2, 0),
+    hour: quietWindow(20, 1),
+    day: quietWindow(2_000, 1),
+  });
+  assert.deepEqual(pages, []);
+  assert.ok(logged.includes("POOL_REQUEST_OUTCOMES_UNKNOWN"));
+});
+
+test("missing terminal evidence is paged however quiet the windows are", async (t) => {
+  const { pages } = await collectionPages(t, {
+    target: 99,
+    state: "unavailable",
+    reason: "terminal_collection_unavailable",
+    captureAt: null,
+    current: quietWindow(2),
+    hour: quietWindow(20),
+    day: quietWindow(40),
+  });
+  assert.deepEqual(pages, ["pool_request_reliability_unavailable"]);
+});
