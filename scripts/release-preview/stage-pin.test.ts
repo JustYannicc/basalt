@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { managedReference } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
 
@@ -11,23 +12,21 @@ const parts = (patch: Record<string, string> = {}) =>
     ...patch,
   });
 
-describe("composeRootPin", () => {
-  it("is absent when the lane has no root image", () => {
-    expect(composeRootPin(undefined, account)).toBeUndefined();
-    expect(composeRootPin("  ", account)).toBeUndefined();
-  });
+test("composeRootPin is absent when the lane has no root image", () => {
+  assert.equal(composeRootPin(undefined, account), undefined);
+  assert.equal(composeRootPin("  ", account), undefined);
+});
 
-  it("composes a digest reference the fleet pin keeps as it is", () => {
-    const pin = JSON.parse(composeRootPin(parts(), account)!) as { image: string; input: string };
-    expect(pin.input).toBe("526fa60bed0df442");
-    expect(managedReference(pin.image)).toEqual({ kind: "digest", reference: pin.image });
-  });
+test("composeRootPin composes a digest reference the fleet pin keeps as it is", () => {
+  const pin = JSON.parse(composeRootPin(parts(), account)!) as { image: string; input: string };
+  assert.equal(pin.input, "526fa60bed0df442");
+  assert.deepEqual(managedReference(pin.image), { kind: "digest", reference: pin.image });
+});
 
-  it("refuses a short digest, a bad input, a tag, or a missing account", () => {
-    expect(() => composeRootPin(parts({ digest: "sha256:ed541640" }), account)).toThrow();
-    expect(() => composeRootPin(parts({ input: "526fa60b" }), account)).toThrow();
-    expect(() => composeRootPin(parts({ repository: "repo:latest" }), account)).toThrow();
-    expect(() => composeRootPin(parts(), undefined)).toThrow(/account id/u);
-    expect(() => composeRootPin("not json", account)).toThrow();
-  });
+test("composeRootPin refuses a short digest, a bad input, a tag, or a missing account", () => {
+  assert.throws(() => composeRootPin(parts({ digest: "sha256:ed541640" }), account));
+  assert.throws(() => composeRootPin(parts({ input: "526fa60b" }), account));
+  assert.throws(() => composeRootPin(parts({ repository: "repo:latest" }), account));
+  assert.throws(() => composeRootPin(parts(), undefined), /account id/u);
+  assert.throws(() => composeRootPin("not json", account));
 });
