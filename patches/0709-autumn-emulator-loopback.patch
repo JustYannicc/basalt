@@ -96,7 +96,7 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/autumn-emulator.ts
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,94 @@
 +/**
 + * The Autumn billing emulator a local Cloud runs beside itself when CI provides one, so billing
 + * never waits on a shared outside service. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI;
@@ -166,10 +166,7 @@ new file mode 100644
 +          }),
 +        ),
 +      ),
-+    ).pipe(
-+      Effect.timeout("5 seconds"),
-+      Effect.retry({ schedule: Schedule.spaced("100 millis") }),
-+    );
++    ).pipe(Effect.timeout("5 seconds"), Effect.retry({ schedule: Schedule.spaced("100 millis") }));
 +    yield* Effect.raceFirst(
 +      answers,
 +      child.exitCode.pipe(
