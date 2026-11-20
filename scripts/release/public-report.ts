@@ -2,8 +2,9 @@ import { safeJson } from "./safe-json.ts";
 
 /**
  * What a stopped run says in public (the repository, its logs, step summaries and artifacts are
- * public) and what it keeps private. Public: the tagged reason in our own vocabulary and the error
- * class. Private: names, ids, paths, values and raw messages, which can carry hosts or account ids.
+ * public) and what it keeps private. Public: the tagged reason in our own vocabulary, the error
+ * class, and the key paths a plan refusal names. Private: names, ids, paths, values and raw
+ * messages, which can carry hosts or account ids.
  */
 export interface FailureReport {
   readonly publicText: string;
@@ -13,6 +14,48 @@ export interface FailureReport {
 const PUBLIC_FIELDS = ["check", "rule", "field", "exit", "why", "fix"] as const;
 const PRIVATE_FIELDS = ["resource", "script", "method", "path", "value"] as const;
 const CHAIN = ["cause", "reason", "error", "defect", "failures", "reasons", "issue"] as const;
+
+/**
+ * Records keyed by data rather than by names in our source: an API token policy's `resources`
+ * (Cloudflare resource names that carry account and zone ids) and observability `headers`. A key's
+ * own dots split it into pieces that look like names, and the line cannot say where the key ends,
+ * so everything after such a record prints as one `{key}`. A new record keyed by data belongs here.
+ */
+const DATA_KEYED = new Set(["resources", "headers"]);
+const NAME = /^\$?[A-Za-z_][A-Za-z0-9_]*$/u;
+const INDEX = /^(?:0|[1-9][0-9]{0,3})$/u;
+/** Account, zone and namespace ids, hashes and digests are hex runs, which a name never holds. */
+const HEX_ID = /[A-Fa-f0-9]{16,}/u;
+const KEYS_PER_VIOLATION = 8;
+
+/**
+ * The key path of a change line (`path: before -> after`, see `propChanges`), never its values:
+ * anything that is not one of our names or an array index prints as `{key}`.
+ */
+const keyPath = (line: string) => {
+  const end = line.indexOf(": ");
+  if (end < 0) return "{key}";
+  const segments = line.slice(0, end).split(".");
+  const printed: string[] = [];
+  for (const [index, segment] of segments.entries()) {
+    const named = (NAME.test(segment) && !HEX_ID.test(segment)) || INDEX.test(segment);
+    const shown = named ? segment : "{key}";
+    if (shown !== "{key}" || printed.at(-1) !== "{key}") printed.push(shown);
+    if (DATA_KEYED.has(segment) && index < segments.length - 1) {
+      printed.push("{key}");
+      break;
+    }
+  }
+  return printed.join(".");
+};
+
+const keyPaths = (change: unknown) => {
+  const lines = Array.isArray(change) ? change.filter((line) => typeof line === "string") : [];
+  const paths = [...new Set(lines.map(keyPath))];
+  const more = paths.length - KEYS_PER_VIOLATION;
+  const shown = paths.slice(0, KEYS_PER_VIOLATION).join(",");
+  return paths.length ? `[${shown}${more > 0 ? `,+${more} more` : ""}]` : "";
+};
 
 const errorClass = (error: unknown) => {
   if (error && typeof error === "object") {
@@ -136,8 +179,12 @@ export function failureReport(error: unknown, context?: FailureContext): Failure
       const remaining = Array.isArray(record.remaining)
         ? (record.remaining as unknown[]).filter((item): item is string => typeof item === "string")
         : [];
+      // The full change lines carry values, so they stay in the sealed detail below.
       const rules = violations
-        .map((violation) => `${String(violation.rule)}@${String(violation.fqn)}`)
+        .map(
+          (violation) =>
+            `${String(violation.rule)}@${String(violation.fqn)}${keyPaths(violation.change)}`,
+        )
         .join(",");
       publicLines.push(
         [

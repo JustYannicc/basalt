@@ -35,9 +35,43 @@ test("a plan refusal names its rules and resources, not the changed values", () 
       },
     ],
   });
-  assert.match(report.publicText, /rules=pool-container-image-not-pinned@PoolContainer/u);
+  assert.match(
+    report.publicText,
+    /rules=pool-container-image-not-pinned@PoolContainer\[props\.image\]/u,
+  );
   assert.doesNotMatch(report.publicText, new RegExp(account, "u"));
   assert.match(report.detail, new RegExp(account, "u"));
+});
+
+test("a refusal's key paths print once each and capped, and an id or a data key never passes for a name", () => {
+  // Starts with a letter, so only its hex run tells it from a name.
+  const id = "abcdef0123456789".repeat(2);
+  const report = failureReport({
+    _tag: "PlanRefused",
+    violations: [
+      {
+        rule: "unreviewed-replace",
+        fqn: "Router",
+        change: [
+          ...Array.from({ length: 10 }, (_, index) => `props.env.NAME_${index}: absent -> x`),
+          "props.env.NAME_0: x -> absent",
+          `bindings.${id}.namespaceId: a -> b`,
+        ],
+      },
+      {
+        rule: "unreviewed-replace",
+        fqn: "Telemetry",
+        change: [`bindings.${id}.namespaceId: a -> b`, `props.headers.${host}: absent -> x`],
+      },
+    ],
+  });
+  const names = Array.from({ length: 8 }, (_, index) => `props.env.NAME_${index}`).join(",");
+  assert.match(report.publicText, new RegExp(`@Router\\[${names},\\+3 more\\]`, "u"));
+  assert.match(
+    report.publicText,
+    /@Telemetry\[bindings\.\{key\}\.namespaceId,props\.headers\.\{key\}\]/u,
+  );
+  assert.doesNotMatch(report.publicText, new RegExp(`${id}|${host}|example`, "u"));
 });
 
 test("an untagged error shows its class in public and its message only in private", () => {

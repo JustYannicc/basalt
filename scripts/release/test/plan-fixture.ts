@@ -29,6 +29,10 @@ import { layerNonInteractive } from "alchemy/Interaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Context, Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
+import {
+  poolObservationToken,
+  poolObservationTokenProps,
+} from "../../../src/pool/fleet-observation.ts";
 
 export const accountId = "0".repeat(32);
 export const applicationId = "11111111-1111-4111-8111-111111111111";
@@ -63,6 +67,8 @@ export interface Declaration {
   credentialsEnv?: Record<string, string>;
   /** Binds a second class on ArtifactsCredentials, which State never recorded. */
   credentialsClass?: string;
+  /** Declares the provider observation token as production does, under this fixture's account. */
+  observationToken?: boolean;
 }
 
 /** The recorded production body of the root application read, with synthetic identifiers. */
@@ -247,6 +253,7 @@ const providers = (base: string) =>
       Cloudflare.R2.Bucket,
       Cloudflare.D1.Database,
       Cloudflare.SecretsStore.Store,
+      Cloudflare.ApiToken.AccountApiToken,
       Command.Exec,
     ]),
   ).pipe(
@@ -257,6 +264,7 @@ const providers = (base: string) =>
         Cloudflare.R2.BucketProvider(),
         Cloudflare.D1.DatabaseProvider(),
         Cloudflare.SecretsStore.SecretsStoreProvider(),
+        Cloudflare.ApiToken.AccountApiTokenProvider(),
         Command.providers(),
       ),
     ),
@@ -305,6 +313,7 @@ const program = (declared: Declaration) =>
       yield* Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
     if (declared.databaseCommand !== false)
       yield* Command.Exec("PoolDatabase", { command: "node --version", memo: false });
+    if (declared.observationToken) yield* poolObservationToken(accountId, scope.stage);
     const credentials = yield* Cloudflare.Worker("ArtifactsCredentials", {
       main: entry,
       workersDev: false,
@@ -597,6 +606,22 @@ export const productionRows = (): Record<string, ResourceState> => ({
     },
   ),
 });
+
+/** The provider observation token as provisioning recorded it, under the given account. */
+export const observationTokenRow = (account: string, value: string) =>
+  row(
+    "Cloudflare.ApiToken.AccountApiToken",
+    "PoolProviderObservationToken",
+    poolObservationTokenProps(account, scope.stage),
+    {
+      tokenId: "4".repeat(32),
+      name: "basalt-production-pool-provider-observation",
+      status: "active",
+      value: Redacted.make(value),
+      accountId: account,
+    },
+    { removalPolicy: "retain" },
+  );
 
 /** An action row from an older release (a migration step the stack no longer declares). */
 export const recordedActionRow = (fqn: string) =>
