@@ -23,6 +23,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
     "cloudflare",
     "aws",
     "elevenlabs",
+    "github",
     "gitlab",
     "miro",
     "notion",
