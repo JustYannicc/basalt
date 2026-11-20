@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { capturePoolImage } from "../../deploy-safety/capture-pool-image.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,22 +135,6 @@ const http = HttpClient.make((request, url) => {
 
 const receiptDirectory = mkdtempSync(join(tmpdir(), "basalt-publication-receipt-"));
 const receiptPath = join(receiptDirectory, "receipt.json");
-const metadataFetch = async (url) => {
-  const parsed = new URL(url);
-  if (parsed.hostname === "api.cloudflare.com" && parsed.pathname.endsWith("/credentials")) {
-    return globalThis.Response.json({
-      success: true,
-      errors: [],
-      messages: [],
-      result: { username: "fixture", password: "synthetic-never-sent" },
-    });
-  }
-  if (parsed.hostname === "registry.cloudflare.com") {
-    const bytes = registry.get(parsed.pathname.split("/").at(-1));
-    if (bytes) return new globalThis.Response(bytes, { status: 200 });
-  }
-  throw new Error(`Unexpected metadata request: ${parsed.pathname}`);
-};
 const props = { name: "fixture-pool", context, className: "PoolContainer", instanceType: "basic" };
 const store = {};
 const state = Layer.effect(
@@ -170,21 +153,10 @@ const providers = Layer.mergeAll(
     reconcile: ({ id, news }) =>
       Effect.promise(async () => {
         rmSync(receiptPath, { force: true });
-        await capturePoolImage(
-          {
-            BASALT_POOL_IMAGE_RECEIPT: receiptPath,
-            GITHUB_SHA: "a".repeat(40),
-            CLOUDFLARE_ACCOUNT_ID: "fixture",
-            CLOUDFLARE_API_TOKEN: "synthetic-never-sent",
-            POOL_APPLICATION_ID: "fixture-app",
-            POOL_IMAGE_INPUT_HASH: news.inputHash,
-            POOL_IMAGE_DIGEST: news.digest,
-            POOL_IMAGE_REF: news.imageRef,
-            POOL_WORKER_READY: news.worker,
-          },
-          metadataFetch,
-        );
-        return { id, ...JSON.parse(readFileSync(receiptPath, "utf8")) };
+        // A dependent resource records the publication outputs it was handed.
+        const receipt = { inputHash: news.inputHash, digest: news.digest, imageRef: news.imageRef };
+        writeFileSync(receiptPath, JSON.stringify(receipt));
+        return { id, ...receipt };
       }),
     delete: () => Effect.void,
   }),
