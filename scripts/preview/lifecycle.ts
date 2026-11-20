@@ -1,8 +1,9 @@
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { deleteEuNamespace } from "../ensure-artifacts.ts";
+import { captureChild } from "../failure/child.ts";
+import { reportFailure } from "../failure/report.ts";
 import {
   previewCleanupEnvironment,
   previewEnvironment,
@@ -83,51 +84,14 @@ function safeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   ) as NodeJS.ProcessEnv;
 }
 
-function runChild(
+/** Provider output stays out of the log; a failure keeps its last lines, made public first. */
+const runChild = (
   command: string,
   args: readonly string[],
   cwd: string,
   environment: NodeJS.ProcessEnv,
-): Promise<void> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, [...args], {
-      cwd,
-      env: environment,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let size = 0;
-    let tooMuchOutput = false;
-    const discard = (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > 24 * 1024 * 1024 && !tooMuchOutput) {
-        tooMuchOutput = true;
-        child.kill("SIGTERM");
-      }
-    };
-    child.stdout.on("data", discard);
-    child.stderr.on("data", discard);
-    const onInterrupt = () => child.kill("SIGINT");
-    const onTerminate = () => child.kill("SIGTERM");
-    process.once("SIGINT", onInterrupt);
-    process.once("SIGTERM", onTerminate);
-    child.once("error", () => {
-      process.removeListener("SIGINT", onInterrupt);
-      process.removeListener("SIGTERM", onTerminate);
-      rejectPromise(new Error("Preview command could not start"));
-    });
-    child.once("close", (code, signal) => {
-      process.removeListener("SIGINT", onInterrupt);
-      process.removeListener("SIGTERM", onTerminate);
-      if (tooMuchOutput)
-        return rejectPromise(new Error("Preview command output exceeded its private bound"));
-      if (code !== 0)
-        return rejectPromise(
-          new Error("Preview command failed" + (signal ? " with " + signal : " with exit " + code)),
-        );
-      resolvePromise();
-    });
-  });
-}
+): Promise<void> =>
+  captureChild(command, args, { cwd, env: environment, maximumOutputBytes: 24 * 1024 * 1024 });
 
 async function runAlchemy(
   action: StackAction,
@@ -241,7 +205,7 @@ async function materializePreviewBrand(
   if (failed) throw failure;
 }
 
-function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
+export function liveServices(source: NodeJS.ProcessEnv): LifecycleServices {
   return {
     stateReader: (environment) => alchemyPreviewStateReader({ environment }),
     captureProviders: (identity, inventory, environment) =>
@@ -344,8 +308,8 @@ export async function destroyPreview(
   ] as const) {
     try {
       await action();
-    } catch {
-      failures.push(new Error("Preview " + stack + " cleanup failed"));
+    } catch (cause) {
+      failures.push(new Error("Preview " + stack + " cleanup failed", { cause }));
     }
   }
   if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");
@@ -391,8 +355,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     await main();
     console.log("Preview lifecycle step passed");
-  } catch {
-    console.error("Preview lifecycle step failed; remote provider absence is not established");
+  } catch (error) {
+    // To the error output only: a caller that keeps this step's output private keeps the report.
+    await reportFailure(error, { title: "Preview lifecycle step failed" });
+    console.error("Remote provider absence is not established");
     process.exitCode = 1;
   }
 }
