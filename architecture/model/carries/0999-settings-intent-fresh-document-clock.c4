@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The Settings intent keyboard-focus proof counts access, organization and session reads from before its fresh Apps document opens until the focus reads answer. The driver reports a request some time after the page sends it, so a count that starts once Apps shows can attribute the document's own entry reads to focus. The reuse assertion, the read counts and every deadline remain unchanged."
+    }
+  }
+}
