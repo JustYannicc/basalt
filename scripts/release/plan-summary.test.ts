@@ -95,7 +95,7 @@ test("a row left after apply says why Alchemy plans it, binding path by binding 
     deletions: {},
   } as never;
   assert.deepEqual(plannedReasons(plan, "Changed"), [
-    `bindings.PoolContainer.containers.0.hash: ${"a".repeat(16)} -> ${"b".repeat(16)}`,
+    `bindings.PoolContainer.containers[0].hash: ${"a".repeat(16)} -> ${"b".repeat(16)}`,
   ]);
   // Planned as an update with nothing that differs: the provider's own diff asked for it.
   assert.deepEqual(plannedReasons(plan, "Same"), [

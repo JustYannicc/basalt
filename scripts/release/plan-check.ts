@@ -30,6 +30,8 @@ import { sha256Object } from "alchemy/Util/sha256";
 
 const digestRef = /^[a-z0-9.-]+\/[a-z0-9/_-]+@sha256:[a-f0-9]{64}$/u;
 const exactFqn = Schema.String.check(Schema.isPattern(/^[^*?\s]+$/u));
+const settingName = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/u));
+const reason = Schema.String.check(Schema.isPattern(/\S/u));
 
 export const PlanPolicy = Schema.Struct({
   /**
@@ -47,6 +49,14 @@ export const PlanPolicy = Schema.Struct({
       action: Schema.Literals(["delete", "orphaned", "replace"]),
       reason: Schema.String,
     }),
+  ),
+  /**
+   * A Worker binding a reviewer accepted dropping, by the Worker's fqn and the binding's id: a plain
+   * text setting the code no longer reads. Any other removed binding, and this one if it holds
+   * anything but plain text, still refuses.
+   */
+  removedBindings: Schema.optional(
+    Schema.Array(Schema.Struct({ fqn: exactFqn, sid: settingName, reason: Schema.NonEmptyString })),
   ),
   poolContainer: Schema.Struct({
     fqn: exactFqn,
@@ -92,21 +102,30 @@ export const PlanPolicy = Schema.Struct({
        * Admitted only as a change of the Worker's code. Nothing else of the row may differ, except:
        * - `main`, while it names the same file of another checkout: a declaration names its entry
        *   by an absolute path, so the directory a release job runs in is part of the value;
-       * - a `references` entry of `env`. State recorded the named resource's attributes for it,
-       *   and the plan either still waits on that resource alone, while it updates, or holds the
-       *   attributes State records for it now. What the Worker is bound to is the entry's
-       *   binding, which may not change; while the resource updates, that binding waits on it too;
-       * - a `values` entry of `env`, and the value its own binding carries, for the reason written
-       *   beside it.
-       * A changed secret or value, an entry or binding added or removed and a changed class all
-       * refuse. Its classes and migrations follow from its bindings; the wire guard holds the
-       * upload to the serving version's bindings (`wire.fixedBindings`) and refuses any migration.
+       * - a `references` entry of `env`, which holds another resource. The plan either still
+       *   waits on the named resource alone, while it updates, or holds the attributes State
+       *   records for it now. While it waits, the entry's binding waits too. Both have to be the
+       *   resource State held there: what an update cannot change of it (its id, its name) is
+       *   known in the plan and must equal the recorded value, in the entry and in its binding;
+       * - the named `fields` of a `values` entry of `env`, a record as plain or redacted JSON,
+       *   for the reason written beside it. Everything else in that record, a credential
+       *   included, must be as recorded, in the entry and in the value its binding carries.
+       * A changed secret or value, an entry or binding added or removed, an entry moved to
+       * another resource and a changed class all refuse. Its classes and migrations follow from
+       * its bindings; the wire guard holds the upload to the serving version's bindings
+       * (`wire.fixedBindings`) and refuses any migration.
        */
       codeOnly: Schema.optional(
         Schema.Struct({
-          references: Schema.Array(Schema.Struct({ name: Schema.String, resource: exactFqn })),
-          values: Schema.Array(Schema.Struct({ name: Schema.String, why: Schema.String })),
-          why: Schema.String,
+          references: Schema.Array(Schema.Struct({ name: settingName, resource: exactFqn })),
+          values: Schema.Array(
+            Schema.Struct({
+              name: settingName,
+              fields: Schema.NonEmptyArray(settingName),
+              why: reason,
+            }),
+          ),
+          why: reason,
         }),
       ),
     }),
@@ -190,6 +209,14 @@ function shown(value: unknown, path: readonly string[]): string {
     : "<withheld>";
 }
 
+/**
+ * A key as a change line prints it: a plain name after a dot, any other key quoted in brackets
+ * (`["api.example.org"]`, `["3"]`), so a key's own dots never read as separators and a record key
+ * never reads as an array position, which prints as `[3]`.
+ */
+const plainKey = /^\$?[A-Za-z_][A-Za-z0-9_]*$/u;
+const keySegment = (key: string) => (plainKey.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
+
 /** Each leaf that differs, as `path: old -> new` with values shown only when safe to print. */
 export function propChanges(
   old: unknown,
@@ -197,9 +224,19 @@ export function propChanges(
   path: readonly string[] = ["props"],
   depth = 16,
 ): string[] {
+  return leafChanges(old, next, path, depth, path.map(keySegment).join("").replace(/^\./u, ""));
+}
+
+function leafChanges(
+  old: unknown,
+  next: unknown,
+  path: readonly string[],
+  depth: number,
+  at: string,
+): string[] {
   if (Object.is(old, next)) return [];
   // An applied plan's props can point back at themselves; past this depth a leaf is just changed.
-  if (path.length > depth) return [`${path.join(".")}: changed`];
+  if (path.length > depth) return [`${at}: changed`];
   if (
     (record(old) || old === undefined) &&
     (record(next) || next === undefined) &&
@@ -209,14 +246,16 @@ export function propChanges(
     isResolved(next)
   ) {
     const keys = [...new Set([...Object.keys(old ?? {}), ...Object.keys(next ?? {})])].sort();
-    return keys.flatMap((key) => propChanges(old?.[key], next?.[key], [...path, key], depth));
+    return keys.flatMap((key) =>
+      leafChanges(old?.[key], next?.[key], [...path, key], depth, at + keySegment(key)),
+    );
   }
   if (Array.isArray(old) && Array.isArray(next) && isResolved(old) && isResolved(next))
     return Array.from({ length: Math.max(old.length, next.length) }, (_, index) =>
-      propChanges(old[index], next[index], [...path, String(index)], depth),
+      leafChanges(old[index], next[index], [...path, String(index)], depth, `${at}[${index}]`),
     ).flat();
   if (!havePropsChanged({ value: old }, { value: next })) return [];
-  return [`${path.join(".")}: ${shown(old, path)} -> ${shown(next, path)}`];
+  return [`${at}: ${shown(old, path)} -> ${shown(next, path)}`];
 }
 
 /** The checkout this check runs from: the stack's declarations name their files under it. */
@@ -257,6 +296,30 @@ const recorded = (node: Node) =>
 const recordedBindings = (node: Node): readonly { sid: string; data: unknown }[] => {
   const state = recorded(node);
   return state && "bindings" in state && Array.isArray(state.bindings) ? state.bindings : [];
+};
+/**
+ * A row's binding changes against its last finished generation. For a row an interrupted apply left
+ * `updating`, Alchemy compares bindings with the unfinished generation (alchemy/src/Plan.ts), so a
+ * change that apply had already written plans as noop, and a binding it had dropped plans no row.
+ */
+const bindingChanges = (node: Node): Node["bindings"] => {
+  if (!(node.state?.status === "updating" && node.state.old)) return node.bindings;
+  const finished = new Map(recordedBindings(node).map((binding) => [binding.sid, binding.data]));
+  const rows: Node["bindings"][number][] = node.bindings.map((binding) =>
+    binding.action === "delete"
+      ? binding
+      : !finished.has(binding.sid)
+        ? { ...binding, action: "create" }
+        : binding.action === "noop" &&
+            (!isResolved(binding.data) ||
+              propChanges(finished.get(binding.sid), binding.data).length > 0)
+          ? { ...binding, action: "update" }
+          : binding,
+  );
+  for (const [sid, data] of finished)
+    if (!node.bindings.some((binding) => binding.sid === sid))
+      rows.push({ sid, action: "delete", data } as Node["bindings"][number]);
+  return rows;
 };
 
 interface WireBinding {
@@ -301,9 +364,30 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
         : "A release never removes a Worker binding: the running code may still read it, and a cross-script Durable Object binding is the only handle on another Worker's stored objects.",
       fix: "Restore the binding in the Worker's declaration. Retiring a binding or a class is its own reviewed change, never part of a release.",
     });
-  for (const binding of node.bindings) {
+  for (const binding of bindingChanges(node)) {
     const next = wire(binding.data);
     if (binding.action === "delete") {
+      const reviewed = policy.removedBindings?.some(
+        (entry) => entry.fqn === node.resource.FQN && entry.sid === binding.sid,
+      );
+      // Exactly the named setting: one wire entry, plain text, under its own name. An interrupted
+      // apply leaves the planner's row from the unfinished generation, so the last finished one,
+      // which may be what runs, must hold no more than that under the id either.
+      const onlySetting = (data: unknown) => {
+        const entries = wire(data);
+        return (
+          entries.length === 1 &&
+          entries[0]!.type === "plain_text" &&
+          entries[0]!.name === binding.sid
+        );
+      };
+      const finished = recordedBindings(node).find((entry) => entry.sid === binding.sid);
+      if (
+        reviewed &&
+        onlySetting(binding.data) &&
+        (finished === undefined || onlySetting(finished.data))
+      )
+        continue;
       for (const entry of next) removed(binding.sid, entry);
       if (!next.length)
         violations.push({
@@ -403,7 +487,7 @@ export function rootUpdateSettles(
     typeof recordedHash === "string" &&
     referenceHash !== undefined &&
     recordedHash !== referenceHash;
-  const pending = node.bindings.filter((binding) => binding.action !== "noop");
+  const pending = bindingChanges(node).filter((binding) => binding.action !== "noop");
   const className = props.className;
   const attachmentWaitsOnWorker = () => {
     const [binding] = pending;
@@ -413,12 +497,14 @@ export function rootUpdateSettles(
     const upstream = Object.keys(Output.upstreamAny(binding.data));
     if (upstream.length !== 1 || upstream[0] !== policy.poolWorker) return false;
     const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
-    if (
-      propChanges(recordedData, binding.data, ["bindings", binding.sid]).some(
-        (line) => !line.includes("<unresolved>"),
-      )
-    )
-      return false;
+    // The provider writes exactly the namespace here. A comparison stops at data holding an
+    // unknown, so any value beside it, on either row, could differ unseen.
+    const onlyNamespace = (data: unknown) =>
+      record(data) &&
+      Object.keys(data).join() === "durableObjects" &&
+      record(data.durableObjects) &&
+      Object.keys(data.durableObjects).join() === "namespaceId";
+    if (!onlyNamespace(binding.data) || !onlyNamespace(recordedData)) return false;
     // What it will resolve to is already recorded, the same on both rows: a namespace id is
     // permanent for a Worker and a class, so the Worker's update cannot move it.
     const attached =
@@ -439,7 +525,7 @@ export function rootUpdateSettles(
     return (
       workerNode.action === "update" &&
       worker.clean &&
-      workerNode.bindings.some(
+      bindingChanges(workerNode).some(
         (entry) =>
           entry.action !== "delete" &&
           wire(entry.data).some(
@@ -521,7 +607,7 @@ function containerViolations(
       change: [
         `$action: noop -> ${node.action}`,
         ...propChanges(before, props),
-        ...node.bindings
+        ...bindingChanges(node)
           .filter((binding) => binding.action !== "noop")
           .map((binding) => `bindings.${binding.sid}: ${binding.action}`),
       ],
@@ -531,7 +617,7 @@ function containerViolations(
   const recordedAttachments = new Map(
     recordedBindings(node).map((binding) => [binding.sid, binding.data]),
   );
-  for (const binding of node.bindings) {
+  for (const binding of bindingChanges(node)) {
     if (binding.action === "noop") continue;
     // A value unknown until another row resolves, or none at all, is not a planned change: the plan
     // cannot see it, and the wire guard refuses any PATCH or rollout of the root it would cause.
@@ -661,6 +747,33 @@ export const checkPlan = (
       );
       const rootSettled =
         !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
+      // A root recorded by id but not by name makes the wire guard refuse every container
+      // application write of the run, so a plan that writes one would pass here and stop at its
+      // first write. A root not recorded yet is the guard's own case: it requires none there.
+      const rootAttr = rootNode
+        ? (
+            recorded(rootNode) as
+              | { attr?: { applicationId?: unknown; applicationName?: unknown } }
+              | undefined
+          )?.attr
+        : undefined;
+      const present = (value: unknown) => typeof value === "string" && value.length > 0;
+      const containerWrite = nodes.find(
+        (node) =>
+          node.resource.Type === "Cloudflare.Container" &&
+          node.resource.FQN !== policy.poolContainer.fqn &&
+          node.action !== "noop",
+      );
+      if (containerWrite && present(rootAttr?.applicationId) && !present(rootAttr?.applicationName))
+        violations.push({
+          fqn: containerWrite.resource.FQN,
+          type: containerWrite.resource.Type,
+          action: containerWrite.action,
+          rule: "root-name-unrecorded",
+          change: [`${policy.poolContainer.fqn}.attr.applicationName: absent`],
+          why: "The root's State row records no application name, so the wire guard refuses every container application write in this run, and this plan's apply would stop at its first.",
+          fix: "Record the root's application name on its State row before a release that writes a container application.",
+        });
       for (const node of nodes) {
         const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
         const destroys =
@@ -735,7 +848,7 @@ export const checkPlan = (
             fqn: node.resource.FQN,
             type: node.resource.Type,
             action: node.action,
-            bindings: node.bindings
+            bindings: bindingChanges(node)
               .filter((binding) => binding.action !== "noop")
               .map(({ sid, action }) => ({ sid, action })),
           })),
@@ -767,7 +880,7 @@ export const checkPlan = (
         return (
           differences.length > 0 &&
           differences.every((line) => line.includes("<unresolved>")) &&
-          node.bindings.every((binding) => binding.action === "noop")
+          bindingChanges(node).every((binding) => binding.action === "noop")
         );
       };
       // Readiness after the upload refuses a root whose recorded input differs from what the pool
@@ -791,8 +904,24 @@ export const checkPlan = (
             fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
           });
       }
-      // What a code-only allowance does not cover on a row. Each property and each `env` entry is
-      // compared on its own: one value that is not known yet must not hide the rest of the row.
+      // What a code-only allowance does not cover on a row. The rule in one sentence: every
+      // property, `env` entry and binding row of the Worker is the same in the plan as in State,
+      // in the last finished generation and, after an interrupted apply, in the unfinished one as
+      // well, whatever the planner calls the row; either generation may be what is live.
+      // The exceptions, each one named:
+      // - the entry file may sit under another checkout's directory;
+      // - a value the policy names may differ in its named fields, in the entry and in the binding
+      //   row that carries it;
+      // - a reference the policy names: State may hold any record under the entry, such as an
+      //   older copy of the resource's attributes, and the plan holds the attributes State records
+      //   for the resource now, or the resource itself while that updates. This holds only while
+      //   the entry's one binding row holds one wire entry that the upload carries, named after
+      //   the entry and as State has it. That row alone may differ in the copy of a database
+      //   connection's origin that local development reads; no upload reads it.
+      // State itself has to be readable that way: the generation under an interrupted apply is a
+      // finished one, and where State holds a row twice the last copy counts, as for the planner.
+      // Each property and each `env` entry is compared on its own: one value that is not known yet
+      // must not hide the rest of the row.
       const beyondCode = (
         change: PlanChange,
         codeOnly: NonNullable<PlanPolicy["allow"][number]["codeOnly"]>,
@@ -803,104 +932,243 @@ export const checkPlan = (
             ...change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`),
             "props: not readable",
           ];
-        const values = new Set(codeOnly.values.map((value) => value.name));
+        type Row = Node["bindings"][number];
+        const values = new Map(codeOnly.values.map((value) => [value.name, value.fields]));
         const references = new Map(
           codeOnly.references.map((entry) => [entry.name, entry.resource]),
         );
         const keys = (...holders: object[]) => [...new Set(holders.flatMap(Object.keys))].sort();
-        // A binding's wire entries without the values they carry: what the Worker is attached to.
-        const attachment = (data: unknown) =>
-          record(data) && Array.isArray(data.bindings)
-            ? {
-                ...data,
-                bindings: data.bindings.map((entry: unknown) =>
-                  record(entry)
-                    ? Object.fromEntries(
-                        Object.entries(entry).filter(([key]) => key !== "text" && key !== "json"),
-                      )
-                    : entry,
-                ),
-              }
-            : data;
-        const recordedData = new Map(
-          recordedBindings(node).map((binding) => [binding.sid, binding.data]),
-        );
-        // A changed value plans its own binding row as an update too. For a named value that row
-        // is admitted while it stays the same binding; a value not known yet keeps its binding,
-        // and the wire guard holds the upload to the serving version's binding shapes.
-        const valueOnly = (binding: Node["bindings"][number]) =>
-          binding.action === "update" &&
-          values.has(binding.sid) &&
-          recordedData.has(binding.sid) &&
-          (!isResolved(binding.data) ||
-            propChanges(attachment(recordedData.get(binding.sid)), attachment(binding.data))
-              .length === 0);
         const planned = (resource: string) =>
           nodes.find((candidate) => candidate.resource.FQN === resource);
+        // The generations State holds: the last finished one and, behind an interrupted apply, the
+        // unfinished one. The rows below are `noop` only when they are the same in each of them.
+        const finished = recorded(node);
+        const generations: readonly ({ props?: unknown; bindings?: unknown } | undefined)[] = [
+          finished,
+          ...(node.state !== finished ? [node.state] : []),
+        ];
+        const rows = bindingChanges(node);
+        /**
+         * What each generation holds for a row; `undefined` where one does not hold it. Where a
+         * generation holds the row twice, the last copy: the planner reads that one.
+         */
+        const held = (sid: string): unknown[] =>
+          generations.map(
+            (generation) =>
+              (Array.isArray(generation?.bindings) ? generation.bindings : [])
+                .filter((binding: { sid?: unknown }) => binding.sid === sid)
+                .at(-1)?.data,
+          );
+        // A row that is in the plan and in State. A `create` or `delete` row is a change as such.
+        const kept = (binding: Row) => binding.action === "noop" || binding.action === "update";
+
+        // A named value is a record, plain or as JSON text, redacted or not. Only its named fields
+        // may differ: the rest of it, such as a credential beside a version, is compared.
+        const decoded = (value: unknown): Record<string, unknown> | undefined => {
+          const text: unknown = Redacted.isRedacted(value) ? Redacted.value(value) : value;
+          if (record(text)) return text;
+          if (typeof text !== "string") return undefined;
+          try {
+            const parsed: unknown = JSON.parse(text);
+            return record(parsed) ? parsed : undefined;
+          } catch {
+            return undefined;
+          }
+        };
+        const onlyFields = (old: unknown, next: unknown, fields: readonly string[]) => {
+          const before = decoded(old);
+          const after = decoded(next);
+          const rest = (value: Record<string, unknown>) =>
+            Object.fromEntries(Object.entries(value).filter(([key]) => !fields.includes(key)));
+          return (
+            isResolved(old) &&
+            isResolved(next) &&
+            Redacted.isRedacted(old) === Redacted.isRedacted(next) &&
+            typeof (Redacted.isRedacted(old) ? Redacted.value(old) : old) ===
+              typeof (Redacted.isRedacted(next) ? Redacted.value(next) : next) &&
+            before !== undefined &&
+            after !== undefined &&
+            propChanges(rest(before), rest(after)).length === 0
+          );
+        };
+        // A changed value changes its own binding row too. That row is admitted while it is the
+        // same binding and the value it carries differs in the named fields only.
+        const valueOnly = (binding: Row) => {
+          const fields = values.get(binding.sid);
+          if (!kept(binding) || fields === undefined || !isResolved(binding.data)) return false;
+          const carried = (data: unknown): Record<string, unknown>[] =>
+            record(data) && Array.isArray(data.bindings) ? data.bindings.filter(record) : [];
+          const rest = (data: unknown) =>
+            record(data)
+              ? {
+                  ...data,
+                  bindings: carried(data).map((entry) =>
+                    Object.fromEntries(
+                      Object.entries(entry).filter(([key]) => key !== "text" && key !== "json"),
+                    ),
+                  ),
+                }
+              : data;
+          const after = carried(binding.data);
+          return held(binding.sid).every((old) => {
+            const before = carried(old);
+            return (
+              propChanges(rest(old), rest(binding.data)).length === 0 &&
+              before.length === after.length &&
+              after.every((entry, index) =>
+                ["text", "json"].every(
+                  (key) =>
+                    propChanges(before[index]?.[key], entry[key]).length === 0 ||
+                    onlyFields(before[index]?.[key], entry[key], fields),
+                ),
+              )
+            );
+          });
+        };
+
+        // `isResolved` is a type guard, and what it refuses narrows to nothing. Asked this way, a
+        // value that is not known yet stays readable.
+        const unknownYet = (value: unknown): boolean => !isResolved(value);
         // Not known until one resource applies, and that resource keeps its identity: it updates.
         const waitsOn = (value: unknown, resource: string) =>
-          !isResolved(value) &&
+          unknownYet(value) &&
           Object.keys(Output.upstreamAny(value)).join("\n") === resource &&
           planned(resource)?.action === "update";
-        // State recorded the named resource's attributes for the entry. The plan either still waits
-        // on that resource alone, or holds the attributes State records for it now.
-        const reference = (old: unknown, next: unknown, resource: string) => {
-          if (!record(old) || Redacted.isRedacted(old)) return false;
-          if (!isResolved(next)) return Output.isResourceExpr(next) && waitsOn(next, resource);
+        // A reference's row holds one wire entry, named after the entry. With no wire entry of its
+        // name the provider uploads the entry's own value instead: the resource's attributes,
+        // which change with every update of the resource and which the plan does not hold. A wire
+        // entry of the kind the upload drops (the library's `withoutDevOnlyBindings`: the local
+        // S3 credentials) leaves the upload without one, so it does not count.
+        const namesEntry = (binding: Row) => {
+          const data: unknown = binding.data;
+          if (Output.isOutput(data) || !record(data) || !Array.isArray(data.bindings)) return false;
+          const [entry, ...more]: unknown[] = data.bindings;
+          return (
+            more.length === 0 &&
+            record(entry) &&
+            entry.name === binding.sid &&
+            entry.type !== "r2_s3_credentials"
+          );
+        };
+        // A named reference's row whose upload stays the same: its wire entry is known and as State
+        // has it, and so is every other key but one. The copy of a database connection's origin
+        // that local development reads may differ, or wait on the named resource alone while that
+        // updates.
+        const sameBinding = (binding: Row) => {
+          const resource = references.get(binding.sid);
+          const next: unknown = binding.data;
+          return (
+            kept(binding) &&
+            resource !== undefined &&
+            namesEntry(binding) &&
+            record(next) &&
+            held(binding.sid).every(
+              (old) =>
+                record(old) &&
+                keys(old, next).every((key) =>
+                  key === "hyperdrives"
+                    ? isResolved(next[key]) || waitsOn(next[key], resource)
+                    : isResolved(next[key]) && propChanges(old[key], next[key]).length === 0,
+                ),
+            )
+          );
+        };
+        // Which resource the upload binds is read from the entry's one binding row, never from
+        // the copy of the resource's attributes in the entry: a release that left this Worker
+        // alone can have moved those. The value itself is then the named resource: the resource
+        // as such while it updates, or the attributes State records for it now.
+        const reference = (name: string, old: unknown, next: unknown, resource: string) => {
+          const own = rows.filter((binding) => binding.sid === name);
+          if (
+            !record(old) ||
+            Redacted.isRedacted(old) ||
+            own.length !== 1 ||
+            !own.every((row) => namesEntry(row) && (row.action === "noop" || sameBinding(row)))
+          )
+            return false;
+          if (unknownYet(next)) return Output.isResourceExpr(next) && waitsOn(next, resource);
           const target = planned(resource);
           const attributes = target && (recorded(target) as { attr?: unknown } | undefined)?.attr;
           return record(attributes) && record(next) && propChanges(attributes, next).length === 0;
         };
-        // While a referenced resource updates, the entry's binding is not known either: it keeps
-        // its sid and gets that same resource's data at apply.
-        const referenceWaits = (binding: Node["bindings"][number]) => {
-          const resource = references.get(binding.sid);
-          return (
-            binding.action === "update" &&
-            resource !== undefined &&
-            recordedData.has(binding.sid) &&
-            waitsOn(binding.data, resource)
-          );
-        };
-        const lines = node.bindings
-          .filter(
-            (binding) =>
-              binding.action !== "noop" && !valueOnly(binding) && !referenceWaits(binding),
-          )
-          .map(({ sid, action }) => `bindings.${sid}: ${action}`);
-        const before: Record<string, unknown> = record(recorded(node)?.props)
-          ? (recorded(node)?.props as Record<string, unknown>)
-          : {};
+
+        const twice = (names: readonly string[]) => [
+          ...new Set(names.filter((name, index) => names.indexOf(name) !== index)),
+        ];
+        // The apply puts the row before it under `old` when it starts an update, and carries that
+        // one forward when it is interrupted again. Anything else there is not a generation this
+        // check can take as the last finished one.
+        const finishedOne = (generation: unknown) =>
+          record(generation) &&
+          generation.old === undefined &&
+          (generation.status === undefined ||
+            generation.status === "created" ||
+            generation.status === "updated");
+        const lines = [
+          ...(node.state !== finished && !finishedOne(finished)
+            ? ["state: the generation under the interrupted apply is not a finished one"]
+            : []),
+          // A policy that names an entry twice, or the Worker itself, would let the looser rule
+          // answer for the stricter one.
+          ...[codeOnly.references, codeOnly.values].flatMap((list) =>
+            twice(list.map((entry) => entry.name)).map((name) => `policy.${name}: named twice`),
+          ),
+          ...codeOnly.references.flatMap((entry) => [
+            ...(values.has(entry.name)
+              ? [`policy.${entry.name}: named as a reference and as a value`]
+              : []),
+            ...(entry.resource === change.fqn
+              ? [`policy.${entry.name}: names the Worker itself`]
+              : []),
+          ]),
+          ...rows
+            .filter(
+              (binding) =>
+                binding.action !== "noop" && !valueOnly(binding) && !sameBinding(binding),
+            )
+            .map(({ sid, action }) => `bindings.${sid}: ${action}`),
+        ];
         const after: Record<string, unknown> = record(node.props) ? node.props : {};
-        for (const prop of keys(before, after)) {
-          const old = before[prop];
-          const next = after[prop];
-          if (prop === "main" && old !== next) {
-            if (!sameEntryFile(old, next))
-              lines.push(`props.main: ${entryName(old)} -> ${entryName(next)}`);
-            continue;
-          }
-          if (
-            prop !== "env" ||
-            !record(old) ||
-            !record(next) ||
-            Redacted.isRedacted(old) ||
-            Redacted.isRedacted(next) ||
-            Output.isOutput(next)
-          ) {
-            lines.push(...propChanges(old, next, ["props", prop]));
-            continue;
-          }
-          for (const name of keys(old, next)) {
-            const present = Object.hasOwn(old, name) && Object.hasOwn(next, name);
-            if (present && values.has(name)) continue;
-            const resource = references.get(name);
-            if (present && resource !== undefined && reference(old[name], next[name], resource))
+        for (const generation of generations) {
+          const before: Record<string, unknown> = record(generation?.props) ? generation.props : {};
+          for (const prop of keys(before, after)) {
+            const old = before[prop];
+            const next = after[prop];
+            if (prop === "main" && old !== next) {
+              if (!sameEntryFile(old, next))
+                lines.push(`props.main: ${entryName(old)} -> ${entryName(next)}`);
               continue;
-            lines.push(...propChanges(old[name], next[name], ["props", "env", name]));
+            }
+            if (
+              prop !== "env" ||
+              !record(old) ||
+              !record(next) ||
+              Redacted.isRedacted(old) ||
+              Redacted.isRedacted(next) ||
+              Output.isOutput(next)
+            ) {
+              lines.push(...propChanges(old, next, ["props", prop]));
+              continue;
+            }
+            for (const name of keys(old, next)) {
+              const present = Object.hasOwn(old, name) && Object.hasOwn(next, name);
+              const fields = values.get(name);
+              if (present && fields !== undefined && onlyFields(old[name], next[name], fields))
+                continue;
+              const changes = propChanges(old[name], next[name], ["props", "env", name]);
+              const resource = references.get(name);
+              if (!present || resource === undefined) lines.push(...changes);
+              else if (!reference(name, old[name], next[name], resource))
+                // The value can be the same while its binding row is not the reference's.
+                lines.push(
+                  ...(changes.length
+                    ? changes
+                    : [`props.env.${name}: its binding row is not this reference as State has it`]),
+                );
+            }
           }
         }
-        return lines;
+        return [...new Set(lines)];
       };
       if (policy.mode === "code-only")
         for (const change of changes) {

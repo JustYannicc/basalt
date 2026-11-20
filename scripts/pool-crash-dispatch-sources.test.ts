@@ -17,7 +17,8 @@ test("the crash target comes from the Worker's tags and bindings, and the contro
       connect: lane.connect,
       code: lane.code,
     });
-    assert.deepEqual(target, {
+    const { provider, ...rest } = target;
+    assert.deepEqual(rest, {
       accountId,
       worker,
       root: {
@@ -27,6 +28,10 @@ test("the crash target comes from the Worker's tags and bindings, and the contro
         imageInput: primary.imageInput,
       },
     });
+    // The provider pins come from the same live root application read; no extra read is made.
+    assert.equal(provider?.applicationId, primary.applicationId);
+    assert.equal(provider?.applicationVersion, "57");
+    assert.equal(provider?.imageDigest, primary.imageDigest);
     assert.deepEqual(lane.actions, ["inspect"]);
   } finally {
     await lane.close();

@@ -408,7 +408,7 @@ const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
-const { rootPinMismatch } = await import("./root-pin.ts");
+const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -465,6 +465,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
+          // Production keeps the root from the first request on: until both its id and its name
+          // are pushed below, no container application write leaves.
+          rootRequired: stage === "production",
           deletable,
           stage: undefined as StageScope | undefined,
           // Reads of production send nothing but reads; the guard refuses anything else.
@@ -530,13 +533,25 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               script,
             });
           }
-          // Every reviewed release leaves the root application as recorded; previews roll it freely.
-          if (policy?.check) {
-            const root = yield* recordedApplication(policy.check.poolContainer.fqn);
+          // Every reviewed release, and every production command, leaves the root application as
+          // recorded; previews roll it freely. A stage under a policy keeps its root by the same
+          // rules once its State row records one, so a rehearsal runs them as production does.
+          const rootFqn =
+            policy?.check?.poolContainer.fqn ??
+            (stage === "production" ? "PoolContainer" : undefined);
+          if (rootFqn) {
+            const root = yield* recordedApplication(rootFqn);
             if (root) {
               wire.rootApplications.push(root.id);
+              wire.rootRequired = true;
               if (root.name) wire.rootApplicationNames.push(root.name);
-            } else if (stage === "production")
+              else
+                yield* Effect.promise(() =>
+                  summary(
+                    "Warning: the root's State row records no application name, so every container application write in this run is refused.",
+                  ),
+                );
+            } else if (stage === "production" && policy?.check)
               return yield* Effect.die(new Error("No root application recorded on production"));
           }
           // A refused request fails the run at once instead of after the SDK's retries.
@@ -635,6 +650,8 @@ const checkPolicy = () => {
 };
 
 try {
+  // The root pin's full reference carries the account, so it exists only in this process.
+  setRootPin(process.env);
   if (command === "plan" || command === "apply" || command === "deploy") {
     const result = await run(
       Effect.gen(function* () {
@@ -786,6 +803,7 @@ try {
     // Read-only, once before the cutover: the State store version, every State row, the retired
     // layer's records exported sealed, no unresolved Home migration, and the root pin against State.
     const legacy = await import("./legacy-records.ts");
+    const poolParameters = await import("./pool-parameters.ts");
     const result = await run(
       Effect.gen(function* () {
         const state = yield* Alchemist.State.store({
@@ -821,9 +839,52 @@ try {
           stage,
           fqn: "PoolWorker",
         }) as Fx.Effect<unknown, unknown, never>;
+        // Without both, the guard refuses every container application write of a release, the
+        // class change's creates included; said in words before the pin is compared.
+        const attr = (rootRow as { attr?: Record<string, unknown> } | undefined)?.attr;
+        const present = (value: unknown) =>
+          typeof value === "string" && value ? "present" : "absent";
+        const rootRecord = `id ${present(attr?.applicationId)}, name ${present(attr?.applicationName)}`;
+        yield* Effect.promise(() => summary(`root row: ${rootRecord}`));
         const mismatch = rootPinMismatch(process.env.POOL_ROOT_IMAGE, rootRow, workerRow);
-        if (mismatch) return yield* Effect.die(new Error(mismatch));
-        return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
+        if (mismatch) return yield* Effect.fail(mismatch);
+        // One GET of the branch's parameters, which the apply's first database step compares and,
+        // when the pooler differs, patches. A difference or an unreadable answer is reported only.
+        // Production only: its branch is fixed below, and only production's preflight is read-only.
+        const pool =
+          stage !== "production"
+            ? ("not-production" as const)
+            : yield* poolParameters
+                .readPoolParameters({
+                  organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
+                  tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
+                  token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
+                  database: "basalt",
+                  branch: "main",
+                })
+                .pipe(
+                  Effect.match({
+                    onFailure: () => "unreadable" as const,
+                    onSuccess: (report) => report,
+                  }),
+                );
+        yield* Effect.promise(() =>
+          summary(
+            pool === "not-production"
+              ? "Pool parameters: read on production only"
+              : pool === "unreadable"
+                ? "Pool parameters: unreadable; the apply's first database step is not predicted"
+                : poolParameters.poolParameterLine(pool),
+          ),
+        );
+        return {
+          stateStoreVersion: version,
+          rows,
+          exported,
+          rootRow: rootRecord,
+          rootPin: "matches the State row",
+          poolParameters: pool,
+        };
       }),
     );
     await output(resolve(root, ".local/release/preflight.json"), result);

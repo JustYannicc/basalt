@@ -30,6 +30,7 @@ import { layerNonInteractive } from "alchemy/Interaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Context, Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
+import { poolObservationTokenProps } from "../../../src/pool/fleet-observation.ts";
 
 export const accountId = "0".repeat(32);
 export const applicationId = "11111111-1111-4111-8111-111111111111";
@@ -78,12 +79,27 @@ export interface Declaration {
     main?: string;
     secret?: string;
     version?: string;
+    /** The credential inside the redacted value that also carries the version. */
+    token?: string;
+    /** Declares that value as plain text instead of a secret. */
+    telemetryPlain?: boolean;
     mode?: string;
     /** The Worker it calls: the tools Worker, or another one under the same name. */
     calls?: "Api" | "Catalog";
     /** The class its `Coordinator` binding names; by default the recorded one. */
     className?: string;
+    /** The host of the model database connection it reads; another host updates that connection. */
+    databaseHost?: string;
+    /**
+     * Stack code binds its own row under the database entry's name, with a wire entry of another
+     * name; `"with local copy"` adds local development's copy of the connection's origin to it.
+     */
+    ownDatabaseRow?: true | "with local copy";
+    /** The Worker it calls binds the store's class, as production's tools Worker does: a cycle. */
+    calledBindsStore?: boolean;
   };
+  /** Declares the provider observation token as production does, under this fixture's account. */
+  observationToken?: boolean;
 }
 
 /** The recorded production body of the root application read, with synthetic identifiers. */
@@ -268,8 +284,10 @@ const providers = (base: string) =>
       Cloudflare.Workers.Worker,
       Cloudflare.Containers.ContainerPlatform,
       Cloudflare.R2.Bucket,
+      Cloudflare.Hyperdrive.Connection,
       Cloudflare.D1.Database,
       Cloudflare.SecretsStore.Store,
+      Cloudflare.ApiToken.AccountApiToken,
       Command.Exec,
     ]),
   ).pipe(
@@ -278,8 +296,10 @@ const providers = (base: string) =>
         Cloudflare.Workers.WorkerProvider(),
         Cloudflare.Containers.ContainerProvider(),
         Cloudflare.R2.BucketProvider(),
+        Cloudflare.Hyperdrive.ConnectionProvider(),
         Cloudflare.D1.DatabaseProvider(),
         Cloudflare.SecretsStore.SecretsStoreProvider(),
+        Cloudflare.ApiToken.AccountApiTokenProvider(),
         Command.providers(),
       ),
     ),
@@ -304,6 +324,16 @@ const providers = (base: string) =>
     // Planning never reaches the daemon; the provider only needs the service to exist.
     Layer.provide(DockerLive),
   );
+
+const modelDatabaseOrigin = (host = "model-database.invalid") => ({
+  scheme: "postgres" as const,
+  host,
+  port: 5432,
+  database: "pool",
+  user: "pool",
+  password: Redacted.make("synthetic-database-password"),
+});
+const modelDatabaseId = "4".repeat(32);
 
 const service = {
   main: entry,
@@ -342,6 +372,18 @@ const program = (declared: Declaration) =>
           Catalog: yield* Cloudflare.Worker("Catalog", service),
         }[declared.credentials.calls ?? "Api"]
       : undefined;
+    // The model database connection, as the bulk-import store binds it in production.
+    const modelDatabase = declared.credentials
+      ? yield* Cloudflare.Hyperdrive.Connection("PoolModelDatabaseConnection", {
+          origin: modelDatabaseOrigin(declared.credentials.databaseHost),
+        })
+      : undefined;
+    // Declared as main declared it until production's first plan showed State never held it.
+    if (declared.observationToken)
+      yield* Cloudflare.ApiToken.AccountApiToken(
+        "PoolProviderObservationToken",
+        poolObservationTokenProps(accountId, scope.stage),
+      ).pipe(retain());
     const credentials = yield* Cloudflare.Worker("ArtifactsCredentials", {
       main: declared.credentials?.main ?? entry,
       workersDev: false,
@@ -353,13 +395,18 @@ const program = (declared: Declaration) =>
         ...(declared.credentials
           ? {
               TOOLS_SERVICE: called,
+              POOL_AUTH_DATABASE: modelDatabase,
               // A resource whose binding carries more than its stable identity.
               VAULT: vault,
               POOL_APP_SIGNING_KEY: Redacted.make(
                 declared.credentials.secret ?? "synthetic-signing-secret",
               ),
-              EXECUTOR_TELEMETRY: Redacted.make(
-                JSON.stringify({ version: declared.credentials.version ?? "1" }),
+              EXECUTOR_TELEMETRY: ((text: string) =>
+                declared.credentials?.telemetryPlain ? text : Redacted.make(text))(
+                JSON.stringify({
+                  version: declared.credentials.version ?? "1",
+                  traces: { headers: { authorization: declared.credentials.token ?? "token-a" } },
+                }),
               ),
               POOL_MODE: { mode: declared.credentials.mode ?? "a" },
             }
@@ -374,6 +421,24 @@ const program = (declared: Declaration) =>
         ...declared.credentialsEnv,
       },
     });
+    if (declared.credentials?.ownDatabaseRow && modelDatabase)
+      yield* credentials.bind("POOL_AUTH_DATABASE", {
+        bindings: [{ type: "hyperdrive", name: "MODEL_DB", id: modelDatabase.hyperdriveId }],
+        ...(declared.credentials.ownDatabaseRow === "with local copy"
+          ? { hyperdrives: Cloudflare.Hyperdrive.getHyperdriveDevOrigin(modelDatabase) }
+          : {}),
+      } as never);
+    if (declared.credentials?.calledBindsStore && called)
+      yield* called.bind("BulkStore", {
+        bindings: [
+          {
+            type: "durable_object_namespace",
+            name: "BulkStore",
+            className: "ArtifactsTokenCoordinator",
+            scriptName: credentials.workerName,
+          },
+        ],
+      } as never);
     const image = Cloudflare.Container("PoolContainer", {
       ...(declared.container ?? { image: pinnedImage }),
       className: "PoolContainer",
@@ -652,9 +717,12 @@ export const productionRows = (): Record<string, ResourceState> => ({
   ),
 });
 
-/** Rows of the two Workers ArtifactsCredentials can call, as a release before recorded them. */
-export const calledRows = (): Record<string, ResourceState> =>
-  Object.fromEntries(
+/**
+ * Rows of what ArtifactsCredentials holds of other resources, as a release before recorded them:
+ * the two Workers it can call and the model database connection.
+ */
+export const calledRows = (): Record<string, ResourceState> => ({
+  ...Object.fromEntries(
     ["Api", "Catalog"].map((fqn) => [
       fqn,
       row(
@@ -664,7 +732,21 @@ export const calledRows = (): Record<string, ResourceState> =>
         workerAttributes(`basalt-production-${fqn.toLowerCase()}`, {}),
       ),
     ]),
-  );
+  ),
+  PoolModelDatabaseConnection: row(
+    "Cloudflare.Hyperdrive",
+    "PoolModelDatabaseConnection",
+    { origin: modelDatabaseOrigin() },
+    {
+      hyperdriveId: modelDatabaseId,
+      name: "basalt-production-poolmodeldatabaseconnection",
+      accountId,
+      origin: modelDatabaseOrigin(),
+      mtls: { caCertificateId: undefined, mtlsCertificateId: undefined, sslmode: undefined },
+      dev: undefined,
+    },
+  ),
+});
 
 /** Marks settled Workers as built from another checkout, so Alchemy plans an update of their code. */
 export const withCodeFromElsewhere = (
@@ -689,6 +771,22 @@ export const withCodeFromElsewhere = (
           }
         : value) as ResourceState,
     ]),
+  );
+
+/** The provider observation token as provisioning recorded it, under the given account. */
+export const observationTokenRow = (account: string, value: string) =>
+  row(
+    "Cloudflare.ApiToken.AccountApiToken",
+    "PoolProviderObservationToken",
+    poolObservationTokenProps(account, scope.stage),
+    {
+      tokenId: "4".repeat(32),
+      name: "basalt-production-pool-provider-observation",
+      status: "active",
+      value: Redacted.make(value),
+      accountId: account,
+    },
+    { removalPolicy: "retain" },
   );
 
 /** An action row from an older release (a migration step the stack no longer declares). */

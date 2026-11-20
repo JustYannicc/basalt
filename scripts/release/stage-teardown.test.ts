@@ -167,9 +167,10 @@ const underGuard = async <A>(
   state: Fake,
   config: WireGuardConfig,
   body: (fetcher: typeof fetch) => Promise<A>,
+  wrap: (fetcher: typeof fetch) => typeof fetch = (fetcher) => fetcher,
 ) => {
   const original = globalThis.fetch;
-  globalThis.fetch = cloudflare(state);
+  globalThis.fetch = wrap(cloudflare(state));
   try {
     return await Effect.runPromise(
       Effect.scoped(
@@ -394,6 +395,69 @@ test("a registry delete outside a rehearsal teardown's scope is refused, product
     );
     assert.deepEqual([label, "value" in outcome && outcome.value], [label, "refused"]);
     assert.deepEqual(state.sent, [], label);
+  }
+});
+
+test("a teardown's proof read follows no redirect, and writes nothing to the registry but its deletes", async () => {
+  const one = `/client/v4/accounts/${ACCOUNT}/containers/applications/`;
+  // The proof read is sent around the guard; it must not follow a redirect to an unchecked address.
+  const redirects: string[] = [];
+  // Read without building a Request: that would use up a body the guard has already handed on.
+  const seen = (input: RequestInfo | URL, init?: RequestInit) => ({
+    method: (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase(),
+    path: new URL(input instanceof Request ? input.url : String(input)).pathname,
+    redirect: init?.redirect ?? (input instanceof Request ? input.redirect : "follow"),
+  });
+  const recording =
+    (fetcher: typeof fetch): typeof fetch =>
+    async (input, init) => {
+      const { method, path, redirect } = seen(input, init);
+      if (method === "GET" && path.startsWith(one)) redirects.push(redirect);
+      return fetcher(input, init);
+    };
+  const state = fake();
+  const done = await underGuard(
+    state,
+    { stage: scope },
+    (fetcher) => teardownStage("delete", input(), fetcher),
+    recording,
+  );
+  assert.ok("value" in done, String("error" in done && done.error));
+  assert.ok(redirects.length > 0);
+  assert.deepEqual(new Set(redirects), new Set(["manual"]));
+  // Answered with a redirect, the proof names nothing, so the delete is refused and never sent.
+  const moved = fake();
+  const redirected =
+    (fetcher: typeof fetch): typeof fetch =>
+    async (input, init) => {
+      const { method, path } = seen(input, init);
+      if (method === "GET" && path === `${one}app-own-cell`)
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://example.invalid/" },
+        });
+      return fetcher(input, init);
+    };
+  const refused = await underGuard(
+    moved,
+    { stage: scope },
+    (fetcher) => teardownStage("delete", input(), fetcher),
+    redirected,
+  );
+  assert.ok("error" in refused);
+  assert.ok(!moved.sent.some((line) => line.startsWith("DELETE") && line.endsWith("app-own-cell")));
+  // Inside the teardown's scope, a registry write that is not a delete is refused too.
+  const own = `https://registry.cloudflare.com/v2/${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/manifests/${digest(1)}`;
+  for (const method of ["PUT", "POST", "PATCH"]) {
+    const images = fake();
+    const outcome = await underGuard(images, { stage: scope }, (fetcher) =>
+      fetcher(own, { method, body: "{}" }).then(
+        (response) => `sent ${response.status}`,
+        (error: unknown) => (error instanceof WireRefused ? "refused" : String(error)),
+      ),
+    );
+    assert.deepEqual([method, "value" in outcome && outcome.value], [method, "refused"]);
+    assert.deepEqual(images.sent, [], method);
   }
 });
 
