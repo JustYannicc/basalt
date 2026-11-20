@@ -338,7 +338,7 @@ test("the private schema operator reads catalogs and counts and has no schema ap
   }
 });
 
-test("schema apply diagnostics discard driver messages, credentials and nested causes", () => {
+test("activation apply diagnostics discard driver messages, credentials and nested causes", () => {
   const secret = "postgres://secret-user:secret-password@private-host/private-db";
   for (const code of ["42501", "ECONNREFUSED", "EPIPE", "arbitrary-secret-code"]) {
     const error = Object.assign(new Error(secret), {

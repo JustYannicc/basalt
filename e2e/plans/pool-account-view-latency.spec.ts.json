@@ -41,7 +41,10 @@
     ".upstream/e2e/support/sql-wire-requests.ts",
     ".upstream/e2e/support/sql-wire-cohorts.ts",
     ".upstream/e2e/support/pool-account-view-query.ts",
-    ".upstream/e2e/support/sql-wire-noise.ts"
+    ".upstream/e2e/support/sql-wire-noise.ts",
+    ".upstream/e2e/support/pool-history-database.ts",
+    "scripts/pool-tests/history-schema-fixture.ts",
+    "src/pool/model-history/**"
   ],
   "fixture": "pool-setup"
 }
