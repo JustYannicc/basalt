@@ -5,10 +5,10 @@ import {
 import { windowVerdict } from "./model-history/reliability-unknown.ts";
 
 /**
- * An objective left unavailable by its unknown outcomes pages only when a window they decide has
- * enough real requests to page a breach, the unknown ones the window never counted included; doubt
- * never pages louder than a breach would. Every other reason it is unavailable still pages, and the
- * figure keeps saying unavailable either way.
+ * An objective left unavailable by its unknown outcomes pages only when a window they decide has at
+ * least as many real requests as a breach needs to page, the unknown ones the window never counted
+ * included, so a quiet window's doubt doesn't page every minute. Every other reason it is
+ * unavailable still pages, and the figure keeps saying unavailable either way.
  */
 export function notifyCollectionUnavailable(slo: PoolReliabilitySlo): boolean {
   if (slo.state !== "unavailable") return false;

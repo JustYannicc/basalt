@@ -448,6 +448,14 @@ test("a window too quiet to page is not paged as undecided, and its doubt is sti
   assert.ok(logged.includes("POOL_REQUEST_OUTCOMES_UNKNOWN"));
 });
 
+test("a start still without a finish in a quiet hour is not paged as undecided either", async (t) => {
+  const { pages } = await collectionPages(t, {
+    ...undecidedBy(quietWindow(20, 1), quietWindow(2_000, 1)),
+    reason: "terminal_collection_pending",
+  });
+  assert.deepEqual(pages, []);
+});
+
 for (const reason of [
   "history_inactive",
   "capture_stale",
@@ -463,7 +471,8 @@ for (const reason of [
   });
 
 test("the floor counts the requests the doubt is about, not only those already counted", async (t) => {
-  // 90 counted requests and 300 that never finished nor reached Home: 390 real requests.
+  // 90 counted requests and 300 whose outcome no record establishes and which never reached Home:
+  // 390 real requests.
   const { pages } = await collectionPages(
     t,
     undecidedBy(quietWindow(90, 300, 300), quietWindow(2_000, 0)),
