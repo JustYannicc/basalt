@@ -38,7 +38,6 @@ import { poolAccountRecovery } from "../../.upstream/apps/hosted/server/src/impl
 import { createPool } from "../../.upstream/apps/hosted/server/src/implementation/pools.ts";
 import {
   drainProvisioning,
-  provision,
   selfHostProvisioningServices,
 } from "../../.upstream/apps/hosted/server/src/implementation/provisioning.ts";
 import { migrateProvisioning } from "../../.upstream/apps/hosted/server/src/implementation/provisioning-schema.ts";
@@ -182,14 +181,19 @@ type Services =
 
 /**
  * The real creation service, access hook, resource policy hooks, account linking and provisioning
- * queue over real SQL. Only compilation is replaced: `copy` persists the app as the SDK does,
- * inside one transaction that runs the product's hooks.
+ * queue over real SQL. The SDK is a small stand-in, because a real copy compiles the app: `copy`,
+ * `get` and the managed-account calls write the rows the product reads, inside one transaction
+ * that runs the product's own hooks.
  */
 const fixture = <E>(
   run: (context: {
     readonly sql: SqlClient.SqlClient;
     readonly worker: Effect.Success<typeof poolWorker>;
     readonly create: (requestId: string) => ReturnType<typeof createPool>;
+    /** One pass of the queue's own worker over the jobs that are due. */
+    readonly drain: ReturnType<typeof drainProvisioning>;
+    /** Every member setup the queue or the defaults ran. An access job runs none. */
+    readonly setups: readonly string[];
   }) => Effect.Effect<void, E, Services>,
 ) =>
   Effect.runPromise(
@@ -227,6 +231,7 @@ const fixture = <E>(
           Effect.provideService(AccessLifecycle, hook),
         );
         let serial = 0;
+        const setups: string[] = [];
         const get = (id: typeof AppId.Type) =>
           Effect.gen(function* () {
             const [row] = yield* sql<{
@@ -303,6 +308,11 @@ const fixture = <E>(
           worker,
           create: (requestId) =>
             createPool({ name: "Research pool", requestId, newInstance: true }),
+          drain: drainProvisioning({
+            ...selfHostProvisioningServices,
+            member: (user) => Effect.sync(() => void setups.push(`member ${user}`)),
+          }),
+          setups,
         }).pipe(
           Effect.provideService(HostedExecutor, Effect.succeed(executor)),
           Effect.provideService(GroupDatabase, Effect.succeed(sql)),
@@ -318,8 +328,9 @@ const fixture = <E>(
             files: Effect.succeed(files),
           }),
           Effect.provideService(ScheduleWakeup, Effect.void),
-          // An access job never runs member setup; one that did would be recorded as a pool here.
-          Effect.provideService(OrganizationDefaults, () => Effect.void),
+          Effect.provideService(OrganizationDefaults, (team, user) =>
+            Effect.sync(() => void setups.push(`defaults ${team} ${user?.userId ?? ""}`)),
+          ),
           Effect.provideService(
             ConfigProvider.ConfigProvider,
             ConfigProvider.fromUnknown({ POOL_APP_SIGNING_KEY: key }),
@@ -332,9 +343,12 @@ const fixture = <E>(
 const firstRequest = "0b0f5f0c-2b1a-4c9e-9a51-6d3f0f1c2a01";
 const pools = (sql: SqlClient.SqlClient) =>
   sql<{ id: string }>`select id from executor_apps order by id`;
-const jobs = (sql: SqlClient.SqlClient) =>
-  sql<{ id: string; status: string; attempts: number }>`select id, status, attempts
-    from hosted_provisioning order by id`;
+/** Each job's status and attempt count, the access job first. */
+const attempts = (sql: SqlClient.SqlClient) =>
+  sql<{ status: string; attempts: number }>`select status, attempts from hosted_provisioning
+    order by attempts desc, id`.pipe(
+    Effect.map((jobs) => jobs.map((job): [string, number] => [job.status, job.attempts])),
+  );
 
 test("creating a pool answers with the pool and lists it while the pool Worker does not answer", async () => {
   await fixture(({ sql, worker, create }) =>
@@ -350,6 +364,8 @@ test("creating a pool answers with the pool and lists it while the pool Worker d
         listed.map((app) => app.id),
         [created.id],
       );
+      // The request tried the job once; it failed and is left for the queue.
+      assert.deepEqual(yield* attempts(sql), [["queued", 1]]);
       // The Worker has heard nothing, and the owner's pool token already admits them there.
       assert.equal(yield* Effect.promise(() => worker.permissions(created.id, owner)), undefined);
       const [account] = yield* sql<{ token: string }>`select token from executor_accounts`;
@@ -369,27 +385,24 @@ test("creating a pool answers with the pool and lists it while the pool Worker d
 });
 
 test("the queue delivers a new pool's audience once the pool Worker answers, without another request", async () => {
-  await fixture(({ sql, worker, create }) =>
+  await fixture(({ sql, worker, create, drain, setups }) =>
     Effect.gen(function* () {
       yield* Effect.exit(create(firstRequest));
       const [pool] = yield* pools(sql);
       assert.ok(pool);
-      // The queue's own scan finds the job; the attempt fails and the job stays for a retry.
-      yield* drainProvisioning(selfHostProvisioningServices);
-      const waiting = yield* jobs(sql);
+      // The queue's own scan finds the job; its attempt fails too and the job stays.
+      yield* drain;
       assert.deepEqual(
-        waiting.map((job) => [job.status, job.attempts]),
-        [["queued", 1]],
+        yield* attempts(sql),
+        [["queued", 2]],
         "the audience waits in the queue while the pool Worker does not answer",
       );
       assert.equal(yield* Effect.promise(() => worker.permissions(pool.id, owner)), undefined);
       worker.answer();
-      // The queue runs this same attempt again after its backoff; nothing asks for it.
-      for (const job of waiting) yield* provision(job.id, selfHostProvisioningServices);
-      assert.deepEqual(
-        (yield* jobs(sql)).map((job) => [job.status, job.attempts]),
-        [["succeeded", 2]],
-      );
+      // The backoff after the failed attempt has passed; nothing else asks for the delivery.
+      yield* sql`update hosted_provisioning set available_at = now()`;
+      yield* drain;
+      assert.deepEqual(yield* attempts(sql), [["succeeded", 3]]);
       // The Worker's own records: the pool's native policy and its membership reservation.
       assert.deepEqual(yield* Effect.promise(() => worker.permissions(pool.id, owner)), {
         canUse: true,
@@ -402,6 +415,25 @@ test("the queue delivers a new pool's audience once the pool Worker answers, wit
       const { policy } = yield* Effect.promise(() => worker.membership(pool.id));
       assert.equal(policy?.native, true);
       assert.equal(policy?.organization, organization);
+      assert.deepEqual(setups, [], "an access job runs no member setup");
+    }),
+  );
+});
+
+test("a pool Worker that answers has the new pool's audience before creation answers", async () => {
+  await fixture(({ sql, worker, create }) =>
+    Effect.gen(function* () {
+      worker.answer();
+      const created = yield* create(firstRequest);
+      assert.deepEqual(yield* Effect.promise(() => worker.permissions(created.id, owner)), {
+        canUse: true,
+        canManage: true,
+      });
+      assert.deepEqual(
+        yield* attempts(sql),
+        [["succeeded", 1]],
+        "the request's own attempt settles the job, so the queue sends nothing more",
+      );
     }),
   );
 });
@@ -412,13 +444,13 @@ test("retrying a creation request while the pool Worker is down returns the same
       yield* Effect.exit(create(firstRequest));
       const [pool] = yield* pools(sql);
       assert.ok(pool);
-      const queued = yield* jobs(sql);
       const retry = yield* Effect.exit(create(firstRequest));
       assert.ok(Exit.isSuccess(retry), "a retry must return the pool the first request committed");
       assert.equal(retry.value.id, pool.id);
       assert.equal(retry.value.reused, true);
       assert.deepEqual(yield* pools(sql), [pool]);
-      assert.deepEqual(yield* jobs(sql), queued);
+      // Still the one job, tried once by each request.
+      assert.deepEqual(yield* attempts(sql), [["queued", 2]]);
       const [recorded] = yield* sql<{ pools: number }>`select
         (select count(*)::int from jsonb_object_keys(metadata::jsonb -> 'basaltPools')) as pools
         from organization where id = ${organization}`;
@@ -427,22 +459,53 @@ test("retrying a creation request while the pool Worker is down returns the same
   );
 });
 
-test("a pool's waiting audience is not taken for the owner's setup job", async () => {
+test("retrying a creation request delivers an audience the queue had given up on", async () => {
   await fixture(({ sql, worker, create }) =>
     Effect.gen(function* () {
+      yield* Effect.exit(create(firstRequest));
+      const [pool] = yield* pools(sql);
+      assert.ok(pool);
+      // The queue's last attempt failed: nothing sends this job again on its own.
+      yield* sql`update hosted_provisioning set status = 'failed', attempts = 8`;
       worker.answer();
-      const created = yield* create(firstRequest);
-      yield* sql`delete from hosted_app_account_links`;
-      const before = yield* jobs(sql);
-      const state = yield* poolAccountRecovery(true)({
+      const retry = yield* Effect.exit(create(firstRequest));
+      assert.ok(Exit.isSuccess(retry));
+      assert.equal(retry.value.id, pool.id);
+      assert.deepEqual(yield* attempts(sql), [["succeeded", 9]]);
+      assert.deepEqual(yield* Effect.promise(() => worker.permissions(pool.id, owner)), {
+        canUse: true,
+        canManage: true,
+      });
+    }),
+  );
+});
+
+test("a pool's waiting or failed access job is not taken for the owner's setup job", async () => {
+  await fixture(({ sql, create }) =>
+    Effect.gen(function* () {
+      const answer = yield* Effect.exit(create(firstRequest));
+      assert.ok(Exit.isSuccess(answer), "creation must not fail for a pool it committed");
+      const recover = poolAccountRecovery(true)({
         sql,
         organization,
-        app: created,
+        app: answer.value,
         requirement: "pool",
       });
-      assert.equal(state, "restoring");
-      // Recovery queues the setup that restores the link; it never reuses the access job.
-      assert.equal((yield* jobs(sql)).length, before.length + 1);
+      yield* sql`delete from hosted_app_account_links`;
+      // Waiting: recovery queues the setup that restores the link beside the access job.
+      assert.equal(yield* recover, "restoring");
+      assert.deepEqual(
+        (yield* attempts(sql)).map(([status]) => status),
+        ["queued", "queued"],
+      );
+      // Given up on: a failed access job says nothing about a failed setup, so recovery still queues.
+      yield* sql`delete from hosted_provisioning where attempts = 0`;
+      yield* sql`update hosted_provisioning set status = 'failed', updated_at = now()`;
+      assert.equal(yield* recover, "restoring");
+      assert.deepEqual(
+        (yield* attempts(sql)).map(([status]) => status),
+        ["failed", "queued"],
+      );
     }),
   );
 });
