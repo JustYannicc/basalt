@@ -1,0 +1,273 @@
+diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
+--- a/apps/hosted/server/src/contracts/pool-defaults.ts
++++ b/apps/hosted/server/src/contracts/pool-defaults.ts
+@@ -17,6 +17,13 @@ export const PoolBundleTarget = Context.Reference<string | undefined>("hosted/Po
+   defaultValue: () => undefined,
+ });
+ 
++/**
++ * A new pool's first audience for the pool Worker, queued in the transaction that records the
++ * pool: `<prefix><app id>`. Creation answers from what it committed; the queue delivers the
++ * audience and retries while the pool Worker does not answer.
++ */
++export const poolAccessJobPrefix = "basalt-pool-access:";
++
+ /** What the pool Worker reports about itself. Tests supply it directly instead of a Worker. */
+ export interface PoolWorkerRelease {
+   readonly revision: string;
+diff --git a/apps/hosted/server/src/implementation/pool-account-recovery.ts b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+--- a/apps/hosted/server/src/implementation/pool-account-recovery.ts
++++ b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+@@ -2,7 +2,7 @@ import { StorageError } from "@executor-js/sdk/core";
+ import { Effect, Option, Schema } from "effect";
+ import type { HostManagedRecoveryInput } from "../contracts/host-managed-accounts.ts";
+ import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+-import { poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
++import { poolAccessJobPrefix, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
+ import { usableAppLinks } from "./resource-policy.ts";
+ import { PoolRecords, poolRecordOwner } from "./pool-records.ts";
+ 
+@@ -48,6 +48,7 @@ export const poolAccountRecovery =
+           and status = 'queued'
+           and id not like ${poolRotationJobPrefix + "%"}
+           and id not like ${catalogAppJobPrefix + "%"}
++          and id not like ${poolAccessJobPrefix + "%"}
+         order by available_at, id limit 1 for update`;
+       if (pending.length === 0) {
+         // Match the worker's maximum backoff before another view can retry exhausted setup.
+@@ -55,7 +56,8 @@ export const poolAccountRecovery =
+           where kind = 'member' and organization_id = ${organization} and user_id = ${owner}
+             and status = 'failed' and updated_at > now() - interval '5 minutes'
+             and id not like ${poolRotationJobPrefix + "%"}
+-            and id not like ${catalogAppJobPrefix + "%"} limit 1`;
++            and id not like ${catalogAppJobPrefix + "%"}
++            and id not like ${poolAccessJobPrefix + "%"} limit 1`;
+         if (failed.length > 0) return undefined;
+         yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
+           values ('member', ${organization}, ${owner}, now())`;
+diff --git a/apps/hosted/server/src/implementation/pools.ts b/apps/hosted/server/src/implementation/pools.ts
+--- a/apps/hosted/server/src/implementation/pools.ts
++++ b/apps/hosted/server/src/implementation/pools.ts
+@@ -3,11 +3,10 @@ import { Config, Effect, Option, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { HttpApiBuilder } from "effect/http-api";
+ import { HostedApi } from "../contracts/api.ts";
+-import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import { CurrentUserId } from "../contracts/auth.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+-import { PoolAppSource } from "../contracts/pool-defaults.ts";
++import { PoolAppSource, poolAccessJobPrefix } from "../contracts/pool-defaults.ts";
+ import {
+   CreatePool,
+   PoolCreationConflict,
+@@ -22,7 +21,10 @@ import { poolAppSetup } from "./resource-lifecycle.ts";
+ import { poolCatalogPackage, poolCatalogService } from "./pool-catalog.ts";
+ import { installService } from "./service-installs.ts";
+ 
+-/** Compilation precedes publication; the app, token, link and record commit together. */
++/**
++ * Compilation precedes publication; the app, token, link, record and the job that tells the pool
++ * Worker commit together. Nothing after that commit can fail the request.
++ */
+ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+   Effect.gen(function* () {
+     const actor = yield* currentResourceAuthority;
+@@ -104,6 +106,10 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+       '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)
+         || jsonb_build_object(${app.id}::text, ${JSON.stringify(record)}::jsonb))::text
+       where id = ${organization}`;
++        // A new pool has nobody to revoke, so the pool Worker may learn its audience after the
++        // commit. The owner's pool token already admits them there.
++        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
++          values (${poolAccessJobPrefix + app.id}, 'member', ${organization}, ${user})`;
+       }).pipe(Effect.mapError(() => new StorageError()));
+     const files = yield* seed.files;
+     const app = yield* executor.apps
+@@ -139,16 +145,6 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+     if (Option.isSome(wake)) yield* wake.value;
+     return app;
+   }).pipe(
+-    Effect.tap((app) =>
+-      Effect.gen(function* () {
+-        const lifecycle = yield* AccessLifecycle;
+-        const organization = (yield* CurrentOrganization).organization;
+-        yield* (lifecycle.appAccessChanged?.({ organization, apps: [app.id] }) ?? Effect.void).pipe(
+-          Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
+-          Effect.mapError(() => new PoolCreationUnavailable()),
+-        );
+-      }),
+-    ),
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+   );
+ 
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -2,9 +2,11 @@
+ import { StorageError } from "@executor-js/sdk/core";
+ import { Effect, Exit, Schedule, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
+   PoolBundleTarget,
+   PoolTokenRotation,
++  poolAccessJobPrefix,
+   poolBundleJobPrefix,
+   poolRotationJobPrefix,
+ } from "../contracts/pool-defaults.ts";
+@@ -206,6 +208,17 @@ export const provision = (id: string, services: ProvisioningServices) =>
+         case "domain":
+           return yield* services.domain;
+         case "member": {
++          if (job.id.startsWith(poolAccessJobPrefix)) {
++            // The hook reads the audience when it runs, so a later sharing change is included. A
++            // pool Worker that does not answer fails the attempt and the queue tries again.
++            const lifecycle = yield* AccessLifecycle;
++            return yield* (
++              lifecycle.appAccessChanged?.({
++                organization: job.organization_id,
++                apps: [job.id.slice(poolAccessJobPrefix.length)],
++              }) ?? Effect.void
++            );
++          }
+           const initialize = yield* OrganizationDefaults;
+           const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
+           const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
+diff --git a/e2e/support/pool-creation-backend.ts b/e2e/support/pool-creation-backend.ts
+--- a/e2e/support/pool-creation-backend.ts
++++ b/e2e/support/pool-creation-backend.ts
+@@ -17,6 +17,20 @@ const Audience = Schema.Struct({
+ export const poolCreationBackend = Effect.gen(function* () {
+   const pools = yield* Ref.make<readonly (typeof Audience.Type)[]>([]);
+   let available = true;
++  // One signal per pool, made by whichever of the receiver and the test asks first.
++  type Acceptance = { readonly arrived: Promise<void>; readonly arrive: () => void };
++  const accepted = new Map<string, Acceptance>();
++  const acceptance = (pool: string): Acceptance => {
++    const known = accepted.get(pool);
++    if (known !== undefined) return known;
++    let arrive = () => {};
++    const arrived = new Promise<void>((resolve) => {
++      arrive = resolve;
++    });
++    const made = { arrived, arrive };
++    accepted.set(pool, made);
++    return made;
++  };
+   const receive = Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+     const body = yield* request.json.pipe(
+@@ -44,8 +58,10 @@ export const poolCreationBackend = Effect.gen(function* () {
+         pools: Schema.optionalKey(Schema.Array(Audience)),
+       }),
+     )(raw);
+-    if (value.pools !== undefined)
++    if (value.pools !== undefined) {
+       yield* Ref.update(pools, (current) => [...current, ...value.pools!]);
++      for (const pool of value.pools) acceptance(pool.pool).arrive();
++    }
+     return HttpServerResponse.empty({ status: 200 });
+   });
+   const services = yield* Layer.build(
+@@ -67,6 +83,8 @@ export const poolCreationBackend = Effect.gen(function* () {
+   return {
+     origin: `http://127.0.0.1:${server.address.port}`,
+     pools: Ref.get(pools),
++    /** Completes once the receiver has accepted an audience for the pool, never for a refusal. */
++    received: (pool: string) => Effect.promise(() => acceptance(pool).arrived),
+     available: (value: boolean) =>
+       Effect.sync(() => {
+         available = value;
+diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
+--- a/e2e/tests/catalog-instances.spec.ts
++++ b/e2e/tests/catalog-instances.spec.ts
+@@ -178,7 +178,26 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+         yield* captureCatalog("Name a separate pool", (page) =>
+           page.getByRole("dialog", { name: "Add another Pool", exact: true }).waitFor(),
+         );
+-        yield* backend.available(false);
++        // The server creates the pool; its answer is replaced on the way back, as when a
++        // gateway loses it. A receiver outage no longer fails creation.
++        yield* browser.use("Lose the answer after the pool is created", (page) =>
++          page.route(
++            "**/api/organizations/*/apps/install",
++            (route) =>
++              route.fetch().then(() =>
++                route.fulfill({
++                  status: 503,
++                  contentType: "application/json",
++                  body: JSON.stringify({
++                    _tag: "PoolCreationUnavailable",
++                    message:
++                      "Pool creation is unavailable right now. Retry this request with the same name.",
++                  }),
++                }),
++              ),
++            { times: 1 },
++          ),
++        );
+         const failed = yield* ui.submit("Add", { dialog: true });
+         expect(failed.status).toBe(503);
+         yield* browser.use("Uncertain creation offers retry", (page) =>
+@@ -199,7 +218,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+             page.getByRole("textbox", { name: "Name", exact: true }).inputValue(),
+           ),
+         ).toBe("Research pool");
+-        yield* backend.available(true);
+         const retried = yield* ui.submit("Try again", { twice: true });
+         expect(retried.payload).toEqual(failed.payload);
+         expect(retried.status).toBe(200);
+diff --git a/e2e/tests/pool-creation.spec.ts b/e2e/tests/pool-creation.spec.ts
+--- a/e2e/tests/pool-creation.spec.ts
++++ b/e2e/tests/pool-creation.spec.ts
+@@ -199,15 +199,19 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool creation", (it) => {
+             requestId: "bad",
+           })).status,
+         ).toBe(400);
+-        // Publication survived restart, and an uncertain response retries only receiver synchronization.
++        // The receiver does not answer: creation still returns the pool it committed, and the
++        // same request returns that pool again instead of creating another.
+         yield* backend.available(false);
+         const recoveryId = randomUUID();
+-        expect((yield* create("Receiver recovery", recoveryId)).status).toBe(503);
+-        yield* backend.available(true);
+-        yield* serverControl("restart");
+         const recoveredResponse = yield* create("Receiver recovery", recoveryId);
+         expect(recoveredResponse.status, JSON.stringify(recoveredResponse.body)).toBe(200);
+         const recovered = yield* body(App, recoveredResponse);
++        expect(recovered.reused).toBe(false);
++        const replayedResponse = yield* create("Receiver recovery", recoveryId);
++        expect(replayedResponse.status, JSON.stringify(replayedResponse.body)).toBe(200);
++        const replayed = yield* body(App, replayedResponse);
++        expect(replayed.id).toBe(recovered.id);
++        expect(replayed.reused).toBe(true);
+         const inventory = yield* body(
+           Schema.Array(App),
+           yield* api.request(actors.owner, "GET", `${prefix}/apps`),
+@@ -218,6 +222,13 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool creation", (it) => {
+           ),
+         ).toHaveLength(4);
+         expect(inventory.filter((app) => app.name === "Receiver recovery")).toHaveLength(1);
++        // The audience was queued with the pool, so it survives a restart and reaches the
++        // receiver once that answers, without another request.
++        yield* serverControl("stop");
++        yield* backend.available(true);
++        yield* serverControl("start");
++        yield* backend.received(recovered.id);
++        yield* backend.received(second.id);
+         yield* serverControl("stop");
+         const records = yield* legacyStorage([
+           {
+@@ -238,6 +249,11 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool creation", (it) => {
+               owner: viewer.userId,
+               users: [viewer.userId],
+             }),
++            expect.objectContaining({
++              pool: recovered.id,
++              owner: viewer.userId,
++              users: [viewer.userId],
++            }),
+           ]),
+         );
+         yield* evidence.json("pool-creation.json", {

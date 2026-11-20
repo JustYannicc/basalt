@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Creating a pool commits its app, token, account link, record and one provisioning job in a single transaction, and answers from that commit alone: no call to the pool Worker can fail a pool that is already saved, and a repeated request returns that pool without queueing again. The job is a member job named after the pool's app. The provisioning queue sends the pool's audience through the access hook, reads that audience when it runs so a later sharing change is included, and retries a refused or unanswered send on the queue's own schedule and attempt limit, like every other job; it never runs member setup. Recovery of a missing pool account link does not count it as that owner's setup job. Before delivery the pool Worker admits only the owner named in the pool's own token; a new pool is private, so no one is waiting for a revocation."
+    }
+  }
+}

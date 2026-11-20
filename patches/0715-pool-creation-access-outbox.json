@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-creation-access-outbox",
+  "file": "0715-pool-creation-access-outbox.patch",
+  "content_sha256": "cabf3ae2e7a90390ca33d984037276e01a67b32e317fa6801c2ba7a95efbf960",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
