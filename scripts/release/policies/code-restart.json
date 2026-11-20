@@ -92,8 +92,8 @@
   },
   "acceptance": {
     "rootRestart": {
-      "withinSeconds": 420,
-      "why": "A stated bound, not derived from the pool's constants: acceptable only because no production release runs before the release-bounds PR replaces it with one derived from the pool's named constants (worst case about 555 s plus destroy plus one membership pass when in-flight streams are counted). Until then it is the rehearsal's bound only."
+      "bound": "healingAcceptanceWithinMs",
+      "why": "Acceptance waits for the root's new boot within the bound the controller's own named constants give (src/pool/runtime-slots/forced-restart-timing.ts): its slowest heal with a stream count that stands still, plus destroy and one membership pass. Nothing can read the old boot's stream count before the apply, so the release budgets for it."
     }
   },
   "env": {
