@@ -23,12 +23,16 @@ export class PoolAlarms {
   /**
    * With no alarm set, both owners run now. Each owner re-arms its own deadline, but nothing does
    * once a handler failed past the platform's retries or no owner ever armed one, and then
-   * recovery and membership upkeep never run again: a code upload alone runs nothing.
+   * recovery and membership upkeep never run again: a code upload alone runs nothing. Returns
+   * nothing, and starts no work, when this isolate already checked within the spacing.
    */
-  async ensure() {
+  ensure(): Promise<void> | undefined {
     const now = this.now();
-    if (now - this.ensuredAt < ensureSpacingMs) return;
+    if (now - this.ensuredAt < ensureSpacingMs) return undefined;
     this.ensuredAt = now;
+    return this.armMissing(now);
+  }
+  private async armMissing(now: number) {
     if ((await this.storage.getAlarm()) !== null) return;
     // One write for both owners: a `take()` between two writes would see only one of them due.
     await this.storage.transaction(async (transaction) => {

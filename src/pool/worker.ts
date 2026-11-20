@@ -823,9 +823,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   /** Arms the upkeep alarm if nothing has, without holding the caller. */
   private ensureAlarm() {
-    this.ctx.waitUntil(
-      this.alarms.ensure().catch(() => console.error("POOL_ALARM_ENSURE_PENDING")),
-    );
+    const work = this.alarms.ensure();
+    if (work) this.ctx.waitUntil(work.catch(() => console.error("POOL_ALARM_ENSURE_PENDING")));
   }
 
   async fetch(request: Request): Promise<Response> {
