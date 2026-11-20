@@ -298,6 +298,8 @@ export function discoverRootContainerPlanProof(root: string): {
   recorded: string[];
   /** Each answer the provider gave: whether the recorded namespaces stay readable. */
   readable: boolean[];
+  /** For each answer, whether the planner asked with another Worker's name unresolved. */
+  unresolved: boolean[];
   afterApply: { id: string; type: string; action: string }[];
 } {
   return evaluate(root, { rootContainerProof: true }) as ReturnType<
