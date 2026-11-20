@@ -299,6 +299,8 @@ async function healRelease(
       now.stuck === true && now.policyCleanAndExpired === true
         ? { reused: true, state: now }
         : await faultAndConfirm(lane, subject, source, outputs);
+    // Taken after the fault is confirmed, so it is never earlier than the restart's admission.
+    const faultSettledAt = Date.now();
     // 2. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     await rm(candidate, { recursive: true, force: true });
@@ -316,6 +318,20 @@ async function healRelease(
       throw new Error("The heal candidate still carries the rehearsal-only fault command");
     execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
     const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
+    const timing = (await import(
+      pathToFileURL(join(candidate, "src/pool/runtime-slots/forced-restart-timing.ts")).href
+    )) as {
+      restartStartBoundMs: number;
+      forcedRestartServesWithinHeldStreamsMs: number;
+    };
+    // Production's admission is a day old, so its forced stop takes the running container for the
+    // old one at once. A stage restart's admission is seconds old: past `restartStartBoundMs` the
+    // stage takes the same branch. Wait it out before releasing anything.
+    const ownershipMarginMs = 30_000;
+    const ownershipAt = faultSettledAt + timing.restartStartBoundMs + ownershipMarginMs;
+    result.ownershipWaitMs = Math.max(0, ownershipAt - Date.now());
+    if ((result.ownershipWaitMs as number) > 0)
+      await new Promise((done) => setTimeout(done, result.ownershipWaitMs as number));
     const started = Date.now();
     // The healing release's policy; a candidate without it measures nothing the GO asks about.
     if (!existsSync(join(candidate, "scripts/release/policies/code-restart.json")))
@@ -351,11 +367,29 @@ async function healRelease(
         throw new Error(
           `The healing release plans changes on the root container: ${JSON.stringify(onRoot)}`,
         );
-      // The deploy plans again under the policy and stops in plan on any refusal.
-      result.release = await runEntry("deploy", subject, source, env, outputs, {
-        policy: "code-restart",
-        tree: candidate,
-      });
+      // The deploy plans again under the policy and stops in plan on any refusal. A release that
+      // uploads and then fails its readiness check is recorded, and recovery is still watched: the
+      // pool can heal while the release itself reports failure (the unfixed head's predicted red).
+      const failure = join(outputs, "release-failure.txt");
+      const failedBefore = (await readFile(failure, "utf8").catch(() => "")).length;
+      try {
+        result.release = await runEntry("deploy", subject, source, env, outputs, {
+          policy: "code-restart",
+          tree: candidate,
+        });
+      } catch (error) {
+        result.releaseFailed = redactor(source)(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 4_000);
+        result.releaseStopLines = (await readFile(failure, "utf8").catch(() => ""))
+          .slice(failedBefore)
+          .split(/\r?\n/u)
+          .filter((line) => /Release stopped|eadiness|SlotRefused|identity|Unattested/u.test(line))
+          .map((line) => redactor(source)(line).slice(0, 600))
+          .slice(0, 12);
+        // A refusal in plan changed nothing, so there is no recovery to watch.
+        if (/stopped in plan/u.test(String(result.releaseFailed))) throw error;
+      }
     });
     result.releaseSeconds = Math.round((Date.now() - started) / 1000);
     // 4. Recovery: wait, bounded, for the Worker's own restart to bring a new boot that answers.
@@ -375,12 +409,6 @@ async function healRelease(
     // one only after `restartStartBoundMs`; then the worst serve bound (streams held) runs. Both
     // come from the candidate's own timing module. The margin covers what those totals exclude:
     // the time `destroy()` takes and the membership pass that renews an expired pool policy.
-    const timing = (await import(
-      pathToFileURL(join(candidate, "src/pool/runtime-slots/forced-restart-timing.ts")).href
-    )) as {
-      restartStartBoundMs: number;
-      forcedRestartServesWithinHeldStreamsMs: number;
-    };
     const stageMarginMs = 120_000;
     result.waitBoundMs =
       timing.restartStartBoundMs + timing.forcedRestartServesWithinHeldStreamsMs + stageMarginMs;
@@ -469,8 +497,17 @@ async function healRelease(
       throw new Error(
         `The stop lines are not one graceful_exit or destroy_after_grace: ${JSON.stringify(result.stopPath).slice(0, 400)}`,
       );
+    // The pool healed; the release itself still has to have passed for a green heal.
+    if (result.releaseFailed)
+      throw new Error(
+        `The pool healed but the release failed: ${String(result.releaseFailed).slice(0, 400)}`,
+      );
   } finally {
     result.interruption = await probe.stop();
+    // Kept whole even when the heal fails, so a red run still shows both the pool and the release.
+    await writeFile(join(outputs, "heal-detail.json"), `${JSON.stringify(result, null, 2)}\n`, {
+      mode: 0o600,
+    }).catch(() => {});
     await writeFile(join(outputs, "stage-heal.json"), `${JSON.stringify(result, null, 2)}\n`, {
       mode: 0o600,
     });
