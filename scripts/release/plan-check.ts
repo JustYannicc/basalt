@@ -370,7 +370,23 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
       const reviewed = policy.removedBindings?.some(
         (entry) => entry.fqn === node.resource.FQN && entry.sid === binding.sid,
       );
-      if (reviewed && next.length > 0 && next.every((entry) => entry.type === "plain_text"))
+      // Exactly the named setting: one wire entry, plain text, under its own name. An interrupted
+      // apply leaves the planner's row from the unfinished generation, so the last finished one,
+      // which may be what runs, must hold no more than that under the id either.
+      const onlySetting = (data: unknown) => {
+        const entries = wire(data);
+        return (
+          entries.length === 1 &&
+          entries[0]!.type === "plain_text" &&
+          entries[0]!.name === binding.sid
+        );
+      };
+      const finished = recordedBindings(node).find((entry) => entry.sid === binding.sid);
+      if (
+        reviewed &&
+        onlySetting(binding.data) &&
+        (finished === undefined || onlySetting(finished.data))
+      )
         continue;
       for (const entry of next) removed(binding.sid, entry);
       if (!next.length)
