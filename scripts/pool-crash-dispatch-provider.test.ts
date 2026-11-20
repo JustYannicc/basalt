@@ -1,0 +1,338 @@
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { test } from "node:test";
+import { ProviderObservationRefused } from "../src/pool/runtime-provider/read.ts";
+import { providerObservationFailureHeader } from "../src/pool/runtime-provider/observation.ts";
+import { runtimeErrorResponse } from "../src/pool/runtime-slots/request-error.ts";
+import { SlotRefused } from "../src/pool/runtime-slots/contract.ts";
+import { deploymentReadinessPrefix } from "../src/pool/deployment-readiness.ts";
+import { openEnvelope } from "../src/pool/token.ts";
+import { providerTarget, readReleaseTarget } from "./pool-crash-dispatch-sources.ts";
+import {
+  logLine,
+  observeSender,
+  runCrashDispatch,
+  type DispatchDependencies,
+  type DispatchInput,
+} from "./pool-crash-dispatch.ts";
+import { accountId, harness, primary, worker } from "./pool-fleet/test/harness.ts";
+import { resolvedApplication } from "./pool-fleet/test/cloudflare-shapes.ts";
+
+const controllerCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
+const reads = "provider observation: reads";
+const closedLine =
+  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_refused|reply_unreadable|outcome_unknown|target_unavailable)\))$/u;
+// Distinct from every other identity in the run, so any appearance in the output came from this read.
+const pins = {
+  accountId,
+  applicationId: "provider-application-sentinel",
+  namespaceId: "provider-namespace-sentinel",
+  applicationVersion: "991",
+  imageDigest: `sha256:${"7".repeat(64)}`,
+  applicationConfigDigest: "8".repeat(64),
+};
+const observationDigest = "9".repeat(64);
+const observation = (proof: Partial<typeof pins> = {}) => ({
+  credentialBinding: "POOL_PROVIDER_OBSERVATION_TOKEN",
+  proof: { ...pins, ...proof, observationDigest, observedAt: 1_700_000_000_000 },
+});
+const sentinels = [
+  pins.applicationId,
+  pins.namespaceId,
+  pins.imageDigest,
+  pins.applicationConfigDigest,
+  observationDigest,
+  "1700000000000",
+  "body-sentinel",
+  "header-sentinel",
+];
+
+const input = (signingKey = randomBytes(32).toString("hex")): DispatchInput => ({
+  mode: "observe",
+  requestId: crypto.randomUUID(),
+  packet: JSON.stringify({ controllerCode }),
+  coordinatorGo: "GO observe the provider",
+  accountId,
+  signingKey,
+  ref: "refs/heads/main",
+  event: "workflow_dispatch",
+  runId: 7,
+  runAttempt: "1",
+});
+
+/** Every existing observe read answers fixed replies; only provider-observe varies between runs. */
+function world(provider: typeof pins | undefined, observe: DispatchDependencies["observe"]) {
+  const sent: string[] = [];
+  const deps: DispatchDependencies = {
+    listRuns: async () => [],
+    readTarget: async () => ({
+      accountId,
+      worker: "synthetic-pool",
+      ...(provider ? { provider } : {}),
+    }),
+    rootHealth: async () => {
+      throw new Error("root health unavailable");
+    },
+    sleep: async () => {},
+    observe: async (action, ...rest) => {
+      sent.push(action);
+      if (action === "provider-observe") return observe(action, ...rest);
+      return { result: action === "inspect" ? { selection: { slot: "primary" } } : { action } };
+    },
+    crash: async () => {
+      throw new Error("observe never crashes");
+    },
+    now: () => 1,
+  };
+  return { deps, sent };
+}
+
+/** observeSender over a bridge answering provider-observe with one fixed response. */
+const answering = (respond: () => Response | Promise<Response>) =>
+  observeSender(async () => ({
+    dispose: async () => {},
+    env: { POOL_OPERATIONS: { fetch: async () => respond() } },
+  }));
+
+test("the provider target is the live root application's pins, through the controller's decoder", async () => {
+  const raw = {
+    ...structuredClone(resolvedApplication),
+    id: "root-app",
+    account_id: accountId,
+    version: 57,
+    configuration: { ...resolvedApplication.configuration, image: `r/pool@${pins.imageDigest}` },
+    durable_objects: { namespace_id: "ns-root" },
+  };
+  const target = providerTarget(raw, accountId);
+  assert.deepEqual(Object.keys(target ?? {}).sort(), Object.keys(pins).sort());
+  assert.deepEqual(
+    { ...target, applicationConfigDigest: undefined },
+    {
+      accountId,
+      applicationId: "root-app",
+      namespaceId: "ns-root",
+      applicationVersion: "57",
+      imageDigest: pins.imageDigest,
+      applicationConfigDigest: undefined,
+    },
+  );
+  assert.match(target!.applicationConfigDigest, /^[a-f0-9]{64}$/u);
+  // The controller refuses each of these, so no target is built and nothing is sent.
+  const configuration = (image: string) => ({ ...raw.configuration, image });
+  for (const refused of [
+    { ...raw, active_rollout_id: "rollout" },
+    { ...raw, durable_objects: null },
+    { ...raw, configuration: configuration("r/pool:latest") },
+    { ...raw, account_id: "b".repeat(32) },
+    { ...raw, unexpected: true },
+  ])
+    assert.equal(providerTarget(refused, accountId), undefined);
+});
+
+test("a bound provider secret reads, end to end through the controller's handler", async () => {
+  const lane = await harness();
+  try {
+    const target = await readReleaseTarget(
+      {
+        CLOUDFLARE_ACCOUNT_ID: accountId,
+        CLOUDFLARE_API_TOKEN: "fixture-token",
+        POOL_DEPLOYMENT_KEY: lane.signingKey,
+      },
+      { origin: lane.cloudflareOrigin, connect: lane.connect, code: lane.code },
+    );
+    assert.equal(target.worker, worker);
+    assert.equal(target.provider?.applicationId, primary.applicationId);
+    assert.equal(target.provider?.namespaceId, "ns-root");
+    const before = structuredClone([...lane.storage.values]);
+    const real = observeSender(lane.connect);
+    const run = world(target.provider, real);
+    const result = await runCrashDispatch(
+      { ...input(lane.signingKey), packet: JSON.stringify({ controllerCode: lane.code }) },
+      { ...run.deps, readTarget: async () => target },
+    );
+    assert.equal(result.providerObservation, reads);
+    assert.ok(logLine(result).endsWith(`\n${reads}\n`));
+    // (b) The Worker side: one GET of the root application with its own binding, no instance
+    // list, and the controller's storage exactly as before.
+    assert.deepEqual(lane.providerRequests, [
+      `GET /client/v4/accounts/${accountId}/containers/applications/${primary.applicationId}`,
+    ]);
+    assert.deepEqual([...lane.storage.values], before);
+    assert.deepEqual(lane.actions, ["inspect", "provider-observe"]);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("an empty provider secret is the Worker's own refusal, read from its failure header", async () => {
+  const lane = await harness({ providerSecret: null });
+  try {
+    const target = await readReleaseTarget(
+      {
+        CLOUDFLARE_ACCOUNT_ID: accountId,
+        CLOUDFLARE_API_TOKEN: "fixture-token",
+        POOL_DEPLOYMENT_KEY: lane.signingKey,
+      },
+      { origin: lane.cloudflareOrigin, connect: lane.connect, code: lane.code },
+    );
+    const run = world(target.provider, observeSender(lane.connect));
+    const result = await runCrashDispatch(
+      { ...input(lane.signingKey), packet: JSON.stringify({ controllerCode: lane.code }) },
+      { ...run.deps, readTarget: async () => target },
+    );
+    assert.equal(
+      result.providerObservation,
+      "provider observation: does not read (provider_observation_refused)",
+    );
+    // An empty secret never reaches the provider.
+    assert.deepEqual(lane.providerRequests, []);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("(a) every outcome publishes one closed line and nothing else from the read", async () => {
+  const refusal = (error: unknown) => {
+    const response = runtimeErrorResponse(error, "handoff");
+    response.headers.set("x-private", "header-sentinel");
+    return response;
+  };
+  const cases: [string, DispatchDependencies["observe"] | undefined][] = [
+    ["reads", async () => ({ result: observation() })],
+    [
+      "provider_observation_refused",
+      answering(() => refusal(new ProviderObservationRefused("provider_observation_refused"))),
+    ],
+    [
+      "provider_fetch_failed",
+      answering(() => refusal(new ProviderObservationRefused("provider_fetch_failed"))),
+    ],
+    ["controller_refused", answering(() => refusal(new SlotRefused("identity")))],
+    // A 409 that claims a provider cause in its body but lacks the header is not the Worker's cause.
+    [
+      "controller_refused",
+      answering(() =>
+        Response.json(
+          { error: "runtime-handoff-refused", reason: "provider_fetch_failed" },
+          { status: 409 },
+        ),
+      ),
+    ],
+    [
+      "outcome_unknown",
+      answering(() =>
+        Response.json(
+          { error: "runtime-defect", detail: "body-sentinel" },
+          { status: 500, headers: { [providerObservationFailureHeader]: "provider_fetch_failed" } },
+        ),
+      ),
+    ],
+    [
+      "outcome_unknown",
+      async () => {
+        throw new Error("lost reply naming body-sentinel");
+      },
+    ],
+    ["reply_unreadable", async () => ({ nothing: "body-sentinel" })],
+    ["reply_unreadable", async () => ({ result: { proof: "body-sentinel" } })],
+    ["reply_unreadable", async () => ({ result: observation({ namespaceId: "other" }) })],
+    ["target_unavailable", undefined],
+  ];
+  const baseline = await runCrashDispatch(input(), world(undefined, async () => ({})).deps);
+  const { providerObservation: _baseline, ...unchanged } = baseline;
+  for (const [cause, observe] of cases) {
+    const run = world(observe ? pins : undefined, observe ?? (async () => ({})));
+    const result = await runCrashDispatch(input(), run.deps);
+    const line = cause === "reads" ? reads : `provider observation: does not read (${cause})`;
+    assert.equal(result.providerObservation, line, cause);
+    assert.match(result.providerObservation ?? "", closedLine);
+    assert.equal(run.sent.includes("provider-observe"), observe !== undefined, cause);
+    // The rest of the result is exactly what the observe published before this read existed.
+    const { providerObservation: _line, ...rest } = result;
+    assert.deepEqual({ ...rest, requestId: baseline.requestId }, unchanged, cause);
+    const published = JSON.stringify(result) + logLine(result);
+    for (const sentinel of sentinels)
+      assert.ok(!published.includes(sentinel), `${cause} ${sentinel}`);
+    assert.ok(logLine(result).endsWith(`\n${line}\n`), cause);
+  }
+});
+
+test("(b) observe signs only read commands, and the provider read carries exactly the six pins", async () => {
+  const signingKey = randomBytes(32).toString("hex");
+  const commands: Record<string, unknown>[] = [];
+  const sender = observeSender(async () => ({
+    dispose: async () => {},
+    env: {
+      POOL_OPERATIONS: {
+        fetch: async (request: Request) => {
+          assert.equal(request.method, "POST");
+          const { envelope } = (await request.json()) as { envelope: string };
+          const command = (await openEnvelope(signingKey, deploymentReadinessPrefix, envelope)) as {
+            action: string;
+          };
+          commands.push(command);
+          if (command.action === "provider-observe")
+            return Response.json({ result: observation() });
+          return Response.json({
+            result: command.action === "inspect" ? { selection: null } : { action: command.action },
+          });
+        },
+      },
+    },
+  }));
+  const root = {
+    applicationId: "root-application",
+    applicationVersion: "57",
+    imageDigest: pins.imageDigest,
+    imageInput: "root-input",
+  };
+  const result = await runCrashDispatch(input(signingKey), {
+    ...world(pins, sender).deps,
+    readTarget: async () => ({ accountId, worker: "synthetic-pool", root, provider: pins }),
+    rootHealth: async () => ({
+      instanceId: "f".repeat(64),
+      imageHash: "h",
+      running: true,
+      ready: true,
+    }),
+    observe: sender,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.providerObservation, reads);
+  // No crash, inspect-crash, stage, adopt, promote or fleet write is ever signed in observe mode.
+  assert.deepEqual(
+    commands.map((command) => command.action),
+    ["provider-observe", "inspect", "fleet-inspect", "active-health", "witness", "inspect"],
+  );
+  const provider = commands.find((command) => command.action === "provider-observe")!;
+  assert.deepEqual(Object.keys(provider).sort(), [
+    "action",
+    "at",
+    "controllerCode",
+    "expiresAt",
+    "target",
+  ]);
+  assert.deepEqual(provider.target, pins);
+  // The closed command union refuses a subject the action does not carry, before any send.
+  const before = commands.length;
+  const slot = {
+    format: "pool-runtime-slot-v1" as const,
+    controllerId: "1".repeat(64),
+    instanceId: "1".repeat(64),
+    slotId: "legacy",
+    applicationId: "a",
+    applicationVersion: "1",
+    imageDigest: pins.imageDigest,
+    imageInput: "i",
+  };
+  const target = { accountId, worker: "synthetic-pool" };
+  await assert.rejects(sender("provider-observe", controllerCode, target, signingKey, slot));
+  await assert.rejects(sender("witness", controllerCode, target, signingKey, pins));
+  await assert.rejects(
+    sender("provider-observe", controllerCode, target, signingKey, {
+      ...pins,
+      imageInput: "i",
+    } as never),
+  );
+  assert.equal(commands.length, before);
+});

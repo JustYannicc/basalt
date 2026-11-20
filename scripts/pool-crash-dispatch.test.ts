@@ -322,9 +322,13 @@ test("result.json carries raw controller results but never the key or a signed e
     const text = await readFile(join(output, "result.json"), "utf8");
     for (const secret of [signingKey, "header-sentinel", accountId, ...envelopes])
       assert.ok(!text.includes(secret));
+    // This fixture's release state names no provider target, so observe says so and sends none.
     assert.equal(
       logLine(result),
-      `mode=${result.mode} request_id=${nonce} ok=true forcedInspect=false\n`,
+      `mode=${result.mode} request_id=${nonce} ok=true forcedInspect=false\n` +
+        (result.mode === "observe"
+          ? "provider observation: does not read (target_unavailable)\n"
+          : ""),
     );
   }
 });
