@@ -290,7 +290,38 @@ const upgradeStatus = (origin: string, token: string) =>
 
 for (const path of ["restart", "Reconnect"] as const) {
   test(
-    `a pending refresh older than the server's replay window requires sign-in on ${path}`,
+    `a refresh that never reached the server is sent once after more than an hour and connects on ${path}`,
+    { timeout: 30000 },
+    async () => {
+      const f = await fixture();
+      try {
+        f.remote.expireNext(1);
+        await f.login();
+        f.remote.expireNext(3600);
+        await command(["agent", "add", "both", "models", "tools"], f.home);
+        f.remote.offline(true);
+        let origin = await f.start();
+        if (path === "restart") await f.stop();
+        const file = await agePendingRefresh(f.home, 3_600_001);
+        f.remote.offline(false);
+        if (path === "restart") origin = await f.start();
+        else assert.equal((await launch(["reconnect"], f.home).exited).code, 0);
+        assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
+        assert.deepEqual(f.remote.refreshTokens(), ["synthetic-refresh-1"]);
+        const saved = JSON.parse(await readFile(file, "utf8"));
+        assert.equal(saved.refreshToken, "synthetic-refresh-2");
+        assert.equal(saved.refreshPending, false);
+        const response = await toolCall(origin, await f.token());
+        assert.equal(response.status, 200);
+        assert.match(await response.text(), /synthetic-tool-receipt/u);
+        assert.equal(f.remote.counts().refreshes, 1, "One send, no retry.");
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  test(
+    `a refresh the server refuses after more than an hour asks for sign-in after one send on ${path}`,
     { timeout: 30000 },
     async () => {
       const f = await fixture();
@@ -302,6 +333,8 @@ for (const path of ["restart", "Reconnect"] as const) {
         let origin = await f.start();
         if (path === "restart") await f.stop();
         const file = await agePendingRefresh(f.home, 3_600_001);
+        // The server's replay window has passed, so it refuses the rotated token as reuse.
+        f.remote.refuseRefresh();
         if (path === "restart") origin = await f.start();
         else assert.equal((await launch(["reconnect"], f.home).exited).code, 1);
         const token = await f.token();
@@ -325,8 +358,8 @@ for (const path of ["restart", "Reconnect"] as const) {
         await signInRequired();
         assert.equal(
           f.remote.counts().refreshes,
-          1,
-          "A replay the server no longer answers is never sent.",
+          2,
+          "The lost refresh, then one send after the window; none after the refusal.",
         );
         assert.equal(f.remote.counts().writes, 0);
         assert.equal(JSON.parse(await readFile(file, "utf8")).refreshToken, "synthetic-refresh-1");
