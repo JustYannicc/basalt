@@ -390,10 +390,12 @@ test("reconstructing a running or stopped object without a request leaves comput
     starts = 0,
     destroys = 0;
   // Reconstruction may arm a missing upkeep alarm; it writes nothing else and touches no compute.
+  const values = new Map<string, unknown>();
   const storage = {
-    get: async () => undefined,
-    put: async (key: string) => {
+    get: async (key: string) => values.get(key),
+    put: async (key: string, value: unknown) => {
       if (key !== "pool-alarm-v1:deadlines") writes++;
+      values.set(key, value);
     },
     transaction: async <T>(work: (transaction: typeof storage) => Promise<T>) => work(storage),
     getAlarm: async () => null,
