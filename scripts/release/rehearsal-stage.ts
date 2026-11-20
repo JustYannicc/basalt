@@ -4,7 +4,9 @@
  * pushed pool images) has no State row once its stacks are destroyed, so only the stage token in a
  * name places it. Kept free of imports: the entry reads it before it loads anything else.
  */
-const REHEARSAL_STAGE = /^test-rehearsal-[1-9][0-9]{0,9}$/u;
+// One digit: the pool container's name is exactly Alchemy's 64-character limit at one, and from ten
+// on Alchemy truncates it past the stage token, so nothing would find it by name.
+const REHEARSAL_STAGE = /^test-rehearsal-[1-9]$/u;
 export const rehearsalStack = "basalt-rehearsal";
 
 export const isRehearsalStage = (stage: string) => REHEARSAL_STAGE.test(stage);

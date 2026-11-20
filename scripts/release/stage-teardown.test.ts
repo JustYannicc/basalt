@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
 import type { StageScope } from "./stage-writes.ts";
-import { stageOwnsName } from "./rehearsal-stage.ts";
+import { createContainerApplicationName } from "alchemy/Cloudflare/Containers";
+import { InstanceId } from "alchemy/InstanceId";
+import { StackContext } from "alchemy/StackContext";
+import { Stage } from "alchemy/Stage";
+import { isRehearsalStage, rehearsalStack, stageOwnsName } from "./rehearsal-stage.ts";
 import { TEARDOWN_NOT_CHECKED, teardownStage } from "./stage-teardown.ts";
 import { install, WireRefused, type WireGuardConfig } from "./wire-guard.ts";
 
@@ -181,6 +185,26 @@ test("the stage token matches whole: test-rehearsal-2 never owns test-rehearsal-
   ])
     assert.equal(stageOwnsName(name, "test-rehearsal-2"), false, name);
   assert.equal(stageOwnsName("basalt-test-pr-7-cell", "test-pr-7"), false);
+});
+
+test("Alchemy's name for the pool container carries every accepted rehearsal stage whole", async () => {
+  const name = (stage: string) =>
+    Effect.runPromise(
+      createContainerApplicationName("PoolContainer", undefined).pipe(
+        Effect.provideService(StackContext, { name: rehearsalStack } as never),
+        Effect.provideService(Stage, stage),
+        Effect.provideService(InstanceId, "ab".repeat(16)),
+      ),
+    );
+  for (const stage of ["test-rehearsal-1", "test-rehearsal-9"]) {
+    // The application and its registry repository both take this name.
+    const own = await name(stage);
+    assert.match(own, new RegExp(`^${rehearsalStack}-poolcontainer-${stage}-[a-z2-7]{16}$`, "u"));
+    assert.equal(stageOwnsName(own, stage), true, own);
+  }
+  // From ten on the name is truncated past the token, so the entry refuses those stages.
+  assert.doesNotMatch(await name("test-rehearsal-10"), /test-rehearsal-10/u);
+  assert.equal(isRehearsalStage("test-rehearsal-10"), false);
 });
 
 test("a teardown deletes only the stage's own applications and images, then proves them gone", async () => {
