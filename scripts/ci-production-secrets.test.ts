@@ -537,11 +537,7 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
       fixture({}, { defaults: { run: { shell: "python {0}" } } } as Partial<Job>),
       "pinned",
     ],
-    [
-      "an output the job doesn't export",
-      fixture({}, { outputs: {} }),
-      "matching",
-    ],
+    ["an output the job doesn't export", fixture({}, { outputs: {} }), "matching"],
     [
       "another output",
       fixture(
@@ -604,7 +600,11 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
       }),
       "pinned",
     ],
-    ["a workflow-level shell", workflowWide({ defaults: { run: { shell: "python {0}" } } }), "pinned"],
+    [
+      "a workflow-level shell",
+      workflowWide({ defaults: { run: { shell: "python {0}" } } }),
+      "pinned",
+    ],
     ["a workflow-level env", workflowWide({ env: { BASH_ENV: "./fake-env.sh" } }), "pinned"],
     [
       "a second checkout in another case",
