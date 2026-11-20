@@ -219,7 +219,7 @@ export type BaseState = {
   allowlist: Allowlist;
   /** The file's path at the base commit, following renames; undefined for a new file. */
   basePath: (file: string) => string | undefined;
-  /** Whether that path was outside the gated scope, as code moved out of the release layer is. */
+  /** Whether that path was outside the gated scope (installed or generated code). */
   enteredScope: (file: string) => boolean;
   /** Whether this change touches the file. */
   changed: (file: string) => boolean;
