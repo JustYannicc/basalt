@@ -31,8 +31,8 @@ export async function seedAndAdopt(input: {
   source: NodeJS.ProcessEnv;
   outputs: string;
   deployedCommit: string;
-  /** The pin's build input; the adopt refuses when the root's differs. */
-  expectedInput?: string;
+  /** The lane's pin; the adopt refuses unless the root's image and input are exactly these. */
+  pin: { image: string; input: string };
 }) {
   const { root, subject, source, outputs } = input;
   const { stage } = stageNames(subject);
@@ -72,7 +72,8 @@ export async function seedAndAdopt(input: {
         ...rehearsalReleaseEnvironment(writer),
         PATH: source.PATH,
         HOME: source.HOME,
-        ...(input.expectedInput ? { STAGE_ADOPT_EXPECTED_INPUT: input.expectedInput } : {}),
+        STAGE_ADOPT_EXPECTED_IMAGE: input.pin.image,
+        STAGE_ADOPT_EXPECTED_INPUT: input.pin.input,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

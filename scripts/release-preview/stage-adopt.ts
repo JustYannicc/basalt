@@ -34,6 +34,55 @@ export async function adoptScope(env: NodeJS.ProcessEnv) {
   return { stack: target.stack, stage: target.stage };
 }
 
+/** The pin the adopt runs against; without both values nothing is adopted. */
+export function requiredPin(env: NodeJS.ProcessEnv) {
+  const image = env.STAGE_ADOPT_EXPECTED_IMAGE ?? "";
+  const input = env.STAGE_ADOPT_EXPECTED_INPUT ?? "";
+  if (!/@sha256:[a-f0-9]{64}$/u.test(image) || !/^[a-f0-9]{16}$/u.test(input))
+    throw new Error("Adopt needs the lane's pinned image (by digest) and its 16-hex input");
+  return { image, input };
+}
+
+/**
+ * The root the adopt would fix in the selection must be the pinned one, image and input: the
+ * digest becomes the selected target's `imageDigest`, and every later restart compares it with
+ * the platform, so a wrong one leaves a pool recovery can never restart.
+ */
+export function rootMatchesPin(
+  root: { image: string | undefined; input: string | undefined },
+  pin: { image: string; input: string },
+) {
+  if (root.input !== pin.input)
+    throw new Error("The root's image input differs from the pin's; nothing was adopted");
+  if (root.image !== pin.image)
+    throw new Error("The root's image differs from the pinned digest; nothing was adopted");
+}
+
+/**
+ * The selection proof adopt() signs embeds the policy digest and revisions; a retry passes only
+ * with the identical manifest. So adopt only once two reads a pass apart agree.
+ */
+export function settledProof(first: unknown, second: unknown) {
+  const record = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const proof = (inspect: unknown) => {
+    const view = record(inspect);
+    const policies = Array.isArray(view.policies) ? view.policies : [];
+    return JSON.stringify({
+      digest: view.digest ?? null,
+      revisions: policies
+        .map((policy) => [record(policy).pool ?? null, record(policy).revision ?? null])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    });
+  };
+  const a = proof(first);
+  if (a !== proof(second))
+    throw new Error("The pools' policies were still changing; nothing was adopted");
+  return JSON.parse(a) as { digest: unknown; revisions: unknown[] };
+}
+
 /** What the heal proof needs before any fault, from the controller's own inspect and health. */
 export function adoptedState(inspect: unknown, healthy: boolean) {
   const record = (value: unknown): Record<string, unknown> =>
@@ -62,7 +111,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
   // The manifests adopt() signs name this scope; it is read from the same environment.
   const scope = await adoptScope(env);
   if (scope.stage !== stage) throw new Error("The release scope names another stage");
-  const expectedInput = env.STAGE_ADOPT_EXPECTED_INPUT;
+  const pin = requiredPin(env);
   const [
     { evalStack },
     { State },
@@ -101,8 +150,13 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
           adoptTarget(stage, state.target.worker);
           // The Worker's binding, the release state's root input and the pin agree, or nothing is sent.
           const input = state.applications.root.image.inputHash;
-          if (expectedInput && input !== expectedInput)
-            throw new Error("The root's image input differs from the pin's; nothing was adopted");
+          rootMatchesPin(
+            {
+              image: state.applications.root.attributes.configuration?.image,
+              input,
+            },
+            pin,
+          );
           let promotion: unknown;
           const client = yield* runtimeReleaseClient({
             state,
@@ -115,7 +169,12 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
               },
             },
           });
-          const before = adoptedState(yield* Effect.promise(() => client.inspect()), false);
+          const first = yield* Effect.promise(() => client.inspect());
+          // A recovery pass and the membership refresh run every few seconds; wait past one.
+          yield* Effect.promise(() => new Promise((done) => setTimeout(done, 10_000)));
+          const second = yield* Effect.promise(() => client.inspect());
+          const proof = settledProof(first, second);
+          const before = adoptedState(second, false);
           yield* Effect.promise(() =>
             verifyBoundProviderObservation({
               state,
@@ -133,7 +192,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
             ),
           );
           const after = adoptedState(yield* Effect.promise(() => client.inspect()), healthy);
-          return { stage, rootInput: input, before, after };
+          return { stage, candidate: writer.candidate, proof, rootInput: input, before, after };
         }).pipe(
           Effect.provideContext(compiled.services),
           Effect.provideService(State, Context.get(compiled.services, State)),

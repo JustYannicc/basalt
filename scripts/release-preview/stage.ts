@@ -1047,10 +1047,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "adopt") {
       // Pin first, then adopt: a root rolled after adoption can never be restarted by recovery.
+      // The adopt is one-way: it only runs against the lane's own pin, checked field for field.
       const pin = composeRootPin(
         source[`REHEARSAL_ROOT_IMAGE_${lane}`],
         source.CLOUDFLARE_ACCOUNT_ID,
       );
+      if (!pin) throw new Error(`Adopt needs the lane's root pin (REHEARSAL_ROOT_IMAGE_${lane})`);
       result.before = await faultRead(lane, source, outputs, "before-adopt", ["--read-only"]);
       Object.assign(
         result,
@@ -1060,7 +1062,7 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
           source,
           outputs,
           deployedCommit: String(result.deployedCommit),
-          ...(pin ? { expectedInput: (JSON.parse(pin) as { input: string }).input } : {}),
+          pin: JSON.parse(pin) as { image: string; input: string },
         }),
       );
       // The state the heal proof needs before any fault: a selection, health, the pinned root.
