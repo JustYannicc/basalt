@@ -20,10 +20,13 @@ const redact = (text: string, limit: number) =>
  * (PoolWorker's setup context). The acceptance client keeps only "did not return a successful
  * result"; this keeps the status and the `ok:false` body.
  */
-async function computerContext(
+/** One pool app query as it is: its status and redacted body, never thrown on a status. */
+async function appQuery(
   client: PreviewClient,
   origin: string,
-  ids: Discovery,
+  ids: Pick<Discovery, "organizationId" | "poolAppId">,
+  name: string,
+  input: unknown,
 ): Promise<{ status: number; body: string }> {
   const path = `/api/organizations/${encodeURIComponent(ids.organizationId)}/apps/${encodeURIComponent(ids.poolAppId)}/data/query`;
   const response = await client.http.request(
@@ -31,11 +34,32 @@ async function computerContext(
     {
       method: "POST",
       headers: client.http.headers({ Origin: origin, "Content-Type": "application/json" }),
-      body: JSON.stringify({ name: "computerContext", input: {} }),
+      body: JSON.stringify({ name, input }),
     },
     path,
   );
   return { status: response.status, body: redact(await response.text(), 1_200) };
+}
+
+const computerContext = (client: PreviewClient, origin: string, ids: Discovery) =>
+  appQuery(client, origin, ids, "computerContext", {});
+
+/** The pool app's own answers to the seed's and the claim's first queries, as the smoke user. */
+export async function stagePoolQueries(input: {
+  origin: string;
+  stage: string;
+  email: string;
+  password: string;
+}) {
+  const ids = await discoverStagePool(input);
+  const client = new PreviewClient({ ...input, ...ids });
+  await client.signIn();
+  // Three variants: the fresh capture, the view itself, and the claim's first query.
+  return {
+    viewFresh: await appQuery(client, input.origin, ids, "view", { fresh: true }),
+    view: await appQuery(client, input.origin, ids, "view", {}),
+    computerContext: await appQuery(client, input.origin, ids, "computerContext", {}),
+  };
 }
 
 type Discovery = {

@@ -36,6 +36,7 @@ import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
 import { seedAndAdopt } from "./stage-seed.ts";
+import { diagnoseStagePool } from "./stage-diagnose.ts";
 import {
   planHighlights,
   requireBaselineShape,
@@ -53,6 +54,7 @@ export const stageModes = [
   "fault",
   "heal",
   "adopt",
+  "diagnose",
   "destroy",
 ] as const;
 export type StageMode = (typeof stageModes)[number];
@@ -1218,6 +1220,9 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     } else if (mode === "heal") {
       result.reproduces = healReproduces;
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "diagnose") {
+      // Read-only: the pool app's own answers and this stage's Workers' events, kept privately.
+      Object.assign(result, await diagnoseStagePool(subject, source, outputs));
     } else if (mode === "adopt") {
       // Pin first, then adopt: a root rolled after adoption can never be restarted by recovery.
       // The adopt is one-way: it only runs against the lane's own pin, checked field for field.
