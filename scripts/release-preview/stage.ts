@@ -35,7 +35,7 @@ import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
-import { seedAndAdopt } from "./stage-seed.ts";
+import { adoptWithoutSeed, seedAndAdopt } from "./stage-seed.ts";
 import { diagnoseStagePool } from "./stage-diagnose.ts";
 import {
   planHighlights,
@@ -351,6 +351,7 @@ const healReproduces = [
   "before the fault: an adoption record here against production's restart record",
   "the Worker that wrote the record is not the Worker that heals, as in production",
   "the infra half only: new boot selected at epoch + 1, recovery ready, active-health 200, inspect clean, the stop path; the 27 model calls need accounts and stay production's own acceptance",
+  'a zero-policy stage does not prove: that a policy is installed on the new boot (none is); that the membership pass renews one (nothing to renew); or production\'s own case, a clean policy that expired long ago, where recovery reports ready only after the membership pass has renewed it. That case rests on the worker test "the stuck record heals by itself when its pool policy expired long ago"; a stage pass is no proof of that hold or of its timing',
 ];
 
 async function healRelease(
@@ -1232,9 +1233,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       );
       if (!pin) throw new Error(`Adopt needs the lane's root pin (REHEARSAL_ROOT_IMAGE_${lane})`);
       result.before = await faultRead(lane, source, outputs, "before-adopt", ["--read-only"]);
+      // No seed unless asked for: nothing then goes to the pool app or creates a pool.
+      const withSeed = source.REHEARSAL_ADOPT_SEED === "infra-only";
+      result.seed = withSeed ? "infra-only" : "none";
       Object.assign(
         result,
-        await seedAndAdopt({
+        await (withSeed ? seedAndAdopt : adoptWithoutSeed)({
           root,
           subject,
           source,

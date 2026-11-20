@@ -122,6 +122,36 @@ export async function noAdoptionRecorded(error: unknown) {
   );
 }
 
+/**
+ * What the policies must be before anything is sent: none at all (an adopt with no seed), or the
+ * infra-only seed's set. Without either named, nothing is adopted.
+ */
+export function expectedPolicies(
+  env: NodeJS.ProcessEnv,
+): "none" | { cleanPool: string; emptyPools: string[] } {
+  if (env.STAGE_ADOPT_POLICIES === "none") return "none";
+  const cleanPool = env.STAGE_ADOPT_CLEAN_POOL ?? "";
+  const emptyPools = JSON.parse(env.STAGE_ADOPT_EMPTY_POOLS ?? "[]") as string[];
+  if (!cleanPool || !emptyPools.length)
+    throw new Error("Adopt needs no policies or the seeded pool set to check the policies against");
+  return { cleanPool, emptyPools };
+}
+
+/** The controller's own policies must be exactly the expected ones. */
+export async function policyShape(
+  inspect: unknown,
+  expected: "none" | { cleanPool: string; emptyPools: readonly string[] },
+) {
+  if (expected !== "none") return infraOnlyShape(inspect, expected);
+  const policies =
+    inspect && typeof inspect === "object"
+      ? (inspect as { policies?: unknown }).policies
+      : undefined;
+  const count = Array.isArray(policies) ? policies.length : -1;
+  if (count !== 0)
+    throw new Error(`The pool controller holds ${count} policies; none were expected`);
+}
+
 /** The infra-only seed's policy shape, from the controller's own inspect. */
 export async function infraOnlyShape(
   inspect: unknown,
@@ -163,12 +193,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
   const scope = await adoptScope(env);
   if (scope.stage !== stage) throw new Error("The release scope names another stage");
   const pin = requiredPin(env);
-  const pools = {
-    cleanPool: env.STAGE_ADOPT_CLEAN_POOL ?? "",
-    emptyPools: JSON.parse(env.STAGE_ADOPT_EMPTY_POOLS ?? "[]") as string[],
-  };
-  if (!pools.cleanPool || !pools.emptyPools.length)
-    throw new Error("Adopt needs the seeded pool set to check the policies against");
+  const pools = expectedPolicies(env);
   const [
     { evalStack },
     { State },
@@ -236,7 +261,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
           for (let attempt = 0; attempt < 24; attempt += 1) {
             const read = yield* Effect.promise(() => client.inspect());
             const refused = yield* Effect.promise(() =>
-              infraOnlyShape(read, pools).then(
+              policyShape(read, pools).then(
                 () => undefined,
                 (error: unknown) => (error instanceof Error ? error.message : String(error)),
               ),
@@ -246,7 +271,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
               break;
             }
             if (attempt === 23)
-              throw new Error(`The pools' policies are not the infra-only shape: ${refused}`);
+              throw new Error(`The pools' policies are not the expected shape: ${refused}`);
             yield* Effect.promise(() => new Promise((done) => setTimeout(done, 5_000)));
           }
           const first = shaped;

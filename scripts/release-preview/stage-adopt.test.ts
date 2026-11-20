@@ -261,3 +261,26 @@ test("noAdoptionRecorded reads only the witness's 409 identity refusal as no rec
   assert.equal(await noAdoptionRecorded(refusal("inspect", 409, "identity")), false);
   assert.equal(await noAdoptionRecorded(new Error("network")), false);
 });
+
+test("an adopt with no seed refuses unless the controller holds no policy at all", async () => {
+  const { policyShape, expectedPolicies } = await import("./stage-adopt.ts");
+  const { adoptWithoutSeed } = await import("./stage-seed.ts");
+  assert.equal(expectedPolicies({ STAGE_ADOPT_POLICIES: "none" }), "none");
+  assert.throws(() => expectedPolicies({}), /no policies or the seeded pool set/u);
+  await policyShape({ policies: [] }, "none");
+  await assert.rejects(policyShape({ policies: [{ pool: "app_x" }] }, "none"), /holds 1 policies/u);
+  await assert.rejects(policyShape({}, "none"), /holds -1 policies/u);
+  const input = {
+    root: "/nowhere",
+    subject: { kind: "rehearsal", number: 2 } as const,
+    source: {},
+    outputs: "/nowhere",
+    deployedCommit: "a".repeat(40),
+    pin,
+  };
+  await assert.rejects(adoptWithoutSeed({ ...input, controllerPolicies: 1 }), /holds 1 policies/u);
+  await assert.rejects(
+    adoptWithoutSeed({ ...input, controllerPolicies: -1 }),
+    /holds -1 policies/u,
+  );
+});

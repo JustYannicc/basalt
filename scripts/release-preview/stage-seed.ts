@@ -113,6 +113,26 @@ export async function seedAndAdopt(input: {
   };
 }
 
+/**
+ * An adopt with no seed: nothing goes to the pool app or the host's routes. The controller's own
+ * signed inspect must show no policy, here and again inside the adopt before anything is sent.
+ */
+export async function adoptWithoutSeed(input: {
+  root: string;
+  subject: StageSubject;
+  source: NodeJS.ProcessEnv;
+  outputs: string;
+  deployedCommit: string;
+  pin: { image: string; input: string };
+  controllerPolicies: number;
+}) {
+  if (input.controllerPolicies !== 0)
+    throw new Error(
+      `The pool controller holds ${input.controllerPolicies} policies; an adopt with no seed needs none`,
+    );
+  return { seeded: "none", adopted: await adopt(input, stageNames(input.subject).stage, "none") };
+}
+
 async function adopt(
   input: {
     root: string;
@@ -122,7 +142,7 @@ async function adopt(
     pin: { image: string; input: string };
   },
   stage: string,
-  pools: { cleanPool: string; emptyPools: readonly string[] },
+  pools: "none" | { cleanPool: string; emptyPools: readonly string[] },
 ) {
   const { root, source, outputs } = input;
   const writer: NodeJS.ProcessEnv = {
@@ -142,9 +162,13 @@ async function adopt(
         HOME: source.HOME,
         STAGE_ADOPT_EXPECTED_IMAGE: input.pin.image,
         STAGE_ADOPT_EXPECTED_INPUT: input.pin.input,
-        // The infra-only shape the policies must hold before anything is sent.
-        STAGE_ADOPT_CLEAN_POOL: pools.cleanPool,
-        STAGE_ADOPT_EMPTY_POOLS: JSON.stringify(pools.emptyPools),
+        // The policies the controller must hold before anything is sent.
+        ...(pools === "none"
+          ? { STAGE_ADOPT_POLICIES: "none" }
+          : {
+              STAGE_ADOPT_CLEAN_POOL: pools.cleanPool,
+              STAGE_ADOPT_EMPTY_POOLS: JSON.stringify(pools.emptyPools),
+            }),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
