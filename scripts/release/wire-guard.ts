@@ -170,6 +170,13 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/accounts\/[^/]+\/workflows\/([^/]+)/, "Workflow"],
   // The Artifacts API (scripts/ensure-artifacts.ts): a namespace holds every repo and its history.
   [/^\/accounts\/[^/]+\/artifacts\/namespaces\/([^/]+)/, "Artifacts namespace"],
+  // Before the database: a destroy plan names a role or branch with the database it lives in, so
+  // admitting one never admits the database, and the same id elsewhere is not the plan's.
+  [
+    /^\/organizations\/[^/]+\/databases\/([^/]+\/branches\/[^/]+\/roles\/[^/]+)$/,
+    "PlanetScale role",
+  ],
+  [/^\/organizations\/[^/]+\/databases\/([^/]+\/branches\/[^/]+)$/, "PlanetScale branch"],
   [/^\/organizations\/[^/]+\/databases\/([^/]+)/, "PlanetScale database"],
   // Deleting a token breaks whatever authenticates with it (the provider observation, for one).
   [/^\/accounts\/[^/]+\/tokens\/([^/]+)/, "API token"],
