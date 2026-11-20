@@ -351,6 +351,7 @@ test(
     f.old.hooks.health = async () => {};
     await homePass(f);
     assert.ok(f.old.calls.home > home, "the attested boot took the Home read");
+    assert.equal(await status(f.model()), 503);
     assert.equal(f.old.calls.model, models, "still no model call before it is proven");
   },
 );

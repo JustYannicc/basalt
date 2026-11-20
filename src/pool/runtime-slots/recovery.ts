@@ -337,7 +337,8 @@ export class RuntimeSlotRecovery {
       await transaction.put(slotSelectionKey, {
         ...selection,
         epoch: selection.epoch + 1,
-        // The new boot took current policies above, so a handed-back slot is proven.
+        // The new boot holds no grant from before a fence: it took every unexpired policy above,
+        // and an expired one reaches it only through Home. So a handed-back slot is proven.
         active: {
           ...selection.active,
           identity: health.identity,

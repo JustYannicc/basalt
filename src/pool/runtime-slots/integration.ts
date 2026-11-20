@@ -335,8 +335,13 @@ export class RuntimeHandoff {
       throw new SlotRefused("selection");
     return this.legacyEndpoint.bootstrapPeer(input, signal);
   }
-  /** A fence stopped the fleet alarm that runs recovery, so an unfence arms it again. */
+  /**
+   * A fence stopped the fleet alarm that runs recovery, so an unfence arms it again. Armed before
+   * the unfence commits too, so an object reset between the two still runs recovery; a pass under
+   * a fence that holds refuses and arms nothing further.
+   */
   async unfence(identity: SlotIdentity) {
+    await this.options.selectedChanged?.();
     const unfenced = await this.slots.unfence(identity);
     await this.options.selectedChanged?.();
     return unfenced;
