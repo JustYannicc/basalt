@@ -37,6 +37,7 @@ import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
 import { adoptWithoutSeed, seedAndAdopt } from "./stage-seed.ts";
 import { diagnoseStagePool } from "./stage-diagnose.ts";
+import { readSecretsStores } from "./stage-secrets.ts";
 import {
   planHighlights,
   requireBaselineShape,
@@ -55,6 +56,7 @@ export const stageModes = [
   "heal",
   "adopt",
   "diagnose",
+  "secrets",
   "destroy",
 ] as const;
 export type StageMode = (typeof stageModes)[number];
@@ -1221,6 +1223,9 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     } else if (mode === "heal") {
       result.reproduces = healReproduces;
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "secrets") {
+      // Read-only: the account's Secrets Stores and secret names, privately; counts in public.
+      Object.assign(result, await readSecretsStores(source, outputs, stage));
     } else if (mode === "diagnose") {
       // Read-only: the pool app's own answers and this stage's Workers' events, kept privately.
       Object.assign(result, await diagnoseStagePool(subject, source, outputs));
