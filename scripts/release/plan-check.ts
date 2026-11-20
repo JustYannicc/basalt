@@ -698,19 +698,24 @@ export const checkPlan = (
       );
       const rootSettled =
         !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
-      // Without the root's name the wire guard refuses every container application write of the
-      // run, so a plan that writes one would pass here and stop at its first write.
-      const rootName = rootNode
-        ? (recorded(rootNode) as { attr?: { applicationName?: unknown } } | undefined)?.attr
-            ?.applicationName
-        : "";
+      // A root recorded by id but not by name makes the wire guard refuse every container
+      // application write of the run, so a plan that writes one would pass here and stop at its
+      // first write. A root not recorded yet is the guard's own case: it requires none there.
+      const rootAttr = rootNode
+        ? (
+            recorded(rootNode) as
+              | { attr?: { applicationId?: unknown; applicationName?: unknown } }
+              | undefined
+          )?.attr
+        : undefined;
+      const present = (value: unknown) => typeof value === "string" && value.length > 0;
       const containerWrite = nodes.find(
         (node) =>
           node.resource.Type === "Cloudflare.Container" &&
           node.resource.FQN !== policy.poolContainer.fqn &&
           node.action !== "noop",
       );
-      if (containerWrite && !(typeof rootName === "string" && rootName.length > 0))
+      if (containerWrite && present(rootAttr?.applicationId) && !present(rootAttr?.applicationName))
         violations.push({
           fqn: containerWrite.resource.FQN,
           type: containerWrite.resource.Type,

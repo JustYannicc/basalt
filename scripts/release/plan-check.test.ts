@@ -2048,6 +2048,13 @@ test("a plan that writes a container application refuses while the root's row ha
     (await planned(context, { declared: { fleetClasses: true } })).plan,
   );
   assert.ok(!(await rulesOf(named, cutoverPolicy)).includes(refusal));
+  // A root State does not record yet: the guard requires none there, and neither does this rule.
+  const fresh = productionRows();
+  delete (fresh as Record<string, unknown>).PoolContainer;
+  const first = withFleetApplication(
+    (await planned(context, { rows: fresh, declared: { fleetClasses: true } })).plan,
+  );
+  assert.ok(!(await rulesOf(first, cutoverPolicy)).includes(refusal));
   // The healing release writes no container application, so a missing name never refuses it.
   const healing = {
     mode: "code-only",
