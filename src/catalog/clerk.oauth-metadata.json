@@ -1,4 +1,7 @@
 {
+  "protected_resources": [
+    "https://clerk.com"
+  ],
   "issuer": "https://clerk.clerk.com",
   "authorization_endpoint": "https://clerk.clerk.com/oauth/authorize",
   "token_endpoint": "https://clerk.clerk.com/oauth/token",
@@ -24,6 +27,7 @@
     "email",
     "offline_access",
     "user:org:read",
+    "poppy:browser-sign-in",
     "application_domains:manage",
     "application_domains:read",
     "applications:manage",
