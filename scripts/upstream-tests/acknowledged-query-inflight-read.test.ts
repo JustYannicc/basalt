@@ -3,10 +3,11 @@ import { createRequire, registerHooks } from "node:module";
 import { after, test, type TestContext } from "node:test";
 import { clearTimeout, setTimeout } from "node:timers";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { AtomRegistry as RegistryType } from "effect/reactivity";
+import type { Atom as AtomType, AtomRegistry as RegistryType } from "effect/reactivity";
 
 // The real hosted manager contract, the shared `acknowledgedQuery` under it, a real atom registry
-// and a real DOM. The host's answers come through the API client, which answers when told to.
+// and a real DOM. The host's answers come through a stand-in for the API client, which answers
+// when told to.
 const contractPath = fileURLToPath(
   new URL("../../.upstream/apps/hosted/web/src/contracts/tool-availability.ts", import.meta.url),
 );
@@ -21,9 +22,7 @@ const hooks = registerHooks({
     if (!url.startsWith("file:") || !url.endsWith(".ts") || loaded.source === undefined)
       return loaded;
     const source =
-      typeof loaded.source === "string"
-        ? loaded.source
-        : new TextDecoder().decode(loaded.source as Uint8Array);
+      typeof loaded.source === "string" ? loaded.source : new TextDecoder().decode(loaded.source);
     return source.includes("import.meta.env")
       ? { ...loaded, source: source.replaceAll(/import\.meta\.env\.(?:SSR|DEV)\b/g, "false") }
       : loaded;
@@ -37,17 +36,45 @@ const require = createRequire(contractPath);
 // revalidated reads listen for its visibility events. It is registered before those modules load,
 // at a dashboard origin, because the browser's auth client is addressed through the page's. A
 // listener that throws fails the test instead of being logged, as happy-dom does by default.
+//
+// The dashboard's telemetry posts to that origin, so the page answers it as the host's relay does:
+// accepted, with no body. No other request may leave the page; one that tries fails its test.
+const strays: string[] = [];
+interface PageRequest {
+  readonly request: { readonly method: string; readonly url: string };
+  readonly window: {
+    readonly location: { readonly origin: string };
+    readonly Response: typeof Response;
+  };
+}
 const { GlobalRegistrator } = await import(require.resolve("@happy-dom/global-registrator"));
 GlobalRegistrator.register({
   url: "https://dashboard.invalid/",
-  settings: { errorCapture: "disabled" },
+  settings: {
+    errorCapture: "disabled",
+    fetch: {
+      interceptor: {
+        beforeAsyncRequest: async ({ request, window }: PageRequest) => {
+          const { origin, pathname } = new URL(request.url);
+          if (origin === window.location.origin && pathname.startsWith("/api/telemetry/"))
+            return new window.Response(null, {
+              status: 202,
+              headers: { "cache-control": "no-store" },
+            });
+          strays.push(`${request.method} ${request.url}`);
+          return window.Response.error();
+        },
+      },
+    },
+  },
 });
 after(() => GlobalRegistrator.unregister());
 // The browser fires this at the visible document, and it bubbles to the window.
 const returnToPage = () => document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
 
 const { Atom, AtomRegistry, AsyncResult } = await import(require.resolve("effect/reactivity"));
-const { Context, Effect } = await import(require.resolve("effect"));
+const { Context, Effect, Option } = await import(require.resolve("effect"));
+const { StorageError } = await import(require.resolve("@executor-js/sdk/core"));
 const { HostedClient } = await import(pathToFileURL(clientPath).href);
 const { toolAvailabilityAtom, toolAvailabilityCatalogAtom, updateToolAvailabilityAtom } =
   await import(pathToFileURL(contractPath).href);
@@ -124,13 +151,6 @@ function host() {
     },
     read: (index: number) => nth(reads, index, "list read"),
     save: (index: number) => nth(saves, index, "save"),
-    /** A confirmed save restarts a read still in flight; settling every held read reaches the live one. */
-    answerReads: (value: unknown) => {
-      for (const read of reads) read.answer(value);
-    },
-    failReads: (error: unknown) => {
-      for (const read of reads) read.fail(error);
-    },
   };
 }
 
@@ -140,7 +160,7 @@ const show = (result: Result | undefined) =>
 /** The value of `atom` once `done` accepts it. */
 const until = (
   registry: RegistryType.AtomRegistry,
-  atom: unknown,
+  atom: AtomType.Atom<Result>,
   done: (value: Result) => boolean,
 ) =>
   new Promise<Result>((resolve, reject) => {
@@ -153,8 +173,8 @@ const until = (
       },
     );
     const cancel = registry.subscribe(
-      atom as never,
-      (value: Result) => {
+      atom,
+      (value) => {
         last = value;
         if (!done(value)) return;
         clearTimeout(timer);
@@ -178,6 +198,7 @@ async function open(t: TestContext) {
     ],
   });
   t.after(() => registry.dispose());
+  t.after(() => assert.deepEqual(strays.splice(0), [], "the page sent a request no one answers"));
   registry.mount(HostedClient.runtime);
   const setting = toolAvailabilityAtom(KEY);
   const catalog = toolAvailabilityCatalogAtom(KEY);
@@ -208,7 +229,7 @@ for (const [reading, start] of otherReads)
     registry.set(update, CHANGE);
     await backend.save(0);
     start(opened);
-    await backend.read(1);
+    const earlier = await backend.read(1);
     const reloading = registry.get(setting) as Result;
     assert.equal(show(reloading), "Success waiting revision 1", "the other read is in flight");
 
@@ -220,23 +241,28 @@ for (const [reading, start] of otherReads)
       "a confirmed save must not hide the read that is still in flight",
     );
 
-    backend.answerReads(ANSWER);
+    // The confirmed save restarted that read. The request sent before the save answers with what
+    // the host held then, which must never show; the restarted one answers with what it holds now.
+    const restarted = await backend.read(2);
+    const shown: string[] = [];
+    const stop = registry.subscribe(setting, (value: Result) => {
+      shown.push(show(value));
+    });
+    earlier.answer(list(1));
+    restarted.answer(ANSWER);
     const answered = await until(
       registry,
       setting,
       (value) => value.value?.revision === ANSWER.revision,
     );
-    assert.equal(
-      show(answered),
-      "Success revision 3",
-      "the read's answer replaces the saved value",
+    stop();
+    assert.deepEqual(
+      shown,
+      ["Success revision 3"],
+      "only the restarted read's answer replaces the saved value",
     );
     assert.deepEqual(answered.value?.enabledTools, [READ.name, WRITE.name, REVIEW.name]);
-    await until(
-      registry,
-      catalog,
-      (value) => tools(value)?.join() === [READ.name, WRITE.name, REVIEW.name].join(),
-    );
+    assert.deepEqual(tools(registry.get(catalog) as Result), [READ.name, WRITE.name, REVIEW.name]);
   });
 
 test("a save confirmed with no other read in flight waits for the read it starts", async (t) => {
@@ -244,7 +270,7 @@ test("a save confirmed with no other read in flight waits for the read it starts
   registry.set(update, CHANGE);
   const confirmed = await confirm();
   assert.equal(show(confirmed), "Success waiting revision 2");
-  backend.answerReads(ANSWER);
+  (await backend.read(1)).answer(ANSWER);
   const answered = await until(
     registry,
     setting,
@@ -260,13 +286,12 @@ test("a read that fails after a save was confirmed during it keeps the saved set
   returnToPage();
   await backend.read(1);
   await confirm();
-  backend.failReads({ _tag: "ToolAvailabilityUnavailable" });
+  // The list endpoint's storage failure: an error the host declares that is not an access denial.
+  (await backend.read(2)).fail(new StorageError());
   const failed = await until(registry, setting, (value) => value._tag === "Failure");
   assert.equal(failed.waiting, false, "the failed read is no longer in flight");
-  const kept = AsyncResult.value(failed) as { _tag: string; value?: { revision: number } };
-  assert.equal(
-    kept.value?.revision,
-    SAVED.revision,
-    "a transport failure keeps the confirmed save",
+  const kept: { readonly revision: number } | undefined = Option.getOrUndefined(
+    AsyncResult.value(failed),
   );
+  assert.equal(kept?.revision, SAVED.revision, "a storage failure keeps the confirmed save");
 });
