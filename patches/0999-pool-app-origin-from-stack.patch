@@ -1,0 +1,60 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
+index 7ead5fe..26baff5 100644
+--- a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
+@@ -4,6 +4,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
+ import { SourceFiles, StorageError } from "@executor-js/sdk/core";
+ import { Config, Effect, Option, Schema } from "effect";
+ import { makePoolAppSource } from "../implementation/pool-app-assets.ts";
++import { cloudHosts } from "./stage.ts";
+ 
+ const Assets = Schema.declare(
+   (value): value is Pick<Fetcher, "fetch"> =>
+@@ -27,9 +28,14 @@ export const cloudPoolAppSource = Effect.gen(function* () {
+     }),
+   );
+   const local = yield* Config.String("EXECUTOR_E2E_LOCAL_ORIGIN").pipe(Config.option);
+-  if (Option.isNone(local)) return source;
+-  const origin = new URL(local.value);
++  // The bundle names the host it was built for. The seed a host serves names that host's own
++  // origin, the one its own pool calls use, so one bundle fits every stack and an installed
++  // pool's provider declares, and its token reaches, this stack only.
++  const origin = new URL(
++    Option.isSome(local) ? local.value : (yield* cloudHosts.pipe(Effect.orDie)).browser,
++  );
+   if (
++    Option.isSome(local) &&
+     !(
+       ["http:", "https:"].includes(origin.protocol) &&
+       (["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname) ||
+@@ -59,7 +65,8 @@ export const cloudPoolAppSource = Effect.gen(function* () {
+           (["localhost", "127.0.0.1", "[::1]"].includes(configured.hostname) ||
+             configured.hostname.endsWith(".localhost"));
+         // Recipe harnesses already bind a local Home peer with their own signing key.
+-        const poolOrigin = configuredLocal ? configured.origin : origin.origin;
++        const poolOrigin =
++          Option.isSome(local) && configuredLocal ? configured.origin : origin.origin;
+         return yield* Schema.decodeUnknownEffect(SourceFiles)(
+           files.map((file) =>
+             !("content" in file)
+@@ -83,10 +90,19 @@ export const cloudPoolAppSource = Effect.gen(function* () {
+                   : file,
+           ),
+         );
+-      }),
++      }).pipe(
++        Effect.tapError(() =>
++          Effect.logWarning(
++            "Pool app seed has no pool origin this host can replace; setup will retry",
++          ),
++        ),
++      ),
+     ),
+     Effect.mapError(() => new StorageError()),
+   );
++  // Installed pools compare the bundle they recorded with the version. A deployed host keeps the
++  // bundle's own hash: the host the bundle was built for serves it unchanged and rolls nothing out.
++  if (Option.isNone(local)) return { version: source.version, files };
+   const digest = yield* Effect.promise(() =>
+     crypto.subtle.digest(
+       "SHA-256",

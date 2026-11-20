@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-app-origin-from-stack",
+  "file": "0999-pool-app-origin-from-stack.patch",
+  "content_sha256": "b0387c312db70d6d4b98c9ea1562c2bb326ae6ef434ead64acb2f80d516134e9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
