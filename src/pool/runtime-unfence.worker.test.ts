@@ -235,3 +235,23 @@ test(
     assert.equal(served.status, 200, await served.text());
   },
 );
+
+test(
+  "a runtime that answers health but refuses current policies goes back to recovery, unproven",
+  {
+    timeout: 20_000,
+  },
+  async (context) => {
+    const { f, identity } = await root(context);
+    await f.send("fence", { identity });
+    f.old.hooks.install = async () => {
+      throw new Error("synthetic install failure");
+    };
+    // It can't take current policies, so it can't serve: recovery replaces it, never routes to it.
+    const { status: code, body } = await unfence(f, identity);
+    assert.equal(code, 200);
+    assert.equal(body.result?.by, "recovery");
+    assert.equal((await selection(f)).active.unfenced?.proven, false);
+    assert.equal(await status(f.model()), 503);
+  },
+);
