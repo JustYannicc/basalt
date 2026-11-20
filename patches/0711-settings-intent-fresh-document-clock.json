@@ -1,6 +1,6 @@
 {
   "identity": "basalt-settings-intent-fresh-document-clock",
-  "file": "0999-settings-intent-fresh-document-clock.patch",
+  "file": "0711-settings-intent-fresh-document-clock.patch",
   "content_sha256": "ef5fd41f62169775c8d53448c556c329216edc418177464f41a5cebe35541fa0",
   "kind": "overlay",
   "upstream_pull_request": null,
