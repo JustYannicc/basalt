@@ -119,6 +119,7 @@ export async function forwardPoolRequest(
           inFlight: deps.streams.active,
           receivedAt: deps.arrival?.receive?.receivedAt,
           calledAt: deps.arrival?.receive?.calledAt,
+          firstCalledAt: deps.arrival?.receive?.firstCalledAt,
           arrivedAt: deps.arrival?.at,
           started: deps.arrival?.started,
           traceparent: request.headers.get("traceparent"),

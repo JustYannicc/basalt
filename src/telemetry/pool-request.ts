@@ -14,6 +14,7 @@ initWorkersLogger({ env: { service: "basalt-pool", environment: "production" } }
 
 const hops = [
   "worker",
+  "replay",
   "queue",
   "admission",
   "dispatch",
@@ -44,6 +45,7 @@ const outcomes = [
   "outcome_unknown",
   "controller_unavailable",
   "controller_failed",
+  "controller_reset",
 ] as const;
 export type PoolRequestOutcome = (typeof outcomes)[number];
 const labelKeys = [
@@ -85,6 +87,8 @@ export interface PoolRequestInput {
   /** Wall clock when the Worker received the request and when it called the Durable Object. */
   receivedAt?: number | undefined;
   calledAt?: number | undefined;
+  /** The first call, when `calledAt` is a second one after the object's instance was replaced. */
+  firstCalledAt?: number | undefined;
   /** Wall clock when the Durable Object's handler started. Absent while the call never arrived. */
   arrivedAt?: number | undefined;
   /** This event's clock at that same moment. */
@@ -168,10 +172,16 @@ export function poolRequestEvent(
   const emit = async (result: PoolRequestResult, finished: number, finishedAt: number) => {
     const durations: Partial<Record<Hop, number>> = {};
     if (input.receivedAt !== undefined && input.calledAt !== undefined) {
-      durations.worker = whole(input.calledAt - input.receivedAt);
+      const firstCall = input.firstCalledAt ?? input.calledAt;
+      durations.worker = whole(firstCall - input.receivedAt);
+      // The failed call and the wait before the next one belong to neither the Worker nor the queue.
+      if (input.firstCalledAt !== undefined) durations.replay = whole(input.calledAt - firstCall);
       // A call that failed without an answer waited for the Durable Object, unless the object's own
-      // code threw: then its handler ran and the Worker cannot tell the wait from the work.
-      if (input.arrivedAt === undefined && result.outcome === "controller_failed")
+      // code threw or its instance ended mid-call: then the Worker cannot tell the wait from the work.
+      if (
+        input.arrivedAt === undefined &&
+        (result.outcome === "controller_failed" || result.outcome === "controller_reset")
+      )
         durations.unanswered = whole(finishedAt - input.calledAt);
       else durations.queue = whole((input.arrivedAt ?? finishedAt) - input.calledAt);
     }

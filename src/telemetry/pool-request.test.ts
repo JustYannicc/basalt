@@ -171,6 +171,47 @@ test("a call the Durable Object's own code failed is unanswered, not queue", asy
   assert.deepEqual(timings(event), { totalMs: 9_000, workerMs: 30, unansweredMs: 8_970 });
 });
 
+test("a call sent again after a controller reset keeps the Worker's and the queue's own waits", async (context) => {
+  const h = harness(context, {
+    firstCalledAt: 1_700_000_000_030,
+    calledAt: 1_700_000_001_130,
+    arrivedAt: 1_700_000_001_330,
+  });
+  h.advance(7);
+  h.event.set({ guard: "model_membership" });
+  h.event.end({ outcome: "refused", status: 503 });
+  const { event } = await h.emitted();
+
+  assert.deepEqual(timings(event), {
+    totalMs: 1_337,
+    workerMs: 30,
+    replayMs: 1_100,
+    queueMs: 200,
+    admissionMs: 7,
+  });
+});
+
+test("a call cut by a controller reset is unanswered and keeps the Worker's answer", async (context) => {
+  const h = harness(context, {
+    arrivedAt: undefined,
+    started: undefined,
+    kind: undefined,
+    firstCalledAt: 1_700_000_000_030,
+    calledAt: 1_700_000_001_030,
+  });
+  h.event.end({ outcome: "controller_reset", status: 503 });
+  const { event } = await h.emitted();
+
+  assert.deepEqual(timings(event), {
+    totalMs: 9_000,
+    workerMs: 30,
+    replayMs: 1_000,
+    unansweredMs: 7_970,
+  });
+  assert.equal(event.outcome, "controller_reset");
+  assert.equal(event.status, 503);
+});
+
 test("the trace carries the event on its root span and one span per hop that took time", async (context) => {
   const parent = "0af7651916cd43dd8448eb211c80319c";
   const h = harness(context, { traceparent: `00-${parent}-b7ad6b7169203331-01` });

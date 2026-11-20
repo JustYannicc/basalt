@@ -133,7 +133,7 @@ import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
-import { fetchController } from "./controller-reset.ts";
+import { controllerInstanceEnded, fetchController } from "./controller-reset.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -1065,22 +1065,12 @@ async function callController(
   receivedAt: number,
   defer: (work: Promise<unknown>) => void,
 ): Promise<Response> {
-  const calledAt = Date.now();
-  try {
-    // The controller hop owns retries and its own log lines. Each attempt carries its own call
-    // time, so a replay's queue wait is not the failed attempt's.
-    return await fetchController(request, {
-      controller: () => {
-        const stub = singleton(env);
-        return {
-          fetch: (forwarded: Request) =>
-            stub.fetch(stampPoolReceive(forwarded, receivedAt, Date.now())),
-        };
-      },
-      env,
-      defer,
-    });
-  } catch (error) {
+  // Every call to the object, first and replayed; each carries its own call time, so a replay's
+  // queue wait is not the failed attempt's.
+  const calls: number[] = [];
+  let failure: unknown;
+  let answered = false;
+  const unanswered = (error: unknown, response?: Response) => {
     try {
       const pathname = new URL(request.url).pathname;
       // Cloudflare marks an error the object's own code threw, and one from an object with more
@@ -1088,12 +1078,14 @@ async function callController(
       const flag = (name: string) =>
         typeof error === "object" && error !== null && Reflect.get(error, name) === true;
       const event = startPoolRequestEvent(env, () => ({
-        requestId: crypto.randomUUID(),
+        // The Worker's own answer names the request the caller can quote.
+        requestId: response?.headers.get("X-Request-Id") ?? crypto.randomUUID(),
         method: request.method,
         route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
         port: poolPort(pathname),
         receivedAt,
-        calledAt,
+        calledAt: calls.at(-1) ?? receivedAt,
+        firstCalledAt: calls.length > 1 ? calls[0] : undefined,
         traceparent: request.headers.get("traceparent"),
         defer,
       }));
@@ -1102,12 +1094,57 @@ async function callController(
           error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
         overloaded: flag("overloaded"),
       });
-      event?.end({ outcome: flag("remote") ? "controller_failed" : "controller_unavailable" });
+      event?.end({
+        outcome: controllerInstanceEnded(error)
+          ? "controller_reset"
+          : flag("remote")
+            ? "controller_failed"
+            : "controller_unavailable",
+        status: response?.status,
+      });
     } catch {
       console.error("POOL_REQUEST_EVENT_UNAVAILABLE");
     }
+  };
+  let response: Response;
+  try {
+    // The controller hop owns retries and its own log lines.
+    response = await fetchController(request, {
+      controller: () => {
+        const stub = singleton(env);
+        return {
+          fetch: async (forwarded: Request) => {
+            const at = Date.now();
+            calls.push(at);
+            try {
+              const answer = await stub.fetch(
+                stampPoolReceive(
+                  forwarded,
+                  receivedAt,
+                  at,
+                  calls.length > 1 ? calls[0] : undefined,
+                ),
+              );
+              answered = true;
+              return answer;
+            } catch (error) {
+              failure = error;
+              throw error;
+            }
+          },
+        };
+      },
+      env,
+      defer,
+    });
+  } catch (error) {
+    unanswered(error);
     throw error;
   }
+  // Retry advice or an unknown outcome the hop built itself after a reset: the object never
+  // answered, so it never reported this request.
+  if (!answered) unanswered(failure, response);
+  return response;
 }
 
 export async function handlePoolWorkerRequest(

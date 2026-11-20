@@ -11,6 +11,8 @@ export const poolReceiveHeader = "x-basalt-pool-receive";
 export interface PoolReceive {
   receivedAt: number;
   calledAt: number;
+  /** The first call, when this one is sent again after the object's instance was replaced. */
+  firstCalledAt?: number;
 }
 
 /** A request as the Durable Object received it, without the Worker's private timing header. */
@@ -22,9 +24,15 @@ export interface PoolArrival {
 }
 
 /** Overwrites whatever a caller sent: only the Worker's own clock reaches the Durable Object. */
-export function stampPoolReceive(request: Request, receivedAt: number, now = Date.now()): Request {
+export function stampPoolReceive(
+  request: Request,
+  receivedAt: number,
+  now = Date.now(),
+  firstCalledAt?: number,
+): Request {
   const headers = new Headers(request.headers);
-  headers.set(poolReceiveHeader, `${Math.trunc(receivedAt)},${Math.trunc(now)}`);
+  const replay = firstCalledAt === undefined ? "" : `,${Math.trunc(firstCalledAt)}`;
+  headers.set(poolReceiveHeader, `${Math.trunc(receivedAt)},${Math.trunc(now)}${replay}`);
   return new Request(request, { headers });
 }
 
@@ -39,19 +47,29 @@ export function poolArrival(
   const headers = new Headers(request.headers);
   headers.delete(poolReceiveHeader);
   const stripped = new Request(request, { headers });
-  const match = /^(\d{13}),(\d{13})$/.exec(value);
+  const match = /^(\d{13}),(\d{13})(?:,(\d{13}))?$/.exec(value);
   const receivedAt = Number(match?.[1]);
   const calledAt = Number(match?.[2]);
+  const firstCalledAt = match?.[3] === undefined ? undefined : Number(match[3]);
   // Clocks of two isolates can differ slightly; a stamp from another minute is not this request's.
   const plausible =
     match !== null &&
-    receivedAt <= calledAt &&
+    receivedAt <= (firstCalledAt ?? calledAt) &&
+    (firstCalledAt ?? calledAt) <= calledAt &&
     calledAt <= at + 1_000 &&
     at - receivedAt <= 600_000;
   return {
     request: stripped,
     at,
     started,
-    ...(plausible ? { receive: { receivedAt, calledAt } } : {}),
+    ...(plausible
+      ? {
+          receive: {
+            receivedAt,
+            calledAt,
+            ...(firstCalledAt === undefined ? {} : { firstCalledAt }),
+          },
+        }
+      : {}),
   };
 }
