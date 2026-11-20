@@ -1008,7 +1008,9 @@ for (const retire of [false, true])
       const entered = Promise.withResolvers<void>(),
         release = Promise.withResolvers<void>();
       const installed: NativeMembershipPolicy[] = [];
-      let alarm: number | null = null,
+      // A pool whose alarm is alive, so the deadlines read below are the reservation's own; a pool
+      // with none is armed at once instead (alarms.test.ts, runtime-heal-no-alarm.worker.test.ts).
+      let alarm: number | null = start + 3_600_000,
         reads = 0,
         native = true;
       if (retire)
