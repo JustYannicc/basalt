@@ -79,6 +79,7 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
     assert.match(refused.stderr, /workerd-assets: expected (?:success|skipped), got missing/);
   }
 });
+
 test("the retry count runs after every gate verdict but can never change it", () => {
   const job = workflow.jobs.check;
   const gate = job.steps.findIndex(
