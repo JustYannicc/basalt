@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-database-recovery-parameters",
+  "file": "0712-database-recovery-parameters.patch",
+  "content_sha256": "3ee56e7abbf293363bfa85a043e06f7e311c0f4d0675daa042024ea9d53d4786",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

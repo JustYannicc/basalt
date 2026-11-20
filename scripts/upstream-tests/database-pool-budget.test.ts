@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConfigProvider, Effect } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { configureDatabasePoolBudget } from "../../.upstream/apps/hosted/cloud/scripts/database-pool-budget.ts";
-import { databasePoolParameters } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts";
+import {
+  configureDatabasePoolBudget,
+  recoverDatabaseParameters,
+} from "../../.upstream/apps/hosted/cloud/scripts/database-pool-budget.ts";
+import {
+  databaseMaxConnections,
+  databasePoolParameters,
+} from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts";
 
 function run(
   options: {
@@ -13,6 +19,10 @@ function run(
     mode?: string;
     nullableCatalog?: "initial" | "readback" | "both";
     nullBudgetReadback?: boolean;
+    branch?: string;
+    maxConnections?: string;
+    readbackMaxConnections?: string;
+    recover?: boolean;
   } = {},
 ) {
   const requests: { method: string; path: string; body?: unknown }[] = [];
@@ -35,8 +45,18 @@ function run(
         name: "pool_mode",
         value: options.mode ?? "transaction",
       });
-      let data: unknown = path.endsWith("parameters")
-        ? (++reads === 1 && !options.existing) || (reads > 1 && options.readback === false)
+      const isParameters = path.endsWith("parameters");
+      if (isParameters) reads++;
+      parameters.push({
+        namespace: "pgconf",
+        name: "max_connections",
+        value:
+          reads > 1
+            ? (options.readbackMaxConnections ?? databaseMaxConnections)
+            : (options.maxConnections ?? databaseMaxConnections),
+      });
+      let data: unknown = isParameters
+        ? (reads === 1 && !options.existing) || (reads > 1 && options.readback === false)
           ? parameters.filter((row) => row.name !== "max_db_connections")
           : parameters
         : request.method === "PATCH"
@@ -77,14 +97,14 @@ function run(
   return {
     requests,
     result: Effect.runPromise(
-      configureDatabasePoolBudget.pipe(
+      (options.recover ? recoverDatabaseParameters : configureDatabasePoolBudget).pipe(
         Effect.provideService(HttpClient.HttpClient, http),
         Effect.provideService(
           ConfigProvider.ConfigProvider,
           ConfigProvider.fromUnknown({
             PLANETSCALE_ORGANIZATION: "fixture",
             POOL_BUDGET_DATABASE: "fixture",
-            POOL_BUDGET_BRANCH: "main",
+            POOL_BUDGET_BRANCH: options.branch ?? "main",
             PLANETSCALE_API_TOKEN_ID: "fixture",
             PLANETSCALE_API_TOKEN: "fixture",
           }),
@@ -140,4 +160,58 @@ test("an already configured budget accepts unrelated null catalog values without
 
 test("a null required budget value on readback still refuses deployment", async () => {
   await assert.rejects(run({ nullBudgetReadback: true }).result);
+});
+
+test("a release refuses main's wrong Postgres connection slots before any write", async () => {
+  for (const maxConnections of ["25", ""]) {
+    const proof = run({ maxConnections });
+    await assert.rejects(proof.result, /max_connections .* on main, expected 50/);
+    assert.deepEqual(
+      proof.requests.map((request) => request.method),
+      ["GET"],
+      "a release never changes main's Postgres connection slots",
+    );
+  }
+});
+
+test("a release leaves a test branch's own connection slots alone", async () => {
+  const proof = run({ branch: "test-fixture", maxConnections: "25", readbackMaxConnections: "25" });
+  await proof.result;
+  assert.deepEqual(proof.requests[1]!.body, { parameters: { pgbouncer: databasePoolParameters } });
+});
+
+test("recovery applies the pooler budget and connection slots to a restored branch and reads both back", async () => {
+  const proof = run({ recover: true, branch: "restored-fixture", maxConnections: "25" });
+  await proof.result;
+  assert.deepEqual(
+    proof.requests.map((request) => request.method),
+    ["GET", "PATCH", "GET", "GET"],
+  );
+  assert.deepEqual(proof.requests[1]!.body, {
+    parameters: {
+      pgbouncer: databasePoolParameters,
+      pgconf: { max_connections: databaseMaxConnections },
+    },
+  });
+  const settled = run({ recover: true, branch: "restored-fixture", existing: true });
+  await settled.result;
+  assert.deepEqual(
+    settled.requests.map((request) => request.method),
+    ["GET"],
+  );
+});
+
+test("recovery refuses main and a branch whose connection slots do not read back", async () => {
+  const serving = run({ recover: true, maxConnections: "25" });
+  await assert.rejects(serving.result, /never main/);
+  assert.deepEqual(serving.requests, [], "recovery sends nothing for main");
+  await assert.rejects(
+    run({
+      recover: true,
+      branch: "restored-fixture",
+      maxConnections: "25",
+      readbackMaxConnections: "25",
+    }).result,
+    /max_connections readback did not match/,
+  );
 });
