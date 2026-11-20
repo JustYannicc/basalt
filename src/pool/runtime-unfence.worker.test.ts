@@ -4,6 +4,7 @@ import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worke
 import { unfenceHandBackAfterMs } from "./runtime-slots/controller.ts";
 import { unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
+import { PoolAlarms } from "./alarms.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Slot {
@@ -168,6 +169,10 @@ test(
     installsFail = false;
     await pass(f);
     assert.equal((await selection(f)).active.unfenced?.proven, true);
+    // The failed installs also held back the pool's own membership; its next Home pass renews it.
+    await new PoolAlarms(f.old.storage).schedule("home", Date.now());
+    await f.alarm();
+    await f.settle();
     const served = await f.model();
     assert.equal(served.status, 200, await served.text());
     assert.deepEqual(f.old.calls.signals, [], "a boot that answers is never stopped");
