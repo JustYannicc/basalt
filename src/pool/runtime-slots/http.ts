@@ -173,6 +173,9 @@ export async function handleRuntimeHandoff(
       case "active-health":
         result = await handoff.activeHealth();
         break;
+      case "rehearsal-restart-over-running":
+        result = await handoff.rehearseRestartOverRunning();
+        break;
       case "receipt":
         result = await handoff.slots.receipt(value.operationId);
         break;
