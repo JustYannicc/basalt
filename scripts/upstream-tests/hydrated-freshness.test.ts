@@ -54,7 +54,7 @@ const browserReads = ({ ahead, age }: { readonly ahead: number; readonly age: nu
     },
   });
   try {
-    applyAtoms(browser, page);
+    applyAtoms(browser, page, browserNow);
     browser.mount(shown);
     for (let task = deferred.shift(); task !== undefined; task = deferred.shift()) task();
     assert.equal(
