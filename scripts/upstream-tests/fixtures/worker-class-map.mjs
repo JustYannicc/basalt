@@ -97,6 +97,20 @@ const program = Effect.gen(function* () {
     false,
     "another Worker's name that cannot be known promises nothing",
   );
+  // The same unknown name, for a class this Worker hosted before: "no name" would mean hosted here.
+  const hostedBefore = [hosted, { ...elsewhere, scriptName: undefined }];
+  assert.equal(
+    yield* readable(both, inCycle, hostedBefore),
+    false,
+    "a class hosted before and now bound under a name that cannot be known is not hosted here",
+  );
+  assert.equal(
+    yield* readable(both, inCycle, hostedBefore, {
+      Elsewhere: Effect.succeed({ className: "Elsewhere", scriptName: "another-worker" }),
+    }),
+    false,
+    "a setting that is computed late does not make the name known",
+  );
   assert.equal(
     yield* readable(
       { Hosted: "hosted-id", Retired: "retired-id" },
@@ -145,6 +159,27 @@ const program = Effect.gen(function* () {
     false,
     "one name for a hosted class and another Worker's class has one entry for two ids",
   );
+  // One entry cannot stand for two other Workers' classes either.
+  const fromTwo = [
+    hosted,
+    elsewhere,
+    { ...elsewhere, name: "Third", scriptName: "a-third-worker" },
+  ];
+  assert.equal(
+    yield* readable(both, fromTwo, fromTwo),
+    false,
+    "one name for the classes of two other Workers has one entry for two ids",
+  );
+  assert.equal(
+    yield* readable(both, [hosted, elsewhere], fromTwo),
+    false,
+    "dropping one of two other Workers that shared a name changes its entry",
+  );
+  assert.equal(
+    yield* readable({ Hosted: undefined }, [hosted]),
+    false,
+    "a recorded name without a namespace id is not a recorded class",
+  );
   const inherited = [{ ...hosted, name: "Inherited", className: "toString" }];
   assert.equal(
     yield* readable({}, inherited, inherited),
@@ -161,7 +196,7 @@ const program = Effect.gen(function* () {
     false,
     "bindings that are not known at all promise nothing",
   );
-  return { scenarios: 15 };
+  return { scenarios: 20 };
 }).pipe(
   Effect.provide(LiveWorkerProvider()),
   Effect.provideService(WorkerBundle, {}),

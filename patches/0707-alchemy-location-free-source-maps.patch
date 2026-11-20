@@ -1,7 +1,7 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -8237,3 +8237,82 @@
+@@ -8257,3 +8257,82 @@
           return value;
       const resources = instanceResources[value.instanceType];
       if (resources === undefined)
