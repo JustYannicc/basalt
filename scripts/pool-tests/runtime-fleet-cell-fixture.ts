@@ -1,7 +1,7 @@
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import { RuntimeSqlite } from "./runtime-handoff-storage.ts";
 import { runtimeFixtureCode } from "./runtime-handoff-proofs.ts";
-import { runtimeProofFixture } from "../release-barrier/test/runtime-proof-fixture.ts";
+import { runtimeProofFixture } from "../pool-fleet/test/runtime-proof-fixture.ts";
 import { boundFleetCell } from "../../src/pool/runtime-fleet/bound-cell.ts";
 import { RuntimeProviderReader } from "../../src/pool/runtime-provider/read.ts";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";

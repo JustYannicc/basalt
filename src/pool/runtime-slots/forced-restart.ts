@@ -45,7 +45,10 @@ export function holdsSelectedBoot(record: Omit<Witnessed, "running">, previous: 
   );
 }
 
-/** The controller's half of a forced restart: when to ask for the stop, and what it records. */
+/**
+ * The controller's half of a forced restart: when to ask for the stop, and what it records. It also
+ * ends a restart recovery started on its own that never serves in needs-a-person.
+ */
 export class RuntimeForcedRestart {
   readonly clock: UnservingClock;
   private storage: RuntimeSlotStorage;
@@ -139,7 +142,7 @@ export class RuntimeForcedRestart {
     await this.clock.restarted(now);
     return true;
   }
-  /** Any refusal: a forced restart that still hasn't served in its budget has failed. */
+  /** Any refusal: a restart, forced or not, that still hasn't served in its budget has failed. */
   async refused() {
     const now = Date.now();
     this.report(await this.clock.failedSince(now), now);
