@@ -269,6 +269,30 @@ const recordedBindings = (node: Node): readonly { sid: string; data: unknown }[]
   const state = recorded(node);
   return state && "bindings" in state && Array.isArray(state.bindings) ? state.bindings : [];
 };
+/**
+ * A row's binding changes against its last finished generation. For a row an interrupted apply left
+ * `updating`, Alchemy compares bindings with the unfinished generation (alchemy/src/Plan.ts), so a
+ * change that apply had already written plans as noop, and a binding it had dropped plans no row.
+ */
+const bindingChanges = (node: Node): Node["bindings"] => {
+  if (!(node.state?.status === "updating" && node.state.old)) return node.bindings;
+  const finished = new Map(recordedBindings(node).map((binding) => [binding.sid, binding.data]));
+  const rows: Node["bindings"][number][] = node.bindings.map((binding) =>
+    binding.action === "delete"
+      ? binding
+      : !finished.has(binding.sid)
+        ? { ...binding, action: "create" }
+        : binding.action === "noop" &&
+            (!isResolved(binding.data) ||
+              propChanges(finished.get(binding.sid), binding.data).length > 0)
+          ? { ...binding, action: "update" }
+          : binding,
+  );
+  for (const [sid, data] of finished)
+    if (!node.bindings.some((binding) => binding.sid === sid))
+      rows.push({ sid, action: "delete", data } as Node["bindings"][number]);
+  return rows;
+};
 
 interface WireBinding {
   readonly name?: unknown;
@@ -312,7 +336,7 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
         : "A release never removes a Worker binding: the running code may still read it, and a cross-script Durable Object binding is the only handle on another Worker's stored objects.",
       fix: "Restore the binding in the Worker's declaration. Retiring a binding or a class is its own reviewed change, never part of a release.",
     });
-  for (const binding of node.bindings) {
+  for (const binding of bindingChanges(node)) {
     const next = wire(binding.data);
     if (binding.action === "delete") {
       for (const entry of next) removed(binding.sid, entry);
@@ -414,7 +438,7 @@ export function rootUpdateSettles(
     typeof recordedHash === "string" &&
     referenceHash !== undefined &&
     recordedHash !== referenceHash;
-  const pending = node.bindings.filter((binding) => binding.action !== "noop");
+  const pending = bindingChanges(node).filter((binding) => binding.action !== "noop");
   const className = props.className;
   const attachmentWaitsOnWorker = () => {
     const [binding] = pending;
@@ -452,7 +476,7 @@ export function rootUpdateSettles(
     return (
       workerNode.action === "update" &&
       worker.clean &&
-      workerNode.bindings.some(
+      bindingChanges(workerNode).some(
         (entry) =>
           entry.action !== "delete" &&
           wire(entry.data).some(
@@ -534,7 +558,7 @@ function containerViolations(
       change: [
         `$action: noop -> ${node.action}`,
         ...propChanges(before, props),
-        ...node.bindings
+        ...bindingChanges(node)
           .filter((binding) => binding.action !== "noop")
           .map((binding) => `bindings.${binding.sid}: ${binding.action}`),
       ],
@@ -544,7 +568,7 @@ function containerViolations(
   const recordedAttachments = new Map(
     recordedBindings(node).map((binding) => [binding.sid, binding.data]),
   );
-  for (const binding of node.bindings) {
+  for (const binding of bindingChanges(node)) {
     if (binding.action === "noop") continue;
     // A value unknown until another row resolves, or none at all, is not a planned change: the plan
     // cannot see it, and the wire guard refuses any PATCH or rollout of the root it would cause.
@@ -748,7 +772,7 @@ export const checkPlan = (
             fqn: node.resource.FQN,
             type: node.resource.Type,
             action: node.action,
-            bindings: node.bindings
+            bindings: bindingChanges(node)
               .filter((binding) => binding.action !== "noop")
               .map(({ sid, action }) => ({ sid, action })),
           })),
@@ -780,7 +804,7 @@ export const checkPlan = (
         return (
           differences.length > 0 &&
           differences.every((line) => line.includes("<unresolved>")) &&
-          node.bindings.every((binding) => binding.action === "noop")
+          bindingChanges(node).every((binding) => binding.action === "noop")
         );
       };
       // Readiness after the upload refuses a root whose recorded input differs from what the pool
