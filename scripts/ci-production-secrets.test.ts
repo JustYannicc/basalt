@@ -17,6 +17,7 @@ type Step = {
 type Job = {
   if?: string;
   needs?: string | string[];
+  outputs?: Record<string, unknown>;
   env?: Record<string, unknown>;
   environment?: unknown;
   secrets?: unknown;
@@ -64,17 +65,17 @@ const baseRunJobs = [
   "release.yml/release",
 ];
 
-type Provider = { output: string; step: string; sha256: string };
+type Provider = { output: string; sha256: string };
 // Jobs whose output a secret-holding job may check out as main's commit. The guard proves the job is
 // confined to main on every path into it; that the commit it writes is main's lives in shell it can't
-// read, so the step is pinned: any change to it fails here until someone re-reviews it and re-pins.
+// read. So the whole job is pinned (its outputs, every step, defaults, runner): any change to it fails
+// here until someone re-reviews it and re-pins.
 const mainCommitProviders: Record<string, Provider> = {
   // A main push's head, or the newest passing main commit containing it; a dispatch from main, or a
   // named full commit that is an ancestor of main.
   "release.yml/candidate": {
     output: "sha",
-    step: "pick",
-    sha256: "37e6d00ef6f1ada18079d3d5be178e0334af7a6697e157b7c79c7d59fed0d895",
+    sha256: "f4c8a0900365dc590246ea8f69ddfc8176f7e7957e354fee7d8e8707413035d2",
   },
 };
 // Events whose secret-holding jobs these rules understand; anything else holding secrets fails.
@@ -207,7 +208,7 @@ const confinedToMain = (condition: string | undefined) =>
     return onMain || confinedToMainPush(part);
   });
 
-const stepHash = (step: Step) => createHash("sha256").update(JSON.stringify(step)).digest("hex");
+const jobHash = (job: Job) => createHash("sha256").update(JSON.stringify(job)).digest("hex");
 
 /** Whether a checkout ref is a pinned provider's main commit, read straight from the job's needs. */
 function providedMainCommit(
@@ -217,28 +218,24 @@ function providedMainCommit(
   index: number,
   providers: Record<string, Provider>,
 ) {
+  // First, so no earlier step can rewrite its env (GITHUB_ENV) or the tools it runs (GITHUB_PATH).
+  if (index !== 0) return false;
   const step = job.steps![index]!;
   let ref = String(step.with?.ref);
   const viaEnv = /^\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/.exec(ref)?.[1];
-  if (viaEnv) {
-    // A step before the checkout could rewrite the variable through GITHUB_ENV.
-    if (JSON.stringify(job.steps!.slice(0, index)).includes("GITHUB_ENV")) return false;
-    ref = String(step.env?.[viaEnv] ?? job.env?.[viaEnv]);
-  }
+  if (viaEnv) ref = String(step.env?.[viaEnv] ?? job.env?.[viaEnv]);
   const output = /^\$\{\{\s*needs\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}$/.exec(ref);
   if (!output) return false;
   const [, id = "", key = ""] = output;
   const needs = [job.needs ?? []].flat();
   const provider = providers[`${name}/${id}`];
   const source = workflow.jobs[id];
-  const pinned = source?.steps?.find((candidate) => candidate.id === provider?.step);
   return (
     needs.includes(id) &&
     provider?.output === key &&
-    source !== undefined &&
+    source?.outputs?.[key] !== undefined &&
     confinedToMain(source.if) &&
-    pinned !== undefined &&
-    stepHash(pinned) === provider.sha256
+    jobHash(source) === provider.sha256
   );
 }
 
@@ -251,8 +248,10 @@ const checksOutMain = (
   (job.steps ?? []).every(
     (step, index) =>
       !step.uses?.startsWith("actions/checkout") ||
-      ["main", "refs/heads/main"].includes(String(step.with?.ref)) ||
-      providedMainCommit(name, workflow, job, index, providers),
+      // Another repository's main is not this one's.
+      ([undefined, "${{ github.repository }}"].includes(step.with?.repository as string) &&
+        (["main", "refs/heads/main"].includes(String(step.with?.ref)) ||
+          providedMainCommit(name, workflow, job, index, providers))),
   );
 
 const readsPullRequestHead = (job: Job) =>
@@ -316,9 +315,8 @@ test("no job runs code other than main's with a secret, beyond the named exposur
   for (const [key, provider] of Object.entries(mainCommitProviders)) {
     const [name, id = ""] = key.split("/");
     const job = workflows.find((file) => file.name === name)?.workflow.jobs[id];
-    const step = job?.steps?.find((candidate) => candidate.id === provider.step);
-    assert.ok(step, `stale provider ${key}`);
-    assert.equal(stepHash(step), provider.sha256, `${key}: re-review its ${provider.step} step`);
+    assert.ok(job?.outputs?.[provider.output], `stale provider ${key}`);
+    assert.equal(jobHash(job), provider.sha256, `${key}: re-review the job, then re-pin it`);
   }
   for (const [key, secrets] of Object.entries(knownExposure)) {
     const [name, id = ""] = key.split("/");
@@ -448,59 +446,108 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
     "github.event.workflow_run.head_branch == 'main'",
     "github.event.workflow_run.head_repository.full_name == github.repository",
   ].join(" && ");
-  const providers = {
-    "release.yml/candidate": { output: "sha", step: "pick", sha256: stepHash(pick) },
+  const candidate: Job = {
+    if: `(${dispatchFromMain}) || (${mainPush})`,
+    outputs: { sha: "${{ steps.pick.outputs.sha }}" },
+    steps: [pick],
   };
-  const checkout = (ref: string): Step => ({ uses: "actions/checkout@v4", with: { ref } });
+  const pinned = { "release.yml/candidate": { output: "sha", sha256: jobHash(candidate) } };
+  const checkout = (ref: string, extra: Record<string, unknown> = {}): Step => ({
+    uses: "actions/checkout@v4",
+    with: { ref, ...extra },
+  });
+  const secret: Step = { run: "${{ secrets.CLOUDFLARE_API_TOKEN }}" };
   const fixture = (
     release: Partial<Job>,
-    candidate: Partial<Job> = {},
+    provider: Partial<Job> = {},
     ref = "${{ env.CANDIDATE }}",
   ): File => ({
     name: "release.yml",
     workflow: {
       on: { workflow_run: {}, workflow_dispatch: {} },
       jobs: {
-        candidate: { if: `(${dispatchFromMain}) || (${mainPush})`, steps: [pick], ...candidate },
+        candidate: { ...candidate, ...provider },
         release: {
           needs: "candidate",
           if: "github.ref == 'refs/heads/main' && needs.candidate.outputs.release == 'true'",
           env: { CANDIDATE: "${{ needs.candidate.outputs.sha }}" },
           environment: { name: "production-release", deployment: false },
-          steps: [checkout(ref), { run: "${{ secrets.CLOUDFLARE_API_TOKEN }}" }],
+          steps: [checkout(ref), secret],
           ...release,
         },
       },
     },
   });
+  // Pinned to whatever the fixture's provider job is, so only the rule under test can refuse it.
+  const pinnedTo = (file: File) => ({
+    "release.yml/candidate": { output: "sha", sha256: jobHash(file.workflow.jobs.candidate!) },
+  });
   // The release path as it is: the candidate job's main commit, through the job's env or directly.
-  assert.deepEqual(violations([fixture({})], providers), []);
-  assert.deepEqual(
-    violations([fixture({}, {}, "${{ needs.candidate.outputs.sha }}")], providers),
-    [],
-  );
-  const refused: [string, File, Record<string, Provider>?][] = [
-    ["a pull request's head", fixture({}, {}, "${{ github.event.pull_request.head.sha }}")],
-    ["a pull request's merge ref", fixture({}, {}, "refs/pull/1/merge")],
-    ["the triggering run's head", fixture({}, {}, "${{ github.event.workflow_run.head_sha }}")],
-    ["the head ref", fixture({}, {}, "${{ github.head_ref }}")],
+  assert.deepEqual(violations([fixture({})], pinned), []);
+  assert.deepEqual(violations([fixture({}, {}, "${{ needs.candidate.outputs.sha }}")], pinned), []);
+  const head = "${{ github.event.pull_request.head.sha }}";
+  const refused: [string, File, "pinned" | "matching" | "none"][] = [
+    ["a pull request's head", fixture({}, {}, head), "pinned"],
+    ["a pull request's merge ref", fixture({}, {}, "refs/pull/1/merge"), "pinned"],
+    [
+      "the triggering run's head",
+      fixture({}, {}, "${{ github.event.workflow_run.head_sha }}"),
+      "pinned",
+    ],
+    ["the head ref", fixture({}, {}, "${{ github.head_ref }}"), "pinned"],
     // A job that writes a sha but proves nothing about main.
-    ["an unpinned job's output", fixture({}), {}],
-    ["a changed provider step", fixture({}, { steps: [{ ...pick, run: 'echo "sha=$INPUT"' }] })],
-    ["another output", fixture({ env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } })],
-    ["a job it doesn't need", fixture({ needs: [] })],
-    ["a provider on any branch", fixture({}, { if: "github.event_name == 'workflow_dispatch'" })],
+    ["an unpinned job's output", fixture({}), "none"],
+    // The pin covers the whole job: what it exports, every step and the shell they run in.
+    [
+      "a changed provider step",
+      fixture({}, { steps: [{ ...pick, run: 'echo "sha=$INPUT"' }] }),
+      "pinned",
+    ],
+    [
+      "an output that skips the proof",
+      fixture({}, { outputs: { sha: "${{ inputs.candidate || steps.pick.outputs.sha }}" } }),
+      "pinned",
+    ],
+    [
+      "a step before the proof",
+      fixture({}, { steps: [{ run: 'echo "$RUNNER_TEMP/fake" >> "$GITHUB_PATH"' }, pick] }),
+      "pinned",
+    ],
+    [
+      "another shell",
+      fixture({}, { defaults: { run: { shell: "python {0}" } } } as Partial<Job>),
+      "pinned",
+    ],
+    [
+      "an output the job doesn't export",
+      fixture({ env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } }, { outputs: {} }),
+      "matching",
+    ],
+    [
+      "another output",
+      fixture({ env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } }),
+      "pinned",
+    ],
+    ["a job it doesn't need", fixture({ needs: [] }), "pinned"],
+    // Each confinement case is pinned to its own provider job, so only the condition refuses it.
+    [
+      "a provider on any branch",
+      fixture({}, { if: "github.event_name == 'workflow_dispatch'" }),
+      "matching",
+    ],
     [
       "a provider after any run",
       fixture({}, { if: `${dispatchFromMain} || github.ref == 'refs/heads/main'` }),
+      "matching",
     ],
-    ["a provider with no condition", fixture({}, { if: undefined })],
+    ["a provider with no condition", fixture({}, { if: undefined }), "matching"],
     [
       "a provider after a branch's run",
       fixture(
         {},
         { if: `(${dispatchFromMain}) || (github.event.workflow_run.head_branch == 'main')` },
       ),
+      "matching",
     ],
     [
       "an env rewritten before the checkout",
@@ -508,17 +555,49 @@ test("a secret-holding job may check out a pinned provider's main commit, and no
         steps: [
           { run: 'echo "CANDIDATE=$PR" >> "$GITHUB_ENV"' },
           checkout("${{ env.CANDIDATE }}"),
-          { run: "${{ secrets.CLOUDFLARE_API_TOKEN }}" },
+          secret,
         ],
       }),
+      "pinned",
+    ],
+    [
+      "any step before the checkout",
+      fixture({ steps: [{ run: "true" }, checkout("${{ needs.candidate.outputs.sha }}"), secret] }),
+      "pinned",
+    ],
+    [
+      "a step env over the job's",
+      fixture({
+        steps: [{ ...checkout("${{ env.CANDIDATE }}"), env: { CANDIDATE: head } }, secret],
+      }),
+      "pinned",
+    ],
+    [
+      "another repository",
+      fixture({
+        steps: [checkout("${{ env.CANDIDATE }}", { repository: "someone/fork" }), secret],
+      }),
+      "pinned",
     ],
     [
       "a release without main's ref on dispatch",
       fixture({ if: "needs.candidate.outputs.release == 'true'" }),
+      "pinned",
     ],
   ];
-  for (const [label, file, given] of refused)
-    assert.notDeepEqual(violations([file], given ?? providers), [], label);
+  for (const [label, file, pin] of refused) {
+    const providers = pin === "pinned" ? pinned : pin === "matching" ? pinnedTo(file) : {};
+    assert.notDeepEqual(violations([file], providers), [], label);
+  }
+  // Another repository is refused for a literal main checkout too.
+  const literal: File = {
+    name: "release-cleanup.yml",
+    workflow: {
+      on: { workflow_run: {} },
+      jobs: { cleanup: { steps: [checkout("main", { repository: "someone/fork" }), secret] } },
+    },
+  };
+  assert.notDeepEqual(violations([literal]), []);
 });
 
 test("only a condition that requires another event keeps a job off pull requests", () => {
