@@ -9,6 +9,7 @@ import {
   noSpreadIntoProviderRequest,
   noStrictProviderDecode,
 } from "./provider.mjs";
+import { noAlchemyAutoApprove } from "./alchemy.mjs";
 import { noEchoStub, noHandwrittenProviderResponse } from "./stand-ins.mjs";
 import { noDiscardedChildOutput, noNodeTestDoubles, noNodeTestFlakeMasking } from "./tests.mjs";
 
@@ -24,5 +25,6 @@ export default {
     "no-discarded-child-output": noDiscardedChildOutput,
     "no-node-test-doubles": noNodeTestDoubles,
     "no-node-test-flake-masking": noNodeTestFlakeMasking,
+    "no-alchemy-auto-approve": noAlchemyAutoApprove,
   },
 };
