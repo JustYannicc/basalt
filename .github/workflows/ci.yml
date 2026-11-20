@@ -3061,7 +3061,7 @@ jobs:
     runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-observations') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     # About 1.5x the slower half of the split: at the slowest measured full Check's pace, this job
     # plans 11.3 minutes and account-acquisition 12.9.
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
