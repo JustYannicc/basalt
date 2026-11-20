@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "The controller's storage bookmark and restore are private operator-signed handoff commands over the runtime adapter's point-in-time recovery for the controller's own storage, the only place that recovery can be driven from. Reading the current bookmark arms a restore to an older point for ten minutes. A restore must name a bookmark this session handed out, records its nonce durably before it schedules the platform restore, ends the session after its reply, and admits no further bookmark read or restore until the session has ended, so one reply always names the target that is applied. A refused restore names its rule in the reply. The release hold is checked by the operator step that signs a restore, never inside the object."
+    }
+  }
+}
