@@ -18,6 +18,7 @@ import { BoundSlotDriver, runtimeRequest, type RuntimeStub } from "./transport.t
 import { RuntimeEndpoint, type EndpointEnvironment, type EndpointOptions } from "./endpoint.ts";
 import {
   SlotRefused,
+  awaitsProof,
   type ControllerCode,
   type SlotIdentity,
   type SlotTarget,
@@ -209,7 +210,8 @@ export class RuntimeHandoff {
   }
   async activeHealth() {
     const identity = await this.selected();
-    if (!identity) throw new SlotRefused("selection");
+    if (!identity || awaitsProof((await this.storage.inspect()).selection?.active))
+      throw new SlotRefused("selection");
     const health = await this.driver.health(identity, AbortSignal.timeout(2_000));
     return {
       identity,

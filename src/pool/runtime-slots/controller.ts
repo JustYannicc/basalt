@@ -17,10 +17,23 @@ import {
 import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "./proof.ts";
 import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
-import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import {
+  membershipTtlMs,
+  nativeProjectionTtlCapMs,
+  policyInstallTimeoutMs,
+  type NativeMembershipPolicy,
+} from "../membership-contract.ts";
 import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
 import { SlotFirstStart } from "./first-start.ts";
+
+/**
+ * A fenced slot gets no installs, but may still hold grants from before its fence. Each was signed
+ * before the fence and lasts at most the native cap from when the plugin took it, which is within
+ * an install's timeout. A fence this old has outlived every one of them.
+ */
+export const unfenceHandBackAfterMs =
+  Math.max(membershipTtlMs, nativeProjectionTtlCapMs) + policyInstallTimeoutMs;
 
 interface Dependencies {
   controllerId: string;
@@ -238,7 +251,11 @@ export class RuntimeSlots {
         if (slot.fenced) return;
         if (!slot.identity) throw new SlotRefused("uncertain");
         // A failed ACK remains unconfirmed. An explicit fence can resolve it without lying to the writer.
-        await this.deps.driver.install(slot.identity, policy, AbortSignal.timeout(2_000));
+        await this.deps.driver.install(
+          slot.identity,
+          policy,
+          AbortSignal.timeout(policyInstallTimeoutMs),
+        );
       }),
     );
     const after = await this.inspect();
@@ -255,16 +272,27 @@ export class RuntimeSlots {
       if (!role) throw new SlotRefused("identity");
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: true },
+        [role]: { ...selection[role], fenced: true, fencedAt: this.clock.now() },
       });
     });
     this.deps.streams.abortSlot(executionKey(identity));
   }
 
-  async unfence(identity: SlotIdentity) {
+  /**
+   * Ends a fence. A slot that proves its health and takes current policies serves at once. An active
+   * slot that can't, fenced for longer than any grant it could still hold, goes back to recovery,
+   * which restarts it or proves it before it serves; a younger or undated fence still needs the proof.
+   */
+  async unfence(identity: SlotIdentity): Promise<{ by: "proof" | "recovery" }> {
     this.identity(identity);
     const before = await this.inspect();
-    const proof = await proveSlot(this.deps.driver, identity, before, this.clock);
+    let proof: Awaited<ReturnType<typeof proveSlot>>;
+    try {
+      proof = await proveSlot(this.deps.driver, identity, before, this.clock);
+    } catch (refusal) {
+      await this.handBack(identity, refusal);
+      return { by: "recovery" };
+    }
     await this.deps.storage.transact(async (snapshot, transaction) => {
       const selection = snapshot.selection;
       if (!selection || snapshot.digest !== before.digest) throw new SlotRefused("selection");
@@ -277,7 +305,31 @@ export class RuntimeSlots {
       healthy(proof, identity, this.clock);
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: false },
+        [role]: {
+          ...selection[role],
+          fenced: false,
+          unfenced: { by: "proof" as const, at: this.clock.now(), proven: true },
+        },
+      });
+    });
+    return { by: "proof" };
+  }
+  private handBack(identity: SlotIdentity, refusal: unknown) {
+    const now = this.clock.now();
+    return this.deps.storage.transact(async ({ selection }, transaction) => {
+      const active = selection?.active;
+      if (
+        !selection ||
+        !active?.fenced ||
+        !sameIdentity(active.identity, identity) ||
+        active.retirement ||
+        active.fencedAt === undefined ||
+        now - active.fencedAt < unfenceHandBackAfterMs
+      )
+        throw refusal;
+      await transaction.put(slotSelectionKey, {
+        ...selection,
+        active: { ...active, fenced: false, unfenced: { by: "recovery", at: now, proven: false } },
       });
     });
   }

@@ -6,6 +6,7 @@ import type { NativeStreamLease } from "../native-streams.ts";
 import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 import {
   SlotRefused,
+  awaitsProof,
   executionKey,
   sameIdentity,
   type SlotDriver,
@@ -54,6 +55,7 @@ export class RuntimeSlotRouter {
         if (
           !active?.identity ||
           active.fenced ||
+          awaitsProof(active) ||
           active.retirement ||
           active.target.controllerId !== this.deps.controllerId ||
           (candidate && !sameIdentity(active.identity, candidate))

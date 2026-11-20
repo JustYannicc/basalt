@@ -213,7 +213,7 @@ export async function handleRuntimeHandoff(
         await handoff.slots.fence(value.identity);
         break;
       case "unfence":
-        await handoff.slots.unfence(value.identity);
+        result = await handoff.slots.unfence(value.identity);
         break;
       case "peer-bootstrap":
         result = await handoff.bootstrapPeer(value, request.signal);

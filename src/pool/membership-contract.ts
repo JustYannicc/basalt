@@ -14,6 +14,11 @@ export const membershipReadMs = 60_000;
 // Leave clock-skew headroom below the native 15-second cap. Five-second upkeep
 // and two-second installs renew with three seconds left after completion rearm.
 export const membershipTtlMs = 12_000;
+// The native policy plugin refuses a projection with more than this left on its own clock
+// (`maxProjectionTTL` in containers/pool/native_policy/policy.go); a test keeps the two equal.
+export const nativeProjectionTtlCapMs = 15_000;
+/** How long the controller waits for one policy install on a runtime. */
+export const policyInstallTimeoutMs = 2_000;
 // The native scheduler refuses use assertions with more than two hours left on
 // its own clock. Clock-skew headroom below that native 2-hour cap keeps a pool
 // clock running behind the signer from refusing every fresh assertion.
