@@ -660,6 +660,18 @@ try {
           snapshot = yield* planOf("deploy");
         }
         const checked = checkPolicy();
+        if (checked && command === "plan" && stage === "production") {
+          // The provider decides at apply, after the pool Worker's upload, whether the root's row
+          // modifies the application; the plan makes the same read and comparison first.
+          const root = yield* Effect.promise(() => import("./root-settle-check.ts"));
+          const settled = yield* root.rootSettles({
+            node: snapshot.native.resources[checked.poolContainer.fqn],
+            accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+            pin: checked.poolContainer.image,
+            read: root.liveApplication(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? "")),
+          });
+          if (settled) yield* Effect.promise(() => summary(settled));
+        }
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
         if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
