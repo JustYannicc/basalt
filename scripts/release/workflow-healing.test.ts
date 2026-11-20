@@ -74,9 +74,9 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
     assert.equal(readFileSync(log, "utf8"), "ran\n", "the smoke ran");
     assert.equal(readFileSync(output, "utf8"), `smoke=${smoke}\n`);
     // The healing branch ran: a declared root restart, with the apply's outcome passed on.
-    assert.match(
+    assert.equal(
       readFileSync(args, "utf8"),
-      /--expect restart --serving \.local\/release\/serving\.json --apply any /u,
+      "scripts/release/deploy.ts accept --stage production --expect restart --serving .local/release/serving.json --apply any --root-boot .local/release/root-boot.json --out .local/release/acceptance.json\n",
     );
   }
   // Without a declared root restart a failed acceptance goes straight to its rollback.
@@ -105,7 +105,40 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
     );
     assert.equal(result.status, exit, `accept ${accept}: ${result.stderr}`);
     assert.equal(existsSync(log), smoked, `accept ${accept}: the smoke ran`);
-    assert.match(readFileSync(args, "utf8"), /--expect any --root-boot /u, "no declared restart");
+    assert.equal(
+      readFileSync(args, "utf8"),
+      "scripts/release/deploy.ts accept --stage production --expect any --root-boot .local/release/root-boot.json --out .local/release/acceptance.json\n",
+      "no declared restart",
+    );
+  }
+});
+
+test("a declared root restart's boot read lets the pool not answer; others need its boot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-boot-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$@" >> "$BOOT_ARGS"\n');
+  chmodSync(join(bin, "bun"), 0o755);
+  for (const [policy, extra] of [
+    [
+      { acceptance: { rootRestart: { bound: "healingAcceptanceWithinMs" } } },
+      " --allow-not-serving",
+    ],
+    [{}, ""],
+  ] as const) {
+    const file = join(dir, `policy-${extra.length}.json`);
+    const args = join(dir, `boot-${extra.length}`);
+    writeFileSync(file, JSON.stringify(policy));
+    const result = runStep(
+      script("Record the root's boot before the apply"),
+      { PATH: `${bin}:${process.env.PATH ?? ""}`, POLICY: file, BOOT_ARGS: args },
+      dir,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(args, "utf8"),
+      `scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json${extra}\n`,
+    );
   }
 });
 
