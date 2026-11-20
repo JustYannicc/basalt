@@ -1,0 +1,91 @@
+diff --git a/packages/dashboard-start/src/implementation/hydrate-atoms.ts b/packages/dashboard-start/src/implementation/hydrate-atoms.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/dashboard-start/src/implementation/hydrate-atoms.ts
+@@ -0,0 +1,35 @@
++/** Applying a server-rendered document's values in the browser, without JSX, so tests can drive it. */
++import { AsyncResult, Atom, type AtomRegistry, Hydration } from "effect/reactivity";
++
++/**
++ * New values preload atoms before they are first read. A later value for an atom the page has
++ * already created replaces its state, when that atom is writable state rather than a query. A
++ * query the page started before its value arrived, such as one in a region the browser rendered
++ * itself, takes the server's value while it is still loading; a value the browser already has
++ * is newer than the page's.
++ */
++export const applyAtoms = (
++  registry: AtomRegistry.AtomRegistry,
++  values: ReadonlyArray<Hydration.DehydratedAtom>,
++) => {
++  const nodes = registry.getNodes();
++  const loading: Array<Atom.Atom<unknown>> = [];
++  const fresh = Hydration.toValues(values).filter((entry) => {
++    const node = nodes.get(entry.key);
++    if (node === undefined || !Atom.isSerializable(node.atom)) return true;
++    const atom = node.atom;
++    if (Atom.isWritable(atom)) {
++      registry.set(atom, atom[Atom.SerializableTypeId].decode(entry.value));
++      return false;
++    }
++    // A node that has not been read yet takes the preloaded value when it is.
++    if (node.currentState() !== "valid") return true;
++    const current = node.value();
++    if (!AsyncResult.isAsyncResult(current) || !AsyncResult.isInitial(current)) return false;
++    loading.push(atom);
++    return true;
++  });
++  Hydration.hydrate(registry, fresh);
++  // Reading an existing node applies its preloaded value and notifies the components using it.
++  for (const atom of loading) registry.get(atom);
++};
+diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
+--- a/packages/dashboard-start/src/implementation/registry.tsx
++++ b/packages/dashboard-start/src/implementation/registry.tsx
+@@ -11,6 +11,7 @@
+ import { Cause, Effect } from "effect";
+ import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
+ import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
++import { applyAtoms } from "./hydrate-atoms.ts";
+ import { nodeKey } from "./loaded-value.ts";
+ 
+ interface DehydratedAtoms {
+@@ -307,39 +308,6 @@
+   };
+ };
+ 
+-/**
+- * New values preload atoms before they are first read. A later value for an atom the page has
+- * already created replaces its state, when that atom is writable state rather than a query. A
+- * query the page started before its value arrived, such as one in a region the browser rendered
+- * itself, takes the server's value while it is still loading; a value the browser already has
+- * is newer than the page's.
+- */
+-const applyAtoms = (
+-  registry: AtomRegistry.AtomRegistry,
+-  values: ReadonlyArray<Hydration.DehydratedAtom>,
+-) => {
+-  const nodes = registry.getNodes();
+-  const loading: Array<Atom.Atom<unknown>> = [];
+-  const fresh = Hydration.toValues(values).filter((entry) => {
+-    const node = nodes.get(entry.key);
+-    if (node === undefined || !Atom.isSerializable(node.atom)) return true;
+-    const atom = node.atom;
+-    if (Atom.isWritable(atom)) {
+-      registry.set(atom, atom[Atom.SerializableTypeId].decode(entry.value));
+-      return false;
+-    }
+-    // A node that has not been read yet takes the preloaded value when it is.
+-    if (node.currentState() !== "valid") return true;
+-    const current = node.value();
+-    if (!AsyncResult.isAsyncResult(current) || !AsyncResult.isInitial(current)) return false;
+-    loading.push(atom);
+-    return true;
+-  });
+-  Hydration.hydrate(registry, fresh);
+-  // Reading an existing node applies its preloaded value and notifies the components using it.
+-  for (const atom of loading) registry.get(atom);
+-};
+-
+ /** Apply the server's values before hydration reaches the components that read them. */
+ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) => {
+   const original = router.options.hydrate;
