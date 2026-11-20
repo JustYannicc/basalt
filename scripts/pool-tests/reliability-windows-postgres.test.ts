@@ -149,8 +149,9 @@ test(
       assert.ok(windows);
       const blocks = windows.Plan["Shared Hit Blocks"] + windows.Plan["Shared Read Blocks"];
       // Probing all 16 Home partitions for a refusal before the cheap check against the day's Home
-      // rows took this statement past 5 s on a copy of production; here it touched about 140 buffers
-      // per request of the day, and with the probe fenced off but every finish looked up by key, 13.
+      // rows took this statement past 5 s on a copy of production, at about 145 buffers per request of
+      // the day; here it touched about 110, and with the probe fenced off but every Home attempt
+      // looked up by key, 13.
       assert.ok(blocks < 10 * perDay, `windows statement buffers: ${blocks}`);
       assert.ok(
         windows["Execution Time"] < 1_000,
