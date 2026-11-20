@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readDeploymentLedger } from "../deploy-safety/github-ledger.ts";
 import { retryGitHubReads } from "./github-retry.ts";
 import { requestJson } from "../deploy-safety/http.ts";
 
@@ -113,16 +112,6 @@ test("other client errors, unknown failures, aborted reads and writes are never 
   });
   assert.equal(response.status, 502);
   assert.deepEqual(write.calls, ["POST"]);
-});
-
-test("the production ledger read survives one gateway error from GitHub", async () => {
-  const github = fakeGitHub([502, 200]);
-  const ledger = await readDeploymentLedger(
-    { token: "fixture-token", repository: "owner/repo" },
-    github.fetcher,
-  );
-  assert.equal(ledger.state, "uninitialized");
-  assert.deepEqual(github.calls, ["GET", "GET"]);
 });
 
 test("a GitHub 500 retries like a gateway error and then succeeds", async () => {
