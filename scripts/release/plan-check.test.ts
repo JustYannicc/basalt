@@ -427,9 +427,9 @@ test("a code-only release is admitted without, and refused with, a new binding",
   });
 });
 
-// The bulk-import store's Worker in production's forms: the tools Worker it calls, a secret, a
-// redacted value that carries the release's version and a JSON value. Its State row is the one
-// Alchemy's own apply records for that declaration, then marked as built from another checkout.
+// The bulk-import store's Worker in production's forms: the tools Worker it calls, the model
+// database connection, a secret, a redacted value that carries the release's version and a JSON
+// value. Its State rows are the ones Alchemy's own apply records for a declaration.
 const allowance = (codeOnly: Record<string, unknown> = {}, also: readonly object[] = []) => ({
   mode: "code-only",
   allow: [
@@ -450,650 +450,959 @@ const allowance = (codeOnly: Record<string, unknown> = {}, also: readonly object
     ...also,
   ],
 });
-const credentialsRows = async (
-  context: TestContext,
-  builtElsewhere: readonly string[] = ["Api", "Catalog", "ArtifactsCredentials"],
-) => {
-  const settled = await makePlan(context, {
-    rows: { ...productionRows(), ...calledRows() },
-    declared: { credentials: {} },
-    settle: ["Api", "Catalog", "ArtifactsCredentials"],
-  });
-  return withCodeFromElsewhere(settled.rows, builtElsewhere);
-};
-const credentialsPlan = async (
-  context: TestContext,
-  credentials: NonNullable<PlanInput["declared"]>["credentials"] = {},
-  rows?: Readonly<Record<string, ResourceState>>,
-) =>
-  (
-    await makePlan(context, {
-      rows: rows ?? (await credentialsRows(context)),
-      declared: { credentials },
-    })
-  ).plan;
+type StateRows = Readonly<Record<string, ResourceState>>;
+type Declared = NonNullable<PlanInput["declared"]>;
+type Credentials = NonNullable<Declared["credentials"]>;
 type StoreProps = { main: string; env: Record<string, Record<string, unknown>> };
-/** The same rows with the store's recorded props changed. Copied by spread: a clone unwraps secrets. */
-const withStoreProps = (
-  rows: Readonly<Record<string, ResourceState>>,
-  change: (props: StoreProps) => StoreProps,
-): Record<string, ResourceState> => {
-  const store = rows.ArtifactsCredentials as unknown as { props: StoreProps };
-  return {
-    ...rows,
-    ArtifactsCredentials: { ...store, props: change(store.props) } as unknown as ResourceState,
-  };
-};
 type RowData = Record<string, unknown> & { bindings: Record<string, unknown>[] };
-/** The same rows with one of the store's recorded binding rows changed. */
-const withStoreBinding = (
-  rows: Readonly<Record<string, ResourceState>>,
-  sid: string,
-  change: (data: RowData) => unknown,
-): Record<string, ResourceState> => {
-  const store = rows.ArtifactsCredentials as unknown as {
+type StoreRow = { sid: string; action: string; data: RowData };
+type Planned = {
+  plan: Plan.Plan;
+  /** The store's node. */
+  node: {
+    action: string;
+    props: { main: string; env: Record<string, unknown> };
+    bindings: StoreRow[];
+  };
+  row: (sid: string) => StoreRow;
+};
+const storeWorkers = ["Api", "Catalog", "ArtifactsCredentials"];
+const onlyStore = ["ArtifactsCredentials"];
+const store = (rows: StateRows) =>
+  rows.ArtifactsCredentials as unknown as {
+    props: StoreProps;
     bindings: { sid: string; data: RowData }[];
   };
+const attributes = (rows: StateRows, fqn: string) =>
+  (rows[fqn] as unknown as { attr: Record<string, unknown> }).attr;
+
+// Changes to the store's State row. Copied by spread: a clone unwraps secrets.
+const withStore = (
+  rows: StateRows,
+  change: (row: ReturnType<typeof store>) => object,
+): StateRows => ({
+  ...rows,
+  ArtifactsCredentials: { ...store(rows), ...change(store(rows)) } as unknown as ResourceState,
+});
+/** One recorded `env` entry changed. */
+const entry =
+  (
+    name: string,
+    change: (value: Record<string, unknown>, rows: StateRows) => Record<string, unknown>,
+  ) =>
+  (rows: StateRows) =>
+    withStore(rows, ({ props }) => ({
+      props: { ...props, env: { ...props.env, [name]: change(props.env[name] ?? {}, rows) } },
+    }));
+/** One recorded binding row changed. */
+const row =
+  (sid: string, change: (data: RowData, rows: StateRows) => unknown) => (rows: StateRows) =>
+    withStore(rows, ({ bindings }) => ({
+      bindings: bindings.map((binding) =>
+        binding.sid === sid ? { ...binding, data: change(binding.data, rows) } : binding,
+      ),
+    }));
+/** Every wire entry of a recorded row changed. */
+const wireEntry =
+  (change: (wire: Record<string, unknown>, rows: StateRows) => Record<string, unknown>) =>
+  (data: RowData, rows: StateRows) => ({
+    ...data,
+    bindings: data.bindings.map((wire) => change(wire, rows)),
+  });
+const withoutEntry = (name: string) => (rows: StateRows) =>
+  withStore(rows, ({ props, bindings }) => ({
+    props: {
+      ...props,
+      env: Object.fromEntries(Object.entries(props.env).filter(([key]) => key !== name)),
+    },
+    bindings: bindings.filter((binding) => binding.sid !== name),
+  }));
+const each =
+  (...changes: ((rows: StateRows) => StateRows)[]) =>
+  (rows: StateRows) =>
+    changes.reduce((state, change) => change(state), rows);
+const recordedMain = (main: string) => (rows: StateRows) =>
+  withStore(rows, ({ props }) => ({ props: { ...props, main } }));
+/** State holds another Worker under the tools entry, in the entry and in its binding row. */
+const callsCatalog = each(
+  entry("TOOLS_SERVICE", (_value, rows) => ({ ...attributes(rows, "Catalog") })),
+  row(
+    "TOOLS_SERVICE",
+    wireEntry((wire, rows) => ({ ...wire, service: attributes(rows, "Catalog").workerName })),
+  ),
+);
+const otherConnection = "5".repeat(32);
+const otherConnectionRow = row(
+  "POOL_AUTH_DATABASE",
+  wireEntry((wire) => ({ ...wire, id: otherConnection })),
+);
+const otherConnectionEntry = entry("POOL_AUTH_DATABASE", (value) => ({
+  ...value,
+  hyperdriveId: otherConnection,
+}));
+const withoutLocalCopy = ({ hyperdrives: _none, ...data }: RowData) => data;
+const olderLocalCopy = (data: RowData) => ({
+  ...data,
+  hyperdrives: Object.fromEntries(
+    Object.entries(data.hyperdrives as Record<string, object>).map(([id, origin]) => [
+      id,
+      { ...origin, host: "older-host.invalid" },
+    ]),
+  ),
+});
+const secondWireEntry = (data: RowData) => ({
+  ...data,
+  bindings: [...data.bindings, { type: "plain_text", name: "MODE", text: "before" }],
+});
+const otherBucket = "basalt-production-otherbucket";
+/** An earlier release moved the connection to this host and left the store alone. */
+const movedHost = "another-host.invalid";
+const connectionMovedEarlier = (rows: StateRows): StateRows => {
+  const connection = rows.PoolModelDatabaseConnection as unknown as {
+    props: { origin: object };
+    attr: { origin: object };
+  };
   return {
     ...rows,
-    ArtifactsCredentials: {
-      ...store,
-      bindings: store.bindings.map((binding) =>
-        binding.sid === sid ? { ...binding, data: change(binding.data) } : binding,
-      ),
+    PoolModelDatabaseConnection: {
+      ...connection,
+      props: { ...connection.props, origin: { ...connection.props.origin, host: movedHost } },
+      attr: { ...connection.attr, origin: { ...connection.attr.origin, host: movedHost } },
     } as unknown as ResourceState,
   };
 };
-const credentialsNode = (plan: Plan.Plan) =>
-  plan.resources.ArtifactsCredentials as unknown as {
-    action: string;
-    props: { main: string; env: Record<string, unknown> };
-    bindings: { sid: string; action: string; data: RowData }[];
-  };
-/** Admitted under the allowance; a refusal fails with the lines that name what exceeded it. */
-const storeCodeMoves = async (
-  plan: Plan.Plan,
-  codeOnly: Record<string, unknown> = {},
-  also: readonly object[] = [],
-) => {
-  const exit = await Effect.runPromiseExit(
-    checkPlan(plan, await policy(allowance(codeOnly, also))),
-  );
-  if (Exit.isFailure(exit)) assert.fail(String((Cause.squash(exit.cause) as Error).message));
-  assert.ok(exit.value.some((change) => change.fqn === "ArtifactsCredentials"));
-};
-const exceeded = async (
-  plan: Plan.Plan,
-  codeOnly: Record<string, unknown> = {},
-  also: readonly object[] = [],
-) => {
-  const { rules, message } = await refused(plan, allowance(codeOnly, also));
-  assert.ok(rules.includes("code-only-allowance-exceeded ArtifactsCredentials"), rules.join(", "));
-  return { rules, message };
-};
-// The rows of what the store refers to are other rules' to admit; these name them for a test.
+/**
+ * An apply that stopped at the store's upload. Alchemy wrote the generation it was applying into
+ * State first and keeps the last finished one under `old`; either may be what is live.
+ */
+const storeInterrupted = (unfinished: StateRows, finished: StateRows): StateRows => ({
+  ...unfinished,
+  ArtifactsCredentials: {
+    ...store(unfinished),
+    status: "updating",
+    old: finished.ArtifactsCredentials,
+  } as unknown as ResourceState,
+});
+
+// The rows of what the store refers to are other rules' to admit; these name them for a case.
 const database = [{ fqn: "PoolModelDatabaseConnection", action: "update" }];
 const bucket = [{ fqn: "VaultAttachments", action: "update" }];
-/**
- * A plan in which the model database connection's origin moved, as it does on a test stage. The
- * store's entry for it is then the connection itself, not known until that applies, and the
- * entry's own binding row waits too.
- */
-const databaseMoves = async (
-  context: TestContext,
-  rows?: Readonly<Record<string, ResourceState>>,
-) => {
-  const plan = await credentialsPlan(context, { databaseHost: "another-host.invalid" }, rows);
-  assert.equal(plan.resources.PoolModelDatabaseConnection?.action, "update");
-  const node = credentialsNode(plan);
-  assert.equal(isResolved(node.props.env.POOL_AUTH_DATABASE), false);
-  const row = node.bindings.find((binding) => binding.sid === "POOL_AUTH_DATABASE");
-  assert.ok(row);
-  assert.equal(row.action, "update");
-  return { plan, node, row };
+/** The connection's origin moves in this plan, as it does on a test stage, so it updates. */
+const connectionMoves: Credentials = { databaseHost: movedHost };
+const bucketMoves: Declared = { bucketStorageClass: "InfrequentAccess" };
+const named = (name: string) => [{ name, fields: ["version"], why: "a reason" }];
+const toolsOnly = { references: [{ name: "TOOLS_SERVICE", resource: "Api" }] };
+const TOOLS = /props\.env\.TOOLS_SERVICE/u;
+const TOOLS_ROW = /bindings\.TOOLS_SERVICE: update/u;
+const DATABASE = /props\.env\.POOL_AUTH_DATABASE/u;
+const DATABASE_ROW = /bindings\.POOL_AUTH_DATABASE: update/u;
+const TELEMETRY = /props\.env\.EXECUTOR_TELEMETRY: <redacted> -> <redacted>/u;
+const TELEMETRY_ROW = /bindings\.EXECUTOR_TELEMETRY: update/u;
+const SECRET = /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u;
+
+// What the real planner makes of a declaration, asserted before the verdict.
+const waits = (planned: Planned, name: string, resource: string) => {
+  assert.equal(planned.plan.resources[resource]?.action, "update");
+  assert.equal(isResolved(planned.node.props.env[name]), false);
+  assert.ok(Output.isResourceExpr(planned.node.props.env[name]));
 };
-const refusesDatabase = async (plan: Plan.Plan, codeOnly: Record<string, unknown> = {}) => {
-  const { rules, message } = await exceeded(plan, codeOnly, database);
-  assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
-  return message;
+const known = (planned: Planned, name: string, resource: string) => {
+  assert.equal(planned.plan.resources[resource]?.action, "noop");
+  assert.ok(isResolved(planned.node.props.env[name]));
 };
-
-test("a code-only allowance admits the bulk-import store's code while a Worker it calls updates", async (context) => {
-  const plan = await credentialsPlan(context);
-  const node = credentialsNode(plan);
-  assert.equal(node.action, "update");
-  assert.equal(plan.resources.Api?.action, "update");
-  // What Alchemy plans for a reference to a resource that updates: not known until that applies.
-  assert.equal(isResolved(node.props.env.TOOLS_SERVICE), false);
+const changedRows = (planned: Planned) =>
+  planned.node.bindings.filter((binding) => binding.action !== "noop").map(({ sid }) => sid);
+/** The connection updates: the entry is the connection, and its row waits in one key only. */
+const databaseWaits = (planned: Planned) => {
+  waits(planned, "POOL_AUTH_DATABASE", "PoolModelDatabaseConnection");
+  const { action, data } = planned.row("POOL_AUTH_DATABASE");
+  assert.equal(action, "update");
+  assert.ok(isResolved(data.bindings));
   assert.deepEqual(
-    node.bindings.filter((binding) => binding.action !== "noop"),
-    [],
-  );
-  await storeCodeMoves(plan);
-  // The entry has to be named, and named for the resource it waits on.
-  assert.match((await exceeded(plan, { references: [] })).message, /props\.env\.TOOLS_SERVICE: /u);
-  assert.match(
-    (await exceeded(plan, { references: [{ name: "TOOLS_SERVICE", resource: "Catalog" }] }))
-      .message,
-    /props\.env\.TOOLS_SERVICE: /u,
-  );
-});
-
-test("a code-only allowance admits a reference that is the called Worker's own recorded attributes", async (context) => {
-  // Only the store's code moved; the Worker it calls is unchanged and resolves at plan time.
-  const rows = await credentialsRows(context, ["ArtifactsCredentials"]);
-  const settled = await credentialsPlan(context, {}, rows);
-  assert.equal(settled.resources.Api?.action, "noop");
-  assert.ok(isResolved(credentialsNode(settled).props.env.TOOLS_SERVICE));
-  await storeCodeMoves(settled);
-  // State kept an older copy of those attributes: the called Worker moved in a release that left
-  // the store alone. The entry is still that Worker, and its binding is unchanged.
-  const stale = withStoreProps(rows, (props) => ({
-    ...props,
-    env: {
-      ...props.env,
-      TOOLS_SERVICE: { ...props.env.TOOLS_SERVICE, url: "https://older.invalid" },
-    },
-  }));
-  const older = await credentialsPlan(context, {}, stale);
-  await storeCodeMoves(older);
-  assert.match((await exceeded(older, { references: [] })).message, /TOOLS_SERVICE\.url/u);
-});
-
-test("a code-only allowance admits the database connection's binding while that connection updates", async (context) => {
-  const rows = await credentialsRows(context);
-  const { plan, node, row } = await databaseMoves(context, rows);
-  assert.deepEqual(
-    node.bindings.filter((binding) => binding.action !== "noop").map(({ sid }) => sid),
-    ["POOL_AUTH_DATABASE"],
-  );
-  // What the upload carries of the row is known. Only the copy of the connection's origin that
-  // local development reads waits on the connection.
-  assert.ok(isResolved(row.data.bindings));
-  assert.deepEqual(
-    Object.keys(row.data).filter((key) => !isResolved(row.data[key])),
+    Object.keys(data).filter((key) => !isResolved(data[key])),
     ["hyperdrives"],
   );
-  await storeCodeMoves(plan, {}, database);
-  // State from a release that recorded no such copy holds the same binding.
-  const bare = withStoreBinding(
-    rows,
-    "POOL_AUTH_DATABASE",
-    ({ hyperdrives: _none, ...data }) => data,
-  );
-  await storeCodeMoves((await databaseMoves(context, bare)).plan, {}, database);
-  // Unnamed, or named for another resource, both the entry and its binding refuse.
-  for (const references of [
-    [{ name: "TOOLS_SERVICE", resource: "Api" }],
+};
+/** The connection is unchanged, so its row is known, and the planner still marks it changed. */
+const databaseRowDiffers = (planned: Planned) => {
+  known(planned, "POOL_AUTH_DATABASE", "PoolModelDatabaseConnection");
+  const { action, data } = planned.row("POOL_AUTH_DATABASE");
+  assert.equal(action, "update");
+  assert.ok(isResolved(data));
+};
+const bucketWaits = (planned: Planned) => {
+  waits(planned, "VAULT", "VaultAttachments");
+  const { action, data } = planned.row("VAULT");
+  assert.equal(action, "update");
+  // The wire entry holds the bucket's jurisdiction, which is not known while the bucket updates.
+  assert.equal(isResolved(data.bindings), false);
+};
+/** The store's State row is left by an interrupted apply, and the planner calls the row unchanged. */
+const unchangedForThePlanner = (sid: string) => (planned: Planned) => {
+  assert.equal(planned.node.action, "update");
+  assert.equal(planned.row(sid).action, "noop");
+};
+
+const healingPlan = [...storeWorkers, "PoolWorker"];
+/** The store, the tools Worker and the pool Worker all update; the tools entry is not known yet. */
+const healing = (planned: Planned) => {
+  assert.equal(planned.node.action, "update");
+  assert.equal(planned.plan.resources.PoolWorker?.action, "update");
+  waits(planned, "TOOLS_SERVICE", "Api");
+};
+/** The forms in which State can hold local development's copy of the connection's origin. */
+const localCopyForms = [
+  ["no", withoutLocalCopy],
+  ["an undefined", (data: RowData) => ({ ...data, hyperdrives: undefined })],
+  ["an empty", (data: RowData) => ({ ...data, hyperdrives: {} })],
+  ["an older", olderLocalCopy],
+] as const;
+
+interface AllowanceCase {
+  /** The design, or the review that tried it against an earlier form of the rule. */
+  readonly from: "design" | "review 1" | "review 2" | "review 3";
+  readonly name: string;
+  /** Workers whose code moved since the last apply; by default the store and the two it can call. */
+  readonly moved?: readonly string[];
+  /** What the last apply declared for the store, where that is not the plain declaration. */
+  readonly applied?: Credentials;
+  /** State as it is now, made from the rows that apply recorded. `settle` runs another apply. */
+  readonly state?: (
+    rows: StateRows,
+    settle: (declared: Declared) => Promise<StateRows>,
+  ) => StateRows | Promise<StateRows>;
+  /** What the stack declares for the store now, on top of `applied`; `"nothing"` for no settings. */
+  readonly declares?: Credentials | "nothing";
+  /** What else the stack declares now. */
+  readonly stack?: Declared;
+  /** What the real planner made of it. */
+  readonly planner?: (planned: Planned) => void;
+  /** A change made to the plan by hand: a shape no declaration of this fixture produces. */
+  readonly byHand?: (planned: Planned) => void;
+  readonly codeOnly?: Record<string, unknown>;
+  /** Other rows the policy admits. */
+  readonly allow?: readonly object[];
+  /** Admitted, or refused with each of these lines. */
+  readonly expect:
+    | "admitted"
+    | {
+        readonly lines: readonly RegExp[];
+        /** Other rules that refuse it too. */
+        readonly rules?: readonly string[];
+        /** The allowance is the only rule that refuses it. */
+        readonly alone?: true;
+        /** Text the refusal must not print. */
+        readonly without?: readonly string[];
+      };
+}
+const refusedWith = (...lines: RegExp[]) => ({ lines });
+
+const allowanceCases: readonly AllowanceCase[] = [
+  // The store's code moves, and nothing else of it.
+  {
+    from: "design",
+    name: "admits the store's code while the Worker it calls updates",
+    planner: (planned) => {
+      waits(planned, "TOOLS_SERVICE", "Api");
+      assert.deepEqual(changedRows(planned), []);
+    },
+    expect: "admitted",
+  },
+  {
+    from: "design",
+    name: "refuses that entry when the policy does not name it",
+    codeOnly: { references: [] },
+    expect: refusedWith(TOOLS),
+  },
+  {
+    from: "design",
+    name: "refuses that entry when the policy names it for another resource",
+    codeOnly: { references: [{ name: "TOOLS_SERVICE", resource: "Catalog" }] },
+    expect: refusedWith(TOOLS),
+  },
+  {
+    from: "design",
+    name: "admits the store's code when nothing else moves",
+    moved: onlyStore,
+    planner: (planned) => known(planned, "TOOLS_SERVICE", "Api"),
+    expect: "admitted",
+  },
+  // A named value.
+  {
+    from: "design",
+    name: "admits a named value whose named field moves with the release, and its binding row",
+    declares: { version: "2" },
+    planner: (planned) => assert.deepEqual(changedRows(planned), ["EXECUTOR_TELEMETRY"]),
+    expect: "admitted",
+  },
+  {
+    from: "design",
+    name: "refuses that value when the policy does not name it",
+    declares: { version: "2" },
+    codeOnly: { values: [] },
+    expect: refusedWith(TELEMETRY_ROW, TELEMETRY),
+  },
+  {
+    from: "review 1",
+    name: "refuses a credential that changes beside the named field",
+    declares: { token: "token-b" },
+    expect: refusedWith(TELEMETRY_ROW, TELEMETRY),
+  },
+  {
+    from: "review 1",
+    name: "refuses the named field and the credential changing together",
+    declares: { version: "2", token: "token-b" },
+    expect: refusedWith(TELEMETRY_ROW, TELEMETRY),
+  },
+  {
+    from: "review 1",
+    name: "refuses a field the policy does not name, though it names another",
+    declares: { version: "2" },
+    codeOnly: {
+      values: [{ name: "EXECUTOR_TELEMETRY", fields: ["environment"], why: "another field" }],
+    },
+    expect: refusedWith(TELEMETRY_ROW, TELEMETRY),
+  },
+  {
+    from: "review 1",
+    name: "refuses the same value as another kind of binding",
+    declares: { version: "2", telemetryPlain: true },
+    expect: refusedWith(TELEMETRY_ROW),
+  },
+  {
+    from: "review 1",
+    name: "refuses a named value that State does not hold",
+    state: withoutEntry("EXECUTOR_TELEMETRY"),
+    expect: refusedWith(
+      /bindings\.EXECUTOR_TELEMETRY: create/u,
+      /props\.env\.EXECUTOR_TELEMETRY: absent -> <redacted>/u,
+    ),
+  },
+  {
+    from: "review 1",
+    name: "refuses a secret that is no record, though the policy names it as a value",
+    declares: { secret: "another-secret" },
+    codeOnly: {
+      values: [...named("EXECUTOR_TELEMETRY"), ...named("POOL_APP_SIGNING_KEY")],
+    },
+    expect: refusedWith(SECRET),
+  },
+  // The entry file.
+  ...[
+    "/runner/_temp/candidate/scripts/release/test/plan-worker.ts",
+    "file:///runner/_temp/candidate/scripts/release/test/plan-worker.ts",
+  ].map((main): AllowanceCase => ({
+    from: "design",
+    name: `admits the same entry file recorded under another checkout (${main.startsWith("file:") ? "a file URL" : "a path"})`,
+    state: recordedMain(main),
+    planner: (planned) => assert.notEqual(planned.node.props.main, main),
+    expect: "admitted",
+  })),
+  ...[
+    ["another file", "/runner/_temp/candidate/scripts/release/test/another-worker.ts"],
+    ["no directory boundary", "/runner/_temp/candidatescripts/release/test/plan-worker.ts"],
+    ["another directory", "/runner/_temp/candidate/scripts/other/test/plan-worker.ts"],
+    ["the file name alone", "/runner/_temp/candidate/plan-worker.ts"],
+  ].map(([what, main]): AllowanceCase => ({
+    from: "design",
+    name: `refuses another entry file, wherever the checkout sits (${what})`,
+    state: recordedMain(main!),
+    expect: { lines: [/props\.main: /u], without: ["/runner/_temp"] },
+  })),
+  {
+    from: "design",
+    name: "refuses a declaration that names another file of this checkout",
+    declares: { main: fileURLToPath(new URL("./test/plan-fixture.ts", import.meta.url)) },
+    expect: refusedWith(/props\.main: /u),
+  },
+  // What a code-only release must never carry.
+  {
+    from: "design",
+    name: "refuses a changed secret, and a reference that is not known yet does not hide it",
+    declares: { secret: "another-signing-secret" },
+    planner: (planned) => waits(planned, "TOOLS_SERVICE", "Api"),
+    expect: {
+      lines: [/bindings\.POOL_APP_SIGNING_KEY: update/u, SECRET],
+      without: ["props: ", "TOOLS_SERVICE"],
+    },
+  },
+  {
+    from: "design",
+    name: "refuses a changed secret, though the policy names it as a reference",
+    declares: { secret: "another-signing-secret" },
+    codeOnly: {
+      references: [...toolsOnly.references, { name: "POOL_APP_SIGNING_KEY", resource: "Api" }],
+    },
+    expect: refusedWith(SECRET),
+  },
+  {
+    from: "design",
+    name: "refuses a changed value that the policy does not name",
+    declares: { mode: "b" },
+    expect: refusedWith(/bindings\.POOL_MODE: update/u, /props\.env\.POOL_MODE\.mode: /u),
+  },
+  {
+    from: "design",
+    name: "refuses a new class binding",
+    stack: { credentialsClass: "SecondCoordinator" },
+    expect: {
+      lines: [/bindings\.Second: create/u],
+      rules: ["code-only-binding-change ArtifactsCredentials"],
+    },
+  },
+  {
+    from: "design",
+    name: "refuses a new entry",
+    stack: { credentialsEnv: { MODE: "next" } },
+    expect: refusedWith(/bindings\.MODE: create/u, /props\.env\.MODE: absent -> /u),
+  },
+  {
+    from: "design",
+    name: "refuses a removed binding",
+    declares: "nothing",
+    expect: {
+      lines: [
+        /bindings\.TOOLS_SERVICE: delete/u,
+        /props\.env\.TOOLS_SERVICE\.workerName: .* -> absent/u,
+      ],
+      rules: ["worker-binding-removed ArtifactsCredentials"],
+    },
+  },
+  {
+    from: "design",
+    name: "refuses a changed class",
+    declares: { className: "ArtifactsTokenCoordinatorNext" },
+    expect: {
+      lines: [/bindings\.Coordinator: update/u],
+      rules: ["durable-object-class-changed ArtifactsCredentials"],
+    },
+  },
+  ...[storeWorkers, onlyStore].map((moved): AllowanceCase => ({
+    from: "design",
+    name: `refuses a declaration that calls another Worker under the same name (${moved.length > 1 ? "the tools Worker updating" : "nothing else moving"})`,
+    moved,
+    declares: { calls: "Catalog" },
+    expect: refusedWith(TOOLS_ROW, TOOLS),
+  })),
+  // The policy itself.
+  {
+    from: "design",
+    name: "refuses a policy that names one entry as a reference and as a value",
+    codeOnly: { values: [...named("EXECUTOR_TELEMETRY"), ...named("TOOLS_SERVICE")] },
+    expect: refusedWith(/policy\.TOOLS_SERVICE: named as a reference and as a value/u),
+  },
+  {
+    from: "design",
+    name: "refuses a policy whose reference names the Worker itself",
+    codeOnly: {
+      references: [...toolsOnly.references, { name: "VAULT", resource: "ArtifactsCredentials" }],
+    },
+    expect: refusedWith(/policy\.VAULT: names the Worker itself/u),
+  },
+  {
+    from: "review 2",
+    name: "refuses a policy that names one reference twice",
+    codeOnly: {
+      references: [...toolsOnly.references, { name: "TOOLS_SERVICE", resource: "Catalog" }],
+    },
+    expect: refusedWith(/policy\.TOOLS_SERVICE: named twice/u),
+  },
+  {
+    from: "review 2",
+    name: "refuses a policy that names one value twice",
+    codeOnly: { values: [...named("EXECUTOR_TELEMETRY"), ...named("EXECUTOR_TELEMETRY")] },
+    expect: refusedWith(/policy\.EXECUTOR_TELEMETRY: named twice/u),
+  },
+  // A reference to a Worker.
+  {
+    from: "review 1",
+    name: "refuses another Worker in State under the entry and its row, while the named one updates",
+    state: callsCatalog,
+    planner: (planned) => waits(planned, "TOOLS_SERVICE", "Api"),
+    expect: refusedWith(TOOLS, TOOLS_ROW),
+  },
+  {
+    from: "review 2",
+    name: "admits an older copy of the called Worker in State, also of what an update cannot change",
+    // That Worker was replaced, and gained a class, in releases that left the store alone. The
+    // store still binds it by name, so its binding row is unchanged.
+    state: entry("TOOLS_SERVICE", (value) => ({
+      ...value,
+      workerId: "an-older-worker-id",
+      durableObjectNamespaces: { Older: "0".repeat(32) },
+    })),
+    planner: (planned) => {
+      waits(planned, "TOOLS_SERVICE", "Api");
+      assert.deepEqual(changedRows(planned), []);
+    },
+    expect: "admitted",
+  },
+  {
+    from: "review 2",
+    name: "admits an older address of the called Worker in State when nothing else moves",
+    moved: onlyStore,
+    state: entry("TOOLS_SERVICE", (value) => ({ ...value, url: "https://older.invalid" })),
+    planner: (planned) => known(planned, "TOOLS_SERVICE", "Api"),
+    expect: "admitted",
+  },
+  {
+    from: "review 2",
+    name: "refuses that older address when the policy does not name the entry",
+    moved: onlyStore,
+    state: entry("TOOLS_SERVICE", (value) => ({ ...value, url: "https://older.invalid" })),
+    codeOnly: { references: [] },
+    expect: refusedWith(/TOOLS_SERVICE\.url/u),
+  },
+  {
+    from: "review 3",
+    name: "refuses a named resource that is replaced, not updated",
+    byHand: (planned) => {
+      (planned.plan.resources.Api as unknown as { action: string }).action = "replace";
+    },
+    expect: refusedWith(TOOLS),
+  },
+  // A reference to the database connection, while the connection updates.
+  {
+    from: "review 2",
+    name: "admits the database connection's entry and row while the connection updates",
+    declares: connectionMoves,
+    allow: database,
+    planner: (planned) => {
+      databaseWaits(planned);
+      assert.deepEqual(changedRows(planned), ["POOL_AUTH_DATABASE"]);
+    },
+    expect: "admitted",
+  },
+  {
+    from: "review 2",
+    name: "admits them when State's row has no local-development copy of the origin",
+    state: row("POOL_AUTH_DATABASE", withoutLocalCopy),
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    expect: "admitted",
+  },
+  {
+    from: "review 2",
+    name: "refuses them when the policy does not name the entry",
+    declares: connectionMoves,
+    allow: database,
+    codeOnly: toolsOnly,
+    expect: { lines: [DATABASE_ROW, DATABASE], alone: true },
+  },
+  {
+    from: "review 2",
+    name: "refuses them when the policy names the entry for another resource",
+    declares: connectionMoves,
+    allow: database,
+    codeOnly: {
+      references: [...toolsOnly.references, { name: "POOL_AUTH_DATABASE", resource: "Api" }],
+    },
+    expect: { lines: [DATABASE_ROW, DATABASE], alone: true },
+  },
+  {
+    from: "review 2",
+    name: "refuses another connection in State under the entry and its row",
+    state: each(otherConnectionEntry, otherConnectionRow),
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    expect: { lines: [DATABASE_ROW, DATABASE], alone: true },
+  },
+  {
+    from: "review 2",
+    name: "refuses another connection in State's row alone",
+    state: otherConnectionRow,
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    expect: { lines: [DATABASE_ROW, DATABASE], alone: true },
+  },
+  ...(
     [
-      { name: "TOOLS_SERVICE", resource: "Api" },
-      { name: "POOL_AUTH_DATABASE", resource: "Api" },
-    ],
-  ]) {
-    const message = await refusesDatabase(plan, { references });
-    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
-    assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
-  }
-});
-
-test("a code-only allowance admits a reference's binding that differs only in local development's copy of the origin", async (context) => {
-  // State from a release that recorded that copy in another form, or not at all. The connection
-  // itself is unchanged, so the whole plan is known, and the planner still marks the row changed.
-  const rows = await credentialsRows(context, ["ArtifactsCredentials"]);
-  const row = (plan: Plan.Plan) => {
-    assert.equal(plan.resources.PoolModelDatabaseConnection?.action, "noop");
-    const node = credentialsNode(plan);
-    assert.ok(isResolved(node.props.env.POOL_AUTH_DATABASE));
-    const found = node.bindings.find((binding) => binding.sid === "POOL_AUTH_DATABASE");
-    assert.equal(found?.action, "update");
-    assert.ok(isResolved(found?.data));
-    return found;
-  };
-  const older = (data: RowData) =>
-    Object.fromEntries(
-      Object.entries(data.hyperdrives as Record<string, object>).map(([id, origin]) => [
-        id,
-        { ...origin, host: "older-host.invalid" },
-      ]),
-    );
-  for (const change of [
-    ({ hyperdrives: _none, ...data }: RowData) => data,
-    (data: RowData) => ({ ...data, hyperdrives: {} }),
-    (data: RowData) => ({ ...data, hyperdrives: older(data) }),
-  ]) {
-    const plan = await credentialsPlan(
-      context,
-      {},
-      withStoreBinding(rows, "POOL_AUTH_DATABASE", change),
-    );
-    row(plan);
-    await storeCodeMoves(plan);
-    // The entry has to be named for it.
-    const unnamed = await exceeded(plan, {
-      references: [{ name: "TOOLS_SERVICE", resource: "Api" }],
-    });
-    assert.match(unnamed.message, /bindings\.POOL_AUTH_DATABASE: update/u);
-  }
-  // With that copy gone, what the upload carries still has to be as State recorded it.
-  for (const change of [
-    // Another connection.
-    ({ hyperdrives: _none, ...data }: RowData) => ({
-      ...data,
-      bindings: data.bindings.map((entry) => ({ ...entry, id: "5".repeat(32) })),
-    }),
-    // A second wire entry, and a key the plan does not carry.
-    ({ hyperdrives: _none, ...data }: RowData) => ({
-      ...data,
-      bindings: [...data.bindings, { type: "plain_text", name: "MODE", text: "before" }],
-    }),
-    ({ hyperdrives: _none, ...data }: RowData) => ({ ...data, extra: true }),
-  ]) {
-    const plan = await credentialsPlan(
-      context,
-      {},
-      withStoreBinding(rows, "POOL_AUTH_DATABASE", change),
-    );
-    row(plan);
-    assert.match((await exceeded(plan)).message, /bindings\.POOL_AUTH_DATABASE: update/u);
-  }
-});
-
-test("a code-only allowance refuses a database connection that State recorded as another one", async (context) => {
-  const settled = await credentialsRows(context);
-  const other = "5".repeat(32);
-  const rowMoved = withStoreBinding(settled, "POOL_AUTH_DATABASE", (data) => ({
-    ...data,
-    bindings: data.bindings.map((entry) => ({ ...entry, id: other })),
-  }));
-  for (const rows of [
-    // State holds another connection under the entry and in its binding row.
-    withStoreProps(rowMoved, (props) => ({
-      ...props,
-      env: {
-        ...props.env,
-        POOL_AUTH_DATABASE: { ...props.env.POOL_AUTH_DATABASE, hyperdriveId: other },
-      },
-    })),
-    // The binding row alone: it is what the upload before carried.
-    rowMoved,
-  ]) {
-    const message = await refusesDatabase((await databaseMoves(context, rows)).plan);
-    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
-    assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
-  }
-});
-
-test("a code-only allowance refuses a waiting binding row that State recorded with more or less", async (context) => {
-  const settled = await credentialsRows(context);
-  for (const change of [
-    // A second wire entry under the reference's own row.
-    (data: RowData) => ({
-      ...data,
-      bindings: [...data.bindings, { type: "plain_text", name: "MODE", text: "before" }],
-    }),
-    // A key the plan no longer carries.
-    (data: RowData) => ({ ...data, extra: true }),
-    // No wire entry at all.
-    (data: RowData) => ({ ...data, bindings: [] }),
-    // A wire entry without the connection's id.
-    (data: RowData) => ({
-      ...data,
-      bindings: data.bindings.map(({ id: _none, ...entry }) => entry),
-    }),
-  ]) {
-    const rows = withStoreBinding(settled, "POOL_AUTH_DATABASE", change);
-    const message = await refusesDatabase((await databaseMoves(context, rows)).plan);
-    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
-  }
-});
-
-test("a code-only allowance refuses a waiting binding row that carries more than the reference", async (context) => {
-  const settled = await credentialsRows(context);
-  type Waiting = Awaited<ReturnType<typeof databaseMoves>>;
-  for (const change of [
-    // Code that contributes a second wire entry under the reference's own row.
-    ({ row }: Waiting) => {
-      row.data = {
-        ...row.data,
-        bindings: [...row.data.bindings, { type: "plain_text", name: "MODE", text: "next" }],
-      };
+      ["a second wire entry", secondWireEntry],
+      ["a key the plan does not carry", (data: RowData) => ({ ...data, extra: true })],
+      ["no wire entry", (data: RowData) => ({ ...data, bindings: [] })],
+      ["a wire entry without the connection's id", wireEntry(({ id: _none, ...wire }) => wire)],
+    ] as const
+  ).map(([what, change]): AllowanceCase => ({
+    from: "review 2",
+    name: `refuses a waiting row when State's row holds ${what}`,
+    state: row("POOL_AUTH_DATABASE", change),
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    expect: refusedWith(DATABASE_ROW),
+  })),
+  ...(
+    [
+      [
+        "a second wire entry",
+        ({ data }: StoreRow) => ({
+          ...data,
+          bindings: [...data.bindings, { type: "plain_text", name: "MODE", text: "next" }],
+        }),
+      ],
+      [
+        // The upload would carry whatever it turns out to be.
+        "a wire entry that is not known yet",
+        ({ data }: StoreRow) => ({
+          ...data,
+          bindings: data.bindings.map((wire) => ({ ...wire, id: data.hyperdrives })),
+        }),
+      ],
+      [
+        "nothing known: the row as a whole waits on the connection",
+        ({ data }: StoreRow) => data.hyperdrives,
+      ],
+      [
+        "an unknown under another key than the local-development copy",
+        ({ data }: StoreRow) => ({ ...data, devRemote: data.hyperdrives }),
+      ],
+      [
+        // A comparison of plain values does not see it: it has to be asked for.
+        "a key State lacks whose value is an unfinished computation",
+        ({ data }: StoreRow) => ({ ...data, extra: Effect.succeed("later") }),
+      ],
+    ] as const
+  ).map(([what, change]): AllowanceCase => ({
+    from: what.startsWith("a key State lacks") ? "review 3" : "review 2",
+    name: `refuses a waiting row when the plan's row holds ${what}`,
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    byHand: (planned) => {
+      const waiting = planned.row("POOL_AUTH_DATABASE");
+      waiting.data = change(waiting) as RowData;
     },
-    // A wire entry that is not known yet: the upload would carry whatever it turns out to be.
-    ({ row }: Waiting) => {
-      row.data = {
-        ...row.data,
-        bindings: row.data.bindings.map((entry) => ({ ...entry, id: row.data.hyperdrives })),
-      };
+    expect: { lines: [DATABASE_ROW, DATABASE], alone: true },
+  })),
+  {
+    from: "review 2",
+    name: "refuses a waiting row whose local-development copy waits on another resource",
+    declares: connectionMoves,
+    allow: database,
+    planner: (planned) => {
+      databaseWaits(planned);
+      waits(planned, "TOOLS_SERVICE", "Api");
     },
-    // A row that is not known as a whole, though it waits on the named connection alone.
-    ({ row }: Waiting) => {
-      row.data = row.data.hyperdrives as RowData;
+    byHand: (planned) => {
+      const waiting = planned.row("POOL_AUTH_DATABASE");
+      waiting.data = { ...waiting.data, hyperdrives: planned.node.props.env.TOOLS_SERVICE };
     },
-    // Something not known under a key that is not local development's copy of the origin.
-    ({ row }: Waiting) => {
-      row.data = { ...row.data, devRemote: row.data.hyperdrives };
+    expect: { lines: [DATABASE_ROW, DATABASE], alone: true },
+  },
+  {
+    from: "review 2",
+    name: "refuses an entry that is a value derived from the resource, not the resource",
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    byHand: (planned) => {
+      planned.node.props.env.POOL_AUTH_DATABASE =
+        planned.row("POOL_AUTH_DATABASE").data.hyperdrives;
     },
-    // That copy waiting on another resource than the named one.
-    ({ row, node }: Waiting) => {
-      assert.equal(isResolved(node.props.env.TOOLS_SERVICE), false);
-      row.data = { ...row.data, hyperdrives: node.props.env.TOOLS_SERVICE };
+    expect: { lines: [DATABASE], alone: true },
+  },
+  {
+    from: "review 2",
+    name: "refuses an entry that has no binding row of its own",
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    byHand: (planned) => {
+      planned.node.bindings = planned.node.bindings.filter(
+        (binding) => binding.sid !== "POOL_AUTH_DATABASE",
+      );
     },
-  ]) {
-    const waiting = await databaseMoves(context, settled);
-    change(waiting);
-    const message = await refusesDatabase(waiting.plan);
-    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
-    assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
-  }
-});
-
-test("a code-only allowance refuses an entry that only derives from the resource, or has no binding of its own", async (context) => {
-  const settled = await credentialsRows(context);
-  // Not the connection itself: a value computed from it, which can be anything once known.
-  const derived = await databaseMoves(context, settled);
-  derived.node.props.env.POOL_AUTH_DATABASE = derived.row.data.hyperdrives;
-  assert.match(await refusesDatabase(derived.plan), /props\.env\.POOL_AUTH_DATABASE: /u);
-  // Which resource the upload binds is read from the entry's binding row. Without one, nothing says.
-  const unbound = await databaseMoves(context, settled);
-  unbound.node.bindings = unbound.node.bindings.filter(
-    (binding) => binding.sid !== "POOL_AUTH_DATABASE",
-  );
-  const { message } = await exceeded(unbound.plan, {}, database);
-  assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
-});
-
-test("a code-only allowance refuses a named bucket's binding while that bucket updates", async (context) => {
-  // A bucket's binding carries more than a stable identity: its wire entry holds the bucket's
-  // jurisdiction, which is not known while the bucket updates. The upload would carry whatever
-  // that turns out to be, so the row is refused though the policy names the entry.
-  const moves = (rows: Readonly<Record<string, ResourceState>>) =>
-    makePlan(context, {
-      rows,
-      declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
-    });
-  const settled = await credentialsRows(context);
-  const other = "basalt-production-otherbucket";
-  for (const rows of [
-    settled,
-    // State holds the same bucket name in another jurisdiction.
-    withStoreBinding(settled, "VAULT", (data) => ({
-      ...data,
-      bindings: data.bindings.map((entry) => ({ ...entry, jurisdiction: "eu" })),
-    })),
-    // State holds another bucket under the entry.
-    withStoreBinding(
-      withStoreProps(settled, (props) => ({
-        ...props,
-        env: { ...props.env, VAULT: { ...props.env.VAULT, bucketName: other } },
-      })),
-      "VAULT",
-      (data) => ({
-        ...data,
-        bindings: data.bindings.map((entry) => ({ ...entry, bucketName: other })),
-      }),
+    expect: refusedWith(DATABASE),
+  },
+  // A reference to a bucket: its wire entry is not known while the bucket updates.
+  ...(
+    [
+      ["as State holds it", (rows: StateRows) => rows],
+      [
+        "State holding it in another jurisdiction",
+        row(
+          "VAULT",
+          wireEntry((wire) => ({ ...wire, jurisdiction: "eu" })),
+        ),
+      ],
+      [
+        "State holding another bucket",
+        each(
+          entry("VAULT", (value) => ({ ...value, bucketName: otherBucket })),
+          row(
+            "VAULT",
+            wireEntry((wire) => ({ ...wire, bucketName: otherBucket })),
+          ),
+        ),
+      ],
+    ] as const
+  ).map(([what, state]): AllowanceCase => ({
+    from: "review 2",
+    name: `refuses a named bucket's entry and row while that bucket updates (${what})`,
+    state,
+    stack: bucketMoves,
+    allow: bucket,
+    planner: bucketWaits,
+    expect: { lines: [/bindings\.VAULT: update/u, /props\.env\.VAULT: /u], alone: true },
+  })),
+  // The connection is unchanged; State holds local development's copy of its origin in another form.
+  ...localCopyForms.map(([what, change]): AllowanceCase => ({
+    from: "review 3",
+    name: `admits the connection's row when it differs only in State holding ${what} local-development copy`,
+    moved: onlyStore,
+    state: row("POOL_AUTH_DATABASE", change),
+    planner: databaseRowDiffers,
+    expect: "admitted",
+  })),
+  // The healing plan itself, with production's settings: the store's code moves in one plan with
+  // the tools Worker and the pool Worker, and the connection is unchanged.
+  {
+    from: "design",
+    name: "admits the healing plan: the store's code with the tools Worker and the pool Worker updating",
+    moved: healingPlan,
+    planner: (planned) => {
+      healing(planned);
+      assert.deepEqual(changedRows(planned), []);
+    },
+    expect: "admitted",
+  },
+  ...localCopyForms.map(([what, change]): AllowanceCase => ({
+    from: "design",
+    name: `admits the healing plan when State's row for the connection holds ${what} local-development copy`,
+    moved: healingPlan,
+    state: row("POOL_AUTH_DATABASE", change),
+    planner: (planned) => {
+      healing(planned);
+      databaseRowDiffers(planned);
+      assert.deepEqual(changedRows(planned), ["POOL_AUTH_DATABASE"]);
+    },
+    expect: "admitted",
+  })),
+  {
+    from: "review 3",
+    name: "refuses that row when the policy does not name the entry",
+    moved: onlyStore,
+    state: row("POOL_AUTH_DATABASE", withoutLocalCopy),
+    codeOnly: toolsOnly,
+    planner: databaseRowDiffers,
+    expect: refusedWith(DATABASE_ROW),
+  },
+  ...(
+    [
+      ["another connection", wireEntry((wire) => ({ ...wire, id: otherConnection }))],
+      ["a second wire entry", secondWireEntry],
+      ["a key the plan does not carry", (data: RowData) => ({ ...data, extra: true })],
+    ] as const
+  ).map(([what, change]): AllowanceCase => ({
+    from: "review 3",
+    name: `refuses that row when State's also holds ${what}`,
+    moved: onlyStore,
+    state: row("POOL_AUTH_DATABASE", (data, rows) =>
+      change(withoutLocalCopy(data) as RowData, rows),
     ),
-  ]) {
-    const { plan } = await moves(rows);
-    assert.equal(plan.resources.VaultAttachments?.action, "update");
-    const node = credentialsNode(plan);
-    assert.equal(isResolved(node.props.env.VAULT), false);
-    const row = node.bindings.find((binding) => binding.sid === "VAULT");
-    assert.equal(row?.action, "update");
-    assert.equal(isResolved(row?.data.bindings), false);
-    const { rules, message } = await refused(plan, allowance({}, bucket));
-    assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
-    assert.match(message, /bindings\.VAULT: update/u);
-    assert.match(message, /props\.env\.VAULT: /u);
-  }
-});
-
-test("a code-only allowance admits an older recorded copy of the called Worker and refuses another Worker", async (context) => {
-  const settled = await credentialsRows(context);
-  // State kept an older copy of the called Worker's attributes, also of those an update cannot
-  // change: that Worker was replaced, and gained a class, in releases that left the store alone.
-  // The store still binds the same Worker by name, so its binding row is unchanged.
-  const stale = withStoreProps(settled, (props) => ({
-    ...props,
-    env: {
-      ...props.env,
-      TOOLS_SERVICE: {
-        ...props.env.TOOLS_SERVICE,
-        workerId: "an-older-worker-id",
-        durableObjectNamespaces: { Older: "0".repeat(32) },
-      },
+    planner: databaseRowDiffers,
+    expect: refusedWith(DATABASE_ROW),
+  })),
+  {
+    from: "review 3",
+    name: "refuses a row that holds no wire entry in State and in the plan",
+    moved: onlyStore,
+    state: row("POOL_AUTH_DATABASE", (data) => ({ ...data, bindings: [], hyperdrives: {} })),
+    planner: databaseRowDiffers,
+    byHand: (planned) => {
+      const differing = planned.row("POOL_AUTH_DATABASE");
+      differing.data = { ...differing.data, bindings: [] };
     },
-  }));
-  const older = await credentialsPlan(context, {}, stale);
-  assert.equal(older.resources.Api?.action, "update");
-  assert.equal(isResolved(credentialsNode(older).props.env.TOOLS_SERVICE), false);
-  assert.deepEqual(
-    credentialsNode(older).bindings.filter((binding) => binding.action !== "noop"),
-    [],
-  );
-  await storeCodeMoves(older);
-  // State holds another Worker under the entry and in its binding row; the declaration calls the
-  // named one, which updates, so the entry in the plan waits on the named Worker alone.
-  const catalog = (settled.Catalog as unknown as { attr: Record<string, unknown> }).attr;
-  const moved = withStoreBinding(
-    withStoreProps(settled, (props) => ({
-      ...props,
-      env: { ...props.env, TOOLS_SERVICE: { ...catalog } },
-    })),
-    "TOOLS_SERVICE",
-    (data) => ({
-      ...data,
-      bindings: data.bindings.map((entry) => ({ ...entry, service: catalog.workerName })),
-    }),
-  );
-  const plan = await credentialsPlan(context, {}, moved);
-  assert.equal(plan.resources.Api?.action, "update");
-  assert.equal(isResolved(credentialsNode(plan).props.env.TOOLS_SERVICE), false);
-  const { message } = await exceeded(plan);
-  // The entry itself refuses, not only the binding row that happens to be known for a Worker.
-  assert.match(message, /props\.env\.TOOLS_SERVICE: /u);
-  assert.match(message, /bindings\.TOOLS_SERVICE: update/u);
+    expect: refusedWith(DATABASE_ROW),
+  },
+  // Stack code binds its own row under the entry's name, with a wire entry of another name. With
+  // no wire entry of its name, the provider uploads the entry's own value: the connection's
+  // attributes, as they are after it applied.
+  {
+    from: "review 3",
+    name: "refuses a reference whose row carries a wire entry of another name, while the connection updates",
+    applied: { ownDatabaseRow: true },
+    declares: connectionMoves,
+    allow: database,
+    planner: (planned) => {
+      waits(planned, "POOL_AUTH_DATABASE", "PoolModelDatabaseConnection");
+      assert.deepEqual(
+        planned.row("POOL_AUTH_DATABASE").data.bindings.map((wire) => wire.name),
+        ["MODEL_DB"],
+      );
+    },
+    expect: refusedWith(DATABASE),
+  },
+  {
+    from: "review 3",
+    name: "refuses that reference when an earlier release moved the connection and only its local copy differs",
+    applied: { ownDatabaseRow: "with local copy" },
+    moved: onlyStore,
+    state: connectionMovedEarlier,
+    declares: connectionMoves,
+    planner: (planned) => {
+      databaseRowDiffers(planned);
+      assert.deepEqual(
+        planned.row("POOL_AUTH_DATABASE").data.bindings.map((wire) => wire.name),
+        ["MODEL_DB"],
+      );
+    },
+    expect: refusedWith(DATABASE_ROW, DATABASE),
+  },
+  // An interrupted apply: the planner compares the plan with the unfinished generation only.
+  {
+    from: "review 3",
+    name: "refuses another Worker in the last finished generation, though the planner calls the row unchanged",
+    state: (rows) => storeInterrupted(rows, callsCatalog(rows)),
+    planner: (planned) => {
+      waits(planned, "TOOLS_SERVICE", "Api");
+      unchangedForThePlanner("TOOLS_SERVICE")(planned);
+    },
+    expect: refusedWith(TOOLS, TOOLS_ROW),
+  },
+  {
+    from: "review 3",
+    name: "refuses the same when the called Worker itself is unchanged",
+    moved: onlyStore,
+    state: (rows) => storeInterrupted(rows, callsCatalog(rows)),
+    planner: (planned) => {
+      known(planned, "TOOLS_SERVICE", "Api");
+      unchangedForThePlanner("TOOLS_SERVICE")(planned);
+    },
+    expect: refusedWith(TOOLS, TOOLS_ROW),
+  },
+  {
+    from: "review 3",
+    name: "refuses another connection in the last finished generation while the connection updates",
+    state: (rows) => storeInterrupted(rows, each(otherConnectionEntry, otherConnectionRow)(rows)),
+    declares: connectionMoves,
+    allow: database,
+    planner: databaseWaits,
+    expect: refusedWith(DATABASE, DATABASE_ROW),
+  },
+  {
+    from: "design",
+    name: "admits the store's code after an interrupted apply that changed nothing else",
+    state: (rows) => storeInterrupted(rows, rows),
+    planner: (planned) => assert.equal(planned.node.action, "update"),
+    expect: "admitted",
+  },
+  {
+    from: "design",
+    name: "admits an interrupted code-only apply run again: the named field differs in the finished generation only",
+    state: async (rows, settle) =>
+      storeInterrupted(await settle({ credentials: { version: "2" } }), rows),
+    declares: { version: "2" },
+    planner: unchangedForThePlanner("EXECUTOR_TELEMETRY"),
+    expect: "admitted",
+  },
+  {
+    from: "design",
+    name: "admits it when the named field moved on once more",
+    state: async (rows, settle) =>
+      storeInterrupted(await settle({ credentials: { version: "2" } }), rows),
+    declares: { version: "3" },
+    planner: (planned) => assert.deepEqual(changedRows(planned), ["EXECUTOR_TELEMETRY"]),
+    expect: "admitted",
+  },
+  {
+    from: "design",
+    name: "refuses a secret the interrupted apply changed, when the declaration is the finished generation's again",
+    // The interrupted upload may have gone out: taking the change back is a change too.
+    state: async (rows, settle) =>
+      storeInterrupted(await settle({ credentials: { secret: "the-interrupted-secret" } }), rows),
+    planner: (planned) => assert.deepEqual(changedRows(planned), ["POOL_APP_SIGNING_KEY"]),
+    expect: refusedWith(/bindings\.POOL_APP_SIGNING_KEY: update/u, SECRET),
+  },
+  {
+    from: "design",
+    name: "refuses a secret the interrupted apply changed, when the declaration keeps it",
+    state: async (rows, settle) =>
+      storeInterrupted(await settle({ credentials: { secret: "the-interrupted-secret" } }), rows),
+    declares: { secret: "the-interrupted-secret" },
+    planner: unchangedForThePlanner("POOL_APP_SIGNING_KEY"),
+    expect: refusedWith(SECRET, /bindings\.POOL_APP_SIGNING_KEY: update/u),
+  },
+  {
+    from: "design",
+    name: "refuses an entry of the last finished generation that the interrupted apply dropped",
+    state: async (rows, settle) =>
+      storeInterrupted(rows, await settle({ credentials: {}, credentialsEnv: { MODE: "before" } })),
+    planner: (planned) =>
+      assert.ok(!planned.node.bindings.some((binding) => binding.sid === "MODE")),
+    expect: refusedWith(/bindings\.MODE: delete/u, /props\.env\.MODE: /u),
+  },
+];
+
+test("the code-only allowance, case by case", async (context) => {
+  const names = allowanceCases.map(({ from, name }) => `${from}: ${name}`);
+  assert.equal(new Set(names).size, names.length, "two cases share a name");
+  for (const [index, given] of allowanceCases.entries())
+    await context.test(names[index]!, async (t) => {
+      const settle = async (declared: Declared) =>
+        withCodeFromElsewhere(
+          (
+            await makePlan(t, {
+              rows: { ...productionRows(), ...calledRows() },
+              declared,
+              settle: storeWorkers,
+            })
+          ).rows,
+          given.moved ?? storeWorkers,
+        );
+      const applied = await settle({ credentials: given.applied ?? {} });
+      const rows = given.state ? await given.state(applied, settle) : applied;
+      const { plan } = await makePlan(t, {
+        rows,
+        declared: {
+          ...(given.declares === "nothing"
+            ? {}
+            : { credentials: { ...given.applied, ...given.declares } }),
+          ...given.stack,
+        },
+      });
+      const node = plan.resources.ArtifactsCredentials as unknown as Planned["node"];
+      const planned: Planned = {
+        plan,
+        node,
+        row: (sid) => {
+          const found = node.bindings.find((binding) => binding.sid === sid);
+          assert.ok(found, `no binding row ${sid}`);
+          return found;
+        },
+      };
+      given.planner?.(planned);
+      given.byHand?.(planned);
+      const changes = allowance(given.codeOnly, given.allow);
+      if (given.expect === "admitted") {
+        const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(changes)));
+        if (Exit.isFailure(exit)) assert.fail(String((Cause.squash(exit.cause) as Error).message));
+        assert.ok(exit.value.some((change) => change.fqn === "ArtifactsCredentials"));
+        return;
+      }
+      const { rules, message } = await refused(plan, changes);
+      const own = "code-only-allowance-exceeded ArtifactsCredentials";
+      assert.ok(rules.includes(own), `${rules.join(", ")}\n${message}`);
+      for (const line of given.expect.lines) assert.match(message, line);
+      for (const rule of given.expect.rules ?? [])
+        assert.ok(rules.includes(rule), rules.join(", "));
+      if (given.expect.alone) assert.deepEqual(rules, [own], message);
+      for (const text of given.expect.without ?? []) assert.ok(!message.includes(text), message);
+    });
 });
 
-test("a code-only allowance admits only the named field of a value, never the credential beside it", async (context) => {
-  // The redacted value holds the release's version and a telemetry credential.
-  const { message } = await exceeded(await credentialsPlan(context, { token: "token-b" }));
-  assert.match(message, /bindings\.EXECUTOR_TELEMETRY: update/u);
-  assert.match(message, /props\.env\.EXECUTOR_TELEMETRY: <redacted> -> <redacted>/u);
-  await exceeded(await credentialsPlan(context, { version: "2", token: "token-b" }));
-  // A field the policy does not name is not admitted because another one is.
-  await exceeded(await credentialsPlan(context, { version: "2" }), {
-    values: [{ name: "EXECUTOR_TELEMETRY", fields: ["environment"], why: "another field" }],
-  });
-  // The same value as another kind of binding is not the same binding.
-  const plain = await exceeded(
-    await credentialsPlan(context, { version: "2", telemetryPlain: true }),
-  );
-  assert.match(plain.message, /bindings\.EXECUTOR_TELEMETRY: update/u);
-  // A named value has to be there on both sides: State without it means the entry is new.
-  const rows = await credentialsRows(context);
-  const store = rows.ArtifactsCredentials as unknown as { bindings: { sid: string }[] };
-  const { EXECUTOR_TELEMETRY: _dropped, ...env } = (
-    store as unknown as { props: { env: Record<string, Record<string, unknown>> } }
-  ).props.env;
-  const added = await exceeded(
-    await credentialsPlan(
-      context,
-      {},
-      {
-        ...withStoreProps(rows, (props) => ({ ...props, env })),
-        ArtifactsCredentials: {
-          ...withStoreProps(rows, (props) => ({ ...props, env })).ArtifactsCredentials,
-          bindings: store.bindings.filter((binding) => binding.sid !== "EXECUTOR_TELEMETRY"),
-        } as unknown as ResourceState,
-      },
-    ),
-  );
-  assert.match(added.message, /bindings\.EXECUTOR_TELEMETRY: create/u);
-  assert.match(added.message, /props\.env\.EXECUTOR_TELEMETRY: absent -> <redacted>/u);
-  // A secret that is not such a record cannot be named into the list.
-  const secret = await exceeded(await credentialsPlan(context, { secret: "another-secret" }), {
-    values: [
-      { name: "EXECUTOR_TELEMETRY", fields: ["version"], why: "the release's version" },
-      { name: "POOL_APP_SIGNING_KEY", fields: ["version"], why: "not a record" },
-    ],
-  });
-  assert.match(secret.message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
-});
-
-test("a code-only allowance admits a named value that changes with the release, and its binding", async (context) => {
-  const plan = await credentialsPlan(context, { version: "2" });
-  // A changed value plans its own binding row as an update as well.
-  assert.deepEqual(
-    credentialsNode(plan).bindings.filter((binding) => binding.action !== "noop"),
-    [{ sid: "EXECUTOR_TELEMETRY", action: "update" }].map((row) => ({
-      ...credentialsNode(plan).bindings.find((binding) => binding.sid === row.sid),
-      ...row,
-    })),
-  );
-  await storeCodeMoves(plan);
-  const { message } = await exceeded(plan, { values: [] });
-  assert.match(message, /bindings\.EXECUTOR_TELEMETRY: update/u);
-  assert.match(message, /props\.env\.EXECUTOR_TELEMETRY: <redacted> -> <redacted>/u);
-});
-
-test("a code-only allowance admits the same entry file under another checkout's directory", async (context) => {
-  const rows = await credentialsRows(context);
-  const recordedMain = (main: string) => withStoreProps(rows, (props) => ({ ...props, main }));
-  const inCheckout = "scripts/release/test/plan-worker.ts";
-  for (const main of [
-    // As the release layer before recorded it: a path, or a file URL, under its own directory.
-    `/runner/_temp/candidate/${inCheckout}`,
-    `file:///runner/_temp/candidate/${inCheckout}`,
-  ]) {
-    const plan = await credentialsPlan(context, {}, recordedMain(main));
-    assert.notEqual(credentialsNode(plan).props.main, main);
-    await storeCodeMoves(plan);
-  }
-  // Another file is a change of the entry, wherever the checkout sits.
-  for (const main of [
-    "/runner/_temp/candidate/scripts/release/test/another-worker.ts",
-    // The same characters at the end, without the directory boundary before them.
-    "/runner/_temp/candidatescripts/release/test/plan-worker.ts",
-    "/runner/_temp/candidate/scripts/other/test/plan-worker.ts",
-    "/runner/_temp/candidate/plan-worker.ts",
-  ]) {
-    const { message } = await exceeded(await credentialsPlan(context, {}, recordedMain(main)));
-    assert.match(message, /props\.main: /u, main);
-    assert.ok(!message.includes("/runner/_temp"), message);
-  }
-  // And so is a declaration that names another file of this checkout.
-  const declared = await credentialsPlan(context, {
-    main: fileURLToPath(new URL("./test/plan-fixture.ts", import.meta.url)),
-  });
-  assert.match((await exceeded(declared)).message, /props\.main: /u);
-});
-
-test("a code-only allowance refuses a changed secret, also beside a reference that is not known yet", async (context) => {
-  const plan = await credentialsPlan(context, { secret: "another-signing-secret" });
-  assert.equal(isResolved(credentialsNode(plan).props.env.TOOLS_SERVICE), false);
-  const { message } = await exceeded(plan);
-  assert.match(message, /bindings\.POOL_APP_SIGNING_KEY: update/u);
-  assert.match(message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
-  // One value that is not known yet does not hide the rest of the row.
-  assert.ok(!message.includes("props: "), message);
-  assert.ok(!message.includes("TOOLS_SERVICE"), message);
-  // A secret is not a reference, whatever the policy calls it.
-  const named = await exceeded(plan, {
-    references: [
-      { name: "TOOLS_SERVICE", resource: "Api" },
-      { name: "POOL_APP_SIGNING_KEY", resource: "Api" },
-    ],
-  });
-  assert.match(named.message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
-});
-
-test("a code-only allowance cannot be declared with an empty or doubled name, or for the Worker itself", async (context) => {
-  const named = (name: string, why = "a reason") => [{ name, fields: ["version"], why }];
-  await assert.rejects(policy(allowance({ values: named("") })));
-  await assert.rejects(policy(allowance({ values: named("EXECUTOR_TELEMETRY", " ") })));
+test("a code-only allowance cannot be declared with an empty name, field list or reason", async () => {
+  const value = (name: string, why = "a reason") => [{ name, fields: ["version"], why }];
+  await assert.rejects(policy(allowance({ values: value("") })));
+  await assert.rejects(policy(allowance({ values: value("EXECUTOR_TELEMETRY", " ") })));
   await assert.rejects(
     policy(allowance({ values: [{ name: "EXECUTOR_TELEMETRY", fields: [], why: "a reason" }] })),
   );
   await assert.rejects(policy(allowance({ why: "" })));
   await assert.rejects(policy(allowance({ references: [{ name: "", resource: "Api" }] })));
-  const plan = await credentialsPlan(context);
-  // One name in both lists would let the looser rule answer for the stricter one.
-  const doubled = await exceeded(plan, {
-    values: [...named("EXECUTOR_TELEMETRY"), ...named("TOOLS_SERVICE")],
-  });
-  assert.match(doubled.message, /policy\.TOOLS_SERVICE: named as a reference and as a value/u);
-  // One name twice in a list: the second entry would answer for the first.
-  const twice = await exceeded(plan, {
-    references: [
-      { name: "TOOLS_SERVICE", resource: "Api" },
-      { name: "TOOLS_SERVICE", resource: "Catalog" },
-    ],
-    values: [...named("EXECUTOR_TELEMETRY"), ...named("EXECUTOR_TELEMETRY")],
-  });
-  assert.match(twice.message, /policy\.TOOLS_SERVICE: named twice/u);
-  assert.match(twice.message, /policy\.EXECUTOR_TELEMETRY: named twice/u);
-  const itself = await exceeded(plan, {
-    references: [
-      { name: "TOOLS_SERVICE", resource: "Api" },
-      { name: "VAULT", resource: "ArtifactsCredentials" },
-    ],
-  });
-  assert.match(itself.message, /policy\.VAULT: names the Worker itself/u);
-});
-
-test("a code-only allowance refuses a changed value that the policy does not name", async (context) => {
-  const { message } = await exceeded(await credentialsPlan(context, { mode: "b" }));
-  assert.match(message, /bindings\.POOL_MODE: update/u);
-  assert.match(message, /props\.env\.POOL_MODE\.mode: /u);
-});
-
-test("a code-only allowance refuses a new binding and a new entry", async (context) => {
-  const rows = await credentialsRows(context);
-  const bound = await makePlan(context, {
-    rows,
-    declared: { credentials: {}, credentialsClass: "SecondCoordinator" },
-  });
-  const byClass = await exceeded(bound.plan);
-  assert.ok(byClass.rules.includes("code-only-binding-change ArtifactsCredentials"));
-  assert.match(byClass.message, /bindings\.Second: create/u);
-  const entry = await makePlan(context, {
-    rows,
-    declared: { credentials: {}, credentialsEnv: { MODE: "next" } },
-  });
-  const byEntry = await exceeded(entry.plan);
-  assert.match(byEntry.message, /bindings\.MODE: create/u);
-  assert.match(byEntry.message, /props\.env\.MODE: absent -> /u);
-});
-
-test("a code-only allowance refuses a removed binding", async (context) => {
-  // The declaration no longer holds what State recorded for the store.
-  const { plan } = await makePlan(context, { rows: await credentialsRows(context) });
-  const { rules, message } = await exceeded(plan);
-  assert.ok(rules.includes("worker-binding-removed ArtifactsCredentials"), rules.join(", "));
-  assert.match(message, /bindings\.TOOLS_SERVICE: delete/u);
-  assert.match(message, /props\.env\.TOOLS_SERVICE\.workerName: .* -> absent/u);
-});
-
-test("a code-only allowance refuses a changed class and another called Worker", async (context) => {
-  const renamed = await exceeded(
-    await credentialsPlan(context, { className: "ArtifactsTokenCoordinatorNext" }),
-  );
-  assert.ok(renamed.rules.includes("durable-object-class-changed ArtifactsCredentials"));
-  assert.match(renamed.message, /bindings\.Coordinator: update/u);
-  // The same name bound to another Worker: its binding changes, updating or not.
-  for (const builtElsewhere of [
-    ["Api", "Catalog", "ArtifactsCredentials"],
-    ["ArtifactsCredentials"],
-  ]) {
-    const plan = await credentialsPlan(
-      context,
-      { calls: "Catalog" },
-      await credentialsRows(context, builtElsewhere),
-    );
-    const { message } = await exceeded(plan);
-    assert.match(message, /bindings\.TOOLS_SERVICE: update/u);
-    assert.match(message, /props\.env\.TOOLS_SERVICE/u);
-  }
 });
 
 test("a filtered plan needs the policy's include list, and the list needs a filtered plan", async (context) => {

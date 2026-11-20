@@ -89,6 +89,11 @@ export interface Declaration {
     className?: string;
     /** The host of the model database connection it reads; another host updates that connection. */
     databaseHost?: string;
+    /**
+     * Stack code binds its own row under the database entry's name, with a wire entry of another
+     * name; `"with local copy"` adds local development's copy of the connection's origin to it.
+     */
+    ownDatabaseRow?: true | "with local copy";
   };
 }
 
@@ -403,6 +408,13 @@ const program = (declared: Declaration) =>
         ...declared.credentialsEnv,
       },
     });
+    if (declared.credentials?.ownDatabaseRow && modelDatabase)
+      yield* credentials.bind("POOL_AUTH_DATABASE", {
+        bindings: [{ type: "hyperdrive", name: "MODEL_DB", id: modelDatabase.hyperdriveId }],
+        ...(declared.credentials.ownDatabaseRow === "with local copy"
+          ? { hyperdrives: Cloudflare.Hyperdrive.getHyperdriveDevOrigin(modelDatabase) }
+          : {}),
+      } as never);
     const image = Cloudflare.Container("PoolContainer", {
       ...(declared.container ?? { image: pinnedImage }),
       className: "PoolContainer",
