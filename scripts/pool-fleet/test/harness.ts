@@ -243,6 +243,9 @@ export async function harness(options: HarnessOptions = {}) {
     },
     // A refused command logs the Home pool counters with it; this double has none to report.
     databasePool: () => null,
+    // `inspect` reports the forced-restart clock and `recovery-reset` clears it; this double's is clean.
+    recoveryState: async () => ({ restarts: [] }),
+    resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
   const connect: PoolOperationsTarget["connect"] = async () => ({
     env: {

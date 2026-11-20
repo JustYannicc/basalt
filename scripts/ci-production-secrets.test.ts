@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
@@ -6,8 +7,21 @@ import { test } from "node:test";
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const directory = new URL("../.github/workflows/", import.meta.url);
 
-type Step = { uses?: string; run?: string; with?: Record<string, unknown> };
-type Job = { if?: string; environment?: unknown; secrets?: unknown; steps?: Step[] };
+type Step = {
+  id?: string;
+  uses?: string;
+  run?: string;
+  env?: Record<string, unknown>;
+  with?: Record<string, unknown>;
+};
+type Job = {
+  if?: string;
+  needs?: string | string[];
+  env?: Record<string, unknown>;
+  environment?: unknown;
+  secrets?: unknown;
+  steps?: Step[];
+};
 type Workflow = { on?: unknown; env?: unknown; jobs: Record<string, Job> };
 type File = { name: string; workflow: Workflow };
 
@@ -43,7 +57,26 @@ const knownExposure: Record<string, string[]> = {
 
 // The only jobs that hold secrets beside a pull request's run or after another run. Each runs main's
 // code; any new one needs review before it joins this list.
-const baseRunJobs = ["deploy.yml/deploy", "release-cleanup.yml/cleanup", "release-merge.yml/merge"];
+const baseRunJobs = [
+  "release-cleanup.yml/cleanup",
+  "release-merge.yml/merge",
+  // Its checkout is the candidate job's main commit, never a pull request's.
+  "release.yml/release",
+];
+
+type Provider = { output: string; step: string; sha256: string };
+// Jobs whose output a secret-holding job may check out as main's commit. The guard proves the job is
+// confined to main on every path into it; that the commit it writes is main's lives in shell it can't
+// read, so the step is pinned: any change to it fails here until someone re-reviews it and re-pins.
+const mainCommitProviders: Record<string, Provider> = {
+  // A main push's head, or the newest passing main commit containing it; a dispatch from main, or a
+  // named full commit that is an ancestor of main.
+  "release.yml/candidate": {
+    output: "sha",
+    step: "pick",
+    sha256: "37e6d00ef6f1ada18079d3d5be178e0334af7a6697e157b7c79c7d59fed0d895",
+  },
+};
 // Events whose secret-holding jobs these rules understand; anything else holding secrets fails.
 const knownEvents = [
   "push",
@@ -102,6 +135,30 @@ function reachableOnPullRequest(condition: string | undefined) {
 const requiresMain = (condition: string | undefined) =>
   conjuncts(condition).includes("github.ref == 'refs/heads/main'");
 
+/** The alternatives of a condition, split at top-level `||`, each without its outer parentheses. */
+function disjuncts(condition: string | undefined) {
+  const expression = (condition ?? "").trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");
+  const parts: string[] = [];
+  let depth = 0,
+    quoted = false,
+    start = 0;
+  for (let index = 0; index < expression.length; index++) {
+    const character = expression[index];
+    if (character === "'") quoted = !quoted;
+    if (quoted) continue;
+    if (character === "(") depth++;
+    if (character === ")") depth--;
+    if (depth === 0 && expression.slice(index, index + 2) === "||") {
+      parts.push(expression.slice(start, index));
+      start = index + 2;
+    }
+  }
+  parts.push(expression.slice(start));
+  return parts
+    .map((part) => part.trim())
+    .map((part) => (/^\((?:[^()]|\([^()]*\))*\)$/.test(part) ? part.slice(1, -1).trim() : part));
+}
+
 // A workflow_run job confined to the repository's own pushes to main runs main's code even when it
 // checks out the triggering run's head.
 const confinedToMainPush = (condition: string | undefined) =>
@@ -135,10 +192,68 @@ function secretsOf(workflow: Workflow, job: Job) {
   ].sort();
 }
 
-const checksOutMain = (job: Job) =>
-  (job.steps ?? [])
-    .filter((step) => step.uses?.startsWith("actions/checkout"))
-    .every((step) => ["main", "refs/heads/main"].includes(String(step.with?.ref)));
+// Every alternative must be main's: a dispatch, push or schedule that also requires main's ref, or
+// another run that is this repository's push to main. Under workflow_run, github.ref is always the
+// default branch, so the ref alone proves nothing there.
+const confinedToMain = (condition: string | undefined) =>
+  condition !== undefined &&
+  disjuncts(condition).every((part) => {
+    const terms = conjuncts(part);
+    const onMain =
+      terms.includes("github.ref == 'refs/heads/main'") &&
+      ["workflow_dispatch", "push", "schedule"].some((event) =>
+        terms.includes(`github.event_name == '${event}'`),
+      );
+    return onMain || confinedToMainPush(part);
+  });
+
+const stepHash = (step: Step) => createHash("sha256").update(JSON.stringify(step)).digest("hex");
+
+/** Whether a checkout ref is a pinned provider's main commit, read straight from the job's needs. */
+function providedMainCommit(
+  name: string,
+  workflow: Workflow,
+  job: Job,
+  index: number,
+  providers: Record<string, Provider>,
+) {
+  const step = job.steps![index]!;
+  let ref = String(step.with?.ref);
+  const viaEnv = /^\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/.exec(ref)?.[1];
+  if (viaEnv) {
+    // A step before the checkout could rewrite the variable through GITHUB_ENV.
+    if (JSON.stringify(job.steps!.slice(0, index)).includes("GITHUB_ENV")) return false;
+    ref = String(step.env?.[viaEnv] ?? job.env?.[viaEnv]);
+  }
+  const output = /^\$\{\{\s*needs\.([\w-]+)\.outputs\.([\w-]+)\s*\}\}$/.exec(ref);
+  if (!output) return false;
+  const [, id = "", key = ""] = output;
+  const needs = [job.needs ?? []].flat();
+  const provider = providers[`${name}/${id}`];
+  const source = workflow.jobs[id];
+  const pinned = source?.steps?.find((candidate) => candidate.id === provider?.step);
+  return (
+    needs.includes(id) &&
+    provider?.output === key &&
+    source !== undefined &&
+    confinedToMain(source.if) &&
+    pinned !== undefined &&
+    stepHash(pinned) === provider.sha256
+  );
+}
+
+const checksOutMain = (
+  name: string,
+  workflow: Workflow,
+  job: Job,
+  providers: Record<string, Provider> = mainCommitProviders,
+) =>
+  (job.steps ?? []).every(
+    (step, index) =>
+      !step.uses?.startsWith("actions/checkout") ||
+      ["main", "refs/heads/main"].includes(String(step.with?.ref)) ||
+      providedMainCommit(name, workflow, job, index, providers),
+  );
 
 const readsPullRequestHead = (job: Job) =>
   /github\.(?:event\.pull_request\.head|head_ref|event\.workflow_run\.head)|refs\/pull\//.test(
@@ -152,7 +267,7 @@ const pushBranches = (on: unknown) => {
 };
 
 /** Violations in a set of workflows; the same rules run on the real files and on fixtures below. */
-function violations(files: File[]) {
+function violations(files: File[], providers: Record<string, Provider> = mainCommitProviders) {
   const found: string[] = [];
   for (const { name, workflow } of files) {
     const on = events(workflow.on);
@@ -172,7 +287,10 @@ function violations(files: File[]) {
       if (on.includes("pull_request_target") || on.includes("workflow_run")) {
         if (!baseRunJobs.includes(key))
           found.push(`${key}: holds secrets beside another run without review`);
-        else if (!confinedToMainPush(job.if) && (!checksOutMain(job) || readsPullRequestHead(job)))
+        else if (
+          !confinedToMainPush(job.if) &&
+          (!checksOutMain(name, workflow, job, providers) || readsPullRequestHead(job))
+        )
           found.push(`${key}: runs code other than main's with secrets`);
       }
       const otherRefs =
@@ -194,6 +312,13 @@ test("no job runs code other than main's with a secret, beyond the named exposur
   for (const key of baseRunJobs) {
     const [name, id = ""] = key.split("/");
     assert.ok(workflows.find((file) => file.name === name)?.workflow.jobs[id], `stale ${key}`);
+  }
+  for (const [key, provider] of Object.entries(mainCommitProviders)) {
+    const [name, id = ""] = key.split("/");
+    const job = workflows.find((file) => file.name === name)?.workflow.jobs[id];
+    const step = job?.steps?.find((candidate) => candidate.id === provider.step);
+    assert.ok(step, `stale provider ${key}`);
+    assert.equal(stepHash(step), provider.sha256, `${key}: re-review its ${provider.step} step`);
   }
   for (const [key, secrets] of Object.entries(knownExposure)) {
     const [name, id = ""] = key.split("/");
@@ -255,8 +380,8 @@ test("secrets beside a pull request's run or on another ref run only main's code
   });
   // Named as an allowed base-run job, so these fixtures test what such a job may do.
   const file = (on: unknown, job: Job): File => ({
-    name: "deploy.yml",
-    workflow: { on, jobs: { deploy: job } },
+    name: "release-cleanup.yml",
+    workflow: { on, jobs: { cleanup: job } },
   });
   const main = { uses: "actions/checkout@v4", with: { ref: "main" } };
   const head = {
@@ -309,6 +434,91 @@ test("secrets beside a pull request's run or on another ref run only main's code
   const batches = { push: { branches: ["main", "batch/**"] } };
   assert.notDeepEqual(violations([file(batches, holding(branch))]), []);
   assert.deepEqual(violations([file({ push: { branches: ["main"] } }, holding(branch))]), []);
+});
+
+test("a secret-holding job may check out a pinned provider's main commit, and nothing else", () => {
+  const pick: Step = {
+    id: "pick",
+    run: 'git merge-base --is-ancestor "$INPUT" "$HEAD" && echo "sha=$INPUT" >> "$GITHUB_OUTPUT"',
+  };
+  const dispatchFromMain =
+    "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'";
+  const mainPush = [
+    "github.event.workflow_run.event == 'push'",
+    "github.event.workflow_run.head_branch == 'main'",
+    "github.event.workflow_run.head_repository.full_name == github.repository",
+  ].join(" && ");
+  const providers = {
+    "release.yml/candidate": { output: "sha", step: "pick", sha256: stepHash(pick) },
+  };
+  const checkout = (ref: string): Step => ({ uses: "actions/checkout@v4", with: { ref } });
+  const fixture = (
+    release: Partial<Job>,
+    candidate: Partial<Job> = {},
+    ref = "${{ env.CANDIDATE }}",
+  ): File => ({
+    name: "release.yml",
+    workflow: {
+      on: { workflow_run: {}, workflow_dispatch: {} },
+      jobs: {
+        candidate: { if: `(${dispatchFromMain}) || (${mainPush})`, steps: [pick], ...candidate },
+        release: {
+          needs: "candidate",
+          if: "github.ref == 'refs/heads/main' && needs.candidate.outputs.release == 'true'",
+          env: { CANDIDATE: "${{ needs.candidate.outputs.sha }}" },
+          environment: { name: "production-release", deployment: false },
+          steps: [checkout(ref), { run: "${{ secrets.CLOUDFLARE_API_TOKEN }}" }],
+          ...release,
+        },
+      },
+    },
+  });
+  // The release path as it is: the candidate job's main commit, through the job's env or directly.
+  assert.deepEqual(violations([fixture({})], providers), []);
+  assert.deepEqual(
+    violations([fixture({}, {}, "${{ needs.candidate.outputs.sha }}")], providers),
+    [],
+  );
+  const refused: [string, File, Record<string, Provider>?][] = [
+    ["a pull request's head", fixture({}, {}, "${{ github.event.pull_request.head.sha }}")],
+    ["a pull request's merge ref", fixture({}, {}, "refs/pull/1/merge")],
+    ["the triggering run's head", fixture({}, {}, "${{ github.event.workflow_run.head_sha }}")],
+    ["the head ref", fixture({}, {}, "${{ github.head_ref }}")],
+    // A job that writes a sha but proves nothing about main.
+    ["an unpinned job's output", fixture({}), {}],
+    ["a changed provider step", fixture({}, { steps: [{ ...pick, run: 'echo "sha=$INPUT"' }] })],
+    ["another output", fixture({ env: { CANDIDATE: "${{ needs.candidate.outputs.ref }}" } })],
+    ["a job it doesn't need", fixture({ needs: [] })],
+    ["a provider on any branch", fixture({}, { if: "github.event_name == 'workflow_dispatch'" })],
+    [
+      "a provider after any run",
+      fixture({}, { if: `${dispatchFromMain} || github.ref == 'refs/heads/main'` }),
+    ],
+    ["a provider with no condition", fixture({}, { if: undefined })],
+    [
+      "a provider after a branch's run",
+      fixture(
+        {},
+        { if: `(${dispatchFromMain}) || (github.event.workflow_run.head_branch == 'main')` },
+      ),
+    ],
+    [
+      "an env rewritten before the checkout",
+      fixture({
+        steps: [
+          { run: 'echo "CANDIDATE=$PR" >> "$GITHUB_ENV"' },
+          checkout("${{ env.CANDIDATE }}"),
+          { run: "${{ secrets.CLOUDFLARE_API_TOKEN }}" },
+        ],
+      }),
+    ],
+    [
+      "a release without main's ref on dispatch",
+      fixture({ if: "needs.candidate.outputs.release == 'true'" }),
+    ],
+  ];
+  for (const [label, file, given] of refused)
+    assert.notDeepEqual(violations([file], given ?? providers), [], label);
 });
 
 test("only a condition that requires another event keeps a job off pull requests", () => {
