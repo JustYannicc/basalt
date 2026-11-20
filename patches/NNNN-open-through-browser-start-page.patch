@@ -1,0 +1,88 @@
+diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
+--- a/e2e/support/in-app-navigation.ts
++++ b/e2e/support/in-app-navigation.ts
+@@ -1,6 +1,7 @@
+ /** Client-side navigation in a running dashboard, as a link click performs it. */
+ import { Effect } from "effect";
+ import { Browser } from "./browser.ts";
++import { startPage, type StartPage } from "./start-page.ts";
+ 
+ /**
+  * A document load arrives with its data rendered on the server, so its loading states are never
+@@ -16,33 +17,25 @@ export const openInApp = (label: string, path: string) =>
+     );
+   });
+ 
+-/**
+- * A dashboard page that does not render the destination’s app or account list. Organization entry
+- * may prefetch shared resources, so callers install request holds before opening it. Hosted pages start from their
+- * organization's Connect page; account pages name that organization in their `organization`
+- * search parameter, because only dashboard routes are served as dashboard documents (Cloud serves
+- * other paths as static assets). The local dashboard has no organizations and serves `/connect`.
+- */
+-const neutralPage = (destination: URL) => {
+-  const organization =
+-    /^\/org\/([^/?#]+)/.exec(destination.pathname)?.[1] ??
+-    destination.searchParams.get("organization");
+-  return organization === null ? "/connect" : `/org/${organization}/connect`;
+-};
+-
+ /**
+  * Load another dashboard page, then navigate to the destination in the browser. Holds and fixtures
+  * must already be installed: organization entry can prefetch the destination’s shared resources.
++ * The document starts from Connect unless `start` names another page. Connect's document can
++ * already carry the Apps list, so a scenario that holds or replaces that list starts from
++ * `settings`; see `StartPage`.
+  */
+-export const openThroughBrowser = (label: string, path: string) =>
++export const openThroughBrowser = (
++  label: string,
++  path: string,
++  options: { readonly start?: StartPage } = {},
++) =>
+   Effect.gen(function* () {
+     const browser = yield* Browser;
+     const destination = new URL(path, "http://dashboard.invalid");
+     const local = destination.origin === "http://dashboard.invalid";
++    const start = startPage(destination, options.start);
+     yield* browser.use(`${label}: start from another page`, (page) =>
+-      page.goto(
+-        local ? neutralPage(destination) : new URL(neutralPage(destination), destination).href,
+-      ),
++      page.goto(local ? start : new URL(start, destination).href),
+     );
+     yield* openInApp(label, local ? path : destination.pathname + destination.search);
+   });
+diff --git a/e2e/support/start-page.ts b/e2e/support/start-page.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/start-page.ts
+@@ -0,0 +1,28 @@
++/** The dashboard page a scenario's document loads before it navigates in the browser. */
++
++/**
++ * `connect` is the organization's Connect page. Its route starts the Apps list on the server
++ * without waiting for it, so the document carries the list whenever it answers before the render
++ * ends. The browser then uses that list without requesting it, and a hold or a replacement
++ * answer a scenario put on the request never applies.
++ *
++ * `settings` is the organization's Settings page. Its route declares only reads that run in the
++ * browser, and nothing it renders reads the Apps list, so its document never carries the list.
++ * The organization still reads the list in the browser after hydration, through the network,
++ * where a scenario's hold or replacement answer applies. A scenario that holds or replaces the
++ * Apps list starts here.
++ */
++export type StartPage = "connect" | "settings";
++
++/**
++ * The page to load before opening `destination` in the browser. Hosted pages start in their own
++ * organization; account pages name it in their `organization` search parameter, because only
++ * dashboard routes are served as dashboard documents (Cloud serves other paths as static assets).
++ * The local dashboard has no organizations and serves `/connect`.
++ */
++export const startPage = (destination: URL, _start: StartPage = "connect") => {
++  const organization =
++    /^\/org\/([^/?#]+)/.exec(destination.pathname)?.[1] ??
++    destination.searchParams.get("organization");
++  return organization === null ? "/connect" : `/org/${organization}/connect`;
++};

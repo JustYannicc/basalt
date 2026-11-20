@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-open-through-browser-start-page",
+  "file": "NNNN-open-through-browser-start-page.patch",
+  "content_sha256": "cf28bfd9e64964a11980100ef0fa24a3d4dd458f87b4666258d77644e3022d3d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
