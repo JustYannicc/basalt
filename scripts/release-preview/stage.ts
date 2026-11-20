@@ -485,6 +485,33 @@ async function healRelease(
         ).slice(0, 1_000);
       });
       lap("servingAndBoot");
+      // A healing release heals only while the pool's own alarm is alive: the alarm's upkeep
+      // lines in the five minutes before the upload, and the last deadlines they name.
+      result.alarmBeforeUpload = await workerLogLines(
+        subject,
+        source,
+        Date.now() - 5 * 60_000,
+        "POOL_RUNTIME_UPKEEP",
+      ).then(
+        (lines) => {
+          const alarm = lines.filter((line) => line.side === "alarm");
+          const deadlines = alarm.filter((line) => line.phase === "deadlines").at(-1);
+          return {
+            alive: alarm.length > 0,
+            alarmLines: alarm.length,
+            lastDeadlines: deadlines
+              ? {
+                  homeDeadline: deadlines.homeDeadline ?? null,
+                  fleetDeadline: deadlines.fleetDeadline ?? null,
+                  nativeDeadline: deadlines.nativeDeadline ?? null,
+                }
+              : null,
+          };
+        },
+        (error: unknown) => ({
+          unreadable: error instanceof Error ? error.message : String(error),
+        }),
+      );
       // The deploy plans again under the policy and stops in plan on any refusal. A release that
       // uploads and then fails its readiness check is recorded, and recovery is still watched: the
       // pool can heal while the release itself reports failure (the unfixed head's predicted red).
