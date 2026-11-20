@@ -7,7 +7,7 @@ import { UnservingClock, unservingDecision, type UnservingState } from "./unserv
 
 // A running runtime refusing with one of these is not serving. Fence, selection, policy and
 // draining refusals are deliberate states a forced restart must never fight.
-const notServing = new Set([
+export const notServing = new Set([
   "unhealthy",
   "timeout",
   "transport",

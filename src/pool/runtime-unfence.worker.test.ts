@@ -4,6 +4,8 @@ import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worke
 import { unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { PoolAlarms } from "./alarms.ts";
+import { membershipTtlMs } from "./membership-contract.ts";
+import { policyHealthHeader } from "./runtime-health.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Slot {
@@ -181,6 +183,7 @@ test(
     assert.equal((await unfence(f, identity)).body.result?.by, "recovery");
     await f.send("fence", { identity });
     assert.equal((await selection(f)).active.fenced, true);
+    assert.equal((await selection(f)).active.unfenced, undefined, "a fence clears the hand-back");
     f.old.hooks.health = async () => {};
     assert.equal((await unfence(f, identity)).body.result?.by, "proof");
     const { active } = await selection(f);
@@ -253,5 +256,88 @@ test(
     assert.equal(body.result?.by, "recovery");
     assert.equal((await selection(f)).active.unfenced?.proven, false);
     assert.equal(await status(f.model()), 503);
+  },
+);
+
+/** A fence held past every clean lease: membership can't renew through a fenced slot. */
+async function fencedPastLeases(f: Fixture, advance: (milliseconds: number) => void) {
+  for (let elapsed = 0; elapsed <= 3 * membershipTtlMs; elapsed += 5_000) {
+    await homePass(f);
+    advance(5_000);
+  }
+}
+
+test(
+  "a healthy root fenced past its leases goes back unproven and is proven through Home",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f, identity, advance } = await root(context);
+    await f.send("fence", { identity });
+    await fencedPastLeases(f, advance);
+    const { status: code, body } = await unfence(f, identity);
+    assert.equal(code, 200);
+    assert.equal(body.result?.by, "recovery", "no proof passes on leases the fence let run out");
+    assert.equal((await selection(f)).active.unfenced?.proven, false);
+    assert.equal(await status(f.model()), 503, "no model call before current policies reach it");
+    const home = f.old.calls.home;
+    await homePass(f);
+    assert.ok(f.old.calls.home > home, "membership's Home read reached the unproven boot");
+    await pass(f);
+    assert.equal((await selection(f)).active.unfenced?.proven, true);
+    const served = await f.model();
+    assert.equal(served.status, 200, await served.text());
+    assert.deepEqual(f.old.calls.signals, [], "a boot that answers is never stopped");
+    assert.equal(f.old.calls.start, 0);
+  },
+);
+
+test(
+  "a refusing root fenced past its leases goes back to recovery and serves on its new boot",
+  { timeout: 30_000 },
+  async (context) => {
+    const { f, identity, advance } = await root(context);
+    refuseCurrentBoot(f);
+    await f.send("fence", { identity });
+    await fencedPastLeases(f, advance);
+    const { body } = await unfence(f, identity);
+    assert.equal(body.result?.by, "recovery");
+    for (let elapsed = 0; elapsed <= unservingBoundMs; elapsed += 2_000) {
+      await pass(f);
+      advance(2_000);
+    }
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [15], "recovery's forced restart replaced it");
+    // The committed boot is proven; its expired lease holds recovery until Home renews it.
+    await homePass(f);
+    await pass(f);
+    const after = await selection(f);
+    assert.notEqual(after.active.identity?.bootId, identity.bootId);
+    assert.equal(after.active.unfenced?.proven, true);
+    const served = await f.model();
+    assert.equal(served.status, 200, await served.text());
+  },
+);
+
+test(
+  "an unproven boot takes no Home call and no model call while another boot answers for it",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f, identity, advance } = await root(context);
+    await f.send("fence", { identity });
+    await fencedPastLeases(f, advance);
+    assert.equal((await unfence(f, identity)).body.result?.by, "recovery");
+    // A container answering readiness as a boot the selection never attested.
+    f.old.hooks.health = async () =>
+      Response.json(
+        { boot_id: crypto.randomUUID(), started_at: "fixture-started" },
+        { headers: { [policyHealthHeader]: "1500" } },
+      );
+    const home = f.old.calls.home;
+    const models = f.old.calls.model;
+    await homePass(f);
+    assert.equal(await status(f.model()), 503);
+    assert.equal(f.old.calls.home, home, "no Home call reached it");
+    assert.equal(f.old.calls.model, models, "no model call reached it");
+    assert.equal((await selection(f)).active.unfenced?.proven, false);
   },
 );

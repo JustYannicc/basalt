@@ -14,11 +14,21 @@ import {
   type SlotRecord,
   type SlotSelection,
 } from "./contract.ts";
-import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "./proof.ts";
+import {
+  currentPolicies,
+  healthy,
+  proveSlot,
+  retiredDenials,
+  slotClock,
+  staleLeases,
+  type SlotClock,
+} from "./proof.ts";
 import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
+import { runtimeFailureCause, runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { notServing } from "./forced-restart.ts";
 import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
 import { SlotFirstStart } from "./first-start.ts";
@@ -26,17 +36,21 @@ import { SlotFirstStart } from "./first-start.ts";
 /**
  * The proof failed because the runtime itself refused: it isn't running, answers unhealthy or as
  * another boot, or doesn't answer in time. A controller-side refusal or a defect is not one.
+ * An endpoint's refusal arrives as `uncertain`, so its closed reason decides, as for the forced
+ * restart; a failure of the endpoint's own storage or signing is not the runtime's.
  */
 export function proofRefusedByRuntime(refusal: unknown) {
-  if (refusal instanceof SlotRefused)
-    return (
-      refusal.reason === "unhealthy" ||
-      refusal.reason === "identity" ||
-      refusal.reason === "uncertain"
-    );
+  if (
+    !(refusal instanceof SlotRefused) &&
+    !(refusal instanceof PoolRuntimeUnhealthy) &&
+    !(refusal instanceof DOMException && refusal.name === "TimeoutError")
+  )
+    return false;
+  const failed = runtimeFailureCause(refusal);
   return (
-    refusal instanceof PoolRuntimeUnhealthy ||
-    (refusal instanceof DOMException && refusal.name === "TimeoutError")
+    notServing.has(runtimeFailureDiagnostic(refusal, "slot_health").runtimeReason) &&
+    failed !== "dependency_storage" &&
+    failed !== "dependency_signing"
   );
 }
 
@@ -293,6 +307,13 @@ export class RuntimeSlots {
   async unfence(identity: SlotIdentity): Promise<{ by: "proof" | "recovery" }> {
     this.identity(identity);
     const before = await this.inspect();
+    retiredDenials(before);
+    // A fence stops membership renewing, so a clean lease runs out a few seconds in and no proof
+    // can pass until a Home read renews it. That read needs the slot unfenced: recovery's turn.
+    if (staleLeases(before, this.clock)) {
+      if (await this.returnToRecovery(identity)) return { by: "recovery" };
+      throw new SlotRefused("policy");
+    }
     let proof: Awaited<ReturnType<typeof proveSlot>>;
     try {
       proof = await proveSlot(this.deps.driver, identity, before, this.clock);

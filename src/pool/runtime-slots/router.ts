@@ -55,7 +55,9 @@ export class RuntimeSlotRouter {
         if (
           !active?.identity ||
           active.fenced ||
-          awaitsProof(active) ||
+          // A handed-back boot takes Home calls, the way current policies reach it, but no model
+          // call until it is proven. The health read below still pins its boot on both ports.
+          (port === 8317 && awaitsProof(active)) ||
           active.retirement ||
           active.target.controllerId !== this.deps.controllerId ||
           (candidate && !sameIdentity(active.identity, candidate))
