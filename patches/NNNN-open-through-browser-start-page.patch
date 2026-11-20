@@ -9,14 +9,17 @@ diff --git a/e2e/support/browser-observability.ts b/e2e/support/browser-observab
  import { Target } from "./platform.ts";
  
  const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }));
-@@ -81,9 +82,11 @@ export const injectDashboardResponse = (slug: string, body: string, status: numb
+@@ -80,10 +81,13 @@ export const injectDashboardResponse = (slug: string, body: string, status: numb
+         }),
        ),
      );
-     // Pages render on the server with their data, so the browser reads resources only when it
+-    // Pages render on the server with their data, so the browser reads resources only when it
 -    // navigates to them itself.
 -    yield* browser.use("Open a page that does not read resources", (page) =>
 -      page.goto(`/org/${slug}/connect`),
-+    // navigates to them itself. Connect's document can already carry them; Settings' never does.
++    // A document that carries resources leaves the browser nothing to read, so this starts from
++    // a page whose document carries none. Connect's can already carry them. Settings' never does,
++    // and the organization reads them in the browser once that page has hydrated.
 +    yield* openStartPage(
 +      "Open a page whose document never carries resources",
 +      `/org/${slug}/apps`,

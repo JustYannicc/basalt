@@ -43,21 +43,23 @@ test("a destination that names no organization cannot start from settings", () =
 });
 
 test("only an entry for the Apps list's read counts as a carried list", () => {
-  const entry = (key: string) => `{"key":"${key}","value":{"_tag":"Success"}}`;
+  // A read that follows the organization's revisions is sent under `hosted:accepted:` and its
+  // query's key, which ends in the request with its properties in order.
+  const accepted = (endpoint: string, request: object) =>
+    JSON.stringify({
+      "~effect/reactivity/Hydration/DehydratedAtom": true,
+      key: `hosted:accepted:AtomHttpApi:${endpoint}:${JSON.stringify(request)}`,
+      value: { body: { _tag: "Success" }, receipt: { revisions: [] } },
+    });
+  const list = (view: string) =>
+    accepted("resourceAccess:directory", { params: { organization: "acme" }, query: { view } });
   for (const view of ["available", "managed"])
-    assert.equal(
-      carriesAppsList(
-        `<script>${entry(`AtomHttpApi:resourceAccess:directory:{"query":{"view":"${view}"}}`)}</script>`,
-      ),
-      true,
-      view,
-    );
-  // Every dashboard document carries the shell's reads; they are not the list.
-  assert.equal(
-    carriesAppsList(
-      `<script>${entry("AtomHttpApi:organization:access:{}")}${entry("AtomHttpApi:groups:list:{}")}</script>`,
-    ),
-    false,
-  );
+    assert.equal(carriesAppsList(`<script>${list(view)}</script>`), true, view);
+  // The organization's inventory is another such read, and every document carries its access.
+  const others = [
+    accepted("organization:inventory", { params: { organization: "acme" } }),
+    JSON.stringify({ key: "hosted:organization-access:acme", value: { _tag: "Success" } }),
+  ];
+  assert.equal(carriesAppsList(`<script>${others.join("")}</script>`), false);
   assert.equal(carriesAppsList("<main>Apps</main>"), false);
 });
