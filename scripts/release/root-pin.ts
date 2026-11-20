@@ -18,7 +18,8 @@ const refused = (rule: string, why: string, fix: string) =>
 
 const REGISTRY = "registry.cloudflare.com";
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
-const REPOSITORY = /^[a-z0-9][a-z0-9_.-]*(?:\/[a-z0-9][a-z0-9_.-]*)*$/u;
+// The characters the stack's declaration admits (`ImmutableImage`, src/pool/fleet-deployment.ts).
+const REPOSITORY = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/u;
 const PARTS_FIX =
   'Set POOL_ROOT_PIN to {"repository":"<repository>","digest":"sha256:<64 hex>","input":"<16 hex>"}: the repository and digest of PoolContainer\'s configuration.image, without the registry or the account, and PoolWorker\'s POOL_IMAGE_HASH.';
 
@@ -52,19 +53,25 @@ export function composeRootPin(parts: string | undefined, accountId: string | un
       "POOL_ROOT_PIN is not {repository, digest, input}.",
       PARTS_FIX,
     );
-  // The variable is public: a repository carrying the registry or an account would print it.
-  const first = repository.split("/")[0]!;
-  if (first === REGISTRY || /^[a-f0-9]{32}$/u.test(first))
+  // The variable is public: a repository carrying an account would print it. (The registry's dots
+  // never pass the pattern.)
+  if (/^[a-f0-9]{32}$/u.test(repository.split("/")[0]!))
     throw refused(
       "root-pin-malformed",
-      "POOL_ROOT_PIN's repository starts with the registry or an account; the entry adds those.",
+      "POOL_ROOT_PIN's repository starts with an account; the entry adds it.",
       PARTS_FIX,
     );
-  if (!/^[a-f0-9]{32}$/u.test(accountId ?? ""))
+  if (!accountId)
     throw refused(
       "root-pin-no-account",
       "The root pin needs the deployment account, and this step has none.",
       "Run the entry with the CLOUDFLARE_ACCOUNT_ID secret.",
+    );
+  if (!/^[a-f0-9]{32}$/u.test(accountId))
+    throw refused(
+      "root-pin-bad-account",
+      "The deployment account this step has is not 32 hex characters.",
+      "Check the CLOUDFLARE_ACCOUNT_ID secret's value, for example for a trailing newline.",
     );
   return JSON.stringify({ image: `${REGISTRY}/${accountId}/${repository}@${digest}`, input });
 }
@@ -121,7 +128,9 @@ export function rootPinMismatch(
   } catch {
     return refused("root-pin-malformed", "The root pin is not JSON.", PARTS_FIX);
   }
-  if (!record(pin)) return refused("root-pin-not-set", "The root pin is not set.", PARTS_FIX);
+  if (pin === undefined) return refused("root-pin-not-set", "The root pin is not set.", PARTS_FIX);
+  if (!record(pin))
+    return refused("root-pin-malformed", "The root pin is not a JSON object.", PARTS_FIX);
   const attr = record(rootRow) && record(rootRow.attr) ? rootRow.attr : {};
   const configuration = record(attr.configuration) ? attr.configuration : {};
   const props = record(workerRow) && record(workerRow.props) ? workerRow.props : {};

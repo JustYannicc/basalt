@@ -21,7 +21,12 @@ test("the preflight admits only the pin State records the root running", () => {
   // Unset, unreadable, or naming nothing State records.
   for (const unset of [undefined, ""])
     assert.match(why(rootPinMismatch(unset, rootRow(), workerRow)), /^root-pin-not-set: /u);
-  assert.match(why(rootPinMismatch("{", rootRow(), workerRow)), /^root-pin-malformed: /u);
+  for (const malformed of ["{", "null", "[]", "42"])
+    assert.match(
+      why(rootPinMismatch(malformed, rootRow(), workerRow)),
+      /^root-pin-malformed: /u,
+      malformed,
+    );
   assert.match(
     why(rootPinMismatch(pin({ image, input }), undefined, workerRow)),
     /^root-pin-state-unreadable: .*State records the image absent; POOL_IMAGE_HASH present/u,
@@ -87,16 +92,25 @@ test("the pin is composed from its public parts and the account, and refuses any
     // The registry or the account in the public variable.
     pin({ repository: `registry.cloudflare.com/${account}/${repository}`, digest, input }),
     pin({ repository: `${account}/${repository}`, digest, input }),
+    // A name the stack's declaration would refuse after the preflight passed.
+    pin({ repository: "pool.root", digest, input }),
   ])
     assert.throws(
       () => composeRootPin(malformed, account),
       (error: unknown) => error instanceof RootPinRefused && error.rule === "root-pin-malformed",
       malformed,
     );
-  for (const missing of [undefined, "", "not-an-account"])
+  for (const [given, rule] of [
+    [undefined, "root-pin-no-account"],
+    ["", "root-pin-no-account"],
+    // Set, but not an account: a stray newline in the secret is not a missing secret.
+    [`${account}\n`, "root-pin-bad-account"],
+    ["not-an-account", "root-pin-bad-account"],
+  ] as const)
     assert.throws(
-      () => composeRootPin(parts, missing),
-      (error: unknown) => error instanceof RootPinRefused && error.rule === "root-pin-no-account",
+      () => composeRootPin(parts, given),
+      (error: unknown) => error instanceof RootPinRefused && error.rule === rule,
+      rule,
     );
 });
 
