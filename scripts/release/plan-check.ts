@@ -861,11 +861,16 @@ export const checkPlan = (
       // well, whatever the planner calls the row; either generation may be what is live.
       // The exceptions, each one named:
       // - the entry file may sit under another checkout's directory;
-      // - a value the policy names may differ in its named fields;
-      // - a reference the policy names may be any copy of its resource's attributes, or the
-      //   resource itself while that updates, provided the entry's one binding row holds one wire
-      //   entry, named after the entry and as State has it. That row alone may differ in the copy
-      //   of a database connection's origin that local development reads; no upload reads it.
+      // - a value the policy names may differ in its named fields, in the entry and in the binding
+      //   row that carries it;
+      // - a reference the policy names: State may hold any record under the entry, such as an
+      //   older copy of the resource's attributes, and the plan holds the attributes State records
+      //   for the resource now, or the resource itself while that updates. This holds only while
+      //   the entry's one binding row holds one wire entry that the upload carries, named after
+      //   the entry and as State has it. That row alone may differ in the copy of a database
+      //   connection's origin that local development reads; no upload reads it.
+      // State itself has to be readable that way: the generation under an interrupted apply is a
+      // finished one, and where State holds a row twice the last copy counts, as for the planner.
       // Each property and each `env` entry is compared on its own: one value that is not known yet
       // must not hide the rest of the row.
       const beyondCode = (
@@ -894,13 +899,16 @@ export const checkPlan = (
           ...(node.state !== finished ? [node.state] : []),
         ];
         const rows = bindingChanges(node);
-        /** What each generation holds for a row; `undefined` where one does not hold it. */
+        /**
+         * What each generation holds for a row; `undefined` where one does not hold it. Where a
+         * generation holds the row twice, the last copy: the planner reads that one.
+         */
         const held = (sid: string): unknown[] =>
           generations.map(
             (generation) =>
-              (Array.isArray(generation?.bindings) ? generation.bindings : []).find(
-                (binding: { sid?: unknown }) => binding.sid === sid,
-              )?.data,
+              (Array.isArray(generation?.bindings) ? generation.bindings : [])
+                .filter((binding: { sid?: unknown }) => binding.sid === sid)
+                .at(-1)?.data,
           );
         // A row that is in the plan and in State. A `create` or `delete` row is a change as such.
         const kept = (binding: Row) => binding.action === "noop" || binding.action === "update";
@@ -979,12 +987,19 @@ export const checkPlan = (
           planned(resource)?.action === "update";
         // A reference's row holds one wire entry, named after the entry. With no wire entry of its
         // name the provider uploads the entry's own value instead: the resource's attributes,
-        // which change with every update of the resource and which the plan does not hold.
+        // which change with every update of the resource and which the plan does not hold. A wire
+        // entry of the kind the upload drops (the library's `withoutDevOnlyBindings`: the local
+        // S3 credentials) leaves the upload without one, so it does not count.
         const namesEntry = (binding: Row) => {
           const data: unknown = binding.data;
           if (Output.isOutput(data) || !record(data) || !Array.isArray(data.bindings)) return false;
           const [entry, ...more]: unknown[] = data.bindings;
-          return more.length === 0 && record(entry) && entry.name === binding.sid;
+          return (
+            more.length === 0 &&
+            record(entry) &&
+            entry.name === binding.sid &&
+            entry.type !== "r2_s3_credentials"
+          );
         };
         // A named reference's row whose upload stays the same: its wire entry is known and as State
         // has it, and so is every other key but one. The copy of a database connection's origin
@@ -1031,7 +1046,19 @@ export const checkPlan = (
         const twice = (names: readonly string[]) => [
           ...new Set(names.filter((name, index) => names.indexOf(name) !== index)),
         ];
+        // The apply puts the row before it under `old` when it starts an update, and carries that
+        // one forward when it is interrupted again. Anything else there is not a generation this
+        // check can take as the last finished one.
+        const finishedOne = (generation: unknown) =>
+          record(generation) &&
+          generation.old === undefined &&
+          (generation.status === undefined ||
+            generation.status === "created" ||
+            generation.status === "updated");
         const lines = [
+          ...(node.state !== finished && !finishedOne(finished)
+            ? ["state: the generation under the interrupted apply is not a finished one"]
+            : []),
           // A policy that names an entry twice, or the Worker itself, would let the looser rule
           // answer for the stricter one.
           ...[codeOnly.references, codeOnly.values].flatMap((list) =>
