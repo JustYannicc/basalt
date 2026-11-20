@@ -58,7 +58,6 @@ const knownExposure: Record<string, string[]> = {
 // The only jobs that hold secrets beside a pull request's run or after another run. Each runs main's
 // code; any new one needs review before it joins this list.
 const baseRunJobs = [
-  "deploy.yml/deploy",
   "release-cleanup.yml/cleanup",
   "release-merge.yml/merge",
   // Its checkout is the candidate job's main commit, never a pull request's.
@@ -381,8 +380,8 @@ test("secrets beside a pull request's run or on another ref run only main's code
   });
   // Named as an allowed base-run job, so these fixtures test what such a job may do.
   const file = (on: unknown, job: Job): File => ({
-    name: "deploy.yml",
-    workflow: { on, jobs: { deploy: job } },
+    name: "release-cleanup.yml",
+    workflow: { on, jobs: { cleanup: job } },
   });
   const main = { uses: "actions/checkout@v4", with: { ref: "main" } };
   const head = {
