@@ -43,7 +43,9 @@ jobs:
   repin:
     name: Re-pin ${{ matrix.entry }}
     needs: metadata
-    if: ${{ !cancelled() && needs.metadata.outputs.entries != '' && needs.metadata.outputs.entries != '[]' }}
+    # It holds a write token, so only main's own workflow may run it: a dispatch from another
+    # branch would run that branch's definition of this job with the secret.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.metadata.outputs.entries != '' && needs.metadata.outputs.entries != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
