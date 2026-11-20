@@ -7,8 +7,8 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
            // Keyboard focus is intent too, and a fresh answer is shown without reading again.
 +          // A new document replays the 31 seconds added above, so it would open that far ahead of
 +          // the server that rendered it, find its access and organizations older than their
-+          // freshness, and read them again on entry. A fresh document starts at the server's time.
-+          yield* browser.use("Return the browser clock to the server's time", (page) =>
++          // freshness, and read them again on entry. Real time is where the first document started.
++          yield* browser.use("Return the browser clock to real time", (page) =>
 +            page.clock.setSystemTime(Date.now()),
 +          );
 +          // Counted from before the document opens: the driver reports a request some time after

@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "The Settings intent keyboard-focus proof returns the browser clock to the server's time before it opens its fresh Apps document. A new document replays every advance made on the controlled clock, so the 31 seconds added to make the members stale would otherwise open it that far ahead of the server that rendered it, and it would read its hydrated access and organizations again on entry. The proof counts access, organization and session reads from before that document opens until the focus reads answer, because the driver reports a request some time after the page sends it. The reuse assertion still allows no such read, over that wider window; the read counts and every deadline remain unchanged."
+      constraint "The Settings intent keyboard-focus proof returns the browser clock to real time, where its first document started, before it opens its fresh Apps document. A new document replays every advance made on the controlled clock, so the 31 seconds added to make the members stale would otherwise open it that far ahead of the server that rendered it, and it would read its hydrated access and organizations again on entry. The proof counts access, organization and session reads from before that document opens until the focus reads have answered and settled, because the driver reports a request some time after the page sends it. The reuse assertion still allows no such read, over that wider window; the read counts and every deadline remain unchanged."
     }
   }
 }
