@@ -51,7 +51,7 @@ concurrency:
 jobs:
   operate:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     environment:
       name: production-release
@@ -61,7 +61,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       - name: Load the completed encrypted source operation

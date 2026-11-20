@@ -1,0 +1,40 @@
+{
+  "description": "Every production release after the cutover: the fleet stays declared and built from source; no class may be created, deleted, renamed or transferred; no data resource deleted or replaced.",
+  "check": {
+    "mode": "release",
+    "protected": {
+      "fqns": [
+        "PoolContainer",
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+        "PoolRuntime",
+        "VaultAttachments",
+        "PublicSiteWaitlist",
+        "PoolObservationSecrets",
+        "PoolProviderObservationToken",
+        "ArtifactsCredentials"
+      ],
+      "types": [
+        "Cloudflare.Hyperdrive",
+        "Planetscale.*",
+        "Cloudflare.R2.Bucket",
+        "Cloudflare.D1Database",
+        "Cloudflare.SecretsStore"
+      ]
+    },
+    "removals": [],
+    "poolContainer": {
+      "fqn": "PoolContainer",
+      "image": ""
+    },
+    "poolWorker": "PoolWorker",
+    "artifactsCredentials": "ArtifactsCredentials",
+    "allow": []
+  },
+  "wire": {
+    "sqliteClasses": {}
+  },
+  "env": {
+    "POOL_FLEET_BUILD": "true"
+  }
+}
