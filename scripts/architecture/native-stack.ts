@@ -14,23 +14,6 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateInventory, type WorkerMetadata } from "./native-stack-fixtures.ts";
 
-type CandidateProof =
-  | "ready"
-  | "missing-attempt"
-  | "entry-ready"
-  | "entry-missing-attempt"
-  | "entry-inventory-refusals"
-  | "forward-state-v7"
-  | "release-state-v7"
-  | "release-state-v8"
-  | "retirement-ready"
-  | "retirement-v8"
-  | "retirement-future"
-  | "entry-retirement-v7"
-  | "entry-retirement-v8"
-  | "entry-retirement-unauthorized"
-  | "entry-retirement-malformed";
-
 export interface StackResource {
   id: string;
   kind: string;
@@ -63,14 +46,8 @@ function evaluate(
   root: string,
   options: {
     manualCron?: true;
-    settingsProof?: true;
-    candidateProof?: CandidateProof;
-    releaseProof?: true;
-    connectionProof?: true;
-    previewConnectionProof?: true;
-    connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection";
-    connectionChange?: "origin" | "limit" | "tls" | "name";
-    containerProof?: string;
+    settlesProof?: "production" | "preview";
+    rootContainerProof?: true;
   } = {},
 ): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
@@ -86,15 +63,9 @@ function evaluate(
       TMPDIR: join(scratch, "tmp"),
       BUN_INSTALL_CACHE_DIR: join(scratch, "cache"),
       NATIVE_STACK_ROOT: realpathSync(root),
-      NATIVE_STACK_SETTINGS_PROOF: String(options.settingsProof ?? false),
-      NATIVE_STACK_CANDIDATE_PROOF: options.candidateProof ?? "",
       NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
-      NATIVE_STACK_RELEASE_PROOF: String(options.releaseProof ?? false),
-      NATIVE_STACK_CONNECTION_TARGET: options.connectionTarget ?? "DatabaseConnection",
-      NATIVE_STACK_CONNECTION_PROOF: String(options.connectionProof ?? false),
-      NATIVE_STACK_PREVIEW_CONNECTION_PROOF: String(options.previewConnectionProof ?? false),
-      NATIVE_STACK_CONNECTION_CHANGE: options.connectionChange ?? "",
-      NATIVE_STACK_CONTAINER_PROOF: options.containerProof ?? "",
+      NATIVE_STACK_SETTLES_PROOF: options.settlesProof ?? "",
+      NATIVE_STACK_ROOT_CONTAINER_PROOF: String(options.rootContainerProof ?? false),
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -197,88 +168,49 @@ export function discoverStack(root: string): StackResource[] {
   return discoverStackInventory(root).map(({ id, kind, source }) => ({ id, kind, source }));
 }
 
-export interface ReleasePhaseProof {
-  resources: { id: string; type: string; dependencies: string[] }[];
-  selected: string[];
-  failed: string[];
-  applied: string[];
-  dbSecondPass: { id: string; action: string }[];
-  nextAttempt: { id: string; action: string }[];
-}
-
-/** Uses the real root declarations, Alchemy selection and the installed Exec provider. */
-export function discoverReleasePhaseProof(root: string): ReleasePhaseProof {
-  return evaluate(root, { releaseProof: true }) as ReleasePhaseProof;
-}
-
-export interface ConnectionPlanProof {
-  connectionIds: string[];
-  poolWorkerDependencies: string[];
-  poolAction: string;
-  databasePhaseContainsPool: boolean;
+export interface PlannedRow {
+  id: string;
+  type: string;
   action: string;
-  storedOriginResolved: boolean;
-  candidateOriginResolved: boolean;
-  dependencies: string[];
-  budgetAction: string;
-  migrationAction: string;
-  databasePhaseContainsMigrations: boolean;
-  databasePhaseContainsBudget: boolean;
-  refusal: string | null;
-  resolvedOriginEqual: boolean | null;
-  resolvedConfigEqual: boolean | null;
-  connectionWrites: number;
-  commandRuns: number;
+  /** Resources that wait on this row's outcome. */
+  readers: string[];
 }
 
-export function discoverPreviewConnectionProof(root: string): {
-  dependencies: string[];
-  selected: string[];
-  success: { succeeded: boolean; connectionWrites: number; commands: string[] };
-  failure: { succeeded: boolean; connectionWrites: number; commands: string[] };
-} {
-  return evaluate(root, { previewConnectionProof: true }) as ReturnType<
-    typeof discoverPreviewConnectionProof
-  >;
-}
-
-export function discoverConnectionPlanProof(
+/**
+ * Deploys the real stack into empty state, then plans it again unchanged and once more with a new
+ * release attempt id. A failed phase is named by its phase and error class only.
+ */
+export function discoverPlanSettlesProof(
   root: string,
-  connectionChange?: "origin" | "limit" | "tls" | "name",
-  connectionTarget?: "DatabaseConnection" | "PoolModelDatabaseConnection",
-): ConnectionPlanProof {
-  return evaluate(root, {
-    connectionProof: true,
-    ...(connectionTarget ? { connectionTarget } : {}),
-    ...(connectionChange ? { connectionChange } : {}),
-  }) as ConnectionPlanProof;
+  shape: "production" | "preview",
+): {
+  failed?: string;
+  error?: string;
+  resources: number;
+  /** The key the declared pool database command carries. */
+  poolDatabaseKey?: { include?: string[]; lockfile?: boolean };
+  afterApply: PlannedRow[];
+  nextAttempt: PlannedRow[];
+} {
+  return evaluate(root, { settlesProof: shape }) as ReturnType<typeof discoverPlanSettlesProof>;
 }
 
-export function discoverContainerBarrierProof(root: string, scenario: string) {
-  return evaluate(root, { containerProof: scenario }) as {
-    scenario: string;
-    succeeded: boolean;
-    without631Action: string;
-    containerAction: string;
-    workerInputMatches: boolean;
-    applicationWrites: number;
-    rollouts: number;
-    dockerCalls: number;
-    events: string[];
-    unchangedAction?: string;
-    liveStateWrites: number;
-    planReasons: string[];
-    containerDependencies: string[];
-    containerBindingUnresolved: boolean;
-    readinessDependencies: string[];
-  };
-}
-
-/** Derives the exact script settings from all real declarations in the existing network sandbox. */
-export function discoverScriptSettings(root: string): unknown {
-  return evaluate(root, { settingsProof: true });
-}
-
-export function discoverCandidateSettings(root: string, candidateProof: CandidateProof): unknown {
-  return evaluate(root, { candidateProof });
+/**
+ * Deploys the real stack into empty state and plans it again unchanged. The pool Worker's answer
+ * comes from the installed Worker provider. A failed phase is named by its phase and error class.
+ */
+export function discoverRootContainerPlanProof(root: string): {
+  failed?: string;
+  error?: string;
+  resources: number;
+  /** Classes the pool Worker hosts, and every class it has a recorded namespace for. */
+  hosted: string[];
+  recorded: string[];
+  /** Each answer the provider gave: whether the recorded namespaces stay readable. */
+  readable: boolean[];
+  afterApply: { id: string; type: string; action: string }[];
+} {
+  return evaluate(root, { rootContainerProof: true }) as ReturnType<
+    typeof discoverRootContainerPlanProof
+  >;
 }

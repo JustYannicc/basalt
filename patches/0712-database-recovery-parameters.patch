@@ -13,21 +13,28 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
  
  class PoolBudgetFailed extends Schema.TaggedError<PoolBudgetFailed>()("PoolBudgetFailed", {
    message: Schema.String,
-@@ -15,81 +18,124 @@ const Parameters = Schema.Array(
+@@ -15,6 +18,7 @@ const Parameters = Schema.Array(
  );
  const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
  const Changes = Schema.Struct({ data: Schema.Array(Change) });
 +type Rows = typeof Parameters.Type;
  
+ const testDatabases = "basalt-preview-";
+ /**
+@@ -34,76 +38,129 @@ export function ownPoolBudgetTarget(stage: string, database: string, branch: str
+   );
+ }
+ 
 -export const configureDatabasePoolBudget = Effect.gen(function* () {
 -  const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
+-  const stage = yield* Config.NonEmptyString("POOL_BUDGET_STAGE");
 -  const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
 -  const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
 -  const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
 -  const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
--  if (branch !== "main" && !/^test-[a-z0-9-]+$/.test(branch))
+-  if (!ownPoolBudgetTarget(stage, database, branch))
 -    return yield* new PoolBudgetFailed({
--      message: "The database budget requires main or an isolated test branch",
+-      message: "The database budget refuses a database or branch that is not its stage's own",
 -    });
 -  const client = yield* HttpClient.HttpClient;
 -  const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
@@ -38,6 +45,19 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 -          request,
 -          "authorization",
 -          `${Redacted.value(id)}:${Redacted.value(token)}`,
++/**
++ * Recovery targets a branch restored from a non-test stage's own database, before it serves:
++ * never `main`, which is serving, and never a test stage's database or branch.
++ */
++export function recoveryTarget(stage: string, database: string, branch: string): boolean {
++  return (
++    !stage.startsWith("test-") &&
++    !database.startsWith(testDatabases) &&
++    branch !== "main" &&
++    !branch.startsWith("test-")
++  );
++}
++
 +const value = (rows: Rows, namespace: string, name: string) =>
 +  rows.find((row) => row.namespace === namespace && row.name === name)?.value;
 +const poolerMatches = (rows: Rows) =>
@@ -48,26 +68,26 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +  value(rows, "pgconf", "max_connections") === databaseMaxConnections;
 +
 +/**
-+ * The release keeps the shared pooler budget on main or a test branch and verifies main's
-+ * Postgres connection slots without changing them, because that change restarts Postgres.
-+ * Recovery applies both to a restored branch before it serves, and never to main.
++ * The release keeps the shared pooler budget on its stage's own branch and verifies a non-test
++ * stage's Postgres connection slots without changing them, because that change restarts Postgres.
++ * Recovery applies both to a restored branch before it serves.
 + */
 +const databasePoolBudget = (mode: "release" | "recovery") =>
 +  Effect.gen(function* () {
 +    const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
++    const stage = yield* Config.NonEmptyString("POOL_BUDGET_STAGE");
 +    const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
 +    const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
 +    const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
 +    const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
-+    if (mode === "release" && branch !== "main" && !/^test-[a-z0-9-]+$/.test(branch))
++    if (mode === "release" && !ownPoolBudgetTarget(stage, database, branch))
 +      return yield* new PoolBudgetFailed({
-+        message: "The database budget requires main or an isolated test branch",
++        message: "The database budget refuses a database or branch that is not its stage's own",
 +      });
-+    // Previews serve their own stage and are sized for fewer connections than production.
-+    if (mode === "recovery" && (branch === "main" || branch.startsWith("test-")))
++    if (mode === "recovery" && !recoveryTarget(stage, database, branch))
 +      return yield* new PoolBudgetFailed({
 +        message:
-+          "Recovery applies parameters only to a restored branch that is not serving, never main or a test branch",
++          "Recovery applies parameters only to a restored branch that is not serving, never main or a test stage's",
 +      });
 +    const client = yield* HttpClient.HttpClient;
 +    const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
@@ -105,11 +125,12 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +      return yield* new PoolBudgetFailed({
 +        message: "The database budget requires transaction pooling",
 +      });
-+    const slots = mode === "recovery" || branch === "main";
++    // A test stage keeps its own smaller connection size; every other release target is `main`.
++    const slots = mode === "recovery" || !stage.startsWith("test-");
 +    // Refused before any write: only recovery on a branch that is not serving may restart Postgres.
-+    if (mode === "release" && branch === "main" && !connectionsMatch(current))
++    if (mode === "release" && slots && !connectionsMatch(current))
 +      return yield* new PoolBudgetFailed({
-+        message: `Postgres max_connections is ${value(current, "pgconf", "max_connections") ?? "unset"} on main, expected ${databaseMaxConnections}; apply it through recovery on a branch that is not serving`,
++        message: `Postgres max_connections on main is not ${databaseMaxConnections}; apply it through recovery on a branch that is not serving`,
 +      });
 +    const pending = {
 +      ...(poolerMatches(current) ? {} : { pgbouncer: databasePoolParameters }),
@@ -129,11 +150,11 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +      Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
 +      Effect.flatMap(({ data }) => {
 +        const state = data.find((entry) => entry.id === change.id)?.state;
-+        return state === "completed"
-+          ? Effect.void
-+          : Effect.fail(
-+              new PoolBudgetFailed({ message: `Parameter change is ${state ?? "missing"}` }),
-+            );
++        if (state === "completed") return Effect.void;
++        // Only a plain state word reaches the failure text; anything else is provider data.
++        const word =
++          state === undefined ? "missing" : /^[a-z_]{1,32}$/.test(state) ? state : "unreadable";
++        return Effect.fail(new PoolBudgetFailed({ message: `Parameter change is ${word}` }));
 +      }),
 +      // A pooler reload completes in seconds; recovery's Postgres restart can take much longer.
 +      Effect.retry({
@@ -170,11 +191,11 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 -    Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
 -    Effect.flatMap(({ data }) => {
 -      const state = data.find((entry) => entry.id === change.id)?.state;
--      return state === "completed"
--        ? Effect.void
--        : Effect.fail(
--            new PoolBudgetFailed({ message: `PgBouncer change is ${state ?? "missing"}` }),
--          );
+-      if (state === "completed") return Effect.void;
+-      // Only a plain state word reaches the failure text; anything else is provider data.
+-      const word =
+-        state === undefined ? "missing" : /^[a-z_]{1,32}$/.test(state) ? state : "unreadable";
+-      return Effect.fail(new PoolBudgetFailed({ message: `PgBouncer change is ${word}` }));
 -    }),
 -    Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
 -  );
@@ -194,6 +215,12 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +/** `node scripts/database-pool-budget.ts --recover` on a restored branch, before it serves. */
 +export const recoverDatabaseParameters = databasePoolBudget("recovery");
  
+ /** Fixed text only: this script's own failure messages, or the class of any other error. */
+ const failureText = (error: unknown) =>
+@@ -118,10 +175,11 @@ const failureText = (error: unknown) =>
+           : "error"
+       }`;
+ 
 -if (import.meta.main)
 +if (import.meta.main) {
 +  const recover = process.argv.includes("--recover");
@@ -203,6 +230,10 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +    (recover ? recoverDatabaseParameters : configureDatabasePoolBudget).pipe(
 +      Effect.timeout(recover ? "35 minutes" : "6 minutes"),
        Effect.provide(FetchHttpClient.layer),
+       // A deploy reports only a command's stderr, and the runtime logs failures to stdout.
+       Effect.tapError((error) =>
+@@ -129,3 +187,4 @@ if (import.meta.main)
+       ),
      ),
    );
 +}
