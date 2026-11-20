@@ -15,9 +15,9 @@ diff --git a/packages/ui/src/contracts/mutations.ts b/packages/ui/src/contracts/
        const current = AsyncResult.value(result);
 -      if (Option.isSome(current)) get.setSelf(AsyncResult.success(update(current.value)));
 +      if (Option.isNone(current)) return;
-+      // A read already in flight answers after this write. The refresh that follows a confirmed
-+      // save restarts it without changing the source's waiting value, so nothing rebuilds this
-+      // query: it carries `waiting` itself, and that read's answer then replaces the value.
++      // When a read is already in flight, it answers after this write. The refresh that follows a
++      // confirmed save restarts it without changing the source's waiting value, so nothing rebuilds
++      // this query: it carries `waiting` itself until that read settles.
 +      const { waiting } = get.get(source);
 +      get.setSelf(AsyncResult.success(update(current.value), { waiting }));
      },
