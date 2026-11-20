@@ -7,7 +7,12 @@ import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { poolDatabase, poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
+import {
+  disposableStagePattern,
+  poolDatabase,
+  poolDatabaseUrl,
+  previewPoolDatabaseBranch,
+} from "./database-settings.ts";
 import { poolDatabaseInputs } from "./model-history/sources.ts";
 import { databasePoolBudget } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts";
 import { productionDatabaseMigration } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database.ts";
@@ -18,15 +23,17 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
   const stackStage = yield* Effect.serviceOption(Stage);
   const configuredStage = yield* Config.String("ALCHEMY_STAGE").pipe(Config.option);
   const stageName = Option.getOrUndefined(stackStage) ?? Option.getOrUndefined(configuredStage);
-  const isPreview = stageName !== undefined && /^test-pr-[1-9][0-9]*$/.test(stageName);
+  const isPreview = stageName !== undefined && disposableStagePattern.test(stageName);
   if (stageName?.startsWith("test-") && !isPreview)
-    return yield* Effect.die(new Error("Pool database is restricted to PR preview stages."));
+    return yield* Effect.die(
+      new Error("Pool database is restricted to PR preview and rehearsal stages."),
+    );
   const { admin, runtime } = isPreview
     ? yield* Effect.gen(function* () {
         const database = yield* Config.NonEmptyString("TEST_STAGE_DATABASE");
-        const expectedDatabase = `basalt-preview-pr-${stageName!.slice("test-pr-".length)}`;
+        const expectedDatabase = `basalt-preview-${stageName!.slice("test-".length)}`;
         if (database !== expectedDatabase)
-          return yield* Effect.die(new Error("Pool database parent does not match the PR stage."));
+          return yield* Effect.die(new Error("Pool database parent does not match its stage."));
         if (globalThis.__ALCHEMY_RUNTIME__) {
           return {
             admin: yield* Planetscale.PostgresRole.ref("PoolDatabaseMigrationRole"),
