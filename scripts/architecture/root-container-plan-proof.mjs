@@ -90,7 +90,7 @@ export const proveRootContainerPlan = (stack) =>
     );
     // The planner asks more than once: with the Worker's bindings resolved, and unresolved while
     // it follows the cycle with the container. Every answer counts.
-    const observed = { hosted: [], recorded: [], readable: [] };
+    const observed = { hosted: [], recorded: [], readable: [], unresolved: [] };
     const layers = [...new Set(Object.values(stack.resources).map((node) => node.Type))]
       .filter((type) => type !== "Command.Exec" && type !== "Cloudflare.Worker")
       .map((type) =>
@@ -115,6 +115,12 @@ export const proveRootContainerPlan = (stack) =>
                   Effect.sync(() => {
                     observed.readable.push(
                       diff?.stables?.includes("durableObjectNamespaces") ?? false,
+                    );
+                    observed.unresolved.push(
+                      classBindings(input.newBindings).some(
+                        ({ scriptName }) =>
+                          scriptName !== undefined && typeof scriptName !== "string",
+                      ),
                     );
                   }),
                 ),

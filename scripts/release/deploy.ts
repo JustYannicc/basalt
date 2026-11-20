@@ -251,7 +251,9 @@ if (command === "boot" || command === "accept") {
               "inspect",
               controllerCode,
               { accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "", worker },
-              process.env.POOL_APP_SIGNING_KEY ?? "",
+              // The pool Worker opens handoff envelopes with its deployment key (`runtimeHandoff`),
+              // as the crash dispatcher signs them; the app signing key signs pool tokens.
+              process.env.POOL_DEPLOYMENT_KEY ?? "",
             )) as { result?: unknown } | undefined
           )?.result,
         before: rootBoot,
@@ -279,6 +281,20 @@ if (command === "boot" || command === "accept") {
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
       client,
+    }).catch(async (error: unknown) => {
+      if (!verdict) throw error;
+      // The model calls could not run at all (the catalog failed): a healing release that did not
+      // serve. Its record is kept; the cause can name hosts, so it stays in the private detail.
+      await keepPrivate("acceptance", error instanceof Error ? error.message : String(error));
+      const view = {
+        outcome: "not-serving",
+        failed: "the model calls could not run",
+        restart,
+        ...(stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
+      };
+      if (values.out) await output(resolve(values.out), view);
+      await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
+      process.exit(1);
     });
     // A healing release ends healed, serving but needing a person, or not serving.
     const outcome = verdict ? healingOutcome(verdict, result) : undefined;
@@ -647,6 +663,25 @@ try {
         }
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
+        // After the plan check, which proves the recorded attachment the read relies on and names
+        // every violation first. A rehearsal stage pinned to production's root image runs the same
+        // read, so it is proven on a real application before production relies on it.
+        if (
+          checked &&
+          command === "plan" &&
+          (stage === "production" || /^test-rehearsal-[1-9][0-9]*$/u.test(stage))
+        ) {
+          // The provider decides at apply, after the pool Worker's upload, whether the root's row
+          // modifies the application; the plan makes the same read and comparison first.
+          const root = yield* Effect.promise(() => import("./root-settle-check.ts"));
+          const settled = yield* root.rootSettles({
+            node: snapshot.native.resources[checked.poolContainer.fqn],
+            accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+            pin: checked.poolContainer.image,
+            read: root.liveApplication(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? "")),
+          });
+          if (settled) yield* Effect.promise(() => summary(settled));
+        }
         const digest = planDigest(snapshot.native);
         if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
           return yield* Effect.die(
@@ -654,6 +689,20 @@ try {
               `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
             ),
           );
+        if (command === "plan" && stage === "production" && policy) {
+          // Readiness refuses a runtime digest that differs from the selected runtime's seal only
+          // after the upload; the plan compares first, or says loudly why it could not.
+          const fingerprint = yield* Effect.promise(() => import("./fingerprint-check.ts"));
+          const report = fingerprint.fingerprintReport(
+            yield* fingerprint.checkRuntimeFingerprint(
+              snapshot.native,
+              policy.check.poolWorker,
+              async () => fingerprint.identityUnknownBeforeUpload,
+            ),
+          );
+          yield* Effect.promise(() => summary(report.summary));
+          if (report.annotation) console.log(report.annotation);
+        }
         if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
