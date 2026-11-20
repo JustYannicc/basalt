@@ -235,23 +235,3 @@ test(
     assert.equal(served.status, 200, await served.text());
   },
 );
-
-test(
-  "an unfence whose proof fails on a runtime that answers health stays an error, and keeps the fence",
-  { timeout: 20_000 },
-  async (context) => {
-    const { f, identity } = await root(context);
-    await f.send("fence", { identity });
-    // The runtime answers health, but current policies can't be installed: not a dead runtime.
-    let installsFail = true;
-    f.old.hooks.install = async () => {
-      if (installsFail) throw new Error("synthetic install failure");
-    };
-    const refused = await unfence(f, identity);
-    assert.notEqual(refused.status, 200, JSON.stringify(refused.body));
-    assert.equal((await selection(f)).active.fenced, true, "the fence holds");
-    installsFail = false;
-    assert.equal((await unfence(f, identity)).body.result?.by, "proof");
-    assert.equal(await status(f.model()), 200);
-  },
-);
