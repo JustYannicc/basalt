@@ -133,7 +133,10 @@ export async function noAdoptionRecorded(error: unknown) {
   if (!(error instanceof BarrierRefusal) || error.reason !== "runtime-handoff-response-refused")
     return false;
   const changed = error.delta?.changed ?? [];
-  const at = (path: string) => changed.find((entry) => entry.path === path)?.new;
+  const at = (path: string) => {
+    const entry = changed.find((candidate) => candidate.path === path);
+    return entry && "new" in entry ? entry.new : undefined;
+  };
   return (
     at("handoff.command.action") === "witness" &&
     at("handoff.response.status") === digest(canonical(409)) &&

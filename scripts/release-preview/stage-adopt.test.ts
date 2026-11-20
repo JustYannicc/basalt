@@ -311,6 +311,7 @@ test("an adopt with no seed refuses unless the controller holds no policy at all
     outputs: "/nowhere",
     deployedCommit: "a".repeat(40),
     pin,
+    stackEnv: {},
   };
   await assert.rejects(adoptWithoutSeed({ ...input, controllerPolicies: 1 }), /holds 1 policies/u);
   await assert.rejects(

@@ -112,7 +112,9 @@ export async function diagnoseStagePool(
     const script = pick(part);
     reads[label] = script
       ? await workerEvents({ account, headers, script, from, needle }).then((read) =>
-          "body" in read ? { ...read, body: redact(read.body) } : read,
+          "body" in read && typeof read.body === "string"
+            ? { ...read, body: redact(read.body) }
+            : read,
         )
       : { missing: `no ${part} Worker of this stage` };
   }
