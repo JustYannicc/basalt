@@ -49,7 +49,10 @@
           "values": [
             {
               "name": "EXECUTOR_TELEMETRY",
-              "why": "It holds the release's build version beside the telemetry settings, so it differs on every release. It labels and routes telemetry only; no class, binding or stored job depends on it."
+              "fields": [
+                "version"
+              ],
+              "why": "A secret: the telemetry settings with their credential, and beside them the release's build version, which differs on every release. Only that one field may differ. A changed endpoint or credential in it refuses, like any other secret."
             }
           ],
           "why": "The release ships main as a whole. Holding the bulk-import store's Worker at older code while the pool Worker and the history schema move is version skew, so its code moves with the rest. Only its code: a changed binding or property refuses here, and its upload must carry the serving version's bindings and no migration (wire.fixedBindings), so its Durable Object classes and their stored jobs stay as they are. The Worker has three more bindings that are not settings of its own: the two source stores and the vault bucket. They are named in neither list, so a refusal that names one of them, or any other binding, is a real change to what this Worker is attached to. It is not a healing release's to carry: ship it in a normal release."
