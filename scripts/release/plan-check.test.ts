@@ -540,6 +540,54 @@ test("a Worker binding whose value waits on another row is not a removal", async
 
 const rootUnchanged = { poolContainer: { fqn: "PoolContainer", image: pinnedImage } };
 
+test("with a root pin, the pool Worker names the pin's input as its root's identity, both ways", async () => {
+  const input = "526fa60bed0df442";
+  const worker = (env: Record<string, string>) => ({
+    action: "update",
+    resource: { FQN: "PoolWorker", Type: "Cloudflare.Worker", Props: { env } },
+    props: { env },
+    state: { status: "updated", props: { env }, bindings: [] },
+    bindings: [],
+  });
+  const plan = (node: object) =>
+    ({ resources: { PoolWorker: node }, deletions: {}, actions: {}, actionDeletions: {} }) as never;
+  const rules = async (node: object, pinned: string | undefined) => {
+    const exit = await Effect.runPromiseExit(
+      checkPlan(
+        plan(node),
+        await policy({
+          mode: "code-only",
+          poolContainer: {
+            fqn: "PoolContainer",
+            image: pinnedImage,
+            imageRelease: true,
+            ...(pinned ? { input: pinned } : {}),
+          },
+        }),
+      ),
+    );
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map(
+          (v) => `${v.rule} ${v.change.join("; ")}`,
+        )
+      : [];
+  };
+  const both = { POOL_IMAGE_HASH: input, POOL_DESIRED_IMAGE_INPUT: input };
+  assert.deepEqual(await rules(worker(both), input), []);
+  // Today's context hash as the desired input would stop the apply after the upload.
+  assert.deepEqual(
+    await rules(worker({ ...both, POOL_DESIRED_IMAGE_INPUT: "0123456789abcdef" }), input),
+    [
+      "pool-worker-image-input-not-pinned env.POOL_DESIRED_IMAGE_INPUT: differs from the root pin's input",
+    ],
+  );
+  assert.deepEqual(await rules(worker({ POOL_DESIRED_IMAGE_INPUT: input }), input), [
+    "pool-worker-image-input-not-pinned env.POOL_IMAGE_HASH: differs from the root pin's input",
+  ]);
+  // Without a pin the root builds from the context, and the rule has nothing to compare.
+  assert.deepEqual(await rules(worker({}), undefined), []);
+});
+
 test("a release given no root pin, a tag, or another digest than the root runs is refused in plan", async (context) => {
   // Unset: the entry hands the check an empty image, which is no digest reference.
   await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: "" } }));

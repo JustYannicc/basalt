@@ -610,7 +610,11 @@ const checkPolicy = () => {
   const pin = process.env.POOL_ROOT_IMAGE ? JSON.parse(process.env.POOL_ROOT_IMAGE) : undefined;
   return {
     ...policy.check,
-    poolContainer: { ...policy.check.poolContainer, image: pin?.image ?? "" },
+    poolContainer: {
+      ...policy.check.poolContainer,
+      image: pin?.image ?? "",
+      ...(typeof pin?.input === "string" ? { input: pin.input } : {}),
+    },
     ...(include.length ? { include } : {}),
   };
 };

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { fleetBindings, fleetClasses, fleetInfrastructure } from "./fleet-deployment.ts";
-import { desiredPoolImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
+import { readinessImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
 import { bindPoolObservation } from "./fleet-observation.ts";
 import { rootContainer } from "./root-image-pin.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
@@ -50,7 +50,7 @@ export const poolWorker = Effect.gen(function* () {
     );
   const database = yield* poolDatabaseInfrastructure;
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
-  const { image, application, imageHash, imageInput } = yield* rootContainer;
+  const { image, application, imageHash, imageInput, pinnedInput } = yield* rootContainer;
   const fleet = yield* fleetInfrastructure;
   const imageRelease = yield* RuntimeImageReleasePlan;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
@@ -67,7 +67,10 @@ export const poolWorker = Effect.gen(function* () {
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       POOL_PRESERVE_LEGACY_IMAGE: "true",
       ...(yield* masterCrashBinding),
-      POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
+      POOL_DESIRED_IMAGE_INPUT: yield* readinessImageInput(
+        pinnedInput,
+        imageRelease?.candidateConfiguration !== undefined,
+      ).pipe(Effect.orDie),
       ...(imageRelease?.candidateConfiguration
         ? {
             POOL_CANDIDATE_APPLICATION_ID: imageRelease.candidateConfiguration.applicationId,
