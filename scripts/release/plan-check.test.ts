@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type * as Plan from "alchemy/Plan";
 import { Cause, Effect, Exit } from "effect";
-import { checkPlan, decodePlanPolicy, planDigest, PlanRefused } from "./plan-check.ts";
+import { checkPlan, decodePlanPolicy, planDigest, PlanRefused, propChanges } from "./plan-check.ts";
 import {
   accountId,
   buildContext,
@@ -766,4 +766,143 @@ test("the healing release admits the root's row only as the recorded hash the ol
   }
   // Any other policy refuses the row as it is.
   assert.deepEqual(await rules(root(), false), [notNoop]);
+});
+
+/** Production's pool Worker has long recorded the database command's outcome as a setting. */
+const recordsReadiness = (rows: ReturnType<typeof productionRows>) => {
+  (rows.PoolWorker as unknown as { bindings: { sid: string; data: unknown }[] }).bindings.push({
+    sid: "POOL_DATABASE_READY",
+    data: { bindings: [{ type: "plain_text", name: "POOL_DATABASE_READY", text: "ready" }] },
+  });
+  return rows;
+};
+
+test("the root's attachment that waits on the pool Worker settles only as lane 1's row, its namespace recorded on both rows", async (context) => {
+  const root = { fqn: "PoolContainer", image: pinnedImage };
+  const healing = {
+    mode: "code-only",
+    poolContainer: { ...root, recordedHashOnly: true, workerAttachment: true },
+  };
+  const rulesFor = async (plan: Plan.Plan, changes: Record<string, unknown> = healing) => {
+    const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(changes)));
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
+      : [];
+  };
+  const notNoop = "pool-container-not-noop PoolContainer";
+  type Mutable = { action: string; bindings: { sid: string; action: string; data: unknown }[] };
+  const waits = (declared: Record<string, unknown> = {}, rows = productionRows()) =>
+    planned(context, {
+      rows: recordsReadiness(rows),
+      declared: { poolWorkerWaitsOnCommand: true, ...declared },
+    });
+
+  // The real planner, the pool Worker reading the pool database command's outcome: lane 1's row.
+  const lane = (await waits()).plan;
+  const row = lane.resources.PoolContainer as unknown as Mutable & {
+    resource: { Props: Record<string, unknown> };
+    state: { props: Record<string, unknown> };
+  };
+  assert.equal(row.action, "update");
+  assert.deepEqual(propChanges(row.state.props, row.resource.Props), []);
+  assert.deepEqual(
+    row.bindings
+      .filter((binding) => binding.action !== "noop")
+      .map(({ sid, action }) => ({ sid, action })),
+    [{ sid: "PoolContainer", action: "update" }],
+  );
+  assert.equal(lane.resources.PoolWorker?.action, "update");
+  assert.ok(!(await rulesFor(lane)).includes(notNoop), "the healing release admits it");
+  // Without the policy's say, the same row refuses.
+  assert.ok(
+    (
+      await rulesFor(lane, { ...healing, poolContainer: { ...root, recordedHashOnly: true } })
+    ).includes(notNoop),
+  );
+
+  const refuses = async (deviation: string, plan: Plan.Plan) =>
+    assert.ok((await rulesFor(plan)).includes(notNoop), deviation);
+  // The namespace the attachment resolves to differs between the two recorded rows.
+  const moved = productionRows();
+  (
+    moved.PoolWorker as unknown as { attr: { durableObjectNamespaces: Record<string, string> } }
+  ).attr.durableObjectNamespaces.PoolContainer = "namespace-elsewhere";
+  await refuses("two recorded namespace ids that differ", (await waits({}, moved)).plan);
+  // A changed setting on the root.
+  await refuses("a changed setting", (await waits({ containerInstanceType: "standard" })).plan);
+  // A resolved difference in the attachment, with nothing the pool Worker waits on.
+  const elsewhere = productionRows();
+  (elsewhere.PoolContainer as unknown as { bindings: { sid: string; data: unknown }[] }).bindings =
+    [{ sid: "PoolContainer", data: { durableObjects: { namespaceId: "namespace-elsewhere" } } }];
+  await refuses(
+    "a resolved difference in the attachment",
+    (await planned(context, { rows: elsewhere })).plan,
+  );
+  // A second binding row that is not noop.
+  const second = (await waits()).plan;
+  (second.resources.PoolContainer as unknown as Mutable).bindings.push({
+    sid: "Second",
+    action: "update",
+    data: {},
+  });
+  await refuses("a second binding row", second);
+  // An unknown that waits on something other than the pool Worker: the command's own outcome.
+  const other = (await waits()).plan;
+  const pendingCommand = (
+    other.resources.PoolWorker as unknown as { props: { env: { POOL_DATABASE_READY: unknown } } }
+  ).props.env.POOL_DATABASE_READY;
+  (other.resources.PoolContainer as unknown as Mutable).bindings[0]!.data = {
+    durableObjects: { namespaceId: pendingCommand },
+  };
+  await refuses("an unknown that names another row", other);
+  // The pool Worker is replaced, or refused by its own rules, or no longer hosts the class.
+  for (const action of ["create", "replace", "delete"]) {
+    const plan = (await waits()).plan;
+    (plan.resources.PoolWorker as unknown as Mutable).action = action;
+    await refuses(`a pool Worker that plans ${action}`, plan);
+  }
+  await refuses("a pool Worker its own rules refuse", (await waits({ ledger: undefined })).plan);
+  const dropped = (await waits()).plan;
+  for (const binding of (dropped.resources.PoolWorker as unknown as Mutable).bindings)
+    if (binding.sid === "PoolContainer") binding.action = "delete";
+  await refuses("a pool Worker that no longer hosts the class", dropped);
+});
+
+test("the class change admits the root's attachment row too, and nothing else on it", async (context) => {
+  const { sha256Object } = await import("alchemy/Util/sha256");
+  const referenceHash = (
+    await Effect.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
+  ).slice(0, 16);
+  // By the class change the healing release has recorded the reference's hash on the root.
+  const rows = productionRows();
+  (rows.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
+    referenceHash;
+  const { plan } = await planned(context, {
+    rows: recordsReadiness(rows),
+    declared: { poolWorkerWaitsOnCommand: true },
+  });
+  const rulesFor = async (workerAttachment: boolean) => {
+    const exit = await Effect.runPromiseExit(
+      checkPlan(
+        plan,
+        await policy({
+          mode: "cutover-classes",
+          poolContainer: {
+            fqn: "PoolContainer",
+            image: pinnedImage,
+            ...(workerAttachment ? { workerAttachment: true } : {}),
+          },
+        }),
+      ),
+    );
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
+      : [];
+  };
+  const admitted = await rulesFor(true);
+  assert.ok(!admitted.includes("pool-container-not-noop PoolContainer"), admitted.join(", "));
+  assert.ok(!admitted.includes("outside-cutover-classes PoolContainer"), admitted.join(", "));
+  const refused = await rulesFor(false);
+  assert.ok(refused.includes("pool-container-not-noop PoolContainer"), refused.join(", "));
+  assert.ok(refused.includes("outside-cutover-classes PoolContainer"), refused.join(", "));
 });

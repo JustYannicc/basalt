@@ -17,6 +17,7 @@ export const ReleasePolicy = Schema.Struct({
       image: Schema.Literal(""),
       imageRelease: poolContainer.fields.imageRelease,
       recordedHashOnly: poolContainer.fields.recordedHashOnly,
+      workerAttachment: poolContainer.fields.workerAttachment,
     }),
   }),
   include: Schema.optional(Schema.Array(Schema.String)),

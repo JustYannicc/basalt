@@ -102,12 +102,17 @@ test("only the healing release declares a root restart, bounded, and it is other
   // Only the healing release admits the root's row the old layer left: its recorded hash alone.
   for (const name of ["release", "code", "cutover-code", "cutover-classes"])
     assert.equal((await read(name)).check.poolContainer.recordedHashOnly, undefined, name);
+  // The attachment the plan cannot know while the pool Worker updates: the heal and the class change.
+  for (const name of ["release", "code", "cutover-code"])
+    assert.equal((await read(name)).check.poolContainer.workerAttachment, undefined, name);
+  assert.equal((await read("cutover-classes")).check.poolContainer.workerAttachment, true);
   // No general loosening: apart from its named commands, the two connections that wait on them
   // and the bulk-import store's code, it is the code policy.
   const { commands, allow, poolContainer, ...rest } = healing.check;
   const { commands: _none, allow: codeAllow, poolContainer: codeRoot, ...codeRest } = code.check;
-  const { recordedHashOnly, ...root } = poolContainer;
+  const { recordedHashOnly, workerAttachment, ...root } = poolContainer;
   assert.equal(recordedHashOnly, true);
+  assert.equal(workerAttachment, true);
   assert.deepEqual(root, codeRoot);
   const { fixedBindings, ...wire } = healing.wire;
   assert.deepEqual(codeAllow, []);

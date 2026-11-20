@@ -11,6 +11,7 @@ import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
+import * as Output from "alchemy/Output";
 import { DockerLive } from "alchemy/Docker/Docker";
 import * as Apply from "alchemy/Apply";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
@@ -59,6 +60,11 @@ export interface Declaration {
   databaseCommand?: boolean;
   /** Binds the vault bucket to PoolWorker; when false the binding is dropped. */
   vaultBinding?: boolean;
+  /**
+   * PoolWorker reads the pool database command's outcome, as production's does
+   * (`POOL_DATABASE_READY`): a setting the plan cannot know while that command runs.
+   */
+  poolWorkerWaitsOnCommand?: boolean;
   /** Adds plain env values to ArtifactsCredentials, which State never recorded. */
   credentialsEnv?: Record<string, string>;
   /** Binds a second class on ArtifactsCredentials, which State never recorded. */
@@ -303,8 +309,10 @@ const program = (declared: Declaration) =>
       }).pipe(retain());
     if (declared.observationStore !== false)
       yield* Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
-    if (declared.databaseCommand !== false)
-      yield* Command.Exec("PoolDatabase", { command: "node --version", memo: false });
+    const databaseCommand =
+      declared.databaseCommand !== false
+        ? yield* Command.Exec("PoolDatabase", { command: "node --version", memo: false })
+        : undefined;
     const credentials = yield* Cloudflare.Worker("ArtifactsCredentials", {
       main: entry,
       workersDev: false,
@@ -364,6 +372,9 @@ const program = (declared: Declaration) =>
         ...(declared.vaultBinding === false ? {} : { VAULT: vault }),
         WAITLIST: waitlist,
         POOL_MANAGEMENT_KEY: Redacted.make("synthetic-management-secret"),
+        ...(declared.poolWorkerWaitsOnCommand && databaseCommand
+          ? { POOL_DATABASE_READY: databaseCommand.hash.pipe(Output.map(() => "ready")) }
+          : {}),
       },
     });
   });

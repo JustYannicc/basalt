@@ -24,6 +24,7 @@ import { havePropsChanged, isResolved } from "alchemy/Diff";
 import * as Plan from "alchemy/Plan";
 import { Data, Effect, Redacted, Schema } from "effect";
 import { sha256Object } from "alchemy/Util/sha256";
+import * as Output from "alchemy/Output";
 
 const digestRef = /^[a-z0-9.-]+\/[a-z0-9/_-]+@sha256:[a-f0-9]{64}$/u;
 const exactFqn = Schema.String.check(Schema.isPattern(/^[^*?\s]+$/u));
@@ -63,6 +64,13 @@ export const PlanPolicy = Schema.Struct({
      * the wire guard refuses any modify or rollout of the root whatever the plan says.
      */
     recordedHashOnly: Schema.optional(Schema.Literal(true)),
+    /**
+     * The root's attachment may plan as not known yet while the pool Worker updates: one of the
+     * Worker's settings waits on a row that runs in the same plan, so the planner promises only its
+     * id and name. Admitted only when the namespace it resolves to is already recorded, equal on
+     * both rows, and the pool Worker still hosts the class; the apply then reads and sends nothing.
+     */
+    workerAttachment: Schema.optional(Schema.Literal(true)),
     /** The pin's build input, supplied by the caller with the image: what the root really runs. */
     input: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u))),
   }),
@@ -328,11 +336,94 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
   return violations;
 }
 
+/**
+ * Whether the root's planned update is one the apply settles with reads only, explained by one or
+ * both of: the image hash the old release layer recorded (a pinned declaration hashes the reference
+ * instead), and an attachment the plan cannot know while the pool Worker updates.
+ */
+export function rootUpdateSettles(
+  node: Node,
+  policy: PlanPolicy,
+  referenceHash: string | undefined,
+  worker: { readonly node: Node | undefined; readonly clean: boolean },
+): boolean {
+  const props: Record<string, unknown> = record(node.resource.Props) ? node.resource.Props : {};
+  const before = recorded(node)?.props;
+  const built = ["context", "dockerfile", "main"].filter((key) => props[key] !== undefined);
+  // A root update the apply settles with reads only, explained by one or both of: the image hash
+  // the old release layer recorded (a pinned declaration hashes the reference instead), and an
+  // attachment the plan cannot know while the pool Worker updates. Anything else stays refused.
+  const recordedHash = (recorded(node) as { attr?: { hash?: { image?: unknown } } } | undefined)
+    ?.attr?.hash?.image;
+  const hashDiffers =
+    typeof recordedHash === "string" &&
+    referenceHash !== undefined &&
+    recordedHash !== referenceHash;
+  const pending = node.bindings.filter((binding) => binding.action !== "noop");
+  const className = props.className;
+  const attachmentWaitsOnWorker = () => {
+    const [binding] = pending;
+    if (pending.length !== 1 || !binding || binding.action !== "update") return false;
+    // Not known yet, and waiting on the pool Worker alone.
+    if (isResolved(binding.data)) return false;
+    const upstream = Object.keys(Output.upstreamAny(binding.data));
+    if (upstream.length !== 1 || upstream[0] !== policy.poolWorker) return false;
+    const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
+    if (
+      propChanges(recordedData, binding.data, ["bindings", binding.sid]).some(
+        (line) => !line.includes("<unresolved>"),
+      )
+    )
+      return false;
+    // What it will resolve to is already recorded, the same on both rows: a namespace id is
+    // permanent for a Worker and a class, so the Worker's update cannot move it.
+    const attached =
+      record(recordedData) && record(recordedData.durableObjects)
+        ? recordedData.durableObjects.namespaceId
+        : undefined;
+    if (typeof attached !== "string" || attached.length === 0) return false;
+    const rootAttr = (recorded(node) as { attr?: { durableObjects?: { namespaceId?: unknown } } })
+      ?.attr;
+    if (rootAttr?.durableObjects?.namespaceId !== attached) return false;
+    const workerNode = worker.node;
+    if (!workerNode || typeof className !== "string") return false;
+    const workerAttr = (
+      recorded(workerNode) as { attr?: { durableObjectNamespaces?: Record<string, unknown> } }
+    )?.attr;
+    if (workerAttr?.durableObjectNamespaces?.[className] !== attached) return false;
+    // The pool Worker updates, nothing its own rules refuse, and still hosts the class itself.
+    return (
+      workerNode.action === "update" &&
+      worker.clean &&
+      workerNode.bindings.some(
+        (entry) =>
+          entry.action !== "delete" &&
+          wire(entry.data).some(
+            (bound) =>
+              durable(bound) && bound.className === className && bound.scriptName === undefined,
+          ),
+      )
+    );
+  };
+  return (
+    node.action === "update" &&
+    propChanges(before, props).length === 0 &&
+    !built.length &&
+    props.image === policy.poolContainer.image &&
+    (hashDiffers || pending.length > 0) &&
+    (!hashDiffers || policy.poolContainer.recordedHashOnly === true) &&
+    (pending.length === 0 ||
+      (policy.poolContainer.workerAttachment === true && attachmentWaitsOnWorker()))
+  );
+}
+
 function containerViolations(
   node: Node,
   policy: PlanPolicy,
   /** The hash Alchemy gives the declared image reference (`ContainerProvider`, a pre-built image). */
   referenceHash: string | undefined,
+  /** The pool Worker's node in the same plan, and whether its own rules refused nothing. */
+  worker: { readonly node: Node | undefined; readonly clean: boolean },
 ): PlanViolation[] {
   const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
   const props: Record<string, unknown> = record(node.resource.Props) ? node.resource.Props : {};
@@ -378,20 +469,8 @@ function containerViolations(
     });
   // The pool's own restart refuses for good once the application's version or settings move, so
   // a release that relies on it may not touch the root's row in any way.
-  // Exactly the row the old layer left: an update, no setting or attachment that differs, the pinned
-  // image declared, and a recorded hash other than the reference's. Nothing else explains it.
-  const recordedHash = (recorded(node) as { attr?: { hash?: { image?: unknown } } } | undefined)
-    ?.attr?.hash?.image;
-  const recordedHashOnly =
-    policy.poolContainer.recordedHashOnly === true &&
-    node.action === "update" &&
-    propChanges(before, props).length === 0 &&
-    node.bindings.every((binding) => binding.action === "noop") &&
-    props.image === policy.poolContainer.image &&
-    typeof recordedHash === "string" &&
-    referenceHash !== undefined &&
-    recordedHash !== referenceHash;
-  if (!policy.poolContainer.imageRelease && !recordedHashOnly && node.action !== "noop")
+  const settles = rootUpdateSettles(node, policy, referenceHash, worker);
+  if (!policy.poolContainer.imageRelease && !settles && node.action !== "noop")
     violations.push({
       ...at,
       rule: "pool-container-not-noop",
@@ -525,6 +604,19 @@ export const checkPlan = (
             fix: "Pass exactly the policy's `include` list to the plan.",
           });
 
+      // The pool Worker as the root's rules see it, and whether the root's row settles with reads.
+      const poolWorkerNode = nodes.find(
+        (candidate) => candidate.resource.FQN === policy.poolWorker,
+      );
+      const workerContext = {
+        node: poolWorkerNode,
+        clean: !!poolWorkerNode && workerViolations(poolWorkerNode, policy).length === 0,
+      };
+      const rootNode = nodes.find(
+        (candidate) => candidate.resource.FQN === policy.poolContainer.fqn,
+      );
+      const rootSettled =
+        !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
       for (const node of nodes) {
         const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
         const destroys =
@@ -578,7 +670,7 @@ export const checkPlan = (
           });
         if (node.resource.Type === workerType) violations.push(...workerViolations(node, policy));
         if (at.fqn === policy.poolContainer.fqn && !destroys)
-          violations.push(...containerViolations(node, policy, referenceHash));
+          violations.push(...containerViolations(node, policy, referenceHash, workerContext));
       }
       for (const [fqn, node] of Object.entries(plan.actionDeletions))
         if (node && !policy.removals.some((r) => r.fqn === fqn && r.action === "delete"))
@@ -739,7 +831,11 @@ export const checkPlan = (
           });
         for (const change of changes) {
           const allowed = policy.allow.find((entry) => entry.fqn === change.fqn);
-          if (change.fqn === policy.artifactsCredentials || allowed?.action === change.action)
+          if (
+            change.fqn === policy.artifactsCredentials ||
+            allowed?.action === change.action ||
+            (change.fqn === policy.poolContainer.fqn && rootSettled)
+          )
             continue;
           outside(
             change,
