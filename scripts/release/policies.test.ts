@@ -111,18 +111,24 @@ test("only the healing release declares a root restart, bounded, and it is other
   );
   assert.ok(commands?.includes("Migrations") && commands.includes("PoolDatabase"));
   assert.deepEqual(
-    allow.map((entry) => [
-      entry.fqn,
-      entry.action,
-      entry.unresolvedOnly,
-      entry.codeOnly?.references,
-    ]),
+    allow.map((entry) => [entry.fqn, entry.action, entry.unresolvedOnly]),
     [
-      ["ArtifactsCredentials", "update", undefined, ["env"]],
-      ["DatabaseConnection", "update", true, undefined],
-      ["PoolModelDatabaseConnection", "update", true, undefined],
+      ["ArtifactsCredentials", "update", undefined],
+      ["DatabaseConnection", "update", true],
+      ["PoolModelDatabaseConnection", "update", true],
     ],
   );
+  // The store's Worker names what it holds of other resources, and the one value that moves
+  // with every release; a secret is in neither list.
+  assert.deepEqual(allow[0]?.codeOnly?.references, [
+    { name: "POOL_AUTH_DATABASE", resource: "PoolModelDatabaseConnection" },
+    { name: "TOOLS_SERVICE", resource: "Api" },
+  ]);
+  assert.deepEqual(
+    allow[0]?.codeOnly?.values.map((value) => value.name),
+    ["EXECUTOR_TELEMETRY"],
+  );
+  assert.match(allow[0]?.codeOnly?.values[0]?.why ?? "", /build version/u);
   // Its code moves only with its uploads held to the serving bindings, and the reason is written.
   assert.deepEqual(fixedBindings, ["ArtifactsCredentials"]);
   assert.match(allow[0]?.codeOnly?.why ?? "", /version skew/u);

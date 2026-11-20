@@ -63,6 +63,21 @@ export interface Declaration {
   credentialsEnv?: Record<string, string>;
   /** Binds a second class on ArtifactsCredentials, which State never recorded. */
   credentialsClass?: string;
+  /**
+   * What ArtifactsCredentials holds besides its class, in production's forms: the tools Worker it
+   * calls, a secret, a redacted value that carries the release's version, and a JSON value.
+   */
+  credentials?: {
+    /** Its entry file; by default the fixture's Worker entry. */
+    main?: string;
+    secret?: string;
+    version?: string;
+    mode?: string;
+    /** The Worker it calls: the tools Worker, or another one under the same name. */
+    calls?: "Api" | "Catalog";
+    /** The class its `Coordinator` binding names; by default the recorded one. */
+    className?: string;
+  };
 }
 
 /** The recorded production body of the root application read, with synthetic identifiers. */
@@ -141,6 +156,8 @@ const stackTags = (id: string) => [
   `alchemy:id:${id}`,
 ];
 const recordedSettings: Record<string, { tags: readonly string[]; bindings: readonly object[] }> = {
+  "basalt-production-api": { tags: stackTags("Api"), bindings: [] },
+  "basalt-production-catalog": { tags: stackTags("Catalog"), bindings: [] },
   "basalt-production-artifactscredentials": {
     tags: stackTags("ArtifactsCredentials"),
     bindings: [
@@ -282,6 +299,12 @@ const providers = (base: string) =>
     Layer.provide(DockerLive),
   );
 
+const service = {
+  main: entry,
+  workersDev: false,
+  compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+};
+
 const program = (declared: Declaration) =>
   Effect.gen(function* () {
     const vault = yield* Cloudflare.R2.Bucket("VaultAttachments", {
@@ -305,14 +328,34 @@ const program = (declared: Declaration) =>
       yield* Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
     if (declared.databaseCommand !== false)
       yield* Command.Exec("PoolDatabase", { command: "node --version", memo: false });
+    const called = declared.credentials
+      ? {
+          Api: yield* Cloudflare.Worker("Api", service),
+          Catalog: yield* Cloudflare.Worker("Catalog", service),
+        }[declared.credentials.calls ?? "Api"]
+      : undefined;
     const credentials = yield* Cloudflare.Worker("ArtifactsCredentials", {
-      main: entry,
+      main: declared.credentials?.main ?? entry,
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       env: {
         Coordinator: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
-          className: "ArtifactsTokenCoordinator",
+          className: declared.credentials?.className ?? "ArtifactsTokenCoordinator",
         }),
+        ...(declared.credentials
+          ? {
+              TOOLS_SERVICE: called,
+              // A resource whose binding carries more than its stable identity.
+              VAULT: vault,
+              POOL_APP_SIGNING_KEY: Redacted.make(
+                declared.credentials.secret ?? "synthetic-signing-secret",
+              ),
+              EXECUTOR_TELEMETRY: Redacted.make(
+                JSON.stringify({ version: declared.credentials.version ?? "1" }),
+              ),
+              POOL_MODE: { mode: declared.credentials.mode ?? "a" },
+            }
+          : {}),
         ...(declared.credentialsClass
           ? {
               Second: Cloudflare.DurableObject(declared.credentialsClass, {
@@ -597,6 +640,45 @@ export const productionRows = (): Record<string, ResourceState> => ({
     },
   ),
 });
+
+/** Rows of the two Workers ArtifactsCredentials can call, as a release before recorded them. */
+export const calledRows = (): Record<string, ResourceState> =>
+  Object.fromEntries(
+    ["Api", "Catalog"].map((fqn) => [
+      fqn,
+      row(
+        "Cloudflare.Worker",
+        fqn,
+        { ...service, isExternal: true },
+        workerAttributes(`basalt-production-${fqn.toLowerCase()}`, {}),
+      ),
+    ]),
+  );
+
+/** Marks settled Workers as built from another checkout, so Alchemy plans an update of their code. */
+export const withCodeFromElsewhere = (
+  rows: Readonly<Record<string, unknown>>,
+  fqns: readonly string[],
+): Record<string, ResourceState> =>
+  Object.fromEntries(
+    Object.entries(rows).map(([fqn, value]) => [
+      fqn,
+      (fqns.includes(fqn)
+        ? {
+            ...(value as object),
+            attr: {
+              ...(value as { attr: object }).attr,
+              hash: {
+                assets: undefined,
+                bundle: "recorded",
+                input: "recorded",
+                metadata: "recorded",
+              },
+            },
+          }
+        : value) as ResourceState,
+    ]),
+  );
 
 /** An action row from an older release (a migration step the stack no longer declares). */
 export const recordedActionRow = (fqn: string) =>
