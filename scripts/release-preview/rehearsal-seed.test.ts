@@ -275,3 +275,37 @@ test("an infra-only seed creates the same pools with no accounts and claims no t
     /no accounts/,
   );
 });
+
+test("a seed proved empty by the pool controller never asks the pool app, and refuses a held policy", async () => {
+  const host = fakeHost();
+  const seed = await seedRehearsalPools({
+    ...input,
+    accounts: [],
+    infraOnly: true,
+    emptyCount: 2,
+    controllerPolicies: 0,
+    fetch: host.fetch,
+  });
+  assert.deepEqual(seed, { cleanPool: "app_pool0", emptyPools: ["app_pool1", "app_pool2"] });
+  assert.ok(
+    host.calls.every((call) => !call.path.includes("/data/")),
+    "no pool app request",
+  );
+
+  const refused = fakeHost();
+  await assert.rejects(
+    seedRehearsalPools({
+      ...input,
+      accounts: [],
+      infraOnly: true,
+      emptyCount: 2,
+      controllerPolicies: 1,
+      fetch: refused.fetch,
+    }),
+    /already holds 1 policies; nothing was seeded/,
+  );
+  assert.ok(
+    refused.calls.every((call) => !call.path.endsWith("/pools")),
+    "no pool created",
+  );
+});

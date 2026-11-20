@@ -65,6 +65,8 @@ export async function seedAndAdopt(input: {
   deployedCommit: string;
   /** The lane's pin; the adopt refuses unless the root's image and input are exactly these. */
   pin: { image: string; input: string };
+  /** The pool controller's policy count from its signed inspect, read just before. */
+  controllerPolicies: number;
 }) {
   const { subject, source } = input;
   const { stage, slug } = stageNames(subject);
@@ -89,6 +91,8 @@ export async function seedAndAdopt(input: {
     };
   const seed = await seedRehearsalPools({
     infraOnly: true,
+    // The pool app is not asked: the controller's own record proves the stage holds no pool.
+    controllerPolicies: input.controllerPolicies,
     origin,
     email,
     password,

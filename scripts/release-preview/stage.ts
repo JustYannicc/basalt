@@ -1241,6 +1241,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
           outputs,
           deployedCommit: String(result.deployedCommit),
           pin: JSON.parse(pin) as { image: string; input: string },
+          controllerPolicies:
+            (result.before as { policies?: { count?: number } }).policies?.count ?? -1,
         }),
       );
       // The state the heal proof needs before any fault: a selection, health, the pinned root.

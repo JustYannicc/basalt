@@ -19,6 +19,11 @@ export interface RehearsalSeedInput {
   readonly accounts: readonly PreviewSavedAccount[];
   /** No subscription accounts: the clean pool stays account-less and no traffic computer is claimed. */
   readonly infraOnly?: boolean;
+  /**
+   * The pool controller's own policy count, from its signed `inspect`. When given, it proves the
+   * stage holds no pool yet (it must be 0) and the seed does not ask the pool app.
+   */
+  readonly controllerPolicies?: number;
   readonly emptyCount?: number;
   readonly fetch?: typeof fetch;
 }
@@ -122,8 +127,14 @@ export async function seedRehearsalPools(input: RehearsalSeedInput): Promise<Reh
   const preview = new PreviewClient(input, { fetch: input.fetch });
   await preview.signIn();
   try {
-    // The preview smoke refuses a non-empty pool, so a seed that touched it must fail here.
-    await preview.verifyEmptyPool();
+    // The preview smoke refuses a non-empty pool, so a seed that touched it must fail here. A
+    // standing stage proves it from the controller's own record instead of the pool app.
+    if (input.controllerPolicies !== undefined) {
+      if (input.controllerPolicies !== 0)
+        throw new AcceptanceFailure(
+          `The pool controller already holds ${input.controllerPolicies} policies; nothing was seeded`,
+        );
+    } else await preview.verifyEmptyPool();
     const pools: string[] = [];
     for (let index = 0; index <= emptyCount; index += 1) {
       const id = await createPool(preview, input.organizationId, index);
