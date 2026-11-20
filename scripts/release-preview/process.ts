@@ -53,7 +53,11 @@ async function publishReport(report: FileHandle, publish: Publish): Promise<void
   const buffer = Buffer.alloc(Math.min(size, reportBytes));
   const { bytesRead } = await report.read(buffer, 0, buffer.length, 0);
   let raw = buffer.subarray(0, bytesRead).toString("utf8");
-  if (size > reportBytes) raw = `${raw.slice(0, raw.lastIndexOf("\n") + 1)}[cut]\n`;
+  if (size > reportBytes) {
+    raw = `${raw.slice(0, raw.lastIndexOf("\n") + 1)}[cut]\n`;
+    // A cut inside the summary's code block would leave the rest of the summary in it.
+    if ((raw.match(/^```/gmu) ?? []).length % 2 === 1) raw += "```\n";
+  }
   if (!raw.trim()) return;
   const environment = publicEnvironment(publish.environment);
   const text = raw
@@ -80,7 +84,10 @@ export async function privateOperation(
   const log = await open(operation.logPath, "wx", 0o600);
   const reportPath = `${operation.logPath}.report`;
   // Made here, before the step runs, so what is read back is this file whatever the step does.
-  const report = await open(reportPath, "wx+", 0o600);
+  const report = await open(reportPath, "wx+", 0o600).catch(async (error: unknown) => {
+    await log.close();
+    throw error;
+  });
   try {
     if (operation.signal?.aborted) throw new Error(`Preview ${operation.label} cancelled`);
     const child = spawn(operation.command, operation.args, {

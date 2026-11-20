@@ -100,7 +100,8 @@ function withoutEnvironmentValues(text: string, environment: NodeJS.ProcessEnv):
     if (!plain) continue;
     if (zoneName.test(name))
       text = text.replace(
-        new RegExp(`(?<![\\w.-])(?:[\\w-]+\\.)*${escaped(plain)}(?![\\w-])`, "giu"),
+        // A wildcard or cookie-domain form (`*.pr-41.<zone>`, `.<zone>`) is the same host.
+        new RegExp(`(?<![\\w.*-])[*.]*(?:[\\w-]+\\.)*${escaped(plain)}(?![\\w-])`, "giu"),
         "[host]",
       );
     else if (accountName.test(name))

@@ -106,10 +106,15 @@ test("a failed step publishes only its own report, cleaned of every credential t
       `fs.rmSync(process.env.PREVIEW_FAILURE_REPORT);fs.symlinkSync(${JSON.stringify(join(directory, "other"))}, process.env.PREVIEW_FAILURE_REPORT)`,
     );
     assert.equal(printed.length, 0);
-    await fail(report(`${"line of a long report\n".repeat(4_000)}`));
+    await fail(
+      report(
+        `## Preview deploy step failed\n\n\`\`\`text\n${"line of a long report\n".repeat(4_000)}\`\`\`\n`,
+      ),
+    );
     assert.equal(printed.length, 1);
-    assert.ok(printed[0]!.length <= 64 * 1024 + 8);
-    assert.match(printed[0]!, /line of a long report\n\[cut\]\n$/u);
+    assert.ok(printed[0]!.length <= 64 * 1024 + 16);
+    // The cut closes the summary's code block it fell inside.
+    assert.match(printed[0]!, /line of a long report\n\[cut\]\n```\n$/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

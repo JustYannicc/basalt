@@ -299,6 +299,11 @@ test("the preview zone and the operator's accounts never print, however short or
       "deployed [host] for [account] in [account]",
       kind.name,
     );
+  // A wildcard or cookie-domain form of a zone host is the same host.
+  assert.equal(
+    publicTail("route *.pr-41.b.io/* and Domain=.b.io and .pr-41.b.io", environment),
+    "route [host]/* and Domain=[host] and [host]",
+  );
   // Only whole names: a longer word or host that merely contains one stays.
   assert.equal(
     publicTail("acme-corp and acmes at b.iox", environment),
