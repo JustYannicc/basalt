@@ -27,6 +27,10 @@ export type ReliabilityFailure =
   | "history_deadline"
   | "probe_budget";
 
+export type ReliabilitySessionPhase = "connect" | "statements" | "close";
+/** All a failed reliability session tells its caller, which may be across a Durable Object call. */
+export const reliabilitySessionFailed = "Model history reliability session failed";
+
 export function reliabilityStep(text: string): ReliabilityStep {
   return statements.find(([fragment]) => text.includes(fragment))?.[1] ?? "other";
 }
@@ -41,7 +45,7 @@ export function reliabilityFailure(error: unknown): {
       return { failure: "history_disabled" };
     if (error.message === "Model history database is unavailable")
       return { failure: "database_unavailable" };
-    // The session rethrows every timeout, of any kind, as this one message.
+    // A session without the history timeout mode rethrows every timeout as this one message.
     if (error.message === "Model history database deadline exceeded")
       return { failure: "history_deadline" };
   }

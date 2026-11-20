@@ -88,7 +88,7 @@ new file mode 100644
 diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
 --- a/e2e/tests/hitl-intent-scope.spec.ts
 +++ b/e2e/tests/hitl-intent-scope.spec.ts
-@@ -13,6 +13,7 @@
+@@ -14,6 +14,7 @@
  import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
  import { batchedReads, batchPath } from "../support/read-batches.ts";
  import { workflowInputFixture } from "../support/workflow-input-fixture.ts";
@@ -96,7 +96,7 @@ diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.s
  import { scenarios } from "../test-plan.ts";
  
  type QueueRead = {
-@@ -138,25 +139,31 @@
+@@ -139,25 +140,31 @@
            const answered: QueueRead[] = [];
            const blocked: string[] = [];
            let viewLoaded = yield* Deferred.make<void>();
@@ -133,7 +133,7 @@ diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.s
 +          );
            yield* Effect.acquireRelease(
              browser.use("Observe queue reads with the browser clock", (page) =>
-               page.clock
+               installClock(page)
 @@ -172,7 +179,6 @@
                  .then(() => {
                    page.on("request", record);
