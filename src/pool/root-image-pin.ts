@@ -52,7 +52,7 @@ export const rootImagePin = Effect.gen(function* () {
         new PoolDeclarationRefused({
           reason: "root-image-pin-missing",
           why: "Without POOL_ROOT_IMAGE, PoolContainer builds from containers/pool and Alchemy rolls the live root to the new image.",
-          fix: "Set POOL_ROOT_PIN to the repository and digest of PoolContainer's configuration.image and PoolWorker's POOL_IMAGE_HASH, as the preflight reads them; the release entry composes POOL_ROOT_IMAGE from it.",
+          fix: "Set POOL_ROOT_IMAGE to PoolContainer's configuration.image and PoolWorker's POOL_IMAGE_HASH, as the preflight reads them.",
         }),
       );
     return undefined;
