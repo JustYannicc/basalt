@@ -250,15 +250,38 @@ test("the private schema operator reads catalogs and counts and has no schema ap
       catalogHash: activation.catalogHash,
     };
     assert.equal((await invoke(historyJournalActivationPath, cutover)).status, 400);
+    const acknowledged = { ...cutover, readersReady: historyJournalReaderVersion };
     assert.equal(
-      (
-        await invoke(historyJournalActivationPath, {
-          ...cutover,
-          readersReady: historyJournalReaderVersion,
-        })
-      ).status,
-      200,
+      (await invoke(historyJournalActivationPath, { ...acknowledged, schemaHash: "0".repeat(64) }))
+        .status,
+      409,
+      "an approval for another manifest never activates",
     );
+    assert.equal((await (await invoke(historyJournalActivationPath)).json()).applied, false);
+    // A failed activation answers with an empty 503 and logs only closed diagnostics.
+    const errors: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      const failed = await handleModelHistoryOperation(
+        new Request(`http://operator${historyJournalActivationPath}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(acknowledged),
+        }),
+        "postgresql://fixture:private-secret@127.0.0.1:1/unreachable",
+      );
+      assert.equal(failed.status, 503);
+      assert.equal(await failed.text(), "");
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0]![0], "Model history journal activation failed");
+      assert.doesNotMatch(JSON.stringify(errors), /private-secret|fixture:/u);
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal((await invoke(historyJournalActivationPath, acknowledged)).status, 200);
     assert.equal((await (await invoke(historyJournalActivationPath)).json()).applied, true);
     assert.equal(
       (await db.query("SELECT count(*)::text AS rows FROM basalt_model_history_cursor")).rows[0]

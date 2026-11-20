@@ -240,7 +240,7 @@ export async function handleModelHistoryOperation(
       (approval.go !== true ||
         typeof approval.schemaHash !== "string" ||
         typeof approval.catalogHash !== "string" ||
-        (activation && approval.readersReady !== historyJournalReaderVersion))
+        approval.readersReady !== historyJournalReaderVersion)
     )
       return new Response(null, { status: 400 });
     return await withHistoryDatabase(connectionString, async (db) => {
@@ -263,7 +263,7 @@ export async function handleModelHistoryOperation(
           version: plan.version,
           schemaHash: plan.schemaHash,
           applied: !plan.applied,
-          ...(activation ? { readersReady: historyJournalReaderVersion } : {}),
+          readersReady: historyJournalReaderVersion,
           automaticBackfill: false,
         },
         { headers: { "Cache-Control": "no-store" } },
@@ -271,7 +271,7 @@ export async function handleModelHistoryOperation(
     });
   } catch (error) {
     if (apply && !(error instanceof HistoryInputError) && !(error instanceof SyntaxError))
-      console.error("Model history schema apply failed", historyApplyFailure(error));
+      console.error("Model history journal activation failed", historyApplyFailure(error));
     return new Response(null, {
       status: error instanceof HistoryInputError || error instanceof SyntaxError ? 400 : 503,
     });
