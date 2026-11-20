@@ -666,6 +666,20 @@ try {
               `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
             ),
           );
+        if (command === "plan" && stage === "production" && policy) {
+          // Readiness refuses a runtime digest that differs from the selected runtime's seal only
+          // after the upload; the plan compares first, or says loudly why it could not.
+          const fingerprint = yield* Effect.promise(() => import("./fingerprint-check.ts"));
+          const report = fingerprint.fingerprintReport(
+            yield* fingerprint.checkRuntimeFingerprint(
+              snapshot.native,
+              policy.check.poolWorker,
+              async () => fingerprint.identityUnknownBeforeUpload,
+            ),
+          );
+          yield* Effect.promise(() => summary(report.summary));
+          if (report.annotation) console.log(report.annotation);
+        }
         if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
