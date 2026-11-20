@@ -8,6 +8,7 @@
  * Usage (from the stage runner, with the stage's release environment):
  *   node scripts/release-preview/stage-adopt.ts <outFile>
  */
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -194,6 +195,14 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
   if (scope.stage !== stage) throw new Error("The release scope names another stage");
   const pin = requiredPin(env);
   const pools = expectedPolicies(env);
+  // As the entry does: a release attempt id, and the cloud app as the working directory before
+  // anything loads Alchemy, which captures it once (`initialCwd`) and resolves commands from it.
+  const cloud = fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url));
+  Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: randomUUID(), CI: "true" });
+  process.chdir(cloud);
+  const { initialCwd } = await import("alchemy/Util/Node");
+  if (initialCwd !== process.cwd())
+    throw new Error("Alchemy loaded before the adopt moved into the cloud app; nothing was sent");
   const [
     { evalStack },
     { State },
@@ -224,7 +233,6 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
   const directory = fileURLToPath(new URL("../../.local/stage-adopt/", import.meta.url));
   const writer = ordinaryReleaseWriter(env);
   const code = { candidate: writer.candidate, workerInput: poolWorkerRevision };
-  process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
   const stack = (await import(new URL("../../alchemy.run.ts", import.meta.url).href)).default;
   const exit = await Effect.runPromiseExit(
     evalStack(
