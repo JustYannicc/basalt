@@ -304,7 +304,7 @@ async function healRelease(
     // 2. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     await rm(candidate, { recursive: true, force: true });
-    execFileSync("git", ["fetch", "-q", "--depth", "1", "origin", healCandidateBranch], {
+    execFileSync("git", ["fetch", "-q", "--depth", "5", "origin", healCandidateBranch], {
       cwd: root,
     });
     execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
@@ -314,6 +314,14 @@ async function healRelease(
       cwd: candidate,
       encoding: "utf8",
     }).trim();
+    // What the candidate is made of: its first-parent commits back to the stage's deployed commit.
+    result.candidateComposition = execFileSync(
+      "git",
+      ["log", "--first-parent", "--format=%h %s", "-4"],
+      { cwd: candidate, encoding: "utf8" },
+    )
+      .trim()
+      .split("\n");
     if (existsSync(join(candidate, "scripts/release-preview/stage-fault.ts")))
       throw new Error("The heal candidate still carries the rehearsal-only fault command");
     execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
@@ -478,6 +486,16 @@ async function healRelease(
       unavailable: error instanceof Error ? error.message : String(error),
       green: false,
     }));
+    // One named verdict, so a run is read from its record, not from the detail file.
+    result.verdict = result.needsPerson
+      ? "NEEDS_PERSON"
+      : !healed
+        ? "NOT_HEALED"
+        : result.releaseFailed
+          ? /eadiness/u.test(JSON.stringify(result.releaseStopLines ?? result.releaseFailed))
+            ? "HEALED_RELEASE_FAILED_AT_READINESS"
+            : "HEALED_RELEASE_FAILED"
+          : "HEALED";
     if (result.needsPerson)
       throw new Error(
         `Recovery ended in needs-a-person: ${JSON.stringify(result.needsPerson).slice(0, 300)}`,
