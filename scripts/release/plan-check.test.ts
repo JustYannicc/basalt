@@ -2318,3 +2318,75 @@ test("a plan that writes a container application refuses while the root's row ha
     !(await rulesOf(heal, healing)).some((rule) => rule.startsWith("root-name-unrecorded")),
   );
 });
+
+test("a healing release drops exactly the one named plain setting the deleted layer left, and no other binding", async (context) => {
+  const withRecorded = (sid: string, entry: Record<string, unknown>) => {
+    const rows = productionRows();
+    (rows.PoolWorker as unknown as { bindings: { sid: string; data: unknown }[] }).bindings.push({
+      sid,
+      data: { bindings: [{ name: sid, ...entry }] },
+    });
+    return rows;
+  };
+  const named = [{ fqn: "PoolWorker", sid: "POOL_PRESERVE_LEGACY_IMAGE", reason: "unread" }];
+  const healing = { mode: "code-only", removedBindings: named };
+  const removedRules = async (rows: ReturnType<typeof productionRows>, changes = healing) => {
+    const plan = (await planned(context, { rows })).plan;
+    const removal = (plan.resources.PoolWorker as unknown as Rows).bindings.find(
+      (binding) => binding.action === "delete",
+    );
+    assert.ok(removal, "the plan removes a binding");
+    return (await rulesOf(plan, changes)).filter((rule) => rule.includes("removed"));
+  };
+  const plain = { type: "plain_text", text: "true" };
+  // The named setting, plain text: admitted.
+  assert.deepEqual(await removedRules(withRecorded("POOL_PRESERVE_LEGACY_IMAGE", plain)), []);
+  // Without the policy naming it, another name, or the name holding a secret: refused.
+  assert.deepEqual(
+    await removedRules(withRecorded("POOL_PRESERVE_LEGACY_IMAGE", plain), {
+      mode: "code-only",
+    } as never),
+    ["worker-binding-removed PoolWorker"],
+  );
+  assert.deepEqual(await removedRules(withRecorded("POOL_CANDIDATE_APPLICATION_ID", plain)), [
+    "worker-binding-removed PoolWorker",
+  ]);
+  assert.deepEqual(
+    await removedRules(withRecorded("POOL_PRESERVE_LEGACY_IMAGE", { type: "secret_text" })),
+    ["worker-binding-removed PoolWorker"],
+  );
+});
+
+test("a healing release drops the publication receipt's row the deleted layer left, and no other command", async (context) => {
+  const leftover = (fqn: string) => {
+    const rows = productionRows() as Record<string, unknown>;
+    rows[fqn] = {
+      resourceType: "Command.Exec",
+      fqn,
+      logicalId: fqn,
+      namespace: undefined,
+      instanceId: fqn.toLowerCase().padEnd(32, "0").slice(0, 32),
+      providerVersion: 0,
+      status: "updated",
+      downstream: [],
+      bindings: [],
+      props: { command: "node capture-pool-image.ts" },
+      attr: {},
+    };
+    return rows as ReturnType<typeof productionRows>;
+  };
+  const healing = {
+    mode: "code-only",
+    allow: [{ fqn: "PoolImagePublicationReceipt", action: "delete" }],
+  };
+  const receipt = (await planned(context, { rows: leftover("PoolImagePublicationReceipt") })).plan;
+  const receiptRow = (receipt.deletions as Record<string, { action?: string } | undefined>)
+    .PoolImagePublicationReceipt;
+  assert.equal(receiptRow?.action, "delete", "the plan deletes the leftover row");
+  assert.ok(
+    !(await rulesOf(receipt, healing)).some((rule) => rule.endsWith("PoolImagePublicationReceipt")),
+  );
+  // Any other command the stack no longer declares still refuses.
+  const other = (await planned(context, { rows: leftover("SomeOtherReceipt") })).plan;
+  assert.ok((await rulesOf(other, healing)).includes("outside-code-only SomeOtherReceipt"));
+});
