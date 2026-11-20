@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { publicGuidance, publicLine, publicTail, publicText } from "./failure/redact.ts";
 
 const none = {};
@@ -255,6 +256,35 @@ test("a line cut to its limit leaves no part of a credential behind", () => {
     assert.ok(!byShape.includes("sk9LIVE"), byShape.slice(-80));
     assert.ok(byShape.endsWith("[cut]"));
   }
+});
+
+test("a stack frame inside the checkout is printed from the repository root, in every kind", () => {
+  const checkout = new URL("../", import.meta.url);
+  const frames = [
+    `    at deploy (${checkout.href}scripts/preview/lifecycle.ts:120:11)`,
+    `    at ${fileURLToPath(checkout)}scripts/process.ts:48:5`,
+  ];
+  // Actions exports the checkout as `PWD`, a name the credential rule matches.
+  const checkoutPath = fileURLToPath(checkout);
+  for (const environment of [none, { PWD: checkoutPath.slice(0, -1), OLDPWD: checkoutPath }])
+    for (const kind of [publicTail, publicGuidance, publicLine])
+      assert.deepEqual(
+        frames.map((frame) => kind(frame, environment).trim()),
+        ["at deploy (scripts/preview/lifecycle.ts:120:11)", "at scripts/process.ts:48:5"],
+        `${kind.name} ${Object.keys(environment).join(",")}`,
+      );
+  // A message still loses its dotted names, but never to an absolute path or a URL.
+  for (const frame of frames)
+    assert.match(publicText(frame, none), /^\s+at (?:deploy \()?scripts\//u);
+  // A file URL outside the checkout names the machine and goes; a plain path outside it is printed
+  // as before, under the home-directory rule.
+  assert.equal(
+    publicTail("    at file:///opt/hostedtoolcache/node/x.mjs:1:1", none),
+    "    at [url]",
+  );
+  // Only a path that starts at the root loses it, not one that merely contains its text.
+  assert.doesNotMatch(publicTail(`/mnt/snap${checkoutPath}x.ts`, none), /snapx\.ts/u);
+  assert.equal(publicTail(`git+${checkout.href}`, none), "[url]");
 });
 
 test("a line cannot issue a workflow command or span lines", () => {

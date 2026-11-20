@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { createError, EvlogError } from "evlog";
 import { causeChain, causeLine, publicError, typeName, type PublicCause } from "./cause.ts";
 import { failedCommand } from "./command.ts";
@@ -36,8 +35,6 @@ const subjects = [
   "detail",
 ];
 const shown = 50;
-// Frames are printed from the repository's root: the path above it names a machine and a person.
-const root = fileURLToPath(new URL("../../", import.meta.url));
 const text = (value: unknown) => (typeof value === "string" && value.trim() ? value : undefined);
 // A link is documentation on a site this repository cites, with no query to carry anything.
 const linkShape =
@@ -215,9 +212,7 @@ export function structuredFailure(
         .split("\n")
         .filter((line) => /^\s+at /u.test(line) && !line.includes("node:"))
         .slice(0, 3)
-        .map((line) =>
-          publicGuidance(line.trim().replaceAll("file://", "").replaceAll(root, ""), environment),
-        ),
+        .map((line) => publicGuidance(line.trim(), environment)),
     );
   let why = "It carries no cause, so its message is all that is known.";
   if (status !== undefined) why = `The service answered HTTP ${status}.`;
