@@ -123,6 +123,10 @@ const REASONS = {
     "Alchemy found a configuration difference on the root application, and a PATCH or rollout restarts the root and its master Home.",
     "Make the declaration match the recorded application, or restart the root in its own named step.",
   ],
+  host: [
+    "The host ends in a dot. DNS and TLS take it as the same host, but every rule here compares hosts exactly, so none would apply.",
+    "Send the request to the host without the trailing dot.",
+  ],
   rootUnknown: [
     "The root's application is not known by both its id and its name in this run, so a container application write could reach it.",
     "Record the root's application name on its State row, or run without container application writes.",
@@ -163,7 +167,7 @@ const refuse = (
 
 // Path words kept in the journal; every other segment (accounts, names, ids) prints as {id}.
 const WORDS = new Set(
-  "client v1 v2 v4 accounts zones organizations workers scripts services environments versions deployments content settings script-settings edge-preview previews subdomain secrets schedules tails durable_objects namespaces objects containers applications rollouts instances registries hyperdrive configs r2 buckets d1 database query secrets_store stores databases branches roles passwords backups assets upload assets-upload-session routes domains queues consumers purge messages workflows storage kv bulk delete values vectorize indexes delete_by_ids artifacts repos tokens user".split(
+  "client v1 v2 v4 accounts zones organizations workers scripts services environments versions deployments content settings script-settings edge-preview previews subdomain secrets schedules tails durable_objects namespaces objects containers cloudchamber applications rollouts instances registries hyperdrive configs r2 buckets d1 database query secrets_store stores databases branches roles passwords backups assets upload assets-upload-session routes domains queues consumers purge messages workflows storage kv bulk delete values vectorize indexes delete_by_ids artifacts repos tokens user".split(
     " ",
   ),
 );
@@ -222,7 +226,10 @@ const StoreCredentialRead = Schema.Struct({
   ]),
 });
 const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(?:\/|$)/;
-const APPLICATION = /^\/accounts\/[^/]+\/containers\/applications(?:\/([^/]+))?/;
+// The API serves an application under both paths; the SDK sends the first, Cloudflare's own CLI
+// may send the second.
+const APPLICATION = /^\/accounts\/[^/]+\/(?:containers|cloudchamber)\/applications(?:\/([^/]+))?/;
+const APPLICATIONS = /\/(?:containers|cloudchamber)\/applications\/?$/u;
 const REGISTRY_HOST = "registry.cloudflare.com";
 
 const API_ROOT = /\/(?:accounts|organizations|user|zones)\//iu;
@@ -282,6 +289,7 @@ const Created = Schema.Struct({ result: Schema.Struct({ id: Schema.String }) });
 // instances by state; `durable_objects` is the immutable namespace attachment.
 const ApplicationRead = Schema.Struct({
   result: Schema.Struct({
+    name: Schema.optional(Schema.String),
     durable_objects: Schema.optional(Schema.Unknown),
     health: Schema.Struct({ instances: Schema.Record(Schema.String, Schema.Number) }),
   }),
@@ -422,10 +430,18 @@ const checkStoreCredentialRead = (request: Request, at: At) =>
  * apply meets. The delete is admitted only when a fresh read, sent around the guard with the same
  * credentials, shows no attachment and nothing running; any other answer or a failed read refuses.
  */
-const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: At) =>
+const checkUnattached = (
+  config: WireGuardConfig,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  at: At,
+) =>
   Effect.gen(function* () {
     const url = new URL(request.url);
-    url.pathname = url.pathname.replace(/(\/containers\/applications\/[^/]+).*$/u, "$1");
+    url.pathname = url.pathname.replace(
+      /(\/(?:containers|cloudchamber)\/applications\/[^/]+).*$/u,
+      "$1",
+    );
     url.search = "";
     const authorization = request.headers.get("authorization");
     const read = yield* Effect.tryPromise(async () => {
@@ -441,7 +457,13 @@ const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: A
       Effect.flatMap(Schema.decodeUnknownEffect(ApplicationRead)),
       Effect.mapError((cause) => refuse(at, "application", "application read", "failed", cause)),
     );
-    const { durable_objects: attached, health } = read.result;
+    const { name, durable_objects: attached, health } = read.result;
+    // The root, by the name Cloudflare reads back, whatever its attachment and its instances.
+    if (
+      name !== undefined &&
+      config.rootApplicationNames?.some((root) => root.toLowerCase() === name.toLowerCase())
+    )
+      return yield* refuse(at, "root", "name", "root");
     if (attached !== undefined && attached !== null)
       return yield* refuse(at, "application", "durable_objects", "attached");
     const running = Object.entries(health.instances).filter(
@@ -578,6 +600,8 @@ const check = (
     });
     const write = method !== "GET" && method !== "HEAD";
     const url = new URL(request.url);
+    if (url.hostname.endsWith("."))
+      return yield* refuse(at("host", "{id}"), "host", "host", url.hostname);
     if (write && !canonicalPath(url.pathname))
       return yield* refuse(at("request", "{id}"), "path", "path", "not canonical");
     if (write && url.hostname.toLowerCase() === REGISTRY_HOST)
@@ -643,7 +667,12 @@ const check = (
         return;
     }
     if (application !== undefined && !created.has(application))
-      return yield* checkUnattached(inner, request, at("container application", application));
+      return yield* checkUnattached(
+        config,
+        inner,
+        request,
+        at("container application", application),
+      );
     for (const [pattern, kind] of PROTECTED) {
       const id = name(pattern);
       if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "DELETE");
@@ -694,7 +723,7 @@ export const install = (config: WireGuardConfig = {}) =>
         ))
           ownedHere.add(name);
       // Only a create of an application (a POST to the collection itself) feeds the created set.
-      if (request.method === "POST" && response.ok && path.endsWith("/containers/applications")) {
+      if (request.method === "POST" && response.ok && APPLICATIONS.test(path)) {
         const decoded = Schema.decodeUnknownExit(Created)(
           await response
             .clone()
@@ -705,9 +734,7 @@ export const install = (config: WireGuardConfig = {}) =>
       }
       // Any application Cloudflare names as the root, in a read or a create's answer, is the root.
       if (
-        (request.method === "GET" ||
-          (request.method === "POST" && path.endsWith("/containers/applications"))) &&
-        response.ok &&
+        (request.method === "GET" || (request.method === "POST" && APPLICATIONS.test(path))) &&
         config.rootApplicationNames?.length &&
         APPLICATION.test(path)
       ) {

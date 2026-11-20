@@ -698,6 +698,28 @@ export const checkPlan = (
       );
       const rootSettled =
         !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
+      // Without the root's name the wire guard refuses every container application write of the
+      // run, so a plan that writes one would pass here and stop at its first write.
+      const rootName = rootNode
+        ? (recorded(rootNode) as { attr?: { applicationName?: unknown } } | undefined)?.attr
+            ?.applicationName
+        : "";
+      const containerWrite = nodes.find(
+        (node) =>
+          node.resource.Type === "Cloudflare.Container" &&
+          node.resource.FQN !== policy.poolContainer.fqn &&
+          node.action !== "noop",
+      );
+      if (containerWrite && !(typeof rootName === "string" && rootName.length > 0))
+        violations.push({
+          fqn: containerWrite.resource.FQN,
+          type: containerWrite.resource.Type,
+          action: containerWrite.action,
+          rule: "root-name-unrecorded",
+          change: [`${policy.poolContainer.fqn}.attr.applicationName: absent`],
+          why: "The root's State row records no application name, so the wire guard refuses every container application write in this run, and this plan's apply would stop at its first.",
+          fix: "Record the root's application name on its State row before a release that writes a container application.",
+        });
       for (const node of nodes) {
         const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
         const destroys =
