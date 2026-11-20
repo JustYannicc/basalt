@@ -1,12 +1,12 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -7954,3 +7954,286 @@
+@@ -7954,3 +7954,306 @@
   }) => (importPath: string) => string;
   /**
    * The default source provider: bundle `props.main` with rolldown.
 +diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
-+index 75ee7f1..d5b9dac 100644
++index 75ee7f1..4139161 100644
 +--- a/src/Cloudflare/Workers/WorkerProvider.ts
 ++++ b/src/Cloudflare/Workers/WorkerProvider.ts
 +@@ -4947,6 +4947,7 @@ export const LiveWorkerProvider = () =>
@@ -17,7 +17,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +         }) {
 +           const { accountId } = yield* yield* CloudflareEnvironment;
 +           // Effect-valued `env` entries (tagged Worker classes / resource
-+@@ -5094,35 +5095,85 @@ export const LiveWorkerProvider = () =>
++@@ -5094,35 +5095,98 @@ export const LiveWorkerProvider = () =>
 +                   )
 +                 : undefined;
 +           const urlStable = newUrl !== undefined && newUrl === output.url;
@@ -57,10 +57,13 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++          // DO) then resolve it during planning instead of re-updating on every
 ++          // deploy. A class this Worker starts to host has no id of its own yet,
 ++          // even when the map holds that name for another Worker's class. A name
-++          // that is both hosted and bound from another Worker has one entry for two
-++          // ids, so nothing is promised then. Another Worker's name is an Output in
-++          // a cycle member's bindings; the resolved props carry it. An entry for a
-++          // class that is no longer bound stays in the map until the next record.
+++          // bound in two ways (hosted and from another Worker, or from two other
+++          // Workers) has one entry for two ids, so nothing is promised then.
+++          // Another Worker's name is an Output in a cycle member's bindings. For a
+++          // binding declared in `env` the resolved props carry it; a name that
+++          // cannot be known is never taken for this Worker's own and promises
+++          // nothing. An entry for a class that is no longer bound stays in the map
+++          // until the next record.
 ++          const doBindings = (
 ++            bindings: unknown,
 ++            resolved?: Record<string, unknown>,
@@ -77,28 +80,39 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++                )
 ++                  return [];
 ++                const declared = binding.scriptName as unknown;
-++                const known = resolved?.[binding.name] as
-++                  | { scriptName?: unknown }
-++                  | undefined;
+++                const known = (
+++                  resolved?.[binding.name] as
+++                    | { scriptName?: unknown }
+++                    | undefined
+++                )?.scriptName;
 ++                return [
 ++                  {
 ++                    className: binding.className,
 ++                    scriptName:
-++                      declared === undefined || typeof declared === "string"
+++                      declared === undefined ||
+++                      typeof declared === "string" ||
+++                      typeof known !== "string"
 ++                        ? declared
-++                        : known?.scriptName,
+++                        : known,
 ++                  },
 ++                ];
 ++              });
 ++          const hostedHere = (binding: { scriptName: unknown }) =>
 ++            binding.scriptName === undefined ||
 ++            binding.scriptName === workerName;
-++          const oneWayPerName = (all: ReturnType<typeof doBindings>) =>
+++          const sameSource = (
+++            one: { scriptName: unknown },
+++            other: { scriptName: unknown },
+++          ) =>
+++            hostedHere(one)
+++              ? hostedHere(other)
+++              : typeof one.scriptName === "string" &&
+++                one.scriptName === other.scriptName;
+++          const oneSourcePerName = (all: ReturnType<typeof doBindings>) =>
 ++            all.every((one) =>
 ++              all.every(
 ++                (other) =>
-++                  one.className !== other.className ||
-++                  hostedHere(one) === hostedHere(other),
+++                  one.className !== other.className || sameSource(one, other),
 ++              ),
 ++            );
 ++          const recordedDoNamespaces = output.durableObjectNamespaces ?? {};
@@ -112,18 +126,17 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +-            newDoClassNames.length === oldDoClassNames.length &&
 +-            newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
 ++            (Array.isArray(newBindings)
-++              ? oneWayPerName(oldDoBindings) &&
-++                oneWayPerName(newDoBindings) &&
+++              ? oneSourcePerName(oldDoBindings) &&
+++                oneSourcePerName(newDoBindings) &&
 ++                newDoBindings.every(
 ++                  (binding) =>
 ++                    Object.hasOwn(recordedDoNamespaces, binding.className) &&
+++                    typeof recordedDoNamespaces[binding.className] ===
+++                      "string" &&
 ++                    oldDoBindings.some(
 ++                      (old) =>
 ++                        old.className === binding.className &&
-++                        hostedHere(old) === hostedHere(binding) &&
-++                        (hostedHere(binding) ||
-++                          (typeof binding.scriptName === "string" &&
-++                            old.scriptName === binding.scriptName)),
+++                        sameSource(binding, old),
 ++                    ),
 ++                )
 ++              : Object.keys(recordedDoNamespaces).length === 0);
@@ -131,7 +144,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +           // `workerId` (interrupted precreates a provisional ""). Plan one
 +           // update even when nothing else changed, so reconcile re-records
 +diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
-+index 9f1bdc5..0e36fec 100644
++index 9f1bdc5..52e1481 100644
 +--- a/lib/Cloudflare/Workers/WorkerProvider.js
 ++++ b/lib/Cloudflare/Workers/WorkerProvider.js
 +@@ -3624,7 +3624,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
@@ -143,7 +156,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +             const { accountId } = yield* yield* CloudflareEnvironment;
 +             // Effect-valued `env` entries (tagged Worker classes / resource
 +             // Effects — the circular-bindings pattern) never resolve at plan
-+@@ -3752,27 +3752,56 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++@@ -3752,27 +3752,63 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
 +                             urlHostname(u).startsWith(`${workerName}.`))
 +                         : undefined;
 +             const urlStable = newUrl !== undefined && newUrl === output.url;
@@ -176,10 +189,13 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++            // DO) then resolve it during planning instead of re-updating on every
 ++            // deploy. A class this Worker starts to host has no id of its own yet,
 ++            // even when the map holds that name for another Worker's class. A name
-++            // that is both hosted and bound from another Worker has one entry for two
-++            // ids, so nothing is promised then. Another Worker's name is an Output in
-++            // a cycle member's bindings; the resolved props carry it. An entry for a
-++            // class that is no longer bound stays in the map until the next record.
+++            // bound in two ways (hosted and from another Worker, or from two other
+++            // Workers) has one entry for two ids, so nothing is promised then.
+++            // Another Worker's name is an Output in a cycle member's bindings. For a
+++            // binding declared in `env` the resolved props carry it; a name that
+++            // cannot be known is never taken for this Worker's own and promises
+++            // nothing. An entry for a class that is no longer bound stays in the map
+++            // until the next record.
 ++            const doBindings = (bindings, resolved) => (Array.isArray(bindings) ? bindings : [])
 ++                .flatMap((b) => b.data.bindings ?? [])
 ++                .flatMap((binding) => {
@@ -187,20 +203,25 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++                    !binding.className)
 ++                    return [];
 ++                const declared = binding.scriptName;
-++                const known = resolved?.[binding.name];
+++                const known = resolved?.[binding.name]?.scriptName;
 ++                return [
 ++                    {
 ++                        className: binding.className,
-++                        scriptName: declared === undefined || typeof declared === "string"
+++                        scriptName: declared === undefined ||
+++                            typeof declared === "string" ||
+++                            typeof known !== "string"
 ++                            ? declared
-++                            : known?.scriptName,
+++                            : known,
 ++                    },
 ++                ];
 ++            });
 ++            const hostedHere = (binding) => binding.scriptName === undefined ||
 ++                binding.scriptName === workerName;
-++            const oneWayPerName = (all) => all.every((one) => all.every((other) => one.className !== other.className ||
-++                hostedHere(one) === hostedHere(other)));
+++            const sameSource = (one, other) => hostedHere(one)
+++                ? hostedHere(other)
+++                : typeof one.scriptName === "string" &&
+++                    one.scriptName === other.scriptName;
+++            const oneSourcePerName = (all) => all.every((one) => all.every((other) => one.className !== other.className || sameSource(one, other)));
 ++            const recordedDoNamespaces = output.durableObjectNamespaces ?? {};
 ++            const oldDoBindings = doBindings(oldBindings);
 ++            const newDoBindings = doBindings(newBindings, news.env);
@@ -208,14 +229,13 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +-                newDoClassNames.length === oldDoClassNames.length &&
 +-                newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
 ++                (Array.isArray(newBindings)
-++                    ? oneWayPerName(oldDoBindings) &&
-++                        oneWayPerName(newDoBindings) &&
+++                    ? oneSourcePerName(oldDoBindings) &&
+++                        oneSourcePerName(newDoBindings) &&
 ++                        newDoBindings.every((binding) => Object.hasOwn(recordedDoNamespaces, binding.className) &&
+++                            typeof recordedDoNamespaces[binding.className] ===
+++                                "string" &&
 ++                            oldDoBindings.some((old) => old.className === binding.className &&
-++                                hostedHere(old) === hostedHere(binding) &&
-++                                (hostedHere(binding) ||
-++                                    (typeof binding.scriptName === "string" &&
-++                                        old.scriptName === binding.scriptName))))
+++                                sameSource(binding, old)))
 ++                    : Object.keys(recordedDoNamespaces).length === 0);
 +             // Rows persisted by older releases carried the script *name* in
 +             // `workerId` (interrupted precreates a provisional ""). Plan one
