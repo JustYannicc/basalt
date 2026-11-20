@@ -57,7 +57,7 @@
         "allow": {
           "scripts/architecture/native-stack.test.ts": 5,
           "scripts/ci-browser-install.test.ts": 2,
-          "scripts/database-budget-deployment.test.ts": 1,
+          "scripts/plan-settles.test.ts": 1,
           "scripts/pool-crash-operator.test.ts": 1,
           "scripts/pool-readiness.test.ts": 1,
           "scripts/pool-tests/app-log-privacy.test.ts": 1,
@@ -89,7 +89,7 @@
           "scripts/pool-ui-tests/history-coverage.test.mjs": 3,
           "scripts/pool-ui-tests/import-access.test.mjs": 1,
           "scripts/pool-ui-tests/usage-import.test.mjs": 1,
-          "scripts/release-phases.test.ts": 1,
+          "scripts/root-container-plan.test.ts": 1,
           "scripts/site-readiness.test.ts": 1,
           "scripts/upstream-bun-isolation.test.ts": 1,
           "scripts/upstream-install-recovery.test.ts": 1,
