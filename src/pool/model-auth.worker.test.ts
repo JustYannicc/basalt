@@ -482,7 +482,11 @@ test("a reset the Worker answers itself is reported once, by the Worker", async 
 });
 
 test("a caller who leaves while a reset call waits to be sent again is not a controller failure", async (context) => {
-  const log = context.mock.method(console, "error", () => {});
+  let callFailed!: () => void;
+  const failed = new Promise<"failed">((resolve) => (callFailed = () => resolve("failed")));
+  const log = context.mock.method(console, "error", (name: unknown) => {
+    if (name === "POOL_CONTROLLER_CALL_FAILED") callFailed();
+  });
   const events = workerEvents(context);
   const { env, calls } = poolStub(undefined, async () => {
     throw new Error(instanceEnded);
@@ -500,9 +504,10 @@ test("a caller who leaves while a reset call waits to be sent again is not a con
     async () => true,
     (work) => deferred.push(work),
   ).catch((error: unknown) => error);
-  // The first call has failed once the hop says so; the caller leaves during the wait.
-  while (!log.mock.calls.some((call) => call.arguments[0] === "POOL_CONTROLLER_CALL_FAILED"))
-    await new Promise((resolve) => setImmediate(resolve));
+  // The first call has failed once the hop says so, and not because the request already ended.
+  assert.equal(await Promise.race([failed, answer.then(() => "settled" as const)]), "failed");
+  // Let the hop reach its wait before the caller leaves.
+  await new Promise((resolve) => setImmediate(resolve));
   caller.abort();
   await answer;
   await Promise.all(deferred);
