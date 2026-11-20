@@ -212,9 +212,15 @@ export async function handleRuntimeHandoff(
       case "fence":
         await handoff.slots.fence(value.identity);
         break;
-      case "unfence":
-        result = await handoff.slots.unfence(value.identity);
+      case "unfence": {
+        const unfenced = await handoff.slots.unfence(value.identity);
+        // A slot handed back to recovery may meet a clock that already needs a person.
+        result =
+          unfenced.by === "recovery"
+            ? { ...unfenced, recovery: await handoff.recoveryState() }
+            : unfenced;
         break;
+      }
       case "peer-bootstrap":
         result = await handoff.bootstrapPeer(value, request.signal);
         break;

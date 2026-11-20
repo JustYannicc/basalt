@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { unfenceHandBackAfterMs } from "./runtime-slots/controller.ts";
 import { unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { PoolAlarms } from "./alarms.ts";
@@ -12,6 +11,9 @@ interface Slot {
   fencedAt?: number;
   unfenced?: { by: string; at: number; proven: boolean };
   identity?: { bootId: string };
+}
+interface Unfenced {
+  result?: { by: string; recovery?: { restarts: number[]; needsPerson?: unknown } };
 }
 
 async function root(context: TestContext) {
@@ -35,12 +37,18 @@ async function pass(f: Fixture) {
   await f.upkeep();
   await f.settle();
 }
+/** The Home upkeep, whose membership pass renews what failed installs held back. */
+async function homePass(f: Fixture) {
+  await new PoolAlarms(f.old.storage).schedule("home", Date.now());
+  await f.alarm();
+  await f.settle();
+}
 async function selection(f: Fixture) {
   return ((await f.send("inspect")) as { selection: { epoch: number; active: Slot } }).selection;
 }
 async function unfence(f: Fixture, identity: ReturnType<Fixture["old"]["identity"]>) {
   const response = await f.command("unfence", { identity });
-  return { status: response.status, body: (await response.json()) as { result?: { by: string } } };
+  return { status: response.status, body: (await response.json()) as Unfenced };
 }
 async function status(response: Promise<Response>) {
   const value = await response;
@@ -60,7 +68,9 @@ test(
   async (context) => {
     const { f, identity } = await root(context);
     await f.send("fence", { identity });
-    assert.equal((await selection(f)).active.fenced, true);
+    const fenced = await selection(f);
+    assert.equal(fenced.active.fenced, true);
+    assert.equal(typeof fenced.active.fencedAt, "number", "the operator sees when it was fenced");
     const { status: code, body } = await unfence(f, identity);
     assert.equal(code, 200);
     assert.equal(body.result?.by, "proof");
@@ -75,43 +85,7 @@ test(
 );
 
 test(
-  "a refusing root fenced for less than every lease it could hold keeps its fence",
-  {
-    timeout: 20_000,
-  },
-  async (context) => {
-    const { f, identity, advance } = await root(context);
-    refuseCurrentBoot(f);
-    await f.send("fence", { identity });
-    advance(unfenceHandBackAfterMs - 1);
-    const { status: code } = await unfence(f, identity);
-    assert.equal(code, 409);
-    assert.equal((await selection(f)).active.fenced, true);
-  },
-);
-
-test(
-  "a fence recorded before its age was kept still needs the proof",
-  {
-    timeout: 20_000,
-  },
-  async (context) => {
-    const { f, identity, advance } = await root(context);
-    refuseCurrentBoot(f);
-    await f.send("fence", { identity });
-    // A selection written by code that didn't record when it fenced: its age is unknown.
-    const stored = (await f.old.storage.get(slotSelectionKey)) as { active: Slot };
-    delete stored.active.fencedAt;
-    await f.old.storage.put(slotSelectionKey, stored);
-    advance(10 * unfenceHandBackAfterMs);
-    const { status: code } = await unfence(f, identity);
-    assert.equal(code, 409);
-    assert.equal((await selection(f)).active.fenced, true);
-  },
-);
-
-test(
-  "a refusing root fenced past every lease goes back to recovery, which restarts it",
+  "a refusing root goes back to recovery at once and serves only on its proven new boot",
   {
     timeout: 30_000,
   },
@@ -119,10 +93,10 @@ test(
     const { f, identity, advance } = await root(context);
     refuseCurrentBoot(f);
     await f.send("fence", { identity });
-    advance(unfenceHandBackAfterMs);
     const { status: code, body } = await unfence(f, identity);
     assert.equal(code, 200);
     assert.equal(body.result?.by, "recovery");
+    assert.deepEqual(body.result?.recovery?.needsPerson, undefined, "the reply shows the recovery");
     const before = await selection(f);
     assert.equal(before.active.fenced, false);
     assert.deepEqual(
@@ -150,10 +124,9 @@ test(
     timeout: 20_000,
   },
   async (context) => {
-    const { f, identity, advance } = await root(context);
+    const { f, identity } = await root(context);
     refuseCurrentBoot(f);
     await f.send("fence", { identity });
-    advance(unfenceHandBackAfterMs);
     assert.equal((await unfence(f, identity)).body.result?.by, "recovery");
     // The refusal was a moment's: the old boot answers again right after the unfence, but current
     // policies can't reach it yet.
@@ -163,19 +136,102 @@ test(
       if (installsFail) throw new Error("synthetic install failure");
     };
     assert.equal(await status(f.model()), 503, "not before current policies reach it");
-    assert.equal(await status(f.command("active-health")), 409);
+    assert.equal(await status(f.command("active-health")), 409, "nor reported as serving");
     await pass(f);
     assert.equal((await selection(f)).active.unfenced?.proven, false, "still unproven");
     installsFail = false;
     await pass(f);
     assert.equal((await selection(f)).active.unfenced?.proven, true);
-    // The failed installs also held back the pool's own membership; its next Home pass renews it.
-    await new PoolAlarms(f.old.storage).schedule("home", Date.now());
-    await f.alarm();
-    await f.settle();
+    await homePass(f);
     const served = await f.model();
     assert.equal(served.status, 200, await served.text());
     assert.deepEqual(f.old.calls.signals, [], "a boot that answers is never stopped");
     assert.equal(f.old.calls.start, 0);
+  },
+);
+
+test(
+  "a fence recorded before its time was kept is handed back too",
+  {
+    timeout: 20_000,
+  },
+  async (context) => {
+    const { f, identity } = await root(context);
+    refuseCurrentBoot(f);
+    await f.send("fence", { identity });
+    const stored = (await f.old.storage.get(slotSelectionKey)) as { active: Slot };
+    delete stored.active.fencedAt;
+    await f.old.storage.put(slotSelectionKey, stored);
+    const { status: code, body } = await unfence(f, identity);
+    assert.equal(code, 200);
+    assert.equal(body.result?.by, "recovery");
+    assert.equal((await selection(f)).active.unfenced?.proven, false);
+  },
+);
+
+test(
+  "a fence again while unproven, then a passing proof, ends proven",
+  {
+    timeout: 20_000,
+  },
+  async (context) => {
+    const { f, identity } = await root(context);
+    refuseCurrentBoot(f);
+    await f.send("fence", { identity });
+    assert.equal((await unfence(f, identity)).body.result?.by, "recovery");
+    await f.send("fence", { identity });
+    assert.equal((await selection(f)).active.fenced, true);
+    f.old.hooks.health = async () => {};
+    assert.equal((await unfence(f, identity)).body.result?.by, "proof");
+    const { active } = await selection(f);
+    assert.deepEqual(
+      { fenced: active.fenced, by: active.unfenced?.by, proven: active.unfenced?.proven },
+      { fenced: false, by: "proof", proven: true },
+    );
+    assert.equal(await status(f.model()), 200);
+  },
+);
+
+test(
+  "a fence committed mid-restart, then unfenced, serves only on the committed new boot",
+  {
+    timeout: 30_000,
+  },
+  async (context) => {
+    const { f, identity } = await root(context);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    context.after(() => release.resolve());
+    // The 19 Nov shape: a restart is booting when the fence lands.
+    f.old.hooks.health = async () => {
+      if (f.old.calls.start) {
+        entered.resolve();
+        await release.promise;
+      }
+    };
+    f.old.crash();
+    await f.upkeep();
+    await entered.promise;
+    await f.send("fence", { identity });
+    release.resolve();
+    await f.settle();
+    const fenced = await selection(f);
+    assert.equal(fenced.active.fenced, true);
+    assert.equal(
+      fenced.active.identity?.bootId,
+      identity.bootId,
+      "the fence held the old selection",
+    );
+    const { body } = await unfence(f, identity);
+    assert.equal(body.result?.by, "recovery");
+    assert.equal(await status(f.model()), 503, "not before the restart commits its proven boot");
+    await pass(f);
+    await pass(f);
+    const after = await selection(f);
+    assert.equal(after.epoch, fenced.epoch + 1);
+    assert.notEqual(after.active.identity?.bootId, identity.bootId);
+    assert.equal(after.active.unfenced?.proven, true);
+    const served = await f.model();
+    assert.equal(served.status, 200, await served.text());
   },
 );

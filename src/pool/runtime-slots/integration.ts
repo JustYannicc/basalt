@@ -197,6 +197,7 @@ export class RuntimeHandoff {
   async status(signal = AbortSignal.timeout(2_000)) {
     const identity = await this.selected();
     if (!identity) return undefined;
+    await this.assertProven();
     const health = await this.driver.health(identity, signal);
     return {
       boot_id: identity.bootId,
@@ -208,10 +209,15 @@ export class RuntimeHandoff {
   databasePool() {
     return this.options.databasePool?.() ?? null;
   }
+  /** A slot an unfence handed back serves nothing, and reports nothing as serving, until proven. */
+  private async assertProven() {
+    if (awaitsProof((await this.storage.inspect()).selection?.active))
+      throw new SlotRefused("selection");
+  }
   async activeHealth() {
     const identity = await this.selected();
-    if (!identity || awaitsProof((await this.storage.inspect()).selection?.active))
-      throw new SlotRefused("selection");
+    if (!identity) throw new SlotRefused("selection");
+    await this.assertProven();
     const health = await this.driver.health(identity, AbortSignal.timeout(2_000));
     return {
       identity,
@@ -356,6 +362,7 @@ export class RuntimeHandoff {
     return this.choose(
       () => legacy(),
       async (identity) => {
+        await this.assertProven();
         const health = await this.driver.warm(identity, AbortSignal.timeout(2_000));
         return {
           boot_id: identity.bootId,
@@ -387,6 +394,7 @@ export class RuntimeHandoff {
     return this.choose(
       () => legacy(),
       async (identity) => {
+        await this.assertProven();
         const observed = Schema.decodeUnknownSync(Schema.Struct({ kind: Schema.String }))(
           await this.driver.witness(identity),
         );
@@ -470,11 +478,13 @@ export class RuntimeHandoff {
   ) {
     const selected = await this.selected();
     if (!selected) throw new SlotRefused("selection");
+    await this.assertProven();
     await this.driver.native(selected, policy, signal);
   }
   async probeFetch(request: Request, port: 8318 | 8327) {
     const selected = await this.selected();
     if (!selected) throw new SlotRefused("selection");
+    await this.assertProven();
     return this.driver.probeFetch(selected, request, port);
   }
 }

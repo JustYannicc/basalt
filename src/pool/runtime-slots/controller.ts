@@ -17,23 +17,10 @@ import {
 import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "./proof.ts";
 import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
-import {
-  membershipTtlMs,
-  nativeProjectionTtlCapMs,
-  policyInstallTimeoutMs,
-  type NativeMembershipPolicy,
-} from "../membership-contract.ts";
+import { policyInstallTimeoutMs, type NativeMembershipPolicy } from "../membership-contract.ts";
 import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
 import { SlotFirstStart } from "./first-start.ts";
-
-/**
- * A fenced slot gets no installs, but may still hold grants from before its fence. Each was signed
- * before the fence and lasts at most the native cap from when the plugin took it, which is within
- * an install's timeout. A fence this old has outlived every one of them.
- */
-export const unfenceHandBackAfterMs =
-  Math.max(membershipTtlMs, nativeProjectionTtlCapMs) + policyInstallTimeoutMs;
 
 interface Dependencies {
   controllerId: string;
@@ -272,7 +259,7 @@ export class RuntimeSlots {
       if (!role) throw new SlotRefused("identity");
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: true, fencedAt: Date.now() },
+        [role]: { ...selection[role], fenced: true, fencedAt: this.clock.now() },
       });
     });
     this.deps.streams.abortSlot(executionKey(identity));
@@ -280,8 +267,9 @@ export class RuntimeSlots {
 
   /**
    * Ends a fence. A slot that proves its health and takes current policies serves at once. An active
-   * slot that can't, fenced for longer than any grant it could still hold, goes back to recovery,
-   * which restarts it or proves it before it serves; a younger or undated fence still needs the proof.
+   * slot that can't goes back to recovery instead, unproven: nothing routes to it until current
+   * policies reach its boot, by recovery's restart or its proof. A fenced boot may still hold clean
+   * grants from before its fence for the plugin's 24-hour grace, so the gate, not time, is the guard.
    */
   async unfence(identity: SlotIdentity): Promise<{ by: "proof" | "recovery" }> {
     this.identity(identity);
@@ -308,23 +296,22 @@ export class RuntimeSlots {
         [role]: {
           ...selection[role],
           fenced: false,
-          unfenced: { by: "proof" as const, at: Date.now(), proven: true },
+          unfenced: { by: "proof" as const, at: this.clock.now(), proven: true },
         },
       });
     });
     return { by: "proof" };
   }
   private handBack(identity: SlotIdentity, refusal: unknown) {
-    const now = Date.now();
+    const now = this.clock.now();
     return this.deps.storage.transact(async ({ selection }, transaction) => {
       const active = selection?.active;
+      // Recovery acts on the active slot alone; a fenced candidate or draining slot needs its proof.
       if (
         !selection ||
         !active?.fenced ||
         !sameIdentity(active.identity, identity) ||
-        active.retirement ||
-        active.fencedAt === undefined ||
-        now - active.fencedAt < unfenceHandBackAfterMs
+        active.retirement
       )
         throw refusal;
       await transaction.put(slotSelectionKey, {
