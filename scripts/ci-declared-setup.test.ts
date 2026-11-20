@@ -228,7 +228,7 @@ test("account acquisition's self-host proof runs in two required jobs with the s
     [
       "account-observations:driver-readings-health-and-observation-compatibility",
       "account-observations",
-      20,
+      25,
     ],
   ] as const) {
     assert.equal(declarations.groups[id]!.job, job, id);
