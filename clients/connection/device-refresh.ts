@@ -2,19 +2,28 @@ import type { DeviceCredentials } from "../contracts/device.ts";
 import { untilAborted } from "./abort.ts";
 import { DeviceOAuthError, tokenRequest } from "./device-oauth.ts";
 
-export class RefreshReplayBudgetError extends Error {}
-export class RefreshRefusedError extends Error {}
+/**
+ * How long the server answers a rotated refresh token with the pair it already issued: its
+ * refresh-token reuse interval, which it sets to the access-token lifetime and counts from the
+ * rotation. A first attempt starts no later than that rotation, so a replay younger than this is
+ * still answered. An older one can be refused as token reuse, so the client asks for sign-in
+ * instead of sending it.
+ */
+const refreshReplayWindowMs = 3_600_000;
+
+/** The saved grant can no longer be renewed. Only a fresh sign-in recovers. */
+class RefreshSignInRequiredError extends Error {}
 
 export async function refreshDeviceCredentials(
   current: DeviceCredentials,
   signal: AbortSignal,
   commit: (next: DeviceCredentials) => Promise<void>,
 ) {
-  // The server durably replays the same pair for an hour. Keep client replay well inside it.
   const unknown = current.refreshPending === true;
   const startedAt = unknown ? (current.refreshStartedAt ?? Date.now()) : Date.now();
-  if (unknown && Date.now() - startedAt >= 600_000)
-    throw new RefreshReplayBudgetError("Refresh replay time limit reached.");
+  // The start is saved, so sleep, a restart and Reconnect all measure the same elapsed time.
+  if (unknown && Date.now() - startedAt >= refreshReplayWindowMs)
+    throw new RefreshSignInRequiredError("The server no longer replays this refresh.");
   await commit({ ...current, refreshPending: true, refreshStartedAt: startedAt });
   const tokens = await tokenRequest(
     current.origin,
@@ -35,7 +44,7 @@ export async function refreshDeviceCredentials(
       error.status !== 408 &&
       error.status !== 429
     )
-      throw new RefreshRefusedError("Native sign-in was refused.");
+      throw new RefreshSignInRequiredError("Native sign-in was refused.");
     if (
       !unknown &&
       error instanceof Error &&
@@ -53,7 +62,7 @@ export async function refreshDeviceCredentials(
 export function deviceRefresh(ports: {
   store: { write(value: string): Promise<void> };
   changed(credentials: DeviceCredentials): void;
-  unavailable(state: "sign-in-required" | "disconnected"): void;
+  signInRequired(): void;
 }) {
   let pending: Promise<void> | undefined;
   let generation = 0;
@@ -79,10 +88,8 @@ export function deviceRefresh(ports: {
         signal,
       )
         .catch((error: unknown) => {
-          if (ownGeneration === generation) {
-            if (error instanceof RefreshRefusedError) ports.unavailable("sign-in-required");
-            else if (error instanceof RefreshReplayBudgetError) ports.unavailable("disconnected");
-          }
+          if (ownGeneration === generation && error instanceof RefreshSignInRequiredError)
+            ports.signInRequired();
           throw error;
         })
         .finally(() => {
