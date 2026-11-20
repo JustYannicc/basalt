@@ -81,7 +81,7 @@ test("a pool that is not ready does not block staging and promoting a candidate"
 });
 
 test(
-  "a pool that is not ready does not block recovering the selected runtime",
+  "a pool that is not ready does not block a recovery pass that runs alone",
   { timeout: 10_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
