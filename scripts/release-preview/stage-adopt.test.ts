@@ -4,6 +4,7 @@ import {
   adoptScope,
   adoptTarget,
   adoptedState,
+  ownPoolWorker,
   infraOnlyShape,
   noAdoptionRecorded,
   refuseRecordedAdoption,
@@ -18,12 +19,8 @@ import { rehearsalEmptyPoolCount, rehearsalPoolName } from "./rehearsal-seed.ts"
 const image = `registry.cloudflare.com/${"0".repeat(32)}/basalt-poolcontainer@sha256:${"e".repeat(64)}`;
 const pin = { image, input: "526fa60bed0df442" };
 
-test("adoptTarget accepts a standing rehearsal stage and its own pool Worker", () => {
+test("adoptTarget accepts a standing rehearsal stage", () => {
   assert.equal(adoptTarget("test-rehearsal-2"), "test-rehearsal-2");
-  assert.equal(
-    adoptTarget("test-rehearsal-2", "basalt-rehearsal-poolworker-test-rehearsal-2-abc"),
-    "test-rehearsal-2",
-  );
 });
 
 test("adoptTarget refuses production, previews and an unset stage", () => {
@@ -31,14 +28,51 @@ test("adoptTarget refuses production, previews and an unset stage", () => {
     assert.throws(() => adoptTarget(stage), /test-rehearsal/u);
 });
 
-test("adoptTarget refuses a production pool Worker address even on a rehearsal stage", () => {
+test("ownPoolWorker proves the stage's pool Worker by its tags, not its name", () => {
+  const tagged = (id: string, stage: string, logical = "PoolWorker") => ({
+    id,
+    tags: [`alchemy:stage:${stage}`, `alchemy:id:${logical}`],
+  });
+  const lane2 = tagged(
+    "basalt-rehearsal-poolworker-teubpl67o7745xv5lmvet3ht42",
+    "test-rehearsal-2",
+  );
+  const scripts = [
+    lane2,
+    tagged("basalt-rehearsal-poolworker-abc", "test-rehearsal-1"),
+    tagged("basalt-poolworker-production-xyz", "production"),
+    tagged("basalt-rehearsal-api-test-rehearsal-2-x", "test-rehearsal-2", "Api"),
+  ];
+  assert.equal(ownPoolWorker(scripts, "test-rehearsal-2", lane2.id), lane2.id);
+  // The release state naming another stage's or production's Worker refuses.
   assert.throws(
-    () => adoptTarget("test-rehearsal-2", "basalt-poolworker-production-abc"),
+    () => ownPoolWorker(scripts, "test-rehearsal-2", "basalt-poolworker-production-xyz"),
     /not this stage's/u,
   );
   assert.throws(
-    () => adoptTarget("test-rehearsal-2", "basalt-rehearsal-poolworker-test-rehearsal-21-abc"),
+    () => ownPoolWorker(scripts, "test-rehearsal-2", "basalt-rehearsal-poolworker-abc"),
     /not this stage's/u,
+  );
+  // The right name with no tag is not proof: it refuses.
+  assert.throws(
+    () =>
+      ownPoolWorker(
+        [{ id: lane2.id }, ...scripts.filter((script) => script !== lane2)],
+        "test-rehearsal-2",
+        lane2.id,
+      ),
+    /0 tagged/u,
+  );
+  // None, or two, tagged pool Workers for the stage refuse.
+  assert.throws(() => ownPoolWorker(scripts, "test-rehearsal-3", lane2.id), /0 tagged/u);
+  assert.throws(
+    () =>
+      ownPoolWorker(
+        [...scripts, tagged("basalt-rehearsal-poolworker-dup", "test-rehearsal-2")],
+        "test-rehearsal-2",
+        lane2.id,
+      ),
+    /2 tagged/u,
   );
 });
 

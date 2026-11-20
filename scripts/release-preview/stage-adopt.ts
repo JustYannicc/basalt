@@ -15,12 +15,32 @@ import { fileURLToPath } from "node:url";
 const rehearsalStage = /^test-rehearsal-[1-9][0-9]{0,9}$/u;
 
 /** Refuses anything but a standing rehearsal stage whose own pool Worker is the target. */
-export function adoptTarget(stage: string | undefined, workerName?: string) {
+export function adoptTarget(stage: string | undefined) {
   if (!stage || !rehearsalStage.test(stage))
     throw new Error(`Adopt runs only on a test-rehearsal-<n> stage, not ${stage ?? "(unset)"}`);
-  if (workerName !== undefined && !workerName.includes(`-${stage}-`))
-    throw new Error("The pool Worker the adopt would address is not this stage's");
   return stage;
+}
+
+/**
+ * The stage's own pool Worker, by Alchemy's tags, not its name: a Worker's physical name need not
+ * carry the stage (lane 2's is `basalt-rehearsal-poolworker-<hash>`). Exactly one script tagged
+ * with this stage and the PoolWorker id, and it must be the one the release state names.
+ */
+export function ownPoolWorker(
+  scripts: readonly { id: string; tags?: readonly string[] }[],
+  stage: string,
+  workerName: string,
+) {
+  const own = scripts.filter(
+    (script) =>
+      script.tags?.includes(`alchemy:stage:${stage}`) &&
+      script.tags.includes("alchemy:id:PoolWorker"),
+  );
+  if (own.length !== 1)
+    throw new Error(`The stage has ${own.length} tagged pool Workers; exactly one is required`);
+  if (own[0]!.id !== workerName)
+    throw new Error("The pool Worker the adopt would address is not this stage's");
+  return workerName;
 }
 
 /**
@@ -241,7 +261,23 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
         Effect.gen(function* () {
           yield* assertReleaseStateVersion(compiled);
           const state = yield* runtimeReleaseState(compiled);
-          adoptTarget(stage, state.target.worker);
+          // The release state comes from the stage's own State; its Worker must carry the stage's tag.
+          const scripts = yield* Effect.promise(() =>
+            fetch(
+              `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID ?? "")}/workers/scripts`,
+              { headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN ?? ""}` } },
+            ).then(async (response) => {
+              if (!response.ok)
+                throw new Error(
+                  `The scripts list refused with HTTP ${response.status}; nothing was sent`,
+                );
+              return (
+                ((await response.json()) as { result?: { id: string; tags?: string[] }[] })
+                  .result ?? []
+              );
+            }),
+          );
+          ownPoolWorker(scripts, stage, state.target.worker);
           // The Worker's binding, the release state's root input and the pin agree, or nothing is sent.
           const input = state.applications.root.image.inputHash;
           rootMatchesPin(
