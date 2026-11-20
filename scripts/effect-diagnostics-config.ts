@@ -110,7 +110,6 @@ export const quietPaths = [
   "apps/**/*",
   "clients/**/*",
   "e2e/**/*",
-  "scripts/release-barrier/**/*",
   "*.ts",
 ] as const;
 

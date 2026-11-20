@@ -174,7 +174,6 @@ test("the gate covers Basalt's own code by path, not by a list", () => {
   ])
     assert.ok(inScope(file), file);
   for (const file of [
-    "scripts/release-barrier/x.ts",
     "e2e/x.ts",
     "src/setup/files.d.mts",
     "src/pool/plain.mjs",

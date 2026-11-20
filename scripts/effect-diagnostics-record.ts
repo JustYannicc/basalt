@@ -58,8 +58,7 @@ const hidingDirective =
 // Any module specifier naming effect, or a call on an Effect namespace however it was imported.
 const usesEffect = /["'`]effect(?:\/[^"'`]*)?["'`]|\bEffect\s*(?:\.\s*[A-Za-z]+\s*\(|:)/;
 
-const owned = (file: string) =>
-  /^(?:scripts|src)\//.test(file) && !file.startsWith("scripts/release-barrier/");
+const owned = (file: string) => /^(?:scripts|src)\//.test(file);
 export const inScope = (file: string) =>
   owned(file) && /\.[cm]?tsx?$/.test(file) && !/\.d\.[cm]?ts$/.test(file);
 const isJavaScript = (file: string) => owned(file) && /\.[cm]?jsx?$/.test(file);
