@@ -154,7 +154,8 @@ async function adopt(
   const out = join(outputs, "adopt.json");
   const log = join(outputs, "adopt.log");
   const code = await new Promise<number | null>((done) => {
-    const child = spawn("node", [join(root, "scripts/release-preview/stage-adopt.ts"), out], {
+    // Bun, as the release entry runs the same stack: plain node cannot load its TypeScript.
+    const child = spawn("bun", [join(root, "scripts/release-preview/stage-adopt.ts"), out], {
       cwd: root,
       env: {
         ...rehearsalReleaseEnvironment(writer),
