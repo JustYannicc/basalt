@@ -154,13 +154,19 @@ test(
     await f.send("fence", { identity });
     advance(unfenceHandBackAfterMs);
     assert.equal((await unfence(f, identity)).body.result?.by, "recovery");
-    // The refusal was a moment's: the old boot answers again right after the unfence.
+    // The refusal was a moment's: the old boot answers again right after the unfence, but current
+    // policies can't reach it yet.
     f.old.hooks.health = async () => {};
-    assert.equal(await status(f.model()), 503, "not before its proof");
+    let installsFail = true;
+    f.old.hooks.install = async () => {
+      if (installsFail) throw new Error("synthetic install failure");
+    };
+    assert.equal(await status(f.model()), 503, "not before current policies reach it");
     assert.equal(await status(f.command("active-health")), 409);
-    const installs = f.old.calls.install.length;
     await pass(f);
-    assert.ok(f.old.calls.install.length > installs, "recovery installed current policies first");
+    assert.equal((await selection(f)).active.unfenced?.proven, false, "still unproven");
+    installsFail = false;
+    await pass(f);
     assert.equal((await selection(f)).active.unfenced?.proven, true);
     assert.equal(await status(f.model()), 200);
     assert.deepEqual(f.old.calls.signals, [], "a boot that answers is never stopped");
