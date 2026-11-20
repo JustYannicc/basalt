@@ -19,6 +19,7 @@ import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
 import { PoolRuntimeFleet, type FleetNamespace } from "./runtime-fleet/production.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
+import { rehearsalObservationEnv } from "./runtime-provider/rehearsal-observation-env.ts";
 import {
   primaryRetirementProvider,
   startupAbortProvider,
@@ -192,7 +193,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private bookmarks: StorageBookmarks;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
-    super(ctx, env);
+    // REHEARSAL-ONLY overlay: a rehearsal stage's plain observation secret, in the store binding's shape.
+    super(ctx, (env = rehearsalObservationEnv(env)));
     // A new isolate means the platform replaced it; a later construction in one rebuilt the object.
     controllerIsolate ??= { id: crypto.randomUUID(), startedAt: Date.now() };
     console.info("POOL_CONTROLLER_INSTANCE", {

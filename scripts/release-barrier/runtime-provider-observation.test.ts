@@ -174,6 +174,38 @@ for (const fault of ["drift", "stale", "unexpected"] as const)
     if (fault === "drift") assert.match(publicText, /runtime-provider-observation.target/);
   });
 
+test("REHEARSAL-ONLY: a stage's plain observation secret reaches provider-observe through the controller and returns the proof", async (context) => {
+  const f = await runtimeReleaseClientFixture(undefined, { plainObservationToken: true });
+  const directory = await mkdtemp(join(tmpdir(), "pool-observation-plain-"));
+  context.after(async () => {
+    await f.cleanup();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await f.settle();
+  const commands = f.commands.length;
+  let reads = 0;
+  const providerFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    reads++;
+    assert.equal(init?.method, "GET");
+    return providerFetch(input, init);
+  };
+  context.after(() => {
+    globalThis.fetch = providerFetch;
+  });
+  const observed = await verifyBoundProviderObservation({
+    state: f.state,
+    code: runtimeFixtureCode,
+    client: f.client,
+    directory,
+    encryptionKey,
+  });
+  assert.equal(observed.credentialBinding, "POOL_PROVIDER_OBSERVATION_TOKEN");
+  assert.equal(observed.proof.applicationId, f.state.applications.root.attributes.applicationId);
+  assert.deepEqual(f.commands.slice(commands), ["provider-observe"]);
+  assert.equal(reads, 1);
+});
+
 test("credential acceptance refuses a plaintext credential instead of bypassing the deployed binding", async (context) => {
   const f = await runtimeReleaseClientFixture();
   context.after(f.cleanup);

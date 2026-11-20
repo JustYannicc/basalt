@@ -26,7 +26,7 @@ export async function runtimeReleaseClientFixture(
     | "candidate-probe-before"
     | "promote-before"
     | "promote-refuse",
-  options: { adopt?: boolean } = {},
+  options: { adopt?: boolean; plainObservationToken?: boolean } = {},
 ) {
   const f = await fleetWorkerFixture({ candidateColor: "green", publicProbe: true, ...options });
   if (options.adopt !== false) {

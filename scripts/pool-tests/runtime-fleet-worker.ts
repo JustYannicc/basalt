@@ -42,6 +42,8 @@ export async function fleetWorkerFixture(
     adopt?: boolean;
     /** Extra Worker bindings every fleet cell's runtime starts with. */
     runtimeBindings?: Readonly<Record<string, string>>;
+    /** REHEARSAL-ONLY: the observation token as a plain secret, as a test-rehearsal stage binds it. */
+    plainObservationToken?: boolean;
   } = {},
 ) {
   const original = await runtimeProofFixture();
@@ -255,9 +257,9 @@ export async function fleetWorkerFixture(
           POOL_BLUE_IMAGE_HASH: applications[0]!.imageInput,
           POOL_GREEN_APPLICATION_ID: applications[1]!.applicationId,
           POOL_GREEN_IMAGE_HASH: applications[1]!.imageInput,
-          POOL_PROVIDER_OBSERVATION_TOKEN: {
-            get: async () => (secretAvailable ? "synthetic-provider-read" : null),
-          },
+          POOL_PROVIDER_OBSERVATION_TOKEN: options.plainObservationToken
+            ? ("synthetic-provider-read" as never)
+            : { get: async () => (secretAvailable ? "synthetic-provider-read" : null) },
         };
       },
     });
