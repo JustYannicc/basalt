@@ -12,7 +12,7 @@ export interface SlotClock {
   now(): number;
   monotonic(): number;
 }
-export const slotClock: SlotClock = { now: Date.now, monotonic: () => performance.now() };
+export const slotClock: SlotClock = { now: () => Date.now(), monotonic: () => performance.now() };
 export function healthy(health: SlotHealth, identity: SlotIdentity, clock: SlotClock) {
   if (!sameIdentity(health.identity, identity)) throw new SlotRefused("identity");
   if (!Number.isFinite(health.policyLeaseUntil) || health.policyLeaseUntil <= clock.monotonic())
