@@ -69,6 +69,22 @@ describe responsibilities, not carry history.
 enforce boundaries. For behavior, read [pools](docs/pools.md) or
 [connectors](docs/connectors.md); for deployment, [self-hosting](docs/self-hosting.md).
 
+## Lint as you edit
+
+After each edit, the repository's Claude Code and Codex hooks format the file with oxfmt and
+report upstream oxlint and [owned rule](scripts/owned-lint/README.md) findings. Without them,
+`node scripts/owned-lint/check.ts <files>` checks the owned rules alone. Fix a finding by
+changing the code it names:
+
+- Parse input at its boundary into a named type, with Effect Schema in Effect code, then
+  narrow. A `SAFETY:` comment states the check that proves its assertion.
+- In Effect code, fail with tagged errors handled by `catchTag` or `Match`, and provide
+  services as Layers.
+- Change the shape the message names; renaming, commenting or wrapping the same code keeps
+  the defect.
+
+After fixing findings or rebasing, run `npm run lint:owned -- --write-baseline` and commit it.
+
 ## Prove the outcome
 
 Run focused `package.json` checks and applicable [CI gates](.github/workflows/ci.yml).

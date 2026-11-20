@@ -34,3 +34,16 @@ EB Garamond
 https://github.com/octaviopardo/EBGaramond12
 Copyright 2017 The EB Garamond Project Authors
 SIL Open Font License, Version 1.1; see public/brand/serif/LICENSE.txt
+
+anti-slop
+https://github.com/dmmulroy/anti-slop
+Copyright (c) 2026 Dillon Mulroy
+MIT License; see scripts/owned-lint/vendor/anti-slop/LICENSE
+Vendored in scripts/owned-lint/vendor/anti-slop/.
+
+ESLint Stylistic
+https://github.com/eslint-stylistic/eslint-stylistic
+Copyright OpenJS Foundation and other contributors
+Copyright (c) 2023-PRESENT ESLint Stylistic contributors
+MIT License; see scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/LICENSE
+Carried in the anti-slop copy, in scripts/owned-lint/vendor/anti-slop/vendor/eslint-stylistic/.
