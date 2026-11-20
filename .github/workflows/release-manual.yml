@@ -21,7 +21,7 @@ concurrency:
 jobs:
   backup:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     outputs:
       head: ${{ steps.candidate.outputs.head }}
@@ -39,7 +39,7 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       - name: Validate current CI, preview teardown and review proof
@@ -59,7 +59,7 @@ jobs:
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" > .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Prepare the read-only baseline client
@@ -149,7 +149,7 @@ jobs:
     needs: backup
     if: github.ref == 'refs/heads/main'
     environment: production-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     # Same multi-phase release path as release-main.yml; see the reason on its deploy job.
     timeout-minutes: 180
     env:
@@ -216,7 +216,7 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
       - name: Reject any candidate or base change since the backup
@@ -235,7 +235,7 @@ jobs:
         with:
           name: manual-release-report
           path: .local
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
       - name: Rebuild and check the backed-up candidate
