@@ -37,7 +37,20 @@
         "action": "update",
         "codeOnly": {
           "references": [
-            "env"
+            {
+              "name": "POOL_AUTH_DATABASE",
+              "resource": "PoolModelDatabaseConnection"
+            },
+            {
+              "name": "TOOLS_SERVICE",
+              "resource": "Api"
+            }
+          ],
+          "values": [
+            {
+              "name": "EXECUTOR_TELEMETRY",
+              "why": "It holds the release's build version beside the telemetry settings, so it differs on every release. It labels and routes telemetry only; no class, binding or stored job depends on it."
+            }
           ],
           "why": "The release ships main as a whole. Holding the bulk-import store's Worker at older code while the pool Worker and the history schema move is version skew, so its code moves with the rest. Only its code: a changed binding or property refuses here, and its upload must carry the serving version's bindings and no migration (wire.fixedBindings), so its Durable Object classes and their stored jobs stay as they are."
         }

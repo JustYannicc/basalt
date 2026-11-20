@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
+import { isResolved } from "alchemy/Diff";
 import type * as Plan from "alchemy/Plan";
+import type { ResourceState } from "alchemy/State/ResourceState";
 import { Cause, Effect, Exit } from "effect";
 import { checkPlan, decodePlanPolicy, planDigest, PlanRefused, propChanges } from "./plan-check.ts";
 import {
   accountId,
   buildContext,
+  calledRows,
   makePlan,
   pinnedImage,
   productionRows,
   recordedActionRow,
   retainedScratchRow,
+  withCodeFromElsewhere,
   type PlanInput,
 } from "./test/plan-fixture.ts";
 
@@ -421,44 +426,275 @@ test("a code-only release is admitted without, and refused with, a new binding",
   });
 });
 
-test("a code-only allowance moves the bulk-import store's code and nothing else of it", async (context) => {
-  const allowance = (references: string[] = ["env"]) => ({
-    mode: "code-only",
-    allow: [
-      { fqn: "ArtifactsCredentials", action: "update", codeOnly: { references, why: "skew" } },
+// The bulk-import store's Worker in production's forms: the tools Worker it calls, a secret, a
+// redacted value that carries the release's version and a JSON value. Its State row is the one
+// Alchemy's own apply records for that declaration, then marked as built from another checkout.
+const allowance = (codeOnly: Record<string, unknown> = {}, also: readonly object[] = []) => ({
+  mode: "code-only",
+  allow: [
+    {
+      fqn: "ArtifactsCredentials",
+      action: "update",
+      codeOnly: {
+        references: [
+          { name: "TOOLS_SERVICE", resource: "Api" },
+          { name: "VAULT", resource: "VaultAttachments" },
+        ],
+        values: [{ name: "EXECUTOR_TELEMETRY", why: "it carries the release's version" }],
+        why: "skew",
+        ...codeOnly,
+      },
+    },
+    ...also,
+  ],
+});
+const credentialsRows = async (
+  context: TestContext,
+  builtElsewhere: readonly string[] = ["Api", "Catalog", "ArtifactsCredentials"],
+) => {
+  const settled = await makePlan(context, {
+    rows: { ...productionRows(), ...calledRows() },
+    declared: { credentials: {} },
+    settle: ["Api", "Catalog", "ArtifactsCredentials"],
+  });
+  return withCodeFromElsewhere(settled.rows, builtElsewhere);
+};
+const credentialsPlan = async (
+  context: TestContext,
+  credentials: NonNullable<PlanInput["declared"]>["credentials"] = {},
+  rows?: Readonly<Record<string, ResourceState>>,
+) =>
+  (
+    await makePlan(context, {
+      rows: rows ?? (await credentialsRows(context)),
+      declared: { credentials },
+    })
+  ).plan;
+type StoreProps = { main: string; env: Record<string, Record<string, unknown>> };
+/** The same rows with the store's recorded props changed. Copied by spread: a clone unwraps secrets. */
+const withStoreProps = (
+  rows: Readonly<Record<string, ResourceState>>,
+  change: (props: StoreProps) => StoreProps,
+): Record<string, ResourceState> => {
+  const store = rows.ArtifactsCredentials as unknown as { props: StoreProps };
+  return {
+    ...rows,
+    ArtifactsCredentials: { ...store, props: change(store.props) } as unknown as ResourceState,
+  };
+};
+const credentialsNode = (plan: Plan.Plan) =>
+  plan.resources.ArtifactsCredentials as unknown as {
+    action: string;
+    props: { main: string; env: Record<string, unknown> };
+    bindings: { sid: string; action: string }[];
+  };
+/** Admitted under the allowance; a refusal fails with the lines that name what exceeded it. */
+const storeCodeMoves = async (plan: Plan.Plan, codeOnly: Record<string, unknown> = {}) => {
+  const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(allowance(codeOnly))));
+  if (Exit.isFailure(exit)) assert.fail(String((Cause.squash(exit.cause) as Error).message));
+  assert.ok(exit.value.some((change) => change.fqn === "ArtifactsCredentials"));
+};
+const exceeded = async (plan: Plan.Plan, codeOnly: Record<string, unknown> = {}) => {
+  const { rules, message } = await refused(plan, allowance(codeOnly));
+  assert.ok(rules.includes("code-only-allowance-exceeded ArtifactsCredentials"), rules.join(", "));
+  return { rules, message };
+};
+
+test("a code-only allowance admits the bulk-import store's code while a Worker it calls updates", async (context) => {
+  const plan = await credentialsPlan(context);
+  const node = credentialsNode(plan);
+  assert.equal(node.action, "update");
+  assert.equal(plan.resources.Api?.action, "update");
+  // What Alchemy plans for a reference to a resource that updates: not known until that applies.
+  assert.equal(isResolved(node.props.env.TOOLS_SERVICE), false);
+  assert.deepEqual(
+    node.bindings.filter((binding) => binding.action !== "noop"),
+    [],
+  );
+  await storeCodeMoves(plan);
+  // The entry has to be named, and named for the resource it waits on.
+  assert.match((await exceeded(plan, { references: [] })).message, /props\.env\.TOOLS_SERVICE: /u);
+  assert.match(
+    (await exceeded(plan, { references: [{ name: "TOOLS_SERVICE", resource: "Catalog" }] }))
+      .message,
+    /props\.env\.TOOLS_SERVICE: /u,
+  );
+});
+
+test("a code-only allowance admits a reference that is the called Worker's own recorded attributes", async (context) => {
+  // Only the store's code moved; the Worker it calls is unchanged and resolves at plan time.
+  const rows = await credentialsRows(context, ["ArtifactsCredentials"]);
+  const settled = await credentialsPlan(context, {}, rows);
+  assert.equal(settled.resources.Api?.action, "noop");
+  assert.ok(isResolved(credentialsNode(settled).props.env.TOOLS_SERVICE));
+  await storeCodeMoves(settled);
+  // State kept an older copy of those attributes: the called Worker moved in a release that left
+  // the store alone. The entry is still that Worker, and its binding is unchanged.
+  const stale = withStoreProps(rows, (props) => ({
+    ...props,
+    env: {
+      ...props.env,
+      TOOLS_SERVICE: { ...props.env.TOOLS_SERVICE, url: "https://older.invalid" },
+    },
+  }));
+  const older = await credentialsPlan(context, {}, stale);
+  await storeCodeMoves(older);
+  assert.match((await exceeded(older, { references: [] })).message, /TOOLS_SERVICE\.url/u);
+});
+
+test("a code-only allowance admits a reference whose own binding waits on the resource it names", async (context) => {
+  // The bucket's settings move in the same plan, as a database connection's origin does on a
+  // test stage. Its binding carries more than a stable identity, so the binding waits as well.
+  const { plan } = await makePlan(context, {
+    rows: await credentialsRows(context),
+    declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
+  });
+  assert.equal(plan.resources.VaultAttachments?.action, "update");
+  const node = credentialsNode(plan);
+  assert.equal(isResolved(node.props.env.VAULT), false);
+  const waiting = node.bindings.filter((binding) => binding.action !== "noop");
+  assert.deepEqual(
+    waiting.map(({ sid, action }) => [sid, action]),
+    [["VAULT", "update"]],
+  );
+  assert.equal(isResolved((waiting[0] as unknown as { data: unknown }).data), false);
+  // The bucket's own row is another rule's to admit; the store's row is within its allowance.
+  const bucket = [{ fqn: "VaultAttachments", action: "update" }];
+  const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(allowance({}, bucket))));
+  assert.ok(Exit.isSuccess(exit), Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : "");
+  // Unnamed, or named for another resource, both the entry and its binding refuse.
+  for (const references of [
+    [{ name: "TOOLS_SERVICE", resource: "Api" }],
+    [
+      { name: "TOOLS_SERVICE", resource: "Api" },
+      { name: "VAULT", resource: "Api" },
+    ],
+  ]) {
+    const { rules, message } = await refused(plan, allowance({ references }, bucket));
+    assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
+    assert.match(message, /bindings\.VAULT: update/u);
+    assert.match(message, /props\.env\.VAULT: /u);
+  }
+});
+
+test("a code-only allowance admits a named value that changes with the release, and its binding", async (context) => {
+  const plan = await credentialsPlan(context, { version: "2" });
+  // A changed value plans its own binding row as an update as well.
+  assert.deepEqual(
+    credentialsNode(plan).bindings.filter((binding) => binding.action !== "noop"),
+    [{ sid: "EXECUTOR_TELEMETRY", action: "update" }].map((row) => ({
+      ...credentialsNode(plan).bindings.find((binding) => binding.sid === row.sid),
+      ...row,
+    })),
+  );
+  await storeCodeMoves(plan);
+  const { message } = await exceeded(plan, { values: [] });
+  assert.match(message, /bindings\.EXECUTOR_TELEMETRY: update/u);
+  assert.match(message, /props\.env\.EXECUTOR_TELEMETRY: <redacted> -> <redacted>/u);
+});
+
+test("a code-only allowance admits the same entry file under another checkout's directory", async (context) => {
+  const rows = await credentialsRows(context);
+  const recordedMain = (main: string) => withStoreProps(rows, (props) => ({ ...props, main }));
+  const inCheckout = "scripts/release/test/plan-worker.ts";
+  for (const main of [
+    // As the release layer before recorded it: a path, or a file URL, under its own directory.
+    `/runner/_temp/candidate/${inCheckout}`,
+    `file:///runner/_temp/candidate/${inCheckout}`,
+  ]) {
+    const plan = await credentialsPlan(context, {}, recordedMain(main));
+    assert.notEqual(credentialsNode(plan).props.main, main);
+    await storeCodeMoves(plan);
+  }
+  // Another file is a change of the entry, wherever the checkout sits.
+  for (const main of [
+    "/runner/_temp/candidate/scripts/release/test/another-worker.ts",
+    "/runner/_temp/candidate/scripts/other/test/plan-worker.ts",
+    "/runner/_temp/candidate/plan-worker.ts",
+  ]) {
+    const { message } = await exceeded(await credentialsPlan(context, {}, recordedMain(main)));
+    assert.match(message, /props\.main: /u, main);
+    assert.ok(!message.includes("/runner/_temp"), message);
+  }
+  // And so is a declaration that names another file of this checkout.
+  const declared = await credentialsPlan(context, {
+    main: fileURLToPath(new URL("./test/plan-fixture.ts", import.meta.url)),
+  });
+  assert.match((await exceeded(declared)).message, /props\.main: /u);
+});
+
+test("a code-only allowance refuses a changed secret, also beside a reference that is not known yet", async (context) => {
+  const plan = await credentialsPlan(context, { secret: "another-signing-secret" });
+  assert.equal(isResolved(credentialsNode(plan).props.env.TOOLS_SERVICE), false);
+  const { message } = await exceeded(plan);
+  assert.match(message, /bindings\.POOL_APP_SIGNING_KEY: update/u);
+  assert.match(message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
+  // One value that is not known yet does not hide the rest of the row.
+  assert.ok(!message.includes("props: "), message);
+  assert.ok(!message.includes("TOOLS_SERVICE"), message);
+  // A secret is not a reference, whatever the policy calls it.
+  const named = await exceeded(plan, {
+    references: [
+      { name: "TOOLS_SERVICE", resource: "Api" },
+      { name: "POOL_APP_SIGNING_KEY", resource: "Api" },
     ],
   });
-  // Its recorded hashes come from another checkout: Alchemy plans an update of its code alone.
-  const code = await planned(context);
-  assert.equal(code.plan.resources.ArtifactsCredentials?.action, "update");
-  assert.ok((await admitted(code.plan, allowance([]))).includes("update ArtifactsCredentials"));
-  // A reference both sides hold whose target moved is admitted only under a named property.
-  const rows = productionRows();
-  const props = (
-    rows.ArtifactsCredentials as unknown as { props: { env: { Coordinator: object } } }
-  ).props;
-  props.env.Coordinator = { ...props.env.Coordinator, recordedOutput: "before" };
-  const moved = await planned(context, { rows });
-  assert.ok((await admitted(moved.plan, allowance())).includes("update ArtifactsCredentials"));
-  assert.deepEqual((await refused(moved.plan, allowance([]))).rules, [
-    "code-only-allowance-exceeded ArtifactsCredentials",
-  ]);
-  // A value of its own, or an entry added, is configuration, not a moved reference.
-  const env = await planned(context, { declared: { credentialsEnv: { MODE: "next" } } });
-  const byEnv = await refused(env.plan, allowance());
-  assert.deepEqual(byEnv.rules, [
-    "code-only-binding-change ArtifactsCredentials",
-    "code-only-allowance-exceeded ArtifactsCredentials",
-  ]);
-  assert.match(byEnv.message, /props\.env\.MODE: absent -> /u);
-  // A class it starts to bind is a binding change, whatever the allowance names.
-  const bound = await planned(context, { declared: { credentialsClass: "SecondCoordinator" } });
-  const byClass = await refused(bound.plan, allowance());
-  assert.ok(
-    byClass.rules.includes("code-only-allowance-exceeded ArtifactsCredentials"),
-    byClass.rules.join(", "),
-  );
+  assert.match(named.message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
+});
+
+test("a code-only allowance refuses a changed value that the policy does not name", async (context) => {
+  const { message } = await exceeded(await credentialsPlan(context, { mode: "b" }));
+  assert.match(message, /bindings\.POOL_MODE: update/u);
+  assert.match(message, /props\.env\.POOL_MODE\.mode: /u);
+});
+
+test("a code-only allowance refuses a new binding and a new entry", async (context) => {
+  const rows = await credentialsRows(context);
+  const bound = await makePlan(context, {
+    rows,
+    declared: { credentials: {}, credentialsClass: "SecondCoordinator" },
+  });
+  const byClass = await exceeded(bound.plan);
+  assert.ok(byClass.rules.includes("code-only-binding-change ArtifactsCredentials"));
   assert.match(byClass.message, /bindings\.Second: create/u);
+  const entry = await makePlan(context, {
+    rows,
+    declared: { credentials: {}, credentialsEnv: { MODE: "next" } },
+  });
+  const byEntry = await exceeded(entry.plan);
+  assert.match(byEntry.message, /bindings\.MODE: create/u);
+  assert.match(byEntry.message, /props\.env\.MODE: absent -> /u);
+});
+
+test("a code-only allowance refuses a removed binding", async (context) => {
+  // The declaration no longer holds what State recorded for the store.
+  const { plan } = await makePlan(context, { rows: await credentialsRows(context) });
+  const { rules, message } = await exceeded(plan);
+  assert.ok(rules.includes("worker-binding-removed ArtifactsCredentials"), rules.join(", "));
+  assert.match(message, /bindings\.TOOLS_SERVICE: delete/u);
+  assert.match(message, /props\.env\.TOOLS_SERVICE\.workerName: .* -> absent/u);
+});
+
+test("a code-only allowance refuses a changed class and another called Worker", async (context) => {
+  const renamed = await exceeded(
+    await credentialsPlan(context, { className: "ArtifactsTokenCoordinatorNext" }),
+  );
+  assert.ok(renamed.rules.includes("durable-object-class-changed ArtifactsCredentials"));
+  assert.match(renamed.message, /bindings\.Coordinator: update/u);
+  // The same name bound to another Worker: its binding changes, updating or not.
+  for (const builtElsewhere of [
+    ["Api", "Catalog", "ArtifactsCredentials"],
+    ["ArtifactsCredentials"],
+  ]) {
+    const plan = await credentialsPlan(
+      context,
+      { calls: "Catalog" },
+      await credentialsRows(context, builtElsewhere),
+    );
+    const { message } = await exceeded(plan);
+    assert.match(message, /bindings\.TOOLS_SERVICE: update/u);
+    assert.match(message, /props\.env\.TOOLS_SERVICE/u);
+  }
 });
 
 test("a filtered plan needs the policy's include list, and the list needs a filtered plan", async (context) => {
