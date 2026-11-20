@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-unchanged-container",
+  "file": "0696-alchemy-unchanged-container.patch",
+  "content_sha256": "3ca9055b376ed57ecb2a5d1267e9df6f49967d401bcb8048f4b5be3ac6f6323e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release keeps a Worker's class map readable beside another Worker's class and sends nothing for an unchanged container; remove after both source/lib proofs pass."
+}

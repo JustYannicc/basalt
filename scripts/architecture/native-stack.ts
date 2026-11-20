@@ -47,6 +47,7 @@ function evaluate(
   options: {
     manualCron?: true;
     settlesProof?: "production" | "preview";
+    rootContainerProof?: true;
   } = {},
 ): unknown {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
@@ -64,6 +65,7 @@ function evaluate(
       NATIVE_STACK_ROOT: realpathSync(root),
       NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
       NATIVE_STACK_SETTLES_PROOF: options.settlesProof ?? "",
+      NATIVE_STACK_ROOT_CONTAINER_PROOF: String(options.rootContainerProof ?? false),
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -191,4 +193,24 @@ export function discoverPlanSettlesProof(
   nextAttempt: PlannedRow[];
 } {
   return evaluate(root, { settlesProof: shape }) as ReturnType<typeof discoverPlanSettlesProof>;
+}
+
+/**
+ * Deploys the real stack into empty state and plans it again unchanged. The pool Worker's answer
+ * comes from the installed Worker provider. A failed phase is named by its phase and error class.
+ */
+export function discoverRootContainerPlanProof(root: string): {
+  failed?: string;
+  error?: string;
+  resources: number;
+  /** Classes the pool Worker hosts, and every class it has a recorded namespace for. */
+  hosted: string[];
+  recorded: string[];
+  /** Each answer the provider gave: whether the recorded namespaces stay readable. */
+  readable: boolean[];
+  afterApply: { id: string; type: string; action: string }[];
+} {
+  return evaluate(root, { rootContainerProof: true }) as ReturnType<
+    typeof discoverRootContainerPlanProof
+  >;
 }
