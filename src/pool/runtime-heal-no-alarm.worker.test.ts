@@ -181,6 +181,6 @@ test(
         call.arguments[0] === "POOL_SELECTED_RECOVERY_PENDING" &&
         String(call.arguments[1]).includes('"slot_selection"'),
     );
-    assert.ok(refusals.length > 0, "the pass under the moving digest was refused");
+    assert.equal(refusals.length, 1, "refused once, on the pass under the moving digest");
   },
 );
