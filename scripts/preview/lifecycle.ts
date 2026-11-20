@@ -632,6 +632,9 @@ export async function destroyStage(
     } catch (error) {
       // The cause is what says which resource is left; the CLI prints it redacted.
       failures.push(new Error("Preview " + stack + " cleanup failed", { cause: error }));
+      // Stop at the first failure: a later step (the database under a stack that still binds it)
+      // only widens a half-done teardown, and the next attempt starts from where this one stopped.
+      break;
     }
   }
   if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");
