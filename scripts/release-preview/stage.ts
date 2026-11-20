@@ -12,7 +12,7 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { previewStageOrigin, stageEnvironment } from "../environment.ts";
@@ -83,6 +83,20 @@ export const declaration = {
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = join(root, ".upstream/apps/hosted/cloud");
 
+/**
+ * The stage env names the harness tree's built app framework and its upstream pin. A candidate
+ * tree releases what it built itself (`withStageBuild(candidate)`), so its own framework is the
+ * one uploaded; a candidate on another upstream pin would carry a build version it did not build.
+ */
+export function candidateTreeEnvironment(harness: string, tree: string): NodeJS.ProcessEnv {
+  if (tree === harness) return {};
+  const pin = (at: string) =>
+    (JSON.parse(readFileSync(join(at, "upstream.json"), "utf8")) as { commit?: unknown }).commit;
+  if (pin(tree) !== pin(harness))
+    throw new Error("The candidate tree pins another upstream commit than the stage's harness");
+  return { EXECUTOR_APPS_FRAMEWORK: join(tree, ".upstream/.local/basalt-framework") };
+}
+
 async function runEntry(
   command: "plan" | "deploy" | "serving" | "rollback" | "boot" | "accept",
   subject: StageSubject,
@@ -137,6 +151,7 @@ async function runEntry(
           HOME: source.HOME,
           ...config.deploy,
           ...config.seed,
+          ...candidateTreeEnvironment(root, tree),
           ...extra,
           PREVIEW_AUTH_SEED_OUTPUT: seed,
           // The entry keeps its private failure detail here (release-failure.txt).
@@ -356,6 +371,90 @@ const healReproduces = [
   'a zero-policy stage does not prove: that a policy is installed on the new boot (none is); that the membership pass renews one (nothing to renew); or production\'s own case, a clean policy that expired long ago, where recovery reports ready only after the membership pass has renewed it. That case rests on the worker test "the stuck record heals by itself when its pool policy expired long ago"; a stage pass is no proof of that hold or of its timing',
 ];
 
+/**
+ * The controller allows three forced restarts and the container three forced stops an hour, and
+ * the next one ends in a durable needs-a-person (`restart_limit`) that every later pass stops at.
+ * A fault-family run therefore starts only with a stop left and no person already needed.
+ */
+async function requireRestartBudget(
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  before: Record<string, unknown>,
+  result: Record<string, unknown>,
+) {
+  const values = (before.recovery as { values?: Record<string, unknown> } | null)?.values ?? {};
+  const needsPerson = Object.entries(values).find(
+    ([key, value]) => /needs/iu.test(key) && value !== null && value !== undefined,
+  );
+  const stops = await workerLogLines(
+    subject,
+    source,
+    Date.now() - 60 * 60_000,
+    "POOL_RUNTIME_FORCED_STOP",
+  );
+  result.restartBudget = {
+    forcedStopsLastHour: stops.length,
+    needsPerson: needsPerson?.[0] ?? null,
+  };
+  if (needsPerson)
+    throw new Error(
+      `The controller already needs a person (${needsPerson[0]}); no fault runs over it`,
+    );
+  if (stops.length >= 3)
+    throw new Error(
+      `The pool Worker logged ${stops.length} forced stops in the last hour; the next would end in restart_limit`,
+    );
+}
+
+/**
+ * The stage-only overlay a heal candidate carries on top of the commit it heals with: every
+ * first-parent commit back to the first that is not marked as overlay, and its files and lines.
+ * Production never runs this code, so every record says how much of it there is.
+ */
+export function overlayExtent(candidate: string) {
+  const commits = execFileSync("git", ["log", "--first-parent", "--format=%H %s", "-30"], {
+    cwd: candidate,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n");
+  const marked = (line: string) => /^[0-9a-f]{40} (?:STAGE-ONLY OVERLAY|rehearsal:)/u.test(line);
+  const firstUnmarked = commits.findIndex((line) => !marked(line));
+  // Thirty marked commits with no base in reach is no overlay this record can measure.
+  const overlay = firstUnmarked < 0 ? [] : commits.slice(0, firstUnmarked);
+  const base = commits[overlay.length]?.slice(0, 40);
+  if (!base || overlay.length === 0)
+    return { base: base ?? null, commits: [], files: [], added: 0, removed: 0 };
+  const files = execFileSync("git", ["diff", "--numstat", base, "HEAD"], {
+    cwd: candidate,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [added, removed, path] = line.split("\t");
+      return { path: path ?? "", added: Number(added), removed: Number(removed) };
+    });
+  return {
+    base: base.slice(0, 12),
+    commits: overlay.map((line) => `${line.slice(0, 12)} ${line.slice(41)}`),
+    files,
+    added: files.reduce((total, file) => total + file.added, 0),
+    removed: files.reduce((total, file) => total + file.removed, 0),
+  };
+}
+
+/** Said in every heal record, beside `overlay`: what production will not run, and what follows. */
+const healOverlayStatement = [
+  "the candidate is the trial commit plus a stage-only overlay (`overlay`): production never runs that code, and a heal here proves the trial's mechanism with that overlay in place, not the exact release commit",
+  "the overlay carries: the fault trigger (rehearsal-restart-over-running), the stage's database naming, the stage's observation token binding, the controller's wrap of a plain token, and the rehearsal stage handling in alchemy.run.ts (stack basalt-rehearsal, the stage's names and preview shape)",
+  "the observation token reached the pool Worker as a plain Worker secret minted by the stage, not through the Secrets Store production uses; the controller presents it in the store binding's shape, so the heal's own reads (recovery, retirement, startup-abort, fleet and provider-observe) are unchanged",
+  "the release's own accept: its restart wait compares against the stuck boot a signed inspect names, since the stage has no acceptance key and the boot command records only not-serving; its model calls cannot run without that key, so its not-serving line after a ready wait is expected and is not this run's verdict",
+  "the fault command reads the root as not running, so the candidate's confirmed-stop guard admits the stuck state: a self-heal measures leaving that state, not that the candidate avoids entering it",
+  "the stage's copy of the token and every plain secret also sit in the stage's own State rows, as production's do in its own",
+];
+
 async function healRelease(
   lane: number,
   subject: StageSubject,
@@ -376,6 +475,7 @@ async function healRelease(
   try {
     // 1. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
     const now = await faultRead(lane, source, outputs, "before", ["--read-only"]);
+    await requireRestartBudget(subject, source, now, result);
     result.confirmed =
       now.stuck === true && now.policyCleanAndExpired === true
         ? { reused: true, state: now }
@@ -386,7 +486,7 @@ async function healRelease(
     // 2. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     await rm(candidate, { recursive: true, force: true });
-    execFileSync("git", ["fetch", "-q", "--depth", "5", "origin", healCandidateBranch], {
+    execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", healCandidateBranch], {
       cwd: root,
     });
     execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
@@ -404,6 +504,8 @@ async function healRelease(
     )
       .trim()
       .split("\n");
+    result.overlay = overlayExtent(candidate);
+    result.overlayStatement = healOverlayStatement;
     if (existsSync(join(candidate, "scripts/release-preview/stage-fault.ts")))
       throw new Error("The heal candidate still carries the rehearsal-only fault command");
     execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
@@ -460,9 +562,24 @@ async function healRelease(
         throw new Error(
           `The healing release plans changes on the root container: ${JSON.stringify(onRoot)}`,
         );
+      lap("plan");
+      // The candidate's own plan under its policy, as production plans before it deploys: its
+      // root-settle check runs only here. A refusal changed nothing; it is the run's stop.
+      try {
+        const planned = await runEntry("plan", subject, source, env, outputs, {
+          policy: "code-restart",
+          tree: candidate,
+        });
+        result.policyPlan = (planned.record as { summary?: unknown }).summary ?? "planned";
+      } catch (error) {
+        result.policyPlanRefused = redactor(source)(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 4_000);
+        throw error;
+      }
+      lap("policyPlan");
       // The release's own acceptance, as release.yml runs it from the candidate's own entry: the
       // serving versions and the root's boot before the apply, `accept` after it either way.
-      lap("plan");
       const acceptEnv = {
         ...env,
         POOL_ACCEPTANCE_ORIGIN: previewStageOrigin(
@@ -476,14 +593,32 @@ async function healRelease(
         args: ["--fqn", "PoolWorker", "--out", servingFile],
         tree: candidate,
       });
+      const bootCommandFile = join(outputs, "heal-root-boot-command.json");
       await runEntry("boot", subject, source, acceptEnv, outputs, {
-        args: ["--out", rootBootFile, "--allow-not-serving"],
+        args: ["--out", bootCommandFile, "--allow-not-serving"],
         tree: candidate,
       }).catch((error: unknown) => {
         result.rootBootRefused = redactor(source)(
           error instanceof Error ? error.message : String(error),
         ).slice(0, 1_000);
       });
+      // The stage has no acceptance key, so the boot command can only say "not serving", and the
+      // release's wait would then take the stuck boot for a new one. The boot it compares with is
+      // the selected boot a signed read-only inspect names; the command's own answer stays beside it.
+      await rm(rootBootFile, { force: true });
+      await faultRead(
+        lane,
+        { ...source, STAGE_FAULT_BOOT_OUT: rootBootFile },
+        outputs,
+        "root-boot",
+        ["--read-only"],
+      );
+      if (!existsSync(rootBootFile))
+        throw new Error(
+          "The stuck boot has no id in inspect; acceptance would have nothing to compare",
+        );
+      result.rootBootSource =
+        "signed inspect, selected boot (the boot command records only not-serving here)";
       lap("servingAndBoot");
       // A healing release heals only while the pool's own alarm is alive: the alarm's upkeep
       // lines in the five minutes before the upload, and the last deadlines they name.
@@ -926,6 +1061,16 @@ async function requireDeployedHead(
   // fault and heal deploy nothing from this checkout: a head that differs from the deployed commit
   // only in the rehearsal's own client scripts (never deployed) measures the same stage.
   if (recorded[0] !== head && clientOnly) {
+    // After a heal the stage runs the heal candidate itself, and the self-heals and the next fault
+    // measure that Worker. Only the branch's current head counts, read from origin, never a guess.
+    const candidate = execFileSync(
+      "git",
+      ["ls-remote", "origin", `refs/heads/${healCandidateBranch}`],
+      { cwd: root, encoding: "utf8" },
+    )
+      .trim()
+      .split(/\s+/u)[0];
+    if (candidate && recorded[0] === candidate) return recorded[0]!;
     execFileSync("git", ["fetch", "-q", "--depth", "1", "origin", recorded[0]!], { cwd: root });
     const changed = execFileSync("git", ["diff", "--name-only", recorded[0]!, head], {
       cwd: root,
@@ -1246,6 +1391,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       );
     } else if (mode === "fault") {
       await writeStateEvidence(subject, source, outputs, "deployed");
+      await requireRestartBudget(
+        subject,
+        source,
+        await faultRead(lane, source, outputs, "budget", ["--read-only"]),
+        result,
+      );
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "heal") {
       result.reproduces = healReproduces;

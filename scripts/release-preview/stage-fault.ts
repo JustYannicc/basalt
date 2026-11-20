@@ -212,6 +212,13 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
     };
     await health.body?.cancel();
     const identity = record(record(record(inspect).selection).active).identity;
+    // A heal's acceptance compares the boot after the apply with this one. The stage has no
+    // acceptance key, so the candidate's own boot read records only "not serving", which would
+    // let the stuck boot pass as new. The raw id goes to a private file, never to the record.
+    const bootOut = env.STAGE_FAULT_BOOT_OUT;
+    const bootId = text(record(identity).bootId);
+    if (bootOut && bootId)
+      await writeFile(bootOut, `${JSON.stringify({ boot: bootId })}\n`, { mode: 0o600 });
     const applicationId = text(record(identity).applicationId);
     const instanceId = text(record(identity).instanceId);
     const running =
