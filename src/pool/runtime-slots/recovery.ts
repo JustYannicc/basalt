@@ -278,6 +278,7 @@ export class RuntimeSlotRecovery {
         throw new SlotRefused("selection");
       retiredDenials(current);
     });
+    await this.forced.joining(previous, retained);
     if (!retained.running) await driver.admit(previous, await envelope(false));
     signal.throwIfAborted();
     console.info("POOL_SELECTED_RECOVERY", {

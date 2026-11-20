@@ -139,7 +139,16 @@ export class RuntimeForcedRestart {
     await this.clock.restarted(now);
     return true;
   }
-  /** Any refusal: a forced restart that still hasn't served in its budget has failed. */
+  /**
+   * Recovery is about to try the restart itself. One over the selected boot's running container
+   * is this class's to end, by a stop; any other gets the same budget, so a restart that never
+   * serves ends in needs-a-person rather than a silent loop.
+   */
+  async joining(previous: SlotIdentity, retained: Witnessed) {
+    if (retained.running && holdsSelectedBoot(retained, previous)) await this.clock.notJoined();
+    else await this.clock.joined(previous, Date.now());
+  }
+  /** Any refusal: a forced or joined restart that still hasn't served in its budget has failed. */
   async refused() {
     const now = Date.now();
     this.report(await this.clock.failedSince(now), now);

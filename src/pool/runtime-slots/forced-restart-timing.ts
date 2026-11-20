@@ -6,7 +6,10 @@
 
 /** A selected runtime that runs but refuses this long, with no successful read between, is stopped. */
 export const unservingBoundMs = 60_000;
-/** A forced restart that hasn't reached ready this long after its stop has failed: needs a person. */
+/**
+ * A restart that hasn't reached ready this long after it began has failed: needs a person. A forced
+ * restart begins at its stop; one recovery tries on its own, at its first try since serving.
+ */
 export const forcedRestartBudgetMs = 300_000;
 /** Forced restarts allowed per hour, counted by the controller. */
 export const forcedRestartsPerHour = 3;

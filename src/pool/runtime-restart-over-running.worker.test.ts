@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import { leakedStreamsMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Inspected {
@@ -181,6 +181,39 @@ test(
         .join("\n");
       throw new Error(`${String(error)}\n${lines}`, { cause: error });
     }
+    assert.deepEqual(f.old.calls.signals, [15]);
+  },
+);
+
+test(
+  "the stuck record heals after a held stream count, and the joined restart's budget never pre-empts its stop",
+  { timeout: 60_000 },
+  async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    context.mock.method(console, "info", () => {});
+    context.mock.method(console, "error", () => {});
+    const { previous, epoch } = await stuckOverRunningContainer(f);
+    // A lease that never moves, unstamped: the stop waits leakedStreamsMs from the first refusal,
+    // exactly the restart budget, while every pass also joins the admitted restart.
+    const identity = f.old.identity();
+    await f.old.storage.put(
+      `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`,
+      { identity, phase: "open", active: 1, known: true, leases: { leaked: "active" } },
+    );
+    now += 3_600_000;
+    await f.send("recovery-reset", { operationId: "incident-release" });
+    for (let elapsed = 0; elapsed < leakedStreamsMs; elapsed += 10_000) {
+      await passes(f, 1);
+      now += 10_000;
+    }
+    assert.deepEqual(f.old.calls.signals, [], "held while the count may be live");
+    now += 10_000;
+    await assertHealed(f, previous, epoch);
+    const { recovery } = (await f.send("inspect")) as { recovery: { needsPerson?: unknown } };
+    assert.equal(recovery.needsPerson, undefined);
     assert.deepEqual(f.old.calls.signals, [15]);
   },
 );

@@ -22,6 +22,11 @@ export const UnservingState = Schema.Struct({
   needsPerson: Schema.optional(NeedsPerson),
   /** Streams counted active that hold the stop, and since when their count has stood still. */
   streams: Schema.optional(Schema.Struct({ active: Schema.Number, stillSince: Schema.Number })),
+  /**
+   * When recovery first tried a restart it didn't force, since the runtime last served, and the
+   * boot that restart replaces. It shares the forced restart's budget.
+   */
+  joined: Schema.optional(Schema.Struct({ boot: Schema.String, at: Schema.Number })),
 });
 export type UnservingState = typeof UnservingState.Type;
 type Decision = "wait" | "needs_person" | "restart_limit" | "stop";
@@ -65,15 +70,30 @@ export class UnservingClock {
         : { ...state, since: undefined, streams: undefined },
     );
   }
-  /** A refusal of any kind: a forced restart that still hasn't served has failed. */
+  /** A refusal of any kind: a forced or joined restart that still hasn't served has failed. */
   failedSince(now: number) {
-    return this.change((state) =>
-      state.restartedAt !== undefined &&
-      !state.needsPerson &&
-      now - state.restartedAt >= forcedRestartBudgetMs
+    return this.change((state) => {
+      const began = state.restartedAt ?? state.joined?.at;
+      return began !== undefined && !state.needsPerson && now - began >= forcedRestartBudgetMs
         ? { ...state, needsPerson: { at: now, reason: "restart_failed" as const } }
-        : state,
+        : state;
+    });
+  }
+  /**
+   * Recovery tries a restart it didn't force. The budget starts at the first try since the runtime
+   * last served, so a restart that commits, exits and is tried again doesn't start it over.
+   */
+  joined(identity: SlotIdentity, now: number) {
+    return this.change((state) =>
+      state.restartedAt !== undefined || state.joined
+        ? state
+        : { ...state, joined: { boot: executionKey(identity), at: now } },
     );
+  }
+  /** The restart runs over the selected boot's own container, so the forced restart times it. */
+  notJoined() {
+    if (this.clean) return Promise.resolve({ restarts: [] });
+    return this.change((state) => (state.joined ? { ...state, joined: undefined } : state));
   }
   /** The stop no longer waits on streams. */
   notWaiting() {
@@ -108,7 +128,8 @@ export class UnservingClock {
       state.since === undefined &&
       state.restartedAt === undefined &&
       !state.needsPerson &&
-      !state.streams
+      !state.streams &&
+      !state.joined
         ? state
         : { restarts: state.restarts },
     );
