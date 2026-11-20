@@ -4,6 +4,8 @@ import type { TransactionStorage } from "./runtime-slots/storage.ts";
 const Time = Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)));
 const Deadlines = Schema.Struct({ home: Time, fleet: Time });
 const key = "pool-alarm-v1:deadlines";
+// An isolate checks for a missing alarm at most this often, so the check costs a request nothing.
+const ensureSpacingMs = 5_000;
 interface Storage extends TransactionStorage {
   getAlarm(): Promise<number | null>;
   setAlarm(at: number): Promise<void>;
@@ -13,9 +15,23 @@ interface Storage extends TransactionStorage {
 export class PoolAlarms {
   private storage: Storage;
   private now: () => number;
+  private ensuredAt = -Infinity;
   constructor(storage: Storage, now = Date.now) {
     this.storage = storage;
     this.now = now;
+  }
+  /**
+   * With no alarm set, both owners run now. Each owner re-arms its own deadline, but nothing does
+   * once a handler failed past the platform's retries or no owner ever armed one, and then
+   * recovery and membership upkeep never run again: a code upload alone runs nothing.
+   */
+  async ensure() {
+    const now = this.now();
+    if (now - this.ensuredAt < ensureSpacingMs) return;
+    this.ensuredAt = now;
+    if ((await this.storage.getAlarm()) !== null) return;
+    await this.schedule("fleet", now);
+    await this.schedule("home", now);
   }
   async schedule(owner: "home" | "fleet", at: number) {
     if (!Number.isSafeInteger(at) || at < 0) throw new Error("Invalid pool alarm deadline");

@@ -101,3 +101,24 @@ test("lifecycle warmth retains its Home deadline behind an earlier fleet alarm",
   f.fire(300_100);
   assert.deepEqual(await new PoolAlarms(f.storage, f.now).take(), { home: true, fleet: false });
 });
+
+test("a missing alarm is armed for both owners at once, and an armed one is left alone", async () => {
+  const f = fixture();
+  await f.scheduler.ensure();
+  assert.equal(f.current(), 100, "nothing was armed, so both owners run now");
+  assert.deepEqual(await f.scheduler.take(), { home: true, fleet: true });
+  const armed = fixture(5_000);
+  await armed.scheduler.ensure();
+  assert.equal(armed.current(), 5_000, "an armed alarm keeps its deadline");
+});
+
+test("an isolate checks for a missing alarm at most once every five seconds", async () => {
+  const f = fixture(5_000);
+  await f.scheduler.ensure();
+  f.fire(4_000);
+  await f.scheduler.ensure();
+  assert.equal(f.current(), null, "within five seconds of the last check, no read and no arm");
+  f.fire(5_100);
+  await f.scheduler.ensure();
+  assert.equal(f.current(), 5_100);
+});

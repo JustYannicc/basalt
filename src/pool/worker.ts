@@ -224,6 +224,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         ctx.waitUntil(this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"))),
     );
     this.alarms = new PoolAlarms(ctx.storage);
+    // The first event after a code update or eviction runs here, before any alarm could.
+    this.ensureAlarm();
     this.peers = new RuntimeHomePeerTransport(ctx, env.POOL_DEPLOYMENT_KEY ?? "", (identity) =>
       this.handoff.peerHealth(identity),
     );
@@ -566,6 +568,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async availabilityProbe(pool: string, includeRuntime = false) {
+    this.ensureAlarm();
     const selected = await this.handoff.selected();
     const identity: ProbeRuntimeIdentity = {
       source: selected ? "selected" : "legacy",
@@ -789,6 +792,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async deploymentReady() {
+    this.ensureAlarm();
     return {
       ...this.deploymentIdentity(),
       ...(await this.handoff.deploymentReady(() =>
@@ -802,6 +806,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async runtimeHandoff(request: Request) {
+    this.ensureAlarm();
     return handleRuntimeHandoff(
       request,
       this.handoff,
@@ -816,7 +821,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     );
   }
 
+  /** Arms the upkeep alarm if nothing has, without holding the caller. */
+  private ensureAlarm() {
+    this.ctx.waitUntil(
+      this.alarms.ensure().catch(() => console.error("POOL_ALARM_ENSURE_PENDING")),
+    );
+  }
+
   async fetch(request: Request): Promise<Response> {
+    this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
       return readCommittedPoolChanges(request, {
