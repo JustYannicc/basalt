@@ -168,7 +168,8 @@ test(
     installsFail = false;
     await pass(f);
     assert.equal((await selection(f)).active.unfenced?.proven, true);
-    assert.equal(await status(f.model()), 200);
+    const served = await f.model();
+    assert.equal(served.status, 200, await served.text());
     assert.deepEqual(f.old.calls.signals, [], "a boot that answers is never stopped");
     assert.equal(f.old.calls.start, 0);
   },
