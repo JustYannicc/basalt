@@ -53,8 +53,7 @@ test("Cloud's emulator configuration accepts a loopback Autumn emulator for bill
   assert.ok(accepts(EmulatedServices, services()));
   assert.ok(accepts(EmulatedServices, billingAt(local)));
   assert.ok(accepts(EmulatedServices, billingAt("http://localhost:41234")));
-  for (const baseUrl of refused)
-    assert.ok(!accepts(EmulatedServices, billingAt(baseUrl)), baseUrl);
+  for (const baseUrl of refused) assert.ok(!accepts(EmulatedServices, billingAt(baseUrl)), baseUrl);
   for (const service of ["mail", "company", "workos"])
     assert.ok(
       !accepts(EmulatedServices, services({ [service]: { baseUrl: local, token: "x" } })),
