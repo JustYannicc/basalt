@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { discoverPlanSettlesProof } from "./architecture/native-stack.ts";
+import { poolDatabaseInputs } from "../src/pool/model-history/sources.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -13,6 +14,11 @@ for (const shape of ["production", "preview"] as const)
       { failed: undefined, error: undefined },
     );
     assert.ok(proof.resources > 50, "the whole stack is planned, not a part of it");
+    assert.deepEqual(
+      proof.poolDatabaseKey,
+      poolDatabaseInputs,
+      "the pool database command is keyed on every file it runs",
+    );
     for (const [name, plan] of [
       ["the same release attempt", proof.afterApply],
       ["a new release attempt", proof.nextAttempt],

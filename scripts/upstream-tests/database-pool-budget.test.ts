@@ -195,7 +195,11 @@ test("the script's rule accepts exactly the names the stage tooling gives a stag
   for (const branch of [identity.stage, previewPoolDatabaseBranch(identity.stage)])
     assert.equal(ownPoolBudgetTarget(identity.stage, identity.databaseName, branch), true);
   assert.equal(ownPoolBudgetTarget(identity.stage, identity.databaseName, "main"), false);
-  assert.equal(ownPoolBudgetTarget("production", identity.databaseName, "main"), true);
+  // A stage that is not a test stage owns the main branch of its own database, never a test
+  // stage's database: a wrong name in its settings must not resize a preview.
+  assert.equal(ownPoolBudgetTarget("production", identity.databaseName, "main"), false);
+  assert.equal(ownPoolBudgetTarget("production", "fixture-production", "main"), true);
+  assert.equal(ownPoolBudgetTarget("production", "fixture-production", identity.stage), false);
 });
 
 test("the real script exits non-zero with a closed error and sends nothing", () => {

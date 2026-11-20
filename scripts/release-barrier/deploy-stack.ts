@@ -321,10 +321,12 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         Object.keys(databasePlan.deletions).length ||
         Object.keys(databasePlan.actions).length ||
         [...prepared.databaseCommands].some((fqn) => !Object.hasOwn(databasePlan.resources, fqn)) ||
-        Object.entries(databasePlan.resources).some(([fqn, node]) =>
-          node.resource.Type === "Command.Exec"
-            ? !prepared.databaseCommands.has(fqn)
-            : node.action !== "noop",
+        // A command keyed on its inputs plans as unchanged when they are, and then runs in neither
+        // preparation nor this phase. Only a command that would run here must have been prepared.
+        Object.entries(databasePlan.resources).some(
+          ([fqn, node]) =>
+            node.action !== "noop" &&
+            (node.resource.Type !== "Command.Exec" || !prepared.databaseCommands.has(fqn)),
         )
       )
         throw new BarrierRefusal("unsafe-database-selection");

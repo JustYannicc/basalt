@@ -1,23 +1,24 @@
 diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
 --- a/apps/hosted/cloud/scripts/database-pool-budget.ts
 +++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
-@@ -16,15 +16,33 @@
+@@ -16,15 +16,34 @@
  const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
  const Changes = Schema.Struct({ data: Schema.Array(Change) });
  
++const testDatabases = "basalt-preview-";
 +/**
 + * Whether a database and branch are the stage's own. A disposable test stage owns one database,
-+ * named after it, and the two branches named after it; every other stage owns only `main`. The
-+ * script decides this itself, before any request: it runs as a child process, where nothing
-+ * outside it can see or refuse what it sends, and test stages share the organization and its
-+ * credentials with production.
++ * named after it, and the two branches named after it. Every other stage owns only `main`, of a
++ * database that is not a test stage's. The script decides this itself, before any request: it
++ * runs as a child process, where nothing outside it can see or refuse what it sends, and test
++ * stages share the organization and its credentials with production.
 + */
 +export function ownPoolBudgetTarget(stage: string, database: string, branch: string): boolean {
-+  if (!stage.startsWith("test-")) return branch === "main";
++  if (!stage.startsWith("test-")) return branch === "main" && !database.startsWith(testDatabases);
 +  const slug = /^test-(pr-[1-9][0-9]*|rehearsal-[1-9][0-9]{0,9})$/.exec(stage)?.[1];
 +  return (
 +    slug !== undefined &&
-+    database === `basalt-preview-${slug}` &&
++    database === `${testDatabases}${slug}` &&
 +    (branch === stage || branch === `${stage}-pool`)
 +  );
 +}
@@ -37,7 +38,7 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
      });
    const client = yield* HttpClient.HttpClient;
    const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
-@@ -74,11 +92,11 @@
+@@ -74,11 +93,11 @@
      Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
      Effect.flatMap(({ data }) => {
        const state = data.find((entry) => entry.id === change.id)?.state;
@@ -54,7 +55,7 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
      }),
      Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
    );
-@@ -86,10 +104,27 @@
+@@ -86,10 +105,27 @@
      return yield* new PoolBudgetFailed({ message: "PgBouncer budget readback did not match" });
  });
  
@@ -210,3 +211,44 @@ new file mode 100644
 +  ],
 +  lockfile: true,
 +};
+diff --git a/apps/hosted/cloud/src/infrastructure/site-inputs.ts b/apps/hosted/cloud/src/infrastructure/site-inputs.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/site-inputs.ts
+@@ -0,0 +1,17 @@
++/**
++ * The site build reads the whole tree, so its key stays every file the tree does not ignore, plus
++ * the lockfile. Three files are rewritten for every release and no page or site script imports
++ * them. A fourth is written by every install and names that install's own dependency store. With
++ * any of them in the key the site, and every Worker that serves it, changed on every release.
++ * Patterns are relative to the tree's root, the build's working directory.
++ */
++export const siteInputs = {
++  include: [
++    "**/*",
++    "!.basalt-dependencies.json",
++    "!apps/hosted/cloud/src/implementation/production-ops-release.ts",
++    "!apps/hosted/server/src/implementation/catalog-app-release.ts",
++    "!apps/hosted/server/src/implementation/pool-worker-revision.ts",
++  ],
++  lockfile: true,
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/src/infrastructure/site.ts
+--- a/apps/hosted/cloud/src/infrastructure/site.ts
++++ b/apps/hosted/cloud/src/infrastructure/site.ts
+@@ -9,6 +9,7 @@
+ import { postHogBindings } from "./posthog.ts";
+ import { sentryBindings } from "./sentry.ts";
+ import { cloudHosts } from "./stage.ts";
++import { siteInputs } from "./site-inputs.ts";
+ 
+ /** Alchemy reuses this resource when the API and development server request it. */
+ export const cloudSite = Effect.gen(function* () {
+@@ -25,6 +26,7 @@
+     cwd: "../../..",
+     command: "bun run hosted:cloud:site:build",
+     outdir: "apps/hosted/cloud/.generated/site",
++    memo: siteInputs,
+     env: {
+       // Generated assets are outside tracked source; the version invalidates Command.Build's input hash.
+       BASALT_POOL_APP_VERSION: poolAppVersion,

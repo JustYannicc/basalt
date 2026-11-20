@@ -278,6 +278,8 @@ export function discoverPlanSettlesProof(
   failed?: string;
   error?: string;
   resources: number;
+  /** The key the declared pool database command carries. */
+  poolDatabaseKey?: { include?: string[]; lockfile?: boolean };
   afterApply: PlannedRow[];
   nextAttempt: PlannedRow[];
 } {
