@@ -10,10 +10,26 @@ export const poolObservationSecretName = (stage: string) =>
 export const poolObservationStore = () =>
   Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
 
-/** Provisioning owns the value; deployment only binds its account store and stable name. */
+/**
+ * The account token the observation secret holds. Provisioning created this row with exactly these
+ * props, so declaring them here makes a plain plan adopt it as a noop instead of orphaning it.
+ * Its value is never bound: the Worker reads it from the Secrets Store.
+ */
+export const poolObservationToken = (accountId: string, stage: string) => {
+  const token = Cloudflare.ApiToken.AccountApiToken(
+    "PoolProviderObservationToken",
+    poolObservationTokenProps(accountId, stage),
+  );
+  // Production keeps the token provisioning created; a disposable stage's token goes with the stage.
+  return stage === "production" ? token.pipe(retain()) : token;
+};
+
+/** Provisioning owns the secret value; deployment binds the account store and stable name. */
 export const bindPoolObservationSecret = (worker: Cloudflare.Worker) =>
   Effect.gen(function* () {
     const stage = yield* Stage;
+    const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
+    yield* poolObservationToken(accountId, stage);
     const store = yield* poolObservationStore();
     yield* worker.bind("pool-provider-observation", {
       bindings: [
@@ -25,6 +41,15 @@ export const bindPoolObservationSecret = (worker: Cloudflare.Worker) =>
         },
       ],
     });
+  });
+
+/**
+ * Production binds on every deploy, fleet or not, so no plan can drop POOL_PROVIDER_OBSERVATION_TOKEN.
+ * Other stages bind once they declare a fleet.
+ */
+export const bindPoolObservation = (worker: Cloudflare.Worker, fleetDeclared: boolean) =>
+  Effect.gen(function* () {
+    if (fleetDeclared || (yield* Stage) === "production") yield* bindPoolObservationSecret(worker);
   });
 
 export function poolObservationTokenProps(accountId: string, stage: string) {

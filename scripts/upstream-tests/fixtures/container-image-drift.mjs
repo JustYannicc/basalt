@@ -196,7 +196,43 @@ const program = Effect.gen(function* () {
     beforeCommandDrift + 1,
     "non-resource configuration drift still rolls out",
   );
-  assert.equal(state.app.configuration.command, undefined);
+  assert.deepEqual(state.app.configuration.command, []);
+  state.app.configuration.runtime = "unexpected-runtime";
+  const beforeRuntimeDrift = state.rollouts;
+  expected = yield* reconcile(yield* read());
+  assert.equal(
+    state.rollouts,
+    beforeRuntimeDrift + 1,
+    "a runtime other than the default rolls out",
+  );
+  assert.equal(state.app.configuration.runtime, "firecracker");
+
+  // The platform's defaults count as not set. A declaration that sets one is a real change.
+  const undeclared = props;
+  // Whether a partly declared network reads back as declared is the platform's business and is
+  // not known here, so only its rollout is claimed.
+  for (const [key, value, readsBackAsDeclared] of [
+    ["command", ["serve"], true],
+    ["entrypoint", ["/bin/runtime"], true],
+    ["network", { mode: "public" }, false],
+  ]) {
+    const beforeDeclared = state.rollouts;
+    props = { ...undeclared, [key]: value };
+    expected = yield* reconcile(yield* read());
+    assert.equal(state.rollouts, beforeDeclared + 1, `a declared ${key} rolls out`);
+    assert.deepEqual(state.app.configuration[key], value);
+    if (readsBackAsDeclared) {
+      const afterDeclared = state.writes;
+      expected = yield* reconcile(yield* read());
+      assert.equal(state.writes, afterDeclared, `a declared ${key} stays unchanged once applied`);
+    }
+    props = undeclared;
+    expected = yield* reconcile(yield* read());
+    assert.equal(state.rollouts, beforeDeclared + 2, `removing the declared ${key} rolls out`);
+    const afterRemoved = state.writes;
+    expected = yield* reconcile(yield* read());
+    assert.equal(state.writes, afterRemoved, `the default ${key} then stays unchanged`);
+  }
 
   state.app.configuration.image = image(digest("4"));
   const stale = yield* read();
@@ -260,7 +296,7 @@ const program = Effect.gen(function* () {
   assert.equal(state.app.durable_objects.namespace_id, "fixture-namespace");
   assert.equal(expected.maxInstances, 3);
   return {
-    scenarios: 20,
+    scenarios: 32,
     rollouts: state.rollouts,
     inputHash: expected.hash.image,
     digest: expected.hash.digest,

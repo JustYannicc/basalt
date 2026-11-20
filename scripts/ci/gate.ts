@@ -10,12 +10,7 @@ export const fastJobs = [
   "client-connection",
   "browser-install",
 ];
-export const conditionalJobs = [
-  "baseline-probe",
-  "release-preflight",
-  "restore-preparation-probe",
-  "workerd-assets",
-];
+export const conditionalJobs = ["workerd-assets"];
 
 // The long tier: jobs that start as soon as `select` finishes. Every other job the selector starts
 // also needs the trivial `long-started` job, so when a full Check queues more jobs than there are
@@ -46,9 +41,6 @@ export function gateErrors(
   selected: readonly string[],
   boat: readonly string[] = [],
   full?: boolean,
-  baselineProbeRequired = false,
-  restorePreparationRequired = false,
-  releasePreflightRequired = false,
 ) {
   const errors: string[] = [];
   if (full === false && selected.length) errors.push("Fast lane selected heavy jobs");
@@ -67,9 +59,6 @@ export function gateErrors(
   for (const job of expected) {
     const required =
       fastJobs.includes(job) ||
-      (job === "baseline-probe" && baselineProbeRequired) ||
-      (job === "restore-preparation-probe" && restorePreparationRequired) ||
-      (job === "release-preflight" && releasePreflightRequired) ||
       (job === "workerd-assets" && selected.includes("upstream-image")) ||
       selected.includes(job);
     if (needs[job]?.result !== (required ? "success" : "skipped"))
@@ -125,16 +114,11 @@ export function runGateCli(env = process.env): void {
     throw new Error(`reuse: expected success, got ${reuse?.result ?? "missing"}`);
   if (!["true", "false"].includes(env.CI_FULL_SUITE ?? ""))
     throw new Error("Missing or invalid CI lane");
-  if (!["true", "false"].includes(env.CI_BASELINE_PROBE ?? ""))
-    throw new Error("Missing or invalid baseline probe selection");
   const errors = gateErrors(
     suite,
     JSON.parse(env.CI_JOBS ?? "null"),
     JSON.parse(env.CI_BOAT_JOBS ?? "null"),
     env.CI_FULL_SUITE === "true",
-    env.CI_BASELINE_PROBE === "true",
-    env.CI_RESTORE_PREPARATION_PROBE === "true",
-    env.CI_RELEASE_PREFLIGHT === "true",
   );
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;
