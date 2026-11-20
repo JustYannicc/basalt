@@ -18,13 +18,14 @@ export const handler = (fn) =>
   fn.params.some((param) => param.type === "Identifier" && HANDLER_PARAMS.test(param.name));
 
 // Identifiers in a value, without the functions nested in it.
-export const identifiers = (node, found = []) => {
-  if (!node || typeof node.type !== "string" || /Function/u.test(node.type)) return found;
+// Every AST node has a `type`; any other property value does not.
+const identifiers = (node, found = []) => {
+  if (!node?.type || /Function/u.test(node.type)) return found;
   if (node.type === "Identifier") found.push(node);
   for (const [key, value] of Object.entries(node)) {
     if (key === "parent") continue;
     if (Array.isArray(value)) value.forEach((child) => identifiers(child, found));
-    else if (value && typeof value === "object") identifiers(value, found);
+    else if (value?.type) identifiers(value, found);
   }
   return found;
 };
