@@ -38,6 +38,14 @@ const {
 } = await import(modulePath);
 hooks.deregister();
 
+interface StubStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  transaction<T>(work: (transaction: StubStorage) => Promise<T>): Promise<T>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
+}
+
 test("the scheduled Worker keeps its passive probe and reports unavailable history separately without warming or repair", async (t) => {
   const f = await fixture();
   f.home.addFile("auth-a");
@@ -134,7 +142,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
         background.push(work);
       },
       storage: (() => {
-        const storage = {
+        const storage: StubStorage = {
           get: async (key: string) =>
             key === "native-pool-memberships-v1"
               ? { [state.pool]: structuredClone(state) }
@@ -145,8 +153,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
             assert.equal(key, "pool-alarm-v1:deadlines", "probe wrote storage");
             deadlines = value;
           },
-          transaction: async <T>(work: (transaction: typeof storage) => Promise<T>) =>
-            work(storage),
+          transaction: async (work) => work(storage),
           getAlarm: async () => alarm,
           setAlarm: async (at: number) => {
             armed.push(at);

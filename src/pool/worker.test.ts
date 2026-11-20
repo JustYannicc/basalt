@@ -376,6 +376,14 @@ test("the Durable Object alarm provisions pending pool members", async () => {
   assert.ok(alarm);
 });
 
+interface StubStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  transaction<T>(work: (transaction: StubStorage) => Promise<T>): Promise<T>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
+}
+
 test("reconstructing a running or stopped object without a request leaves compute and idle state alone", async () => {
   const env = {
     POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
@@ -391,13 +399,13 @@ test("reconstructing a running or stopped object without a request leaves comput
     destroys = 0;
   // Reconstruction may arm a missing upkeep alarm; it writes nothing else and touches no compute.
   const values = new Map<string, unknown>();
-  const storage = {
+  const storage: StubStorage = {
     get: async (key: string) => values.get(key),
     put: async (key: string, value: unknown) => {
       if (key !== "pool-alarm-v1:deadlines") writes++;
       values.set(key, value);
     },
-    transaction: async <T>(work: (transaction: typeof storage) => Promise<T>) => work(storage),
+    transaction: async (work) => work(storage),
     getAlarm: async () => null,
     setAlarm: async (at: number) => {
       armed.push(at);
