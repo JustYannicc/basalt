@@ -59,6 +59,7 @@
     "scripts/connectors-tests/gitlab-legacy.mjs": 1,
     "scripts/connectors-tests/gitlab-oauth.mjs": 1,
     "scripts/connectors-tests/gitlab.mjs": 1,
+    "scripts/connectors-tests/gmail-tools.mjs": 1,
     "scripts/connectors-tests/google-admin-scenario.mjs": 1,
     "scripts/connectors-tests/google-admin.mjs": 1,
     "scripts/connectors-tests/notion-health.mjs": 1,
