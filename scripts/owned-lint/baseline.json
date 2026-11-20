@@ -62,7 +62,7 @@
     "src/pool/runtime-provider.test.ts": 3
   },
   "basalt/no-node-test-doubles": {
-    "scripts/catalog-oauth-evidence.test.ts": 3,
+    "scripts/catalog-oauth-evidence.test.ts": 1,
     "scripts/catalog-source-check.test.ts": 1,
     "scripts/pool-tests/bulk-progress.test.ts": 3,
     "scripts/pool-tests/gateway-history.test.ts": 2,
@@ -142,6 +142,7 @@
     "src/pool/storage-bookmark.ts": 1
   },
   "landmines-testing/no-test-doubles": {
+    "scripts/allowance-seed.test.ts": 2,
     "scripts/cutover-import.test.ts": 1,
     "scripts/deploy-safety/release-plan.test.ts": 4,
     "scripts/pool-tests/gateway-failure.test.ts": 3,
@@ -187,6 +188,7 @@
     "src/pool/worker.test.ts": 2,
     "src/setup/native-device-api.test.ts": 2,
     "src/site/waitlist.test.ts": 2,
+    "src/telemetry/allowance-expiry.test.ts": 2,
     "src/telemetry/sentry.test.ts": 2,
     "src/telemetry/traces.test.ts": 2
   }
