@@ -5,6 +5,7 @@ import {
   adoptTarget,
   adoptedState,
   infraOnlyShape,
+  noAdoptionRecorded,
   refuseRecordedAdoption,
   requiredPin,
   rootMatchesPin,
@@ -229,4 +230,34 @@ test("infraOnlyShape refuses any policy set but the infra-only one", async () =>
     infraOnlyShape({ policies: [policy("app_0", false, ["auth-a"])] }, pools),
     /infra-only clean pool has accounts|expected/u,
   );
+});
+
+test("noAdoptionRecorded reads only the witness's 409 identity refusal as no record", async () => {
+  const { BarrierRefusal } = await import("../release-barrier/refusal.ts");
+  const { canonical, digest } = await import("../release-barrier/manifest.ts");
+  const refusal = (action: string, status: number, reason: string, code = "unclassified") =>
+    new BarrierRefusal("runtime-handoff-response-refused", "PoolRuntime", {
+      fqn: "PoolRuntime",
+      type: "Cloudflare.Container",
+      changed: [
+        {
+          path: "handoff.response.status",
+          old: digest(canonical(200)),
+          new: digest(canonical(status)),
+        },
+        { path: "handoff.command.action", old: null, new: action },
+        { path: "handoff.response.step", old: null, new: "slot" },
+        { path: "handoff.response.reason", old: null, new: reason },
+        { path: "handoff.response.code", old: null, new: code },
+      ],
+    });
+  assert.equal(await noAdoptionRecorded(refusal("witness", 409, "identity")), true);
+  assert.equal(
+    await noAdoptionRecorded(refusal("witness", 409, "unclassified", "slot_identity")),
+    true,
+  );
+  assert.equal(await noAdoptionRecorded(refusal("witness", 409, "selection")), false);
+  assert.equal(await noAdoptionRecorded(refusal("witness", 503, "identity")), false);
+  assert.equal(await noAdoptionRecorded(refusal("inspect", 409, "identity")), false);
+  assert.equal(await noAdoptionRecorded(new Error("network")), false);
 });

@@ -98,6 +98,30 @@ export function refuseRecordedAdoption(witness: unknown) {
   if (kind !== "witness") throw new Error("The root's witness could not be read; nothing was sent");
 }
 
+/**
+ * A root never adopted keeps no record for its legacy target, and the endpoint's witness read
+ * refuses exactly so: 409, closed reason identity. Only that refusal of the witness read means
+ * "no adoption recorded"; any other failure refuses. A record the read misses can still never be
+ * overwritten: the endpoint's admit reads the record under the proof's target and refuses first.
+ */
+export async function noAdoptionRecorded(error: unknown) {
+  const [{ BarrierRefusal }, { canonical, digest }] = await Promise.all([
+    import("../release-barrier/refusal.ts"),
+    import("../release-barrier/manifest.ts"),
+  ]);
+  if (!(error instanceof BarrierRefusal) || error.reason !== "runtime-handoff-response-refused")
+    return false;
+  const changed = error.delta?.changed ?? [];
+  const at = (path: string) => changed.find((entry) => entry.path === path)?.new;
+  return (
+    at("handoff.command.action") === "witness" &&
+    at("handoff.response.status") === digest(canonical(409)) &&
+    [at("handoff.response.reason"), at("handoff.response.code")].some(
+      (value) => typeof value === "string" && /(?:^|_)identity$/u.test(value),
+    )
+  );
+}
+
 /** The infra-only seed's policy shape, from the controller's own inspect. */
 export async function infraOnlyShape(
   inspect: unknown,
@@ -244,14 +268,27 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
           const observed = yield* Effect.promise(() =>
             verifyContainerHealth(state.target, input, AbortSignal.timeout(15_000)),
           );
-          refuseRecordedAdoption(
-            yield* Effect.promise(() =>
-              client.call({
+          const witnessed = yield* Effect.promise(() =>
+            client
+              .call({
                 action: "witness",
                 target: legacyAdoptionTarget(state.applications.root, observed.instanceId),
-              }),
-            ),
+              })
+              .then(
+                (body) => ({ body }),
+                (error: unknown) => ({ error }),
+              ),
           );
+          if ("error" in witnessed) {
+            if (!(yield* Effect.promise(() => noAdoptionRecorded(witnessed.error))))
+              throw new Error(
+                `The root's witness could not be read; nothing was sent: ${
+                  witnessed.error instanceof Error
+                    ? witnessed.error.message
+                    : String(witnessed.error)
+                }`,
+              );
+          } else refuseRecordedAdoption(witnessed.body);
           yield* Effect.promise(() => client.adopt());
           const healthy = yield* Effect.promise(() =>
             client.health().then(
