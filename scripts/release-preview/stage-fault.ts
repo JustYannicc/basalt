@@ -55,6 +55,12 @@ export function confirmedState(reads: Reads) {
       launch: Object.keys(record(witness.launch)).length > 0,
       operation: hashed(operationId),
       boot: hashed(witness.bootId),
+      // The restart's admission time: the stage's forced stop counts its start bound from it.
+      admittedAt: (() => {
+        const at =
+          record(record(reads.witness).authorization).at ?? record(witness.authorization).at;
+        return typeof at === "number" ? at : null;
+      })(),
     },
     // The controller's recovery record, if any: production's stuck state has none, or a clean one.
     recovery:

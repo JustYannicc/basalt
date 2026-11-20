@@ -307,10 +307,16 @@ async function healAcceptance(input: {
   try {
     const policy = JSON.parse(
       await readFile(join(input.candidate, "scripts/release/policies/code-restart.json"), "utf8"),
-    ) as { acceptance?: { rootRestart?: { bound?: number } } };
+    ) as { acceptance?: { rootRestart?: { bound?: unknown; withinSeconds?: unknown } } };
     const args = restartExpectArgs({
       workflow: await readFile(join(input.candidate, ".github/workflows/release.yml"), "utf8"),
-      bound: policy.acceptance?.rootRestart?.bound,
+      // The older policy states seconds; the newer names a constant, used with --apply, not --within.
+      bound:
+        typeof policy.acceptance?.rootRestart?.withinSeconds === "number"
+          ? policy.acceptance.rootRestart.withinSeconds
+          : typeof policy.acceptance?.rootRestart?.bound === "number"
+            ? policy.acceptance.rootRestart.bound
+            : undefined,
       serving: input.servingFile,
       apply: input.apply,
     });
@@ -354,6 +360,14 @@ async function healRelease(
 ) {
   const result: Record<string, unknown> = { reproduces: healReproduces };
   const probe = startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
+  // Seconds per phase, so the slow ones are named, not guessed.
+  const phases: Record<string, number> = {};
+  result.phases = phases;
+  let mark = Date.now();
+  const lap = (name: string) => {
+    phases[name] = Math.round((Date.now() - mark) / 1000);
+    mark = Date.now();
+  };
   try {
     // 1. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
     const now = await faultRead(lane, source, outputs, "before", ["--read-only"]);
@@ -363,6 +377,7 @@ async function healRelease(
         : await faultAndConfirm(lane, subject, source, outputs);
     // Taken after the fault is confirmed, so it is never earlier than the restart's admission.
     const faultSettledAt = Date.now();
+    lap("fault");
     // 2. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     await rm(candidate, { recursive: true, force: true });
@@ -387,6 +402,7 @@ async function healRelease(
     if (existsSync(join(candidate, "scripts/release-preview/stage-fault.ts")))
       throw new Error("The heal candidate still carries the rehearsal-only fault command");
     execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+    lap("candidatePrepare");
     const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
     const timing = (await import(
       pathToFileURL(join(candidate, "src/pool/runtime-slots/forced-restart-timing.ts")).href
@@ -402,11 +418,13 @@ async function healRelease(
     result.ownershipWaitMs = Math.max(0, ownershipAt - Date.now());
     if ((result.ownershipWaitMs as number) > 0)
       await new Promise((done) => setTimeout(done, result.ownershipWaitMs as number));
+    lap("ownershipWait");
     const started = Date.now();
     // The healing release's policy; a candidate without it measures nothing the GO asks about.
     if (!existsSync(join(candidate, "scripts/release/policies/code-restart.json")))
       throw new Error("The heal candidate has no code-restart policy");
     await withStageBuild(candidate, subject, source, async () => {
+      lap("stageBuild");
       // 3. The plan must not touch the root container application. The policy-free plan comes
       // first and is kept whole, so a refusal below still leaves every row the candidate plans.
       await writeStateEvidence(subject, source, outputs, "candidate");
@@ -439,6 +457,7 @@ async function healRelease(
         );
       // The release's own acceptance, as release.yml runs it from the candidate's own entry: the
       // serving versions and the root's boot before the apply, `accept` after it either way.
+      lap("plan");
       const acceptEnv = {
         ...env,
         POOL_ACCEPTANCE_ORIGIN: previewStageOrigin(
@@ -460,6 +479,7 @@ async function healRelease(
           error instanceof Error ? error.message : String(error),
         ).slice(0, 1_000);
       });
+      lap("servingAndBoot");
       // The deploy plans again under the policy and stops in plan on any refusal. A release that
       // uploads and then fails its readiness check is recorded, and recovery is still watched: the
       // pool can heal while the release itself reports failure (the unfixed head's predicted red).
@@ -483,6 +503,7 @@ async function healRelease(
         // A refusal in plan changed nothing, so there is no recovery to watch.
         if (/stopped in plan/u.test(String(result.releaseFailed))) throw error;
       }
+      lap("deploy");
       result.releaseAcceptance = await healAcceptance({
         candidate,
         subject,
@@ -494,6 +515,7 @@ async function healRelease(
         apply: result.releaseFailed ? "failure" : "success",
       });
     });
+    lap("acceptance");
     result.releaseSeconds = Math.round((Date.now() - started) / 1000);
     // 4. Recovery: wait, bounded, for the Worker's own restart to bring a new boot that answers.
     // Every read goes into a timeline: the boot the witness names (the restart's new boot N), the
@@ -581,6 +603,7 @@ async function healRelease(
       unavailable: error instanceof Error ? error.message : String(error),
       green: false,
     }));
+    lap("recoveryWatch");
     // One named verdict, so a run is read from its record, not from the detail file.
     result.verdict = result.needsPerson
       ? "NEEDS_PERSON"
