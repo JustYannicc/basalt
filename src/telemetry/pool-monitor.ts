@@ -1,6 +1,6 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
-import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import type { PoolReliabilitySlo, UnknownOutcomes } from "../../apps/pool/reliability-contract.ts";
 import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
 const guards = new Set([
@@ -93,6 +93,9 @@ export async function capturePoolMonitor(
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
+  // Unknown outcomes are a recording defect even when the objective is decided without them.
+  const unknown = input.reliability && unknownWindows(input.reliability);
+  if (unknown) console.warn("POOL_REQUEST_OUTCOMES_UNKNOWN", unknown);
   // Missing evidence is a reliability incident, independently of synthetic availability.
   if (reliability.some((failure) => failure.reason === "collection_unavailable")) {
     const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
@@ -143,17 +146,21 @@ export async function capturePoolMonitor(
   }
 }
 
+const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+const state = (slo: PoolReliabilitySlo) =>
+  ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null;
+
 function reliabilityContext(slo: PoolReliabilitySlo) {
-  const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
   const window = (value: PoolReliabilitySlo["hour"]) => ({
     requests: count(value.real.requests),
     failed: count(value.real.failed),
     proof_requests: count(value.proof.requests),
     proof_failed: count(value.proof.failed),
+    ...(value.unknown ? { unknown: unknownOutcomes(value.unknown) } : {}),
   });
   return {
     target: 99,
-    state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
+    state: state(slo),
     hour: window(slo.hour),
     day: window(slo.day),
     ...(slo.current ? { current: window(slo.current) } : {}),
@@ -167,5 +174,26 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
     ].includes(slo.reason ?? "")
       ? slo.reason
       : null,
+  };
+}
+
+function unknownOutcomes(value: UnknownOutcomes) {
+  return {
+    requests: count(value.requests),
+    pending: count(value.pending),
+    unavailable: count(value.unavailable),
+    unmatched: count(value.unmatched),
+    uncounted: count(value.uncounted),
+    could_fail: count(value.couldFail),
+  };
+}
+
+/** Counts per window and class, only when some outcome in the hour or day is unknown. */
+function unknownWindows(slo: PoolReliabilitySlo) {
+  if (!slo.hour.unknown?.requests && !slo.day.unknown?.requests) return undefined;
+  return {
+    state: state(slo),
+    ...(slo.hour.unknown ? { hour: unknownOutcomes(slo.hour.unknown) } : {}),
+    ...(slo.day.unknown ? { day: unknownOutcomes(slo.day.unknown) } : {}),
   };
 }
