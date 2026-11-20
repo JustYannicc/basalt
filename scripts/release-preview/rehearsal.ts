@@ -348,7 +348,11 @@ export async function executeRehearsal(
       release,
       verifyAdopted: async () => {
         const { policies } = await adoptedSnapshot(join(previousRoot, ".local", "release-barrier"));
-        verifyRehearsalPolicies(policies as RehearsalPolicy[], { cleanPool, emptyPools });
+        verifyRehearsalPolicies(policies as RehearsalPolicy[], {
+          cleanPool,
+          emptyPools,
+          infraOnly,
+        });
       },
       settle: async () => {
         const environment = candidateEnvironment();

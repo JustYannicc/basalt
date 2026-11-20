@@ -33,7 +33,7 @@ import { alchemyPreviewStateReader } from "../preview/inventory.ts";
 import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
-import { nativeHooks } from "./rehearsal-native-hooks.ts";
+import { managedReference, nativeHooks } from "./rehearsal-native-hooks.ts";
 import {
   planHighlights,
   requireBaselineShape,
@@ -716,6 +716,28 @@ async function requireDeployedHead(
  * The stage's legacy-root pin, read the way production's preflight reads it: the root application's
  * image by digest, and the build input PoolWorker already knows it by (`POOL_IMAGE_HASH`).
  */
+/** A secret pin, checked for its shape only; its value never reaches the output. */
+function explicitRootPin(value: string | undefined) {
+  if (!value?.trim()) return undefined;
+  const parsed = (() => {
+    try {
+      return JSON.parse(value) as { image?: unknown; input?: unknown };
+    } catch {
+      return undefined;
+    }
+  })();
+  if (
+    typeof parsed?.image !== "string" ||
+    managedReference(parsed.image).kind !== "digest" ||
+    typeof parsed.input !== "string" ||
+    !/^[a-f0-9]{16}$/u.test(parsed.input)
+  )
+    throw new Error(
+      "The lane's root pin secret is not {image: <digest reference>, input: <16 hex>}",
+    );
+  return JSON.stringify({ image: parsed.image, input: parsed.input });
+}
+
 async function rootPin(
   hooks: ReturnType<typeof nativeHooks>,
   subject: StageSubject,
@@ -781,6 +803,13 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         .then(rootVersion)
         .catch(() => null);
       const env: NodeJS.ProcessEnv = { ...source, ...declaration.baseline };
+      // A lane may carry an explicit root pin as a repository secret (lane 2: production's image by
+      // digest). It replaces the pin read from the stage's own State, so one baseline rolls onto it.
+      const explicit = explicitRootPin(source[`REHEARSAL_ROOT_PIN_${lane}`]);
+      if (explicit) {
+        Object.assign(env, { POOL_ROOT_IMAGE: explicit });
+        result.rootPin = "secret";
+      }
       try {
         try {
           await deployStage(root, subject, env);
@@ -789,7 +818,7 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
           // here, so the root may roll once; every later policy run then sees the pinned form.
           if (error instanceof Error && /existing remote state/u.test(error.message)) {
             // A stage whose PoolWorker never deployed has no root identity yet: deploy it unpinned first.
-            const pin = await rootPin(hooks, subject, source).catch(() => undefined);
+            const pin = explicit ?? (await rootPin(hooks, subject, source).catch(() => undefined));
             if (pin) Object.assign(env, { POOL_ROOT_IMAGE: pin });
             result.rootPinned = Boolean(pin);
           }

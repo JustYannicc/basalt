@@ -153,7 +153,12 @@ export async function seedRehearsalPools(input: RehearsalSeedInput): Promise<Reh
 /** Refuses unless the controller holds exactly the production-shaped policy set. */
 export function verifyRehearsalPolicies(
   policies: readonly RehearsalPolicy[],
-  expected: { readonly cleanPool: string; readonly emptyPools?: readonly string[] },
+  expected: {
+    readonly cleanPool: string;
+    readonly emptyPools?: readonly string[];
+    /** An infra-only seed adds no accounts: its clean pool must hold none, not some. */
+    readonly infraOnly?: boolean;
+  },
 ): void {
   const reasons: string[] = [];
   const total = rehearsalDirtyPolicyCount + 1;
@@ -168,7 +173,9 @@ export function verifyRehearsalPolicies(
   if (clean.length !== 1) reasons.push("the clean pool has no policy");
   for (const policy of clean) {
     if (policy.dirty) reasons.push("the clean pool is dirty");
-    if (policy.accounts.length === 0) reasons.push("the clean pool has no accounts");
+    if (expected.infraOnly) {
+      if (policy.accounts.length !== 0) reasons.push("the infra-only clean pool has accounts");
+    } else if (policy.accounts.length === 0) reasons.push("the clean pool has no accounts");
   }
   const others = policies.filter((policy) => policy.pool !== expected.cleanPool);
   for (const policy of others) {

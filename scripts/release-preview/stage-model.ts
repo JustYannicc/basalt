@@ -10,7 +10,33 @@ import { PreviewClient } from "../pool-acceptance/preview-client.ts";
 
 export type ModelAnswer =
   | { ok: true; status: number; retryAfter: string | null; body: string; ms: number }
-  | { ok: false; step: string; error: string };
+  | { ok: false; step: string; error: string; context?: { status: number; body: string } };
+
+const redact = (text: string, limit: number) =>
+  text.replace(/[A-Za-z0-9_-]{32,}/gu, "[redacted]").slice(0, limit);
+
+/**
+ * The claim's first step as it is, when the claim fails: the pool app's `computerContext` query
+ * (PoolWorker's setup context). The acceptance client keeps only "did not return a successful
+ * result"; this keeps the status and the `ok:false` body.
+ */
+async function computerContext(
+  client: PreviewClient,
+  origin: string,
+  ids: Discovery,
+): Promise<{ status: number; body: string }> {
+  const path = `/api/organizations/${encodeURIComponent(ids.organizationId)}/apps/${encodeURIComponent(ids.poolAppId)}/data/query`;
+  const response = await client.http.request(
+    path,
+    {
+      method: "POST",
+      headers: client.http.headers({ Origin: origin, "Content-Type": "application/json" }),
+      body: JSON.stringify({ name: "computerContext", input: {} }),
+    },
+    path,
+  );
+  return { status: response.status, body: redact(await response.text(), 1_200) };
+}
 
 type Discovery = { organizationId: string; poolAppId: string };
 
@@ -50,6 +76,7 @@ export async function stageModelRequest(input: {
   model?: string;
 }): Promise<ModelAnswer> {
   let step = "discover";
+  let context: { status: number; body: string } | undefined;
   try {
     const finder = new PreviewClient({
       ...input,
@@ -61,7 +88,15 @@ export async function stageModelRequest(input: {
     step = "claim";
     const client = new PreviewClient({ ...input, ...ids });
     await client.signIn();
-    const computer = await client.claimComputer(`Rehearsal heal probe ${randomUUID().slice(0, 8)}`);
+    const computer = await client
+      .claimComputer(`Rehearsal heal probe ${randomUUID().slice(0, 8)}`)
+      .catch(async (error: unknown) => {
+        context = await computerContext(client, input.origin, ids).catch((read: unknown) => ({
+          status: 0,
+          body: redact(read instanceof Error ? read.message : String(read), 300),
+        }));
+        throw error;
+      });
     const { modelUrl, modelKey } = computer.payload.credentials;
     step = "request";
     const started = Date.now();
@@ -89,9 +124,8 @@ export async function stageModelRequest(input: {
     return {
       ok: false,
       step,
-      error: (error instanceof Error ? error.message : String(error))
-        .replace(/[A-Za-z0-9_-]{32,}/gu, "[redacted]")
-        .slice(0, 300),
+      error: redact(error instanceof Error ? error.message : String(error), 300),
+      ...(context ? { context } : {}),
     };
   }
 }

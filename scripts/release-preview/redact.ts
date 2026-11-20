@@ -1,6 +1,6 @@
 /** Names whose values never reach a public log: credentials, keys, identities and account names. */
 const secretName =
-  /TOKEN|KEY|SECRET|PASSWORD|DSN|AUTH|COOKIE|SESSION|CREDENTIAL|ACCOUNT_ID|ORGANIZATION|EMAIL/u;
+  /TOKEN|KEY|SECRET|PASSWORD|DSN|AUTH|COOKIE|SESSION|CREDENTIAL|ACCOUNT_ID|ORGANIZATION|EMAIL|ROOT_PIN|ROOT_IMAGE/u;
 
 /**
  * Removes every secret-named environment value, then bearer tokens, JWTs and long hex strings, from

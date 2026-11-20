@@ -145,7 +145,10 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
     throw new Error("Usage: stage-fault.ts <lane> <outFile> [--read-only]");
   const context = await stageContext("stage fault", laneText, env);
   const { key, redact, follower } = context;
-  const { runtimeResponseDiagnostic } = await import("../../src/pool/runtime-route-diagnostic.ts");
+  const [{ runtimeResponseDiagnostic }, { runtimeRecoveryPath }] = await Promise.all([
+    import("../../src/pool/runtime-route-diagnostic.ts"),
+    import("../../src/pool/recovery-approval.ts"),
+  ]);
   const bridge = await context.open(await context.worker());
   const signal = AbortSignal.timeout(5 * 60_000);
   const send = (
@@ -214,11 +217,45 @@ async function main(args: string[], env: NodeJS.ProcessEnv) {
             instanceId,
           )
         : undefined;
+    // For the controller owner: what the pool holds before any selection exists. The root's own
+    // /ready is reachable only from the controller; its unsigned recovery status is the root's view.
+    const readAt = Date.now();
+    const rootStatus = await bridge.service
+      .fetch(new Request(`http://pool-operations${runtimeRecoveryPath}`, { signal }))
+      .then(async (response) => {
+        const body = record(await response.json().catch(() => ({})));
+        return {
+          status: response.status,
+          keys: Object.keys(body).sort(),
+          running: typeof body.running === "boolean" ? body.running : null,
+          boot: hashed(body.bootId),
+          instance: hashed(body.instanceId),
+        };
+      })
+      .catch((error: unknown) => ({
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    const view = record(inspect);
+    const pool = {
+      inspectKeys: Object.keys(view).sort(),
+      digest: text(view.digest) ?? null,
+      selectionKeys: Object.keys(record(view.selection)).sort(),
+      policies: (Array.isArray(view.policies) ? view.policies : []).map((entry) => {
+        const policy = record(entry);
+        return {
+          pool: hashed(policy.pool),
+          dirty: policy.dirty ?? null,
+          expiresInMs: typeof policy.expiresAt === "number" ? policy.expiresAt - readAt : null,
+        };
+      }),
+      rootStatus,
+    };
     const report = {
       stage: context.stage,
       at: new Date().toISOString(),
       fault,
-      ...confirmedState({ inspect, witness, activeHealth, running, at: Date.now() }),
+      pool,
+      ...confirmedState({ inspect, witness, activeHealth, running, at: readAt }),
       witnessStatus: witnessed?.status ?? null,
       modelRoute:
         "not read: needs a pool model key; production code returns 503 pool_protection_unavailable",

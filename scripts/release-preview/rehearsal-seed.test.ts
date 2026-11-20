@@ -238,6 +238,25 @@ test("the verifier refuses any other policy shape", () => {
     );
 });
 
+test("an infra-only seed's clean pool must hold no accounts, and is refused with any", () => {
+  const infra = at("app_pool0", { accounts: [] });
+  verifyRehearsalPolicies(infra, { cleanPool: "app_pool0", emptyPools: empty, infraOnly: true });
+  assert.throws(
+    () => verifyRehearsalPolicies(production(), { cleanPool: "app_pool0", infraOnly: true }),
+    (error) =>
+      error instanceof RehearsalRefusal && /infra-only clean pool has accounts/.test(error.message),
+  );
+  // Every other check still runs: an infra-only clean pool that is dirty is still refused.
+  assert.throws(
+    () =>
+      verifyRehearsalPolicies(at("app_pool0", { accounts: [], dirty: true }), {
+        cleanPool: "app_pool0",
+        infraOnly: true,
+      }),
+    (error) => error instanceof RehearsalRefusal && /clean pool is dirty/.test(error.message),
+  );
+});
+
 test("an infra-only seed creates the same pools with no accounts and claims no traffic computer", async () => {
   const host = fakeHost();
   const seed = await seedRehearsalPools({

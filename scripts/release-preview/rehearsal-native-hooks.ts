@@ -24,6 +24,22 @@ type Context = {
   fetcher?: typeof fetch;
 };
 
+/**
+ * A managed-registry image reference, by tag or by digest. A digest reference is pinned as it is;
+ * a tag is resolved to its digest through the registry first.
+ */
+export function managedReference(
+  reference: string,
+): { kind: "digest"; reference: string } | { kind: "tag"; repository: string; tag: string } {
+  if (/^registry\.cloudflare\.com\/[a-z0-9][a-z0-9/_.-]*@sha256:[a-f0-9]{64}$/u.test(reference))
+    return { kind: "digest", reference };
+  const [, repository, tag] =
+    /^registry\.cloudflare\.com\/([^@]+):([^:/@]+)$/u.exec(reference) ?? [];
+  if (!repository || !tag)
+    throw new Error("The stage pool image is not a managed-registry reference by tag or digest");
+  return { kind: "tag", repository, tag };
+}
+
 export function nativeHooks(context: Context): NativeHooks {
   const { root, previousRoot, subject, deployEnvironment } = context;
   const fetcher = context.fetcher ?? fetch;
@@ -140,6 +156,9 @@ export function nativeHooks(context: Context): NativeHooks {
     return read;
   };
   const digest = async (reference: string) => {
+    const parsed = managedReference(reference);
+    // A root pinned by digest (production's image on lane 2) is already immutable.
+    if (parsed.kind === "digest") return reference;
     const minted = await fetcher(
       `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/containers/registries/registry.cloudflare.com/credentials`,
       {
@@ -154,10 +173,7 @@ export function nativeHooks(context: Context): NativeHooks {
     const user = body.result?.username ?? body.result?.user;
     if (!minted.ok || !user || !body.result?.password)
       throw new Error(`Registry credentials refused with HTTP ${minted.status}`);
-    const [, repository, tag] =
-      /^registry\.cloudflare\.com\/(.+):([^:/@]+)$/u.exec(reference) ?? [];
-    if (!repository || !tag)
-      throw new Error("The stage pool image is not a tagged managed-registry reference");
+    const { repository, tag } = parsed;
     const head = await fetcher(
       `https://registry.cloudflare.com/v2/${repository}/manifests/${encodeURIComponent(tag)}`,
       {
