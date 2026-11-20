@@ -173,6 +173,32 @@ export async function policyShape(
     throw new Error(`The pool controller holds ${count} policies; none were expected`);
 }
 
+/**
+ * The controller's own digest of the live application (strict decode, its settings, its digest)
+ * must equal the one the adoption signs from State, and the application must be State's.
+ */
+export async function applicationProofRead(
+  live: unknown,
+  recorded: { applicationId: string; version: number },
+  signedDigest: string,
+) {
+  const [{ decodeProviderApplication }, { runtimeApplicationSettings }, { providerDigest }] =
+    await Promise.all([
+      import("../../src/pool/runtime-provider/application.ts"),
+      import("../../src/pool/runtime-provider/settings.ts"),
+      import("../../src/pool/runtime-provider/canonical.ts"),
+    ]);
+  const value = decodeProviderApplication(live);
+  if (value.applicationId !== recorded.applicationId || value.version !== recorded.version)
+    throw new Error("The live root application is not the one State records; nothing was sent");
+  const observed = await providerDigest(runtimeApplicationSettings(value));
+  if (observed !== signedDigest)
+    throw new Error(
+      "The live root application's settings digest differs from State's; nothing was sent",
+    );
+  return observed.slice(0, 16);
+}
+
 /** The release state with the pinned root's input hash set to the pin's build input. */
 export function pinnedRootState<
   S extends { applications: { root: { image: { inputHash: string } } } },
@@ -250,6 +276,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
     { poolWorkerRevision },
     { verifyContainerHealth },
     { legacyAdoptionTarget },
+    { runtimeApplicationPins },
   ] = await Promise.all([
     import("alchemy/Stack"),
     import("alchemy/State/State"),
@@ -263,6 +290,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
     import("../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts"),
     import("../release-barrier/container-health.ts"),
     import("../release-barrier/legacy-adoption-target.ts"),
+    import("../release-barrier/runtime-release-state.ts"),
   ]);
   const directory = fileURLToPath(new URL("../../.local/stage-adopt/", import.meta.url));
   const writer = ordinaryReleaseWriter(env);
@@ -302,6 +330,28 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
             pin,
           );
           const state = pinnedRootState(recorded, pin.input);
+          // The proof read: the stage's own root application as the controller will read it, against
+          // the settings digest the adoption will sign. A mismatch stops here, nothing sent.
+          const root = state.applications.root.attributes;
+          const live = yield* Effect.promise(() =>
+            fetch(
+              `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(root.accountId)}/containers/applications/${encodeURIComponent(root.applicationId)}`,
+              { headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN ?? ""}` } },
+            ).then(async (response) => {
+              if (!response.ok)
+                throw new Error(
+                  `The root application read refused with HTTP ${response.status}; nothing was sent`,
+                );
+              return ((await response.json()) as { result?: unknown }).result;
+            }),
+          );
+          const configDigest = yield* Effect.promise(() =>
+            applicationProofRead(
+              live,
+              root,
+              runtimeApplicationPins(root, pin.input).applicationConfigDigest,
+            ),
+          );
           let promotion: unknown;
           const client = yield* runtimeReleaseClient({
             state,
@@ -381,7 +431,15 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
             ),
           );
           const after = adoptedState(yield* Effect.promise(() => client.inspect()), healthy);
-          return { stage, candidate: writer.candidate, proof, rootInput: input, before, after };
+          return {
+            stage,
+            candidate: writer.candidate,
+            proof,
+            rootInput: input,
+            configDigest,
+            before,
+            after,
+          };
         }).pipe(
           Effect.provideContext(compiled.services),
           Effect.provideService(State, Context.get(compiled.services, State)),
