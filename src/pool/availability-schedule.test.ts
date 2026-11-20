@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
+import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
 import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
 
@@ -401,10 +402,7 @@ const quietWindow = (requests: number, couldFail?: number) => {
   };
 };
 
-async function collectionPages(
-  t: Parameters<Parameters<typeof test>[1] & object>[0],
-  slo: Awaited<ReturnType<NonNullable<Parameters<typeof runAvailabilityProbe>[2]>>>,
-) {
+async function collectionPages(t: TestContext, slo: PoolReliabilitySlo) {
   const messages: ReturnType<typeof unpack>[] = [];
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
     messages.push(unpack(init));
