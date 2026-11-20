@@ -14,8 +14,8 @@ import { isSigningKey } from "../src/pool/token.ts";
 import { runCrashOperator } from "./pool-crash-operator.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "./pool-operations.ts";
 import { nodePoolOperations } from "./pool-operations-node.ts";
-import { BarrierRefusal } from "./release-barrier/refusal.ts";
-import { sendRuntimeCommand } from "./release-barrier/runtime-command-rpc.ts";
+import { BarrierRefusal } from "./pool-fleet/refusal.ts";
+import { sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import {
   readReleaseTarget,
   workflowRunLister,
