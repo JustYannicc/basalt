@@ -173,6 +173,20 @@ export async function policyShape(
     throw new Error(`The pool controller holds ${count} policies; none were expected`);
 }
 
+/** The release state with the pinned root's input hash set to the pin's build input. */
+export function pinnedRootState<
+  S extends { applications: { root: { image: { inputHash: string } } } },
+>(state: S, input: string): S {
+  const root = state.applications.root;
+  return {
+    ...state,
+    applications: {
+      ...state.applications,
+      root: { ...root, image: { ...root.image, inputHash: input } },
+    },
+  };
+}
+
 /** The infra-only seed's policy shape, from the controller's own inspect. */
 export async function infraOnlyShape(
   inspect: unknown,
@@ -260,7 +274,7 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
       (compiled) =>
         Effect.gen(function* () {
           yield* assertReleaseStateVersion(compiled);
-          const state = yield* runtimeReleaseState(compiled);
+          const recorded = yield* runtimeReleaseState(compiled);
           // The release state comes from the stage's own State; its Worker must carry the stage's tag.
           const scripts = yield* Effect.promise(() =>
             fetch(
@@ -277,16 +291,17 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
               );
             }),
           );
-          ownPoolWorker(scripts, stage, state.target.worker);
-          // The Worker's binding, the release state's root input and the pin agree, or nothing is sent.
-          const input = state.applications.root.image.inputHash;
+          ownPoolWorker(scripts, stage, recorded.target.worker);
+          // A pinned root's State hash is Alchemy's hash of the image reference, not its build
+          // input; the identity the root and the controller know it by is the Worker's
+          // POOL_IMAGE_HASH, which the pin sets. That must be the pin's input, and it is the input
+          // the adoption records (as production's unpinned root records its POOL_IMAGE_HASH).
+          const input = recorded.configuration.imageInput;
           rootMatchesPin(
-            {
-              image: state.applications.root.attributes.configuration?.image,
-              input,
-            },
+            { image: recorded.applications.root.attributes.configuration?.image, input },
             pin,
           );
+          const state = pinnedRootState(recorded, pin.input);
           let promotion: unknown;
           const client = yield* runtimeReleaseClient({
             state,

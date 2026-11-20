@@ -318,3 +318,24 @@ test("an adopt with no seed refuses unless the controller holds no policy at all
     /holds -1 policies/u,
   );
 });
+
+test("pinnedRootState sets only the root's input hash to the pin's input", async () => {
+  const { pinnedRootState } = await import("./stage-adopt.ts");
+  const state = {
+    target: { worker: "w" },
+    applications: {
+      root: { attributes: { version: 10 }, image: { inputHash: "ref-hash", other: 1 } },
+      blue: { x: 1 },
+    },
+  };
+  const pinned = pinnedRootState(state, "526fa60bed0df442");
+  assert.equal(pinned.applications.root.image.inputHash, "526fa60bed0df442");
+  assert.equal(pinned.applications.root.image.other, 1);
+  assert.deepEqual(pinned.applications.root.attributes, { version: 10 });
+  assert.deepEqual(pinned.applications.blue, { x: 1 });
+  assert.equal(
+    state.applications.root.image.inputHash,
+    "ref-hash",
+    "the read state is not mutated",
+  );
+});
