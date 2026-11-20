@@ -125,6 +125,8 @@ export async function adoptWithoutSeed(input: {
   deployedCommit: string;
   pin: { image: string; input: string };
   controllerPolicies: number;
+  /** What the release entry evaluates this stage's stack with: the fleet declaration and the pin. */
+  stackEnv: NodeJS.ProcessEnv;
 }) {
   if (input.controllerPolicies !== 0)
     throw new Error(
@@ -140,6 +142,7 @@ async function adopt(
     outputs: string;
     deployedCommit: string;
     pin: { image: string; input: string };
+    stackEnv?: NodeJS.ProcessEnv;
   },
   stage: string,
   pools: "none" | { cleanPool: string; emptyPools: readonly string[] },
@@ -159,6 +162,10 @@ async function adopt(
       cwd: root,
       env: {
         ...rehearsalReleaseEnvironment(writer),
+        // As runEntry gives the entry: the same stack evaluates the same as the deployed one.
+        ...input.stackEnv,
+        PREVIEW_AUTH_SEED_OUTPUT: join(outputs, `seed-adopt-${Date.now()}.json`),
+        BASALT_STAGE_OUTPUT_DIR: outputs,
         PATH: source.PATH,
         HOME: source.HOME,
         STAGE_ADOPT_EXPECTED_IMAGE: input.pin.image,
