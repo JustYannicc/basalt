@@ -38,7 +38,7 @@ async function computerContext(
   return { status: response.status, body: redact(await response.text(), 1_200) };
 }
 
-type Discovery = { organizationId: string; poolAppId: string };
+type Discovery = { organizationId: string; poolAppId: string; appNames: string[] };
 
 /** The organization and pool the stage's auth seed created (`scripts/preview-auth/seed.ts`). */
 async function discover(client: PreviewClient, origin: string, stage: string): Promise<Discovery> {
@@ -65,7 +65,11 @@ async function discover(client: PreviewClient, origin: string, stage: string): P
     /^Preview smoke's pool(?: \d+)?$/u.test(item.name ?? ""),
   );
   if (!app?.id) throw new Error("The stage's smoke pool is missing");
-  return { organizationId: organization.id, poolAppId: app.id };
+  return {
+    organizationId: organization.id,
+    poolAppId: app.id,
+    appNames: (inventory.apps ?? []).map((item) => item.name ?? ""),
+  };
 }
 
 /** The stage's seeded organization and pool, found as its smoke user sees them. */

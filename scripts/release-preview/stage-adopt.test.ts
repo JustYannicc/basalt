@@ -143,3 +143,18 @@ test("settledProof agrees across policy order and refuses while the digest or a 
   assert.throws(() => settledProof(read("d1", 2), read("d2", 2)), /still changing/u);
   assert.throws(() => settledProof(read("d1", 2), read("d1", 3)), /still changing/u);
 });
+
+test("existingRehearsalPools counts only the names the rehearsal seed gives its pools", async () => {
+  const { existingRehearsalPools } = await import("./stage-seed.ts");
+  assert.equal(existingRehearsalPools(["Preview smoke's pool", "Some app"]), 0);
+  assert.equal(
+    existingRehearsalPools([
+      "Preview smoke's pool",
+      "Rehearsal clean pool",
+      "Rehearsal empty pool 1",
+      "Rehearsal empty pool 5",
+      "Rehearsal empty pool x",
+    ]),
+    3,
+  );
+});

@@ -9,7 +9,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lifecycleEnvironment } from "./credentials.ts";
 import { rehearsalReleaseEnvironment } from "./rehearsal-environment.ts";
-import { seedRehearsalPools } from "./rehearsal-seed.ts";
+import {
+  rehearsalEmptyPoolCount,
+  rehearsalPoolName,
+  seedRehearsalPools,
+} from "./rehearsal-seed.ts";
 import { discoverStagePool } from "./stage-model.ts";
 import { previewStageOrigin } from "../environment.ts";
 import { applyRehearsalFixture } from "../preview/lifecycle.ts";
@@ -24,6 +28,12 @@ const writerInputs = [
   "GITHUB_RUN_ID",
   "GITHUB_RUN_ATTEMPT",
 ] as const;
+
+/** How many of the apps carry a name the rehearsal seed gives the pools it creates. */
+export function existingRehearsalPools(appNames: readonly string[]) {
+  const seeded = new Set(Array.from({ length: 21 }, (_, index) => rehearsalPoolName(index)));
+  return appNames.filter((name) => seeded.has(name)).length;
+}
 
 export async function seedAndAdopt(input: {
   root: string;
@@ -43,11 +53,26 @@ export async function seedAndAdopt(input: {
   const origin = previewStageOrigin(stageNames(subject).slug, source.TEST_STAGE_DOMAIN ?? "");
   const email = source.PREVIEW_SMOKE_EMAIL ?? "";
   const password = source.PREVIEW_SMOKE_PASSWORD ?? "";
-  const { organizationId, poolAppId } = await discoverStagePool({ origin, stage, email, password });
-  if (input.seeded) {
-    // An earlier run seeded; only the adopt is retried.
-    return { seeded: "earlier", adopted: await adopt(input, stage) };
+  const { organizationId, poolAppId, appNames } = await discoverStagePool({
+    origin,
+    stage,
+    email,
+    password,
+  });
+  // Pools an earlier seed created, counted by the names the seed gives them. A full set means only
+  // the adopt is retried; a partial one is refused rather than seeded over.
+  const existing = existingRehearsalPools(appNames);
+  if (existing > 0) {
+    if (existing !== rehearsalEmptyPoolCount + 1 || !input.seeded)
+      throw new Error(
+        `The stage holds ${existing} rehearsal pools (a full seed is ${rehearsalEmptyPoolCount + 1}) and ${input.seeded ? "has" : "has no"} policies; nothing was seeded or adopted`,
+      );
+    return { existingPools: existing, seeded: "earlier", adopted: await adopt(input, stage) };
   }
+  if (input.seeded)
+    throw new Error(
+      "The stage holds policies but no rehearsal pools; nothing was seeded or adopted",
+    );
   const seed = await seedRehearsalPools({
     infraOnly: true,
     origin,
@@ -63,6 +88,7 @@ export async function seedAndAdopt(input: {
     pools: emptyPools,
   });
   return {
+    existingPools: 0,
     cleanPool: seed.cleanPool,
     emptyPools: emptyPools.length,
     adopted: await adopt(input, stage),
