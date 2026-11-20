@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-commands-keyed-on-inputs",
+  "file": "0693-commands-keyed-on-inputs.patch",
+  "content_sha256": "ec2e9c49af245f23132fb62d643c67ad7f5af81f63d1e73700132eb5b558cd89",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
