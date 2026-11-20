@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import type * as Plan from "alchemy/Plan";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Cause, Effect, Exit } from "effect";
@@ -438,6 +439,7 @@ const allowance = (codeOnly: Record<string, unknown> = {}, also: readonly object
       codeOnly: {
         references: [
           { name: "TOOLS_SERVICE", resource: "Api" },
+          { name: "POOL_AUTH_DATABASE", resource: "PoolModelDatabaseConnection" },
           { name: "VAULT", resource: "VaultAttachments" },
         ],
         values: [{ name: "EXECUTOR_TELEMETRY", fields: ["version"], why: "the release's version" }],
@@ -482,14 +484,15 @@ const withStoreProps = (
     ArtifactsCredentials: { ...store, props: change(store.props) } as unknown as ResourceState,
   };
 };
+type RowData = Record<string, unknown> & { bindings: Record<string, unknown>[] };
 /** The same rows with one of the store's recorded binding rows changed. */
 const withStoreBinding = (
   rows: Readonly<Record<string, ResourceState>>,
   sid: string,
-  change: (data: { bindings: Record<string, unknown>[] }) => unknown,
+  change: (data: RowData) => unknown,
 ): Record<string, ResourceState> => {
   const store = rows.ArtifactsCredentials as unknown as {
-    bindings: { sid: string; data: { bindings: Record<string, unknown>[] } }[];
+    bindings: { sid: string; data: RowData }[];
   };
   return {
     ...rows,
@@ -505,18 +508,54 @@ const credentialsNode = (plan: Plan.Plan) =>
   plan.resources.ArtifactsCredentials as unknown as {
     action: string;
     props: { main: string; env: Record<string, unknown> };
-    bindings: { sid: string; action: string }[];
+    bindings: { sid: string; action: string; data: RowData }[];
   };
 /** Admitted under the allowance; a refusal fails with the lines that name what exceeded it. */
-const storeCodeMoves = async (plan: Plan.Plan, codeOnly: Record<string, unknown> = {}) => {
-  const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(allowance(codeOnly))));
+const storeCodeMoves = async (
+  plan: Plan.Plan,
+  codeOnly: Record<string, unknown> = {},
+  also: readonly object[] = [],
+) => {
+  const exit = await Effect.runPromiseExit(
+    checkPlan(plan, await policy(allowance(codeOnly, also))),
+  );
   if (Exit.isFailure(exit)) assert.fail(String((Cause.squash(exit.cause) as Error).message));
   assert.ok(exit.value.some((change) => change.fqn === "ArtifactsCredentials"));
 };
-const exceeded = async (plan: Plan.Plan, codeOnly: Record<string, unknown> = {}) => {
-  const { rules, message } = await refused(plan, allowance(codeOnly));
+const exceeded = async (
+  plan: Plan.Plan,
+  codeOnly: Record<string, unknown> = {},
+  also: readonly object[] = [],
+) => {
+  const { rules, message } = await refused(plan, allowance(codeOnly, also));
   assert.ok(rules.includes("code-only-allowance-exceeded ArtifactsCredentials"), rules.join(", "));
   return { rules, message };
+};
+// The rows of what the store refers to are other rules' to admit; these name them for a test.
+const database = [{ fqn: "PoolModelDatabaseConnection", action: "update" }];
+const bucket = [{ fqn: "VaultAttachments", action: "update" }];
+/**
+ * A plan in which the model database connection's origin moved, as it does on a test stage. The
+ * store's entry for it is then the connection itself, not known until that applies, and the
+ * entry's own binding row waits too.
+ */
+const databaseMoves = async (
+  context: TestContext,
+  rows?: Readonly<Record<string, ResourceState>>,
+) => {
+  const plan = await credentialsPlan(context, { databaseHost: "another-host.invalid" }, rows);
+  assert.equal(plan.resources.PoolModelDatabaseConnection?.action, "update");
+  const node = credentialsNode(plan);
+  assert.equal(isResolved(node.props.env.POOL_AUTH_DATABASE), false);
+  const row = node.bindings.find((binding) => binding.sid === "POOL_AUTH_DATABASE");
+  assert.ok(row);
+  assert.equal(row.action, "update");
+  return { plan, node, row };
+};
+const refusesDatabase = async (plan: Plan.Plan, codeOnly: Record<string, unknown> = {}) => {
+  const { rules, message } = await exceeded(plan, codeOnly, database);
+  assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
+  return message;
 };
 
 test("a code-only allowance admits the bulk-import store's code while a Worker it calls updates", async (context) => {
@@ -561,75 +600,219 @@ test("a code-only allowance admits a reference that is the called Worker's own r
   assert.match((await exceeded(older, { references: [] })).message, /TOOLS_SERVICE\.url/u);
 });
 
-test("a code-only allowance admits a reference whose own binding waits on the resource it names", async (context) => {
-  // The bucket's settings move in the same plan, as a database connection's origin does on a
-  // test stage. Its binding carries more than a stable identity, so the binding waits as well.
-  const { plan } = await makePlan(context, {
-    rows: await credentialsRows(context),
-    declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
-  });
-  assert.equal(plan.resources.VaultAttachments?.action, "update");
-  const node = credentialsNode(plan);
-  assert.equal(isResolved(node.props.env.VAULT), false);
-  const waiting = node.bindings.filter((binding) => binding.action !== "noop");
+test("a code-only allowance admits the database connection's binding while that connection updates", async (context) => {
+  const rows = await credentialsRows(context);
+  const { plan, node, row } = await databaseMoves(context, rows);
   assert.deepEqual(
-    waiting.map(({ sid, action }) => [sid, action]),
-    [["VAULT", "update"]],
+    node.bindings.filter((binding) => binding.action !== "noop").map(({ sid }) => sid),
+    ["POOL_AUTH_DATABASE"],
   );
-  assert.equal(isResolved((waiting[0] as unknown as { data: unknown }).data), false);
-  // The bucket's own row is another rule's to admit; the store's row is within its allowance.
-  const bucket = [{ fqn: "VaultAttachments", action: "update" }];
-  const exit = await Effect.runPromiseExit(checkPlan(plan, await policy(allowance({}, bucket))));
-  assert.ok(Exit.isSuccess(exit), Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : "");
+  // What the upload carries of the row is known. Only the copy of the connection's origin that
+  // local development reads waits on the connection.
+  assert.ok(isResolved(row.data.bindings));
+  assert.deepEqual(
+    Object.keys(row.data).filter((key) => !isResolved(row.data[key])),
+    ["hyperdrives"],
+  );
+  await storeCodeMoves(plan, {}, database);
+  // State from a release that recorded no such copy holds the same binding.
+  const bare = withStoreBinding(
+    rows,
+    "POOL_AUTH_DATABASE",
+    ({ hyperdrives: _none, ...data }) => data,
+  );
+  await storeCodeMoves((await databaseMoves(context, bare)).plan, {}, database);
   // Unnamed, or named for another resource, both the entry and its binding refuse.
   for (const references of [
     [{ name: "TOOLS_SERVICE", resource: "Api" }],
     [
       { name: "TOOLS_SERVICE", resource: "Api" },
-      { name: "VAULT", resource: "Api" },
+      { name: "POOL_AUTH_DATABASE", resource: "Api" },
     ],
   ]) {
-    const { rules, message } = await refused(plan, allowance({ references }, bucket));
+    const message = await refusesDatabase(plan, { references });
+    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
+    assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
+  }
+});
+
+test("a code-only allowance refuses a database connection that State recorded as another one", async (context) => {
+  const settled = await credentialsRows(context);
+  const other = "5".repeat(32);
+  const rowMoved = withStoreBinding(settled, "POOL_AUTH_DATABASE", (data) => ({
+    ...data,
+    bindings: data.bindings.map((entry) => ({ ...entry, id: other })),
+  }));
+  for (const rows of [
+    // State holds another connection under the entry and in its binding row.
+    withStoreProps(rowMoved, (props) => ({
+      ...props,
+      env: {
+        ...props.env,
+        POOL_AUTH_DATABASE: { ...props.env.POOL_AUTH_DATABASE, hyperdriveId: other },
+      },
+    })),
+    // The binding row alone: it is what the upload before carried.
+    rowMoved,
+  ]) {
+    const message = await refusesDatabase((await databaseMoves(context, rows)).plan);
+    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
+    assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
+  }
+});
+
+test("a code-only allowance refuses a waiting binding row that State recorded with more or less", async (context) => {
+  const settled = await credentialsRows(context);
+  for (const change of [
+    // A second wire entry under the reference's own row.
+    (data: RowData) => ({
+      ...data,
+      bindings: [...data.bindings, { type: "plain_text", name: "MODE", text: "before" }],
+    }),
+    // A key the plan no longer carries.
+    (data: RowData) => ({ ...data, extra: true }),
+    // No wire entry at all.
+    (data: RowData) => ({ ...data, bindings: [] }),
+    // A wire entry without the connection's id.
+    (data: RowData) => ({
+      ...data,
+      bindings: data.bindings.map(({ id: _none, ...entry }) => entry),
+    }),
+  ]) {
+    const rows = withStoreBinding(settled, "POOL_AUTH_DATABASE", change);
+    const message = await refusesDatabase((await databaseMoves(context, rows)).plan);
+    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
+  }
+});
+
+test("a code-only allowance refuses a waiting binding row that carries more than the reference", async (context) => {
+  const settled = await credentialsRows(context);
+  type Waiting = Awaited<ReturnType<typeof databaseMoves>>;
+  for (const change of [
+    // Code that contributes a second wire entry under the reference's own row.
+    ({ row }: Waiting) => {
+      row.data = {
+        ...row.data,
+        bindings: [...row.data.bindings, { type: "plain_text", name: "MODE", text: "next" }],
+      };
+    },
+    // A wire entry that is not known yet: the upload would carry whatever it turns out to be.
+    ({ row }: Waiting) => {
+      row.data = {
+        ...row.data,
+        bindings: row.data.bindings.map((entry) => ({ ...entry, id: row.data.hyperdrives })),
+      };
+    },
+    // A row that is not known as a whole, though it waits on the named connection alone.
+    ({ row }: Waiting) => {
+      row.data = row.data.hyperdrives as RowData;
+    },
+    // Something not known under a key that is not local development's copy of the origin.
+    ({ row }: Waiting) => {
+      row.data = { ...row.data, devRemote: row.data.hyperdrives };
+    },
+    // That copy waiting on another resource than the named one.
+    ({ row, node }: Waiting) => {
+      assert.equal(isResolved(node.props.env.TOOLS_SERVICE), false);
+      row.data = { ...row.data, hyperdrives: node.props.env.TOOLS_SERVICE };
+    },
+  ]) {
+    const waiting = await databaseMoves(context, settled);
+    change(waiting);
+    const message = await refusesDatabase(waiting.plan);
+    assert.match(message, /bindings\.POOL_AUTH_DATABASE: update/u);
+    assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
+  }
+});
+
+test("a code-only allowance refuses an entry that only derives from the resource, or has no binding of its own", async (context) => {
+  const settled = await credentialsRows(context);
+  // Not the connection itself: a value computed from it, which can be anything once known.
+  const derived = await databaseMoves(context, settled);
+  derived.node.props.env.POOL_AUTH_DATABASE = derived.row.data.hyperdrives;
+  assert.match(await refusesDatabase(derived.plan), /props\.env\.POOL_AUTH_DATABASE: /u);
+  // Which resource the upload binds is read from the entry's binding row. Without one, nothing says.
+  const unbound = await databaseMoves(context, settled);
+  unbound.node.bindings = unbound.node.bindings.filter(
+    (binding) => binding.sid !== "POOL_AUTH_DATABASE",
+  );
+  const { message } = await exceeded(unbound.plan, {}, database);
+  assert.match(message, /props\.env\.POOL_AUTH_DATABASE: /u);
+});
+
+test("a code-only allowance refuses a named bucket's binding while that bucket updates", async (context) => {
+  // A bucket's binding carries more than a stable identity: its wire entry holds the bucket's
+  // jurisdiction, which is not known while the bucket updates. The upload would carry whatever
+  // that turns out to be, so the row is refused though the policy names the entry.
+  const moves = (rows: Readonly<Record<string, ResourceState>>) =>
+    makePlan(context, {
+      rows,
+      declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
+    });
+  const settled = await credentialsRows(context);
+  const other = "basalt-production-otherbucket";
+  for (const rows of [
+    settled,
+    // State holds the same bucket name in another jurisdiction.
+    withStoreBinding(settled, "VAULT", (data) => ({
+      ...data,
+      bindings: data.bindings.map((entry) => ({ ...entry, jurisdiction: "eu" })),
+    })),
+    // State holds another bucket under the entry.
+    withStoreBinding(
+      withStoreProps(settled, (props) => ({
+        ...props,
+        env: { ...props.env, VAULT: { ...props.env.VAULT, bucketName: other } },
+      })),
+      "VAULT",
+      (data) => ({
+        ...data,
+        bindings: data.bindings.map((entry) => ({ ...entry, bucketName: other })),
+      }),
+    ),
+  ]) {
+    const { plan } = await moves(rows);
+    assert.equal(plan.resources.VaultAttachments?.action, "update");
+    const node = credentialsNode(plan);
+    assert.equal(isResolved(node.props.env.VAULT), false);
+    const row = node.bindings.find((binding) => binding.sid === "VAULT");
+    assert.equal(row?.action, "update");
+    assert.equal(isResolved(row?.data.bindings), false);
+    const { rules, message } = await refused(plan, allowance({}, bucket));
     assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
     assert.match(message, /bindings\.VAULT: update/u);
     assert.match(message, /props\.env\.VAULT: /u);
   }
 });
 
-test("a code-only allowance refuses a reference moved onto the resource it names while that resource updates", async (context) => {
-  // State holds another bucket under the entry. The declaration binds the named one, and that
-  // one updates, so neither the entry nor its binding is fully known in the plan.
-  const other = "basalt-production-otherbucket";
-  const rows = withStoreBinding(
-    withStoreProps(await credentialsRows(context), (props) => ({
-      ...props,
-      env: { ...props.env, VAULT: { ...props.env.VAULT, bucketName: other } },
-    })),
-    "VAULT",
-    (data) => ({
-      ...data,
-      bindings: data.bindings.map((entry) => ({ ...entry, bucketName: other })),
-    }),
-  );
-  const { plan } = await makePlan(context, {
-    rows,
-    declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
-  });
-  assert.equal(plan.resources.VaultAttachments?.action, "update");
-  assert.equal(isResolved(credentialsNode(plan).props.env.VAULT), false);
-  const bucket = [{ fqn: "VaultAttachments", action: "update" }];
-  const { rules, message } = await refused(plan, allowance({}, bucket));
-  assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
-  assert.match(message, /bindings\.VAULT: update/u);
-  assert.match(message, /props\.env\.VAULT: /u);
-});
-
-test("a code-only allowance refuses a called Worker that State recorded as another one", async (context) => {
-  // State holds another Worker under the entry; the declaration calls the named one, which
-  // updates, so the entry in the plan waits on the named Worker alone.
+test("a code-only allowance admits an older recorded copy of the called Worker and refuses another Worker", async (context) => {
   const settled = await credentialsRows(context);
+  // State kept an older copy of the called Worker's attributes, also of those an update cannot
+  // change: that Worker was replaced, and gained a class, in releases that left the store alone.
+  // The store still binds the same Worker by name, so its binding row is unchanged.
+  const stale = withStoreProps(settled, (props) => ({
+    ...props,
+    env: {
+      ...props.env,
+      TOOLS_SERVICE: {
+        ...props.env.TOOLS_SERVICE,
+        workerId: "an-older-worker-id",
+        durableObjectNamespaces: { Older: "0".repeat(32) },
+      },
+    },
+  }));
+  const older = await credentialsPlan(context, {}, stale);
+  assert.equal(older.resources.Api?.action, "update");
+  assert.equal(isResolved(credentialsNode(older).props.env.TOOLS_SERVICE), false);
+  assert.deepEqual(
+    credentialsNode(older).bindings.filter((binding) => binding.action !== "noop"),
+    [],
+  );
+  await storeCodeMoves(older);
+  // State holds another Worker under the entry and in its binding row; the declaration calls the
+  // named one, which updates, so the entry in the plan waits on the named Worker alone.
   const catalog = (settled.Catalog as unknown as { attr: Record<string, unknown> }).attr;
-  const rows = withStoreBinding(
+  const moved = withStoreBinding(
     withStoreProps(settled, (props) => ({
       ...props,
       env: { ...props.env, TOOLS_SERVICE: { ...catalog } },
@@ -640,33 +823,13 @@ test("a code-only allowance refuses a called Worker that State recorded as anoth
       bindings: data.bindings.map((entry) => ({ ...entry, service: catalog.workerName })),
     }),
   );
-  const plan = await credentialsPlan(context, {}, rows);
+  const plan = await credentialsPlan(context, {}, moved);
   assert.equal(plan.resources.Api?.action, "update");
   assert.equal(isResolved(credentialsNode(plan).props.env.TOOLS_SERVICE), false);
   const { message } = await exceeded(plan);
   // The entry itself refuses, not only the binding row that happens to be known for a Worker.
   assert.match(message, /props\.env\.TOOLS_SERVICE: /u);
   assert.match(message, /bindings\.TOOLS_SERVICE: update/u);
-});
-
-test("a code-only allowance refuses a waiting binding row that carries more than the reference", async (context) => {
-  const { plan } = await makePlan(context, {
-    rows: await credentialsRows(context),
-    declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
-  });
-  const row = credentialsNode(plan).bindings.find((binding) => binding.sid === "VAULT") as
-    | { data: { bindings: object[] } }
-    | undefined;
-  assert.ok(row);
-  // Code that contributes a second wire entry under the reference's own row.
-  row.data = {
-    ...row.data,
-    bindings: [...row.data.bindings, { type: "plain_text", name: "MODE", text: "next" }],
-  };
-  const bucket = [{ fqn: "VaultAttachments", action: "update" }];
-  const { rules, message } = await refused(plan, allowance({}, bucket));
-  assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
-  assert.match(message, /bindings\.VAULT: update/u);
 });
 
 test("a code-only allowance admits only the named field of a value, never the credential beside it", async (context) => {
@@ -797,6 +960,16 @@ test("a code-only allowance cannot be declared with an empty or doubled name, or
     values: [...named("EXECUTOR_TELEMETRY"), ...named("TOOLS_SERVICE")],
   });
   assert.match(doubled.message, /policy\.TOOLS_SERVICE: named as a reference and as a value/u);
+  // One name twice in a list: the second entry would answer for the first.
+  const twice = await exceeded(plan, {
+    references: [
+      { name: "TOOLS_SERVICE", resource: "Api" },
+      { name: "TOOLS_SERVICE", resource: "Catalog" },
+    ],
+    values: [...named("EXECUTOR_TELEMETRY"), ...named("EXECUTOR_TELEMETRY")],
+  });
+  assert.match(twice.message, /policy\.TOOLS_SERVICE: named twice/u);
+  assert.match(twice.message, /policy\.EXECUTOR_TELEMETRY: named twice/u);
   const itself = await exceeded(plan, {
     references: [
       { name: "TOOLS_SERVICE", resource: "Api" },
@@ -1246,6 +1419,21 @@ test("the root's attachment that waits on the pool Worker settles only as lane 1
     data: {},
   });
   await refuses("a second binding row", second);
+  // A known value beside the waiting namespace would hide behind the unknown.
+  for (const [deviation, extend] of [
+    ["a field beside the attachment", (data: Record<string, unknown>) => ({ ...data, other: "x" })],
+    [
+      "a field beside the namespace id",
+      (data: Record<string, unknown>) => ({
+        durableObjects: { ...(data.durableObjects as object), className: "Other" },
+      }),
+    ],
+  ] as const) {
+    const plan = (await waits()).plan;
+    const waiting = (plan.resources.PoolContainer as unknown as Mutable).bindings[0]!;
+    waiting.data = extend(waiting.data as Record<string, unknown>);
+    await refuses(deviation, plan);
+  }
   // An unknown that waits on something other than the pool Worker: the command's own outcome.
   const other = (await waits()).plan;
   const pendingCommand = (
@@ -1274,14 +1462,13 @@ test("the class change admits the root's attachment row too, and nothing else on
     await Effect.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
   ).slice(0, 16);
   // By the class change the healing release has recorded the reference's hash on the root.
-  const rows = productionRows();
-  (rows.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
-    referenceHash;
-  const { plan } = await planned(context, {
-    rows: recordsReadiness(rows),
-    declared: { poolWorkerWaitsOnCommand: true },
-  });
-  const rulesFor = async (workerAttachment: boolean) => {
+  const rows = () => {
+    const recorded = productionRows();
+    (recorded.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
+      referenceHash;
+    return recorded;
+  };
+  const rulesFor = async (plan: Plan.Plan, workerAttachment: boolean) => {
     const exit = await Effect.runPromiseExit(
       checkPlan(
         plan,
@@ -1299,10 +1486,50 @@ test("the class change admits the root's attachment row too, and nothing else on
       ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
       : [];
   };
-  const admitted = await rulesFor(true);
-  assert.ok(!admitted.includes("pool-container-not-noop PoolContainer"), admitted.join(", "));
-  assert.ok(!admitted.includes("outside-cutover-classes PoolContainer"), admitted.join(", "));
-  const refused = await rulesFor(false);
-  assert.ok(refused.includes("pool-container-not-noop PoolContainer"), refused.join(", "));
-  assert.ok(refused.includes("outside-cutover-classes PoolContainer"), refused.join(", "));
+  type Row = { action: string; bindings: { sid: string; action: string; data: unknown }[] };
+  // The designed cause, on every class change: a class new to the pool Worker has no namespace
+  // yet, so the provider does not promise the class map and the root's attachment waits on the
+  // Worker, whose node then also creates the class. And lane 1's cause, a setting that waits.
+  for (const [cause, plan] of [
+    [
+      "a class new to the pool Worker",
+      (await planned(context, { rows: rows(), declared: { newClass: true } })).plan,
+    ],
+    [
+      "the fleet's classes",
+      (await planned(context, { rows: rows(), declared: { fleetClasses: true } })).plan,
+    ],
+    [
+      "a setting that waits on a command",
+      (
+        await planned(context, {
+          rows: recordsReadiness(rows()),
+          declared: { poolWorkerWaitsOnCommand: true },
+        })
+      ).plan,
+    ],
+  ] as const) {
+    const root = plan.resources.PoolContainer as unknown as Row;
+    assert.equal(root.action, "update", cause);
+    const pending = root.bindings.filter((binding) => binding.action !== "noop");
+    assert.deepEqual(
+      pending.map(({ sid, action }) => `${sid}: ${action}`),
+      ["PoolContainer: update"],
+      cause,
+    );
+    assert.deepEqual(Object.keys(Output.upstreamAny(pending[0]!.data)), ["PoolWorker"], cause);
+    if (cause !== "a setting that waits on a command")
+      assert.ok(
+        (plan.resources.PoolWorker as unknown as Row).bindings.some(
+          (binding) => binding.action === "create",
+        ),
+        `${cause}: the pool Worker creates the class`,
+      );
+    const admitted = await rulesFor(plan, true);
+    assert.ok(!admitted.includes("pool-container-not-noop PoolContainer"), `${cause}: ${admitted}`);
+    assert.ok(!admitted.includes("outside-cutover-classes PoolContainer"), `${cause}: ${admitted}`);
+    const refused = await rulesFor(plan, false);
+    assert.ok(refused.includes("pool-container-not-noop PoolContainer"), `${cause}: ${refused}`);
+    assert.ok(refused.includes("outside-cutover-classes PoolContainer"), `${cause}: ${refused}`);
+  }
 });

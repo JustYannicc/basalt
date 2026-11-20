@@ -87,6 +87,8 @@ export interface Declaration {
     calls?: "Api" | "Catalog";
     /** The class its `Coordinator` binding names; by default the recorded one. */
     className?: string;
+    /** The host of the model database connection it reads; another host updates that connection. */
+    databaseHost?: string;
   };
 }
 
@@ -272,6 +274,7 @@ const providers = (base: string) =>
       Cloudflare.Workers.Worker,
       Cloudflare.Containers.ContainerPlatform,
       Cloudflare.R2.Bucket,
+      Cloudflare.Hyperdrive.Connection,
       Cloudflare.D1.Database,
       Cloudflare.SecretsStore.Store,
       Command.Exec,
@@ -282,6 +285,7 @@ const providers = (base: string) =>
         Cloudflare.Workers.WorkerProvider(),
         Cloudflare.Containers.ContainerProvider(),
         Cloudflare.R2.BucketProvider(),
+        Cloudflare.Hyperdrive.ConnectionProvider(),
         Cloudflare.D1.DatabaseProvider(),
         Cloudflare.SecretsStore.SecretsStoreProvider(),
         Command.providers(),
@@ -308,6 +312,16 @@ const providers = (base: string) =>
     // Planning never reaches the daemon; the provider only needs the service to exist.
     Layer.provide(DockerLive),
   );
+
+const modelDatabaseOrigin = (host = "model-database.invalid") => ({
+  scheme: "postgres" as const,
+  host,
+  port: 5432,
+  database: "pool",
+  user: "pool",
+  password: Redacted.make("synthetic-database-password"),
+});
+const modelDatabaseId = "4".repeat(32);
 
 const service = {
   main: entry,
@@ -346,6 +360,12 @@ const program = (declared: Declaration) =>
           Catalog: yield* Cloudflare.Worker("Catalog", service),
         }[declared.credentials.calls ?? "Api"]
       : undefined;
+    // The model database connection, as the bulk-import store binds it in production.
+    const modelDatabase = declared.credentials
+      ? yield* Cloudflare.Hyperdrive.Connection("PoolModelDatabaseConnection", {
+          origin: modelDatabaseOrigin(declared.credentials.databaseHost),
+        })
+      : undefined;
     const credentials = yield* Cloudflare.Worker("ArtifactsCredentials", {
       main: declared.credentials?.main ?? entry,
       workersDev: false,
@@ -357,6 +377,7 @@ const program = (declared: Declaration) =>
         ...(declared.credentials
           ? {
               TOOLS_SERVICE: called,
+              POOL_AUTH_DATABASE: modelDatabase,
               // A resource whose binding carries more than its stable identity.
               VAULT: vault,
               POOL_APP_SIGNING_KEY: Redacted.make(
@@ -660,9 +681,12 @@ export const productionRows = (): Record<string, ResourceState> => ({
   ),
 });
 
-/** Rows of the two Workers ArtifactsCredentials can call, as a release before recorded them. */
-export const calledRows = (): Record<string, ResourceState> =>
-  Object.fromEntries(
+/**
+ * Rows of what ArtifactsCredentials holds of other resources, as a release before recorded them:
+ * the two Workers it can call and the model database connection.
+ */
+export const calledRows = (): Record<string, ResourceState> => ({
+  ...Object.fromEntries(
     ["Api", "Catalog"].map((fqn) => [
       fqn,
       row(
@@ -672,7 +696,21 @@ export const calledRows = (): Record<string, ResourceState> =>
         workerAttributes(`basalt-production-${fqn.toLowerCase()}`, {}),
       ),
     ]),
-  );
+  ),
+  PoolModelDatabaseConnection: row(
+    "Cloudflare.Hyperdrive",
+    "PoolModelDatabaseConnection",
+    { origin: modelDatabaseOrigin() },
+    {
+      hyperdriveId: modelDatabaseId,
+      name: "basalt-production-poolmodeldatabaseconnection",
+      accountId,
+      origin: modelDatabaseOrigin(),
+      mtls: { caCertificateId: undefined, mtlsCertificateId: undefined, sslmode: undefined },
+      dev: undefined,
+    },
+  ),
+});
 
 /** Marks settled Workers as built from another checkout, so Alchemy plans an update of their code. */
 export const withCodeFromElsewhere = (

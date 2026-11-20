@@ -424,12 +424,14 @@ export function rootUpdateSettles(
     const upstream = Object.keys(Output.upstreamAny(binding.data));
     if (upstream.length !== 1 || upstream[0] !== policy.poolWorker) return false;
     const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
-    if (
-      propChanges(recordedData, binding.data, ["bindings", binding.sid]).some(
-        (line) => !line.includes("<unresolved>"),
-      )
-    )
-      return false;
+    // The provider writes exactly the namespace here. A comparison stops at data holding an
+    // unknown, so any value beside it, on either row, could differ unseen.
+    const onlyNamespace = (data: unknown) =>
+      record(data) &&
+      Object.keys(data).join() === "durableObjects" &&
+      record(data.durableObjects) &&
+      Object.keys(data.durableObjects).join() === "namespaceId";
+    if (!onlyNamespace(binding.data) || !onlyNamespace(recordedData)) return false;
     // What it will resolve to is already recorded, the same on both rows: a namespace id is
     // permanent for a Worker and a class, so the Worker's update cannot move it.
     const attached =
@@ -889,63 +891,69 @@ export const checkPlan = (
           );
         };
 
+        // `isResolved` is a type guard, and what it refuses narrows to nothing. Asked this way, a
+        // value that is not known yet stays readable.
+        const unknownYet = (value: unknown): boolean => !isResolved(value);
         // Not known until one resource applies, and that resource keeps its identity: it updates.
         const waitsOn = (value: unknown, resource: string) =>
-          !isResolved(value) &&
+          unknownYet(value) &&
           Object.keys(Output.upstreamAny(value)).join("\n") === resource &&
           planned(resource)?.action === "update";
-        // State recorded the named resource's attributes for the entry. The plan either still waits
-        // on that resource, or holds the attributes State records for it now.
-        const reference = (old: unknown, next: unknown, resource: string) => {
+        // While a referenced resource updates, the entry's binding row can wait on it too. What
+        // the upload carries of the row, its wire entries, must be known and as State recorded
+        // them: the same binding to the same resource. Beside them one key may wait, on that
+        // resource alone: the copy of a database connection's origin that local development reads.
+        // No upload reads it, so State need not hold one. Everything else is known and unchanged.
+        const referenceWaits = (binding: Node["bindings"][number]) => {
+          const resource = references.get(binding.sid);
+          const old = recordedData.get(binding.sid);
+          const next: unknown = binding.data;
+          return (
+            binding.action === "update" &&
+            resource !== undefined &&
+            unknownYet(next) &&
+            !Output.isOutput(next) &&
+            record(next) &&
+            record(old) &&
+            Array.isArray(next.bindings) &&
+            next.bindings.length > 0 &&
+            keys(old, next).every((key) =>
+              key === "hyperdrives" && unknownYet(next[key])
+                ? waitsOn(next[key], resource)
+                : isResolved(next[key]) && propChanges(old[key], next[key]).length === 0,
+            )
+          );
+        };
+        // State recorded a resource's attributes for the entry. While the named resource updates,
+        // the plan holds that resource itself, not known until it applies; which resource the
+        // upload binds is then read from the entry's own binding row, unchanged or waiting as
+        // above. State's copy of the attributes may be an older one: a release that left this
+        // Worker alone can have moved them. Once known, the entry is the attributes State records
+        // for the named resource now.
+        const reference = (name: string, old: unknown, next: unknown, resource: string) => {
           if (!record(old) || Redacted.isRedacted(old)) return false;
-          if (!isResolved(next)) {
-            // The plan keeps what an update cannot change of the resource. State must hold the
-            // same there, or the entry was another resource before.
-            const stable: unknown = Output.isResourceExpr(next) ? next.stables : undefined;
+          if (unknownYet(next)) {
+            const rows = node.bindings.filter((binding) => binding.sid === name);
             return (
+              Output.isResourceExpr(next) &&
               waitsOn(next, resource) &&
-              record(stable) &&
-              Object.values(stable).some((value) => value !== undefined) &&
-              Object.entries(stable).every(
-                ([key, value]) => isResolved(value) && propChanges(old[key], value).length === 0,
-              )
+              rows.length === 1 &&
+              rows.every((row) => row.action === "noop" || referenceWaits(row))
             );
           }
           const target = planned(resource);
           const attributes = target && (recorded(target) as { attr?: unknown } | undefined)?.attr;
           return record(attributes) && record(next) && propChanges(attributes, next).length === 0;
         };
-        // While a referenced resource updates, the entry's binding row is not fully known either.
-        // Every known leaf of it must be as State recorded it, so it is the same binding to the
-        // same resource; each unknown leaf stands where State holds a value and waits on that
-        // resource alone.
-        const sameButWaiting = (old: unknown, next: unknown, resource: string): boolean => {
-          if (isResolved(next)) return propChanges(old, next).length === 0;
-          if (Output.isExpr(next)) return old !== undefined && waitsOn(next, resource);
-          if (Array.isArray(next))
-            return (
-              Array.isArray(old) &&
-              old.length === next.length &&
-              next.every((value, index) => sameButWaiting(old[index], value, resource))
-            );
-          return (
-            record(next) &&
-            record(old) &&
-            keys(old, next).every((key) => sameButWaiting(old[key], next[key], resource))
-          );
-        };
-        const referenceWaits = (binding: Node["bindings"][number]) => {
-          const resource = references.get(binding.sid);
-          return (
-            binding.action === "update" &&
-            resource !== undefined &&
-            !isResolved(binding.data) &&
-            sameButWaiting(recordedData.get(binding.sid), binding.data, resource)
-          );
-        };
+        const twice = (names: readonly string[]) => [
+          ...new Set(names.filter((name, index) => names.indexOf(name) !== index)),
+        ];
         const lines = [
           // A policy that names an entry twice, or the Worker itself, would let the looser rule
           // answer for the stricter one.
+          ...[codeOnly.references, codeOnly.values].flatMap((list) =>
+            twice(list.map((entry) => entry.name)).map((name) => `policy.${name}: named twice`),
+          ),
           ...codeOnly.references.flatMap((entry) => [
             ...(values.has(entry.name)
               ? [`policy.${entry.name}: named as a reference and as a value`]
@@ -990,7 +998,11 @@ export const checkPlan = (
             if (present && fields !== undefined && onlyFields(old[name], next[name], fields))
               continue;
             const resource = references.get(name);
-            if (present && resource !== undefined && reference(old[name], next[name], resource))
+            if (
+              present &&
+              resource !== undefined &&
+              reference(name, old[name], next[name], resource)
+            )
               continue;
             lines.push(...propChanges(old[name], next[name], ["props", "env", name]));
           }
