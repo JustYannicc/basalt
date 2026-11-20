@@ -354,12 +354,17 @@ for (const path of ["restart", "Reconnect"] as const) {
           assert.equal(await upgradeStatus(origin, token), 401);
         };
         await signInRequired();
+        assert.equal(
+          f.remote.counts().refreshes,
+          2,
+          "The lost refresh, then one send after the window; agents' requests send none after it.",
+        );
         assert.equal((await launch(["reconnect"], f.home).exited).code, 1);
         await signInRequired();
         assert.equal(
           f.remote.counts().refreshes,
-          2,
-          "The lost refresh, then one send after the window; none after the refusal.",
+          3,
+          "A person's Reconnect asks the server once more, and it refuses again.",
         );
         assert.equal(f.remote.counts().writes, 0);
         assert.equal(JSON.parse(await readFile(file, "utf8")).refreshToken, "synthetic-refresh-1");
