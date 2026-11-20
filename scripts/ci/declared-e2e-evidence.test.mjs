@@ -163,3 +163,50 @@ test("renewal proof uploads public evidence without fixture sessions or raw repo
   ])
     assert.equal(included(file), false, file);
 });
+
+test("jobs running the pool harness upload its gateway forwarding diagnostics", async () => {
+  const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+  const workflow = parse(
+    await readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const invocation = /\bnode (e2e\/[\w/-]+\.mjs)\b(?: +([^\s;&|]+))?/g;
+  const alwaysUploadsHidden = (step) =>
+    step.uses?.startsWith("actions/upload-artifact@") &&
+    step.if === "always()" &&
+    step.with?.["include-hidden-files"] === true;
+  // The SDK keeps each runner's Cloud runtime here, and the gateway drains into it on scope close.
+  const runtime = ".upstream/.local/testing/0123456789abcdef01234567";
+  let harnessRuns = 0;
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    const steps = job.steps ?? [];
+    for (const [index, step] of steps.entries()) {
+      for (const [, runner, output] of (step.run ?? "").matchAll(invocation)) {
+        const source = await readFile(new URL(`../../${runner}`, import.meta.url), "utf8");
+        if (!source.includes("poolCloudHarness")) continue;
+        harnessRuns++;
+        const label = `${name}: ${runner}`;
+        assert.ok(output, `${label} names its evidence directory`);
+        const patterns = steps
+          .slice(index + 1)
+          .filter(alwaysUploadsHidden)
+          .flatMap((upload) => upload.with.path.split("\n").filter(Boolean));
+        const included = (file) => patterns.some((pattern) => matchesGlob(file, pattern));
+        assert.equal(
+          included(`${runtime}/cloud-forwarding-errors.ndjson`),
+          true,
+          `${label} retains the gateway's forwarding diagnostics`,
+        );
+        // Its failure diagnostics name the runtime directory, which ties the file to this runner.
+        assert.equal(
+          included(`${output}/runtime-diagnostics.json`),
+          true,
+          `${label} retains the runtime directory it ran in`,
+        );
+        // Raw runtime logs and journals stay private; the harness retains a redacted log instead.
+        for (const file of ["cloud.log", "pool-backend.ndjson", "change-journal.ndjson"])
+          assert.equal(included(`${runtime}/${file}`), false, `${label} uploads raw ${file}`);
+      }
+    }
+  }
+  assert.ok(harnessRuns > 0, "no CI job runs a pool harness runner");
+});

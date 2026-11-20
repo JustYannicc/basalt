@@ -97,7 +97,7 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BOAT_JOBS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:boat') && 'proof' || vars.BASALT_CI_BOAT_JOBS }}
-          FULL_SUITE: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update') }}
+          FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
@@ -2007,6 +2007,7 @@ jobs:
             .generated/pool-removal-intent/**/report.json
             .generated/pool-removal-intent/**/partial-checks.json
             .generated/pool-removal-intent/**/failure.txt
+            .generated/pool-removal-intent/**/runtime-diagnostics.json
             .generated/pool-recipe-checks/**/report.json
             .generated/pool-recipe-checks/**/partial-checks.json
             .generated/pool-recipe-checks/**/failure.txt
@@ -2019,12 +2020,16 @@ jobs:
             .generated/pool-reset-ui/**/report.json
             .generated/pool-reset-ui/**/failure.json
             .generated/pool-reset-ui/**/*.png
+            .generated/pool-reset-ui/**/runtime-diagnostics.json
             .generated/scoped-change-consumers/**/report.json
             .generated/scoped-change-consumers/**/failure.json
             .generated/scoped-change-consumers/**/*.png
+            .generated/scoped-change-consumers/**/runtime-diagnostics.json
             .generated/pool-overview-ui/**/report.json
             .generated/pool-overview-ui/**/failure.json
             .generated/pool-overview-ui/**/*.png
+            .generated/pool-overview-ui/**/runtime-diagnostics.json
+            .upstream/.local/testing/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**

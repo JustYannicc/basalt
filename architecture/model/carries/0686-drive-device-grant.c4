@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The grant an MCP request authenticated with is the SDK's client grant, provided beside the request's user as actor: the hosted MCP backend provides it to every operation it runs, including tool calls that run after the request built it, and the SDK passes it only to the drive backend. The cloud drive backend sends it to the vault object as an identity object naming the grant; the vault records a device's sync only from such an object and ignores any other value, so a user id is never recorded as a device. Device syncs from app-scope connections, which run without a caller, carry their grant the same way."
+    }
+  }
+}

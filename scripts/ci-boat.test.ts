@@ -61,7 +61,7 @@ test("routed jobs read their runner label from one variable and keep individual 
       );
 });
 
-test("same-repository PR proof requests the full lane without changing normal routing", () => {
+test("same-repository non-batch PR proof requests the full lane without changing normal routing", () => {
   const step = workflow.jobs.select.steps.find((step: { id?: string }) => step.id === "jobs");
   assert.equal(
     step.env.BOAT_JOBS,
