@@ -40,6 +40,7 @@ test("preflight checks prepared source and shipped types, and every failure stop
     [".", "scripts/check-git-secrets.ts"],
     [".upstream", "e2e/check-boundary.ts"],
     [".", "scripts/ci/style.ts"],
+    [".", "scripts/owned-lint/check.ts"],
     [".upstream", "run mcp:apps --check"],
     [".", "scripts/check-connectors.ts --preflight"],
     [".upstream", "run apps:build"],
