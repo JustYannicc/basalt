@@ -129,3 +129,79 @@ test("a failed healing release names its outcome, the apply and the app smoke", 
     assert.doesNotMatch(unread, /NOT SERVING/u);
   }
 });
+
+test("a declared root restart reads the provider observation first, and refuses unless it reads", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-provider-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  // The dispatcher's stand-in writes the result the case gives it and fails like a refused observe.
+  writeFileSync(
+    join(bin, "bun"),
+    '#!/bin/sh\necho ran >> "$BUN_LOG"\nmkdir -p "$POOL_CRASH_OUTPUT_DIRECTORY"\n[ -n "$RESULT" ] && printf %s "$RESULT" > "$POOL_CRASH_OUTPUT_DIRECTORY/result.json"\nexit 1\n',
+  );
+  chmodSync(join(bin, "bun"), 0o755);
+  const restart = join(dir, "restart.json");
+  writeFileSync(restart, JSON.stringify({ acceptance: { rootRestart: { withinSeconds: 420 } } }));
+  const code = join(dir, "code.json");
+  writeFileSync(code, "{}");
+  const run = (label: string, policy: string, packet: string, result: string) => {
+    const out = join(dir, label);
+    mkdirSync(out);
+    const log = join(out, "bun.log");
+    const summary = join(out, "summary.md");
+    writeFileSync(summary, "");
+    const step = runStep(
+      script("Read the provider observation before a declared root restart"),
+      {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        POLICY: policy,
+        POOL_CRASH_PACKET: packet,
+        POOL_CRASH_OUTPUT_DIRECTORY: join(out, "result"),
+        GITHUB_STEP_SUMMARY: summary,
+        BUN_LOG: log,
+        RESULT: result,
+      },
+      dir,
+    );
+    return {
+      status: step.status,
+      stdout: step.stdout,
+      ran: existsSync(log),
+      summary: readFileSync(summary, "utf8"),
+    };
+  };
+  const packet = JSON.stringify({ controllerCode: { candidate: "a", workerInput: "b" } });
+  const reads = JSON.stringify({ providerObservation: "provider observation: reads" });
+  const refused = JSON.stringify({
+    providerObservation: "provider observation: does not read (provider_fetch_failed)",
+  });
+  // A policy that declares no restart never reads.
+  assert.deepEqual(run("code", code, "", reads), {
+    status: 0,
+    stdout: "",
+    ran: false,
+    summary: "",
+  });
+  // A declared restart needs the serving Worker's controller code.
+  const missing = run("missing", restart, "", reads);
+  assert.equal(missing.status, 1);
+  assert.equal(missing.ran, false);
+  assert.match(missing.stdout, /needs the serving_controller input/u);
+  // It reads: the release goes on, whatever the observe reads after it said.
+  const ok = run("reads", restart, packet, reads);
+  assert.equal(ok.status, 0);
+  assert.equal(ok.summary, "provider observation: reads\n");
+  // It does not read, or the dispatcher left nothing: the release stops before its plan.
+  const no = run("refused", restart, packet, refused);
+  assert.equal(no.status, 1);
+  assert.match(
+    no.stdout,
+    /^::error::provider observation: does not read \(provider_fetch_failed\): the heal would stop the root without restarting it\.$/mu,
+  );
+  const none = run("none", restart, packet, "");
+  assert.equal(none.status, 1);
+  assert.match(
+    none.stdout,
+    /^::error::provider observation: not read, the dispatcher left no result/mu,
+  );
+});

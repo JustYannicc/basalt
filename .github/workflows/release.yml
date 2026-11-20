@@ -45,6 +45,10 @@ on:
         description: An exact main commit to release instead of main's head (the class change runs on the commit the code-only release deployed)
         required: false
         type: string
+      serving_controller:
+        description: 'For a policy that declares a root restart: the {"controllerCode": ...} packet of the pool Worker deployed now, as the crash operator takes it'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -256,6 +260,36 @@ jobs:
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
           POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
         run: bun scripts/release/deploy.ts preflight --stage production
+      # A declared root restart stops the stuck root, and the restart after it needs the provider
+      # observation twice: read it on the pool Worker deployed now, before anything is planned or
+      # applied. The crash operator's read-only observe mode; nothing it sends writes.
+      - name: Read the provider observation before a declared root restart
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ALCHEMY_STAGE: production
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_CRASH_MODE: observe
+          POOL_CRASH_PACKET: ${{ inputs.serving_controller }}
+          POOL_CRASH_COORDINATOR_GO: ${{ inputs.go }}
+          POOL_CRASH_TEMPORARY_DIRECTORY: ${{ runner.temp }}
+          POOL_CRASH_OUTPUT_DIRECTORY: ${{ runner.temp }}/provider-observation
+        run: |
+          if [ -z "$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")" ]; then exit 0; fi
+          if [ -z "$POOL_CRASH_PACKET" ]; then
+            echo "::error::A release that declares a root restart needs the serving_controller input: the controller code of the pool Worker deployed now."
+            exit 1
+          fi
+          # The observe reads after it may refuse on their own; only this one decides here.
+          POOL_CRASH_REQUEST_ID="$(node -e 'console.log(crypto.randomUUID())')" bun scripts/pool-crash-dispatch.ts || true
+          line="$(jq -r '.providerObservation // empty' "$POOL_CRASH_OUTPUT_DIRECTORY/result.json" 2>/dev/null || true)"
+          echo "${line:-provider observation: not read}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$line" != "provider observation: reads" ]; then
+            echo "::error::${line:-provider observation: not read, the dispatcher left no result}: the heal would stop the root without restarting it."
+            exit 1
+          fi
       # A dispatched apply re-plans with the reviewed attempt id, so the digest must come out the same:
       # every record below names the plan that is applied.
       - name: Plan and check

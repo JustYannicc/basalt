@@ -205,7 +205,7 @@ test("production secrets reach only the steps that run the entry", () => {
   for (const name of secretSteps)
     assert.match(
       step(name),
-      /scripts\/release\/deploy\.ts |scripts\/pool-fleet\/dispatch\.ts/u,
+      /scripts\/release\/deploy\.ts |scripts\/pool-fleet\/dispatch\.ts|scripts\/pool-crash-dispatch\.ts/u,
       name,
     );
   for (const name of [
@@ -214,7 +214,7 @@ test("production secrets reach only the steps that run the entry", () => {
     "Keep the plan and the counts",
   ])
     assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
-  assert.equal(secretSteps.length, 12);
+  assert.equal(secretSteps.length, 13);
 });
 
 test("the root pin's full reference, which carries the account, never enters the workflow", () => {
