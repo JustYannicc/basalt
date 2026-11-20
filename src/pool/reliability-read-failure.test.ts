@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 import { reliabilityFailure, reliabilityStep } from "./model-history/reliability-read-failure.ts";
@@ -49,18 +49,27 @@ function idlePool(fail?: (text: string) => unknown) {
 async function sessionRead(
   change: Partial<Pick<HistoryDatabaseClient, "connect" | "end">>,
   fail?: (text: string) => unknown,
-  signal?: AbortSignal,
 ) {
   const { client } = idlePool(fail);
   const failure = await readReliabilityInSession("postgres://fixture", "fixture", now, {
     createClient: async () => ({ ...client, ...change }),
-    ...(signal ? { signal } : {}),
   }).then(
     () => assert.fail("the session should fail"),
     (error: unknown) => error,
   );
   assert.match(String(failure), /^Error: Model history reliability session failed$/);
   return failure;
+}
+
+/** A close that never finishes, so the session runs into its 20 s deadline on mocked time. */
+function hangingClose(t: TestContext) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  return {
+    end: () => {
+      t.mock.timers.tick(20_000);
+      return new Promise<void>(() => {});
+    },
+  };
 }
 
 const failureLines = (errors: { mock: { calls: { arguments: unknown[] }[] } }) =>
@@ -117,23 +126,33 @@ test("a session failing outside its statements logs where and why, and its calle
       throw new Error("Connection terminated due to connection timeout");
     },
   });
-  // Every statement succeeded; the connection then never closed and the session was stopped.
-  const stop = new AbortController();
-  await sessionRead(
-    {
-      end: () => {
-        stop.abort();
-        return new Promise<void>(() => {});
-      },
-    },
-    undefined,
-    stop.signal,
-  );
+  // Every statement succeeded; the connection then never closed, into the session's deadline.
+  await sessionRead(hangingClose(t));
   assert.deepEqual(failureLines(errors), [
     { read: "standalone", step: "session", phase: "connect", failure: "connect_timeout" },
-    { read: "standalone", step: "session", phase: "close", failure: "cancelled" },
+    { read: "standalone", step: "session", phase: "close", failure: "total_deadline" },
   ]);
   assert.doesNotMatch(JSON.stringify(errors.mock.calls), /Connection terminated|fixture/);
+});
+
+test("a session whose statements failed and whose connection then never closed reports both", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  await sessionRead(hangingClose(t), (text) =>
+    text.includes("statement_timeout")
+      ? Object.assign(new Error("permission denied"), { code: "42501", severity: "ERROR" })
+      : undefined,
+  );
+  assert.deepEqual(failureLines(errors), [
+    { read: "standalone", step: "timeout_setting", failure: "database_error", sqlstate: "42501" },
+    {
+      read: "standalone",
+      step: "session",
+      phase: "statements",
+      failure: "database_error",
+      sqlstate: "42501",
+      close: "total_deadline",
+    },
+  ]);
 });
 
 test("a statement timeout logs its step and then the session's statements phase", async (t) => {
