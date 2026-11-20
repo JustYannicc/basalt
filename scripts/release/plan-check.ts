@@ -828,8 +828,19 @@ export const checkPlan = (
             fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
           });
       }
-      // What a code-only allowance does not cover on a row. Each property and each `env` entry is
-      // compared on its own: one value that is not known yet must not hide the rest of the row.
+      // What a code-only allowance does not cover on a row. The rule in one sentence: every
+      // property, `env` entry and binding row of the Worker is the same in the plan as in State,
+      // in the last finished generation and, after an interrupted apply, in the unfinished one as
+      // well, whatever the planner calls the row; either generation may be what is live.
+      // The exceptions, each one named:
+      // - the entry file may sit under another checkout's directory;
+      // - a value the policy names may differ in its named fields;
+      // - a reference the policy names may be any copy of its resource's attributes, or the
+      //   resource itself while that updates, provided the entry's one binding row holds one wire
+      //   entry, named after the entry and as State has it. That row alone may differ in the copy
+      //   of a database connection's origin that local development reads; no upload reads it.
+      // Each property and each `env` entry is compared on its own: one value that is not known yet
+      // must not hide the rest of the row.
       const beyondCode = (
         change: PlanChange,
         codeOnly: NonNullable<PlanPolicy["allow"][number]["codeOnly"]>,
@@ -840,16 +851,32 @@ export const checkPlan = (
             ...change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`),
             "props: not readable",
           ];
+        type Row = Node["bindings"][number];
         const values = new Map(codeOnly.values.map((value) => [value.name, value.fields]));
         const references = new Map(
           codeOnly.references.map((entry) => [entry.name, entry.resource]),
         );
         const keys = (...holders: object[]) => [...new Set(holders.flatMap(Object.keys))].sort();
-        const recordedData = new Map(
-          recordedBindings(node).map((binding) => [binding.sid, binding.data]),
-        );
         const planned = (resource: string) =>
           nodes.find((candidate) => candidate.resource.FQN === resource);
+        // The generations State holds: the last finished one and, behind an interrupted apply, the
+        // unfinished one. The rows below are `noop` only when they are the same in each of them.
+        const finished = recorded(node);
+        const generations: readonly ({ props?: unknown; bindings?: unknown } | undefined)[] = [
+          finished,
+          ...(node.state !== finished ? [node.state] : []),
+        ];
+        const rows = bindingChanges(node);
+        /** What each generation holds for a row; `undefined` where one does not hold it. */
+        const held = (sid: string): unknown[] =>
+          generations.map(
+            (generation) =>
+              (Array.isArray(generation?.bindings) ? generation.bindings : []).find(
+                (binding: { sid?: unknown }) => binding.sid === sid,
+              )?.data,
+          );
+        // A row that is in the plan and in State. A `create` or `delete` row is a change as such.
+        const kept = (binding: Row) => binding.action === "noop" || binding.action === "update";
 
         // A named value is a record, plain or as JSON text, redacted or not. Only its named fields
         // may differ: the rest of it, such as a credential beside a version, is compared.
@@ -880,13 +907,11 @@ export const checkPlan = (
             propChanges(rest(before), rest(after)).length === 0
           );
         };
-        // A changed value plans its own binding row as an update too. That row is admitted while
-        // it is the same binding and the value it carries differs in the named fields only.
-        const valueOnly = (binding: Node["bindings"][number]) => {
+        // A changed value changes its own binding row too. That row is admitted while it is the
+        // same binding and the value it carries differs in the named fields only.
+        const valueOnly = (binding: Row) => {
           const fields = values.get(binding.sid);
-          const old = recordedData.get(binding.sid);
-          if (binding.action !== "update" || fields === undefined || !isResolved(binding.data))
-            return false;
+          if (!kept(binding) || fields === undefined || !isResolved(binding.data)) return false;
           const carried = (data: unknown): Record<string, unknown>[] =>
             record(data) && Array.isArray(data.bindings) ? data.bindings.filter(record) : [];
           const rest = (data: unknown) =>
@@ -900,19 +925,21 @@ export const checkPlan = (
                   ),
                 }
               : data;
-          const before = carried(old);
           const after = carried(binding.data);
-          return (
-            propChanges(rest(old), rest(binding.data)).length === 0 &&
-            before.length === after.length &&
-            after.every((entry, index) =>
-              ["text", "json"].every(
-                (key) =>
-                  propChanges(before[index]?.[key], entry[key]).length === 0 ||
-                  onlyFields(before[index]?.[key], entry[key], fields),
-              ),
-            )
-          );
+          return held(binding.sid).every((old) => {
+            const before = carried(old);
+            return (
+              propChanges(rest(old), rest(binding.data)).length === 0 &&
+              before.length === after.length &&
+              after.every((entry, index) =>
+                ["text", "json"].every(
+                  (key) =>
+                    propChanges(before[index]?.[key], entry[key]).length === 0 ||
+                    onlyFields(before[index]?.[key], entry[key], fields),
+                ),
+              )
+            );
+          });
         };
 
         // `isResolved` is a type guard, and what it refuses narrows to nothing. Asked this way, a
@@ -923,52 +950,57 @@ export const checkPlan = (
           unknownYet(value) &&
           Object.keys(Output.upstreamAny(value)).join("\n") === resource &&
           planned(resource)?.action === "update";
-        // A reference's binding row that plans as changed while the upload stays the same. What the
-        // upload carries of the row, its wire entries, must be known and as State recorded them:
-        // the same binding to the same resource. Beside them one key may differ: the copy of a
-        // database connection's origin that local development reads. No upload reads it, so State
-        // may hold another form of it or none, and while the connection updates it may wait, on
-        // that resource alone. Everything else is known and unchanged.
-        const sameBinding = (binding: Node["bindings"][number]) => {
+        // A reference's row holds one wire entry, named after the entry. With no wire entry of its
+        // name the provider uploads the entry's own value instead: the resource's attributes,
+        // which change with every update of the resource and which the plan does not hold.
+        const namesEntry = (binding: Row) => {
+          const data: unknown = binding.data;
+          if (Output.isOutput(data) || !record(data) || !Array.isArray(data.bindings)) return false;
+          const [entry, ...more]: unknown[] = data.bindings;
+          return more.length === 0 && record(entry) && entry.name === binding.sid;
+        };
+        // A named reference's row whose upload stays the same: its wire entry is known and as State
+        // has it, and so is every other key but one. The copy of a database connection's origin
+        // that local development reads may differ, or wait on the named resource alone while that
+        // updates.
+        const sameBinding = (binding: Row) => {
           const resource = references.get(binding.sid);
-          const old = recordedData.get(binding.sid);
           const next: unknown = binding.data;
           return (
-            binding.action === "update" &&
+            kept(binding) &&
             resource !== undefined &&
-            !Output.isOutput(next) &&
+            namesEntry(binding) &&
             record(next) &&
-            record(old) &&
-            Array.isArray(next.bindings) &&
-            next.bindings.length > 0 &&
-            keys(old, next).every((key) =>
-              key === "hyperdrives"
-                ? isResolved(next[key]) || waitsOn(next[key], resource)
-                : isResolved(next[key]) && propChanges(old[key], next[key]).length === 0,
+            held(binding.sid).every(
+              (old) =>
+                record(old) &&
+                keys(old, next).every((key) =>
+                  key === "hyperdrives"
+                    ? isResolved(next[key]) || waitsOn(next[key], resource)
+                    : isResolved(next[key]) && propChanges(old[key], next[key]).length === 0,
+                ),
             )
           );
         };
-        // State recorded a resource's attributes for the entry. While the named resource updates,
-        // the plan holds that resource itself, not known until it applies; which resource the
-        // upload binds is then read from the entry's own binding row, unchanged or the same
-        // binding as above. State's copy of the attributes may be an older one: a release that left this
-        // Worker alone can have moved them. Once known, the entry is the attributes State records
-        // for the named resource now.
+        // Which resource the upload binds is read from the entry's one binding row, never from
+        // the copy of the resource's attributes in the entry: a release that left this Worker
+        // alone can have moved those. The value itself is then the named resource: the resource
+        // as such while it updates, or the attributes State records for it now.
         const reference = (name: string, old: unknown, next: unknown, resource: string) => {
-          if (!record(old) || Redacted.isRedacted(old)) return false;
-          if (unknownYet(next)) {
-            const rows = node.bindings.filter((binding) => binding.sid === name);
-            return (
-              Output.isResourceExpr(next) &&
-              waitsOn(next, resource) &&
-              rows.length === 1 &&
-              rows.every((row) => row.action === "noop" || sameBinding(row))
-            );
-          }
+          const own = rows.filter((binding) => binding.sid === name);
+          if (
+            !record(old) ||
+            Redacted.isRedacted(old) ||
+            own.length !== 1 ||
+            !own.every((row) => namesEntry(row) && (row.action === "noop" || sameBinding(row)))
+          )
+            return false;
+          if (unknownYet(next)) return Output.isResourceExpr(next) && waitsOn(next, resource);
           const target = planned(resource);
           const attributes = target && (recorded(target) as { attr?: unknown } | undefined)?.attr;
           return record(attributes) && record(next) && propChanges(attributes, next).length === 0;
         };
+
         const twice = (names: readonly string[]) => [
           ...new Set(names.filter((name, index) => names.indexOf(name) !== index)),
         ];
@@ -986,52 +1018,54 @@ export const checkPlan = (
               ? [`policy.${entry.name}: names the Worker itself`]
               : []),
           ]),
-          ...node.bindings
+          ...rows
             .filter(
               (binding) =>
                 binding.action !== "noop" && !valueOnly(binding) && !sameBinding(binding),
             )
             .map(({ sid, action }) => `bindings.${sid}: ${action}`),
         ];
-        const before: Record<string, unknown> = record(recorded(node)?.props)
-          ? (recorded(node)?.props as Record<string, unknown>)
-          : {};
         const after: Record<string, unknown> = record(node.props) ? node.props : {};
-        for (const prop of keys(before, after)) {
-          const old = before[prop];
-          const next = after[prop];
-          if (prop === "main" && old !== next) {
-            if (!sameEntryFile(old, next))
-              lines.push(`props.main: ${entryName(old)} -> ${entryName(next)}`);
-            continue;
-          }
-          if (
-            prop !== "env" ||
-            !record(old) ||
-            !record(next) ||
-            Redacted.isRedacted(old) ||
-            Redacted.isRedacted(next) ||
-            Output.isOutput(next)
-          ) {
-            lines.push(...propChanges(old, next, ["props", prop]));
-            continue;
-          }
-          for (const name of keys(old, next)) {
-            const present = Object.hasOwn(old, name) && Object.hasOwn(next, name);
-            const fields = values.get(name);
-            if (present && fields !== undefined && onlyFields(old[name], next[name], fields))
+        for (const generation of generations) {
+          const before: Record<string, unknown> = record(generation?.props) ? generation.props : {};
+          for (const prop of keys(before, after)) {
+            const old = before[prop];
+            const next = after[prop];
+            if (prop === "main" && old !== next) {
+              if (!sameEntryFile(old, next))
+                lines.push(`props.main: ${entryName(old)} -> ${entryName(next)}`);
               continue;
-            const resource = references.get(name);
+            }
             if (
-              present &&
-              resource !== undefined &&
-              reference(name, old[name], next[name], resource)
-            )
+              prop !== "env" ||
+              !record(old) ||
+              !record(next) ||
+              Redacted.isRedacted(old) ||
+              Redacted.isRedacted(next) ||
+              Output.isOutput(next)
+            ) {
+              lines.push(...propChanges(old, next, ["props", prop]));
               continue;
-            lines.push(...propChanges(old[name], next[name], ["props", "env", name]));
+            }
+            for (const name of keys(old, next)) {
+              const present = Object.hasOwn(old, name) && Object.hasOwn(next, name);
+              const fields = values.get(name);
+              if (present && fields !== undefined && onlyFields(old[name], next[name], fields))
+                continue;
+              const changes = propChanges(old[name], next[name], ["props", "env", name]);
+              const resource = references.get(name);
+              if (!present || resource === undefined) lines.push(...changes);
+              else if (!reference(name, old[name], next[name], resource))
+                // The value can be the same while its binding row is not the reference's.
+                lines.push(
+                  ...(changes.length
+                    ? changes
+                    : [`props.env.${name}: its binding row is not this reference as State has it`]),
+                );
+            }
           }
         }
-        return lines;
+        return [...new Set(lines)];
       };
       if (policy.mode === "code-only")
         for (const change of changes) {
