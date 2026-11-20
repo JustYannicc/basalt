@@ -77,18 +77,38 @@ diff --git a/apps/hosted/server/src/implementation/pools.ts b/apps/hosted/server
  const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
    Effect.gen(function* () {
      const actor = yield* currentResourceAuthority;
-@@ -104,6 +108,10 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+@@ -53,6 +57,12 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+         if (rows.length !== 1) return yield* new StorageError();
+         return yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]);
+       });
++    // One job per pool sends its audience to the pool Worker. A pool saved before these jobs
++    // existed has none until a repeat of its request gives it one.
++    const queueAccess = (app: App) =>
++      sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
++        values (${poolAccessJobPrefix + app.id}, 'member', ${organization}, ${user})
++        on conflict (id) do nothing`;
+     const replay = Effect.gen(function* () {
+       const { pools } = yield* records();
+       const matches = ownedPoolRecords(pools, user).filter(
+@@ -63,6 +73,7 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+       if (matches.length !== 1 || saved?.requestName !== input.name)
+         return yield* new PoolCreationConflict();
+       return yield* executor.apps.get({ owner, app: saved.app }).pipe(
++        Effect.tap(queueAccess),
+         Effect.tap(() => Effect.sync(replayed)),
+         Effect.catchTag("AppNotFound", () => new PoolCreationConflict()),
+       );
+@@ -104,6 +115,9 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
        '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)
          || jsonb_build_object(${app.id}::text, ${JSON.stringify(record)}::jsonb))::text
        where id = ${organization}`;
 +        // A new pool has nobody to revoke, so the pool Worker may learn its audience after the
 +        // commit. Until it does, the owner's pool token admits them there.
-+        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
-+          values (${poolAccessJobPrefix + app.id}, 'member', ${organization}, ${user})`;
++        yield* queueAccess(app);
        }).pipe(Effect.mapError(() => new StorageError()));
      const files = yield* seed.files;
      const app = yield* executor.apps
-@@ -139,15 +147,13 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
+@@ -139,15 +153,13 @@ const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
      if (Option.isSome(wake)) yield* wake.value;
      return app;
    }).pipe(
@@ -125,7 +145,7 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
    poolBundleJobPrefix,
    poolRotationJobPrefix,
  } from "../contracts/pool-defaults.ts";
-@@ -192,6 +194,37 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
+@@ -192,6 +194,39 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
        );
    });
  
@@ -149,9 +169,11 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
 +  });
 +
 +/**
-+ * Run a pool's access job now, beside its durable runner, so the pool Worker normally knows a new
-+ * pool before its creation answers. An attempt that fails or is cut short returns the job to
-+ * `queued` for that runner; a job already delivered, and any other job, is left untouched.
++ * Run a pool's access job now, in the request that queued or repeated it, so the pool Worker
++ * normally knows a new pool before its creation answers. An attempt that fails or is cut short
++ * returns the job to `queued` for the queue's runner, which Cloud starts after the request; a
++ * killed attempt waits for the stale-claim scan. A job already delivered, and any other job, is
++ * left untouched.
 + */
 +export const provisionPoolAccess = (pool: string) =>
 +  attempt(poolAccessJobPrefix + pool, "request", "member", (job) =>
@@ -163,7 +185,7 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
  /** Execute one committed event. Membership is read live and checked again by defaults under its lock. */
  export const provision = (id: string, services: ProvisioningServices) =>
    attempt(id, "background", undefined, (job) =>
-@@ -206,6 +239,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+@@ -206,6 +241,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
          case "domain":
            return yield* services.domain;
          case "member": {
