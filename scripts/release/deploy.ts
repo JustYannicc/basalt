@@ -15,7 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
@@ -25,14 +25,10 @@ import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { safeJson } from "./safe-json.ts";
+import { stackConfig } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
-const configs = [
-  "alchemy.run.ts",
-  "scripts/preview/stack/alchemy.database.ts",
-  "scripts/preview/stack/alchemy.cleanup.ts",
-];
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -60,18 +56,7 @@ const { positionals, values } = parseArgs({
 });
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
-// Accept a config relative to the working directory (the cloud dir, as previews call it) or the repo root.
-// The scale test deploys a frozen candidate with this checkout's scale stack, matched by its path suffix.
-const config = values.config
-  ? ([relative(root, resolve(values.config)), relative(root, resolve(root, values.config))].find(
-      (path) => configs.includes(path),
-    ) ??
-    (resolve(values.config).endsWith("/scripts/scale-test/stack.ts")
-      ? resolve(values.config)
-      : values.config))
-  : "alchemy.run.ts";
-const scaleStack = config.endsWith("/scripts/scale-test/stack.ts");
-if (!configs.includes(config) && !scaleStack) throw new Error(`Unknown stack config ${config}`);
+const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
 
 if (command !== "compare") {
   if (stage === "production") {
