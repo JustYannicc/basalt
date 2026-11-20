@@ -1,5 +1,6 @@
 import type { OverviewPriceProvenance } from "../overview-contract.ts";
 import { combinePrice, provenance, type Price } from "./series-model.ts";
+import { formatMoment, utc } from "./moments.ts";
 
 // How an estimate's public rates were obtained, in words. Live rates are the expected case and stay
 // quiet in rows; baseline and failed-refresh rates always say which rates and how old they are.
@@ -11,17 +12,10 @@ const counted = (price: Price) => price.calculation === "token-counts";
 const countedDetail =
   "Older requests without usable API usage details were priced from their recorded token counts.";
 
-const date = (iso: string, year = true) => {
-  const value = new Date(iso);
-  return Number.isNaN(value.getTime())
+const date = (iso: string) =>
+  Number.isNaN(Date.parse(iso))
     ? "an unknown date"
-    : value.toLocaleDateString("en-GB", {
-        day: "numeric",
-        month: "short",
-        ...(year ? { year: "numeric" } : {}),
-        timeZone: "UTC",
-      });
-};
+    : formatMoment(iso, utc, { dateStyle: "short" });
 
 /** Oldest rate set among the slices, marked baseline or failed if any of them was. */
 export function slicePrice(
@@ -53,7 +47,7 @@ export const priceTitle = (price: Price) =>
 
 function rateLines(price: Price): { lines: string[]; failed: boolean } | null {
   if (price.basis === "live" && !price.refreshFailed) return null;
-  const day = date(price.asOf, false);
+  const day = date(price.asOf);
   if (!price.refreshFailed) return { lines: [`Price as of ${day}`], failed: false };
   // A first read that never refreshed still runs on the shipped baseline; say so, not "last good".
   if (price.basis === "baseline")

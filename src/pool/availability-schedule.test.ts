@@ -449,3 +449,31 @@ test("missing terminal evidence is paged however quiet the windows are", async (
   });
   assert.deepEqual(pages, ["pool_request_reliability_unavailable"]);
 });
+
+test("a session failure the read already logged is not logged again by the check-in", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  t.mock.method(console, "warn", () => {});
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => {
+      // The figure's session runs elsewhere; only this message reaches the check-in.
+      throw new Error("Model history reliability session failed");
+    },
+  );
+  assert.deepEqual(
+    errors.mock.calls.filter(
+      (call) => call.arguments[0] === "POOL_REQUEST_RELIABILITY_READ_FAILED",
+    ),
+    [],
+  );
+  assert.match(
+    messages.find((item) => item.type === "event")?.payload.message ?? "",
+    /request_reliability:collection_unavailable/,
+  );
+});
