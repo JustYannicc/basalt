@@ -42,15 +42,17 @@ takes no `extends`, `overrides` or other keys.
 
 `plugin/`, one module per concern. All but `no-direct-cloudflare-api` and the two
 `node:test` rules stop a shortcut that broke a production release, and `rules.test.ts`
-holds the shipped lines they catch. They are syntactic: Oxlint
-gives JS plugins no type information.
+holds the shipped lines they catch. They are syntactic, because Oxlint
+gives JS plugins no type information, and they see one file at a time. A list served from
+another module, `this.x` aliases, and answer methods taken off the response
+(`const { json } = res`) are not followed.
 
 | Rule | Stops |
 |---|---|
 | `no-spread-into-provider-request` | A spread, a whole-object copy or a whole object passed as a provider SDK request. A spread target put a JSON body on a GET, and an echoed read-only annotation was refused by a PUT. |
 | `no-strict-provider-decode` | `onExcessProperty: "error"` on a provider response. Requests Basalt builds may be strict; any other strict decode needs an allowlist reason. |
 | `no-exact-readback-compare` | Whole-value equality of two serialised values, deep equality or `sameProvisioningValue`, in code that calls a provider. Compare through a `*Equivalent` helper in a `*-equivalence.ts` module whose test imports a recorded-shapes module. |
-| `no-echo-stub` | A test stand-in that stores or answers with the request it received. Keeping the request to assert on later is fine: make a `const call = { ... }` in the handler, set its fields, read it only in `assert`/`expect`, and push it onto a module-level list that no response reaches. Anything else that touches the record or the list, such as an alias, `this.calls`, a `Map`, a parameter or `calls.length` in a reply, counts as answering with it. |
+| `no-echo-stub` | A test stand-in that stores or answers with the request it received. Keeping the request to assert on later is fine: make a `const call = { ... }` in the handler, copy single body fields onto it (`call.rpc = body.method`), read it only in `assert`/`expect`, and push it onto a list no response reaches. Any other use of the record (an alias, `this.calls`, a `Map`, a list passed in) is reported, and so is the list once a response can reach it, even as `calls.length`. |
 | `no-handwritten-provider-response` | A hand-written `{ success, result }` provider body in a test, outside a recorded-shapes module (`*-shapes.ts`, built from a real, redacted response). |
 | `no-direct-cloudflare-api` | Cloudflare SDK calls, Cloudflare API URLs and Wrangler runs or imports. Use Alchemy. |
 | `no-discarded-child-output` | A child process whose stderr is ignored, other than git exit-status probes. |
