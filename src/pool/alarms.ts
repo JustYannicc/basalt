@@ -30,8 +30,17 @@ export class PoolAlarms {
     if (now - this.ensuredAt < ensureSpacingMs) return;
     this.ensuredAt = now;
     if ((await this.storage.getAlarm()) !== null) return;
-    await this.schedule("fleet", now);
-    await this.schedule("home", now);
+    // One write for both owners: a `take()` between two writes would see only one of them due.
+    await this.storage.transaction(async (transaction) => {
+      const raw = await transaction.get(key);
+      const value =
+        raw === undefined ? { home: null, fleet: null } : Schema.decodeUnknownSync(Deadlines)(raw);
+      await transaction.put(key, {
+        home: value.home === null ? now : Math.min(now, value.home),
+        fleet: value.fleet === null ? now : Math.min(now, value.fleet),
+      });
+    });
+    await this.rearm();
   }
   async schedule(owner: "home" | "fleet", at: number) {
     if (!Number.isSafeInteger(at) || at < 0) throw new Error("Invalid pool alarm deadline");
