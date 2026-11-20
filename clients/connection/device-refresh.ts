@@ -6,12 +6,25 @@ import { DeviceOAuthError, tokenRequest } from "./device-oauth.ts";
 class RefreshSignInRequiredError extends Error {}
 
 /**
+ * Token refusals a fresh sign-in fixes: it registers a new client and grants scope and resource
+ * again. With no time limit, any of these would otherwise be retried without end. A malformed
+ * request (`invalid_request`, an unsupported grant type) is a client fault sign-in cannot fix.
+ */
+const signInRefusals = new Set([
+  "invalid_grant",
+  "invalid_client",
+  "unauthorized_client",
+  "invalid_scope",
+  "invalid_target",
+]);
+
+/**
  * One refresh exchange; an unconfirmed one is sent again whatever its age, and only the server's
  * refusal asks for sign-in. A refresh that never reached the server is still current there. One
  * the server rotated is answered with the same pair for an hour, then refused. Reuse later than a
  * day revokes the token family, which is this device's own grant: each sign-in registers its own
- * OAuth client. `refreshStartedAt` stays in saved credentials to show how long a renewal has been
- * unconfirmed; nothing decides on it.
+ * OAuth client. `refreshStartedAt` is kept because saved credentials refuse unknown keys and older
+ * ones carry it; nothing decides on it.
  */
 export async function refreshDeviceCredentials(
   current: DeviceCredentials,
@@ -19,8 +32,9 @@ export async function refreshDeviceCredentials(
   commit: (next: DeviceCredentials) => Promise<void>,
 ) {
   const unknown = current.refreshPending === true;
-  const startedAt = unknown ? (current.refreshStartedAt ?? Date.now()) : Date.now();
-  await commit({ ...current, refreshPending: true, refreshStartedAt: startedAt });
+  // A pending refresh with its start saved is already on disk as it would be written.
+  if (!unknown || current.refreshStartedAt === undefined)
+    await commit({ ...current, refreshPending: true, refreshStartedAt: Date.now() });
   const tokens = await tokenRequest(
     current.origin,
     {
@@ -33,7 +47,7 @@ export async function refreshDeviceCredentials(
   ).catch(async (error: unknown) => {
     if (
       error instanceof DeviceOAuthError &&
-      error.code === "invalid_grant" &&
+      signInRefusals.has(error.code) &&
       error.status !== undefined &&
       error.status >= 400 &&
       error.status < 500 &&
