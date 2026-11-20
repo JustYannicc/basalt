@@ -16,9 +16,18 @@ export function ordinaryReleaseWriter(env: NodeJS.ProcessEnv, now = Date.now) {
   } catch {
     throw writerUnavailable();
   }
-  const workflows = target.rehearsal
-    ? ["release-rehearsal.yml"]
-    : ["deploy.yml", "release-main.yml", "release-manual.yml"];
+  // Each workflow file with the one job that may write for it. The standing rehearsal stages'
+  // runner (stage-rehearsal.yml, job stage) writes only to a rehearsal stage, as release-rehearsal does.
+  const workflows: readonly (readonly [string, string])[] = target.rehearsal
+    ? [
+        ["release-rehearsal.yml", "rehearsal"],
+        ["stage-rehearsal.yml", "stage"],
+      ]
+    : [
+        ["deploy.yml", "deploy"],
+        ["release-main.yml", "deploy"],
+        ["release-manual.yml", "deploy"],
+      ];
   const candidate = env.BASALT_RELEASE_CANDIDATE ?? "";
   const repository = env.GITHUB_REPOSITORY;
   const ref = target.rehearsal ? (env.GITHUB_REF ?? "") : "refs/heads/main";
@@ -26,11 +35,12 @@ export function ordinaryReleaseWriter(env: NodeJS.ProcessEnv, now = Date.now) {
     env.GITHUB_ACTIONS !== "true" ||
     env.GITHUB_REF !== ref ||
     !/^refs\/(?:heads\/[A-Za-z0-9._/-]{1,200}|pull\/[1-9][0-9]*\/merge)$/u.test(ref) ||
-    env.GITHUB_JOB !== (target.rehearsal ? "rehearsal" : "deploy") ||
     env.ALCHEMY_STAGE !== target.stage ||
     repository !== "JustYannicc/basalt" ||
     !workflows.some(
-      (file) => env.GITHUB_WORKFLOW_REF === `${repository}/.github/workflows/${file}@${ref}`,
+      ([file, job]) =>
+        env.GITHUB_JOB === job &&
+        env.GITHUB_WORKFLOW_REF === `${repository}/.github/workflows/${file}@${ref}`,
     ) ||
     !/^[a-f0-9]{40}$/u.test(candidate) ||
     !/^[1-9][0-9]*$/u.test(env.GITHUB_RUN_ID ?? "") ||

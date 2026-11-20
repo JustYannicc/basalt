@@ -14,7 +14,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { previewStageOrigin, stageEnvironment } from "../environment.ts";
 import { stageModelRequest } from "./stage-model.ts";
 import { stateEvidence } from "./stage-rows.ts";
@@ -35,6 +35,7 @@ import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
+import { seedAndAdopt } from "./stage-seed.ts";
 import {
   planHighlights,
   requireBaselineShape,
@@ -51,6 +52,7 @@ export const stageModes = [
   "settle",
   "fault",
   "heal",
+  "adopt",
   "destroy",
 ] as const;
 export type StageMode = (typeof stageModes)[number];
@@ -269,6 +271,18 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
  */
 export const healCandidateBranch = "rehearse/heal-candidate";
 
+/**
+ * What a stage heal pass does and does not prove, kept with every heal run (pass or fail) so
+ * nobody reads it as "serves model calls".
+ */
+const healReproduces = [
+  "after the fault: production's shape (a restart authorization over the selected identity, no identity, a witness with a launch and no boot id)",
+  "epoch 1 here against production's 4",
+  "before the fault: an adoption record here against production's restart record",
+  "the Worker that wrote the record is not the Worker that heals, as in production",
+  "the infra half only: new boot selected at epoch + 1, recovery ready, active-health 200, inspect clean, the stop path; the 27 model calls need accounts and stay production's own acceptance",
+];
+
 async function healRelease(
   lane: number,
   subject: StageSubject,
@@ -276,7 +290,7 @@ async function healRelease(
   outputs: string,
   hooks: ReturnType<typeof nativeHooks>,
 ) {
-  const result: Record<string, unknown> = {};
+  const result: Record<string, unknown> = { reproduces: healReproduces };
   const probe = startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
   try {
     // 1. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
@@ -357,7 +371,20 @@ async function healRelease(
     };
     const timeline: Record<string, unknown>[] = [];
     result.timeline = timeline;
-    const deadline = Date.now() + 10 * 60_000;
+    // On a stage the restart's admission is seconds old, so a refusing root is taken for the old
+    // one only after `restartStartBoundMs`; then the worst serve bound (streams held) runs. Both
+    // come from the candidate's own timing module. The margin covers what those totals exclude:
+    // the time `destroy()` takes and the membership pass that renews an expired pool policy.
+    const timing = (await import(
+      pathToFileURL(join(candidate, "src/pool/runtime-slots/forced-restart-timing.ts")).href
+    )) as {
+      restartStartBoundMs: number;
+      forcedRestartServesWithinHeldStreamsMs: number;
+    };
+    const stageMarginMs = 120_000;
+    result.waitBoundMs =
+      timing.restartStartBoundMs + timing.forcedRestartServesWithinHeldStreamsMs + stageMarginMs;
+    const deadline = Date.now() + (result.waitBoundMs as number);
     let healed: Record<string, unknown> | undefined;
     let bootSeenAt: number | undefined;
     let committedAt: number | undefined;
@@ -427,7 +454,10 @@ async function healRelease(
       throw new Error(
         `Recovery ended in needs-a-person: ${JSON.stringify(result.needsPerson).slice(0, 300)}`,
       );
-    if (!healed) throw new Error("Recovery did not report ready within 10 minutes of the release");
+    if (!healed)
+      throw new Error(
+        `Recovery did not report ready within ${Math.round((result.waitBoundMs as number) / 1000)} s of the release`,
+      );
     result.healed = healed;
     result.secondsToReady = Math.round((Date.now() - started) / 1000);
     // (b): with no account on the stage, the first model request after the heal must get through
@@ -1013,7 +1043,28 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       await writeStateEvidence(subject, source, outputs, "deployed");
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "heal") {
+      result.reproduces = healReproduces;
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "adopt") {
+      // Pin first, then adopt: a root rolled after adoption can never be restarted by recovery.
+      const pin = composeRootPin(
+        source[`REHEARSAL_ROOT_IMAGE_${lane}`],
+        source.CLOUDFLARE_ACCOUNT_ID,
+      );
+      result.before = await faultRead(lane, source, outputs, "before-adopt", ["--read-only"]);
+      Object.assign(
+        result,
+        await seedAndAdopt({
+          root,
+          subject,
+          source,
+          outputs,
+          deployedCommit: String(result.deployedCommit),
+          ...(pin ? { expectedInput: (JSON.parse(pin) as { input: string }).input } : {}),
+        }),
+      );
+      // The state the heal proof needs before any fault: a selection, health, the pinned root.
+      result.after = await faultRead(lane, source, outputs, "after-adopt", ["--read-only"]);
     } else if (mode === "destroy") {
       await destroyStage(root, subject, source);
       await verifyStageAbsent(root, subject, source);
@@ -1028,7 +1079,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       mode === "code" ||
       mode === "settle" ||
       mode === "fault" ||
-      mode === "heal"
+      mode === "heal" ||
+      mode === "adopt"
     ) {
       // A plan measures the deployed commit only if it is that commit, built as the stage is built.
       // The heal release builds its own candidate checkout, so it only checks the deployed commit.
@@ -1049,12 +1101,12 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     await writeFile(join(outputs, `stage-${mode}.json`), `${JSON.stringify(result, null, 2)}\n`, {
       mode: 0o600,
     });
+    if (source.GITHUB_STEP_SUMMARY)
+      await appendFile(
+        source.GITHUB_STEP_SUMMARY,
+        `**${mode}** on \`${stage}\`: ${result.seconds}s${result.failed ? " (failed)" : ""}\n\n\`\`\`json\n${redactor(source)(JSON.stringify(result.plan ?? result.apply ?? result.readBack ?? result, null, 2)).slice(0, 60_000)}\n\`\`\`\n`,
+      );
   }
-  if (source.GITHUB_STEP_SUMMARY)
-    await appendFile(
-      source.GITHUB_STEP_SUMMARY,
-      `**${mode}** on \`${stage}\`: ${result.seconds}s\n\n\`\`\`json\n${redactor(source)(JSON.stringify(result.plan ?? result.apply ?? result.readBack ?? result, null, 2)).slice(0, 60_000)}\n\`\`\`\n`,
-    );
   return result;
 }
 
