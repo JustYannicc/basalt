@@ -123,11 +123,22 @@ test("an isolate checks for a missing alarm at most once every five seconds", as
   assert.equal(f.current(), 5_100);
 });
 
-test("a take racing a missing alarm's arming still finds Home due", async () => {
+test("arming a missing alarm writes both owners at once, so a take right after its write sees both due", async () => {
   const f = fixture();
-  const [, raced] = await Promise.all([f.scheduler.ensure(), f.scheduler.take()]);
-  const next = await f.scheduler.take();
-  assert.ok(raced.home || next.home, "Home runs in that pass or the next");
+  let raced: { home: boolean; fleet: boolean } | undefined;
+  let racing = false;
+  const transaction = f.storage.transaction;
+  // A take that lands right after the arming's first write, as an alarm handler can.
+  f.storage.transaction = (async (work: Parameters<typeof transaction>[0]) => {
+    const result = await transaction(work);
+    if (!racing) {
+      racing = true;
+      raced = await f.scheduler.take();
+    }
+    return result;
+  }) as typeof transaction;
+  await f.scheduler.ensure();
+  assert.deepEqual(raced, { home: true, fleet: true });
 });
 
 test("an alarm another writer moved later is lowered back to the earliest stored deadline", async () => {

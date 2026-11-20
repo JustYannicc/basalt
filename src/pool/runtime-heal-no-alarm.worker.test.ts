@@ -100,6 +100,22 @@ test(
 );
 
 test(
+  "a long-lived object whose alarm was lost heals from a healing release's calls alone",
+  { timeout: 120_000 },
+  async (context) => {
+    const { f, previous, epoch, advance } = await stuck(context);
+    await f.old.storage.delete("fixture-alarm");
+    await f.old.storage.delete("pool-alarm-v1:deadlines");
+    // No new object: the release's readiness read and inspect must arm it themselves.
+    const fired = await healingRelease(f, f.worker, advance, within);
+    assert.deepEqual(
+      { fired: fired.length, ...(await healed(f, previous, epoch)) },
+      { fired: fired.length, epoch: 1, newBoot: true, activeHealth: 200 },
+    );
+  },
+);
+
+test(
   "the stuck record with no alarm armed heals from a healing release's calls alone",
   { timeout: 120_000 },
   async (context) => {
