@@ -1,6 +1,13 @@
 {
   "anyUnknownInErrorContext": {
+    "scripts/pool-fleet/crash-cell.ts": 10,
+    "scripts/pool-fleet/dispatch.ts": 20,
+    "scripts/pool-fleet/operations.ts": 15,
     "scripts/pool-tests/gemini.test.ts": 3,
+    "scripts/release/deploy.ts": 32,
+    "scripts/release/legacy-records.ts": 1,
+    "scripts/release/stage-writes.ts": 2,
+    "scripts/release/wire-guard.test.ts": 2,
     "scripts/upstream-tests/account-acquisition-host-reference.test.ts": 3,
     "scripts/upstream-tests/account-tool-call-traffic.test.ts": 1,
     "scripts/upstream-tests/account-traffic-store.test.ts": 1,
@@ -13,7 +20,6 @@
     "scripts/upstream-tests/catalog-resource-retry-fixture.ts": 6,
     "scripts/upstream-tests/change-revisions.test.ts": 1,
     "scripts/upstream-tests/compiler-admission.test.ts": 1,
-    "scripts/upstream-tests/migration-guard-postgres.test.ts": 1,
     "scripts/upstream-tests/migration-guard.test.ts": 8,
     "scripts/upstream-tests/org-lock-shared.test.ts": 13,
     "scripts/upstream-tests/organization-change-http.test.ts": 2,
@@ -47,11 +53,17 @@
     "scripts/upstream-tests/workflow-instance-id.test.ts": 1,
     "src/drive/shared/strata/serial.ts": 1
   },
+  "catchConditionalRefailToCatchIf": {
+    "scripts/pool-fleet/dispatch.ts": 1,
+    "scripts/pool-history/operation-failure.ts": 1
+  },
   "effectInJavaScript": {
     "scripts/app-lint/config.mjs": 1,
     "scripts/app-lint/conventions.test.mjs": 1,
     "scripts/app-lint/proof.mjs": 1,
     "scripts/architecture/native-stack-worker.mjs": 1,
+    "scripts/architecture/plan-settles-proof.mjs": 1,
+    "scripts/architecture/root-container-plan-proof.mjs": 1,
     "scripts/atlassian-tests/drift-proof.mjs": 1,
     "scripts/atlassian-tests/hosted-proof.mjs": 1,
     "scripts/atlassian-tests/runtime.mjs": 1,
@@ -76,13 +88,13 @@
     "scripts/pool-association-repair.test.mjs": 1,
     "scripts/pool-tests/provider-product.mjs": 1,
     "scripts/pool-tests/sqlite-compiler-worker.mjs": 1,
-    "scripts/release-phases/proof.mjs": 1,
     "scripts/state-store-upgrade/bundle.mjs": 1,
     "scripts/upstream-tests/app-directory-renderer.mjs": 1,
     "scripts/upstream-tests/fixtures/container-drift-api.mjs": 1,
     "scripts/upstream-tests/fixtures/container-image-drift.mjs": 1,
     "scripts/upstream-tests/fixtures/container-publication-cycle.mjs": 1,
     "scripts/upstream-tests/fixtures/oauth-setup-copy.mjs": 1,
+    "scripts/upstream-tests/fixtures/worker-class-map.mjs": 1,
     "scripts/upstream-tests/self-host-committed-changes.test.mjs": 1,
     "scripts/upstream-tests/shell-migration-order-worker.mjs": 1,
     "src/catalog/tests/github-runtime.mjs": 1,
@@ -95,12 +107,14 @@
   },
   "globalConsoleInEffect": {
     "scripts/proof-directory.ts": 1,
+    "scripts/release/deploy.ts": 1,
     "scripts/upstream-tests/app-directory-projection-postgres.test.ts": 1,
     "scripts/upstream-tests/pool-membership-declarations-postgres.test.ts": 1,
     "scripts/upstream-tests/pool-membership-query-postgres.test.ts": 1
   },
   "globalErrorInEffectFailure": {
     "scripts/proof-directory.test.ts": 1,
+    "scripts/release/test/plan-fixture.ts": 1,
     "scripts/upstream-tests/catalog-resource-retry-fixture.ts": 1,
     "scripts/upstream-tests/migration-guard.test.ts": 1,
     "scripts/upstream-tests/pool-personal-org-fixture.ts": 1,
@@ -109,6 +123,7 @@
     "scripts/upstream-tests/retained-frameworks.test.ts": 1
   },
   "globalFetchInEffect": {
+    "scripts/release/wire-guard.test.ts": 1,
     "scripts/upstream-tests/organization-removal.test.ts": 1,
     "scripts/upstream-tests/physical-fixture-diagnostics.test.ts": 1
   },
@@ -116,7 +131,11 @@
     "scripts/preview/stack/alchemy.cleanup.ts": 1,
     "scripts/preview/stack/alchemy.database.ts": 1
   },
+  "missingReturnYieldStar": {
+    "scripts/release/deploy.ts": 2
+  },
   "notTypeChecked": {
+    "scripts/release/test/plan-worker.ts": 1,
     "scripts/scale-test/stack.ts": 1,
     "scripts/scale-test/worker.ts": 1
   },
@@ -134,12 +153,25 @@
   "schemaSync": {
     "scripts/bulk-import-contract.test.ts": 5,
     "scripts/ci/check-plans.ts": 1,
-    "scripts/deploy-safety/recorded-recovery.ts": 1,
-    "scripts/pool-crash-dispatch-sources.ts": 1,
+    "scripts/pool-crash-dispatch-sources.ts": 2,
     "scripts/pool-crash-dispatch.ts": 4,
     "scripts/pool-crash-operator.ts": 2,
     "scripts/pool-credential-bootstrap/contract.ts": 3,
     "scripts/pool-credential-bootstrap/journal.ts": 2,
+    "scripts/pool-fleet/cloudflare.ts": 2,
+    "scripts/pool-fleet/controller.ts": 3,
+    "scripts/pool-fleet/crash-cell.ts": 1,
+    "scripts/pool-fleet/fleet-operator.ts": 3,
+    "scripts/pool-fleet/operations.ts": 1,
+    "scripts/pool-fleet/pins.ts": 1,
+    "scripts/pool-fleet/provisioning-refusal.ts": 1,
+    "scripts/pool-fleet/runtime-command-ipc.test.ts": 4,
+    "scripts/pool-fleet/runtime-fleet-operation.test.ts": 4,
+    "scripts/pool-fleet/runtime-startup-client.ts": 3,
+    "scripts/pool-fleet/test/runtime-proof-fixture.ts": 1,
+    "scripts/pool-history/migration-activation-source.ts": 2,
+    "scripts/pool-history/migration-activation-state.ts": 3,
+    "scripts/pool-history/recovery-envelope.ts": 1,
     "scripts/pool-operations-node.ts": 1,
     "scripts/pool-runtime-operator.ts": 2,
     "scripts/pool-tests/runtime-fleet-worker.ts": 2,
@@ -148,7 +180,12 @@
     "scripts/pool-tests/runtime-handoff-worker.ts": 5,
     "scripts/pool-tests/usage-forecast-contract.test.ts": 1,
     "scripts/pool-tests/usage-forecast.test.ts": 3,
-    "scripts/release-phases/headroom.ts": 1,
+    "scripts/release/database-safety.ts": 4,
+    "scripts/release/deploy.ts": 2,
+    "scripts/release/home-schema-admission.ts": 1,
+    "scripts/release/home-schema-operation.ts": 2,
+    "scripts/release/legacy/sql-schema-journal.ts": 2,
+    "scripts/release/policy.ts": 1,
     "scripts/runtime-recovery/automatic-entry.ts": 2,
     "scripts/runtime-recovery/automatic.ts": 2,
     "scripts/runtime-recovery/inventory.ts": 4,
@@ -182,7 +219,6 @@
     "scripts/upstream-tests/retained-frameworks-pages-runner.test.ts": 3,
     "scripts/upstream-tests/retained-frameworks-pagination.test.ts": 1,
     "scripts/upstream-tests/zoho-oauth.test.ts": 1,
-    "scripts/verify-pool-stream.ts": 1,
     "src/catalog/obsidian.test.ts": 1,
     "src/drive/import-manifest.ts": 1,
     "src/drive/object.ts": 2,
@@ -191,9 +227,8 @@
     "src/drive/shared/strata/storage/journal.ts": 1,
     "src/pool/alarms.ts": 4,
     "src/pool/automatic-recovery.ts": 2,
-    "src/pool/bulk-provisioning.test.ts": 1,
     "src/pool/deployment-readiness.ts": 4,
-    "src/pool/fleet-deployment.ts": 3,
+    "src/pool/fleet-deployment.ts": 1,
     "src/pool/home-peer-transport.ts": 1,
     "src/pool/import-removal/contract.ts": 1,
     "src/pool/import-removal/http.ts": 2,
@@ -203,6 +238,7 @@
     "src/pool/launch-ledger.ts": 3,
     "src/pool/legacy-image.ts": 1,
     "src/pool/recovery-approval.ts": 1,
+    "src/pool/root-image-pin.ts": 1,
     "src/pool/runtime-admission-proof.test.ts": 2,
     "src/pool/runtime-adoption-readback.test.ts": 2,
     "src/pool/runtime-adoption.worker.test.ts": 1,
@@ -277,6 +313,13 @@
     "src/tunnel/access.ts": 1
   },
   "schemaSyncInEffect": {
+    "scripts/pool-crash-dispatch-sources.ts": 1,
+    "scripts/pool-fleet/cloudflare.ts": 2,
+    "scripts/pool-fleet/crash-cell.ts": 1,
+    "scripts/pool-fleet/operations.ts": 1,
+    "scripts/pool-fleet/pins.ts": 1,
+    "scripts/pool-history/migration-activation-state.ts": 1,
+    "scripts/release/database-safety.ts": 4,
     "scripts/upstream-tests/account-source-read-locks-fixture.ts": 1,
     "scripts/upstream-tests/pool-access.test.ts": 2,
     "scripts/upstream-tests/pool-membership-reconnect.test.ts": 2,
@@ -284,16 +327,28 @@
     "scripts/upstream-tests/pool-receiver.test.ts": 1,
     "scripts/upstream-tests/pool-registration-postgres.test.ts": 1,
     "scripts/upstream-tests/provider-error-visibility-fixture.ts": 2,
-    "scripts/upstream-tests/retained-frameworks-pages-runner.test.ts": 1,
-    "src/pool/fleet-deployment.ts": 2
+    "scripts/upstream-tests/retained-frameworks-pages-runner.test.ts": 1
   },
   "unknownInEffectCatch": {
+    "scripts/pool-fleet/crash-cell.ts": 1,
+    "scripts/pool-fleet/dispatch.ts": 1,
+    "scripts/pool-fleet/operations.ts": 1,
     "scripts/upstream-tests/app-removal-connections.test.ts": 1,
     "scripts/upstream-tests/catalog-resource-retries.test.ts": 1,
     "scripts/upstream-tests/catalog-resource-retry-fixture.ts": 1,
     "src/drive/shared/strata/serial.ts": 1
   },
+  "unnecessaryFailYieldableError": {
+    "scripts/pool-fleet/cloudflare.ts": 3,
+    "scripts/pool-fleet/crash-cell.ts": 4,
+    "scripts/pool-fleet/dispatch.ts": 5,
+    "scripts/pool-fleet/operations.ts": 7,
+    "scripts/pool-fleet/pins.ts": 4
+  },
   "unsafeEffectTypeAssertion": {
+    "scripts/release/deploy.ts": 1,
+    "scripts/release/test/plan-fixture.ts": 1,
+    "scripts/release/worker-version.test.ts": 1,
     "scripts/upstream-tests/pool-access-fixture.ts": 1,
     "scripts/upstream-tests/pool-membership-reconnect.test.ts": 1,
     "scripts/upstream-tests/pool-membership-transaction.test.ts": 1,
