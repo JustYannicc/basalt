@@ -26,9 +26,7 @@ export async function readPoolReliabilitySlo(
   if (transaction === "owned")
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
-    // Compiling the windows statement's plan over every Home partition costs seconds, more than
-    // running it.
-    await db.query("SELECT set_config('statement_timeout','5s',true),set_config('jit','off',true)");
+    await db.query("SET LOCAL statement_timeout = '5s'");
     const terminalReady = await terminalCollectionReady(db);
     const [hour, day, current] = await readPoolReliabilityWindows(
       db,

@@ -90,19 +90,24 @@ export async function readPoolReliabilityWindows(
   // each request's latest attempt. An OR across the time and request indexes scans the pool's whole
   // history. Only a request that finished in the window with every Home attempt before it is looked up
   // by its identity.
+  // The pool's requests that finished in the windows with an observable outcome, read once: the Home
+  // rows, the earlier attempts and the terminal-only branch all use them.
   const homeCtes = terminalReady
-    ? `recent_home AS (
+    ? `finished AS MATERIALIZED (
+      SELECT s.pool,s.request_id,s.client_key,f.outcome,f.status,f.finished_at
+      FROM basalt_model_terminal_finishes f
+      CROSS JOIN LATERAL (SELECT s.pool,s.request_id,s.client_key FROM basalt_model_terminal_starts s
+        WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+      WHERE f.outcome <> 'unavailable' AND ${finishedTimeRange}
+    ), recent_home AS (
       SELECT ${homeColumns} FROM basalt_model_requests r
       WHERE r.pool=$1 AND r.source=$3 AND r.timestamp >= ${windowStart}
       UNION ALL
       SELECT earlier_attempt.* FROM (
-        SELECT s.request_id::text AS request_id FROM basalt_model_terminal_finishes f
-        CROSS JOIN LATERAL (SELECT s.request_id FROM basalt_model_terminal_starts s
-          WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
-        WHERE f.outcome <> 'unavailable' AND ${finishedTimeRange}
-          AND NOT EXISTS (SELECT 1 FROM basalt_model_requests h
-            WHERE h.pool=$1 AND h.source=$3 AND h.request_id IS NOT NULL
-              AND h.request_id=s.request_id::text AND h.timestamp >= ${windowStart})
+        SELECT f.request_id::text AS request_id FROM finished f
+        WHERE NOT EXISTS (SELECT 1 FROM basalt_model_requests h
+          WHERE h.pool=$1 AND h.source=$3 AND h.request_id IS NOT NULL
+            AND h.request_id=f.request_id::text AND h.timestamp >= ${windowStart})
         OFFSET 0
       ) earlier
       CROSS JOIN LATERAL (
@@ -129,9 +134,16 @@ export async function readPoolReliabilityWindows(
       ${
         terminalReady
           ? `FROM home_attempts r
+      LEFT JOIN finished hashed ON r.latest AND hashed.request_id=${startId}
+      -- Only a latest attempt whose finish is missing, unavailable or outside the windows is looked up
+      -- by key, so its outcome is the same as before.
       LEFT JOIN LATERAL (SELECT f.outcome,f.status,f.finished_at FROM basalt_model_terminal_starts s
         JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
-        WHERE r.latest AND s.pool=r.pool AND s.request_id=${startId} LIMIT 1) f ON true
+        WHERE r.latest AND hashed.request_id IS NULL AND s.pool=r.pool AND s.request_id=${startId}
+        LIMIT 1) probed ON true
+      CROSS JOIN LATERAL (SELECT COALESCE(hashed.outcome,probed.outcome) AS outcome,
+        COALESCE(hashed.status,probed.status) AS status,
+        COALESCE(hashed.finished_at,probed.finished_at) AS finished_at) f
       WHERE ${homeTimeRange}`
           : `FROM basalt_model_requests r
       WHERE r.pool=$1 AND r.source=$3 AND ${homeTimeRange}`
@@ -155,15 +167,10 @@ export async function readPoolReliabilityWindows(
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS failed,f.status AS status_code,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS unassigned,NULL::text AS raw_at,f.finished_at
       FROM (
-        SELECT s.pool,s.request_id,s.client_key,f.outcome,f.status,f.finished_at
-        FROM basalt_model_terminal_finishes f
-        CROSS JOIN LATERAL (SELECT s.pool,s.request_id,s.client_key FROM basalt_model_terminal_starts s
-          WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
-        WHERE ${finishedTimeRange}
-          AND f.outcome <> 'unavailable'
-          -- recent_home holds at least one Home attempt of every request that finished in the window
-          -- and has one.
-          AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)
+        SELECT f.* FROM finished f
+        -- recent_home holds at least one Home attempt of every request that finished in the window
+        -- and has one.
+        WHERE NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=f.request_id::text)
         -- Only the few finishes still without a Home row reach the refusal probe below, which reads
         -- every Home partition.
         OFFSET 0
