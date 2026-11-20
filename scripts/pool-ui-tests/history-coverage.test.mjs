@@ -20,8 +20,8 @@ test(
             1,
             "Coverage names the last request, not the ingestion watermark",
           );
-          assert.match(await coverage.innerText(), /Nov 4, 2026/);
-          assert.doesNotMatch(await coverage.innerText(), /Nov 9/);
+          assert.match(await coverage.innerText(), /04\.11\.2026 11:28:37 UTC/);
+          assert.doesNotMatch(await coverage.innerText(), /09\.11\.2026/);
           assert.equal(
             await coverage.locator("time").getAttribute("datetime"),
             "2026-11-04T11:28:37.250Z",
@@ -35,7 +35,7 @@ test(
           await page.evaluate(() => window.addSyntheticRequest());
           await page.getByRole("button", { name: "Reload", exact: true }).click();
           await page.locator('time[datetime="2026-11-09T08:01:02.000Z"]').waitFor();
-          assert.match(await coverage.innerText(), /Nov 9, 2026/);
+          assert.match(await coverage.innerText(), /09\.11\.2026 08:01:02 UTC/);
           assert.match(
             await page.getByRole("region", { name: "History totals" }).innerText(),
             /2 retained records/,

@@ -22,6 +22,7 @@ import { HistoryBreakdown } from "./history-breakdown.tsx";
 import { HistoryRequests } from "./history-requests.tsx";
 import { useHistory } from "./history-data.ts";
 import { HistoryChart } from "./history-chart.tsx";
+import { formatMoment, utc, utcMoment } from "./moments.ts";
 
 type Mode = "all" | "dates";
 
@@ -29,17 +30,11 @@ function dateLabel(value: string | null): string | null {
   if (value === null) return null;
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
-  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(date);
+  return formatMoment(date, utc, { dateStyle: "medium" });
 }
 
 function requestTime(value: string): string {
-  return (
-    new Intl.DateTimeFormat("en", {
-      dateStyle: "medium",
-      timeStyle: "medium",
-      timeZone: "UTC",
-    }).format(new Date(value)) + " UTC"
-  );
+  return utcMoment(value, { dateStyle: "medium", timeStyle: "medium" });
 }
 
 const narrowKey = (filters: HistoryFilters) =>

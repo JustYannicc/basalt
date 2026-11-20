@@ -884,7 +884,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://clerk.clerk.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "158ac5428a3f49d85e6c3ab790e0bba4c2d4b813f163c583477a3e954994f9d9"
+          "metadataSha256": "a21b4169c2ce5b3ccbc15672b9819ed9ee843146d2415cae7980c827b69ba3f7"
         }
       }
     },
@@ -1502,7 +1502,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://api.us.elevenlabs.io/.well-known/oauth-authorization-server",
-          "metadataSha256": "3a294ab3214ca03b5e93883492b3a6f24568258e2cef6295fb5bbc4f890714ea"
+          "metadataSha256": "3fd293b754ff6af2006043e8f4f053769fb8223c57cc18e69ab4c057cbf32599"
         }
       }
     },
@@ -1897,7 +1897,7 @@
     {
       "entry": "github",
       "package": "@executor.sh/github",
-      "sourceSha256": "ade512f81e9f2958c2474bcb5104a011b7d5a1fef454f5700cc0aa4b793c5064",
+      "sourceSha256": "17f4c32ee123c292e0ab4b16207d3a5013e121b6bfd8e5e8127b1cb91348e9fc",
       "methods": {
         "oauth": {
           "kind": "hosted",
