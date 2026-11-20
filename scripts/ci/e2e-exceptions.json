@@ -314,7 +314,7 @@
       "empty-state-mcp.spec.ts#emptyStateMcp": "adff1c06850672b087edf607e708d4c6ae2536d76387ce85dfce70ab53a69355",
       "empty-state-recovery.spec.ts#emptyStateRecovery": "80c04db90b3587e3e7febf78b6200c5b2b659ae1c17b75a8c4ccded363caebf2",
       "empty-state-recovery.spec.ts#emptyAccountTools": "6d8443aa43b9d6e26876bb1ea19accd0409e8311bd74a44b46e1a7f1cf70bb9c",
-      "empty-states.spec.ts#emptyStates": "208a518318d7822026b99dbeb63f49e95e1e5de5e8b368d65393b66c55777785",
+      "empty-states.spec.ts#emptyStates": "5396b7309db9c03bfe1a651b8169a7c1d7778de5134921571e674c69e05d251d",
       "enrollment-refresh.spec.ts#enrollmentRefresh": "783a78b6d31f0fd78478e43be79f5c4fd3aeaba5ccdb41e9081bade485a38108",
       "executor-app-redeploy.spec.ts#executorAppRedeploy": "97f20e6fbe2ad8950b092256600d6ed91a6d96b213f43c0dbcfd885f8d94a2d6",
       "executor-customization.spec.ts#executorCustomization": "61b232544f70c48427a89068709ddbb1fd0dfd2993267e06896e0117609f0b6c",

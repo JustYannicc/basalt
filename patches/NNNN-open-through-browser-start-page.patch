@@ -57,7 +57,7 @@ diff --git a/e2e/support/start-page.ts b/e2e/support/start-page.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/start-page.ts
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,35 @@
 +/** The dashboard page a scenario's document loads before it navigates in the browser. */
 +
 +/**
@@ -74,15 +74,86 @@ new file mode 100644
 + */
 +export type StartPage = "connect" | "settings";
 +
++/** Each start page's route under `/org/<organization>/`. */
++const routes = { connect: "connect", settings: "organization" } as const;
++
 +/**
 + * The page to load before opening `destination` in the browser. Hosted pages start in their own
 + * organization; account pages name it in their `organization` search parameter, because only
 + * dashboard routes are served as dashboard documents (Cloud serves other paths as static assets).
 + * The local dashboard has no organizations and serves `/connect`.
 + */
-+export const startPage = (destination: URL, _start: StartPage = "connect") => {
++export const startPage = (destination: URL, start: StartPage = "connect") => {
 +  const organization =
 +    /^\/org\/([^/?#]+)/.exec(destination.pathname)?.[1] ??
 +    destination.searchParams.get("organization");
-+  return organization === null ? "/connect" : `/org/${organization}/connect`;
++  if (organization !== null) return `/org/${organization}/${routes[start]}`;
++  // Falling back to `/connect` would hide that the caller's document is not the one it asked for.
++  if (start !== "connect")
++    throw new Error(`The local dashboard has no ${start} page to start from`);
++  return "/connect";
 +};
+diff --git a/e2e/tests/empty-states.spec.ts b/e2e/tests/empty-states.spec.ts
+--- a/e2e/tests/empty-states.spec.ts
++++ b/e2e/tests/empty-states.spec.ts
+@@ -79,6 +79,8 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
+         );
+ 
+         // Controlled HTTP results exercise first-use states without deleting the built-in app or its token.
++        // Each page below opens from Settings: Connect's document can already carry the real
++        // directory, which the browser would then show instead of this empty one.
+         yield* browser.use("Provide an empty authorized resource directory", (page) =>
+           page.route("**/api/organizations/*/resources*", (route) =>
+             route.fulfill({ json: { apps: [], accounts: [], pendingApp: false } }),
+@@ -100,6 +102,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
+               section === "tokens"
+                 ? `/account/tokens?organization=${actors.organization.slug}`
+                 : `/org/${actors.organization.slug}/${section}`,
++              { start: "settings" },
+             );
+             yield* browser.use("The next action is visible", (page) =>
+               page
+@@ -138,7 +141,9 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
+         yield* browser.use("Close without creating a credential", (page) =>
+           page.keyboard.press("Escape"),
+         );
+-        yield* openThroughBrowser("Open filtered Apps", `/org/${actors.organization.slug}/apps`);
++        yield* openThroughBrowser("Open filtered Apps", `/org/${actors.organization.slug}/apps`, {
++          start: "settings",
++        });
+         yield* browser.use("Open app filters", (page) =>
+           page.getByRole("button", { name: "Filters", exact: true }).click(),
+         );
+@@ -167,6 +172,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
+         yield* openThroughBrowser(
+           "Choose an app from Accounts",
+           `/org/${actors.organization.slug}/accounts`,
++          { start: "settings" },
+         );
+         yield* browser.use("Follow account setup", (page) =>
+           page.getByRole("link", { name: "Choose an app", exact: true }).click(),
+@@ -225,6 +231,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
+           yield* openThroughBrowser(
+             "Open a group with no members or shared apps",
+             `/org/${actors.organization.slug}/groups/${group.id}`,
++            { start: "settings" },
+           );
+           yield* browser.use("Empty members offer setup", (page) =>
+             page.getByRole("button", { name: "Add members", exact: true }).waitFor(),
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -336,10 +336,12 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+               directory,
+             );
+             yield* installBrowserClock;
+-            // A document load renders the directory on the server, beyond the browser hold.
++            // A document load renders the directory on the server, beyond the browser hold, and so
++            // can Connect's document. Settings' document never carries it.
+             yield* openThroughBrowser(
+               "Open Apps during team installation",
+               `/org/${actors.organization.slug}/apps`,
++              { start: "settings" },
+             );
+             yield* held.requested;
+             yield* browser.use("Missing app has one skeleton while the workflow runs", (page) =>
