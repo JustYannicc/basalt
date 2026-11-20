@@ -4,10 +4,15 @@ import {
   adoptScope,
   adoptTarget,
   adoptedState,
+  infraOnlyShape,
+  refuseRecordedAdoption,
   requiredPin,
   rootMatchesPin,
   settledProof,
 } from "./stage-adopt.ts";
+import { earlierSeed } from "./stage-seed.ts";
+import { smokePool } from "./stage-model.ts";
+import { rehearsalEmptyPoolCount, rehearsalPoolName } from "./rehearsal-seed.ts";
 
 const image = `registry.cloudflare.com/${"0".repeat(32)}/basalt-poolcontainer@sha256:${"e".repeat(64)}`;
 const pin = { image, input: "526fa60bed0df442" };
@@ -156,5 +161,72 @@ test("existingRehearsalPools counts only the names the rehearsal seed gives its 
       "Rehearsal empty pool x",
     ]),
     3,
+  );
+});
+
+test("refuseRecordedAdoption sends only when the root records no adoption", () => {
+  assert.doesNotThrow(() => refuseRecordedAdoption({ result: { kind: "witness", witness: {} } }));
+  assert.throws(
+    () => refuseRecordedAdoption({ result: { kind: "unattested-active", authorization: {} } }),
+    /already records an adoption/u,
+  );
+  assert.throws(() => refuseRecordedAdoption({}), /could not be read/u);
+  assert.throws(() => refuseRecordedAdoption(undefined), /could not be read/u);
+});
+
+const fullSeed = () => [
+  { id: "app_smoke", name: "Preview smoke's pool" },
+  ...Array.from({ length: rehearsalEmptyPoolCount + 1 }, (_, index) => ({
+    id: `app_${index}`,
+    name: rehearsalPoolName(index),
+  })),
+];
+
+test("smokePool requires exactly one smoke pool", () => {
+  assert.deepEqual(smokePool(fullSeed()), { id: "app_smoke", name: "Preview smoke's pool" });
+  assert.throws(() => smokePool([]), /0 smoke pools/u);
+  assert.throws(
+    () => smokePool([...fullSeed(), { id: "app_smoke2", name: "Preview smoke's pool 2" }]),
+    /2 smoke pools/u,
+  );
+});
+
+test("earlierSeed takes only a full set with one of each name", () => {
+  assert.equal(
+    earlierSeed([{ id: "app_smoke", name: "Preview smoke's pool" }], "app_smoke"),
+    undefined,
+  );
+  assert.deepEqual(earlierSeed(fullSeed(), "app_smoke"), {
+    cleanPool: "app_0",
+    emptyPools: [
+      "app_smoke",
+      ...Array.from({ length: rehearsalEmptyPoolCount }, (_, index) => `app_${index + 1}`),
+    ],
+  });
+  assert.throws(() => earlierSeed(fullSeed().slice(0, 3), "app_smoke"), /nothing was seeded/u);
+  assert.throws(
+    () => earlierSeed([...fullSeed(), { id: "app_dup", name: rehearsalPoolName(1) }], "app_smoke"),
+    /one of each name/u,
+  );
+});
+
+test("infraOnlyShape refuses any policy set but the infra-only one", async () => {
+  const pools = { cleanPool: "app_0", emptyPools: ["app_smoke", "app_1"] };
+  const policy = (pool: string, dirty: boolean, accounts: string[] = []) => ({
+    pool,
+    organization: "org_a",
+    revision: 1,
+    expiresAt: 0,
+    accounts,
+    dirty,
+  });
+  // A short pool set: the verifier's own count is the production shape's, so this refuses too.
+  await assert.rejects(
+    infraOnlyShape({ policies: [policy("app_0", false), policy("app_smoke", true)] }, pools),
+  );
+  await assert.rejects(infraOnlyShape({ policies: [] }, pools));
+  await assert.rejects(
+    infraOnlyShape({ policies: [policy("app_0", false, ["auth-a"])] }, pools),
+    /infra-only clean pool has accounts|expected/u,
   );
 });

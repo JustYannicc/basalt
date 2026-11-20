@@ -83,6 +83,33 @@ export function settledProof(first: unknown, second: unknown) {
   return JSON.parse(a) as { digest: unknown; revisions: unknown[] };
 }
 
+/**
+ * The adopt is one-way and a retry passes the endpoint only with the identical manifest, so an
+ * adoption the root's witness already records is never sent again: the stage is reset instead.
+ */
+export function refuseRecordedAdoption(witness: unknown) {
+  const body =
+    witness && typeof witness === "object" ? (witness as { result?: unknown }).result : undefined;
+  const kind = body && typeof body === "object" ? (body as { kind?: unknown }).kind : undefined;
+  if (kind === "unattested-active")
+    throw new Error(
+      "The root already records an adoption; nothing was sent. Reset the stage (destroy, fresh baseline, adopt)",
+    );
+  if (kind !== "witness") throw new Error("The root's witness could not be read; nothing was sent");
+}
+
+/** The infra-only seed's policy shape, from the controller's own inspect. */
+export async function infraOnlyShape(
+  inspect: unknown,
+  pools: { cleanPool: string; emptyPools: readonly string[] },
+) {
+  const { verifyRehearsalPolicies } = await import("./rehearsal-seed.ts");
+  const policies = (
+    inspect && typeof inspect === "object" ? (inspect as { policies?: unknown }).policies : []
+  ) as Parameters<typeof verifyRehearsalPolicies>[0];
+  verifyRehearsalPolicies(Array.isArray(policies) ? policies : [], { ...pools, infraOnly: true });
+}
+
 /** What the heal proof needs before any fault, from the controller's own inspect and health. */
 export function adoptedState(inspect: unknown, healthy: boolean) {
   const record = (value: unknown): Record<string, unknown> =>
@@ -112,6 +139,12 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
   const scope = await adoptScope(env);
   if (scope.stage !== stage) throw new Error("The release scope names another stage");
   const pin = requiredPin(env);
+  const pools = {
+    cleanPool: env.STAGE_ADOPT_CLEAN_POOL ?? "",
+    emptyPools: JSON.parse(env.STAGE_ADOPT_EMPTY_POOLS ?? "[]") as string[],
+  };
+  if (!pools.cleanPool || !pools.emptyPools.length)
+    throw new Error("Adopt needs the seeded pool set to check the policies against");
   const [
     { evalStack },
     { State },
@@ -123,6 +156,8 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
     { ordinaryReleaseWriter },
     { verifyBoundProviderObservation },
     { poolWorkerRevision },
+    { verifyContainerHealth },
+    { legacyAdoptionTarget },
   ] = await Promise.all([
     import("alchemy/Stack"),
     import("alchemy/State/State"),
@@ -134,6 +169,8 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
     import("../release-barrier/runtime-release-writer.ts"),
     import("../release-barrier/runtime-provider-observation.ts"),
     import("../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts"),
+    import("../release-barrier/container-health.ts"),
+    import("../release-barrier/legacy-adoption-target.ts"),
   ]);
   const directory = fileURLToPath(new URL("../../.local/stage-adopt/", import.meta.url));
   const writer = ordinaryReleaseWriter(env);
@@ -169,7 +206,26 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
               },
             },
           });
-          const first = yield* Effect.promise(() => client.inspect());
+          // The fixture's policies reach the controller on its membership pass: wait, bounded, for
+          // exactly the infra-only shape, then for it to hold still.
+          let shaped: unknown;
+          for (let attempt = 0; attempt < 24; attempt += 1) {
+            const read = yield* Effect.promise(() => client.inspect());
+            const refused = yield* Effect.promise(() =>
+              infraOnlyShape(read, pools).then(
+                () => undefined,
+                (error: unknown) => (error instanceof Error ? error.message : String(error)),
+              ),
+            );
+            if (!refused) {
+              shaped = read;
+              break;
+            }
+            if (attempt === 23)
+              throw new Error(`The pools' policies are not the infra-only shape: ${refused}`);
+            yield* Effect.promise(() => new Promise((done) => setTimeout(done, 5_000)));
+          }
+          const first = shaped;
           // A recovery pass and the membership refresh run every few seconds; wait past one.
           yield* Effect.promise(() => new Promise((done) => setTimeout(done, 10_000)));
           const second = yield* Effect.promise(() => client.inspect());
@@ -183,6 +239,18 @@ async function main(outFile: string | undefined, env: NodeJS.ProcessEnv) {
               directory,
               encryptionKey: env.EXECUTOR_ENCRYPTION_KEY ?? "",
             }),
+          );
+          // Never a second adoption: read the root's own record first and refuse if it has one.
+          const observed = yield* Effect.promise(() =>
+            verifyContainerHealth(state.target, input, AbortSignal.timeout(15_000)),
+          );
+          refuseRecordedAdoption(
+            yield* Effect.promise(() =>
+              client.call({
+                action: "witness",
+                target: legacyAdoptionTarget(state.applications.root, observed.instanceId),
+              }),
+            ),
           );
           yield* Effect.promise(() => client.adopt());
           const healthy = yield* Effect.promise(() =>

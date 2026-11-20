@@ -38,7 +38,19 @@ async function computerContext(
   return { status: response.status, body: redact(await response.text(), 1_200) };
 }
 
-type Discovery = { organizationId: string; poolAppId: string; appNames: string[] };
+type Discovery = {
+  organizationId: string;
+  poolAppId: string;
+  apps: { id: string; name: string }[];
+};
+
+/** Exactly one smoke pool, so which pool the seed, the fixture and the request use is defined. */
+export function smokePool(apps: readonly { id?: string; name?: string }[]) {
+  const smoke = apps.filter((item) => /^Preview smoke's pool(?: \d+)?$/u.test(item.name ?? ""));
+  if (smoke.length !== 1 || !smoke[0]!.id)
+    throw new Error(`The stage holds ${smoke.length} smoke pools; exactly one is required`);
+  return { id: smoke[0]!.id, name: smoke[0]!.name ?? "" };
+}
 
 /** The organization and pool the stage's auth seed created (`scripts/preview-auth/seed.ts`). */
 async function discover(client: PreviewClient, origin: string, stage: string): Promise<Discovery> {
@@ -61,14 +73,13 @@ async function discover(client: PreviewClient, origin: string, stage: string): P
   const inventory = (await read(
     `/api/organizations/${encodeURIComponent(organization.id)}/inventory`,
   )) as { apps?: { id?: string; name?: string }[] };
-  const app = inventory.apps?.find((item) =>
-    /^Preview smoke's pool(?: \d+)?$/u.test(item.name ?? ""),
-  );
-  if (!app?.id) throw new Error("The stage's smoke pool is missing");
+  const app = smokePool(inventory.apps ?? []);
   return {
     organizationId: organization.id,
     poolAppId: app.id,
-    appNames: (inventory.apps ?? []).map((item) => item.name ?? ""),
+    apps: (inventory.apps ?? []).flatMap((item) =>
+      item.id ? [{ id: item.id, name: item.name ?? "" }] : [],
+    ),
   };
 }
 

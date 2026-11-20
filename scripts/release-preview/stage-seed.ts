@@ -5,7 +5,7 @@
  * Nothing here plans or applies; the stage's root must already be the one the heal proof needs.
  */
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lifecycleEnvironment } from "./credentials.ts";
 import { rehearsalReleaseEnvironment } from "./rehearsal-environment.ts";
@@ -29,10 +29,32 @@ const writerInputs = [
   "GITHUB_RUN_ATTEMPT",
 ] as const;
 
+const seededNames = new Set(
+  Array.from({ length: rehearsalEmptyPoolCount + 1 }, (_, index) => rehearsalPoolName(index)),
+);
+
 /** How many of the apps carry a name the rehearsal seed gives the pools it creates. */
 export function existingRehearsalPools(appNames: readonly string[]) {
-  const seeded = new Set(Array.from({ length: 21 }, (_, index) => rehearsalPoolName(index)));
-  return appNames.filter((name) => seeded.has(name)).length;
+  return appNames.filter((name) => seededNames.has(name)).length;
+}
+
+/**
+ * The pool set an earlier seed left, by the names it gives: exactly one of each name, or nothing.
+ * The empty pools include the smoke pool, as the rehearsal's fixture marks it.
+ */
+export function earlierSeed(apps: readonly { id: string; name: string }[], smokePool: string) {
+  const named = apps.filter((app) => seededNames.has(app.name));
+  if (named.length === 0) return undefined;
+  const names = new Set(named.map((app) => app.name));
+  if (named.length !== seededNames.size || names.size !== seededNames.size)
+    throw new Error(
+      `The stage holds ${named.length} rehearsal pools (a full seed is ${seededNames.size}, one of each name); nothing was seeded or adopted`,
+    );
+  const clean = named.find((app) => app.name === rehearsalPoolName(0))!;
+  return {
+    cleanPool: clean.id,
+    emptyPools: [smokePool, ...named.filter((app) => app !== clean).map((app) => app.id)],
+  };
 }
 
 export async function seedAndAdopt(input: {
@@ -43,36 +65,28 @@ export async function seedAndAdopt(input: {
   deployedCommit: string;
   /** The lane's pin; the adopt refuses unless the root's image and input are exactly these. */
   pin: { image: string; input: string };
-  /** The pools already hold policies (an earlier seed): seeding again would add pools. */
-  seeded: boolean;
 }) {
   const { subject, source } = input;
-  const { stage } = stageNames(subject);
+  const { stage, slug } = stageNames(subject);
   // A standing stage's baseline seeds its smoke organization and pool through the entry; they are
   // found as the smoke user sees them, the way the stage's model request finds them.
-  const origin = previewStageOrigin(stageNames(subject).slug, source.TEST_STAGE_DOMAIN ?? "");
+  const origin = previewStageOrigin(slug, source.TEST_STAGE_DOMAIN ?? "");
   const email = source.PREVIEW_SMOKE_EMAIL ?? "";
   const password = source.PREVIEW_SMOKE_PASSWORD ?? "";
-  const { organizationId, poolAppId, appNames } = await discoverStagePool({
+  const { organizationId, poolAppId, apps } = await discoverStagePool({
     origin,
     stage,
     email,
     password,
   });
-  // Pools an earlier seed created, counted by the names the seed gives them. A full set means only
-  // the adopt is retried; a partial one is refused rather than seeded over.
-  const existing = existingRehearsalPools(appNames);
-  if (existing > 0) {
-    if (existing !== rehearsalEmptyPoolCount + 1 || !input.seeded)
-      throw new Error(
-        `The stage holds ${existing} rehearsal pools (a full seed is ${rehearsalEmptyPoolCount + 1}) and ${input.seeded ? "has" : "has no"} policies; nothing was seeded or adopted`,
-      );
-    return { existingPools: existing, seeded: "earlier", adopted: await adopt(input, stage) };
-  }
-  if (input.seeded)
-    throw new Error(
-      "The stage holds policies but no rehearsal pools; nothing was seeded or adopted",
-    );
+  // A full earlier seed retries only the adopt; a partial one refuses rather than seed over it.
+  const earlier = earlierSeed(apps, poolAppId);
+  if (earlier)
+    return {
+      existingPools: seededNames.size,
+      seeded: "earlier",
+      adopted: await adopt(input, stage, earlier),
+    };
   const seed = await seedRehearsalPools({
     infraOnly: true,
     origin,
@@ -82,16 +96,16 @@ export async function seedAndAdopt(input: {
     poolAppId,
     accounts: [],
   });
-  const emptyPools = [poolAppId, ...seed.emptyPools];
+  const pools = { cleanPool: seed.cleanPool, emptyPools: [poolAppId, ...seed.emptyPools] };
   await applyRehearsalFixture(subject, lifecycleEnvironment(source, "cleanup"), {
     organization: organizationId,
-    pools: emptyPools,
+    pools: pools.emptyPools,
   });
   return {
     existingPools: 0,
     cleanPool: seed.cleanPool,
-    emptyPools: emptyPools.length,
-    adopted: await adopt(input, stage),
+    emptyPools: pools.emptyPools.length,
+    adopted: await adopt(input, stage, pools),
   };
 }
 
@@ -104,6 +118,7 @@ async function adopt(
     pin: { image: string; input: string };
   },
   stage: string,
+  pools: { cleanPool: string; emptyPools: readonly string[] },
 ) {
   const { root, source, outputs } = input;
   const writer: NodeJS.ProcessEnv = {
@@ -123,6 +138,9 @@ async function adopt(
         HOME: source.HOME,
         STAGE_ADOPT_EXPECTED_IMAGE: input.pin.image,
         STAGE_ADOPT_EXPECTED_INPUT: input.pin.input,
+        // The infra-only shape the policies must hold before anything is sent.
+        STAGE_ADOPT_CLEAN_POOL: pools.cleanPool,
+        STAGE_ADOPT_EMPTY_POOLS: JSON.stringify(pools.emptyPools),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -130,7 +148,6 @@ async function adopt(
     child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => chunks.push(chunk));
     child.once("close", async (status) => {
-      const { writeFile } = await import("node:fs/promises");
       await writeFile(log, Buffer.concat(chunks), { mode: 0o600 }).catch(() => {});
       done(status);
     });
