@@ -2,7 +2,7 @@
  * Read-only: why a standing stage's pool app answers errors. One fresh `view` and one
  * `computerContext` as the smoke user (both queries, nothing mutated), then the events this
  * stage's own Workers logged since, kept privately. A Worker is read only when Alchemy tags it
- * with this stage and its name carries the stage token.
+ * with this stage and its logical id.
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,12 +11,25 @@ import { stageNames, type StageSubject } from "../preview/subject.ts";
 import { redactor } from "./redact.ts";
 import { stagePoolQueries } from "./stage-model.ts";
 
-/** The stage's own Workers, by Alchemy's stage tag and the stage token in the name. */
-export function ownWorkers(scripts: readonly { id: string; tags?: string[] }[], stage: string) {
-  const token = stage.replace(/^test-/u, "");
-  return scripts
-    .filter((item) => item.tags?.includes(`alchemy:stage:${stage}`) && item.id.includes(token))
-    .map((item) => item.id);
+/**
+ * This stage's Worker for one logical id: the one script Alchemy tagged with both this stage and
+ * that id. Names are no evidence (this stage's names do not carry the stage token). None, or more
+ * than one, refuses with the sentence the run ends on.
+ */
+export function stageWorker(
+  scripts: readonly { id: string; tags?: readonly string[] }[],
+  stage: string,
+  logicalId: string,
+) {
+  const own = scripts.filter(
+    (script) =>
+      script.tags?.includes(`alchemy:stage:${stage}`) &&
+      script.tags.includes(`alchemy:id:${logicalId}`),
+  );
+  if (own.length === 0) throw new Error(`There is no ${logicalId} Worker of this stage`);
+  if (own.length > 1)
+    throw new Error(`${own.length} ${logicalId} Workers carry this stage; none is picked`);
+  return own[0]!.id;
 }
 
 /** One Worker's events whose text carries `needle`, every page up to `max`, newest first. */
@@ -95,8 +108,26 @@ export async function diagnoseStagePool(
     `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts`,
     { headers },
   ).then((response) => response.json())) as { result?: { id: string; tags?: string[] }[] };
-  const own = ownWorkers(scripts.result ?? [], stage);
-  const pick = (part: string) => own.find((id) => id.includes(`-${part}-`));
+  // Every Worker first: a missing or doubled one ends the run with its sentence, before any event
+  // read, and the reads already made stay in the private record.
+  let workers: Record<"router" | "poolworker" | "appoutbound" | "api", string>;
+  try {
+    workers = {
+      router: stageWorker(scripts.result ?? [], stage, "Router"),
+      poolworker: stageWorker(scripts.result ?? [], stage, "PoolWorker"),
+      appoutbound: stageWorker(scripts.result ?? [], stage, "AppOutbound"),
+      // On a test stage the upstream Api declares a zone route on the Router's own host
+      // (`roleHostRoutes`); its events say whether the app host's /pool/v1 calls reach it instead.
+      api: stageWorker(scripts.result ?? [], stage, "Api"),
+    };
+  } catch (error) {
+    await writeFile(
+      join(outputs, "pool-diagnosis.json"),
+      `${JSON.stringify({ at: new Date(from).toISOString(), queries, release, workers: String(error) }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    throw error;
+  }
   const reads: Record<string, unknown> = {};
   for (const [label, part, needle] of [
     ["router.signIn (control)", "router", "/api/auth/sign-in/email"],
@@ -108,15 +139,18 @@ export async function diagnoseStagePool(
     ["poolworker.release", "poolworker", "/pool/v1/release"],
     ["appoutbound.computerContext", "appoutbound", "setup-context"],
     ["appoutbound.changeRevisions", "appoutbound", "changeRevisions"],
+    ["api.release", "api", "/pool/v1/release"],
+    ["api.changeRevisions", "api", "/pool/v1/changeRevisions"],
   ] as const) {
-    const script = pick(part);
-    reads[label] = script
-      ? await workerEvents({ account, headers, script, from, needle }).then((read) =>
-          "body" in read && typeof read.body === "string"
-            ? { ...read, body: redact(read.body) }
-            : read,
-        )
-      : { missing: `no ${part} Worker of this stage` };
+    reads[label] = await workerEvents({
+      account,
+      headers,
+      script: workers[part],
+      from,
+      needle,
+    }).then((read) =>
+      "body" in read && typeof read.body === "string" ? { ...read, body: redact(read.body) } : read,
+    );
   }
   const record = { at: new Date(from).toISOString(), queries, release, reads };
   await writeFile(join(outputs, "pool-diagnosis.json"), `${JSON.stringify(record, null, 2)}\n`, {
