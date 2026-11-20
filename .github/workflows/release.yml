@@ -124,7 +124,10 @@ jobs:
 
   release:
     needs: candidate
-    if: needs.candidate.outputs.release == 'true'
+    # The candidate job takes only a main push or a dispatch from main, and a dispatched candidate
+    # must be a commit on main. `github.ref` is main under both triggers; stating it here lets the
+    # secrets guard see that this job, which holds production's secrets, runs on main's ref only.
+    if: github.ref == 'refs/heads/main' && needs.candidate.outputs.release == 'true'
     runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     permissions:

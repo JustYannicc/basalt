@@ -32,3 +32,14 @@ export const desiredPoolImageInput = Effect.gen(function* () {
   );
   return (yield* sha256Object({ contextHash, imageName: undefined })).slice(0, 16);
 });
+
+/**
+ * The image input the pool Worker's readiness expects of the root. A pinned root runs the pinned
+ * image, so it is the pin's input; today's context hash only when the root builds from the context,
+ * or while an image release names a candidate built from it. Readiness refuses a root whose recorded
+ * input differs (`runtime-slots/endpoint.ts`, `ready`).
+ */
+export const readinessImageInput = (pinnedInput: string | undefined, releasingImage: boolean) =>
+  pinnedInput !== undefined && !releasingImage
+    ? Effect.succeed(pinnedInput)
+    : desiredPoolImageInput;
