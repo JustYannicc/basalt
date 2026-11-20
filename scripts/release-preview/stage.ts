@@ -36,7 +36,7 @@ import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
 import { adoptWithoutSeed, seedAndAdopt } from "./stage-seed.ts";
-import { diagnoseStagePool } from "./stage-diagnose.ts";
+import { diagnoseStagePool, stageWorker, workerScripts } from "./stage-diagnose.ts";
 import { readSecretsStores } from "./stage-secrets.ts";
 import {
   planHighlights,
@@ -994,20 +994,9 @@ async function workerLogLines(
 ) {
   const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
   const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
-  const scripts = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts`,
-    {
-      headers,
-    },
-  ).then((response) => response.json() as Promise<{ result?: { id: string; tags?: string[] }[] }>);
-  const { stage } = stageNames(subject);
-  const script = (scripts.result ?? []).find(
-    (item) =>
-      item.tags?.includes(`alchemy:stage:${stage}`) && item.tags.includes("alchemy:id:PoolWorker"),
-  )?.id;
-  // Only this stage's own Worker: the name carries the stage, as every rehearsal target must.
-  if (!script || !script.includes(stage.replace(/^test-/u, "")))
-    throw new Error("No PoolWorker of this stage to read logs from");
+  const { stage, stack } = stageNames(subject);
+  // This stage's one pool Worker, by its stack, stage and logical-id tags; names carry no stage token.
+  const script = stageWorker(await workerScripts(account, headers), stage, "PoolWorker", stack);
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${account}/workers/observability/telemetry/query`,
     {

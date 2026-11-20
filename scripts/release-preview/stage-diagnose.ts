@@ -12,24 +12,37 @@ import { redactor } from "./redact.ts";
 import { stagePoolQueries } from "./stage-model.ts";
 
 /**
- * This stage's Worker for one logical id: the one script Alchemy tagged with both this stage and
- * that id. Names are no evidence (this stage's names do not carry the stage token). None, or more
+ * This stage's Worker for one logical id: the one script Alchemy tagged with this stack, this
+ * stage and that id. Names are no evidence (this stage's names do not carry the stage token). None, or more
  * than one, refuses with the sentence the run ends on.
  */
 export function stageWorker(
   scripts: readonly { id: string; tags?: readonly string[] }[],
   stage: string,
   logicalId: string,
+  stack: string,
 ) {
   const own = scripts.filter(
     (script) =>
-      script.tags?.includes(`alchemy:stage:${stage}`) &&
+      script.tags?.includes(`alchemy:stack:${stack}`) &&
+      script.tags.includes(`alchemy:stage:${stage}`) &&
       script.tags.includes(`alchemy:id:${logicalId}`),
   );
   if (own.length === 0) throw new Error(`There is no ${logicalId} Worker of this stage`);
   if (own.length > 1)
     throw new Error(`${own.length} ${logicalId} Workers carry this stage; none is picked`);
   return own[0]!.id;
+}
+
+/** The account's Worker scripts with their tags; a refused list is a failure, never "no Worker". */
+export async function workerScripts(account: string, headers: Record<string, string>) {
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts`,
+    { headers },
+  );
+  if (!response.ok) throw new Error(`The Workers list refused with HTTP ${response.status}`);
+  const body = (await response.json()) as { result?: { id: string; tags?: string[] }[] };
+  return body.result ?? [];
 }
 
 /** One Worker's events whose text carries `needle`, every page up to `max`, newest first. */
@@ -61,7 +74,9 @@ async function workerEvents(input: {
     },
   );
   const text = await response.text();
-  if (!response.ok) return { refused: response.status };
+  // The start of the error body tells a permission refusal from a bad filter; it is redacted with
+  // every other body before it is kept.
+  if (!response.ok) return { refused: response.status, body: text.slice(0, 500) };
   const count = (text.match(/"\$metadata"/gu) ?? []).length;
   return { count, body: text.slice(0, 30_000) };
 }
@@ -79,7 +94,7 @@ export async function diagnoseStagePool(
   source: NodeJS.ProcessEnv,
   outputs: string,
 ) {
-  const { stage, slug } = stageNames(subject);
+  const { stage, slug, stack } = stageNames(subject);
   const origin = previewStageOrigin(slug, source.TEST_STAGE_DOMAIN ?? "");
   const from = Date.now();
   const redact = redactor(source);
@@ -104,21 +119,18 @@ export async function diagnoseStagePool(
   await new Promise((done) => setTimeout(done, 95_000));
   const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
   const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
-  const scripts = (await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts`,
-    { headers },
-  ).then((response) => response.json())) as { result?: { id: string; tags?: string[] }[] };
+  const scripts = await workerScripts(account, headers);
   // Every Worker first: a missing or doubled one ends the run with its sentence, before any event
   // read, and the reads already made stay in the private record.
   let workers: Record<"router" | "poolworker" | "appoutbound" | "api", string>;
   try {
     workers = {
-      router: stageWorker(scripts.result ?? [], stage, "Router"),
-      poolworker: stageWorker(scripts.result ?? [], stage, "PoolWorker"),
-      appoutbound: stageWorker(scripts.result ?? [], stage, "AppOutbound"),
+      router: stageWorker(scripts, stage, "Router", stack),
+      poolworker: stageWorker(scripts, stage, "PoolWorker", stack),
+      appoutbound: stageWorker(scripts, stage, "AppOutbound", stack),
       // On a test stage the upstream Api declares a zone route on the Router's own host
       // (`roleHostRoutes`); its events say whether the app host's /pool/v1 calls reach it instead.
-      api: stageWorker(scripts.result ?? [], stage, "Api"),
+      api: stageWorker(scripts, stage, "Api", stack),
     };
   } catch (error) {
     await writeFile(
