@@ -3,9 +3,15 @@ export const poolDatabase = {
   owner: "basalt_pool_owner",
 } as const;
 
+/**
+ * PR previews and release rehearsals. Kept inline rather than imported from the preview scripts so
+ * the runtime Worker bundle stays free of deploy tooling; the rehearsal bound matches the barrier's.
+ */
+export const disposableStagePattern = /^test-(?:pr-[1-9][0-9]*|rehearsal-[1-9][0-9]{0,9})$/;
+
 export function previewPoolDatabaseBranch(stage: string): string {
-  if (!/^test-pr-[1-9][0-9]*$/.test(stage))
-    throw new Error("The pool database branch is restricted to PR preview stages");
+  if (!disposableStagePattern.test(stage))
+    throw new Error("The pool database branch is restricted to PR preview and rehearsal stages");
   return `${stage}-pool`;
 }
 
