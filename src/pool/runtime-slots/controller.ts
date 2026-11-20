@@ -18,10 +18,27 @@ import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "
 import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
-import { refusesAsNotServing } from "./forced-restart.ts";
+import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
 import { SlotFirstStart } from "./first-start.ts";
+
+/**
+ * The proof failed because the runtime itself refused: it isn't running, answers unhealthy or as
+ * another boot, or doesn't answer in time. A controller-side refusal or a defect is not one.
+ */
+export function proofRefusedByRuntime(refusal: unknown) {
+  if (refusal instanceof SlotRefused)
+    return (
+      refusal.reason === "unhealthy" ||
+      refusal.reason === "identity" ||
+      refusal.reason === "uncertain"
+    );
+  return (
+    refusal instanceof PoolRuntimeUnhealthy ||
+    (refusal instanceof DOMException && refusal.name === "TimeoutError")
+  );
+}
 
 interface Dependencies {
   controllerId: string;
@@ -282,7 +299,8 @@ export class RuntimeSlots {
     } catch (refusal) {
       // Only a runtime that isn't serving goes back to recovery; a policy or selection refusal, or a
       // defect, stays an error for the operator.
-      if (!refusesAsNotServing(refusal) || !(await this.returnToRecovery(identity))) throw refusal;
+      if (!proofRefusedByRuntime(refusal) || !(await this.returnToRecovery(identity)))
+        throw refusal;
       return { by: "recovery" };
     }
     await this.deps.storage.transact(async (snapshot, transaction) => {
