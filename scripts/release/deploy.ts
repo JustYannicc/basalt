@@ -53,7 +53,6 @@ const { positionals, values } = parseArgs({
     light: { type: "boolean" },
     to: { type: "string" },
     "root-boot": { type: "string" },
-    within: { type: "string" },
     apply: { type: "string" },
     serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
@@ -157,8 +156,14 @@ if (command === "boot" || command === "accept") {
   try {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
-    const { awaitRecoveryReady, healingOutcome, NOT_SERVING, runAcceptance, servingBoot } =
-      await import("./acceptance.ts");
+    const {
+      awaitRecoveryReady,
+      healingOutcome,
+      healingWait,
+      NOT_SERVING,
+      runAcceptance,
+      servingBoot,
+    } = await import("./acceptance.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
@@ -202,18 +207,9 @@ if (command === "boot" || command === "accept") {
     if (expect === "restart") {
       // The bound comes from the controller's own named constants: the fix acts, stops the runtime
       // gracefully, and the controller's recovery starts a new one inside its own startup budget.
-      const { healingAcceptanceWithinMs, healingReadinessWithinMs } =
-        await import("../../src/pool/runtime-slots/forced-restart-timing.ts");
-      if (values.within !== undefined)
-        throw new Error("--within is gone: a healing release's bound comes from the controller");
       if (!rootBoot || !values.serving)
         throw new Error("--expect restart needs --root-boot and --serving <serving.json>");
-      // After a failed apply, readiness never proved the controller object adopted the new code, so
-      // the wait budgets that adoption too. It ends at the first ready read either way.
-      const within =
-        values.apply === "failure"
-          ? { name: "healingReadinessWithinMs", seconds: healingReadinessWithinMs / 1_000 }
-          : { name: "healingAcceptanceWithinMs", seconds: healingAcceptanceWithinMs / 1_000 };
+      const within = healingWait(values.apply);
       bound = within;
       // `/v1/models` answers while model calls are still refused; the controller's recovery `ready`
       // is the signal. The new controller answers a signed read-only `inspect` once it has adopted

@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { awaitRecoveryReady, healingOutcome, runAcceptance, servingBoot } from "./acceptance.ts";
+import {
+  awaitRecoveryReady,
+  healingOutcome,
+  healingWait,
+  runAcceptance,
+  servingBoot,
+} from "./acceptance.ts";
+import {
+  healingAcceptanceWithinMs,
+  healingReadinessWithinMs,
+} from "../../src/pool/runtime-slots/forced-restart-timing.ts";
 import { stopPaths } from "./stop-path.ts";
 
 // A pool endpoint speaking the real wire: /v1/models JSON and a streamed chat completion, each with
@@ -272,4 +282,18 @@ test("the stop path is read from the forced-stop lines only, as fixed words", ()
     },
   });
   assert.deepEqual(stopPaths(answer), ["graceful_exit", "unreadable"]);
+});
+
+test("a healing release waits for the object's adoption too when its apply failed", () => {
+  // A failed apply may have ended seconds after the upload, before the object ran the new code.
+  assert.deepEqual(healingWait("failure"), {
+    name: "healingReadinessWithinMs",
+    seconds: healingReadinessWithinMs / 1_000,
+  });
+  // After a successful apply its readiness already waited through the adoption.
+  for (const outcome of ["success", undefined])
+    assert.deepEqual(healingWait(outcome), {
+      name: "healingAcceptanceWithinMs",
+      seconds: healingAcceptanceWithinMs / 1_000,
+    });
 });

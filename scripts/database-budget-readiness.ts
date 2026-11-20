@@ -147,7 +147,10 @@ export async function readyAfterAdoption(
     // Says which side refused: an object still on the old code, or the runtime behind a new one.
     // One slow answer may not use up the wait, so it gets no longer than a pause.
     const adoption = connection.adoption
-      ? await withinDeadline(connection.adoption(signal), readinessRetryMs).catch(() => undefined)
+      ? await withinDeadline(
+          connection.adoption(AbortSignal.any([signal, AbortSignal.timeout(readinessRetryMs)])),
+          readinessRetryMs,
+        ).catch(() => undefined)
       : undefined;
     if (adoption)
       observed = {

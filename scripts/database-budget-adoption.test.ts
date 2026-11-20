@@ -11,6 +11,7 @@ import {
   controllerAdoptionMs,
   destroyAndMembershipMs,
   forcedRestartServesWithinHeldStreamsMs,
+  healingReadinessWithinMs,
 } from "../src/pool/runtime-slots/forced-restart-timing.ts";
 
 const target = { candidate: "a".repeat(40), workerInput: "b".repeat(64), imageHash: "1234abcd" };
@@ -198,6 +199,11 @@ test("readiness outlasts the longest adoption followed by the controller's own h
     });
     assert.equal(result.outcome, "converged");
     assert.equal(result.runtime?.bootId, "boot");
+    assert.equal(
+      databaseReadinessCommandMs,
+      healingReadinessWithinMs,
+      "the wait is the derived bound",
+    );
     assert.ok(databaseReadinessCommandMs >= servingAt + 5_000, "the wait covers the slowest heal");
   });
 });
