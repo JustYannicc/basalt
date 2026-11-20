@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A path that names no tool but lies in a titled router listing no tools for the caller is answered with that router's title and description, by a direct call, a program's call and describe; it is never reported as an unknown path with a pointer to search. The answer uses only routers the caller's own listing already holds, so a policy that hides a router still hides it. The host's reason for a tool it hides comes first. A router that failed to list, or has a failed router below it, stays a failure. Search is unchanged: a section without tools adds no rows. An app whose section needs another kind of account therefore says which, and why, in that router's description."
+    }
+  }
+}

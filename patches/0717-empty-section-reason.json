@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-empty-section-reason",
+  "file": "0717-empty-section-reason.patch",
+  "content_sha256": "1c033808c62005b48ea00b705fbb41e5cf9d5b2019279e375dcce055433d83f0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
