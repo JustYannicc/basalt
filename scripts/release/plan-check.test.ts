@@ -2012,3 +2012,59 @@ test("a row an interrupted apply left updating is judged against its last finish
     "a class new to the live Worker is a binding change",
   );
 });
+
+test("a plan that writes a container application refuses while the root's row has no name; the heal does not", async (context) => {
+  const nameless = () => {
+    const rows = productionRows();
+    delete (rows.PoolContainer as unknown as { attr: { applicationName?: string } }).attr
+      .applicationName;
+    return rows;
+  };
+  // The class change creates the fleet's applications. The fixture models the fleet's classes but
+  // not its applications, so one is added to the real plan as the stack declares it.
+  const withFleetApplication = (plan: Plan.Plan) => {
+    const root = plan.resources.PoolContainer as unknown as {
+      resource: { FQN: string; Type: string };
+    };
+    (plan.resources as Record<string, unknown>).PoolRuntimeBlueApplication = {
+      ...root,
+      action: "create",
+      resource: { ...root.resource, FQN: "PoolRuntimeBlueApplication" },
+      bindings: [],
+      state: undefined,
+    };
+    return plan;
+  };
+  const cutoverPolicy = {
+    mode: "cutover-classes",
+    poolContainer: { fqn: "PoolContainer", image: pinnedImage, workerAttachment: true },
+  };
+  const refusal = "root-name-unrecorded PoolRuntimeBlueApplication";
+  const cutover = withFleetApplication(
+    (await planned(context, { rows: nameless(), declared: { fleetClasses: true } })).plan,
+  );
+  assert.ok((await rulesOf(cutover, cutoverPolicy)).includes(refusal));
+  const named = withFleetApplication(
+    (await planned(context, { declared: { fleetClasses: true } })).plan,
+  );
+  assert.ok(!(await rulesOf(named, cutoverPolicy)).includes(refusal));
+  // The healing release writes no container application, so a missing name never refuses it.
+  const healing = {
+    mode: "code-only",
+    poolContainer: {
+      fqn: "PoolContainer",
+      image: pinnedImage,
+      recordedHashOnly: true,
+      workerAttachment: true,
+    },
+  };
+  const heal = (
+    await planned(context, {
+      rows: recordsReadiness(nameless()),
+      declared: { poolWorkerWaitsOnCommand: true },
+    })
+  ).plan;
+  assert.ok(
+    !(await rulesOf(heal, healing)).some((rule) => rule.startsWith("root-name-unrecorded")),
+  );
+});
