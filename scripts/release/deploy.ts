@@ -156,7 +156,7 @@ if (command === "boot" || command === "accept") {
   try {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
-    const { awaitRecoveryReady, NOT_SERVING, runAcceptance, servingBoot } =
+    const { awaitRecoveryReady, healingOutcome, NOT_SERVING, runAcceptance, servingBoot } =
       await import("./acceptance.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
@@ -191,7 +191,11 @@ if (command === "boot" || command === "accept") {
       throw new Error(
         "The pool did not answer before the apply, and this release declares no restart",
       );
-    let restart: { waitedMs: number; reads: number } | undefined;
+    let restart: Record<string, unknown> | undefined;
+    let verdict: Awaited<ReturnType<typeof awaitRecoveryReady>> | undefined;
+    // How the stuck runtime was stopped, read from the pool Worker's log when it did not heal.
+    let stopPathsOf: (() => Promise<unknown>) | undefined;
+    const startedAt = Date.now();
     if (expect === "restart") {
       // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
       // controller's recovery starts a new one inside its own startup budget.
@@ -230,7 +234,17 @@ if (command === "boot" || command === "accept") {
       const worker = serving.workers?.find((entry) => entry.fqn === "PoolWorker")?.script;
       if (!worker) throw new Error("The serving record names no PoolWorker script");
       const observe = observeSender();
-      const healed = await awaitRecoveryReady({
+      stopPathsOf = async () => {
+        const { readStopPaths } = await import("./stop-path.ts");
+        // The forced stop runs after the apply, which ran just before this step.
+        return readStopPaths({
+          accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+          token: process.env.CLOUDFLARE_API_TOKEN ?? "",
+          script: worker,
+          from: startedAt - 30 * 60_000,
+        });
+      };
+      verdict = await awaitRecoveryReady({
         inspect: async () =>
           (
             (await observe(
@@ -243,8 +257,20 @@ if (command === "boot" || command === "accept") {
         before: rootBoot,
         withinMs: within * 1000,
       });
-      rootBoot = healed.boot;
-      restart = { waitedMs: healed.waitedMs, reads: healed.reads };
+      restart = {
+        ready: verdict.ready,
+        waitedMs: verdict.waitedMs,
+        reads: verdict.reads,
+        ...(verdict.ready ? {} : { reason: verdict.reason, last: verdict.last }),
+      };
+      if (!verdict.boot) {
+        // No new boot is selected, so no model call could show the release healed the pool.
+        const view = { outcome: "not-serving", restart, stopPaths: await stopPathsOf() };
+        if (values.out) await output(resolve(values.out), view);
+        await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
+        process.exit(1);
+      }
+      rootBoot = verdict.boot;
     }
     const result = await runAcceptance({
       apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
@@ -254,6 +280,8 @@ if (command === "boot" || command === "accept") {
       ...(rootBoot ? { rootBoot } : {}),
       client,
     });
+    // A healing release ends healed, serving but needing a person, or not serving.
+    const outcome = verdict ? healingOutcome(verdict, result) : undefined;
     // Failure messages can name hosts; the public record keeps counts and timings only.
     const view = {
       passed: result.passed,
@@ -261,12 +289,21 @@ if (command === "boot" || command === "accept") {
       failed: result.failures.length,
       runtimes: result.boots.length,
       firstByteMs: result.firstByteMs,
+      ...(outcome ? { outcome } : {}),
       ...(restart ? { restart } : {}),
+      ...(outcome === "not-serving" && stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
     };
     if (values.out) await output(resolve(values.out), view);
-    await summary(`Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`);
+    await summary(
+      outcome === "serving-needs-person"
+        ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
+        : outcome === "not-serving"
+          ? `NOT SERVING after the healing release: ${safeJson(view)}`
+          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`,
+    );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
-    process.exit(result.passed ? 0 : 1);
+    // Exit 3 is its own result: not green, and not a failure to undo.
+    process.exit(outcome === "serving-needs-person" ? 3 : result.passed ? 0 : 1);
   } catch (error) {
     await stop(error);
     process.exit(1);
@@ -360,6 +397,7 @@ const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
+const { rootPinMismatch } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -698,35 +736,18 @@ try {
         yield* legacy
           .assertNoUnresolvedHome(stack, stage, key)
           .pipe(Effect.provideService(legacy.State, Effect.succeed(state)));
-        const pin = process.env.POOL_ROOT_IMAGE
-          ? JSON.parse(process.env.POOL_ROOT_IMAGE)
-          : undefined;
-        const rootRow = (yield* state.get({
+        const rootRow = yield* state.get({
           stack: yield* stackName(),
           stage,
           fqn: "PoolContainer",
-        }) as Fx.Effect<unknown, unknown, never>) as
-          | { attr?: { configuration?: { image?: string }; hash?: { image?: string } } }
-          | undefined;
-        // The input is the identity the controller knows the root by: PoolWorker's POOL_IMAGE_HASH.
-        // Once the root is pinned, PoolContainer's own hash.image names the reference, not the build.
-        const workerRow = (yield* state.get({
+        }) as Fx.Effect<unknown, unknown, never>;
+        const workerRow = yield* state.get({
           stack: yield* stackName(),
           stage,
           fqn: "PoolWorker",
-        }) as Fx.Effect<unknown, unknown, never>) as
-          | { props?: { env?: { POOL_IMAGE_HASH?: unknown } } }
-          | undefined;
-        const recorded = {
-          image: rootRow?.attr?.configuration?.image,
-          input: workerRow?.props?.env?.POOL_IMAGE_HASH,
-        };
-        if (!pin || pin.image !== recorded.image || pin.input !== recorded.input)
-          return yield* Effect.die(
-            new Error(
-              `POOL_ROOT_IMAGE does not match State (image ${recorded.image === pin?.image ? "equal" : "differs"} from PoolContainer's configuration.image, input ${recorded.input === pin?.input ? "equal" : "differs"} from PoolWorker's POOL_IMAGE_HASH)`,
-            ),
-          );
+        }) as Fx.Effect<unknown, unknown, never>;
+        const mismatch = rootPinMismatch(process.env.POOL_ROOT_IMAGE, rootRow, workerRow);
+        if (mismatch) return yield* Effect.die(new Error(mismatch));
         return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
       }),
     );
