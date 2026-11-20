@@ -674,3 +674,96 @@ test("a healing release admits a connection only while its origin waits on a dat
   ]);
   assert.deepEqual(await rules(plan(command("Seed"))), ["outside-code-only Seed"]);
 });
+
+test("the healing release admits the root's row only as the recorded hash the old layer left", async () => {
+  const { sha256Object } = await import("alchemy/Util/sha256");
+  const { Effect: E } = await import("effect");
+  const referenceHash = (
+    await E.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
+  ).slice(0, 16);
+  const settings = {
+    image: pinnedImage,
+    className: "PoolContainer",
+    schedulingPolicy: "default",
+    instanceType: "basic",
+    maxInstances: 1,
+  };
+  const root = (
+    change: {
+      action?: string;
+      props?: Record<string, unknown>;
+      hash?: string | undefined;
+      binding?: string;
+    } = {},
+  ) => {
+    const props = { ...settings, ...change.props };
+    return {
+      action: change.action ?? "update",
+      resource: { FQN: "PoolContainer", Type: "Cloudflare.Container", Props: props },
+      props,
+      state: {
+        status: "updated",
+        props: settings,
+        attr: { hash: "hash" in change ? { image: change.hash } : { image: "a".repeat(16) } },
+        bindings: [{ sid: "PoolContainer", data: { durableObjects: { namespaceId: "ns-root" } } }],
+      },
+      bindings: [
+        {
+          sid: "PoolContainer",
+          action: change.binding ?? "noop",
+          data: { durableObjects: { namespaceId: "ns-root" } },
+        },
+      ],
+    };
+  };
+  const plan = (node: object) =>
+    ({
+      resources: { PoolContainer: node },
+      deletions: {},
+      actions: {},
+      actionDeletions: {},
+    }) as never;
+  const rules = async (node: object, recordedHashOnly = true) => {
+    const exit = await Effect.runPromiseExit(
+      checkPlan(
+        plan(node),
+        await policy({
+          mode: "code-only",
+          poolContainer: {
+            fqn: "PoolContainer",
+            image: pinnedImage,
+            ...(recordedHashOnly ? { recordedHashOnly: true } : {}),
+          },
+        }),
+      ),
+    );
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
+      : [];
+  };
+  // Exactly the old layer's row: an update whose only difference is the recorded hash.
+  assert.deepEqual(await rules(root()), []);
+  assert.notEqual("a".repeat(16), referenceHash);
+  const notNoop = "pool-container-not-noop PoolContainer";
+  // Each other way the row can plan refuses.
+  for (const [deviation, node] of [
+    ["a changed setting", root({ props: { instanceType: "standard" } })],
+    ["an attachment that changes", root({ binding: "update" })],
+    [
+      "another image declared",
+      root({ props: { image: pinnedImage.replace(/e{64}$/u, "f".repeat(64)) } }),
+    ],
+    ["a recorded hash that already names the reference", root({ hash: referenceHash })],
+    ["no recorded hash", root({ hash: undefined })],
+    ["a replace", root({ action: "replace" })],
+  ] as const) {
+    // A replace never reaches the root's own rules: the protected-resource rule refuses it first.
+    const refused = await rules(node);
+    assert.ok(
+      deviation === "a replace" ? refused.length > 0 : refused.includes(notNoop),
+      deviation,
+    );
+  }
+  // Any other policy refuses the row as it is.
+  assert.deepEqual(await rules(root(), false), [notNoop]);
+});
