@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { accessPath } from "./access-contract.ts";
 import type { HomeApiKeyLookup } from "./model-auth.ts";
+import { poolReceiveHeader } from "./pool-arrival.ts";
 
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -47,6 +48,16 @@ const {
   ): Promise<Response>;
 } = await import(workerModule);
 hooks.deregister();
+
+/** Everything a caller sent arrives as sent; the Worker adds only its own receive times. */
+function assertForwarded(forwarded: Request, sent: Request) {
+  assert.equal(forwarded.method, sent.method);
+  assert.equal(forwarded.url, sent.url);
+  const headers = new Headers(forwarded.headers);
+  assert.match(headers.get(poolReceiveHeader) ?? "", /^\d{13},\d{13}$/);
+  headers.delete(poolReceiveHeader);
+  assert.deepEqual([...headers], [...sent.headers]);
+}
 
 function poolStub(
   connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool",
@@ -134,7 +145,7 @@ test("the exported Worker rejects bad credentials before controller lookup and p
     assert.equal(calls.lookups, status === 202 ? 1 : 0);
     assert.equal(calls.forwarded.length, status === 202 ? 1 : 0);
     if (status === 202) {
-      assert.equal(calls.forwarded[0], request);
+      assertForwarded(calls.forwarded[0]!, request);
       if (request.method === "POST")
         assert.equal(await calls.forwarded[0]!.text(), "unchanged model request");
     }
@@ -241,7 +252,8 @@ test("any matching candidate continues unchanged through the pool Durable Object
   assert.deepEqual(checked, ["wrong-bearer-key", "valid-home-key", "wrong-query-key"]);
   assert.equal(calls.lookups, 1);
   assert.equal(calls.forwarded.length, 1);
-  assert.equal(calls.forwarded[0], request);
+  assertForwarded(calls.forwarded[0]!, request);
+  assert.equal(await calls.forwarded[0]!.text(), "model request");
 });
 
 test("valid legacy Home key transports continue to the pool Durable Object", async () => {
@@ -378,14 +390,25 @@ test("raw ingress strips private lifetime headers and offer while preserving pub
   assert.equal(calls.forwarded[0]!.headers.get("Sec-WebSocket-Protocol"), "raw.one, raw.two");
 });
 
+/** Pool request events the Worker itself writes; the object a stub stands in for writes none. */
+function workerEvents(context: TestContext) {
+  const events: Record<string, unknown>[] = [];
+  context.mock.method(console, "info", (value: unknown) => {
+    if (typeof value === "object" && value !== null && "outcome" in value)
+      events.push({ ...value });
+  });
+  return events;
+}
+
+const instanceEnded =
+  "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.";
+
 test("a controller reset at the Worker entry is survived by one send to a new instance", async (context) => {
   const log = context.mock.method(console, "error", () => {});
+  const events = workerEvents(context);
   let sends = 0;
   const { env, calls } = poolStub(undefined, async (request) => {
-    if (++sends === 1)
-      throw new Error(
-        "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
-      );
+    if (++sends === 1) throw new Error(instanceEnded);
     return new Response(await request.text(), { status: 200 });
   });
   const deferred: Promise<unknown>[] = [];
@@ -411,4 +434,93 @@ test("a controller reset at the Worker entry is survived by one send to a new in
     saved.map((line) => [line.outcome, line.saved]),
     [["replayed", true]],
   );
+  // The new instance answered, so it reports the request, with the first call to time the replay.
+  assert.deepEqual(events, []);
+  const [first, second] = calls.forwarded.map((forwarded) =>
+    forwarded.headers.get(poolReceiveHeader)!.split(","),
+  );
+  assert.equal(first!.length, 2);
+  assert.deepEqual([second![0], second![2]], first);
+});
+
+test("a reset the Worker answers itself is reported once, by the Worker", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const events = workerEvents(context);
+  for (const [path, status, sends] of [
+    ["/v1/messages", 503, 2],
+    ["/v1/videos", 502, 1],
+  ] as const) {
+    events.length = 0;
+    const { env, calls } = poolStub(undefined, async () => {
+      throw new Error(instanceEnded);
+    });
+    const deferred: Promise<unknown>[] = [];
+    const response = await handlePoolWorkerRequest(
+      new Request(`https://pool.example${path}`, {
+        method: "POST",
+        headers: { "X-Api-Key": "valid-home-key" },
+        body: '{"model":"claude-opus-5-5"}',
+      }),
+      env,
+      async () => true,
+      (work) => deferred.push(work),
+    );
+    assert.equal(response.status, status, path);
+    assert.equal(calls.forwarded.length, sends, path);
+    await Promise.all(deferred);
+    assert.equal(events.length, 1, path);
+    const event = events[0]!;
+    assert.equal(event.outcome, "controller_reset", path);
+    assert.equal(event.status, status, path);
+    assert.equal(event.requestId, response.headers.get("X-Request-Id"), path);
+    assert.equal(typeof event.unansweredMs, "number", path);
+    assert.equal(event.queueMs, undefined, path);
+    // Only the call sent twice spent time between its attempts.
+    if (sends === 2) assert.ok(Number(event.replayMs) >= 1_000, path);
+    else assert.equal(event.replayMs, undefined, path);
+  }
+});
+
+test("a caller who leaves while a reset call waits to be sent again is not a controller failure", async (context) => {
+  let callFailed!: () => void;
+  const failed = new Promise<"failed">((resolve) => (callFailed = () => resolve("failed")));
+  const log = context.mock.method(console, "error", (name: unknown) => {
+    if (name === "POOL_CONTROLLER_CALL_FAILED") callFailed();
+  });
+  const events = workerEvents(context);
+  const { env, calls } = poolStub(undefined, async () => {
+    throw new Error(instanceEnded);
+  });
+  const caller = new AbortController();
+  const deferred: Promise<unknown>[] = [];
+  const answer = handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      headers: { "X-Api-Key": "valid-home-key" },
+      body: '{"model":"claude-opus-5-5"}',
+      signal: caller.signal,
+    }),
+    env,
+    async () => true,
+    (work) => deferred.push(work),
+  ).catch((error: unknown) => error);
+  // The first call has failed once the hop says so, and not because the request already ended.
+  assert.equal(await Promise.race([failed, answer.then(() => "settled" as const)]), "failed");
+  // Let the hop reach its wait before the caller leaves.
+  await new Promise((resolve) => setImmediate(resolve));
+  caller.abort();
+  await answer;
+  await Promise.all(deferred);
+  assert.equal(calls.forwarded.length, 1);
+  const [line] = log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_CONTROLLER_INTERRUPTED")
+    .map((call) => JSON.parse(String(call.arguments[1])));
+  assert.equal(line?.outcome, "client_left");
+  assert.equal(events.length, 1);
+  const event = events[0]!;
+  assert.equal(event.outcome, "client_closed");
+  assert.equal(typeof event.unansweredMs, "number");
+  assert.equal(event.queueMs, undefined);
+  // The event and the hop's log line name the same request.
+  assert.equal(event.requestId, line.requestId);
 });

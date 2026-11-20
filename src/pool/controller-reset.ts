@@ -68,6 +68,8 @@ export interface ControllerHop {
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   holdBudgetBytes?: number;
+  /** The caller's own ID for this request, so its log lines and its event share one. */
+  requestId?: string;
 }
 
 type Outcome =
@@ -248,7 +250,7 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
 export async function fetchController(incoming: Request, hop: ControllerHop): Promise<Response> {
   const request = withoutAttemptId(incoming);
   const model = replayableCall(request);
-  const requestId = crypto.randomUUID();
+  const requestId = hop.requestId ?? crypto.randomUUID();
   const copy = hold(
     model && request.body ? request.clone().body : null,
     hop.holdBudgetBytes ?? controllerHoldBudgetBytes,

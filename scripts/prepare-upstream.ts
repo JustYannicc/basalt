@@ -76,6 +76,7 @@ run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/ru
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/vault-page")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/failure")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/telemetry")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/startup-profiler")]);
