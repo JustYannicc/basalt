@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
@@ -17,6 +27,42 @@ const load = (name) =>
   );
 const { WorkerBundle } = await load("Cloudflare/Workers/Sources/Rolldown");
 const { AlchemyContext } = await load("AlchemyContext");
+
+const text = (file) =>
+  typeof file.content === "string" ? file.content : Buffer.from(file.content).toString("utf8");
+// One build is one process, as one release job is: the bundler fixes the directory it was
+// started in once, and resolves a module that is not a file against it.
+if (process.argv[3] === "build") {
+  const [root, out] = process.argv.slice(4);
+  const bundle = await Effect.runPromise(
+    Effect.gen(function* () {
+      const bundler = yield* WorkerBundle;
+      return yield* bundler.build({
+        id: "Fixture",
+        main: join(root, "app/src/worker.ts"),
+        compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+        entry: { kind: "external" },
+        stack: { name: "fixture", stage: "fixture" },
+        extraOptions: undefined,
+      });
+    }).pipe(
+      Effect.provideService(AlchemyContext, {
+        dotAlchemy: join(root, "app/.alchemy"),
+        dev: false,
+        adopt: false,
+      }),
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+  writeFileSync(
+    out,
+    JSON.stringify({
+      hash: bundle.hash,
+      files: Object.fromEntries(bundle.files.map((file) => [file.path, text(file)])),
+    }),
+  );
+  process.exit(0);
+}
 
 const scratch = mkdtempSync(join(tmpdir(), "worker-bundle-location-"));
 const dependencyPath = "node_modules/.bun/fixture-dependency@1.0.0/node_modules/fixture-dependency";
@@ -67,33 +113,16 @@ const checkout = (name, store, note = "first") => {
   symlinkSync(dependency, join(root, "app/node_modules/fixture-dependency"));
   return root;
 };
-const startedIn = process.cwd();
-// The bundler resolves a module that is not a file against the directory the process runs in.
-const build = (root, runFrom = root) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      process.chdir(runFrom);
-      const bundler = yield* WorkerBundle;
-      return yield* bundler.build({
-        id: "Fixture",
-        main: join(root, "app/src/worker.ts"),
-        compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
-        entry: { kind: "external" },
-        stack: { name: "fixture", stage: "fixture" },
-        extraOptions: undefined,
-      });
-    }).pipe(
-      Effect.provideService(AlchemyContext, {
-        dotAlchemy: join(root, "app/.alchemy"),
-        dev: false,
-        adopt: false,
-      }),
-      Effect.provide(NodeServices.layer),
-    ),
-  );
-const text = (file) =>
-  typeof file.content === "string" ? file.content : Buffer.from(file.content).toString("utf8");
-const named = (bundle) => Object.fromEntries(bundle.files.map((file) => [file.path, text(file)]));
+let builds = 0;
+const build = (root, startedIn = root) => {
+  const out = join(scratch, `build-${++builds}.json`);
+  execFileSync(process.execPath, [fileURLToPath(import.meta.url), tree, "build", root, out], {
+    cwd: startedIn,
+    stdio: "pipe",
+    timeout: 30_000,
+  });
+  return JSON.parse(readFileSync(out, "utf8"));
+};
 const mapOf = (files) => {
   const [name] = Object.keys(files).filter((path) => path.endsWith(".map"));
   assert.ok(name, "the bundle carries a source map");
@@ -104,13 +133,13 @@ try {
   // Two jobs at one commit: another checkout directory, another depth, another store directory,
   // and a build started from another place.
   const firstRoot = checkout("one/checkout", "one/store/generations/aaaaaaaa");
-  const first = await build(firstRoot);
-  const second = await build(
+  const first = build(firstRoot);
+  const second = build(
     checkout("two/runner/work/checkout", "two/cache/store/generations/bbbbbbbb"),
     join(scratch, "two/runner"),
   );
-  const one = named(first);
-  const two = named(second);
+  const one = first.files;
+  const two = second.files;
   assert.deepEqual(Object.keys(one).sort(), Object.keys(two).sort());
   const map = mapOf(one);
   assert.deepEqual(
@@ -140,16 +169,13 @@ try {
 
   // Nothing is hidden. A changed comment leaves the code as it was, and still changes the map and
   // the hash: the hash covers the map, and the map carries every source's text.
-  const changed = await build(
-    checkout("three/checkout", "three/store/generations/cccccccc", "second"),
-  );
-  const three = named(changed);
+  const changed = build(checkout("three/checkout", "three/store/generations/cccccccc", "second"));
+  const three = changed.files;
   for (const path of Object.keys(one).filter((path) => path.endsWith(".js")))
     assert.equal(one[path], three[path], `${path} changed with a comment`);
   assert.notEqual(one[map.name], three[mapOf(three).name], "a changed source changes the map");
   assert.notEqual(first.hash, changed.hash, "a changed source changes the provider's hash");
   console.log(JSON.stringify({ files: Object.keys(one).length, sources: map.sources.length }));
 } finally {
-  process.chdir(startedIn);
   rmSync(scratch, { recursive: true, force: true });
 }
