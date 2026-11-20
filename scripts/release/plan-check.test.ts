@@ -636,6 +636,68 @@ test("a code-only allowance admits the database connection's binding while that 
   }
 });
 
+test("a code-only allowance admits a reference's binding that differs only in local development's copy of the origin", async (context) => {
+  // State from a release that recorded that copy in another form, or not at all. The connection
+  // itself is unchanged, so the whole plan is known, and the planner still marks the row changed.
+  const rows = await credentialsRows(context, ["ArtifactsCredentials"]);
+  const row = (plan: Plan.Plan) => {
+    assert.equal(plan.resources.PoolModelDatabaseConnection?.action, "noop");
+    const node = credentialsNode(plan);
+    assert.ok(isResolved(node.props.env.POOL_AUTH_DATABASE));
+    const found = node.bindings.find((binding) => binding.sid === "POOL_AUTH_DATABASE");
+    assert.equal(found?.action, "update");
+    assert.ok(isResolved(found?.data));
+    return found;
+  };
+  const older = (data: RowData) =>
+    Object.fromEntries(
+      Object.entries(data.hyperdrives as Record<string, object>).map(([id, origin]) => [
+        id,
+        { ...origin, host: "older-host.invalid" },
+      ]),
+    );
+  for (const change of [
+    ({ hyperdrives: _none, ...data }: RowData) => data,
+    (data: RowData) => ({ ...data, hyperdrives: {} }),
+    (data: RowData) => ({ ...data, hyperdrives: older(data) }),
+  ]) {
+    const plan = await credentialsPlan(
+      context,
+      {},
+      withStoreBinding(rows, "POOL_AUTH_DATABASE", change),
+    );
+    row(plan);
+    await storeCodeMoves(plan);
+    // The entry has to be named for it.
+    const unnamed = await exceeded(plan, {
+      references: [{ name: "TOOLS_SERVICE", resource: "Api" }],
+    });
+    assert.match(unnamed.message, /bindings\.POOL_AUTH_DATABASE: update/u);
+  }
+  // With that copy gone, what the upload carries still has to be as State recorded it.
+  for (const change of [
+    // Another connection.
+    ({ hyperdrives: _none, ...data }: RowData) => ({
+      ...data,
+      bindings: data.bindings.map((entry) => ({ ...entry, id: "5".repeat(32) })),
+    }),
+    // A second wire entry, and a key the plan does not carry.
+    ({ hyperdrives: _none, ...data }: RowData) => ({
+      ...data,
+      bindings: [...data.bindings, { type: "plain_text", name: "MODE", text: "before" }],
+    }),
+    ({ hyperdrives: _none, ...data }: RowData) => ({ ...data, extra: true }),
+  ]) {
+    const plan = await credentialsPlan(
+      context,
+      {},
+      withStoreBinding(rows, "POOL_AUTH_DATABASE", change),
+    );
+    row(plan);
+    assert.match((await exceeded(plan)).message, /bindings\.POOL_AUTH_DATABASE: update/u);
+  }
+});
+
 test("a code-only allowance refuses a database connection that State recorded as another one", async (context) => {
   const settled = await credentialsRows(context);
   const other = "5".repeat(32);
