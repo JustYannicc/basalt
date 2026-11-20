@@ -71,6 +71,12 @@ export interface WireGuardConfig {
    */
   readonly rootApplicationNames?: ReadonlyArray<string>;
   /**
+   * The run must keep the root as recorded: every container application write is refused unless the
+   * root is known by both its id and its name. By id alone, Alchemy finds the root by name when the
+   * recorded id is stale, and patches and rolls out its live id.
+   */
+  readonly rootRequired?: boolean;
+  /**
    * Destroy of a disposable stage only: the names and ids its destroy plan records for the
    * resources it deletes. A delete of exactly one of them is admitted; every other stays refused.
    */
@@ -116,6 +122,18 @@ const REASONS = {
   root: [
     "Alchemy found a configuration difference on the root application, and a PATCH or rollout restarts the root and its master Home.",
     "Make the declaration match the recorded application, or restart the root in its own named step.",
+  ],
+  rootUnknown: [
+    "The root's application is not known by both its id and its name in this run, so a container application write could reach it.",
+    "Record the root's application name on its State row, or run without container application writes.",
+  ],
+  path: [
+    "The path is not spelled the way the SDK sends it, so a rule keyed on the path could miss what it names.",
+    "Send the canonical path: lower-case path words, no empty segments, no parameters and no escaped path characters.",
+  ],
+  registry: [
+    "Production's images are served from the account's registry, and a release never writes to it through fetch.",
+    "Publish images with the build, never from the release entry.",
   ],
   store: [
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
@@ -205,6 +223,28 @@ const StoreCredentialRead = Schema.Struct({
 });
 const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(?:\/|$)/;
 const APPLICATION = /^\/accounts\/[^/]+\/containers\/applications(?:\/([^/]+))?/;
+const REGISTRY_HOST = "registry.cloudflare.com";
+
+const API_ROOT = /\/(?:accounts|organizations|user|zones)\//iu;
+/**
+ * The rules key on a path as the SDK spells it. A write spelled any other way could name the same
+ * resource to Cloudflare and nothing to a rule, so it is refused rather than normalised.
+ */
+const canonicalPath = (pathname: string) =>
+  !pathname.includes("//") &&
+  !pathname.includes(";") &&
+  // An escape of a character that needs none, or of the path separator, only hides the path.
+  ![...pathname.matchAll(/%([0-9a-f]{2})/giu)].some(([, hex]) =>
+    /[a-z0-9\-._~/]/iu.test(String.fromCharCode(Number.parseInt(hex!, 16))),
+  ) &&
+  // A provider API path takes its words in lower case. (The State store's paths carry no API root;
+  // they name resources by our own logical ids, which may be capitalised.)
+  (!API_ROOT.test(pathname) ||
+    !pathname
+      .split("/")
+      .some((segment) => segment !== segment.toLowerCase() && WORDS.has(segment.toLowerCase()))) &&
+  // One API root: with two, the rules would read the wrong one.
+  (pathname.match(new RegExp(API_ROOT.source, "giu")) ?? []).length <= 1;
 
 const nullable = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
 const List = Schema.optional(Schema.Array(Schema.Unknown));
@@ -389,8 +429,10 @@ const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: A
     url.search = "";
     const authorization = request.headers.get("authorization");
     const read = yield* Effect.tryPromise(async () => {
+      // A redirect would read another application than the one deleted.
       const response = await inner(url, {
         method: "GET",
+        redirect: "manual",
         headers: authorization ? { authorization } : {},
       });
       if (!response.ok) throw new Error(`application read answered ${response.status}`);
@@ -534,6 +576,12 @@ const check = (
       method,
       path: template(path),
     });
+    const write = method !== "GET" && method !== "HEAD";
+    const url = new URL(request.url);
+    if (write && !canonicalPath(url.pathname))
+      return yield* refuse(at("request", "{id}"), "path", "path", "not canonical");
+    if (write && url.hostname.toLowerCase() === REGISTRY_HOST)
+      return yield* refuse(at("registry", "{id}"), "registry", "method", method);
     // Alchemy reads the store's token through an ephemeral edge preview of the store script
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
     if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))
@@ -558,13 +606,25 @@ const check = (
         method,
       );
     const application = name(APPLICATION);
-    if (
+    // Cloudflare's ids are not case sensitive, so neither is the comparison.
+    const root =
       application !== undefined &&
-      method !== "GET" &&
-      method !== "HEAD" &&
-      (config.rootApplications?.includes(application) || held.has(application))
-    )
+      (config.rootApplications?.some((id) => id.toLowerCase() === application.toLowerCase()) ||
+        held.has(application.toLowerCase()));
+    if (write && root)
       return yield* refuse(at("container application", application), "root", "method", method);
+    if (
+      write &&
+      config.rootRequired &&
+      APPLICATION.test(path) &&
+      !(config.rootApplications?.length && config.rootApplicationNames?.length)
+    )
+      return yield* refuse(
+        at("container application", application ?? "{id}"),
+        "rootUnknown",
+        "method",
+        method,
+      );
     const script = name(UPLOAD);
     if (script !== undefined && ["PUT", "POST", "PATCH"].includes(method))
       return yield* checkUpload(config, request, at("Worker", script), script);
@@ -620,7 +680,10 @@ export const install = (config: WireGuardConfig = {}) =>
           Deferred.doneUnsafe(refused, Effect.fail(error));
         throw error;
       }
-      const response = await inner(request);
+      // fetch re-sends a redirected write with its method and body to an address the guard never
+      // checked, so a write's redirect comes back to the caller instead. Reads follow as before.
+      const write = request.method !== "GET" && request.method !== "HEAD";
+      const response = await inner(request, write ? { redirect: "manual" } : undefined);
       if (exit.value && response.ok)
         for (const name of createdIdentities(
           await response
@@ -640,12 +703,15 @@ export const install = (config: WireGuardConfig = {}) =>
         );
         if (Exit.isSuccess(decoded)) created.add(decoded.value.result.id);
       }
+      // Any application Cloudflare names as the root, in a read or a create's answer, is the root.
       if (
-        request.method === "GET" &&
+        (request.method === "GET" ||
+          (request.method === "POST" && path.endsWith("/containers/applications"))) &&
         response.ok &&
         config.rootApplicationNames?.length &&
         APPLICATION.test(path)
       ) {
+        const names = new Set(config.rootApplicationNames.map((name) => name.toLowerCase()));
         const body = (await response
           .clone()
           .json()
@@ -655,9 +721,9 @@ export const install = (config: WireGuardConfig = {}) =>
             item &&
             typeof item === "object" &&
             typeof (item as { id?: unknown }).id === "string" &&
-            config.rootApplicationNames.includes(String((item as { name?: unknown }).name))
+            names.has(String((item as { name?: unknown }).name).toLowerCase())
           )
-            held.add((item as { id: string }).id);
+            held.add((item as { id: string }).id.toLowerCase());
       }
       return response;
     };

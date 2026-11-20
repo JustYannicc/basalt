@@ -469,6 +469,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
+          // Production keeps the root from the first request on: until both its id and its name
+          // are pushed below, no container application write leaves.
+          rootRequired: stage === "production",
           deletable,
           stage: undefined as StageScope | undefined,
           // Reads of production send nothing but reads; the guard refuses anything else.
@@ -530,13 +533,25 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               script,
             });
           }
-          // Every reviewed release leaves the root application as recorded; previews roll it freely.
-          if (policy?.check) {
-            const root = yield* recordedApplication(policy.check.poolContainer.fqn);
+          // Every reviewed release, and every production command, leaves the root application as
+          // recorded; previews roll it freely. A stage under a policy keeps its root by the same
+          // rules once its State row records one, so a rehearsal runs them as production does.
+          const rootFqn =
+            policy?.check?.poolContainer.fqn ??
+            (stage === "production" ? "PoolContainer" : undefined);
+          if (rootFqn) {
+            const root = yield* recordedApplication(rootFqn);
             if (root) {
               wire.rootApplications.push(root.id);
+              wire.rootRequired = true;
               if (root.name) wire.rootApplicationNames.push(root.name);
-            } else if (stage === "production")
+              else
+                yield* Effect.promise(() =>
+                  summary(
+                    "Warning: the root's State row records no application name, so every container application write in this run is refused.",
+                  ),
+                );
+            } else if (stage === "production" && policy?.check)
               return yield* Effect.die(new Error("No root application recorded on production"));
           }
           // A refused request fails the run at once instead of after the SDK's retries.
@@ -798,9 +813,22 @@ try {
           stage,
           fqn: "PoolWorker",
         }) as Fx.Effect<unknown, unknown, never>;
+        // Without both, the guard refuses every container application write of a release, the
+        // class change's creates included; said in words before the pin is compared.
+        const attr = (rootRow as { attr?: Record<string, unknown> } | undefined)?.attr;
+        const present = (value: unknown) =>
+          typeof value === "string" && value ? "present" : "absent";
+        const rootRecord = `id ${present(attr?.applicationId)}, name ${present(attr?.applicationName)}`;
+        yield* Effect.promise(() => summary(`root row: ${rootRecord}`));
         const mismatch = rootPinMismatch(process.env.POOL_ROOT_IMAGE, rootRow, workerRow);
         if (mismatch) return yield* Effect.die(new Error(mismatch));
-        return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
+        return {
+          stateStoreVersion: version,
+          rows,
+          exported,
+          rootRow: rootRecord,
+          rootPin: "matches the State row",
+        };
       }),
     );
     await output(resolve(root, ".local/release/preflight.json"), result);
