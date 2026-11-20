@@ -30,6 +30,7 @@ import type { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connec
 import { authOptions } from "../../../.upstream/apps/hosted/server/src/implementation/auth.ts";
 import {
   type HostedOAuthOrigins,
+  mcpConnectionStore,
   provisionHostedOAuthResources,
 } from "../../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
 import { beginConnection, pollConnection } from "../../../clients/obsidian/auth.ts";
@@ -126,6 +127,8 @@ export const grantStore = (organization: string) =>
       });
     });
     const owner = { userId: user.id, resource: organization };
+    // The host's own adapter over the grant store's listings, as the dashboard's API reads them.
+    const store = mcpConnectionStore((call) => Effect.tryPromise(() => call(auth.api)));
     const reply = async (response: Response, status = 200) => {
       const body = await response.text();
       assert.equal(response.status, status, body);
@@ -262,6 +265,8 @@ export const grantStore = (organization: string) =>
           });
           return client_id;
         }).pipe(Effect.flatMap(grantOf)),
+      /** The person's connections and agents, as the dashboard lists them. */
+      listings: () => Effect.all({ connections: store.list(owner), agents: store.agents(owner) }),
       /** Disconnect: the person revokes one grant. */
       revokeGrant: (id: GrantId) =>
         Effect.promise(() => auth.api.revokeMcpAgent({ body: { ...owner, id } })),
