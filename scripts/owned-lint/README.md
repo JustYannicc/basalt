@@ -1,7 +1,7 @@
 # Owned lint
 
-Oxlint rules over `scripts/` and `src/`, except `scripts/release-barrier/`, which Alchemy
-replaces. Upstream code keeps upstream's configuration in `.upstream/.oxlintrc.jsonc`.
+Oxlint rules over `scripts/` and `src/`. Upstream code keeps upstream's configuration in
+`.upstream/.oxlintrc.jsonc`.
 `npm run prepare:upstream` installs the pinned tools.
 
 ```sh
