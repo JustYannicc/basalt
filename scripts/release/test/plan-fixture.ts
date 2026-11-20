@@ -94,6 +94,8 @@ export interface Declaration {
      * name; `"with local copy"` adds local development's copy of the connection's origin to it.
      */
     ownDatabaseRow?: true | "with local copy";
+    /** The Worker it calls binds the store's class, as production's tools Worker does: a cycle. */
+    calledBindsStore?: boolean;
   };
 }
 
@@ -414,6 +416,17 @@ const program = (declared: Declaration) =>
         ...(declared.credentials.ownDatabaseRow === "with local copy"
           ? { hyperdrives: Cloudflare.Hyperdrive.getHyperdriveDevOrigin(modelDatabase) }
           : {}),
+      } as never);
+    if (declared.credentials?.calledBindsStore && called)
+      yield* called.bind("BulkStore", {
+        bindings: [
+          {
+            type: "durable_object_namespace",
+            name: "BulkStore",
+            className: "ArtifactsTokenCoordinator",
+            scriptName: credentials.workerName,
+          },
+        ],
       } as never);
     const image = Cloudflare.Container("PoolContainer", {
       ...(declared.container ?? { image: pinnedImage }),

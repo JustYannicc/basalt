@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { isResolved } from "alchemy/Diff";
+import { isResolved, stripUnresolved } from "alchemy/Diff";
 import * as Output from "alchemy/Output";
 import type * as Plan from "alchemy/Plan";
 import type { ResourceState } from "alchemy/State/ResourceState";
@@ -658,9 +658,87 @@ const localCopyForms = [
   ["an older", olderLocalCopy],
 ] as const;
 
+/**
+ * The store's row as the apply itself commits it when it starts an update (alchemy/src/Apply.ts):
+ * the evaluated props, that plan's own binding rows with every value that was not known yet
+ * stripped, and the row before it under `old`. An apply that stops at the upload leaves this.
+ */
+const committedUpdating = async (
+  t: TestContext,
+  given: {
+    /** State before the interrupted apply. */
+    finished: StateRows;
+    /** State that apply planned against; by default `finished`. */
+    plannedFrom?: StateRows;
+    declared: Declared;
+    /** What that apply's other resources had recorded by the time the store committed. */
+    after?: (rows: StateRows) => StateRows;
+    /** The store's evaluated `env` entries in that apply. */
+    env?: (rows: StateRows) => Record<string, unknown>;
+  },
+): Promise<StateRows> => {
+  const { plan } = await makePlan(t, {
+    rows: given.plannedFrom ?? given.finished,
+    declared: given.declared,
+  });
+  const node = plan.resources.ArtifactsCredentials as unknown as Planned["node"];
+  assert.equal(node.action, "update");
+  const after = given.after ? given.after(given.finished) : given.finished;
+  const props = store(given.finished).props;
+  return {
+    ...after,
+    ArtifactsCredentials: {
+      ...store(given.finished),
+      status: "updating",
+      props: { ...props, env: { ...props.env, ...given.env?.(after) } },
+      bindings: stripUnresolved(
+        node.bindings
+          .filter((binding) => binding.action !== "delete")
+          .map(({ sid, data }) => ({ sid, data })),
+      ),
+      old: given.finished.ArtifactsCredentials,
+    } as unknown as ResourceState,
+  };
+};
+/** The vault bucket as an apply that changed its storage class recorded it. */
+const bucketApplied = (rows: StateRows): StateRows => {
+  const applied = rows.VaultAttachments as unknown as { props: object; attr: object };
+  return {
+    ...rows,
+    VaultAttachments: {
+      ...applied,
+      props: { ...applied.props, storageClass: "InfrequentAccess" },
+      attr: { ...applied.attr, storageClass: "InfrequentAccess" },
+    } as unknown as ResourceState,
+  };
+};
+/** State holds a second copy of one binding row after the first; the planner reads the last. */
+const secondCopy =
+  (
+    sid: string,
+    change: (wire: Record<string, unknown>, rows: StateRows) => Record<string, unknown>,
+  ) =>
+  (rows: StateRows) =>
+    withStore(rows, ({ bindings }) => {
+      const first = bindings.find((binding) => binding.sid === sid)!;
+      return {
+        bindings: [
+          ...bindings,
+          {
+            sid,
+            data: {
+              ...first.data,
+              bindings: first.data.bindings.map((wire) => change(wire, rows)),
+            },
+          },
+        ],
+      };
+    });
+const droppedKind = { type: "r2_s3_credentials", name: "POOL_AUTH_DATABASE", bucketName: "x" };
+
 interface AllowanceCase {
   /** The design, or the review that tried it against an earlier form of the rule. */
-  readonly from: "design" | "review 1" | "review 2" | "review 3";
+  readonly from: "design" | "review 1" | "review 2" | "review 3" | "review 4";
   readonly name: string;
   /** Workers whose code moved since the last apply; by default the store and the two it can call. */
   readonly moved?: readonly string[];
@@ -670,6 +748,7 @@ interface AllowanceCase {
   readonly state?: (
     rows: StateRows,
     settle: (declared: Declared) => Promise<StateRows>,
+    t: TestContext,
   ) => StateRows | Promise<StateRows>;
   /** What the stack declares for the store now, on top of `applied`; `"nothing"` for no settings. */
   readonly declares?: Credentials | "nothing";
@@ -1335,6 +1414,170 @@ const allowanceCases: readonly AllowanceCase[] = [
       assert.ok(!planned.node.bindings.some((binding) => binding.sid === "MODE")),
     expect: refusedWith(/bindings\.MODE: delete/u, /props\.env\.MODE: /u),
   },
+  // An interrupted apply, with State written the way the apply itself commits it.
+  {
+    from: "review 4",
+    name: "admits the healing plan run again after it stopped at the store, State as the apply commits it",
+    moved: healingPlan,
+    state: (rows, _settle, t) =>
+      committedUpdating(t, {
+        finished: rows,
+        declared: { credentials: {} },
+        env: (after) => ({ TOOLS_SERVICE: { ...attributes(after, "Api") } }),
+      }),
+    planner: healing,
+    expect: "admitted",
+  },
+  {
+    from: "review 4",
+    name: "admits the healing plan run again when the tools Worker had finished, State as the apply commits it",
+    moved: ["ArtifactsCredentials", "PoolWorker"],
+    state: (rows, _settle, t) =>
+      committedUpdating(t, {
+        finished: rows,
+        plannedFrom: withCodeFromElsewhere(rows, healingPlan),
+        declared: { credentials: {} },
+      }),
+    planner: (planned) => known(planned, "TOOLS_SERVICE", "Api"),
+    expect: "admitted",
+  },
+  {
+    from: "review 4",
+    name: "admits the store's code after a release that moved the database connection stopped at the store",
+    moved: onlyStore,
+    state: (rows, _settle, t) =>
+      committedUpdating(t, {
+        finished: rows,
+        declared: { credentials: connectionMoves },
+        after: connectionMovedEarlier,
+        env: (after) => ({
+          POOL_AUTH_DATABASE: { ...attributes(after, "PoolModelDatabaseConnection") },
+        }),
+      }),
+    declares: connectionMoves,
+    planner: (planned) => known(planned, "POOL_AUTH_DATABASE", "PoolModelDatabaseConnection"),
+    expect: "admitted",
+  },
+  {
+    from: "review 4",
+    name: "refuses the store's code after a release that was updating the vault bucket stopped at the store",
+    // A refusal that is not a real change, kept on purpose. The bucket's jurisdiction was not known
+    // in the interrupted plan, so the unfinished generation's row lost it, and the plan now differs
+    // from that row. Admitting a row because State lost a value would be a guess; the way out is
+    // to finish the interrupted release.
+    moved: onlyStore,
+    state: (rows, _settle, t) =>
+      committedUpdating(t, {
+        finished: rows,
+        declared: { credentials: {}, ...bucketMoves },
+        after: bucketApplied,
+        env: (after) => ({ VAULT: { ...attributes(after, "VaultAttachments") } }),
+      }),
+    stack: bucketMoves,
+    planner: (planned) => {
+      assert.equal(planned.plan.resources.VaultAttachments?.action, "noop");
+      assert.equal(planned.row("VAULT").action, "update");
+      assert.ok(isResolved(planned.row("VAULT").data));
+    },
+    expect: refusedWith(/bindings\.VAULT: update/u),
+  },
+  {
+    from: "review 4",
+    name: "refuses the named Worker when the unfinished generation bound another one",
+    state: (rows) => storeInterrupted(callsCatalog(rows), rows),
+    planner: (planned) => {
+      waits(planned, "TOOLS_SERVICE", "Api");
+      assert.equal(planned.row("TOOLS_SERVICE").action, "update");
+    },
+    expect: refusedWith(TOOLS_ROW),
+  },
+  {
+    from: "review 4",
+    name: "refuses taking back a credential an interrupted apply changed in the named value",
+    state: async (rows, settle) =>
+      storeInterrupted(await settle({ credentials: { token: "token-b" } }), rows),
+    declares: { version: "2" },
+    planner: (planned) => assert.equal(planned.row("EXECUTOR_TELEMETRY").action, "update"),
+    expect: refusedWith(TELEMETRY_ROW, TELEMETRY),
+  },
+  // Production's cycle: the tools Worker binds the store's class, and the store refers to it.
+  {
+    from: "review 4",
+    name: "admits the healing plan when the tools Worker binds the store's class, as production's does",
+    moved: healingPlan,
+    applied: { calledBindsStore: true },
+    planner: healing,
+    expect: "admitted",
+  },
+  {
+    from: "review 4",
+    name: "admits that plan run again after it stopped at the store, State as the apply commits it",
+    moved: healingPlan,
+    applied: { calledBindsStore: true },
+    state: (rows, _settle, t) =>
+      committedUpdating(t, {
+        finished: rows,
+        declared: { credentials: { calledBindsStore: true } },
+      }),
+    planner: (planned) => assert.equal(planned.node.action, "update"),
+    expect: "admitted",
+  },
+  // Shapes this version of the library never writes. The rule does not lean on that.
+  {
+    from: "review 4",
+    name: "refuses a tools row State holds twice, when the copy the planner reads binds another Worker",
+    state: each(
+      entry("TOOLS_SERVICE", (_value, rows) => ({ ...attributes(rows, "Catalog") })),
+      secondCopy("TOOLS_SERVICE", (wire, rows) => ({
+        ...wire,
+        service: attributes(rows, "Catalog").workerName,
+      })),
+    ),
+    planner: (planned) => {
+      waits(planned, "TOOLS_SERVICE", "Api");
+      assert.equal(planned.row("TOOLS_SERVICE").action, "update");
+    },
+    expect: refusedWith(TOOLS_ROW),
+  },
+  {
+    from: "review 4",
+    name: "refuses a value row State holds twice, when the copy the planner reads has another credential",
+    state: secondCopy("EXECUTOR_TELEMETRY", (wire) => ({
+      ...wire,
+      text: JSON.stringify({ version: "1", traces: { headers: { authorization: "token-b" } } }),
+    })),
+    declares: { version: "2" },
+    planner: (planned) => assert.equal(planned.row("EXECUTOR_TELEMETRY").action, "update"),
+    expect: refusedWith(TELEMETRY_ROW),
+  },
+  {
+    from: "review 4",
+    name: "refuses State whose generation under an interrupted apply is itself unfinished",
+    // A secret that differs only in the generation below that one would otherwise never be compared.
+    state: async (rows, settle) => {
+      const older = await settle({ credentials: { secret: "the-older-secret" } });
+      return withStore(rows, (unfinished) => ({
+        status: "updating",
+        old: { ...unfinished, status: "updating", old: older.ArtifactsCredentials },
+      }));
+    },
+    expect: refusedWith(/state: the generation under the interrupted apply is not a finished one/u),
+  },
+  {
+    from: "review 4",
+    name: "refuses a reference row named by a wire entry of a kind the upload drops",
+    // Only local development emits that kind. The live upload drops it, and with no wire entry of
+    // the entry's name left, the provider uploads the entry's own value.
+    state: row("POOL_AUTH_DATABASE", (data) => ({ ...data, bindings: [droppedKind] })),
+    declares: connectionMoves,
+    allow: database,
+    planner: (planned) => waits(planned, "POOL_AUTH_DATABASE", "PoolModelDatabaseConnection"),
+    byHand: (planned) => {
+      const waiting = planned.row("POOL_AUTH_DATABASE");
+      waiting.data = { ...waiting.data, bindings: [droppedKind] };
+    },
+    expect: refusedWith(DATABASE),
+  },
 ];
 
 test("the code-only allowance, case by case", async (context) => {
@@ -1354,7 +1597,7 @@ test("the code-only allowance, case by case", async (context) => {
           given.moved ?? storeWorkers,
         );
       const applied = await settle({ credentials: given.applied ?? {} });
-      const rows = given.state ? await given.state(applied, settle) : applied;
+      const rows = given.state ? await given.state(applied, settle, t) : applied;
       const { plan } = await makePlan(t, {
         rows,
         declared: {
