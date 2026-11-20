@@ -45,6 +45,7 @@ test("preflight checks prepared source and shipped types, and every failure stop
     [".", "scripts/check-connectors.ts --preflight"],
     [".upstream", "run apps:build"],
     [".", "scripts/typecheck.ts"],
+    [".", "scripts/effect-diagnostics.ts"],
   ];
   try {
     for (const path of ["scripts/failure", ".upstream", "bin"])

@@ -173,18 +173,16 @@ const fixture = (
             catch: (cause) => new RpcCallError({ method: "compile", cause }),
           });
           return retryCompilerRequest(request).pipe(
-            Effect.flatMap((result: unknown) => {
-              if (id === "alpha" && options.invalidSource)
-                return Effect.fail(
-                  new VersionBuildFailed({
-                    owner: "organization:team",
-                    name: "alpha",
-                    reason: "compile",
-                    message: "The source does not compile.",
-                  }),
-                );
-              return Effect.succeed(result);
-            }),
+            Effect.filterOrFail(
+              () => !(id === "alpha" && options.invalidSource),
+              () =>
+                new VersionBuildFailed({
+                  owner: "organization:team",
+                  name: "alpha",
+                  reason: "compile",
+                  message: "The source does not compile.",
+                }),
+            ),
           );
         }),
       deploy: ({
