@@ -408,6 +408,107 @@ export const nested = async (request: Request) => {
   return new Response("ok");
 };
 `,
+  // A list records were pushed onto is answered however a response reaches it.
+  "scripts/evasions/test/stores.ts": `
+import assert from "node:assert/strict";
+import type { IncomingMessage, ServerResponse } from "node:http";
+declare function readBody(request: Request): Promise<string>;
+const aliased: unknown[] = [];
+const served = aliased;
+export const postAliased = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  aliased.push(user);
+  return new Response("ok");
+};
+export const listAliased = (_request: Request) => Response.json(served);
+const stringified: unknown[] = [];
+export const postStringified = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  stringified.push(user);
+  const text = JSON.stringify(stringified);
+  return new Response(text);
+};
+const looped: unknown[] = [];
+export const postLooped = async (request: IncomingMessage, res: ServerResponse) => {
+  const body = JSON.parse(await readBody(request as unknown as Request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  looped.push(user);
+  for (const row of looped) res.write(JSON.stringify(row));
+  res.end();
+};
+const chained: unknown[] = [];
+export const postChained = async (request: Request, res: { status(code: number): { json(value: unknown): void } }) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  chained.push(user);
+  res.status(200).json(chained);
+};
+const destructured: unknown[] = [];
+export const postDestructured = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  destructured.push(user);
+  const [first] = destructured;
+  return Response.json(first);
+};
+const helped: unknown[] = [];
+const send = (res: { json(value: unknown): void }, value: unknown) => res.json(value);
+export const postHelped = async (request: Request, res: { json(value: unknown): void }) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  helped.push(user);
+  send(res, helped);
+};
+const inAssertion: unknown[] = [];
+export const answeredInAssertion = async (request: Request, res: { end(value: string): void }) => {
+  const body = JSON.parse(await readBody(request));
+  const call = { name: "" };
+  call.name = body.name; // expect: basalt/no-echo-stub
+  inAssertion.push(call);
+  assert.ok(true, String(res.end(JSON.stringify(call))));
+};
+const set: unknown[] = [];
+export const setter = async (request: Request, res: { end(value: string): void }) => {
+  const body = JSON.parse(await readBody(request));
+  const call = {
+    set name(value: string) {
+      res.end(value);
+    },
+  };
+  call.name = body.name; // expect: basalt/no-echo-stub
+  set.push(call);
+};
+const logged: unknown[] = [];
+export const logs = async (request: Request) => {
+  const call = { rpc: "" };
+  logged.push(call);
+  const body = JSON.parse(await readBody(request));
+  call.rpc = body.method;
+  process.stdout.write(JSON.stringify(logged));
+  return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+};
+let reset: { rpc?: string }[] = [];
+const summary: Record<string, unknown> = {};
+export const resets = async (request: Request) => {
+  const call: { rpc?: string } = {};
+  reset.push(call);
+  const body = JSON.parse(await readBody(request));
+  call.rpc = body.method;
+  return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+};
+export const run = () => {
+  reset = [];
+  summary.first = reset.map((recorded) => recorded.rpc);
+};
+`,
   "src/pool/aliased.test.ts": `
 import { mock as m, test } from "node:test";
 test("aliased", (t) => {
