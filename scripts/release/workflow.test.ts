@@ -217,6 +217,13 @@ test("production secrets reach only the steps that run the entry", () => {
   assert.equal(secretSteps.length, 12);
 });
 
+test("the root pin's full reference, which carries the account, never enters the workflow", () => {
+  const env = /\n    env:\n([\s\S]*?)\n    steps:/u.exec(job("release"))?.[1] ?? "";
+  assert.match(env, /^      POOL_ROOT_PIN: \$\{\{ vars\.POOL_ROOT_PIN \}\}$/mu);
+  // Not in the job env, a step env, GITHUB_ENV or an echo: the entry composes it in its process.
+  assert.doesNotMatch(workflow, /POOL_ROOT_IMAGE/u);
+});
+
 test("acceptance covers the public app as well as the pool", () => {
   const accept = step("Accept the release through the live pool");
   const [pool, app] = [accept.indexOf("deploy.ts accept"), accept.indexOf("node scripts/smoke.ts")];
