@@ -327,6 +327,7 @@ test("the provider read's own go text passes the crash operator's go rule", asyn
       readTarget: unreachable,
       observe: unreachable,
       rootHealth: unreachable,
+      resetRecovery: unreachable,
       crash: unreachable,
       sleep: async () => {},
       now: () => 1,
