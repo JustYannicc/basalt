@@ -30,6 +30,11 @@ interface Pass {
   retained: Witnessed;
 }
 
+/** The runtime refused as one that isn't serving, not for a deliberate or controller-side reason. */
+export function refusesAsNotServing(refusal: unknown) {
+  return notServing.has(runtimeFailureDiagnostic(refusal, "slot_health").runtimeReason);
+}
+
 /**
  * Whether the container now running still belongs to the selected boot. A restart admitted over a
  * running container leaves a record with neither identity nor boot; once that restart has started
@@ -61,7 +66,7 @@ export class RuntimeForcedRestart {
     const reason = runtimeFailureDiagnostic(pass.refusal, "slot_health").runtimeReason;
     // A single `running: false` read proves nothing, so it neither stops nor restarts the bound.
     if (!pass.retained.running) return false;
-    if (!notServing.has(reason) || !holdsSelectedBoot(pass.retained, pass.previous)) {
+    if (!refusesAsNotServing(pass.refusal) || !holdsSelectedBoot(pass.retained, pass.previous)) {
       // The bound counts only an unbroken stretch of a running, refusing selected boot.
       this.declined = undefined;
       await this.clock.notRefusing();

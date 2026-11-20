@@ -6,11 +6,7 @@ import {
   type SlotIdentity,
   type SlotSnapshot,
 } from "./contract.ts";
-import {
-  membershipTtlMs,
-  policyInstallTimeoutMs,
-  type NativeMembershipPolicy,
-} from "../membership-contract.ts";
+import { membershipTtlMs, type NativeMembershipPolicy } from "../membership-contract.ts";
 
 export interface SlotClock {
   now(): number;
@@ -60,9 +56,7 @@ export async function proveSlot(
         ...policy,
         expiresAt: clock.now() + membershipTtlMs,
       })),
-    ].map((policy) =>
-      driver.install(identity, policy, AbortSignal.timeout(policyInstallTimeoutMs)),
-    ),
+    ].map((policy) => driver.install(identity, policy, AbortSignal.timeout(2_000))),
   );
   const health = healthy(
     await driver.health(identity, AbortSignal.timeout(2_000)),

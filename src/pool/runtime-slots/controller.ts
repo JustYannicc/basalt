@@ -17,7 +17,8 @@ import {
 import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "./proof.ts";
 import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
-import { policyInstallTimeoutMs, type NativeMembershipPolicy } from "../membership-contract.ts";
+import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import { refusesAsNotServing } from "./forced-restart.ts";
 import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
 import { SlotFirstStart } from "./first-start.ts";
@@ -238,11 +239,7 @@ export class RuntimeSlots {
         if (slot.fenced) return;
         if (!slot.identity) throw new SlotRefused("uncertain");
         // A failed ACK remains unconfirmed. An explicit fence can resolve it without lying to the writer.
-        await this.deps.driver.install(
-          slot.identity,
-          policy,
-          AbortSignal.timeout(policyInstallTimeoutMs),
-        );
+        await this.deps.driver.install(slot.identity, policy, AbortSignal.timeout(2_000));
       }),
     );
     const after = await this.inspect();
@@ -259,7 +256,12 @@ export class RuntimeSlots {
       if (!role) throw new SlotRefused("identity");
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: true, fencedAt: this.clock.now() },
+        [role]: {
+          ...selection[role],
+          fenced: true,
+          fencedAt: this.clock.now(),
+          unfenced: undefined,
+        },
       });
     });
     this.deps.streams.abortSlot(executionKey(identity));
@@ -278,7 +280,9 @@ export class RuntimeSlots {
     try {
       proof = await proveSlot(this.deps.driver, identity, before, this.clock);
     } catch (refusal) {
-      await this.handBack(identity, refusal);
+      // Only a runtime that isn't serving goes back to recovery; a policy or selection refusal, or a
+      // defect, stays an error for the operator.
+      if (!refusesAsNotServing(refusal) || !(await this.returnToRecovery(identity))) throw refusal;
       return { by: "recovery" };
     }
     await this.deps.storage.transact(async (snapshot, transaction) => {
@@ -296,13 +300,14 @@ export class RuntimeSlots {
         [role]: {
           ...selection[role],
           fenced: false,
-          unfenced: { by: "proof" as const, at: this.clock.now(), proven: true },
+          unfenced: { by: "proof", at: this.clock.now(), proven: true },
         },
       });
     });
     return { by: "proof" };
   }
-  private handBack(identity: SlotIdentity, refusal: unknown) {
+  /** Unfences the active slot unproven, for recovery; false when that isn't this slot's case. */
+  private returnToRecovery(identity: SlotIdentity) {
     const now = this.clock.now();
     return this.deps.storage.transact(async ({ selection }, transaction) => {
       const active = selection?.active;
@@ -313,11 +318,12 @@ export class RuntimeSlots {
         !sameIdentity(active.identity, identity) ||
         active.retirement
       )
-        throw refusal;
+        return false;
       await transaction.put(slotSelectionKey, {
         ...selection,
         active: { ...active, fenced: false, unfenced: { by: "recovery", at: now, proven: false } },
       });
+      return true;
     });
   }
 

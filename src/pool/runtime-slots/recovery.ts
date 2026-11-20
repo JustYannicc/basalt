@@ -115,7 +115,7 @@ export class RuntimeSlotRecovery {
     });
   }
   /** A boot handed back by an unfence that answers again serves once current policies reach it. */
-  private async prove(identity: SlotIdentity, snapshot: SlotSnapshot) {
+  private async proveHandedBack(identity: SlotIdentity, snapshot: SlotSnapshot) {
     await proveSlot(this.deps.driver, identity, snapshot, slotClock);
     await this.deps.storage.transact(async (current, transaction) => {
       const selection = current.selection;
@@ -179,7 +179,7 @@ export class RuntimeSlotRecovery {
     let refusal: unknown;
     try {
       await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(recoveryWarmMs)]));
-      if (awaitsProof(selection.active)) await this.prove(previous, snapshot);
+      if (awaitsProof(selection.active)) await this.proveHandedBack(previous, snapshot);
       this.unavailable = false;
       await this.forced.clock.serving();
       return;

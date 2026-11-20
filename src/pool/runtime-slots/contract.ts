@@ -29,7 +29,7 @@ export const SlotRecord = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
   fenced: Schema.Boolean,
-  /** When the slot was last fenced, for the operator. Slots fenced before it was kept have none. */
+  /** When the fence command last fenced the slot, for the operator; other fences don't record it. */
   fencedAt: Schema.optional(Schema.Number),
   /**
    * How the last unfence ended the fence: with a passing proof, or by handing a slot that couldn't

@@ -235,3 +235,22 @@ test(
     assert.equal(served.status, 200, await served.text());
   },
 );
+
+test(
+  "an unfence refused by the controller's own policy check stays an error, and keeps the fence",
+  {
+    timeout: 20_000,
+  },
+  async (context) => {
+    const { f, identity, advance } = await root(context);
+    await f.send("fence", { identity });
+    // The pool's clean policy has expired and no membership pass has renewed it yet.
+    advance(3_600_000);
+    const refused = await unfence(f, identity);
+    assert.equal(refused.status, 409, "a policy refusal is the operator's, not recovery's");
+    assert.equal((await selection(f)).active.fenced, true);
+    await homePass(f);
+    assert.equal((await unfence(f, identity)).body.result?.by, "proof");
+    assert.equal(await status(f.model()), 200);
+  },
+);
