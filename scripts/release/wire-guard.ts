@@ -639,6 +639,14 @@ const stageGate = (
     return verdict.creates ? { body } : undefined;
   });
 
+/**
+ * The one registry write a release may send through fetch: a rehearsal teardown's delete, which the
+ * stage gate has already placed by repository name (stage-writes.ts). Every other method, and every
+ * run that is not a rehearsal teardown, stays off the registry production's images are served from.
+ */
+export const teardownRegistryDelete = (config: Pick<WireGuardConfig, "stage">, method: string) =>
+  method === "DELETE" && config.stage?.teardown === true && isRehearsalStage(config.stage.stage);
+
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
@@ -664,17 +672,7 @@ const check = (
     if (host.endsWith(".")) return yield* refuse(at("host", "{id}"), "host", "host", host);
     if (write && !canonicalPath(new URL(request.url).pathname))
       return yield* refuse(at("request", "{id}"), "path", "path", "not canonical");
-    // No release writes the account's registry through fetch. A rehearsal teardown's manifest or
-    // tag delete is the one exception, and the stage gate has already placed it by repository name.
-    if (
-      write &&
-      host === REGISTRY_HOST &&
-      !(
-        method === "DELETE" &&
-        config.stage?.teardown === true &&
-        isRehearsalStage(config.stage.stage)
-      )
-    )
+    if (write && host === REGISTRY_HOST && !teardownRegistryDelete(config, method))
       return yield* refuse(at("registry", "{id}"), "registry", "method", method);
     // Alchemy reads the store's token through an ephemeral edge preview of the store script
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
@@ -728,13 +726,6 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
-    // Production's images are served from the same registry: a delete there is only ever a
-    // rehearsal teardown's, which the stage rule has already placed by repository name.
-    if (
-      host === REGISTRY_HOST &&
-      !(config.stage?.teardown === true && isRehearsalStage(config.stage.stage))
-    )
-      return yield* refuse(at("registry image", "{id}"), "delete", "method", method);
     if (
       application !== undefined &&
       provenDeletes.has(application) &&

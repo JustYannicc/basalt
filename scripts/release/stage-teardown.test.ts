@@ -8,7 +8,12 @@ import { StackContext } from "alchemy/StackContext";
 import { Stage } from "alchemy/Stage";
 import { isRehearsalStage, rehearsalStack, stageOwnsName } from "./rehearsal-stage.ts";
 import { TEARDOWN_NOT_CHECKED, teardownStage } from "./stage-teardown.ts";
-import { install, WireRefused, type WireGuardConfig } from "./wire-guard.ts";
+import {
+  install,
+  teardownRegistryDelete,
+  WireRefused,
+  type WireGuardConfig,
+} from "./wire-guard.ts";
 
 const ACCOUNT = "1".repeat(32);
 const OTHER_ACCOUNT = "2".repeat(32);
@@ -459,6 +464,23 @@ test("a teardown's proof read follows no redirect, and writes nothing to the reg
     assert.deepEqual([method, "value" in outcome && outcome.value], [method, "refused"]);
     assert.deepEqual(images.sent, [], method);
   }
+});
+
+test("the guard's own registry rule admits a delete only, and only in a rehearsal teardown", () => {
+  // The stage gate refuses these first on any stage run; this pins the guard's rule on its own.
+  const teardown = { stage: scope };
+  assert.equal(teardownRegistryDelete(teardown, "DELETE"), true);
+  for (const method of ["PUT", "POST", "PATCH", "put"])
+    assert.equal(teardownRegistryDelete(teardown, method), false, method);
+  for (const [label, config] of [
+    ["production: no stage scope", {}],
+    ["the stage outside a teardown", { stage: { ...scope, teardown: false } }],
+    ["a verify-only teardown", { stage: { ...scope, teardown: undefined } }],
+    ["a PR stage", { stage: { ...scope, stage: "test-pr-7" } }],
+    ["a stage past the rehearsal range", { stage: { ...scope, stage: "test-rehearsal-10" } }],
+    ["production named as the stage", { stage: { ...scope, stage: "production" } }],
+  ] as const)
+    assert.equal(teardownRegistryDelete(config, "DELETE"), false, label);
 });
 
 test("a teardown stops at its first failed delete", async () => {
