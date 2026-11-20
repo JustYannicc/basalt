@@ -12,7 +12,12 @@
  *   tail exists to show them. So does a hostname written bare, which no rule can tell from them;
  * - a line this repository wrote (`publicGuidance`): the output rules, except that content
  *   digests, commits and ids stay and a keyword in a sentence is not read as a credential's name.
+ *
+ * In every kind, a path or `file://` URL inside this checkout is printed from the repository's root:
+ * the part above it names a machine and a person, and a stack frame needs only the file and line.
  */
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 type Text = "message" | "output" | "written";
 const maximumBytes = 64 * 1024;
 /** The lines of one stream a failure keeps. */
@@ -50,6 +55,10 @@ export class OutputTail {
     return `[truncated]\n${newline === -1 ? "" : text.slice(newline + 1)}`;
   }
 }
+
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const rootUrl = pathToFileURL(root).href;
+const fromRoot = (text: string) => text.split(rootUrl).join("").split(root).join("");
 
 const stripAnsi = (text: string) =>
   text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
@@ -159,7 +168,8 @@ function bounded(text: string): string {
 
 function scrub(text: string, environment: NodeJS.ProcessEnv, kind: Text, limit: number): string {
   // Whole values first: a cut could leave half of one behind.
-  let result = bounded(withoutEnvironmentValues(stripAnsi(text), environment))
+  // Any other `file://` URL is a machine's path and goes with the rest.
+  let result = bounded(fromRoot(withoutEnvironmentValues(stripAnsi(text), environment)))
     .replace(/[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'`<>]+/giu, "[url]")
     // The same without a scheme; a comment's `// ` is followed by a space.
     .replace(/(?<![:/\w])\/\/[^\s"'`<>/][^\s"'`<>]*/gu, "[url]");

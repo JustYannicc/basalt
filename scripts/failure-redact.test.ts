@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { publicGuidance, publicLine, publicTail, publicText } from "./failure/redact.ts";
 
 const none = {};
@@ -255,6 +256,27 @@ test("a line cut to its limit leaves no part of a credential behind", () => {
     assert.ok(!byShape.includes("sk9LIVE"), byShape.slice(-80));
     assert.ok(byShape.endsWith("[cut]"));
   }
+});
+
+test("a stack frame inside the checkout is printed from the repository root, in every kind", () => {
+  const checkout = new URL("../", import.meta.url);
+  const frames = [
+    `    at deploy (${checkout.href}scripts/preview/lifecycle.ts:120:11)`,
+    `    at ${fileURLToPath(checkout)}scripts/process.ts:48:5`,
+  ];
+  for (const kind of [publicTail, publicGuidance])
+    assert.deepEqual(
+      frames.map((frame) => kind(frame, none).trim()),
+      ["at deploy (scripts/preview/lifecycle.ts:120:11)", "at scripts/process.ts:48:5"],
+    );
+  // A message still loses its dotted names, but never to an absolute path or a URL.
+  for (const frame of frames)
+    assert.match(publicText(frame, none), /^\s+at (?:deploy \()?scripts\//u);
+  // A file outside the checkout names the machine, so neither its URL nor its path is printed.
+  assert.equal(
+    publicTail("    at file:///opt/hostedtoolcache/node/x.mjs:1:1", none),
+    "    at [url]",
+  );
 });
 
 test("a line cannot issue a workflow command or span lines", () => {
