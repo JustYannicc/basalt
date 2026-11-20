@@ -13,3 +13,5 @@ run("node", ["scripts/check-connectors.ts", "--preflight"], root);
 // The pool typecheck reads the shipped authoring declarations, just like the production gate.
 run("bun", ["run", "apps:build"], upstream);
 run("node", ["scripts/typecheck.ts"], root);
+// The type check records Effect diagnostics; this holds Basalt's code to their baseline.
+run("node", ["scripts/effect-diagnostics.ts"], root);
