@@ -77,29 +77,30 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
  /** Loads the apps named (or every app) and returns their tools in path order. */
  type Described<E> = (
    names: ReadonlyArray<string> | "all",
-@@ -677,9 +706,13 @@
+@@ -677,9 +706,14 @@
  
  /**
   * Full detail for exact tool paths. A path that names no tool is reported with the paths in its
 - * app that are fewest edits away.
-+ * app that are fewest edits away, and with why when it lies in a section that lists no tools.
++ * app that are fewest edits away, and with the reason a call to it would be given: the host's for
++ * a tool it hides, or that its section lists no tools.
   */
 -const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>) =>
 +const describeTools = <E>(
 +  described: Described<E>,
-+  emptySection: (path: string) => string | undefined,
++  unavailable: (path: string) => Effect.Effect<string | undefined>,
 +  paths: ReadonlyArray<string>,
 +) =>
    Effect.gen(function* () {
      const named = paths.map(canonical);
      const entries = yield* described(named.filter((path) => path !== ""));
-@@ -698,7 +731,13 @@
+@@ -698,7 +732,13 @@
              .map((candidate) => candidate.path),
            3,
          );
 -        missing.push({ path, matches: closest.map((match) => CodeMode.toolExpression(match)) });
 +        // Read after the path's app has loaded: sections are known from its listing.
-+        const reason = emptySection(name);
++        const reason = yield* unavailable(name);
 +        missing.push({
 +          path,
 +          matches: closest.map((match) => CodeMode.toolExpression(match)),
@@ -108,7 +109,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
          continue;
        }
        items.push({
-@@ -899,6 +938,17 @@
+@@ -899,6 +939,17 @@
      // Tool path prefixes that expose no tools in this execution, and those that do. A call is
      // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
      const namespaces: Namespaces = new Map();
@@ -126,7 +127,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
      /** The version each loaded namespace's tools came from. */
      const loadedFrom = new Map<string, VersionId>();
      const unavailableOf = (app: AppId) => {
-@@ -1102,6 +1152,8 @@
+@@ -1102,6 +1153,8 @@
            failed.push(entry);
            namespaces.set(namespace, entry);
          }
@@ -135,11 +136,8 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
          const described: Target = {
            ...placeOf(app, linked),
            routers: new Map(catalog.routers.map((router) => [router.path, router])),
-@@ -1378,16 +1430,22 @@
-       searchable,
-       lost,
+@@ -1380,14 +1433,19 @@
        unavailableApps,
-+      emptySection,
        unavailableToolReason: (path: string) => {
          const app = apps.find((app) => unique(app) && path.startsWith(`${app.slug}.`));
 -        return app === undefined || backend.unavailableToolReason === undefined
@@ -172,7 +170,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
          output: DescribeResult,
 -        execute: ({ paths }) => real(describeTools(prepared.described, paths)),
 +        execute: ({ paths }) =>
-+          real(describeTools(prepared.described, prepared.emptySection, paths)),
++          real(describeTools(prepared.described, prepared.unavailableToolReason, paths)),
        });
        const runtime = CodeMode.make({
          tools: {
@@ -184,5 +182,5 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
 -    Effect.map(({ value }) => value),
 -  );
 +  readCatalog(backend, (discovered) =>
-+    describeTools(discovered.described, discovered.emptySection, input.paths),
++    describeTools(discovered.described, discovered.unavailableToolReason, input.paths),
 +  ).pipe(Effect.map(({ value }) => value));
