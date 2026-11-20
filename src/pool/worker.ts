@@ -127,7 +127,7 @@ import { historyTrafficPath } from "./model-history/traffic.ts";
 import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
-import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
+import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
@@ -633,9 +633,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return capturedReliability(this.ctx.storage, pool, (now) => {
       if (this.env.POOL_MODEL_HISTORY_ENABLED !== "true")
         throw new Error("Model request history is disabled");
-      return withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-        readPoolReliabilitySlo(db, pool, now),
-      );
+      return readReliabilityInSession(this.env.POOL_AUTH_DATABASE?.connectionString, pool, now);
     });
   }
 
@@ -751,9 +749,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             const target = this.env.POOL_AVAILABILITY_TARGET;
             if (validProbeTarget(target))
               await recordReliability(this.ctx.storage, target, (now) =>
-                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-                  readPoolReliabilitySlo(db, target, now),
-                ),
+                readReliabilityInSession(this.env.POOL_AUTH_DATABASE?.connectionString, target, now),
               ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
           }),
         );
