@@ -59,6 +59,10 @@ export interface Declaration {
   databaseCommand?: boolean;
   /** Binds the vault bucket to PoolWorker; when false the binding is dropped. */
   vaultBinding?: boolean;
+  /** Adds plain env values to ArtifactsCredentials, which State never recorded. */
+  credentialsEnv?: Record<string, string>;
+  /** Binds a second class on ArtifactsCredentials, which State never recorded. */
+  credentialsClass?: string;
 }
 
 /** The recorded production body of the root application read, with synthetic identifiers. */
@@ -309,6 +313,14 @@ const program = (declared: Declaration) =>
         Coordinator: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
           className: "ArtifactsTokenCoordinator",
         }),
+        ...(declared.credentialsClass
+          ? {
+              Second: Cloudflare.DurableObject(declared.credentialsClass, {
+                className: declared.credentialsClass,
+              }),
+            }
+          : {}),
+        ...declared.credentialsEnv,
       },
     });
     const image = Cloudflare.Container("PoolContainer", {
@@ -464,10 +476,19 @@ export const productionRows = (): Record<string, ResourceState> => ({
   ArtifactsCredentials: row(
     "Cloudflare.Worker",
     "ArtifactsCredentials",
+    // The props its last apply recorded: the declaration, its class reference included.
     {
       main: entry,
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+      env: {
+        Coordinator: {
+          kind: "Cloudflare.DurableObject",
+          name: "ArtifactsTokenCoordinator",
+          className: "ArtifactsTokenCoordinator",
+        },
+      },
+      isExternal: true,
     },
     workerAttributes("basalt-production-artifactscredentials", {
       ArtifactsTokenCoordinator: "namespace-coordinator",

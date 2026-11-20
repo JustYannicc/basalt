@@ -421,6 +421,46 @@ test("a code-only release is admitted without, and refused with, a new binding",
   });
 });
 
+test("a code-only allowance moves the bulk-import store's code and nothing else of it", async (context) => {
+  const allowance = (references: string[] = ["env"]) => ({
+    mode: "code-only",
+    allow: [
+      { fqn: "ArtifactsCredentials", action: "update", codeOnly: { references, why: "skew" } },
+    ],
+  });
+  // Its recorded hashes come from another checkout: Alchemy plans an update of its code alone.
+  const code = await planned(context);
+  assert.equal(code.plan.resources.ArtifactsCredentials?.action, "update");
+  assert.ok((await admitted(code.plan, allowance([]))).includes("update ArtifactsCredentials"));
+  // A reference both sides hold whose target moved is admitted only under a named property.
+  const rows = productionRows();
+  const props = (
+    rows.ArtifactsCredentials as unknown as { props: { env: { Coordinator: object } } }
+  ).props;
+  props.env.Coordinator = { ...props.env.Coordinator, recordedOutput: "before" };
+  const moved = await planned(context, { rows });
+  assert.ok((await admitted(moved.plan, allowance())).includes("update ArtifactsCredentials"));
+  assert.deepEqual((await refused(moved.plan, allowance([]))).rules, [
+    "code-only-allowance-exceeded ArtifactsCredentials",
+  ]);
+  // A value of its own, or an entry added, is configuration, not a moved reference.
+  const env = await planned(context, { declared: { credentialsEnv: { MODE: "next" } } });
+  const byEnv = await refused(env.plan, allowance());
+  assert.deepEqual(byEnv.rules, [
+    "code-only-binding-change ArtifactsCredentials",
+    "code-only-allowance-exceeded ArtifactsCredentials",
+  ]);
+  assert.match(byEnv.message, /props\.env\.MODE: absent -> /u);
+  // A class it starts to bind is a binding change, whatever the allowance names.
+  const bound = await planned(context, { declared: { credentialsClass: "SecondCoordinator" } });
+  const byClass = await refused(bound.plan, allowance());
+  assert.ok(
+    byClass.rules.includes("code-only-allowance-exceeded ArtifactsCredentials"),
+    byClass.rules.join(", "),
+  );
+  assert.match(byClass.message, /bindings\.Second: create/u);
+});
+
 test("a filtered plan needs the policy's include list, and the list needs a filtered plan", async (context) => {
   const selected = await planned(context, { include: ["PoolWorker"] });
   assert.deepEqual((await refused(selected.plan)).rules, ["filtered-plan-without-include (plan)"]);
@@ -499,6 +539,81 @@ test("a Worker binding whose value waits on another row is not a removal", async
 });
 
 const rootUnchanged = { poolContainer: { fqn: "PoolContainer", image: pinnedImage } };
+
+test("with a root pin, the pool Worker names the pin's input as its root's identity, both ways", async () => {
+  const input = "526fa60bed0df442";
+  const worker = (env: Record<string, string>) => ({
+    action: "update",
+    resource: { FQN: "PoolWorker", Type: "Cloudflare.Worker", Props: { env } },
+    props: { env },
+    state: { status: "updated", props: { env }, bindings: [] },
+    bindings: [],
+  });
+  const plan = (node: object) =>
+    ({ resources: { PoolWorker: node }, deletions: {}, actions: {}, actionDeletions: {} }) as never;
+  const rules = async (node: object, pinned: string | undefined) => {
+    const exit = await Effect.runPromiseExit(
+      checkPlan(
+        plan(node),
+        await policy({
+          mode: "code-only",
+          poolContainer: {
+            fqn: "PoolContainer",
+            image: pinnedImage,
+            imageRelease: true,
+            ...(pinned ? { input: pinned } : {}),
+          },
+        }),
+      ),
+    );
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map(
+          (v) => `${v.rule} ${v.change.join("; ")}`,
+        )
+      : [];
+  };
+  const both = { POOL_IMAGE_HASH: input, POOL_DESIRED_IMAGE_INPUT: input };
+  assert.deepEqual(await rules(worker(both), input), []);
+  // Today's context hash as the desired input would stop the apply after the upload.
+  assert.deepEqual(
+    await rules(worker({ ...both, POOL_DESIRED_IMAGE_INPUT: "0123456789abcdef" }), input),
+    [
+      "pool-worker-image-input-not-pinned env.POOL_DESIRED_IMAGE_INPUT: differs from the root pin's input",
+    ],
+  );
+  assert.deepEqual(await rules(worker({ POOL_DESIRED_IMAGE_INPUT: input }), input), [
+    "pool-worker-image-input-not-pinned env.POOL_IMAGE_HASH: differs from the root pin's input",
+  ]);
+  // Without a pin the root builds from the context, and the rule has nothing to compare.
+  assert.deepEqual(await rules(worker({}), undefined), []);
+});
+
+test("a release given no root pin, a tag, or another digest than the root runs is refused in plan", async (context) => {
+  // Unset: the entry hands the check an empty image, which is no digest reference.
+  await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: "" } }));
+  // A tag names whatever the registry holds under it today.
+  const tag = pinnedImage.replace(/@sha256:e{64}$/u, ":latest");
+  await assert.rejects(policy({ poolContainer: { fqn: "PoolContainer", image: tag } }));
+  // Another digest, set consistently: the declaration follows the pin, so the pin rule alone
+  // cannot see it; the recorded image the root runs differs from it.
+  const other = pinnedImage.replace(/e{64}$/u, "f".repeat(64));
+  const wrong = await planned(context, { declared: { container: { image: other } } });
+  const { rules, message } = await refused(wrong.plan, {
+    poolContainer: { fqn: "PoolContainer", image: other },
+  });
+  assert.deepEqual(rules, [
+    "pool-container-configuration-change PoolContainer",
+    "pool-container-not-noop PoolContainer",
+  ]);
+  assert.match(message, /props\.image: /u);
+  // The right pin has no configuration change: only the old layer's hash-only row remains.
+  const right = await planned(context);
+  assert.deepEqual((await refused(right.plan, rootUnchanged)).rules, [
+    "pool-container-not-noop PoolContainer",
+  ]);
+  // The plan only read: nothing was sent that could roll the root.
+  assert.ok(wrong.requests.every((request) => request.startsWith("GET ")));
+});
 
 test("no release but a declared image release may plan any row on the root, a hash-only update included", async (context) => {
   // Production's root row was written by the old release layer: its recorded image hash is the old

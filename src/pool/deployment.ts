@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { fleetBindings, fleetClasses, fleetInfrastructure } from "./fleet-deployment.ts";
-import { desiredPoolImageInput } from "./image-release-plan.ts";
+import { readinessImageInput } from "./image-release-plan.ts";
 import { bindPoolObservation } from "./fleet-observation.ts";
 import { rootContainer } from "./root-image-pin.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
@@ -48,7 +48,7 @@ export const poolWorker = Effect.gen(function* () {
     );
   const database = yield* poolDatabaseInfrastructure;
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
-  const { image, application, imageHash, imageInput } = yield* rootContainer;
+  const { image, application, imageHash, imageInput, pinnedInput } = yield* rootContainer;
   const fleet = yield* fleetInfrastructure;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
   const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
@@ -63,7 +63,8 @@ export const poolWorker = Effect.gen(function* () {
       ...fleetBindings(fleet, yield* fleetClasses),
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       ...(yield* masterCrashBinding),
-      POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
+      // No release in this layer names a candidate image, so a pinned root expects the pin.
+      POOL_DESIRED_IMAGE_INPUT: yield* readinessImageInput(pinnedInput, false).pipe(Effect.orDie),
       BulkUsageImport: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
         className: "ArtifactsTokenCoordinator",
         scriptName: (yield* ArtifactsCredentials).workerName,

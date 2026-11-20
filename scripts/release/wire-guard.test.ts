@@ -18,6 +18,7 @@ import * as Vectorize from "@distilled.cloud/cloudflare/vectorize";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import * as Workflows from "@distilled.cloud/cloudflare/workflows";
 import { install, selfTest, WireRefused, type WireGuardConfig } from "./wire-guard.ts";
+import { bindingShapes } from "./fixed-bindings.ts";
 import {
   ACCOUNT,
   MAIN,
@@ -140,6 +141,84 @@ test("the cutover migration is delivered when PoolWorker's allow-list names both
   assert.deepEqual((run.received[0]!.metadata as { migrations: unknown }).migrations, {
     new_sqlite_classes: CUTOVER,
   });
+});
+
+test("a Worker released as code only uploads its serving bindings and no migration", async (t) => {
+  // The serving version as Cloudflare reads it back: namespace ids, values and secrets differ.
+  const served = bindingShapes(
+    [
+      { type: "plain_text", name: "POOL_MODE", text: "served" },
+      {
+        type: "durable_object_namespace",
+        name: "POOL_CONTAINER",
+        class_name: "PoolContainer",
+        namespace_id: "ns-1",
+      },
+      {
+        type: "durable_object_namespace",
+        name: "POOL_RUNTIME_BLUE",
+        class_name: "PoolRuntimeBlue",
+        namespace_id: "ns-2",
+      },
+      {
+        type: "durable_object_namespace",
+        name: "POOL_RUNTIME_GREEN",
+        class_name: "PoolRuntimeGreen",
+        namespace_id: "ns-3",
+      },
+      {
+        type: "durable_object_namespace",
+        name: "BulkUsageImport",
+        class_name: "ArtifactsTokenCoordinator",
+        script_name: "synthetic-other-worker",
+        namespace_id: "ns-4",
+      },
+      { type: "secret_text", name: "POOL_SECRET" },
+    ],
+    POOL_WORKER,
+  );
+  const fixed = { fixedBindings: { [POOL_WORKER]: served } };
+  const same = await guarded(t, fixed, () => Workers.putScript(poolWorkerUpload()));
+  assert.ok(
+    Exit.isSuccess(same.exit),
+    String(Exit.isFailure(same.exit) && Cause.squash(same.exit.cause)),
+  );
+  const upload = poolWorkerUpload();
+  const withBindings = (bindings: typeof upload.metadata.bindings) =>
+    Workers.putScript({ ...upload, metadata: { ...upload.metadata, bindings } });
+  const all = upload.metadata.bindings ?? [];
+  for (const [change, bindings, named] of [
+    ["drops a binding", all.filter((binding) => binding.name !== "POOL_SECRET"), "POOL_SECRET"],
+    [
+      "moves a class",
+      all.map((binding) =>
+        binding.name === "POOL_RUNTIME_BLUE"
+          ? { ...binding, className: "PoolRuntimeNext" }
+          : binding,
+      ),
+      "POOL_RUNTIME_BLUE",
+    ],
+    [
+      "adds a binding",
+      [...all, { type: "plain_text" as const, name: "EXTRA", text: "synthetic" }],
+      "EXTRA",
+    ],
+  ] as const) {
+    const run = await guarded(t, fixed, () => withBindings([...bindings]));
+    const refused = refusalOf(run.exit);
+    assert.equal(refused.field, "bindings", change);
+    // Names only: no value, class or script name in the refusal.
+    assert.equal(refused.value, named, change);
+    assert.deepEqual(run.received, [], change);
+  }
+  // A migration refuses even where the script's allow-list and pinned code would admit it.
+  const migrating = await guarded(
+    t,
+    { ...fixed, sqliteClasses: { [POOL_WORKER]: CUTOVER }, mainModuleSha256: pinned },
+    () => Workers.putScript(poolWorkerUpload({ newSqliteClasses: CUTOVER })),
+  );
+  assert.equal(refusalOf(migrating.exit).field, "migrations.new_sqlite_classes");
+  assert.deepEqual(migrating.received, []);
 });
 
 test("an allow-listed new SQLite class is refused unless the script's live code is pinned", async (t) => {

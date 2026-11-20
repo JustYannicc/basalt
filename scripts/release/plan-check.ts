@@ -54,6 +54,8 @@ export const PlanPolicy = Schema.Struct({
      * pool's own restart then refuses for good.
      */
     imageRelease: Schema.optional(Schema.Literal(true)),
+    /** The pin's build input, supplied by the caller with the image: what the root really runs. */
+    input: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u))),
   }),
   poolWorker: exactFqn,
   artifactsCredentials: exactFqn,
@@ -67,6 +69,17 @@ export const PlanPolicy = Schema.Struct({
        * waits on a database command's hash. A resolved difference, such as another database, refuses.
        */
       unresolvedOnly: Schema.optional(Schema.Literal(true)),
+      /**
+       * Admitted only as a change of the Worker's code: no binding of the row changes and no
+       * property differs, except inside an entry of a named `references` property that both
+       * sides hold as a reference to another resource (a Worker it calls moved with the release).
+       * An entry's own value, or an entry added or removed, still refuses. Its classes and
+       * migrations follow from its bindings; the wire guard holds the upload to the serving
+       * version's bindings (`wire.fixedBindings`) and refuses any migration.
+       */
+      codeOnly: Schema.optional(
+        Schema.Struct({ references: Schema.Array(Schema.String), why: Schema.String }),
+      ),
     }),
   ),
   /** `code-only`: when set, only these commands may run; any other Command row refuses. */
@@ -584,8 +597,70 @@ export const checkPlan = (
         node.bindings.every((binding) => binding.action === "noop")
       );
     };
+    // Readiness after the upload refuses a root whose recorded input differs from what the pool
+    // Worker expects. A pinned root runs the pin's input, so both identities must name it.
+    const pinnedInput = policy.poolContainer.input;
+    const poolWorker = nodes.find((candidate) => candidate.resource.FQN === policy.poolWorker);
+    if (pinnedInput !== undefined && poolWorker) {
+      const declared = record(poolWorker.resource.Props) ? poolWorker.resource.Props : {};
+      const env = record(declared.env) ? declared.env : {};
+      const differ = ["POOL_IMAGE_HASH", "POOL_DESIRED_IMAGE_INPUT"].filter(
+        (key) => env[key] !== pinnedInput,
+      );
+      if (differ.length)
+        violations.push({
+          fqn: poolWorker.resource.FQN,
+          type: poolWorker.resource.Type,
+          action: poolWorker.action,
+          rule: "pool-worker-image-input-not-pinned",
+          change: differ.map((key) => `env.${key}: differs from the root pin's input`),
+          why: "The pool Worker's readiness compares the root's recorded image input with these. The pinned root runs the pin's input, so another value stops the apply after the Worker is uploaded.",
+          fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
+        });
+    }
+    // What a code-only allowance does not cover on a row: a binding that changes, or a property
+    // that differs other than inside a reference both sides hold.
+    const beyondCode = (change: PlanChange, references: ReadonlyArray<string>) => {
+      const node = nodes.find((candidate) => candidate.resource.FQN === change.fqn);
+      const lines = change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`);
+      if (!node || !("props" in node)) return [...lines, "props: not readable"];
+      const before = recorded(node)?.props as Record<string, unknown> | undefined;
+      const after = node.props as Record<string, unknown> | undefined;
+      const entry = (props: Record<string, unknown> | undefined, prop: string, key: string) => {
+        const holder = props?.[prop];
+        return record(holder) ? holder[key] : undefined;
+      };
+      for (const line of propChanges(before, after)) {
+        const [, prop = "", key = ""] = /^props\.([^.:]+)\.([^.:]+)[.:]/u.exec(line) ?? [];
+        const old = entry(before, prop, key);
+        const next = entry(after, prop, key);
+        // A reference whose target moved: the entry was recorded as an object, and is one again
+        // or is not known yet. Its own identity is the binding's, checked above and at the wire.
+        if (references.includes(prop) && record(old) && (record(next) || !isResolved(next)))
+          continue;
+        lines.push(line);
+      }
+      return lines;
+    };
     if (policy.mode === "code-only")
-      for (const change of changes)
+      for (const change of changes) {
+        const codeOnly = policy.allow.find(
+          (entry) => entry.codeOnly && entry.fqn === change.fqn && entry.action === change.action,
+        )?.codeOnly;
+        if (codeOnly) {
+          const beyond = beyondCode(change, codeOnly.references);
+          if (beyond.length)
+            violations.push({
+              fqn: change.fqn,
+              type: change.type,
+              action: change.action,
+              rule: "code-only-allowance-exceeded",
+              change: beyond,
+              why: "This Worker is admitted as a change of its code only. A binding or property change can move its Durable Object classes or what it is attached to, which a Worker rollback does not undo.",
+              fix: "Ship that change in its own reviewed release; this policy admits only the Worker's code.",
+            });
+          continue;
+        }
         if (
           // `allow` names what else a reviewer accepted. Otherwise only code moves: an update of any
           // Worker but the bulk-import store's (binding and class changes are refused above), the
@@ -610,6 +685,7 @@ export const checkPlan = (
             "A code-only release moves Worker code (and runs migration steps) and nothing else, so a Worker rollback undoes the code.",
             "Ship this change in its own release, or review a policy in release mode.",
           );
+      }
     if (policy.mode === "cutover-classes") {
       const credentials = changes.find((change) => change.fqn === policy.artifactsCredentials);
       if (credentials)
