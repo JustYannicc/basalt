@@ -1,0 +1,416 @@
+name: Release
+# The audit reads an override from the run name; the runs API does not return inputs.
+run-name: "${{ inputs.override_reason && format('Release (override: {0})', inputs.override_reason) || 'Release' }}"
+
+# The release path: Alchemy's own plan and apply, wrapped by the checks no tool provides
+# (scripts/release/deploy.ts). A main push that passes Check plans and applies automatically;
+# a dispatch can plan only, or apply exactly a plan digest someone reviewed.
+on:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: plan prints the checked plan and its digest; apply applies exactly that digest
+        required: true
+        type: choice
+        options: [plan, apply]
+        default: plan
+      policy:
+        description: Plan policy in scripts/release/policies (release, or a cutover step)
+        required: true
+        type: choice
+        # code: any code-only release (every changed Worker, rollbackable); cutover-*: the two cutover steps.
+        options: [release, code, code-restart, cutover-code, cutover-classes]
+        default: code
+      plan_digest:
+        description: For apply, the digest printed by the reviewed plan run
+        required: false
+        type: string
+      attempt:
+        description: For apply, the attempt id printed by the reviewed plan run
+        required: false
+        type: string
+      go:
+        description: Required while the release hold is set; recorded in the run summary
+        required: false
+        type: string
+      override_reason:
+        description: Lets a stopped line release (the first cutover); printed in the run name and summary
+        required: false
+        type: string
+      candidate:
+        description: An exact main commit to release instead of main's head (the class change runs on the commit the code-only release deployed)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Check runs finish out of order. An automatic run releases the newest passing main commit that
+  # contains its own, and skips one production already contains, so older code never lands over newer.
+  candidate:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.path == '.github/workflows/ci.yml')
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      release: ${{ steps.pick.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Pick the candidate
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+          CANDIDATE_INPUT: ${{ inputs.candidate }}
+          PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$CANDIDATE_INPUT" ]; then
+              # A named commit must already be on main: the class change re-uploads the serving code.
+              if ! printf '%s' "$CANDIDATE_INPUT" | grep -Eq '^[0-9a-f]{40}$' || ! git merge-base --is-ancestor "$CANDIDATE_INPUT" "$CANDIDATE"; then
+                echo "::error::candidate must be a full commit on main."
+                exit 1
+              fi
+              CANDIDATE="$CANDIDATE_INPUT"
+            fi
+            printf 'sha=%s\nrelease=true\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # While the hold is set an automatic run releases nothing: skipped, not a red run per push.
+          if [ -n "$PRODUCTION_RELEASE_HOLD" ]; then
+            echo "The release hold is set; $CANDIDATE waits for a dispatch under a coordinator GO." >> "$GITHUB_STEP_SUMMARY"
+            printf 'sha=%s\nrelease=false\n' "$CANDIDATE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          GITHUB_OUTPUT="$RUNNER_TEMP/newer" MAIN_RELEASE_CANDIDATE="$CANDIDATE" node scripts/release-merge/main-candidate.ts newer
+          newer=$(sed -n 's/^newer=//p' "$RUNNER_TEMP/newer")
+          sha="${newer:-$CANDIDATE}"
+          live=""
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=30" --jq '.[].id'); do
+            if [ "$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')" = "success" ]; then
+              live=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id" --jq .sha)
+              break
+            fi
+          done
+          if [ -n "$live" ] && git cat-file -e "$live^{commit}" 2>/dev/null && git merge-base --is-ancestor "$sha" "$live"; then
+            echo "Production already contains $sha (live $live); nothing to release." >> "$GITHUB_STEP_SUMMARY"
+            printf 'sha=%s\nrelease=false\n' "$sha" >> "$GITHUB_OUTPUT"
+          else
+            printf 'sha=%s\nrelease=true\n' "$sha" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: candidate
+    # The candidate job takes only a main push or a dispatch from main, and a dispatched candidate
+    # must be a commit on main. `github.ref` is main under both triggers; stating it here lets the
+    # secrets guard see that this job, which holds production's secrets, runs on main's ref only.
+    if: github.ref == 'refs/heads/main' && needs.candidate.outputs.release == 'true'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      deployments: write
+      statuses: read
+    # On the job, not the workflow, so a run whose jobs are all skipped can't replace a pending release.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment:
+      name: production-release
+      deployment: false
+    env:
+      PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
+      BASALT_RELEASE_CANDIDATE: ${{ needs.candidate.outputs.sha }}
+      PLAN_DIGEST_INPUT: ${{ inputs.plan_digest }}
+      ATTEMPT_INPUT: ${{ inputs.attempt }}
+      MODE: ${{ inputs.mode || 'apply' }}
+      # An automatic release is code-only; anything else needs a dispatch with its policy named.
+      POLICY_NAME: ${{ inputs.policy || 'code' }}
+      POLICY: scripts/release/policies/${{ inputs.policy || 'code' }}.json
+      POOL_ROOT_IMAGE: ${{ vars.POOL_ROOT_IMAGE }}
+      ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
+      ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
+      POOL_AVAILABILITY_TARGET: ${{ vars.POOL_AVAILABILITY_TARGET }}
+      POOL_AUTOMATIC_RECOVERY_TARGET: ${{ vars.POOL_AUTOMATIC_RECOVERY_TARGET }}
+      POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASALT_RELEASE_CANDIDATE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Respect the release hold
+        env:
+          GO: ${{ inputs.go }}
+        run: |
+          if [ -n "$PRODUCTION_RELEASE_HOLD" ]; then
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || ! printf '%s' "$GO" | grep -Eq '^coordinator-20[0-9]{2}-[0-9]{2}-[0-9]{2}T'; then
+              echo "::error::The release hold is set. Only a dispatch carrying a coordinator GO may run."
+              exit 1
+            fi
+            echo "Release hold set; running under GO $GO" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: A dispatched apply names its reviewed plan
+        if: github.event_name == 'workflow_dispatch' && env.MODE == 'apply'
+        run: |
+          if [ -z "$PLAN_DIGEST_INPUT" ] || [ -z "$ATTEMPT_INPUT" ]; then
+            echo "::error::An apply dispatch needs the plan_digest and attempt its reviewed plan run printed."
+            exit 1
+          fi
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Stop the line and require a rehearsal
+        if: hashFiles('scripts/guardrails/release-gate.ts') != ''
+        env:
+          OVERRIDE_REASON: ${{ inputs.override_reason }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/guardrails/release-gate.ts "$BASALT_RELEASE_CANDIDATE"
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Prepare
+        run: npm run prepare:upstream
+      - name: Build and measure Worker startup
+        run: |
+          npm run build
+          npm run check:startup
+      # Read-only, every run: the State store version, every State row, the retired layer's records
+      # exported sealed, no unresolved Home schema migration in its journal, and the root pin.
+      - name: Preflight against State
+        env: &release-secrets
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID }}
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
+          EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID }}
+          EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GITLAB_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_ID }}
+          EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID }}
+          EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_MIRO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_ID }}
+          EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_NOTION_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_ID }}
+          EXECUTOR_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_TODOIST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_ID }}
+          EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_TRELLO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_ID }}
+          EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ZOHO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_ID }}
+          EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID }}
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID }}
+          EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+          MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
+          MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
+          APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          GOOGLE_MAPS_ROUTES_API_KEY: ${{ secrets.GOOGLE_MAPS_ROUTES_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+          POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+          APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
+          POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+        run: bun scripts/release/deploy.ts preflight --stage production
+      # A dispatched apply re-plans with the reviewed attempt id, so the digest must come out the same:
+      # every record below names the plan that is applied.
+      - name: Plan and check
+        env: *release-secrets
+        id: plan
+        run: |
+          bun scripts/release/deploy.ts plan --stage production --policy "$POLICY" ${ATTEMPT_INPUT:+--attempt "$ATTEMPT_INPUT"}
+          digest=$(jq -r .digest .local/release/plan.json)
+          if [ "$MODE" = "apply" ] && [ -n "$PLAN_DIGEST_INPUT" ] && [ "$digest" != "$PLAN_DIGEST_INPUT" ]; then
+            echo "::error::The plan changed since it was reviewed: $digest, reviewed $PLAN_DIGEST_INPUT."
+            exit 1
+          fi
+          attempt=$(jq -r .attempt .local/release/plan.json)
+          printf 'digest=%s\nattempt=%s\n' "$digest" "$attempt" >> "$GITHUB_OUTPUT"
+          # The apply step reads these from the job env, so its own env carries only the secrets.
+          printf 'PLAN_DIGEST=%s\nATTEMPT=%s\n' "$digest" "$attempt" >> "$GITHUB_ENV"
+      # Nothing below runs against a pegged database (the history import pauses at the same 60%).
+      - name: Refuse while the pool database is busy
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts db-load --stage production
+      # One GitHub Deployment per production attempt from here on (the guardrails read only these):
+      # success, or failure for a refused, failed or rolled-back apply.
+      - name: Record the deployment
+        id: deployment
+        if: env.MODE == 'apply'
+        env:
+          OVERRIDE_REASON: ${{ inputs.override_reason }}
+          GO: ${{ inputs.go }}
+          DIGEST: ${{ steps.plan.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          payload=$(jq -cn --arg policy "$POLICY_NAME" --arg digest "$DIGEST" --arg run "$GITHUB_RUN_ID" \
+            --arg override "$OVERRIDE_REASON" --arg go "$GO" \
+            '{path: "alchemy", policy: $policy, planDigest: $digest, run: $run, override: $override, go: $go}')
+          id=$(gh api "repos/$GITHUB_REPOSITORY/deployments" -f ref="$BASALT_RELEASE_CANDIDATE" -f environment=production \
+            -F auto_merge=false -f 'required_contexts[]' -f description="Alchemy release ($POLICY_NAME)" \
+            -f payload="$payload" --jq .id)
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress >/dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Record the serving version of every Worker the plan updates
+        env: *release-secrets
+        id: serving
+        if: env.MODE == 'apply'
+        run: |
+          bun scripts/release/deploy.ts serving --stage production --from .local/release/plan.json --out .local/release/serving.json
+          echo "workers=$(jq -c '[.workers[].fqn]' .local/release/serving.json)" >> "$GITHUB_OUTPUT"
+      - name: Back up the pool database
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        run: bun scripts/release/deploy.ts backup --stage production --name "basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID"
+      - name: Count accounts and history before
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        # A code-only release changes no data by itself; skip the multi-million-row count then.
+        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
+      # No release may restart the root: its boot is read now and must still serve after the apply.
+      - name: Record the root's boot before the apply
+        env: *release-secrets
+        if: env.MODE == 'apply'
+        # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
+        # pool that does not answer; every other release needs the root's boot.
+        run: |
+          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
+      - name: What was verified before the irreversible step
+        if: env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'
+        run: |
+          {
+            echo "### Verified immediately before the class change (cannot be rolled back)"
+            echo "- plan digest: \`${{ steps.plan.outputs.digest }}\` (checked by the cutover-classes policy; the apply refuses if it changed)"
+            echo "- wire-guard self-test: passed in the plan run, and runs again first thing in the apply process"
+            echo "- PlanetScale backup: \`basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID\`, completed in this run"
+            echo "- database load: under 60% (step above)"
+            echo "- counts: \`$(jq -c . .local/release/before.json)\`"
+            echo "- serving versions recorded: \`${{ steps.serving.outputs.workers }}\`; the live PoolWorker main module digest is pinned by the policy"
+            echo "- controller storage: recoverable for 30 days by point-in-time recovery from this run's start ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Apply the reviewed plan
+        id: apply
+        if: env.MODE == 'apply'
+        # The outcome decides the rollback below; the job still ends red if anything failed.
+        continue-on-error: true
+        env: *release-secrets
+        run: bun scripts/release/deploy.ts apply --stage production --policy "$POLICY" --plan-digest "$PLAN_DIGEST" --attempt "$ATTEMPT"
+      - name: Accept the release through the live pool
+        env: *release-secrets
+        id: accept
+        if: env.MODE == 'apply' && steps.apply.outcome == 'success'
+        continue-on-error: true
+        # Every request must succeed; the runtimes that served are recorded (a code update may restart the root).
+        # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
+        # release may change the hosted app's Workers too.
+        # A declared root restart first waits, bounded by the policy, for the root's new boot; then every
+        # request must succeed on that one boot.
+        run: |
+          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
+          if [ -n "$within" ]; then expect=(--expect restart --within "$within" --serving .local/release/serving.json); fi
+          bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
+          node scripts/smoke.ts
+      # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
+      - name: Roll back a failed release
+        env: *release-secrets
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        run: |
+          bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
+          # The release is red either way; this says whether the version rolled back to still serves.
+          if ! bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json; then
+            echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
+          fi
+          echo "::error::Release rolled back (every Worker the plan updated); the cause is in the step above and in the sealed detail."
+          exit 1
+      # The code before a healing release could not restart the pool, so putting it back helps nothing
+      # and would stop a restart in progress. The run ends red; a rollback is its own GO.
+      - name: Stop on a failed healing release
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'code-restart' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        # Serving but needing a person is its own result: nothing is undone, and the run is not green.
+        run: |
+          outcome="$(jq -r '.outcome // "not-serving"' .local/release/acceptance.json 2>/dev/null || echo not-serving)"
+          if [ "$outcome" = "serving-needs-person" ]; then
+            echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)). Nothing was undone; look at the recovery with the pool serving."
+            exit 1
+          fi
+          echo "::error::NOT SERVING: the healing release failed, or the pool did not serve on a new root boot within its bound. It is not rolled back: the code before it could not restart the pool. The last read and the stop path are in .local/release/acceptance.json; the serving versions in .local/release/serving.json; a rollback is a separate GO."
+          exit 1
+      - name: Stop on a failed class change
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        run: |
+          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          exit 1
+      - name: Count accounts and history after
+        env: *release-secrets
+        if: env.MODE == 'apply' && steps.apply.outcome == 'success'
+        run: |
+          bun scripts/release/deploy.ts snapshot --stage production --out .local/release/after.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
+          bun scripts/release/deploy.ts compare --before .local/release/before.json --after .local/release/after.json
+      - name: Finish the deployment record
+        if: always() && steps.deployment.outputs.id != ''
+        env:
+          OUTCOME: ${{ job.status == 'success' && 'success' || 'failure' }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/deployments/${{ steps.deployment.outputs.id }}/statuses" -f state="$OUTCOME" >/dev/null
+      - name: Keep the plan and the counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          include-hidden-files: true
+          path: .local/release/*.json
+          if-no-files-found: ignore
+      # Sealed with the encryption key; kept because the first full apply rewrites the stack output.
+      - name: Keep the retired layer's records, sealed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-records
+          include-hidden-files: true
+          path: .local/release/legacy/*.json
+          if-no-files-found: ignore

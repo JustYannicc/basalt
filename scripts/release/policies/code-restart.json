@@ -1,0 +1,84 @@
+{
+  "description": "The code-only release that heals a pool whose runtime runs but refuses: exactly the code policy, plus a stated root restart. The new controller code stops that runtime gracefully and its recovery starts a new one, so acceptance waits for the new boot and then requires every request on it. A failure is not rolled back: the code before it could not restart the pool. Its database rows are exactly what a release from main applies today: the named commands, and the two connections only while their origin waits on those commands. The last three commands exist on test stages only, so stage-heal runs this same policy.",
+  "check": {
+    "mode": "code-only",
+    "protected": {
+      "fqns": [
+        "PoolContainer",
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+        "PoolRuntime",
+        "VaultAttachments",
+        "PublicSiteWaitlist",
+        "PoolObservationSecrets",
+        "PoolProviderObservationToken",
+        "ArtifactsCredentials"
+      ],
+      "types": [
+        "Cloudflare.Hyperdrive",
+        "Planetscale.*",
+        "Cloudflare.R2.Bucket",
+        "Cloudflare.D1Database",
+        "Cloudflare.SecretsStore"
+      ]
+    },
+    "removals": [],
+    "poolContainer": {
+      "fqn": "PoolContainer",
+      "image": ""
+    },
+    "poolWorker": "PoolWorker",
+    "artifactsCredentials": "ArtifactsCredentials",
+    "allow": [
+      {
+        "fqn": "ArtifactsCredentials",
+        "action": "update",
+        "codeOnly": {
+          "references": [
+            "env"
+          ],
+          "why": "The release ships main as a whole. Holding the bulk-import store's Worker at older code while the pool Worker and the history schema move is version skew, so its code moves with the rest. Only its code: a changed binding or property refuses here, and its upload must carry the serving version's bindings and no migration (wire.fixedBindings), so its Durable Object classes and their stored jobs stay as they are."
+        }
+      },
+      {
+        "fqn": "DatabaseConnection",
+        "action": "update",
+        "unresolvedOnly": true
+      },
+      {
+        "fqn": "PoolModelDatabaseConnection",
+        "action": "update",
+        "unresolvedOnly": true
+      }
+    ],
+    "commands": [
+      "Site",
+      "Migrations",
+      "PoolDatabase",
+      "RuntimeDatabaseBudget",
+      "AppSourceNamespace",
+      "PoolBackendBudgetRuntimeReady",
+      "PoolBackendBudget",
+      "ToolsBackendBudget",
+      "PoolImagePublicationReceipt",
+      "PoolDatabaseBudget",
+      "PreviewPoolSize",
+      "PreviewAuthSeed"
+    ]
+  },
+  "wire": {
+    "sqliteClasses": {},
+    "fixedBindings": [
+      "ArtifactsCredentials"
+    ]
+  },
+  "acceptance": {
+    "rootRestart": {
+      "withinSeconds": 420,
+      "why": "A stated bound, not derived from the pool's constants: acceptable only because no production release runs before the release-bounds PR replaces it with one derived from the pool's named constants (worst case about 555 s plus destroy plus one membership pass when in-flight streams are counted). Until then it is the rehearsal's bound only."
+    }
+  },
+  "env": {
+    "POOL_FLEET_CLASSES": "absent"
+  }
+}
