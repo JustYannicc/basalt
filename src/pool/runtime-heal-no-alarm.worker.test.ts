@@ -159,7 +159,7 @@ const unreadyPool = (): Record<string, MembershipState> => ({
 });
 
 test(
-  "a fresh object's first Home pass that changes a pool refuses that recovery pass, and a later one commits",
+  "a fresh object's first Home pass that changes a pool makes recovery refuse that pass, and a later one commits",
   { timeout: 120_000 },
   async (context) => {
     const { f, previous, epoch, errors, advance } = await stuck(context);
@@ -167,8 +167,11 @@ test(
     await f.old.storage.put(nativeMembershipKey, { ...rows, ...unreadyPool() });
     await f.old.storage.delete("fixture-alarm");
     await f.old.storage.delete("pool-alarm-v1:deadlines");
+    await f.settle();
+    assert.equal(await f.old.storage.getAlarm(), null, "no alarm is armed");
     // The healing release's upload: a new object arms Home and fleet together on its first event.
     advance(5_000);
+    errors.mock.resetCalls();
     const fired = await healingRelease(f, f.reconstruct(), advance, within);
     assert.ok(fired.length > 0, "an alarm the pool armed itself fired");
     assert.deepEqual(await healed(f, previous, epoch), {
@@ -176,11 +179,16 @@ test(
       newBoot: true,
       activeHealth: 200,
     });
-    const refusals = errors.mock.calls.filter(
-      (call) =>
-        call.arguments[0] === "POOL_SELECTED_RECOVERY_PENDING" &&
-        String(call.arguments[1]).includes('"slot_selection"'),
+    const after = (await f.old.storage.get<Record<string, MembershipState>>(nativeMembershipKey))!;
+    assert.ok(
+      after["unready-pool"]!.revision > 5,
+      "Home's pass changed the pool, moving the digest",
     );
+    const refusals = errors.mock.calls.filter((call) => {
+      if (call.arguments[0] !== "POOL_SELECTED_RECOVERY_PENDING") return false;
+      const line = JSON.parse(String(call.arguments[1])) as { reason?: string };
+      return line.reason === "slot_selection";
+    });
     assert.equal(refusals.length, 1, "refused once, on the pass under the moving digest");
   },
 );
