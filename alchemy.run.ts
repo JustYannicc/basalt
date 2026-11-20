@@ -27,37 +27,43 @@ import AppPages from "./.upstream/apps/hosted/cloud/src/app-ui.ts";
 import { Api } from "./.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { stackState } from "./.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
 import { previewDatabase } from "./.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
+// STAGE-ONLY OVERLAY: rehearsal stages (#1560).
+import { disposableStageNames, stackNameForStage } from "./scripts/preview/rehearsal-stage.ts";
 
 export default Alchemy.Stack(
-  "basalt",
+  stackNameForStage(process.env.ALCHEMY_STAGE),
   { providers: cloudProviders, state: stackState },
   Effect.gen(function* () {
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
     const stage = yield* Stage;
-    const previewNumber = /^test-pr-([1-9][0-9]*)$/.exec(stage)?.[1];
+    // The stack name is fixed before evaluation from ALCHEMY_STAGE; a differing --stage would land elsewhere.
+    if (stackNameForStage(stage) !== stackNameForStage(process.env.ALCHEMY_STAGE))
+      return yield* Effect.die(
+        new Error("The deploy stage and ALCHEMY_STAGE name different stacks."),
+      );
+    // PR previews and release rehearsals are the disposable stages; every other stage is production.
+    const previewNames = disposableStageNames(stage);
     const preview =
-      previewNumber === undefined
+      previewNames === undefined
         ? undefined
         : {
-            number: previewNumber,
+            names: previewNames,
             domain: yield* Config.NonEmptyString("TEST_STAGE_DOMAIN"),
             sourceNamespace: yield* Config.NonEmptyString("CLOUD_SOURCE_NAMESPACE"),
             databaseName: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
           };
     if (preview !== undefined) {
-      const expectedNamespace = `basalt-preview-pr-${preview.number}-apps`;
-      if (preview.sourceNamespace !== expectedNamespace)
+      if (preview.sourceNamespace !== preview.names.sourceNamespace)
         return yield* Effect.die(
           new Error("Preview Artifacts namespace does not match its stage."),
         );
-      const expectedDatabase = `basalt-preview-pr-${preview.number}`;
-      if (preview.databaseName !== expectedDatabase)
+      if (preview.databaseName !== preview.names.databaseName)
         return yield* Effect.die(
           new Error("Preview PlanetScale database does not match its stage."),
         );
     }
     const zoneName = preview?.domain ?? brand.zone;
-    const host = preview === undefined ? brand.host : `app.pr-${preview.number}.${preview.domain}`;
+    const host = preview === undefined ? brand.host : `app.${preview.names.slug}.${preview.domain}`;
     const zone = yield* Cloudflare.Zone.findZoneByName({ accountId, name: zoneName }).pipe(
       Effect.orDie,
     );
@@ -128,44 +134,30 @@ export default Alchemy.Stack(
       timeout: "1 minute",
     });
     yield* cloudDeployment;
+    let previewMigration: Effect.Success<ReturnType<typeof previewDatabase>> | undefined;
     if (preview !== undefined) {
-      const migration = yield* previewDatabase({
+      previewMigration = yield* previewDatabase({
         name: stage,
-        slug: `pr-${preview.number}`,
+        slug: preview.names.slug,
         domain: preview.domain,
-        origin: previewStageOrigin(`pr-${preview.number}`, preview.domain, false),
-      });
-      const seedScript = fileURLToPath(new URL("./scripts/preview-auth/seed.ts", import.meta.url));
-      yield* Command.Exec("PreviewAuthSeed", {
-        command: `node ${basename(seedScript)}`,
-        cwd: dirname(seedScript),
-        env: {
-          ALCHEMY_STAGE: stage,
-          TEST_STAGE_DOMAIN: preview.domain,
-          BETTER_AUTH_URL: previewStageOrigin(`pr-${preview.number}`, preview.domain),
-          DATABASE_URL: migration.migrationUrl,
-          TEST_STAGE_DATABASE_BRANCH: migration.branchName,
-          TEST_STAGE_DATABASE_NAME: migration.databaseName,
-          TEST_STAGE_DATABASE_USERNAME: migration.username,
-          PREVIEW_SMOKE_EMAIL: yield* Config.String("PREVIEW_SMOKE_EMAIL"),
-          PREVIEW_SMOKE_PASSWORD: yield* Config.Redacted("PREVIEW_SMOKE_PASSWORD"),
-          PREVIEW_AUTH_SEED_OUTPUT: yield* Config.NonEmptyString("PREVIEW_AUTH_SEED_OUTPUT"),
-        },
-        memo: false,
-        timeout: "2 minutes",
+        origin: previewStageOrigin(preview.names.slug, preview.domain, false),
       });
     }
     const api = yield* Api;
     const pool = yield* poolWorker;
-    const runtimeRole = yield* Planetscale.PostgresRole.ref("RuntimeRole");
-    const migrationRole = yield* Planetscale.PostgresRole.ref("MigrationRole");
-    yield* verifyRuntimeDatabaseBudget("ToolsBackendBudget", {
-      adminUrl: migrationRole.connectionUrl,
-      runtimeLogin: runtimeRole.username,
-      databases: ["postgres"],
-      deployment: api.hash,
-      candidate: productionOpsRelease,
-    });
+    // The shared cluster's runtime budget is production's. `.ref` reads deployed state, which a
+    // disposable stage's first deploy does not have; its own database carries the preview pool cap.
+    if (preview === undefined) {
+      const runtimeRole = yield* Planetscale.PostgresRole.ref("RuntimeRole");
+      const migrationRole = yield* Planetscale.PostgresRole.ref("MigrationRole");
+      yield* verifyRuntimeDatabaseBudget("ToolsBackendBudget", {
+        adminUrl: migrationRole.connectionUrl,
+        runtimeLogin: runtimeRole.username,
+        databases: ["postgres"],
+        deployment: api.hash,
+        candidate: productionOpsRelease,
+      });
+    }
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
       env: {
@@ -242,6 +234,31 @@ export default Alchemy.Stack(
         SOURCE_NAMESPACE_READY: namespace.hash.pipe(Output.map(() => "eu")),
       },
     });
+    if (preview !== undefined && previewMigration !== undefined) {
+      const seedScript = fileURLToPath(new URL("./scripts/preview-auth/seed.ts", import.meta.url));
+      yield* Command.Exec("PreviewAuthSeed", {
+        command: `node ${basename(seedScript)}`,
+        cwd: dirname(seedScript),
+        env: {
+          ALCHEMY_STAGE: stage,
+          TEST_STAGE_DOMAIN: preview.domain,
+          BETTER_AUTH_URL: previewStageOrigin(preview.names.slug, preview.domain),
+          DATABASE_URL: previewMigration.migrationUrl,
+          TEST_STAGE_DATABASE_BRANCH: previewMigration.branchName,
+          TEST_STAGE_DATABASE_NAME: previewMigration.databaseName,
+          TEST_STAGE_DATABASE_USERNAME: previewMigration.username,
+          PREVIEW_SMOKE_EMAIL: yield* Config.String("PREVIEW_SMOKE_EMAIL"),
+          PREVIEW_SMOKE_PASSWORD: yield* Config.Redacted("PREVIEW_SMOKE_PASSWORD"),
+          PREVIEW_AUTH_SEED_OUTPUT: yield* Config.NonEmptyString("PREVIEW_AUTH_SEED_OUTPUT"),
+          // Alchemy orders work only by inputs: the seed signs in through these, so it waits for them.
+          PREVIEW_STACK_DEPLOYED: Output.all(router.hash, api.hash, pool.hash).pipe(
+            Output.map((hashes) => hashes.join(":")),
+          ),
+        },
+        memo: false,
+        timeout: "5 minutes",
+      });
+    }
     return { url: router.url, emailReady };
   }).pipe(adopt(true), Effect.provide(cloudWorkers)),
 );
