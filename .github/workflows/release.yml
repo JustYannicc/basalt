@@ -151,7 +151,8 @@ jobs:
       # An automatic release is code-only; anything else needs a dispatch with its policy named.
       POLICY_NAME: ${{ inputs.policy || 'code' }}
       POLICY: scripts/release/policies/${{ inputs.policy || 'code' }}.json
-      POOL_ROOT_IMAGE: ${{ vars.POOL_ROOT_IMAGE }}
+      # The root pin's repository, digest and build input; the entry adds the account in its own process.
+      POOL_ROOT_PIN: ${{ vars.POOL_ROOT_PIN }}
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
       ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
       POOL_AVAILABILITY_TARGET: ${{ vars.POOL_AVAILABILITY_TARGET }}

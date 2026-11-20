@@ -412,7 +412,7 @@ const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
-const { rootPinMismatch } = await import("./root-pin.ts");
+const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -650,6 +650,8 @@ const checkPolicy = () => {
 };
 
 try {
+  // The root pin's full reference carries the account, so it exists only in this process.
+  setRootPin(process.env);
   if (command === "plan" || command === "apply" || command === "deploy") {
     const result = await run(
       Effect.gen(function* () {
@@ -821,7 +823,7 @@ try {
         const rootRecord = `id ${present(attr?.applicationId)}, name ${present(attr?.applicationName)}`;
         yield* Effect.promise(() => summary(`root row: ${rootRecord}`));
         const mismatch = rootPinMismatch(process.env.POOL_ROOT_IMAGE, rootRow, workerRow);
-        if (mismatch) return yield* Effect.die(new Error(mismatch));
+        if (mismatch) return yield* Effect.fail(mismatch);
         return {
           stateStoreVersion: version,
           rows,
