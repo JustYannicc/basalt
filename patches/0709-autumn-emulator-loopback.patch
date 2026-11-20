@@ -96,17 +96,17 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/autumn-emulator.ts
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,97 @@
 +/**
 + * The Autumn billing emulator a local Cloud runs beside itself when CI provides one, so billing
 + * never waits on a shared outside service. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI;
 + * without it, billing uses the hosted emulator exactly as before.
 + */
 +import { Effect, FileSystem, Schedule, Stream } from "effect";
++import { HttpClient } from "effect/http";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import { outputLines } from "./alchemy-dev-output.ts";
 +import { CloudStartFailed } from "./cloud-startup-output.ts";
-+import { driver } from "./platform.ts";
 +import { freePort } from "./ports.ts";
 +
 +/** It starts in about a second; the bound allows for a loaded runner. */
@@ -124,6 +124,7 @@ new file mode 100644
 +    if (entry === undefined || entry === "") return undefined;
 +    const fs = yield* FileSystem.FileSystem;
 +    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const http = yield* HttpClient.HttpClient;
 +    const origin = `http://127.0.0.1:${yield* freePort}`;
 +    const port = new URL(origin).port;
 +    // emulate reads any emulate.config.* in its working directory, so it gets an empty one.
@@ -152,18 +153,21 @@ new file mode 100644
 +    );
 +    // emulate prints its banner before Node reports a failed bind, and the port was free only
 +    // when freePort released it. Only an answer from emulate's control plane proves it holds it.
-+    const answers = driver("ask the local Autumn emulator for its manifest", async (signal) => {
-+      const response = await fetch(`${origin}/_emulate/manifest`, { signal });
-+      await response.arrayBuffer();
-+      return response.status;
-+    }).pipe(
-+      Effect.flatMap((status) =>
-+        status === 200
-+          ? Effect.void
-+          : Effect.fail(
-+              new CloudStartFailed({ operation: `The local Autumn emulator answered ${status}` }),
-+            ),
++    // Each probe has its own bound so one held request cannot use up the startup deadline.
++    const answers = Effect.scoped(
++      http.get(`${origin}/_emulate/manifest`).pipe(
++        Effect.flatMap((response) =>
++          Effect.gen(function* () {
++            yield* response.text;
++            if (response.status !== 200)
++              return yield* new CloudStartFailed({
++                operation: `The local Autumn emulator answered ${response.status}`,
++              });
++          }),
++        ),
 +      ),
++    ).pipe(
++      Effect.timeout("5 seconds"),
 +      Effect.retry({ schedule: Schedule.spaced("100 millis") }),
 +    );
 +    yield* Effect.raceFirst(
