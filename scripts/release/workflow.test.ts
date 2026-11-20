@@ -126,7 +126,11 @@ test("a dispatch releases main only, and only the release job holds the producti
     job("release"),
     /\n    concurrency:\n      group: deploy-production\n      cancel-in-progress: false\n/u,
   );
-  assert.match(job("release"), /\n    if: needs\.candidate\.outputs\.release == 'true'\n/u);
+  // The job holding production's secrets states main's ref itself, where a guard reads it.
+  assert.match(
+    job("release"),
+    /\n    if: github\.ref == 'refs\/heads\/main' && needs\.candidate\.outputs\.release == 'true'\n/u,
+  );
 });
 
 test("an automatic run releases the newest passing main commit and skips one already live", () => {
