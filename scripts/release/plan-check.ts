@@ -20,11 +20,13 @@
  * store's Worker must be a noop.
  */
 import { createHash } from "node:crypto";
+import { isAbsolute, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { havePropsChanged, isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import * as Plan from "alchemy/Plan";
 import { Data, Effect, Redacted, Schema } from "effect";
 import { sha256Object } from "alchemy/Util/sha256";
-import * as Output from "alchemy/Output";
 
 const digestRef = /^[a-z0-9.-]+\/[a-z0-9/_-]+@sha256:[a-f0-9]{64}$/u;
 const exactFqn = Schema.String.check(Schema.isPattern(/^[^*?\s]+$/u));
@@ -87,15 +89,25 @@ export const PlanPolicy = Schema.Struct({
        */
       unresolvedOnly: Schema.optional(Schema.Literal(true)),
       /**
-       * Admitted only as a change of the Worker's code: no binding of the row changes and no
-       * property differs, except inside an entry of a named `references` property that both
-       * sides hold as a reference to another resource (a Worker it calls moved with the release).
-       * An entry's own value, or an entry added or removed, still refuses. Its classes and
-       * migrations follow from its bindings; the wire guard holds the upload to the serving
-       * version's bindings (`wire.fixedBindings`) and refuses any migration.
+       * Admitted only as a change of the Worker's code. Nothing else of the row may differ, except:
+       * - `main`, while it names the same file of another checkout: a declaration names its entry
+       *   by an absolute path, so the directory a release job runs in is part of the value;
+       * - a `references` entry of `env`. State recorded the named resource's attributes for it,
+       *   and the plan either still waits on that resource alone, while it updates, or holds the
+       *   attributes State records for it now. What the Worker is bound to is the entry's
+       *   binding, which may not change; while the resource updates, that binding waits on it too;
+       * - a `values` entry of `env`, and the value its own binding carries, for the reason written
+       *   beside it.
+       * A changed secret or value, an entry or binding added or removed and a changed class all
+       * refuse. Its classes and migrations follow from its bindings; the wire guard holds the
+       * upload to the serving version's bindings (`wire.fixedBindings`) and refuses any migration.
        */
       codeOnly: Schema.optional(
-        Schema.Struct({ references: Schema.Array(Schema.String), why: Schema.String }),
+        Schema.Struct({
+          references: Schema.Array(Schema.Struct({ name: Schema.String, resource: exactFqn })),
+          values: Schema.Array(Schema.Struct({ name: Schema.String, why: Schema.String })),
+          why: Schema.String,
+        }),
       ),
     }),
   ),
@@ -206,6 +218,38 @@ export function propChanges(
   if (!havePropsChanged({ value: old }, { value: next })) return [];
   return [`${path.join(".")}: ${shown(old, path)} -> ${shown(next, path)}`];
 }
+
+/** The checkout this check runs from: the stack's declarations name their files under it. */
+const checkout = fileURLToPath(new URL("../../", import.meta.url));
+const filePath = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  if (!value.startsWith("file:")) return value;
+  try {
+    return fileURLToPath(value);
+  } catch {
+    return undefined;
+  }
+};
+/**
+ * Whether a recorded entry file is the declared one under another checkout's directory. Both are
+ * absolute, as a path or a file URL; the declared one has to sit in this checkout, and the
+ * recorded one has to end with the same path from its own checkout's root.
+ */
+export function sameEntryFile(old: unknown, next: unknown, root = checkout): boolean {
+  const before = filePath(old);
+  const after = filePath(next);
+  if (before === undefined || after === undefined || !isAbsolute(before)) return false;
+  const inside = relative(root, after);
+  if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) return false;
+  return before === after || before.endsWith(`${sep}${inside}`);
+}
+/** An entry file for a public log: its file and directory name, never where the checkout sits. */
+const entryName = (value: unknown) => {
+  const names = (filePath(value) ?? "").split(sep).slice(-2);
+  return names.length === 2 && names.every((name) => /^[A-Za-z0-9._-]{1,80}$/u.test(name))
+    ? `…/${names.join("/")}`
+    : "<withheld>";
+};
 
 /** An interrupted update keeps the last settled generation under `old`. */
 const recorded = (node: Node) =>
@@ -747,27 +791,114 @@ export const checkPlan = (
             fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
           });
       }
-      // What a code-only allowance does not cover on a row: a binding that changes, or a property
-      // that differs other than inside a reference both sides hold.
-      const beyondCode = (change: PlanChange, references: ReadonlyArray<string>) => {
+      // What a code-only allowance does not cover on a row. Each property and each `env` entry is
+      // compared on its own: one value that is not known yet must not hide the rest of the row.
+      const beyondCode = (
+        change: PlanChange,
+        codeOnly: NonNullable<PlanPolicy["allow"][number]["codeOnly"]>,
+      ) => {
         const node = nodes.find((candidate) => candidate.resource.FQN === change.fqn);
-        const lines = change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`);
-        if (!node || !("props" in node)) return [...lines, "props: not readable"];
-        const before = recorded(node)?.props as Record<string, unknown> | undefined;
-        const after = node.props as Record<string, unknown> | undefined;
-        const entry = (props: Record<string, unknown> | undefined, prop: string, key: string) => {
-          const holder = props?.[prop];
-          return record(holder) ? holder[key] : undefined;
+        if (!node || !("props" in node))
+          return [
+            ...change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`),
+            "props: not readable",
+          ];
+        const values = new Set(codeOnly.values.map((value) => value.name));
+        const references = new Map(
+          codeOnly.references.map((entry) => [entry.name, entry.resource]),
+        );
+        const keys = (...holders: object[]) => [...new Set(holders.flatMap(Object.keys))].sort();
+        // A binding's wire entries without the values they carry: what the Worker is attached to.
+        const attachment = (data: unknown) =>
+          record(data) && Array.isArray(data.bindings)
+            ? {
+                ...data,
+                bindings: data.bindings.map((entry: unknown) =>
+                  record(entry)
+                    ? Object.fromEntries(
+                        Object.entries(entry).filter(([key]) => key !== "text" && key !== "json"),
+                      )
+                    : entry,
+                ),
+              }
+            : data;
+        const recordedData = new Map(
+          recordedBindings(node).map((binding) => [binding.sid, binding.data]),
+        );
+        // A changed value plans its own binding row as an update too. For a named value that row
+        // is admitted while it stays the same binding; a value not known yet keeps its binding,
+        // and the wire guard holds the upload to the serving version's binding shapes.
+        const valueOnly = (binding: Node["bindings"][number]) =>
+          binding.action === "update" &&
+          values.has(binding.sid) &&
+          recordedData.has(binding.sid) &&
+          (!isResolved(binding.data) ||
+            propChanges(attachment(recordedData.get(binding.sid)), attachment(binding.data))
+              .length === 0);
+        const planned = (resource: string) =>
+          nodes.find((candidate) => candidate.resource.FQN === resource);
+        // Not known until one resource applies, and that resource keeps its identity: it updates.
+        const waitsOn = (value: unknown, resource: string) =>
+          !isResolved(value) &&
+          Object.keys(Output.upstreamAny(value)).join("\n") === resource &&
+          planned(resource)?.action === "update";
+        // State recorded the named resource's attributes for the entry. The plan either still waits
+        // on that resource alone, or holds the attributes State records for it now.
+        const reference = (old: unknown, next: unknown, resource: string) => {
+          if (!record(old) || Redacted.isRedacted(old)) return false;
+          if (!isResolved(next)) return Output.isResourceExpr(next) && waitsOn(next, resource);
+          const target = planned(resource);
+          const attributes = target && (recorded(target) as { attr?: unknown } | undefined)?.attr;
+          return record(attributes) && record(next) && propChanges(attributes, next).length === 0;
         };
-        for (const line of propChanges(before, after)) {
-          const [, prop = "", key = ""] = /^props\.([^.:]+)\.([^.:]+)[.:]/u.exec(line) ?? [];
-          const old = entry(before, prop, key);
-          const next = entry(after, prop, key);
-          // A reference whose target moved: the entry was recorded as an object, and is one again
-          // or is not known yet. Its own identity is the binding's, checked above and at the wire.
-          if (references.includes(prop) && record(old) && (record(next) || !isResolved(next)))
+        // While a referenced resource updates, the entry's binding is not known either: it keeps
+        // its sid and gets that same resource's data at apply.
+        const referenceWaits = (binding: Node["bindings"][number]) => {
+          const resource = references.get(binding.sid);
+          return (
+            binding.action === "update" &&
+            resource !== undefined &&
+            recordedData.has(binding.sid) &&
+            waitsOn(binding.data, resource)
+          );
+        };
+        const lines = node.bindings
+          .filter(
+            (binding) =>
+              binding.action !== "noop" && !valueOnly(binding) && !referenceWaits(binding),
+          )
+          .map(({ sid, action }) => `bindings.${sid}: ${action}`);
+        const before: Record<string, unknown> = record(recorded(node)?.props)
+          ? (recorded(node)?.props as Record<string, unknown>)
+          : {};
+        const after: Record<string, unknown> = record(node.props) ? node.props : {};
+        for (const prop of keys(before, after)) {
+          const old = before[prop];
+          const next = after[prop];
+          if (prop === "main" && old !== next) {
+            if (!sameEntryFile(old, next))
+              lines.push(`props.main: ${entryName(old)} -> ${entryName(next)}`);
             continue;
-          lines.push(line);
+          }
+          if (
+            prop !== "env" ||
+            !record(old) ||
+            !record(next) ||
+            Redacted.isRedacted(old) ||
+            Redacted.isRedacted(next) ||
+            Output.isOutput(next)
+          ) {
+            lines.push(...propChanges(old, next, ["props", prop]));
+            continue;
+          }
+          for (const name of keys(old, next)) {
+            const present = Object.hasOwn(old, name) && Object.hasOwn(next, name);
+            if (present && values.has(name)) continue;
+            const resource = references.get(name);
+            if (present && resource !== undefined && reference(old[name], next[name], resource))
+              continue;
+            lines.push(...propChanges(old[name], next[name], ["props", "env", name]));
+          }
         }
         return lines;
       };
@@ -777,7 +908,7 @@ export const checkPlan = (
             (entry) => entry.codeOnly && entry.fqn === change.fqn && entry.action === change.action,
           )?.codeOnly;
           if (codeOnly) {
-            const beyond = beyondCode(change, codeOnly.references);
+            const beyond = beyondCode(change, codeOnly);
             if (beyond.length)
               violations.push({
                 fqn: change.fqn,
