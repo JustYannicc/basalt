@@ -13,7 +13,7 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
  
  class PoolBudgetFailed extends Schema.TaggedError<PoolBudgetFailed>()("PoolBudgetFailed", {
    message: Schema.String,
-@@ -15,81 +18,116 @@ const Parameters = Schema.Array(
+@@ -15,81 +18,124 @@ const Parameters = Schema.Array(
  );
  const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
  const Changes = Schema.Struct({ data: Schema.Array(Change) });
@@ -63,9 +63,11 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +      return yield* new PoolBudgetFailed({
 +        message: "The database budget requires main or an isolated test branch",
 +      });
-+    if (mode === "recovery" && branch === "main")
++    // Previews serve their own stage and are sized for fewer connections than production.
++    if (mode === "recovery" && (branch === "main" || branch.startsWith("test-")))
 +      return yield* new PoolBudgetFailed({
-+        message: "Recovery applies parameters only to a branch that is not serving, never main",
++        message:
++          "Recovery applies parameters only to a restored branch that is not serving, never main or a test branch",
 +      });
 +    const client = yield* HttpClient.HttpClient;
 +    const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
@@ -133,7 +135,11 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +              new PoolBudgetFailed({ message: `Parameter change is ${state ?? "missing"}` }),
 +            );
 +      }),
-+      Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
++      // A pooler reload completes in seconds; recovery's Postgres restart can take much longer.
++      Effect.retry({
++        schedule: Schedule.spaced("5 seconds"),
++        times: mode === "recovery" ? 360 : 60,
++      }),
      );
 -  const parameters = () =>
 -    send(HttpClientRequest.get(`${base}/parameters`)).pipe(
@@ -188,17 +194,18 @@ diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/clo
 +/** `node scripts/database-pool-budget.ts --recover` on a restored branch, before it serves. */
 +export const recoverDatabaseParameters = databasePoolBudget("recovery");
  
- if (import.meta.main)
+-if (import.meta.main)
++if (import.meta.main) {
++  const recover = process.argv.includes("--recover");
    NodeRuntime.runMain(
 -    configureDatabasePoolBudget.pipe(
 -      Effect.timeout("6 minutes"),
--      Effect.provide(FetchHttpClient.layer),
--    ),
-+    (process.argv.includes("--recover")
-+      ? recoverDatabaseParameters
-+      : configureDatabasePoolBudget
-+    ).pipe(Effect.timeout("6 minutes"), Effect.provide(FetchHttpClient.layer)),
++    (recover ? recoverDatabaseParameters : configureDatabasePoolBudget).pipe(
++      Effect.timeout(recover ? "35 minutes" : "6 minutes"),
+       Effect.provide(FetchHttpClient.layer),
+     ),
    );
++}
 diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
 --- a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
 +++ b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts

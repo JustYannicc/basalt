@@ -193,6 +193,16 @@ test("recovery applies the pooler budget and connection slots to a restored bran
       pgconf: { max_connections: databaseMaxConnections },
     },
   });
+  const slotsOnly = run({
+    recover: true,
+    branch: "restored-fixture",
+    existing: true,
+    maxConnections: "25",
+  });
+  await slotsOnly.result;
+  assert.deepEqual(slotsOnly.requests[1]!.body, {
+    parameters: { pgconf: { max_connections: databaseMaxConnections } },
+  });
   const settled = run({ recover: true, branch: "restored-fixture", existing: true });
   await settled.result;
   assert.deepEqual(
@@ -202,9 +212,11 @@ test("recovery applies the pooler budget and connection slots to a restored bran
 });
 
 test("recovery refuses main and a branch whose connection slots do not read back", async () => {
-  const serving = run({ recover: true, maxConnections: "25" });
-  await assert.rejects(serving.result, /never main/);
-  assert.deepEqual(serving.requests, [], "recovery sends nothing for main");
+  for (const branch of ["main", "test-fixture"]) {
+    const serving = run({ recover: true, branch, maxConnections: "25" });
+    await assert.rejects(serving.result, /never main or a test branch/);
+    assert.deepEqual(serving.requests, [], `recovery sends nothing for ${branch}`);
+  }
   await assert.rejects(
     run({
       recover: true,
