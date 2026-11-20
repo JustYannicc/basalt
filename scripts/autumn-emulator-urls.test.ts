@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Exit, Schema } from "../.upstream/node_modules/effect/dist/index.js";
+import { Effect, Exit, Layer, Schema } from "../.upstream/node_modules/effect/dist/index.js";
+import { FetchHttpClient } from "../.upstream/node_modules/effect/dist/http/index.js";
 import {
   EmulatedServices,
   HostedOrLoopbackUrl,
@@ -96,7 +97,7 @@ test("without a configured emulator CLI, a local Cloud starts nothing and keeps 
   try {
     const origin = await Effect.runPromise(
       Effect.scoped(localAutumnEmulator("/nonexistent/cloud")).pipe(
-        Effect.provide(NodeServices.layer),
+        Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
       ),
     );
     assert.equal(origin, undefined);
