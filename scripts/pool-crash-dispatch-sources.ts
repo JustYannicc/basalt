@@ -1,7 +1,9 @@
 import { Schema } from "effect";
-import { BarrierRefusal } from "./release-barrier/refusal.ts";
+import type { ControllerCode } from "../src/pool/runtime-slots/contract.ts";
+import type { PoolOperationsTarget } from "./pool-operations.ts";
+import { BarrierRefusal } from "./pool-fleet/refusal.ts";
 
-// Live production sources for the crash dispatch: the run history and the native release target.
+// Live production sources for the crash dispatch: the run history and the deployed release target.
 
 /** A refused run-list read; only its numeric status reaches the public result. */
 export class RunListRefused extends Error {
@@ -56,83 +58,79 @@ export const workflowRunLister =
     throw new Error("Run list exceeded its page limit");
   };
 
-/** Native release provenance names the worker; every State write and non-GET fetch is refused. */
+/**
+ * The worker comes from Alchemy's script tags and the root from the deployed Worker's own bindings
+ * plus a live application read, so no release-layer State reader is needed. While the root is the
+ * selected primary, the controller's signed inspect gives its pins exactly as the controller holds them.
+ */
 export async function readReleaseTarget(
   env: NodeJS.ProcessEnv,
+  io: {
+    fetch?: typeof globalThis.fetch;
+    origin?: string;
+    connect?: PoolOperationsTarget["connect"];
+    code?: ControllerCode;
+  } = {},
 ): Promise<ReleaseTarget & { root: RootApplication }> {
-  // Loaded lazily so refusals and offline tests never initialize the deployment SDK.
-  const [{ Cause, ConfigProvider, Context, Effect, Exit, Logger }, { FetchHttpClient }] =
-    await Promise.all([import("effect"), import("effect/http")]);
-  const [{ State }, { evalStack }] = await Promise.all([
-    import("alchemy/State/State"),
-    import("alchemy/Stack"),
-  ]);
-  const rehearsal = await import("./release-barrier/release-resume-rehearsal.ts");
-  const { runtimeReleaseState } = await import("./release-barrier/runtime-release-state.ts");
-  const { releaseStateStack } = await import("./release-barrier/release-state-stack.ts");
-  const { assertReleaseStateVersion } = await import("./release-barrier/release-state-version.ts");
-  const { withReleaseRuntime } = await import("./release-barrier/runtime.ts");
   const { CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: apiToken } = env;
-  const encryptionKey = env.EXECUTOR_ENCRYPTION_KEY;
-  if (!accountId || !apiToken || !encryptionKey)
+  if (!accountId || !apiToken)
     throw new BarrierRefusal("crash-dispatch-release-state-credentials-unavailable", "PoolWorker");
-  const counters = rehearsal.createRehearsalCounters();
-  const nativeFetch = globalThis.fetch;
-  const guarded = rehearsal.countReadOnlyProbeFetch(accountId, counters, nativeFetch);
-  globalThis.fetch = guarded;
+  const [{ Effect }, cloudflare, controller] = await Promise.all([
+    import("effect"),
+    import("./pool-fleet/cloudflare.ts"),
+    import("./pool-fleet/controller.ts"),
+  ]);
+  const access = { accountId, apiToken, fetch: io.fetch ?? globalThis.fetch, origin: io.origin };
+  const { worker, root } = await Effect.runPromise(
+    Effect.gen(function* () {
+      const worker = yield* cloudflare.poolWorkerName(access);
+      const bindings = yield* cloudflare.workerPlainBindings(access, worker);
+      const applicationId = yield* cloudflare.requireBinding(
+        bindings,
+        "POOL_CONTAINER_APPLICATION_ID",
+      );
+      const imageInput = yield* cloudflare.requireBinding(bindings, "POOL_IMAGE_HASH");
+      const application = Schema.decodeUnknownSync(
+        Schema.Struct({
+          version: Schema.Number,
+          configuration: Schema.Struct({ image: Schema.String }),
+        }),
+      )(yield* cloudflare.containerApplication(access, applicationId));
+      return {
+        worker,
+        root: {
+          applicationId,
+          applicationVersion: String(application.version),
+          // An image without a pinned digest leaves this empty; the witness then reports "not sent".
+          imageDigest: application.configuration.image.split("@")[1] ?? "",
+          imageInput,
+        },
+      };
+    }),
+  );
+  const signingKey = env.POOL_DEPLOYMENT_KEY ?? "";
+  let selected: RootApplication | undefined;
   try {
-    const program = evalStack(
-      releaseStateStack,
-      (compiled) =>
-        Effect.gen(function* () {
-          yield* assertReleaseStateVersion(compiled, guarded, "forward-probe");
-          const state = rehearsal.countReadOnlyState(yield* yield* State, counters);
-          const services = Context.add(compiled.services, State, Effect.succeed(state));
-          const baseline = yield* runtimeReleaseState(compiled).pipe(
-            Effect.provideContext(services),
-          );
-          const root = baseline.applications.root;
-          return {
-            accountId: baseline.target.accountId,
-            worker: baseline.target.worker,
-            root: {
-              applicationId: root.attributes.applicationId,
-              applicationVersion: String(root.attributes.version),
-              // An image without a pinned digest leaves this empty; the witness then reports "not sent".
-              imageDigest: root.attributes.configuration.image.split("@")[1] ?? "",
-              imageInput: root.image.inputHash,
-            },
-          };
-        }).pipe(Effect.provideContext(compiled.services)),
-      { stage: "production" },
-    );
-    const exit = await Effect.runPromiseExit(
-      program.pipe(
-        withReleaseRuntime,
-        Effect.timeout("2 minutes"),
-        Effect.provide(Logger.layer([])),
-        Effect.provideService(FetchHttpClient.Fetch, guarded),
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                ALCHEMY_STAGE: "production",
-                CI: "true",
-                CLOUDFLARE_ACCOUNT_ID: accountId,
-                CLOUDFLARE_API_TOKEN: apiToken,
-                EXECUTOR_ENCRYPTION_KEY: encryptionKey,
-              },
-            }),
-          ),
-        ),
-      ),
-    );
-    if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
-    if (counters.state.writeAttempts || counters.fetch.blockedMutationAttempts)
-      throw new BarrierRefusal("crash-dispatch-release-state-mutation-attempted", "PoolWorker");
-    return exit.value;
-  } finally {
-    // The private operations bridge must not inherit the GET-only guard.
-    globalThis.fetch = nativeFetch;
+    const view = await controller.inspectController({
+      accountId,
+      worker,
+      signingKey,
+      code: io.code ?? controller.checkoutControllerCode,
+      connect: io.connect,
+      directory: "",
+    });
+    const target = view.selection?.active.target;
+    // Only a selection that is still the root container names the root; a promoted cell does not.
+    if (target?.applicationId === root.applicationId)
+      selected = {
+        applicationId: target.applicationId,
+        applicationVersion: target.applicationVersion,
+        imageDigest: target.imageDigest,
+        imageInput: target.imageInput,
+      };
+  } catch {
+    // Signed with this checkout's code; the dispatch's own inspect, signed with the packet's code,
+    // reports any refusal. The Worker's bindings still name the root.
   }
+  return { accountId, worker, root: selected ?? root };
 }

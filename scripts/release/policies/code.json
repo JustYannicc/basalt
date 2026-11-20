@@ -1,0 +1,40 @@
+{
+  "description": "Any code-only release: every Worker whose code changed, as uploads a Worker rollback undoes, plus release migration steps; no binding, class or resource change. Until the cutover has run, the fleet classes stay absent; the cutover's own PR flips this to the built fleet.",
+  "check": {
+    "mode": "code-only",
+    "protected": {
+      "fqns": [
+        "PoolContainer",
+        "PoolRuntimeBlue",
+        "PoolRuntimeGreen",
+        "PoolRuntime",
+        "VaultAttachments",
+        "PublicSiteWaitlist",
+        "PoolObservationSecrets",
+        "PoolProviderObservationToken",
+        "ArtifactsCredentials"
+      ],
+      "types": [
+        "Cloudflare.Hyperdrive",
+        "Planetscale.*",
+        "Cloudflare.R2.Bucket",
+        "Cloudflare.D1Database",
+        "Cloudflare.SecretsStore"
+      ]
+    },
+    "removals": [],
+    "poolContainer": {
+      "fqn": "PoolContainer",
+      "image": ""
+    },
+    "poolWorker": "PoolWorker",
+    "artifactsCredentials": "ArtifactsCredentials",
+    "allow": []
+  },
+  "wire": {
+    "sqliteClasses": {}
+  },
+  "env": {
+    "POOL_FLEET_CLASSES": "absent"
+  }
+}
