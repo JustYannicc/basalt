@@ -9,6 +9,7 @@
  *   bun scripts/release/deploy.ts apply    --stage <s> [--config <f>] [--policy <f>] [--include <fqn>]... --plan-digest <sha256> --attempt <id>
  *   bun scripts/release/deploy.ts deploy   --stage test-… [--config <f>] [--policy <f>] [--include <fqn>]...  (plan, check, apply in one run)
  *   bun scripts/release/deploy.ts destroy  --stage test-… [--config <f>]
+ *   bun scripts/release/deploy.ts teardown --stage test-rehearsal-<n> [--verify-only]
  *   bun scripts/release/deploy.ts backup   --stage production --name <backup name>
  *   bun scripts/release/deploy.ts snapshot --stage <s> --out <file>
  *   bun scripts/release/deploy.ts compare  --before <file> --after <file>
@@ -24,6 +25,7 @@ import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
+import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
 import { stackConfig } from "./stack-config.ts";
 
@@ -52,6 +54,7 @@ const { positionals, values } = parseArgs({
     within: { type: "string" },
     serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
+    "verify-only": { type: "boolean" },
   },
 });
 const command = positionals[0] ?? "";
@@ -65,7 +68,8 @@ if (command !== "compare") {
       !/^[a-f0-9]{40}$/u.test(process.env.BASALT_RELEASE_CANDIDATE ?? "")
     )
       throw new Error("Production releases run only in GitHub Actions on an immutable candidate");
-    if (command === "destroy") throw new Error("Production is never destroyed");
+    if (command === "destroy" || command === "teardown")
+      throw new Error("Production is never destroyed");
     if (command === "deploy") throw new Error("Production applies only a reviewed plan digest");
   } else if (scaleStack ? !/^scale-[0-9]+$/u.test(stage) : !/^test-[a-z0-9-]+$/u.test(stage)) {
     throw new Error(
@@ -73,6 +77,9 @@ if (command !== "compare") {
     );
   }
 }
+// A teardown deletes by the stage token in names, which only a rehearsal stage's names carry.
+if (command === "teardown" && !isRehearsalStage(stage))
+  throw new Error("A teardown runs only on a test-rehearsal-<n> stage");
 
 /**
  * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
@@ -492,6 +499,8 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                   never
                 >,
               ),
+              // Deletes by the stage token in names; no other command ever sets it.
+              ...(command === "teardown" ? { teardown: true } : {}),
             };
           }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
@@ -712,6 +721,29 @@ try {
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
+  } else if (command === "teardown") {
+    const { teardownStage } = await import("./stage-teardown.ts");
+    const result = await run(
+      Effect.tryPromise(() =>
+        teardownStage(
+          values["verify-only"] ? "verify" : "delete",
+          {
+            accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+            token: process.env.CLOUDFLARE_API_TOKEN ?? "",
+            stage,
+          },
+          // Read when the effect runs, inside `run`: the guard's fetch, never the bare one.
+          globalThis.fetch,
+        ),
+      ),
+    );
+    // Names carry the stage and stay in the private record; the public summary keeps counts.
+    await keepPrivate("teardown", safeJson(result, 2));
+    await summary(
+      values["verify-only"]
+        ? `Checked stage ${stage}: none of its container applications or registry images remain.`
+        : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.images} registry images in ${result.repositories.length} repositories deleted; none remain.`,
+    );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");
     const backup = await run(

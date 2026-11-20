@@ -1,4 +1,8 @@
 import { Effect } from "effect";
+import { isRehearsalStage, stageOwnsName } from "./rehearsal-stage.ts";
+
+/** The account's container registry, shared with production. */
+export const REGISTRY_HOST = "registry.cloudflare.com";
 
 /**
  * What a disposable stage owns, so that a write from it can never land on production. Stages and
@@ -18,13 +22,26 @@ export interface StageScope {
   readonly databases: ReadonlyArray<string>;
   /** The names and ids the stage's own State rows record for the resources they own. */
   readonly owned: ReadonlyArray<string>;
+  /**
+   * A rehearsal stage's teardown (`deploy.ts teardown`): what its stack destroys leave without a
+   * State row, retained fleet applications and pushed images, is deleted by the stage token in
+   * its name. Nothing else is: every other stage run leaves this unset.
+   */
+  readonly teardown?: boolean;
 }
 
 export type StageVerdict =
   | { readonly kind: "allow"; readonly creates?: true }
   | { readonly kind: "refuse"; readonly resource: string; readonly field: string }
-  /** A Worker or Workflow name only Cloudflare can place: new, or carrying this stage's tags. */
-  | { readonly kind: "prove"; readonly family: "Worker" | "Workflow"; readonly name: string };
+  /**
+   * A name only Cloudflare can place: a Worker or Workflow that is new or carries this stage's
+   * tags, or a container application a teardown deletes, named for the stage.
+   */
+  | {
+      readonly kind: "prove";
+      readonly family: "Worker" | "Workflow" | "container application";
+      readonly name: string;
+    };
 
 type Mode = "id" | "worker" | "workflow" | "create" | "free" | "never";
 // Services only a test stage writes to: the billing emulator a preview seeds while it plans.
@@ -72,6 +89,11 @@ const hostOf = (value: unknown) =>
   typeof value === "string"
     ? (value.replace(/^[a-z]+:\/\//u, "").split("/")[0] ?? "").toLowerCase()
     : "";
+// `/v2/<account>/<repository>/manifests/<reference>`: a reference is a digest or a tag (OCI
+// distribution spec), and a repository is one name component, so it cannot reach another's path.
+const REGISTRY_MANIFEST = /^\/v2\/[^/]+\/([^/]+)\/manifests\/([^/]+)$/u;
+const REPOSITORY_NAME = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/u;
+const REFERENCE = /^(?:sha256:[a-f0-9]{64}|[A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/u;
 
 /**
  * The verdict on one write, from its method, URL and JSON body. Reads (GET, HEAD) are never
@@ -96,6 +118,19 @@ export function stageWriteVerdict(
     !!scope.domain &&
     (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
   const path = url.pathname;
+  // The registry holds production's images too. The one write a stage sends it is a rehearsal
+  // teardown's delete of a manifest or tag in a repository named for the stage.
+  if (url.hostname.toLowerCase() === REGISTRY_HOST) {
+    const manifest = REGISTRY_MANIFEST.exec(path);
+    const repository = manifest ? decoded(manifest[1]!) : "";
+    return method === "DELETE" &&
+      scope.teardown === true &&
+      REPOSITORY_NAME.test(repository) &&
+      REFERENCE.test(decoded(manifest?.[2] ?? "")) &&
+      stageOwnsName(repository, scope.stage)
+      ? { kind: "allow" }
+      : refuse(`registry repository ${repository || "(none)"}`, "repository");
+  }
   // Alchemy's State store: `/state/stacks/:stack[/stages/:stage/...]`, on its own host.
   const state = /^\/state\/stacks\/([^/]+)(?:\/stages\/([^/]+))?/u.exec(path);
   if (state) {
@@ -162,6 +197,17 @@ export function stageWriteVerdict(
       isOwned(body.service)
       ? { kind: "allow", creates: true }
       : refuse(`Worker domain ${hostOf(record(body) ? body.hostname : "")}`, "hostname");
+  // A rehearsal's fleet applications are retained by its stack destroy, which drops their State
+  // rows, so a teardown deletes one only once a fresh read names it for the stage; even one the
+  // State still records is proven by name.
+  const application = /^\/containers\/applications\/([^/]+)$/u.exec(rest)?.[1];
+  if (
+    application !== undefined &&
+    method === "DELETE" &&
+    scope.teardown === true &&
+    isRehearsalStage(scope.stage)
+  )
+    return { kind: "prove", family: "container application", name: decoded(application) };
   for (const [pattern, family, mode] of ACCOUNT) {
     const match = pattern.exec(rest);
     if (!match) continue;

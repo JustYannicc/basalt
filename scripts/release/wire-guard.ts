@@ -21,10 +21,12 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   createdIdentities,
+  REGISTRY_HOST,
   stageWriteVerdict,
   type StageScope,
   type StageVerdict,
 } from "./stage-writes.ts";
+import { isRehearsalStage, stageOwnsName } from "./rehearsal-stage.ts";
 import { bindingShapes, differingBindings } from "./fixed-bindings.ts";
 
 export class WireRefused extends Data.TaggedError("WireRefused")<{
@@ -430,6 +432,51 @@ const authHeaders = (request: Request) => {
   return headers;
 };
 
+/** The request's own API base and account, for a read sent around the guard. */
+const accountBase = (url: URL) => {
+  const at = url.pathname.search(/\/accounts\//u);
+  const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
+  return `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+};
+
+/**
+ * A teardown's delete of a container application: a fresh read, sent around the guard with the
+ * request's credentials, must answer this id with a name carrying the rehearsal stage's token.
+ * A missing, unreadable or differently named application is refused.
+ */
+const proveStageApplication = (
+  scope: StageScope,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  id: string,
+) =>
+  Effect.gen(function* () {
+    const response = yield* Effect.promise(() =>
+      inner(`${accountBase(url)}/containers/applications/${encodeURIComponent(id)}`, {
+        headers: authHeaders(request),
+      }).catch(() => undefined),
+    );
+    const body = response?.ok
+      ? ((yield* Effect.promise(() => response.json().catch(() => null))) as {
+          result?: { id?: unknown; name?: unknown };
+        } | null)
+      : null;
+    const name =
+      body?.result?.id === id && typeof body.result.name === "string" ? body.result.name : "";
+    if (!stageOwnsName(name, scope.stage))
+      return yield* refuse(
+        {
+          resource: `container application ${id}`,
+          method: request.method,
+          path: template(apiPath(url.pathname)),
+        },
+        "stage",
+        "name",
+        name || (response ? `HTTP ${response.status}` : "unreadable"),
+      );
+  });
+
 /**
  * A Worker or Workflow name the stage's State does not record: Cloudflare places it. Absent means
  * this run creates it; present, it must carry this stage's Alchemy tags (a Worker) or run on a
@@ -444,9 +491,7 @@ const proveStageName = (
   verdict: Extract<StageVerdict, { kind: "prove" }>,
 ) =>
   Effect.gen(function* () {
-    const at = url.pathname.search(/\/accounts\//u);
-    const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
-    const base = `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+    const base = accountBase(url);
     const name = encodeURIComponent(verdict.name);
     const read =
       verdict.family === "Worker"
@@ -485,6 +530,7 @@ const proveStageName = (
 const stageGate = (
   config: WireGuardConfig,
   ownedHere: Set<string>,
+  provenDeletes: Set<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   url: URL,
@@ -514,6 +560,12 @@ const stageGate = (
         verdict.field,
         url.pathname,
       );
+    if (verdict.kind === "prove" && verdict.family === "container application") {
+      yield* proveStageApplication(scope, inner, request, url, verdict.name);
+      // Admits this delete past the unattached-application check; it owns nothing else.
+      provenDeletes.add(verdict.name);
+      return undefined;
+    }
     if (verdict.kind === "prove") {
       yield* proveStageName(scope, isOwned, inner, request, url, verdict);
       ownedHere.add(verdict.name);
@@ -526,12 +578,14 @@ const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
   held: ReadonlySet<string>,
+  provenDeletes: ReadonlySet<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   path: string,
 ) =>
   Effect.gen(function* () {
     const method = request.method.toUpperCase();
+    const host = new URL(request.url).hostname.toLowerCase();
     const name = (pattern: RegExp) => {
       const found = pattern.exec(path)?.[1];
       return found === undefined ? undefined : decodeURIComponent(found);
@@ -581,6 +635,19 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
+    // Production's images are served from the same registry: a delete there is only ever a
+    // rehearsal teardown's, which the stage rule has already placed by repository name.
+    if (
+      host === REGISTRY_HOST &&
+      !(config.stage?.teardown === true && isRehearsalStage(config.stage.stage))
+    )
+      return yield* refuse(at("registry image", "{id}"), "delete", "method", method);
+    if (
+      application !== undefined &&
+      provenDeletes.has(application) &&
+      /^\/accounts\/[^/]+\/containers\/applications\/[^/]+$/u.test(path)
+    )
+      return;
     for (const [pattern, kind] of [[APPLICATION, "container application"], ...PROTECTED] as const) {
       const id = name(pattern);
       if (
@@ -607,6 +674,8 @@ export const install = (config: WireGuardConfig = {}) =>
     const held = new Set<string>();
     // What this run created on a disposable stage: its own from here on.
     const ownedHere = new Set<string>();
+    // Applications a rehearsal teardown proved are the stage's by name, each for its delete.
+    const provenDeletes = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
@@ -615,8 +684,16 @@ export const install = (config: WireGuardConfig = {}) =>
       journal.push({ method: request.method, host: url.host, path: template(path) });
       const exit = await Effect.runPromiseExit(
         Effect.gen(function* () {
-          const creates = yield* stageGate(config, ownedHere, inner, request, url, path);
-          yield* check(config, created, held, inner, request, path);
+          const creates = yield* stageGate(
+            config,
+            ownedHere,
+            provenDeletes,
+            inner,
+            request,
+            url,
+            path,
+          );
+          yield* check(config, created, held, provenDeletes, inner, request, path);
           return creates;
         }),
       );

@@ -175,3 +175,69 @@ test("a stage outside the disposable shapes, or without a stage domain, owns no 
   assert.equal(named("rehearsal-2"), "refuse");
   assert.equal(named("rehearsal-2", "example.dev"), "allow");
 });
+
+const REGISTRY = "https://registry.cloudflare.com/v2/acct";
+const DIGEST = `sha256:${"a".repeat(64)}`;
+const teardown: StageScope = { ...scope, teardown: true };
+const teardownVerdict = (method: string, url: string, at: StageScope = teardown) =>
+  stageWriteVerdict(at, () => false, method, new URL(url), undefined);
+
+test("a rehearsal teardown deletes registry manifests only in repositories named for the stage", () => {
+  const own = `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2`;
+  assert.equal(teardownVerdict("DELETE", `${own}/manifests/${DIGEST}`).kind, "allow");
+  assert.equal(teardownVerdict("DELETE", `${own}/manifests/latest`).kind, "allow");
+  assert.equal(
+    teardownVerdict("DELETE", `${REGISTRY}/basalt-test-rehearsal-2-cell/manifests/${DIGEST}`).kind,
+    "allow",
+  );
+  for (const [method, url] of [
+    // Another stage, one whose number starts the same, and production.
+    ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-20/manifests/${DIGEST}`],
+    ["DELETE", `${REGISTRY}/basalt-test-rehearsal-20-cell/manifests/${DIGEST}`],
+    ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-3/manifests/${DIGEST}`],
+    ["DELETE", `${REGISTRY}/basalt-pool-production/manifests/${DIGEST}`],
+    // Only a manifest or tag delete: no blob, upload, push or catalog write.
+    ["DELETE", `${own}/blobs/${DIGEST}`],
+    ["PUT", `${own}/manifests/latest`],
+    ["POST", `${own}/blobs/uploads/`],
+    ["PATCH", `${own}/blobs/uploads/session`],
+    // A repository below another, or a name an encoded slash would turn into a path.
+    ["DELETE", `${own}/nested/manifests/${DIGEST}`],
+    ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2%2Fx/manifests/${DIGEST}`],
+  ] as const)
+    assert.deepEqual([method, url, teardownVerdict(method, url).kind], [method, url, "refuse"]);
+});
+
+test("a registry delete outside a rehearsal stage's teardown is refused", () => {
+  const url = `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2/manifests/${DIGEST}`;
+  // The same stage, deploying or destroying its stacks rather than tearing down.
+  assert.equal(teardownVerdict("DELETE", url, scope).kind, "refuse");
+  // A stage that is not a rehearsal owns nothing by name, whatever the repository says.
+  for (const stage of ["test-pr-7", "test-rehearsal-0", "test-rehearsal-2x", "production"])
+    assert.equal(
+      teardownVerdict("DELETE", `${REGISTRY}/basalt-${stage}-cell/manifests/${DIGEST}`, {
+        ...teardown,
+        stage,
+        label: stage.replace(/^test-/u, ""),
+      }).kind,
+      "refuse",
+      stage,
+    );
+});
+
+test("a teardown deletes a container application only once Cloudflare names it for the stage", () => {
+  const app = `${CF}/containers/applications/app-1`;
+  // Even an application the stage's State records is proven by name during a teardown.
+  assert.deepEqual(
+    stageWriteVerdict(teardown, () => true, "DELETE", new URL(app), undefined),
+    { kind: "prove", family: "container application", name: "app-1" },
+  );
+  assert.equal(teardownVerdict("PATCH", app).kind, "refuse");
+  assert.equal(teardownVerdict("DELETE", `${app}/rollouts`).kind, "refuse");
+  // Outside a teardown an unrecorded application stays refused.
+  assert.equal(teardownVerdict("DELETE", app, scope).kind, "refuse");
+  assert.equal(
+    teardownVerdict("DELETE", app, { ...teardown, stage: "test-pr-7", label: "pr-7" }).kind,
+    "refuse",
+  );
+});
