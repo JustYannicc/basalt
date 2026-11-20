@@ -20,12 +20,18 @@
  * store's Worker must be a noop.
  */
 import { createHash } from "node:crypto";
+import { isAbsolute, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { havePropsChanged, isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import * as Plan from "alchemy/Plan";
 import { Data, Effect, Redacted, Schema } from "effect";
+import { sha256Object } from "alchemy/Util/sha256";
 
 const digestRef = /^[a-z0-9.-]+\/[a-z0-9/_-]+@sha256:[a-f0-9]{64}$/u;
 const exactFqn = Schema.String.check(Schema.isPattern(/^[^*?\s]+$/u));
+const settingName = Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/u));
+const reason = Schema.String.check(Schema.isPattern(/\S/u));
 
 export const PlanPolicy = Schema.Struct({
   /**
@@ -54,6 +60,21 @@ export const PlanPolicy = Schema.Struct({
      * pool's own restart then refuses for good.
      */
     imageRelease: Schema.optional(Schema.Literal(true)),
+    /**
+     * The healing release only: the root's row may plan an update whose only difference is its
+     * recorded image hash. The old release layer recorded the build's input there, while a pinned
+     * declaration hashes the reference, so the first release through this entry plans the row
+     * although nothing about the application changes. Every other difference still refuses, and
+     * the wire guard refuses any modify or rollout of the root whatever the plan says.
+     */
+    recordedHashOnly: Schema.optional(Schema.Literal(true)),
+    /**
+     * The root's attachment may plan as not known yet while the pool Worker updates: one of the
+     * Worker's settings waits on a row that runs in the same plan, so the planner promises only its
+     * id and name. Admitted only when the namespace it resolves to is already recorded, equal on
+     * both rows, and the pool Worker still hosts the class; the apply then reads and sends nothing.
+     */
+    workerAttachment: Schema.optional(Schema.Literal(true)),
     /** The pin's build input, supplied by the caller with the image: what the root really runs. */
     input: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u))),
   }),
@@ -70,15 +91,34 @@ export const PlanPolicy = Schema.Struct({
        */
       unresolvedOnly: Schema.optional(Schema.Literal(true)),
       /**
-       * Admitted only as a change of the Worker's code: no binding of the row changes and no
-       * property differs, except inside an entry of a named `references` property that both
-       * sides hold as a reference to another resource (a Worker it calls moved with the release).
-       * An entry's own value, or an entry added or removed, still refuses. Its classes and
-       * migrations follow from its bindings; the wire guard holds the upload to the serving
-       * version's bindings (`wire.fixedBindings`) and refuses any migration.
+       * Admitted only as a change of the Worker's code. Nothing else of the row may differ, except:
+       * - `main`, while it names the same file of another checkout: a declaration names its entry
+       *   by an absolute path, so the directory a release job runs in is part of the value;
+       * - a `references` entry of `env`, which holds another resource. The plan either still
+       *   waits on the named resource alone, while it updates, or holds the attributes State
+       *   records for it now. While it waits, the entry's binding waits too. Both have to be the
+       *   resource State held there: what an update cannot change of it (its id, its name) is
+       *   known in the plan and must equal the recorded value, in the entry and in its binding;
+       * - the named `fields` of a `values` entry of `env`, a record as plain or redacted JSON,
+       *   for the reason written beside it. Everything else in that record, a credential
+       *   included, must be as recorded, in the entry and in the value its binding carries.
+       * A changed secret or value, an entry or binding added or removed, an entry moved to
+       * another resource and a changed class all refuse. Its classes and migrations follow from
+       * its bindings; the wire guard holds the upload to the serving version's bindings
+       * (`wire.fixedBindings`) and refuses any migration.
        */
       codeOnly: Schema.optional(
-        Schema.Struct({ references: Schema.Array(Schema.String), why: Schema.String }),
+        Schema.Struct({
+          references: Schema.Array(Schema.Struct({ name: settingName, resource: exactFqn })),
+          values: Schema.Array(
+            Schema.Struct({
+              name: settingName,
+              fields: Schema.NonEmptyArray(settingName),
+              why: reason,
+            }),
+          ),
+          why: reason,
+        }),
       ),
     }),
   ),
@@ -189,6 +229,38 @@ export function propChanges(
   if (!havePropsChanged({ value: old }, { value: next })) return [];
   return [`${path.join(".")}: ${shown(old, path)} -> ${shown(next, path)}`];
 }
+
+/** The checkout this check runs from: the stack's declarations name their files under it. */
+const checkout = fileURLToPath(new URL("../../", import.meta.url));
+const filePath = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  if (!value.startsWith("file:")) return value;
+  try {
+    return fileURLToPath(value);
+  } catch {
+    return undefined;
+  }
+};
+/**
+ * Whether a recorded entry file is the declared one under another checkout's directory. Both are
+ * absolute, as a path or a file URL; the declared one has to sit in this checkout, and the
+ * recorded one has to end with the same path from its own checkout's root.
+ */
+export function sameEntryFile(old: unknown, next: unknown, root = checkout): boolean {
+  const before = filePath(old);
+  const after = filePath(next);
+  if (before === undefined || after === undefined || !isAbsolute(before)) return false;
+  const inside = relative(root, after);
+  if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) return false;
+  return before === after || before.endsWith(`${sep}${inside}`);
+}
+/** An entry file for a public log: its file and directory name, never where the checkout sits. */
+const entryName = (value: unknown) => {
+  const names = (filePath(value) ?? "").split(sep).slice(-2);
+  return names.length === 2 && names.every((name) => /^[A-Za-z0-9._-]{1,80}$/u.test(name))
+    ? `…/${names.join("/")}`
+    : "<withheld>";
+};
 
 /** An interrupted update keeps the last settled generation under `old`. */
 const recorded = (node: Node) =>
@@ -319,7 +391,95 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
   return violations;
 }
 
-function containerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
+/**
+ * Whether the root's planned update is one the apply settles with reads only, explained by one or
+ * both of: the image hash the old release layer recorded (a pinned declaration hashes the reference
+ * instead), and an attachment the plan cannot know while the pool Worker updates.
+ */
+export function rootUpdateSettles(
+  node: Node,
+  policy: PlanPolicy,
+  referenceHash: string | undefined,
+  worker: { readonly node: Node | undefined; readonly clean: boolean },
+): boolean {
+  const props: Record<string, unknown> = record(node.resource.Props) ? node.resource.Props : {};
+  const before = recorded(node)?.props;
+  const built = ["context", "dockerfile", "main"].filter((key) => props[key] !== undefined);
+  // A root update the apply settles with reads only, explained by one or both of: the image hash
+  // the old release layer recorded (a pinned declaration hashes the reference instead), and an
+  // attachment the plan cannot know while the pool Worker updates. Anything else stays refused.
+  const recordedHash = (recorded(node) as { attr?: { hash?: { image?: unknown } } } | undefined)
+    ?.attr?.hash?.image;
+  const hashDiffers =
+    typeof recordedHash === "string" &&
+    referenceHash !== undefined &&
+    recordedHash !== referenceHash;
+  const pending = node.bindings.filter((binding) => binding.action !== "noop");
+  const className = props.className;
+  const attachmentWaitsOnWorker = () => {
+    const [binding] = pending;
+    if (pending.length !== 1 || !binding || binding.action !== "update") return false;
+    // Not known yet, and waiting on the pool Worker alone.
+    if (isResolved(binding.data)) return false;
+    const upstream = Object.keys(Output.upstreamAny(binding.data));
+    if (upstream.length !== 1 || upstream[0] !== policy.poolWorker) return false;
+    const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
+    if (
+      propChanges(recordedData, binding.data, ["bindings", binding.sid]).some(
+        (line) => !line.includes("<unresolved>"),
+      )
+    )
+      return false;
+    // What it will resolve to is already recorded, the same on both rows: a namespace id is
+    // permanent for a Worker and a class, so the Worker's update cannot move it.
+    const attached =
+      record(recordedData) && record(recordedData.durableObjects)
+        ? recordedData.durableObjects.namespaceId
+        : undefined;
+    if (typeof attached !== "string" || attached.length === 0) return false;
+    const rootAttr = (recorded(node) as { attr?: { durableObjects?: { namespaceId?: unknown } } })
+      ?.attr;
+    if (rootAttr?.durableObjects?.namespaceId !== attached) return false;
+    const workerNode = worker.node;
+    if (!workerNode || typeof className !== "string") return false;
+    const workerAttr = (
+      recorded(workerNode) as { attr?: { durableObjectNamespaces?: Record<string, unknown> } }
+    )?.attr;
+    if (workerAttr?.durableObjectNamespaces?.[className] !== attached) return false;
+    // The pool Worker updates, nothing its own rules refuse, and still hosts the class itself.
+    return (
+      workerNode.action === "update" &&
+      worker.clean &&
+      workerNode.bindings.some(
+        (entry) =>
+          entry.action !== "delete" &&
+          wire(entry.data).some(
+            (bound) =>
+              durable(bound) && bound.className === className && bound.scriptName === undefined,
+          ),
+      )
+    );
+  };
+  return (
+    node.action === "update" &&
+    propChanges(before, props).length === 0 &&
+    !built.length &&
+    props.image === policy.poolContainer.image &&
+    (hashDiffers || pending.length > 0) &&
+    (!hashDiffers || policy.poolContainer.recordedHashOnly === true) &&
+    (pending.length === 0 ||
+      (policy.poolContainer.workerAttachment === true && attachmentWaitsOnWorker()))
+  );
+}
+
+function containerViolations(
+  node: Node,
+  policy: PlanPolicy,
+  /** The hash Alchemy gives the declared image reference (`ContainerProvider`, a pre-built image). */
+  referenceHash: string | undefined,
+  /** The pool Worker's node in the same plan, and whether its own rules refused nothing. */
+  worker: { readonly node: Node | undefined; readonly clean: boolean },
+): PlanViolation[] {
   const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
   const props: Record<string, unknown> = record(node.resource.Props) ? node.resource.Props : {};
   const before = recorded(node)?.props;
@@ -364,7 +524,8 @@ function containerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
     });
   // The pool's own restart refuses for good once the application's version or settings move, so
   // a release that relies on it may not touch the root's row in any way.
-  if (!policy.poolContainer.imageRelease && node.action !== "noop")
+  const settles = rootUpdateSettles(node, policy, referenceHash, worker);
+  if (!policy.poolContainer.imageRelease && !settles && node.action !== "noop")
     violations.push({
       ...at,
       rule: "pool-container-not-noop",
@@ -440,292 +601,492 @@ const lifecycleChange = (node: Node): string[] => {
  * The non-noop changes of an admitted plan, for the step summary. A refused plan fails with one
  * error that lists every violation, so a single run shows everything a reviewer has to resolve.
  */
+/** The hash Alchemy gives the root's declared image reference: `sha256Object({ image, imageName })`. */
+const rootReferenceHash = (plan: Plan.Plan, policy: PlanPolicy) => {
+  const props = plan.resources[policy.poolContainer.fqn]?.resource.Props;
+  const image = record(props) && typeof props.image === "string" ? props.image : undefined;
+  return image === undefined
+    ? Effect.succeed(undefined)
+    : sha256Object({ image, imageName: undefined }).pipe(Effect.map((hash) => hash.slice(0, 16)));
+};
+
 export const checkPlan = (
   plan: Plan.Plan,
   policy: PlanPolicy,
 ): Effect.Effect<readonly PlanChange[], PlanRefused> =>
-  Effect.suspend(() => {
-    const violations: PlanViolation[] = [];
-    const nodes: Node[] = [
-      ...Object.values(plan.resources),
-      ...Object.values(plan.deletions).filter((node) => node !== undefined),
-    ];
-    const whole = { fqn: "(plan)", type: "Alchemy.Plan", action: "plan" };
+  Effect.flatMap(rootReferenceHash(plan, policy), (referenceHash) =>
+    Effect.suspend(() => {
+      const violations: PlanViolation[] = [];
+      const nodes: Node[] = [
+        ...Object.values(plan.resources),
+        ...Object.values(plan.deletions).filter((node) => node !== undefined),
+      ];
+      const whole = { fqn: "(plan)", type: "Alchemy.Plan", action: "plan" };
 
-    if (plan.destroy)
-      violations.push({
-        ...whole,
-        rule: "destroy-plan",
-        change: ["$plan: deploy -> destroy"],
-        why: "A destroy plan deletes every resource of the stage.",
-        fix: "Build the plan with the deploy entry point.",
-      });
-    const include = policy.include;
-    if (plan.selectedFqns && !include)
-      violations.push({
-        ...whole,
-        rule: "filtered-plan-without-include",
-        change: [`$selection: full -> ${plan.selectedFqns.size} selected`],
-        why: "A filtered plan skips the orphan pass and every unselected resource, so it is admitted only for a reviewed selection.",
-        fix: "Add the `include` list to the policy, or plan the whole stack.",
-      });
-    if (include && !plan.selectedFqns)
-      violations.push({
-        ...whole,
-        rule: "full-plan-with-include",
-        change: [`$selection: ${include.join(", ")} -> full`],
-        why: "The policy was reviewed for a filtered plan; a full plan also reconciles every other resource and runs the orphan pass.",
-        fix: "Pass the policy's `include` list to the plan, or review a policy for the full stack.",
-      });
-    for (const fqn of include ?? [])
-      if (plan.selectedFqns && !plan.selectedFqns.has(fqn))
+      if (plan.destroy)
         violations.push({
           ...whole,
-          fqn,
-          rule: "include-not-selected",
-          change: [`$selection.${fqn}: selected -> absent`],
-          why: "The plan was built with a different selection than the reviewed one.",
-          fix: "Pass exactly the policy's `include` list to the plan.",
+          rule: "destroy-plan",
+          change: ["$plan: deploy -> destroy"],
+          why: "A destroy plan deletes every resource of the stage.",
+          fix: "Build the plan with the deploy entry point.",
         });
+      const include = policy.include;
+      if (plan.selectedFqns && !include)
+        violations.push({
+          ...whole,
+          rule: "filtered-plan-without-include",
+          change: [`$selection: full -> ${plan.selectedFqns.size} selected`],
+          why: "A filtered plan skips the orphan pass and every unselected resource, so it is admitted only for a reviewed selection.",
+          fix: "Add the `include` list to the policy, or plan the whole stack.",
+        });
+      if (include && !plan.selectedFqns)
+        violations.push({
+          ...whole,
+          rule: "full-plan-with-include",
+          change: [`$selection: ${include.join(", ")} -> full`],
+          why: "The policy was reviewed for a filtered plan; a full plan also reconciles every other resource and runs the orphan pass.",
+          fix: "Pass the policy's `include` list to the plan, or review a policy for the full stack.",
+        });
+      for (const fqn of include ?? [])
+        if (plan.selectedFqns && !plan.selectedFqns.has(fqn))
+          violations.push({
+            ...whole,
+            fqn,
+            rule: "include-not-selected",
+            change: [`$selection.${fqn}: selected -> absent`],
+            why: "The plan was built with a different selection than the reviewed one.",
+            fix: "Pass exactly the policy's `include` list to the plan.",
+          });
 
-    for (const node of nodes) {
-      const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
-      const destroys =
-        node.action === "delete" || node.action === "orphaned" || node.action === "replace";
-      const reviewed = policy.removals.some(
-        (removal) =>
-          removal.fqn === at.fqn && removal.type === at.type && removal.action === at.action,
+      // The pool Worker as the root's rules see it, and whether the root's row settles with reads.
+      const poolWorkerNode = nodes.find(
+        (candidate) => candidate.resource.FQN === policy.poolWorker,
       );
-      if (destroys && protectedBy(node, policy))
-        violations.push({
-          ...at,
-          rule: "protected-resource-destroyed",
-          change: lifecycleChange(node),
-          why:
-            node.action === "orphaned"
-              ? "Alchemy would drop the row and leave the resource live but unmanaged; every reference to it then fails, and nothing guards it afterwards."
-              : "The resource holds data that no release may delete or recreate.",
-          fix: "Restore the resource's declaration exactly as recorded. A protected resource cannot be listed in `removals`.",
-        });
-      else if (node.action === "replace" && !reviewed)
-        violations.push({
-          ...at,
-          rule: "unreviewed-replace",
-          change: lifecycleChange(node),
-          why: "Alchemy would create a new resource and delete the recorded one: whatever it holds is gone, and every binding moves to the empty new one.",
-          fix: 'Make the declaration equal to the recorded props, or add this exact fqn, type and action "replace" to the policy\'s `removals` after review.',
-        });
-      else if (
-        (node.action === "delete" || node.action === "orphaned") &&
-        // A Command has no cloud resource: its delete only drops the row.
-        !(node.action === "delete" && node.resource.Type.startsWith("Command.")) &&
-        !reviewed
-      )
-        violations.push({
-          ...at,
-          rule: "unreviewed-removal",
-          change: lifecycleChange(node),
-          why:
-            node.action === "orphaned"
-              ? "State holds a retained row that the stack no longer declares; Alchemy would drop the row and leave the resource live but unmanaged."
-              : "State holds a row that the stack no longer declares; Alchemy would delete the resource.",
-          fix: "Declare the resource again, or add this exact fqn, type and action to the policy's `removals` after review.",
-        });
-      if ("renamedFrom" in node && node.renamedFrom?.length)
-        violations.push({
-          ...at,
-          rule: "resource-renamed",
-          change: [`$fqn: ${node.renamedFrom.join(", ")} -> ${at.fqn}`],
-          why: "A rename moves the State row before any lifecycle runs; a failed apply then leaves the resource under two identities.",
-          fix: "Remove renamedFrom. Renames ship alone, as a full deployment.",
-        });
-      if (node.resource.Type === workerType) violations.push(...workerViolations(node, policy));
-      if (at.fqn === policy.poolContainer.fqn && !destroys)
-        violations.push(...containerViolations(node, policy));
-    }
-    for (const [fqn, node] of Object.entries(plan.actionDeletions))
-      if (node && !policy.removals.some((r) => r.fqn === fqn && r.action === "delete"))
-        violations.push({
-          fqn,
-          type: node.def.Type,
-          action: "delete",
-          rule: "unreviewed-removal",
-          change: ["$action: recorded -> delete"],
-          why: "State holds an action row that the stack no longer declares.",
-          fix: "Declare the action again, or add it to the policy's `removals` after review.",
-        });
-
-    const changes: PlanChange[] = [
-      ...nodes
-        .filter((node) => node.action !== "noop")
-        .map((node) => ({
-          fqn: node.resource.FQN,
-          type: node.resource.Type,
-          action: node.action,
-          bindings: node.bindings
-            .filter((binding) => binding.action !== "noop")
-            .map(({ sid, action }) => ({ sid, action })),
-        })),
-      ...[...Object.values(plan.actions), ...Object.values(plan.actionDeletions)]
-        .filter((node) => node !== undefined && node.action !== "noop")
-        .map((node) => ({
-          fqn: node.def.FQN,
-          type: node.def.Type,
-          action: node.action,
-          bindings: [],
-        })),
-    ].sort((a, b) => (a.fqn < b.fqn ? -1 : a.fqn > b.fqn ? 1 : 0));
-
-    const outside = (change: PlanChange, expected: string, why: string, fix: string) =>
-      violations.push({
-        fqn: change.fqn,
-        type: change.type,
-        action: change.action,
-        rule: `outside-${policy.mode}`,
-        change: [`$action: ${expected} -> ${change.action}`],
-        why,
-        fix,
-      });
-    // Every property that differs on this row is still unknown at plan time.
-    const onlyUnresolved = (fqn: string) => {
-      const node = nodes.find((candidate) => candidate.resource.FQN === fqn);
-      if (!node || !("props" in node)) return false;
-      const differences = propChanges(recorded(node)?.props, node.props);
-      return (
-        differences.length > 0 &&
-        differences.every((line) => line.includes("<unresolved>")) &&
-        node.bindings.every((binding) => binding.action === "noop")
-      );
-    };
-    // Readiness after the upload refuses a root whose recorded input differs from what the pool
-    // Worker expects. A pinned root runs the pin's input, so both identities must name it.
-    const pinnedInput = policy.poolContainer.input;
-    const poolWorker = nodes.find((candidate) => candidate.resource.FQN === policy.poolWorker);
-    if (pinnedInput !== undefined && poolWorker) {
-      const declared = record(poolWorker.resource.Props) ? poolWorker.resource.Props : {};
-      const env = record(declared.env) ? declared.env : {};
-      const differ = ["POOL_IMAGE_HASH", "POOL_DESIRED_IMAGE_INPUT"].filter(
-        (key) => env[key] !== pinnedInput,
-      );
-      if (differ.length)
-        violations.push({
-          fqn: poolWorker.resource.FQN,
-          type: poolWorker.resource.Type,
-          action: poolWorker.action,
-          rule: "pool-worker-image-input-not-pinned",
-          change: differ.map((key) => `env.${key}: differs from the root pin's input`),
-          why: "The pool Worker's readiness compares the root's recorded image input with these. The pinned root runs the pin's input, so another value stops the apply after the Worker is uploaded.",
-          fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
-        });
-    }
-    // What a code-only allowance does not cover on a row: a binding that changes, or a property
-    // that differs other than inside a reference both sides hold.
-    const beyondCode = (change: PlanChange, references: ReadonlyArray<string>) => {
-      const node = nodes.find((candidate) => candidate.resource.FQN === change.fqn);
-      const lines = change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`);
-      if (!node || !("props" in node)) return [...lines, "props: not readable"];
-      const before = recorded(node)?.props as Record<string, unknown> | undefined;
-      const after = node.props as Record<string, unknown> | undefined;
-      const entry = (props: Record<string, unknown> | undefined, prop: string, key: string) => {
-        const holder = props?.[prop];
-        return record(holder) ? holder[key] : undefined;
+      const workerContext = {
+        node: poolWorkerNode,
+        clean: !!poolWorkerNode && workerViolations(poolWorkerNode, policy).length === 0,
       };
-      for (const line of propChanges(before, after)) {
-        const [, prop = "", key = ""] = /^props\.([^.:]+)\.([^.:]+)[.:]/u.exec(line) ?? [];
-        const old = entry(before, prop, key);
-        const next = entry(after, prop, key);
-        // A reference whose target moved: the entry was recorded as an object, and is one again
-        // or is not known yet. Its own identity is the binding's, checked above and at the wire.
-        if (references.includes(prop) && record(old) && (record(next) || !isResolved(next)))
-          continue;
-        lines.push(line);
-      }
-      return lines;
-    };
-    if (policy.mode === "code-only")
-      for (const change of changes) {
-        const codeOnly = policy.allow.find(
-          (entry) => entry.codeOnly && entry.fqn === change.fqn && entry.action === change.action,
-        )?.codeOnly;
-        if (codeOnly) {
-          const beyond = beyondCode(change, codeOnly.references);
-          if (beyond.length)
-            violations.push({
-              fqn: change.fqn,
-              type: change.type,
-              action: change.action,
-              rule: "code-only-allowance-exceeded",
-              change: beyond,
-              why: "This Worker is admitted as a change of its code only. A binding or property change can move its Durable Object classes or what it is attached to, which a Worker rollback does not undo.",
-              fix: "Ship that change in its own reviewed release; this policy admits only the Worker's code.",
-            });
-          continue;
-        }
-        if (
-          // `allow` names what else a reviewer accepted. Otherwise only code moves: an update of any
-          // Worker but the bulk-import store's (binding and class changes are refused above), the
-          // pinned root's hash, and Command runs such as a migration step (the backup covers those).
-          !policy.allow.some(
-            (entry) =>
-              entry.fqn === change.fqn &&
-              entry.action === change.action &&
-              (!entry.unresolvedOnly || onlyUnresolved(change.fqn)),
-          ) &&
-          !(
-            change.action === "update" &&
-            ((change.type === "Cloudflare.Worker" && change.fqn !== policy.artifactsCredentials) ||
-              change.fqn === policy.poolContainer.fqn ||
-              (change.type.startsWith("Command.") &&
-                (!policy.commands || policy.commands.includes(change.fqn))))
-          )
+      const rootNode = nodes.find(
+        (candidate) => candidate.resource.FQN === policy.poolContainer.fqn,
+      );
+      const rootSettled =
+        !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
+      for (const node of nodes) {
+        const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
+        const destroys =
+          node.action === "delete" || node.action === "orphaned" || node.action === "replace";
+        const reviewed = policy.removals.some(
+          (removal) =>
+            removal.fqn === at.fqn && removal.type === at.type && removal.action === at.action,
+        );
+        if (destroys && protectedBy(node, policy))
+          violations.push({
+            ...at,
+            rule: "protected-resource-destroyed",
+            change: lifecycleChange(node),
+            why:
+              node.action === "orphaned"
+                ? "Alchemy would drop the row and leave the resource live but unmanaged; every reference to it then fails, and nothing guards it afterwards."
+                : "The resource holds data that no release may delete or recreate.",
+            fix: "Restore the resource's declaration exactly as recorded. A protected resource cannot be listed in `removals`.",
+          });
+        else if (node.action === "replace" && !reviewed)
+          violations.push({
+            ...at,
+            rule: "unreviewed-replace",
+            change: lifecycleChange(node),
+            why: "Alchemy would create a new resource and delete the recorded one: whatever it holds is gone, and every binding moves to the empty new one.",
+            fix: 'Make the declaration equal to the recorded props, or add this exact fqn, type and action "replace" to the policy\'s `removals` after review.',
+          });
+        else if (
+          (node.action === "delete" || node.action === "orphaned") &&
+          // A Command has no cloud resource: its delete only drops the row.
+          !(node.action === "delete" && node.resource.Type.startsWith("Command.")) &&
+          !reviewed
         )
+          violations.push({
+            ...at,
+            rule: "unreviewed-removal",
+            change: lifecycleChange(node),
+            why:
+              node.action === "orphaned"
+                ? "State holds a retained row that the stack no longer declares; Alchemy would drop the row and leave the resource live but unmanaged."
+                : "State holds a row that the stack no longer declares; Alchemy would delete the resource.",
+            fix: "Declare the resource again, or add this exact fqn, type and action to the policy's `removals` after review.",
+          });
+        if ("renamedFrom" in node && node.renamedFrom?.length)
+          violations.push({
+            ...at,
+            rule: "resource-renamed",
+            change: [`$fqn: ${node.renamedFrom.join(", ")} -> ${at.fqn}`],
+            why: "A rename moves the State row before any lifecycle runs; a failed apply then leaves the resource under two identities.",
+            fix: "Remove renamedFrom. Renames ship alone, as a full deployment.",
+          });
+        if (node.resource.Type === workerType) violations.push(...workerViolations(node, policy));
+        if (at.fqn === policy.poolContainer.fqn && !destroys)
+          violations.push(...containerViolations(node, policy, referenceHash, workerContext));
+      }
+      for (const [fqn, node] of Object.entries(plan.actionDeletions))
+        if (node && !policy.removals.some((r) => r.fqn === fqn && r.action === "delete"))
+          violations.push({
+            fqn,
+            type: node.def.Type,
+            action: "delete",
+            rule: "unreviewed-removal",
+            change: ["$action: recorded -> delete"],
+            why: "State holds an action row that the stack no longer declares.",
+            fix: "Declare the action again, or add it to the policy's `removals` after review.",
+          });
+
+      const changes: PlanChange[] = [
+        ...nodes
+          .filter((node) => node.action !== "noop")
+          .map((node) => ({
+            fqn: node.resource.FQN,
+            type: node.resource.Type,
+            action: node.action,
+            bindings: node.bindings
+              .filter((binding) => binding.action !== "noop")
+              .map(({ sid, action }) => ({ sid, action })),
+          })),
+        ...[...Object.values(plan.actions), ...Object.values(plan.actionDeletions)]
+          .filter((node) => node !== undefined && node.action !== "noop")
+          .map((node) => ({
+            fqn: node.def.FQN,
+            type: node.def.Type,
+            action: node.action,
+            bindings: [],
+          })),
+      ].sort((a, b) => (a.fqn < b.fqn ? -1 : a.fqn > b.fqn ? 1 : 0));
+
+      const outside = (change: PlanChange, expected: string, why: string, fix: string) =>
+        violations.push({
+          fqn: change.fqn,
+          type: change.type,
+          action: change.action,
+          rule: `outside-${policy.mode}`,
+          change: [`$action: ${expected} -> ${change.action}`],
+          why,
+          fix,
+        });
+      // Every property that differs on this row is still unknown at plan time.
+      const onlyUnresolved = (fqn: string) => {
+        const node = nodes.find((candidate) => candidate.resource.FQN === fqn);
+        if (!node || !("props" in node)) return false;
+        const differences = propChanges(recorded(node)?.props, node.props);
+        return (
+          differences.length > 0 &&
+          differences.every((line) => line.includes("<unresolved>")) &&
+          node.bindings.every((binding) => binding.action === "noop")
+        );
+      };
+      // Readiness after the upload refuses a root whose recorded input differs from what the pool
+      // Worker expects. A pinned root runs the pin's input, so both identities must name it.
+      const pinnedInput = policy.poolContainer.input;
+      const poolWorker = nodes.find((candidate) => candidate.resource.FQN === policy.poolWorker);
+      if (pinnedInput !== undefined && poolWorker) {
+        const declared = record(poolWorker.resource.Props) ? poolWorker.resource.Props : {};
+        const env = record(declared.env) ? declared.env : {};
+        const differ = ["POOL_IMAGE_HASH", "POOL_DESIRED_IMAGE_INPUT"].filter(
+          (key) => env[key] !== pinnedInput,
+        );
+        if (differ.length)
+          violations.push({
+            fqn: poolWorker.resource.FQN,
+            type: poolWorker.resource.Type,
+            action: poolWorker.action,
+            rule: "pool-worker-image-input-not-pinned",
+            change: differ.map((key) => `env.${key}: differs from the root pin's input`),
+            why: "The pool Worker's readiness compares the root's recorded image input with these. The pinned root runs the pin's input, so another value stops the apply after the Worker is uploaded.",
+            fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
+          });
+      }
+      // What a code-only allowance does not cover on a row. Each property and each `env` entry is
+      // compared on its own: one value that is not known yet must not hide the rest of the row.
+      const beyondCode = (
+        change: PlanChange,
+        codeOnly: NonNullable<PlanPolicy["allow"][number]["codeOnly"]>,
+      ) => {
+        const node = nodes.find((candidate) => candidate.resource.FQN === change.fqn);
+        if (!node || !("props" in node))
+          return [
+            ...change.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`),
+            "props: not readable",
+          ];
+        const values = new Map(codeOnly.values.map((value) => [value.name, value.fields]));
+        const references = new Map(
+          codeOnly.references.map((entry) => [entry.name, entry.resource]),
+        );
+        const keys = (...holders: object[]) => [...new Set(holders.flatMap(Object.keys))].sort();
+        const recordedData = new Map(
+          recordedBindings(node).map((binding) => [binding.sid, binding.data]),
+        );
+        const planned = (resource: string) =>
+          nodes.find((candidate) => candidate.resource.FQN === resource);
+
+        // A named value is a record, plain or as JSON text, redacted or not. Only its named fields
+        // may differ: the rest of it, such as a credential beside a version, is compared.
+        const decoded = (value: unknown): Record<string, unknown> | undefined => {
+          const text: unknown = Redacted.isRedacted(value) ? Redacted.value(value) : value;
+          if (record(text)) return text;
+          if (typeof text !== "string") return undefined;
+          try {
+            const parsed: unknown = JSON.parse(text);
+            return record(parsed) ? parsed : undefined;
+          } catch {
+            return undefined;
+          }
+        };
+        const onlyFields = (old: unknown, next: unknown, fields: readonly string[]) => {
+          const before = decoded(old);
+          const after = decoded(next);
+          const rest = (value: Record<string, unknown>) =>
+            Object.fromEntries(Object.entries(value).filter(([key]) => !fields.includes(key)));
+          return (
+            isResolved(old) &&
+            isResolved(next) &&
+            Redacted.isRedacted(old) === Redacted.isRedacted(next) &&
+            typeof (Redacted.isRedacted(old) ? Redacted.value(old) : old) ===
+              typeof (Redacted.isRedacted(next) ? Redacted.value(next) : next) &&
+            before !== undefined &&
+            after !== undefined &&
+            propChanges(rest(before), rest(after)).length === 0
+          );
+        };
+        // A changed value plans its own binding row as an update too. That row is admitted while
+        // it is the same binding and the value it carries differs in the named fields only.
+        const valueOnly = (binding: Node["bindings"][number]) => {
+          const fields = values.get(binding.sid);
+          const old = recordedData.get(binding.sid);
+          if (binding.action !== "update" || fields === undefined || !isResolved(binding.data))
+            return false;
+          const carried = (data: unknown): Record<string, unknown>[] =>
+            record(data) && Array.isArray(data.bindings) ? data.bindings.filter(record) : [];
+          const rest = (data: unknown) =>
+            record(data)
+              ? {
+                  ...data,
+                  bindings: carried(data).map((entry) =>
+                    Object.fromEntries(
+                      Object.entries(entry).filter(([key]) => key !== "text" && key !== "json"),
+                    ),
+                  ),
+                }
+              : data;
+          const before = carried(old);
+          const after = carried(binding.data);
+          return (
+            propChanges(rest(old), rest(binding.data)).length === 0 &&
+            before.length === after.length &&
+            after.every((entry, index) =>
+              ["text", "json"].every(
+                (key) =>
+                  propChanges(before[index]?.[key], entry[key]).length === 0 ||
+                  onlyFields(before[index]?.[key], entry[key], fields),
+              ),
+            )
+          );
+        };
+
+        // Not known until one resource applies, and that resource keeps its identity: it updates.
+        const waitsOn = (value: unknown, resource: string) =>
+          !isResolved(value) &&
+          Object.keys(Output.upstreamAny(value)).join("\n") === resource &&
+          planned(resource)?.action === "update";
+        // State recorded the named resource's attributes for the entry. The plan either still waits
+        // on that resource, or holds the attributes State records for it now.
+        const reference = (old: unknown, next: unknown, resource: string) => {
+          if (!record(old) || Redacted.isRedacted(old)) return false;
+          if (!isResolved(next)) {
+            // The plan keeps what an update cannot change of the resource. State must hold the
+            // same there, or the entry was another resource before.
+            const stable: unknown = Output.isResourceExpr(next) ? next.stables : undefined;
+            return (
+              waitsOn(next, resource) &&
+              record(stable) &&
+              Object.values(stable).some((value) => value !== undefined) &&
+              Object.entries(stable).every(
+                ([key, value]) => isResolved(value) && propChanges(old[key], value).length === 0,
+              )
+            );
+          }
+          const target = planned(resource);
+          const attributes = target && (recorded(target) as { attr?: unknown } | undefined)?.attr;
+          return record(attributes) && record(next) && propChanges(attributes, next).length === 0;
+        };
+        // While a referenced resource updates, the entry's binding row is not fully known either.
+        // Every known leaf of it must be as State recorded it, so it is the same binding to the
+        // same resource; each unknown leaf stands where State holds a value and waits on that
+        // resource alone.
+        const sameButWaiting = (old: unknown, next: unknown, resource: string): boolean => {
+          if (isResolved(next)) return propChanges(old, next).length === 0;
+          if (Output.isExpr(next)) return old !== undefined && waitsOn(next, resource);
+          if (Array.isArray(next))
+            return (
+              Array.isArray(old) &&
+              old.length === next.length &&
+              next.every((value, index) => sameButWaiting(old[index], value, resource))
+            );
+          return (
+            record(next) &&
+            record(old) &&
+            keys(old, next).every((key) => sameButWaiting(old[key], next[key], resource))
+          );
+        };
+        const referenceWaits = (binding: Node["bindings"][number]) => {
+          const resource = references.get(binding.sid);
+          return (
+            binding.action === "update" &&
+            resource !== undefined &&
+            !isResolved(binding.data) &&
+            sameButWaiting(recordedData.get(binding.sid), binding.data, resource)
+          );
+        };
+        const lines = [
+          // A policy that names an entry twice, or the Worker itself, would let the looser rule
+          // answer for the stricter one.
+          ...codeOnly.references.flatMap((entry) => [
+            ...(values.has(entry.name)
+              ? [`policy.${entry.name}: named as a reference and as a value`]
+              : []),
+            ...(entry.resource === change.fqn
+              ? [`policy.${entry.name}: names the Worker itself`]
+              : []),
+          ]),
+          ...node.bindings
+            .filter(
+              (binding) =>
+                binding.action !== "noop" && !valueOnly(binding) && !referenceWaits(binding),
+            )
+            .map(({ sid, action }) => `bindings.${sid}: ${action}`),
+        ];
+        const before: Record<string, unknown> = record(recorded(node)?.props)
+          ? (recorded(node)?.props as Record<string, unknown>)
+          : {};
+        const after: Record<string, unknown> = record(node.props) ? node.props : {};
+        for (const prop of keys(before, after)) {
+          const old = before[prop];
+          const next = after[prop];
+          if (prop === "main" && old !== next) {
+            if (!sameEntryFile(old, next))
+              lines.push(`props.main: ${entryName(old)} -> ${entryName(next)}`);
+            continue;
+          }
+          if (
+            prop !== "env" ||
+            !record(old) ||
+            !record(next) ||
+            Redacted.isRedacted(old) ||
+            Redacted.isRedacted(next) ||
+            Output.isOutput(next)
+          ) {
+            lines.push(...propChanges(old, next, ["props", prop]));
+            continue;
+          }
+          for (const name of keys(old, next)) {
+            const present = Object.hasOwn(old, name) && Object.hasOwn(next, name);
+            const fields = values.get(name);
+            if (present && fields !== undefined && onlyFields(old[name], next[name], fields))
+              continue;
+            const resource = references.get(name);
+            if (present && resource !== undefined && reference(old[name], next[name], resource))
+              continue;
+            lines.push(...propChanges(old[name], next[name], ["props", "env", name]));
+          }
+        }
+        return lines;
+      };
+      if (policy.mode === "code-only")
+        for (const change of changes) {
+          const codeOnly = policy.allow.find(
+            (entry) => entry.codeOnly && entry.fqn === change.fqn && entry.action === change.action,
+          )?.codeOnly;
+          if (codeOnly) {
+            const beyond = beyondCode(change, codeOnly);
+            if (beyond.length)
+              violations.push({
+                fqn: change.fqn,
+                type: change.type,
+                action: change.action,
+                rule: "code-only-allowance-exceeded",
+                change: beyond,
+                why: "This Worker is admitted as a change of its code only. A binding or property change can move its Durable Object classes or what it is attached to, which a Worker rollback does not undo.",
+                fix: "Ship that change in its own reviewed release; this policy admits only the Worker's code.",
+              });
+            continue;
+          }
+          if (
+            // `allow` names what else a reviewer accepted. Otherwise only code moves: an update of any
+            // Worker but the bulk-import store's (binding and class changes are refused above), the
+            // pinned root's hash, and Command runs such as a migration step (the backup covers those).
+            !policy.allow.some(
+              (entry) =>
+                entry.fqn === change.fqn &&
+                entry.action === change.action &&
+                (!entry.unresolvedOnly || onlyUnresolved(change.fqn)),
+            ) &&
+            !(
+              change.action === "update" &&
+              ((change.type === "Cloudflare.Worker" &&
+                change.fqn !== policy.artifactsCredentials) ||
+                change.fqn === policy.poolContainer.fqn ||
+                (change.type.startsWith("Command.") &&
+                  (!policy.commands || policy.commands.includes(change.fqn))))
+            )
+          )
+            outside(
+              change,
+              "noop",
+              "A code-only release moves Worker code (and runs migration steps) and nothing else, so a Worker rollback undoes the code.",
+              "Ship this change in its own release, or review a policy in release mode.",
+            );
+        }
+      if (policy.mode === "cutover-classes") {
+        const credentials = changes.find((change) => change.fqn === policy.artifactsCredentials);
+        if (credentials)
+          violations.push({
+            ...credentials,
+            rule: "artifacts-credentials-not-noop",
+            change: [
+              `$action: noop -> ${credentials.action}`,
+              ...credentials.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`),
+            ],
+            why: "Uploading this Worker restarts the Durable Object that holds bulk-import job state, in the same run as a class change that cannot be rolled back.",
+            fix: "Ship this Worker's change first, as its own code-only release, then plan the cutover again.",
+          });
+        for (const change of changes) {
+          const allowed = policy.allow.find((entry) => entry.fqn === change.fqn);
+          if (
+            change.fqn === policy.artifactsCredentials ||
+            allowed?.action === change.action ||
+            (change.fqn === policy.poolContainer.fqn && rootSettled)
+          )
+            continue;
           outside(
             change,
-            "noop",
-            "A code-only release moves Worker code (and runs migration steps) and nothing else, so a Worker rollback undoes the code.",
-            "Ship this change in its own release, or review a policy in release mode.",
+            allowed ? allowed.action : "noop",
+            "The cutover applies exactly the reviewed set of changes; this one is not in it.",
+            "Find out why the plan differs from the reviewed one. Update the allow-list only after review.",
           );
+        }
+        for (const entry of policy.allow)
+          if (!changes.some((change) => change.fqn === entry.fqn))
+            violations.push({
+              fqn: entry.fqn,
+              type: "(not in plan)",
+              action: "noop",
+              rule: "outside-cutover-classes",
+              change: [`$action: ${entry.action} -> noop`],
+              why: "The reviewed cutover includes this change, but the plan does not: it is not the plan that was reviewed.",
+              fix: "Find out why the plan differs from the reviewed one. Update the allow-list only after review.",
+            });
       }
-    if (policy.mode === "cutover-classes") {
-      const credentials = changes.find((change) => change.fqn === policy.artifactsCredentials);
-      if (credentials)
-        violations.push({
-          ...credentials,
-          rule: "artifacts-credentials-not-noop",
-          change: [
-            `$action: noop -> ${credentials.action}`,
-            ...credentials.bindings.map(({ sid, action }) => `bindings.${sid}: ${action}`),
-          ],
-          why: "Uploading this Worker restarts the Durable Object that holds bulk-import job state, in the same run as a class change that cannot be rolled back.",
-          fix: "Ship this Worker's change first, as its own code-only release, then plan the cutover again.",
-        });
-      for (const change of changes) {
-        const allowed = policy.allow.find((entry) => entry.fqn === change.fqn);
-        if (change.fqn === policy.artifactsCredentials || allowed?.action === change.action)
-          continue;
-        outside(
-          change,
-          allowed ? allowed.action : "noop",
-          "The cutover applies exactly the reviewed set of changes; this one is not in it.",
-          "Find out why the plan differs from the reviewed one. Update the allow-list only after review.",
-        );
-      }
-      for (const entry of policy.allow)
-        if (!changes.some((change) => change.fqn === entry.fqn))
-          violations.push({
-            fqn: entry.fqn,
-            type: "(not in plan)",
-            action: "noop",
-            rule: "outside-cutover-classes",
-            change: [`$action: ${entry.action} -> noop`],
-            why: "The reviewed cutover includes this change, but the plan does not: it is not the plan that was reviewed.",
-            fix: "Find out why the plan differs from the reviewed one. Update the allow-list only after review.",
-          });
-    }
-    return violations.length
-      ? Effect.fail(new PlanRefused({ violations }))
-      : Effect.succeed(changes);
-  });
+      return violations.length
+        ? Effect.fail(new PlanRefused({ violations }))
+        : Effect.succeed(changes);
+    }),
+  );
 
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)
