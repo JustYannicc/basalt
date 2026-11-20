@@ -251,7 +251,9 @@ if (command === "boot" || command === "accept") {
               "inspect",
               controllerCode,
               { accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "", worker },
-              process.env.POOL_APP_SIGNING_KEY ?? "",
+              // The pool Worker opens handoff envelopes with its deployment key (`runtimeHandoff`),
+              // as the crash dispatcher signs them; the app signing key signs pool tokens.
+              process.env.POOL_DEPLOYMENT_KEY ?? "",
             )) as { result?: unknown } | undefined
           )?.result,
         before: rootBoot,
