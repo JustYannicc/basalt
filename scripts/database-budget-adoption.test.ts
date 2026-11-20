@@ -24,7 +24,7 @@ const runtime = {
   readyAt: 120_000,
 };
 /** One call every five seconds from the start of the wait until its deadline. */
-const refusedCalls = databaseReadinessCommandMs / 5_000;
+const refusedCalls = Math.ceil(databaseReadinessCommandMs / 5_000);
 const refusal = () =>
   new ReadinessResponseError(503, { outcome: "readiness-error", stage: "readiness" });
 
@@ -43,7 +43,11 @@ function scheduler(start = 0) {
       if (phase === "command") commands.push({ at: state.clock + milliseconds, controller });
       if (phase === "retry") {
         state.pauses++;
-        state.clock += milliseconds;
+        // The command deadline cuts a pause short, as it does live: the clock stops there.
+        state.clock = Math.min(
+          state.clock + milliseconds,
+          ...commands.map((command) => command.at).filter((at) => at > state.clock),
+        );
         const due = commands.filter((command) => command.at <= state.clock);
         for (const command of due) command.controller.abort();
         if (!due.length) controller.abort();
