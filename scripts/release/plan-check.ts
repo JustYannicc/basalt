@@ -899,35 +899,35 @@ export const checkPlan = (
           unknownYet(value) &&
           Object.keys(Output.upstreamAny(value)).join("\n") === resource &&
           planned(resource)?.action === "update";
-        // While a referenced resource updates, the entry's binding row can wait on it too. What
-        // the upload carries of the row, its wire entries, must be known and as State recorded
-        // them: the same binding to the same resource. Beside them one key may wait, on that
-        // resource alone: the copy of a database connection's origin that local development reads.
-        // No upload reads it, so State need not hold one. Everything else is known and unchanged.
-        const referenceWaits = (binding: Node["bindings"][number]) => {
+        // A reference's binding row that plans as changed while the upload stays the same. What the
+        // upload carries of the row, its wire entries, must be known and as State recorded them:
+        // the same binding to the same resource. Beside them one key may differ: the copy of a
+        // database connection's origin that local development reads. No upload reads it, so State
+        // may hold another form of it or none, and while the connection updates it may wait, on
+        // that resource alone. Everything else is known and unchanged.
+        const sameBinding = (binding: Node["bindings"][number]) => {
           const resource = references.get(binding.sid);
           const old = recordedData.get(binding.sid);
           const next: unknown = binding.data;
           return (
             binding.action === "update" &&
             resource !== undefined &&
-            unknownYet(next) &&
             !Output.isOutput(next) &&
             record(next) &&
             record(old) &&
             Array.isArray(next.bindings) &&
             next.bindings.length > 0 &&
             keys(old, next).every((key) =>
-              key === "hyperdrives" && unknownYet(next[key])
-                ? waitsOn(next[key], resource)
+              key === "hyperdrives"
+                ? isResolved(next[key]) || waitsOn(next[key], resource)
                 : isResolved(next[key]) && propChanges(old[key], next[key]).length === 0,
             )
           );
         };
         // State recorded a resource's attributes for the entry. While the named resource updates,
         // the plan holds that resource itself, not known until it applies; which resource the
-        // upload binds is then read from the entry's own binding row, unchanged or waiting as
-        // above. State's copy of the attributes may be an older one: a release that left this
+        // upload binds is then read from the entry's own binding row, unchanged or the same
+        // binding as above. State's copy of the attributes may be an older one: a release that left this
         // Worker alone can have moved them. Once known, the entry is the attributes State records
         // for the named resource now.
         const reference = (name: string, old: unknown, next: unknown, resource: string) => {
@@ -938,7 +938,7 @@ export const checkPlan = (
               Output.isResourceExpr(next) &&
               waitsOn(next, resource) &&
               rows.length === 1 &&
-              rows.every((row) => row.action === "noop" || referenceWaits(row))
+              rows.every((row) => row.action === "noop" || sameBinding(row))
             );
           }
           const target = planned(resource);
@@ -965,7 +965,7 @@ export const checkPlan = (
           ...node.bindings
             .filter(
               (binding) =>
-                binding.action !== "noop" && !valueOnly(binding) && !referenceWaits(binding),
+                binding.action !== "noop" && !valueOnly(binding) && !sameBinding(binding),
             )
             .map(({ sid, action }) => `bindings.${sid}: ${action}`),
         ];
