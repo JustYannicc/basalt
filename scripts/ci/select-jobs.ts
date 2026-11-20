@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { changedInputs, jobRoutes, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
-import { declaredMatrices } from "./declarations.ts";
+import { declaredMatrices } from "./shards.ts";
 
 const root = process.cwd();
 const full = process.argv.includes("--all");

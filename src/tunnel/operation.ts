@@ -11,7 +11,7 @@ import {
   type TunnelLimits,
 } from "../../clients/contracts/tunnel.ts";
 import { nativeModelRequest } from "../native-model.ts";
-import type { TunnelEnvironment } from "./access.ts";
+import type { TunnelAccess, TunnelEnvironment } from "./access.ts";
 import { TunnelInput, TunnelOutput } from "./flow.ts";
 import { upgradedSocket } from "./platform.ts";
 import { TunnelWebSocket } from "./websocket.ts";
@@ -89,7 +89,8 @@ export class TunnelOperation {
     void this.reader?.cancel().catch(() => {});
     this.done();
   }
-  async run(request: Request, env: TunnelEnvironment) {
+  /** `request` is the session's upgrade, so its bearer is the one `access` checked. */
+  async run(request: Request, env: TunnelEnvironment, access?: TunnelAccess) {
     try {
       const headers = new Headers(this.open.headers);
       headers.set("authorization", request.headers.get("authorization")!);
@@ -114,6 +115,7 @@ export class TunnelOperation {
               env,
               this.limits.websocketMessageBytes !== undefined &&
                 this.open.operation.transport === "websocket",
+              access,
             )
           : await env.TOOLS_SERVICE.fetch(target);
       this.timing?.("headers");

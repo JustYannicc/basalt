@@ -6,16 +6,20 @@ import { heavyJobs } from "./ci/areas.ts";
 import { readDeclarations } from "./ci/declarations.ts";
 import { gateErrors } from "./ci/gate.ts";
 import { selectPaths } from "./ci/affected.ts";
+import { declaredMatrices, fileDeadlineMinutes } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
 );
 
-test("declared matrices use the bounded browser setup within their existing deadlines", () => {
+test("declared shards pay setup once, then run their planned files within the planned deadline", () => {
+  const matrices = declaredMatrices();
   for (const id of ["declared-self-host", "declared-local", "declared-cloud"]) {
     const job = workflow.jobs[id];
-    assert.equal(job["timeout-minutes"], 10, id);
+    assert.equal(job["timeout-minutes"], "${{ matrix.timeout }}", id);
+    assert.equal(job.name, "${{ matrix.shard }}", id);
+    assert.equal(job.strategy["fail-fast"], false, id);
     assert.equal(job.needs, "select", id);
     assert.deepEqual(
       job.steps.slice(3, 7),
@@ -28,13 +32,49 @@ test("declared matrices use the bounded browser setup within their existing dead
         },
         { name: "Install the scenarios' browser engine", uses: "./.github/actions/setup-browser" },
         {
-          name: "Run this file's declared scenarios",
-          run: 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"',
+          name: "Run this shard's declared files, each in its own process",
+          // Names the shard's retry record; the job id comes from GITHUB_JOB.
+          env: { BASALT_E2E_SHARD: "${{ matrix.shard }}" },
+          run: 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"',
         },
       ],
       id,
     );
+    const [upload, retries, ...others] = job.steps.filter((step: { uses?: string }) =>
+      step.uses?.startsWith("actions/upload-artifact@"),
+    );
+    assert.deepEqual(others, [], id);
+    assert.equal(upload.with.name, "${{ matrix.shard }}", id);
+    assert.ok(
+      upload.with.path.split("\n").includes("${{ runner.temp }}/basalt-e2e-evidence/retries.json"),
+      id,
+    );
+    // The check job downloads only these, by the pattern its download step uses.
+    assert.equal(retries.if, "always()", id);
+    // A failed upload leaves the count incomplete; it must never fail the shard.
+    assert.equal(retries["continue-on-error"], true, id);
+    // One per run attempt, so a rerun cannot replace what the first attempt retried.
+    assert.equal(
+      retries.with.name,
+      "e2e-retries-${{ matrix.shard }}-${{ github.run_attempt }}",
+      id,
+    );
+    assert.equal(retries.with.path, "${{ runner.temp }}/basalt-e2e-evidence/retries.json", id);
+    const download = workflow.jobs.check.steps.find((step: { uses?: string }) =>
+      step.uses?.startsWith("actions/download-artifact@"),
+    );
+    assert.equal(download.with.pattern, "e2e-retries-*", id);
+    const shards = matrices[id]!.include;
+    assert.ok(shards.length > 0, id);
+    // A shard's budget covers setup, its planned files and one file running to its own deadline
+    // on both its attempts.
+    for (const shard of shards) {
+      assert.ok(shard.shard.startsWith(id + "-"), shard.shard);
+      assert.ok(shard.timeout > 10 + 2 * fileDeadlineMinutes && shard.timeout <= 40, shard.shard);
+    }
   }
+  const shards = Object.values(matrices).flatMap((matrix) => matrix.include);
+  assert.ok(shards.length <= 24, String(shards.length));
 });
 
 test("sign-in jobs prepare the runtime before bounded browser setup and run independently", () => {
@@ -72,7 +112,11 @@ test("HITL partitions retain every target scenario exactly once behind required 
           : "human-in-the-loop";
     assert.equal(group.job, expectedJob, id);
     const job = workflow.jobs[group.job];
-    assert.equal(job["timeout-minutes"], 15, group.job);
+    assert.equal(
+      job["timeout-minutes"],
+      group.job === "human-in-the-loop-cloud" ? 25 : 15,
+      group.job,
+    );
     assert.equal(job.needs, "select");
     assert.ok(heavyJobs.includes(group.job));
     assert.ok(workflow.jobs.check.needs.includes(group.job));
@@ -148,7 +192,7 @@ test("account usage has its own required budget without changing its approved pr
   assert.equal(declarations.groups[id]!.job, "account-usage");
   const job = workflow.jobs["account-usage"];
   assert.equal(job["timeout-minutes"], 20);
-  assert.equal(workflow.jobs["account-acquisition"]["timeout-minutes"], 20);
+  assert.equal(workflow.jobs["account-acquisition"]["timeout-minutes"], 30);
   assert.ok(heavyJobs.includes("account-usage"));
   assert.ok(workflow.jobs.check.needs.includes("account-usage"));
   assert.ok(
