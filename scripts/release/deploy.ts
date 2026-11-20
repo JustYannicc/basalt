@@ -279,6 +279,20 @@ if (command === "boot" || command === "accept") {
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
       client,
+    }).catch(async (error: unknown) => {
+      if (!verdict) throw error;
+      // The model calls could not run at all (the catalog failed): a healing release that did not
+      // serve. Its record is kept; the cause can name hosts, so it stays in the private detail.
+      await keepPrivate("acceptance", error instanceof Error ? error.message : String(error));
+      const view = {
+        outcome: "not-serving",
+        failed: "the model calls could not run",
+        restart,
+        ...(stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
+      };
+      if (values.out) await output(resolve(values.out), view);
+      await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
+      process.exit(1);
     });
     // A healing release ends healed, serving but needing a person, or not serving.
     const outcome = verdict ? healingOutcome(verdict, result) : undefined;
