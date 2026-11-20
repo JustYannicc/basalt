@@ -4,18 +4,24 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { runtimeRecoveryPath } from "../src/pool/recovery-approval.ts";
 import {
+  BoundProviderObservation,
+  ProviderObservationTarget,
+} from "../src/pool/runtime-provider/observation.ts";
+import {
   ControllerCode,
   SlotIdentity,
   SlotRefused,
   SlotTarget,
 } from "../src/pool/runtime-slots/contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
+import { runtimeFailureCode } from "../src/pool/runtime-route-diagnostic.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { runCrashOperator } from "./pool-crash-operator.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "./pool-operations.ts";
 import { nodePoolOperations } from "./pool-operations-node.ts";
-import { BarrierRefusal } from "./release-barrier/refusal.ts";
-import { sendRuntimeCommand } from "./release-barrier/runtime-command-rpc.ts";
+import { BarrierRefusal } from "./pool-fleet/refusal.ts";
+import { sameProvisioningValue } from "./pool-fleet/provisioning-refusal.ts";
+import { providerObservationCause, sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import {
   readReleaseTarget,
   workflowRunLister,
@@ -34,20 +40,30 @@ const CrashPacket = Schema.Struct({
 });
 type CrashPacket = typeof CrashPacket.Type;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const observeActions = ["inspect", "fleet-inspect", "active-health", "witness"] as const;
+const observeActions = [
+  "inspect",
+  "fleet-inspect",
+  "active-health",
+  "witness",
+  "provider-observe",
+] as const;
 const modes = ["observe", "inspect", "apply", "recovery-reset"];
 type ObserveAction = (typeof observeActions)[number];
+/** A witness names a slot; a provider observation names the application pins it compares. */
+type ObserveSubject = SlotTarget | ProviderObservationTarget;
 type Connect = PoolOperationsTarget["connect"];
 
 export interface DispatchDependencies {
   listRuns(): Promise<readonly { id: number; displayTitle: string }[]>;
-  readTarget(): Promise<ReleaseTarget & { root?: RootApplication }>;
+  readTarget(): Promise<
+    ReleaseTarget & { root?: RootApplication; provider?: ProviderObservationTarget }
+  >;
   observe(
     action: ObserveAction,
     controllerCode: ControllerCode,
     target: ReleaseTarget,
     signingKey: string,
-    slot?: SlotTarget,
+    subject?: ObserveSubject,
   ): Promise<unknown>;
   /**
    * The root PoolContainer's unsigned recovery status read: identity and boot, never a restart.
@@ -186,6 +202,123 @@ function membershipState(inspected: unknown, observedAt: number) {
   };
 }
 
+const providerCauses = [
+  "provider_observation_refused",
+  "provider_fetch_failed",
+  "controller_identity",
+  "controller_refused",
+  "reply_unreadable",
+  "outcome_unknown",
+  "target_unavailable",
+] as const;
+type ProviderCause = (typeof providerCauses)[number];
+const providerLine = (cause?: ProviderCause) =>
+  cause
+    ? (`provider observation: does not read (${cause})` as const)
+    : ("provider observation: reads" as const);
+type ProviderLine = ReturnType<typeof providerLine>;
+const providerLines = new Set<string>([providerLine(), ...providerCauses.map(providerLine)]);
+// The handoff's refusal for a command naming other controller code, or one it cannot decode.
+const identityRefusal = runtimeFailureCode({
+  runtimeStep: "endpoint_route",
+  runtimeReason: "slot_identity",
+});
+
+const uncheckedRestart = [
+  "no_selected_runtime",
+  "selection_unreadable",
+  "selected_runtime_not_root",
+  "target_unavailable",
+] as const;
+type RestartLine =
+  | "restart read: passes"
+  | "restart read: refuses (recorded_pins_differ)"
+  | `restart read: does not read (${ProviderCause})`
+  | `restart read: not checked (${(typeof uncheckedRestart)[number]})`;
+const restartLines = new Set<string>([
+  "restart read: passes",
+  "restart read: refuses (recorded_pins_differ)",
+  ...providerCauses.map((cause) => `restart read: does not read (${cause})`),
+  ...uncheckedRestart.map((cause) => `restart read: not checked (${cause})`),
+]);
+
+/**
+ * The Worker reads the root application with its own POOL_PROVIDER_OBSERVATION_TOKEN binding, as a
+ * heal's restart does at admission and attestation, and compares it to these pins. The reply names
+ * the account, application and digests, so only a closed cause ever leaves this function.
+ */
+async function providerRead(
+  target: ProviderObservationTarget,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<ProviderCause | undefined> {
+  let reply: unknown;
+  try {
+    reply = await send(target);
+  } catch (cause) {
+    // The Worker's failure header outranks the body's reason, which a non-provider 409 also has.
+    return (
+      providerObservationCause(cause) ??
+      (cause instanceof ControllerRefused
+        ? cause.reason === identityRefusal
+          ? "controller_identity"
+          : "controller_refused"
+        : cause instanceof DispatchRefusal
+          ? "reply_unreadable"
+          : "outcome_unknown")
+    );
+  }
+  try {
+    const { proof } = Schema.decodeUnknownSync(BoundProviderObservation)(reply);
+    // The proof must name exactly the pins sent; its observation digest and time stay unread.
+    sameProvisioningValue(
+      "provider.observation.target",
+      target,
+      Schema.decodeUnknownSync(ProviderObservationTarget)(proof),
+    );
+    return undefined;
+  } catch {
+    return "reply_unreadable";
+  }
+}
+
+/** The token read: the live application's own pins, so a refusal speaks for the binding. */
+async function providerObservation(
+  target: ProviderObservationTarget | undefined,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<ProviderLine> {
+  return providerLine(target ? await providerRead(target, send) : "target_unavailable");
+}
+
+/**
+ * The restart's first read, after the stop, compares the live application with the pins recorded
+ * when the selected runtime was admitted. Admission makes the selection's target carry three of
+ * them exactly (application, version, image digest). No deployed reply carries the recorded
+ * namespace or configuration digest, so those two are the live ones: their drift shows only if it
+ * also moved the version. The Worker refuses a dead token and differing pins alike, so the local
+ * comparison names which one it was.
+ */
+async function restartObservation(
+  live: ProviderObservationTarget | undefined,
+  inspected: unknown,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<RestartLine> {
+  if (!live) return "restart read: not checked (target_unavailable)";
+  const selected = selectedTarget(inspected);
+  if (!selected) return "restart read: not checked (no_selected_runtime)";
+  if (!selected.ok) return "restart read: not checked (selection_unreadable)";
+  const { applicationId, applicationVersion, imageDigest } = selected.value;
+  // The heal restarts the root; a selection on another application is not what this reads.
+  if (applicationId !== live.applicationId)
+    return "restart read: not checked (selected_runtime_not_root)";
+  const cause = await providerRead({ ...live, applicationVersion, imageDigest }, send);
+  if (cause === undefined) return "restart read: passes";
+  const differs =
+    applicationVersion !== live.applicationVersion || imageDigest !== live.imageDigest;
+  return differs && cause === "provider_observation_refused"
+    ? "restart read: refuses (recorded_pins_differ)"
+    : `restart read: does not read (${cause})`;
+}
+
 const RootHealth = Schema.Struct({
   instanceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
   imageHash: Schema.String,
@@ -280,7 +413,7 @@ async function diagnose(input: {
   controllerCode: ControllerCode;
   target: ReleaseTarget;
   deps: DispatchDependencies;
-  send: (action: ObserveAction, slot?: SlotTarget) => Promise<unknown>;
+  send: (action: ObserveAction, subject?: ObserveSubject) => Promise<unknown>;
 }) {
   const fleet = fields(input.fleet);
   const permission = fields(fleet.permission);
@@ -331,6 +464,8 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   let forcedInspect = false;
   let phase = "input validation failed";
   const output: {
+    providerObservation?: ProviderLine;
+    restartObservation?: RestartLine;
     observe?: unknown;
     diagnostic?: unknown;
     inspection?: unknown;
@@ -370,14 +505,22 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     if (input.mode === "observe") {
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
-      const { root, ...target } = await readTarget();
-      const send = (action: ObserveAction, slot?: SlotTarget) => {
+      const { root, provider, ...target } = await readTarget();
+      const send = (action: ObserveAction, subject?: ObserveSubject) => {
         phase = `${action} outcome unknown`;
         return deps
-          .observe(action, packet.controllerCode, target, input.signingKey, slot)
+          .observe(action, packet.controllerCode, target, input.signingKey, subject)
           .then((reply) => replyResult(reply, action));
       };
+      // First and never fatal: a heal needs this read whatever state the selection is in.
+      output.providerObservation = await providerObservation(provider, (pins) =>
+        send("provider-observe", pins),
+      );
       const inspected = await send("inspect");
+      // Never fatal either: whatever the selection reads, the line says why it was not checked.
+      output.restartObservation = await restartObservation(provider, inspected, (pins) =>
+        send("provider-observe", pins),
+      );
       if (inspected === null || typeof inspected !== "object")
         throw new DispatchRefusal("inspect reply has no result");
       const observedAt = deps.now();
@@ -411,7 +554,7 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     } else if (input.mode === "recovery-reset") {
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
-      const { root: _root, ...target } = await readTarget();
+      const { root: _root, provider: _provider, ...target } = await readTarget();
       // What is about to be cleared is recorded first, so the result shows the state it replaced.
       phase = "inspect outcome unknown";
       const inspected = replyResult(
@@ -532,14 +675,14 @@ export class ControllerRefused extends Error {
 
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
-  (action, controllerCode, target, signingKey, slot) =>
+  (action, controllerCode, target, signingKey, subject) =>
     signedCommand(
       connect,
       action,
       controllerCode,
       target,
       signingKey,
-      slot ? { target: slot } : {},
+      subject ? { target: subject } : {},
     );
 
 export const recoveryResetSender =
@@ -553,9 +696,10 @@ async function signedCommand(
   controllerCode: ControllerCode,
   target: ReleaseTarget,
   signingKey: string,
-  fields: { target?: SlotTarget; operationId?: string },
+  fields: { target?: ObserveSubject; operationId?: string },
 ) {
   const at = signedNow();
+  // The closed command union decides which subject an action may carry; any other pairing refuses.
   const command = decodeRuntimeHandoffCommand(
     { controllerCode, action, at, expiresAt: at + 25_000, ...fields },
     at,
@@ -603,6 +747,8 @@ async function signedCommand(
       decodeRuntimeHandoffCommand(command, signedNow());
     });
   } catch (cause) {
+    // The provider-observation header is the Worker's own closed cause; keep it.
+    if (providerObservationCause(cause)) throw cause;
     if (refused) throw new ControllerRefused(action, refused);
     throw cause;
   }
@@ -638,7 +784,13 @@ export async function writeDispatchResult(directory: string, result: object) {
 export const logLine = (result: Awaited<ReturnType<typeof runCrashDispatch>>) =>
   `mode=${modes.includes(result.mode) ? result.mode : "invalid"} ` +
   `request_id=${uuid.test(result.requestId) ? result.requestId : "invalid"} ` +
-  `ok=${result.ok} forcedInspect=${result.forcedInspect}\n`;
+  `ok=${result.ok} forcedInspect=${result.forcedInspect}\n` +
+  (result.providerObservation && providerLines.has(result.providerObservation)
+    ? `${result.providerObservation}\n`
+    : "") +
+  (result.restartObservation && restartLines.has(result.restartObservation)
+    ? `${result.restartObservation}\n`
+    : "");
 
 if (import.meta.main) {
   const env = process.env;
