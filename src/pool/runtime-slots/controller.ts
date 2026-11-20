@@ -272,7 +272,7 @@ export class RuntimeSlots {
       if (!role) throw new SlotRefused("identity");
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: true, fencedAt: this.clock.now() },
+        [role]: { ...selection[role], fenced: true, fencedAt: Date.now() },
       });
     });
     this.deps.streams.abortSlot(executionKey(identity));
@@ -308,14 +308,14 @@ export class RuntimeSlots {
         [role]: {
           ...selection[role],
           fenced: false,
-          unfenced: { by: "proof" as const, at: this.clock.now(), proven: true },
+          unfenced: { by: "proof" as const, at: Date.now(), proven: true },
         },
       });
     });
     return { by: "proof" };
   }
   private handBack(identity: SlotIdentity, refusal: unknown) {
-    const now = this.clock.now();
+    const now = Date.now();
     return this.deps.storage.transact(async ({ selection }, transaction) => {
       const active = selection?.active;
       if (
