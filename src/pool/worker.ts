@@ -749,7 +749,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             const target = this.env.POOL_AVAILABILITY_TARGET;
             if (validProbeTarget(target))
               await recordReliability(this.ctx.storage, target, (now) =>
-                readReliabilityInSession(this.env.POOL_AUTH_DATABASE?.connectionString, target, now),
+                readReliabilityInSession(
+                  this.env.POOL_AUTH_DATABASE?.connectionString,
+                  target,
+                  now,
+                ),
               ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
           }),
         );

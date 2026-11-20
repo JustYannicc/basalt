@@ -27,6 +27,10 @@ export type ReliabilityFailure =
   | "history_deadline"
   | "probe_budget";
 
+export type ReliabilitySessionPhase = "connect" | "statements" | "close";
+/** All a failed reliability session tells its caller, which may be across a Durable Object call. */
+export const reliabilitySessionFailed = "Model history reliability session failed";
+
 export function reliabilityStep(text: string): ReliabilityStep {
   return statements.find(([fragment]) => text.includes(fragment))?.[1] ?? "other";
 }

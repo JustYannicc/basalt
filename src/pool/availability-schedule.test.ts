@@ -268,7 +268,9 @@ test("a session failure the read already logged is not logged again by the check
     },
   );
   assert.deepEqual(
-    errors.mock.calls.filter((call) => call.arguments[0] === "POOL_REQUEST_RELIABILITY_READ_FAILED"),
+    errors.mock.calls.filter(
+      (call) => call.arguments[0] === "POOL_REQUEST_RELIABILITY_READ_FAILED",
+    ),
     [],
   );
   assert.match(
