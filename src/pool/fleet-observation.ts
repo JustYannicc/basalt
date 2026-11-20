@@ -43,13 +43,42 @@ export const bindPoolObservationSecret = (worker: Cloudflare.Worker) =>
     });
   });
 
+/** The standing rehearsal stages, exactly. Their names stay short enough to keep the stage token. */
+export const rehearsalObservationStage = /^test-rehearsal-[1-9]$/u;
+
+/**
+ * REHEARSAL-ONLY: a standing rehearsal stage mints its own observation token (the same props as
+ * production's: Workers Containers Read on the account, nothing writable) and binds its value to
+ * the pool Worker as a plain secret. The reader takes a string as it takes the store binding, so
+ * nothing about the reads changes. Nothing is written to the account's Secrets Store, which
+ * production uses. Refuses on any other stage.
+ */
+export const bindRehearsalObservationToken = (worker: Cloudflare.Worker) =>
+  Effect.gen(function* () {
+    const stage = yield* Stage;
+    if (!rehearsalObservationStage.test(stage))
+      return yield* Effect.die(
+        new Error(
+          "Only a test-rehearsal-<1-9> stage binds its observation token as a plain secret",
+        ),
+      );
+    const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
+    const token = yield* poolObservationToken(accountId, stage);
+    yield* worker.bind("pool-provider-observation", {
+      env: { POOL_PROVIDER_OBSERVATION_TOKEN: token.value },
+    });
+  });
+
 /**
  * Production binds on every deploy, fleet or not, so no plan can drop POOL_PROVIDER_OBSERVATION_TOKEN.
- * Other stages bind once they declare a fleet.
+ * A standing rehearsal stage binds its own token as a plain secret, fleet or not. Other stages bind
+ * once they declare a fleet.
  */
 export const bindPoolObservation = (worker: Cloudflare.Worker, fleetDeclared: boolean) =>
   Effect.gen(function* () {
-    if (fleetDeclared || (yield* Stage) === "production") yield* bindPoolObservationSecret(worker);
+    const stage = yield* Stage;
+    if (rehearsalObservationStage.test(stage)) yield* bindRehearsalObservationToken(worker);
+    else if (fleetDeclared || stage === "production") yield* bindPoolObservationSecret(worker);
   });
 
 export function poolObservationTokenProps(accountId: string, stage: string) {
