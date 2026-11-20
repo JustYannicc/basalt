@@ -41,25 +41,30 @@ test("unchanged real journal heads skip source work; saved source and permission
     }),
   ));
 
-test("a failed guard drops cached data and never falls back to it", () =>
+test("a failed guard drops cached data and answers from one uncached read, never from the cache", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const cache = makePoolViewCache();
-      let denied = false,
+      let unreadable = false,
         calls = 0;
       const guard = Effect.suspend(() =>
-        denied ? Effect.fail("denied") : Effect.succeed({ revisions: [] }),
+        unreadable ? Effect.fail("heads unreadable") : Effect.succeed({ revisions: [] }),
       );
-      const read = Effect.sync(() => {
-        calls++;
-        return { windows: [1] };
-      });
-      yield* cache("caller", guard, read);
-      denied = true;
-      assert.equal((yield* Effect.result(cache("caller", guard, read)))._tag, "Failure");
-      denied = false;
-      yield* cache("caller", guard, read);
-      assert.equal(calls, 2);
+      const read = Effect.sync(() => ({ windows: [++calls] }));
+      const load = () =>
+        cache("caller", guard, read).pipe(
+          Effect.result,
+          Effect.map((result) => (result._tag === "Success" ? result.success : result.failure)),
+        );
+      assert.deepEqual(yield* load(), { windows: [1] });
+      assert.deepEqual(yield* load(), { windows: [1] }, "equal heads reuse the stored result");
+      unreadable = true;
+      assert.deepEqual(yield* load(), { windows: [2] }, "the stored result is not served");
+      assert.deepEqual(yield* load(), { windows: [3] }, "a read without heads is not stored");
+      unreadable = false;
+      assert.deepEqual(yield* load(), { windows: [4] }, "the earlier stored result is gone");
+      assert.deepEqual(yield* load(), { windows: [4] }, "reuse resumes once heads are readable");
+      assert.equal(calls, 4);
     }),
   ));
 
