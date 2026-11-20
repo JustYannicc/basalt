@@ -1,5 +1,5 @@
 {
-  "description": "The code-only release that heals a pool whose runtime runs but refuses: exactly the code policy, plus a stated root restart. The new controller code stops that runtime gracefully and its recovery starts a new one, so acceptance waits for the new boot and then requires every request on it. A failure is not rolled back: the code before it could not restart the pool. Its database rows are exactly what a release from main applies today: the named commands, and the two connections only while their origin waits on those commands. The last three commands exist on test stages only, so stage-heal runs this same policy. The root's row may plan only as the update the old release layer left behind: its recorded image hash, nothing else. The provider then reads the application, finds it equal and sends nothing; if it ever differs, the wire guard stops the apply at the root's modify request, after the pool Worker's upload. The root's row may also plan as an update whose only other difference is its attachment, while the pool Worker updates: one of the Worker's settings waits on a row that runs in the same plan (the pool database command's outcome), so the planner cannot know the attachment until the Worker applies. That is a standing shape on every release that changes what the pool database command is keyed on. It is admitted only when the namespace it resolves to is already recorded, equal on both rows, and the pool Worker still hosts the class; the apply then reads the application and sends nothing.",
+  "description": "The code-only release that heals a pool whose runtime runs but refuses: exactly the code policy, plus a stated root restart. The new controller code stops that runtime gracefully and its recovery starts a new one, so acceptance waits for the new boot and then requires every request on it. A failure is not rolled back: the code before it could not restart the pool. Its database rows are exactly what a release from main applies today: the named commands, and the two connections only while their origin waits on those commands. The last three commands exist on test stages only, so stage-heal runs this same policy. The root's row may plan only as the update the old release layer left behind: its recorded image hash, nothing else. The provider then reads the application, finds it equal and sends nothing; if it ever differs, the wire guard stops the apply at the root's modify request, after the pool Worker's upload. The root's row may also plan as an update whose only other difference is its attachment, while the pool Worker updates: one of the Worker's settings waits on a row that runs in the same plan (the pool database command's outcome), so the planner cannot know the attachment until the Worker applies. That is a standing shape on every release that changes what the pool database command is keyed on. It is admitted only when the namespace it resolves to is already recorded, equal on both rows, and the pool Worker still hosts the class; the apply then reads the application and sends nothing. It also drops what the deleted release layer left: the image publication receipt's row, a command whose delete only drops State, and the one setting only that layer read, `POOL_PRESERVE_LEGACY_IMAGE`.",
   "check": {
     "mode": "code-only",
     "protected": {
@@ -23,6 +23,13 @@
       ]
     },
     "removals": [],
+    "removedBindings": [
+      {
+        "fqn": "PoolWorker",
+        "sid": "POOL_PRESERVE_LEGACY_IMAGE",
+        "reason": "A plain setting only the deleted release layer's legacy-image plan check read; no code in src/pool reads it, and it is none of the keys the runtime configuration reads, so sealed settings, fingerprints and readiness do not move."
+      }
+    ],
     "poolContainer": {
       "fqn": "PoolContainer",
       "image": "",
@@ -62,6 +69,10 @@
         "fqn": "DatabaseConnection",
         "action": "update",
         "unresolvedOnly": true
+      },
+      {
+        "fqn": "PoolImagePublicationReceipt",
+        "action": "delete"
       },
       {
         "fqn": "PoolModelDatabaseConnection",

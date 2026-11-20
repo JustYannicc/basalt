@@ -50,6 +50,14 @@ export const PlanPolicy = Schema.Struct({
       reason: Schema.String,
     }),
   ),
+  /**
+   * A Worker binding a reviewer accepted dropping, by the Worker's fqn and the binding's id: a plain
+   * text setting the code no longer reads. Any other removed binding, and this one if it holds
+   * anything but plain text, still refuses.
+   */
+  removedBindings: Schema.optional(
+    Schema.Array(Schema.Struct({ fqn: exactFqn, sid: settingName, reason: Schema.NonEmptyString })),
+  ),
   poolContainer: Schema.Struct({
     fqn: exactFqn,
     /** The registry digest reference the legacy root runs; supplied by the caller, never committed. */
@@ -339,6 +347,11 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
   for (const binding of bindingChanges(node)) {
     const next = wire(binding.data);
     if (binding.action === "delete") {
+      const reviewed = policy.removedBindings?.some(
+        (entry) => entry.fqn === node.resource.FQN && entry.sid === binding.sid,
+      );
+      if (reviewed && next.length > 0 && next.every((entry) => entry.type === "plain_text"))
+        continue;
       for (const entry of next) removed(binding.sid, entry);
       if (!next.length)
         violations.push({
