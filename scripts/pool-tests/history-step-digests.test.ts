@@ -26,17 +26,19 @@ const pinned: Record<string, string> = {
     "c301a62d8ba054835393c6fa8a6261621670ab26fdc7feada7ae57a7db9f1baf",
   model_request_history_v9_change_journal_prepare:
     "fe68268edac8b2e6deffcadde519f8e13f70160eb98e3f8aff342517b0fd608b",
-  model_request_history_v10_change_journal_activate:
-    "b2791bd29dfea0456497f9be6cd6d7f80a528fca126463a8960631b5f4edeccc",
   model_request_history_v11_indexed_row_invalidation:
     "c3841200b773ca34cb19d9db3f1f795885be66bc5e48c7cddf76956025e8890b",
   model_request_history_v12_change_feed_once_per_transaction:
     "a19e9a4269837d0150d0a440d87810df5e1ecbb7d912eefd4126805976309d37",
+  // The journal activation cutover is registered apart from the ordered steps.
+  model_request_history_v10_change_journal_activate:
+    "b2791bd29dfea0456497f9be6cd6d7f80a528fca126463a8960631b5f4edeccc",
 };
 
-test("a registered history step's statements never change after it is merged", () => {
+test("a registered history step's statements and order never change after it is merged", () => {
+  const steps = [...historySchemaMigrations, historyJournalActivationMigration];
   const registered = Object.fromEntries(
-    [...historySchemaMigrations, historyJournalActivationMigration].map((step) => [
+    steps.map((step) => [
       step.name,
       createHash("sha256").update(JSON.stringify(step.statements)).digest("hex"),
     ]),
@@ -45,11 +47,12 @@ test("a registered history step's statements never change after it is merged", (
     assert.equal(
       registered[name],
       digest,
-      `${name} changed or was removed; add the change as a new step instead`,
+      `${name} changed or was removed; add the change as a new step instead, never update an existing digest`,
     );
+  // A partly migrated database runs its pending steps in registry order, so a fresh one must too.
   assert.deepEqual(
-    Object.keys(registered).filter((name) => !(name in pinned)),
-    [],
-    "a new history step pins its statement digest here",
+    steps.map((step) => step.name),
+    Object.keys(pinned),
+    "history steps keep their order; a new step is appended and pins its statement digest here",
   );
 });
