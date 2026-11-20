@@ -68,6 +68,18 @@ async function discover(client: PreviewClient, origin: string, stage: string): P
   return { organizationId: organization.id, poolAppId: app.id };
 }
 
+/** The stage's seeded organization and pool, found as its smoke user sees them. */
+export async function discoverStagePool(input: {
+  origin: string;
+  stage: string;
+  email: string;
+  password: string;
+}): Promise<Discovery> {
+  const finder = new PreviewClient({ ...input, organizationId: "discover", poolAppId: "discover" });
+  await finder.signIn();
+  return discover(finder, input.origin, input.stage);
+}
+
 export async function stageModelRequest(input: {
   origin: string;
   stage: string;

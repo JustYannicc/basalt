@@ -8,10 +8,10 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lifecycleEnvironment } from "./credentials.ts";
-import { manifestPath } from "./checkpoint.ts";
 import { rehearsalReleaseEnvironment } from "./rehearsal-environment.ts";
 import { seedRehearsalPools } from "./rehearsal-seed.ts";
-import { readPreviewManifest } from "../preview/manifest.ts";
+import { discoverStagePool } from "./stage-model.ts";
+import { previewStageOrigin } from "../environment.ts";
 import { applyRehearsalFixture } from "../preview/lifecycle.ts";
 import { stageNames, type StageSubject } from "../preview/subject.ts";
 
@@ -33,30 +33,53 @@ export async function seedAndAdopt(input: {
   deployedCommit: string;
   /** The lane's pin; the adopt refuses unless the root's image and input are exactly these. */
   pin: { image: string; input: string };
+  /** The pools already hold policies (an earlier seed): seeding again would add pools. */
+  seeded: boolean;
 }) {
-  const { root, subject, source, outputs } = input;
+  const { subject, source } = input;
   const { stage } = stageNames(subject);
-  const manifest = await readPreviewManifest(manifestPath(root, subject), subject);
-  if (
-    manifest.phase !== "seeded" ||
-    typeof manifest.organizationId !== "string" ||
-    typeof manifest.poolAppId !== "string"
-  )
-    throw new Error("The stage's baseline did not seed its app context");
+  // A standing stage's baseline seeds its smoke organization and pool through the entry; they are
+  // found as the smoke user sees them, the way the stage's model request finds them.
+  const origin = previewStageOrigin(stageNames(subject).slug, source.TEST_STAGE_DOMAIN ?? "");
+  const email = source.PREVIEW_SMOKE_EMAIL ?? "";
+  const password = source.PREVIEW_SMOKE_PASSWORD ?? "";
+  const { organizationId, poolAppId } = await discoverStagePool({ origin, stage, email, password });
+  if (input.seeded) {
+    // An earlier run seeded; only the adopt is retried.
+    return { seeded: "earlier", adopted: await adopt(input, stage) };
+  }
   const seed = await seedRehearsalPools({
     infraOnly: true,
-    origin: manifest.origin,
-    email: source.PREVIEW_SMOKE_EMAIL ?? "",
-    password: source.PREVIEW_SMOKE_PASSWORD ?? "",
-    organizationId: manifest.organizationId,
-    poolAppId: manifest.poolAppId,
+    origin,
+    email,
+    password,
+    organizationId,
+    poolAppId,
     accounts: [],
   });
-  const emptyPools = [manifest.poolAppId, ...seed.emptyPools];
+  const emptyPools = [poolAppId, ...seed.emptyPools];
   await applyRehearsalFixture(subject, lifecycleEnvironment(source, "cleanup"), {
-    organization: manifest.organizationId,
+    organization: organizationId,
     pools: emptyPools,
   });
+  return {
+    cleanPool: seed.cleanPool,
+    emptyPools: emptyPools.length,
+    adopted: await adopt(input, stage),
+  };
+}
+
+async function adopt(
+  input: {
+    root: string;
+    source: NodeJS.ProcessEnv;
+    outputs: string;
+    deployedCommit: string;
+    pin: { image: string; input: string };
+  },
+  stage: string,
+) {
+  const { root, source, outputs } = input;
   const writer: NodeJS.ProcessEnv = {
     ...lifecycleEnvironment(source, "deploy"),
     ALCHEMY_STAGE: stage,
@@ -92,5 +115,5 @@ export async function seedAndAdopt(input: {
   > | null;
   if (code !== 0 || !adopted)
     throw new Error(`The adopt exited ${code}; its private log is adopt.log`);
-  return { cleanPool: seed.cleanPool, emptyPools: emptyPools.length, adopted };
+  return adopted;
 }
