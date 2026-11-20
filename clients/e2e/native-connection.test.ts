@@ -285,6 +285,7 @@ const upgradeStatus = (origin: string, token: string) =>
       socket.terminate();
       reject(new Error("A device that needs sign-in admitted a WebSocket."));
     });
+    socket.once("close", () => reject(new Error("The WebSocket closed without an answer.")));
   });
 
 for (const path of ["restart", "Reconnect"] as const) {
@@ -347,7 +348,7 @@ for (const path of ["restart", "Reconnect"] as const) {
         await command(["agent", "add", "both", "models", "tools"], f.home);
         let origin = await f.start();
         if (path === "restart") await f.stop();
-        const file = await agePendingRefresh(f.home, 3_540_000);
+        const file = await agePendingRefresh(f.home, 3_300_000);
         if (path === "restart") origin = await f.start();
         else assert.equal((await launch(["reconnect"], f.home).exited).code, 0);
         assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");

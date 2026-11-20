@@ -16,7 +16,7 @@ node clients/cli/main.mjs run
 
 Sign-in opens the system browser. Confirm the code, name the device, choose an accessible model pool and approve models, personal tools or both. Use `login https://<server>` for another server, or `--no-browser` to open the printed short-lived approval URL on another machine. The URL contains no reusable credential.
 
-The connection renews its grant and saves rotated credentials before using them. A lost renewal response is retried without signing in again for up to an hour, while the server still answers with the same renewed grant. After that, or after a definitive authentication refusal, sign in again. `revoke` confirms server-side device revocation before removing the saved grant. `sign-out` removes local credentials without revoking the device. Stop the running connection before signing in again or importing direct credentials. Profile settings, local agent credentials and the local port survive sign-in.
+The connection renews its grant and saves rotated credentials before using them. A lost renewal response is retried without signing in again for just under an hour, while the server still answers with the same renewed grant. After that, or after a definitive authentication refusal, sign in again. `revoke` confirms server-side device revocation before removing the saved grant. `sign-out` removes local credentials without revoking the device. Stop the running connection before signing in again or importing direct credentials. Profile settings, local agent credentials and the local port survive sign-in.
 
 ## Direct credentials
 

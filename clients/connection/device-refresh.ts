@@ -1,4 +1,5 @@
 import type { DeviceCredentials } from "../contracts/device.ts";
+import { nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import { untilAborted } from "./abort.ts";
 import { DeviceOAuthError, tokenRequest } from "./device-oauth.ts";
 
@@ -7,9 +8,10 @@ import { DeviceOAuthError, tokenRequest } from "./device-oauth.ts";
  * refresh-token reuse interval, which it sets to the access-token lifetime and counts from the
  * rotation. A first attempt starts no later than that rotation, so a replay younger than this is
  * still answered. An older one can be refused as token reuse, so the client asks for sign-in
- * instead of sending it.
+ * instead of sending it. The answer carries only what is left of the pair's first lifetime, so
+ * replay stops while that still covers what a token needs before use.
  */
-const refreshReplayWindowMs = 3_600_000;
+const refreshReplayLimitMs = 3_600_000 - nativeTunnelReadyTimeoutMs;
 
 /** The saved grant can no longer be renewed. Only a fresh sign-in recovers. */
 class RefreshSignInRequiredError extends Error {}
@@ -22,7 +24,7 @@ export async function refreshDeviceCredentials(
   const unknown = current.refreshPending === true;
   const startedAt = unknown ? (current.refreshStartedAt ?? Date.now()) : Date.now();
   // The start is saved, so sleep, a restart and Reconnect all measure the same elapsed time.
-  if (unknown && Date.now() - startedAt >= refreshReplayWindowMs)
+  if (unknown && Date.now() - startedAt >= refreshReplayLimitMs)
     throw new RefreshSignInRequiredError("The server no longer replays this refresh.");
   await commit({ ...current, refreshPending: true, refreshStartedAt: startedAt });
   const tokens = await tokenRequest(
