@@ -75,6 +75,10 @@ if (command !== "compare") {
     throw new Error(
       "Use --stage production, a disposable test-* stage, or scale-<n> for the scale stack",
     );
+  } else if (stage.startsWith("test-rehearsal") && !isRehearsalStage(stage)) {
+    // A teardown of test-rehearsal-2 owns names by its stage token, which a test-rehearsal-2-x
+    // stage's names would carry too.
+    throw new Error("A rehearsal stage is exactly test-rehearsal-<n>");
   }
 }
 // A teardown deletes by the stage token in names, which only a rehearsal stage's names carry.
@@ -501,6 +505,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               ),
               // Deletes by the stage token in names; no other command ever sets it.
               ...(command === "teardown" ? { teardown: true } : {}),
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
             };
           }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
@@ -740,7 +745,7 @@ try {
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
   } else if (command === "teardown") {
-    const { teardownStage } = await import("./stage-teardown.ts");
+    const { teardownStage, TEARDOWN_NOT_CHECKED } = await import("./stage-teardown.ts");
     const result = await run(
       Effect.tryPromise(() =>
         teardownStage(
@@ -759,8 +764,8 @@ try {
     await keepPrivate("teardown", safeJson(result, 2));
     await summary(
       values["verify-only"]
-        ? `Checked stage ${stage}: none of its container applications or registry images remain.`
-        : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.images} registry images in ${result.repositories.length} repositories deleted; none remain.`,
+        ? `Checked stage ${stage}: none of its container applications or tagged registry images remain. ${TEARDOWN_NOT_CHECKED}`
+        : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.manifests} registry manifests in ${result.repositories.length} repositories deleted; none tagged remain. ${TEARDOWN_NOT_CHECKED}`,
     );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");

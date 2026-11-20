@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { Effect } from "effect";
 import type { StageScope } from "./stage-writes.ts";
 import { stageOwnsName } from "./rehearsal-stage.ts";
-import { teardownStage } from "./stage-teardown.ts";
+import { TEARDOWN_NOT_CHECKED, teardownStage } from "./stage-teardown.ts";
 import { install, WireRefused, type WireGuardConfig } from "./wire-guard.ts";
 
 const ACCOUNT = "1".repeat(32);
@@ -16,12 +16,17 @@ const scope: StageScope = {
   databases: [],
   owned: [],
   teardown: true,
+  accountId: ACCOUNT,
 };
 
 interface Fake {
   applications: { id: string; name: string }[];
   /** `<account>/<name>` → tag → digest. */
   repositories: Record<string, Record<string, string>>;
+  /** `<account>/<name>` → digests stored with no tag: an index's platform manifests, or a push by digest. */
+  untagged?: Record<string, string[]>;
+  /** An index's digest → the manifests it names. */
+  indexes?: Record<string, string[]>;
   /** An application or manifest digest whose delete answers 500. */
   failDelete?: string;
   sent: string[];
@@ -101,17 +106,33 @@ const cloudflare =
       }
       const manifest = /^\/v2\/(.+)\/manifests\/([^/]+)$/u.exec(url.pathname);
       const repository = manifest ? state.repositories[manifest[1]!] : undefined;
-      if (manifest && repository && method === "HEAD") {
-        const found = repository[decodeURIComponent(manifest[2]!)];
-        return new Response(null, {
-          status: found ? 200 : 404,
-          headers: found ? { "docker-content-digest": found } : {},
-        });
+      const stored = manifest ? (state.untagged?.[manifest[1]!] ?? []) : [];
+      if (manifest && repository && method === "GET") {
+        const reference = decodeURIComponent(manifest[2]!);
+        const found =
+          repository[reference] ??
+          (Object.values(repository).includes(reference) || stored.includes(reference)
+            ? reference
+            : undefined);
+        if (!found) return json({ errors: [] }, 404);
+        const children = state.indexes?.[found];
+        return json(
+          children
+            ? {
+                mediaType: "application/vnd.oci.image.index.v1+json",
+                manifests: children.map((child) => ({ digest: child })),
+              }
+            : { mediaType: "application/vnd.oci.image.manifest.v1+json", layers: [] },
+          200,
+          { "docker-content-digest": found },
+        );
       }
       if (manifest && repository && method === "DELETE") {
         if (state.failDelete === manifest[2]) return json({ errors: [] }, 500);
         for (const [tag, value] of Object.entries(repository))
           if (value === manifest[2]) delete repository[tag];
+        if (state.untagged?.[manifest[1]!])
+          state.untagged[manifest[1]!] = stored.filter((entry) => entry !== manifest[2]);
         return new Response(null, { status: 202 });
       }
     }
@@ -174,7 +195,7 @@ test("a teardown deletes only the stage's own applications and images, then prov
       "basalt-rehearsal-poolcontainer-test-rehearsal-2-x",
     ],
     repositories: [`${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`],
-    images: 2,
+    manifests: 2,
   });
   const registry = `registry.cloudflare.com/v2/${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`;
   const apps = `api.cloudflare.com/client/v4/accounts/${ACCOUNT}/containers`;
@@ -201,6 +222,29 @@ test("a teardown deletes only the stage's own applications and images, then prov
       `${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2/nested`,
     ],
   );
+});
+
+test("an index's platform manifests are deleted with it; a push by digest alone is not seen", async () => {
+  const own = `${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`;
+  const state = fake({
+    applications: [],
+    repositories: { [own]: { multi: digest(7) } },
+    indexes: { [digest(7)]: [digest(8), digest(9)] },
+    untagged: { [own]: [digest(8), digest(9), digest(0)] },
+  });
+  const result = await underGuard(state, { stage: scope }, (fetcher) =>
+    teardownStage("delete", input(), fetcher),
+  );
+  assert.ok("value" in result, String((result as { error?: unknown }).error));
+  assert.equal(result.value.manifests, 3);
+  const registry = `registry.cloudflare.com/v2/${own}`;
+  assert.deepEqual(
+    writes(state).filter((line) => line.includes("/manifests/")),
+    [7, 8, 9].map((n) => `DELETE ${registry}/manifests/${digest(n)}`),
+  );
+  // No tag names it, so the registry never lists it: it stays, and the summary says so.
+  assert.deepEqual(state.untagged?.[own], [digest(0)]);
+  assert.match(TEARDOWN_NOT_CHECKED, /pushed by digest alone, never tagged, is not checked/u);
 });
 
 test("a teardown of production or any non-rehearsal stage refuses before anything is sent", async () => {
@@ -230,6 +274,8 @@ test("the guard refuses another stage's or production's delete, even if the tear
       `${api}/app-missing`,
       `${registry}/basalt-rehearsal-pool-test-rehearsal-20/manifests/${digest(3)}`,
       `${registry}/basalt-pool-production/manifests/${digest(4)}`,
+      // The stage's repository name, in another account's path.
+      `https://registry.cloudflare.com/v2/${OTHER_ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2/manifests/${digest(5)}`,
     ])
       results.push(
         await fetcher(url, { method: "DELETE", headers: { authorization: "Bearer synthetic" } })
@@ -249,6 +295,7 @@ test("the guard refuses another stage's or production's delete, even if the tear
     "refused name",
     "refused repository",
     "refused repository",
+    "refused account",
   ]);
   // Only the reads that placed each application; no delete left the process.
   assert.deepEqual(writes(state), []);
@@ -310,7 +357,7 @@ test("the absence check refuses while any of the stage's applications or images 
     teardownStage("verify", input(), fetcher),
   );
   assert.ok("error" in tagged);
-  assert.match(String(tagged.error), /The stage's registry images remain/u);
+  assert.match(String(tagged.error), /The stage's tagged registry images remain/u);
   // The check deletes nothing.
   for (const state of [withApplication, withImage])
     assert.deepEqual(
@@ -325,7 +372,7 @@ test("the absence check refuses while any of the stage's applications or images 
   const verified = await underGuard(clean, { stage: scope }, (fetcher) =>
     teardownStage("verify", input(), fetcher),
   );
-  assert.deepEqual(verified, { value: { applications: [], repositories: [], images: 0 } });
+  assert.deepEqual(verified, { value: { applications: [], repositories: [], manifests: 0 } });
 });
 
 test("the entry refuses a teardown of production or a non-rehearsal stage before it loads anything", async () => {
@@ -336,7 +383,7 @@ test("the entry refuses a teardown of production or a non-rehearsal stage before
     // Outside CI, production refuses before it gets to say it is never destroyed.
     ["production", /Production releases run only in GitHub Actions/u],
     ["test-pr-7", /A teardown runs only on a test-rehearsal-<n> stage/u],
-    ["test-rehearsal-2x", /A teardown runs only on a test-rehearsal-<n> stage/u],
+    ["test-rehearsal-2x", /A rehearsal stage is exactly test-rehearsal-<n>/u],
   ] as const) {
     const run = spawnSync(process.execPath, [entry, "teardown", "--stage", stage], {
       encoding: "utf8",
@@ -344,6 +391,28 @@ test("the entry refuses a teardown of production or a non-rehearsal stage before
     });
     assert.notEqual(run.status, 0, stage);
     assert.match(run.stderr, refusal, stage);
+    assert.doesNotMatch(run.stdout, /Outgoing requests/u, stage);
+  }
+});
+
+test("the entry refuses any stage whose names would carry a rehearsal stage's token", async () => {
+  // `basalt-test-rehearsal-2-x-cell` is test-rehearsal-2's by name, so no test-rehearsal-2-x may exist.
+  assert.equal(stageOwnsName("basalt-test-rehearsal-2-x-cell", "test-rehearsal-2"), true);
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const entry = fileURLToPath(new URL("./deploy.ts", import.meta.url));
+  for (const [command, stage] of [
+    ["deploy", "test-rehearsal-2-x"],
+    ["plan", "test-rehearsal-2-x"],
+    ["destroy", "test-rehearsal-02"],
+    ["plan", "test-rehearsal"],
+  ] as const) {
+    const run = spawnSync(process.execPath, [entry, command, "--stage", stage], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "" },
+    });
+    assert.notEqual(run.status, 0, stage);
+    assert.match(run.stderr, /A rehearsal stage is exactly test-rehearsal-<n>/u, stage);
     assert.doesNotMatch(run.stdout, /Outgoing requests/u, stage);
   }
 });

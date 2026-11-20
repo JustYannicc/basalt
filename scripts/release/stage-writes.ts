@@ -28,6 +28,8 @@ export interface StageScope {
    * its name. Nothing else is: every other stage run leaves this unset.
    */
   readonly teardown?: boolean;
+  /** The deployment account; a teardown's registry delete must name it. */
+  readonly accountId?: string;
 }
 
 export type StageVerdict =
@@ -91,7 +93,7 @@ const hostOf = (value: unknown) =>
     : "";
 // `/v2/<account>/<repository>/manifests/<reference>`: a reference is a digest or a tag (OCI
 // distribution spec), and a repository is one name component, so it cannot reach another's path.
-const REGISTRY_MANIFEST = /^\/v2\/[^/]+\/([^/]+)\/manifests\/([^/]+)$/u;
+const REGISTRY_MANIFEST = /^\/v2\/([^/]+)\/([^/]+)\/manifests\/([^/]+)$/u;
 const REPOSITORY_NAME = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/u;
 const REFERENCE = /^(?:sha256:[a-f0-9]{64}|[A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/u;
 
@@ -122,11 +124,13 @@ export function stageWriteVerdict(
   // teardown's delete of a manifest or tag in a repository named for the stage.
   if (url.hostname.toLowerCase() === REGISTRY_HOST) {
     const manifest = REGISTRY_MANIFEST.exec(path);
-    const repository = manifest ? decoded(manifest[1]!) : "";
+    const repository = manifest ? decoded(manifest[2]!) : "";
+    if (!scope.accountId || decoded(manifest?.[1] ?? "") !== scope.accountId)
+      return refuse("registry account", "account");
     return method === "DELETE" &&
       scope.teardown === true &&
       REPOSITORY_NAME.test(repository) &&
-      REFERENCE.test(decoded(manifest?.[2] ?? "")) &&
+      REFERENCE.test(decoded(manifest?.[3] ?? "")) &&
       stageOwnsName(repository, scope.stage)
       ? { kind: "allow" }
       : refuse(`registry repository ${repository || "(none)"}`, "repository");

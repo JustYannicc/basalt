@@ -178,7 +178,7 @@ test("a stage outside the disposable shapes, or without a stage domain, owns no 
 
 const REGISTRY = "https://registry.cloudflare.com/v2/acct";
 const DIGEST = `sha256:${"a".repeat(64)}`;
-const teardown: StageScope = { ...scope, teardown: true };
+const teardown: StageScope = { ...scope, teardown: true, accountId: "acct" };
 const teardownVerdict = (method: string, url: string, at: StageScope = teardown) =>
   stageWriteVerdict(at, () => false, method, new URL(url), undefined);
 
@@ -204,8 +204,16 @@ test("a rehearsal teardown deletes registry manifests only in repositories named
     // A repository below another, or a name an encoded slash would turn into a path.
     ["DELETE", `${own}/nested/manifests/${DIGEST}`],
     ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2%2Fx/manifests/${DIGEST}`],
+    // The stage's repository name under another account.
+    [
+      "DELETE",
+      `https://registry.cloudflare.com/v2/other/basalt-rehearsal-pool-test-rehearsal-2/manifests/${DIGEST}`,
+    ],
   ] as const)
     assert.deepEqual([method, url, teardownVerdict(method, url).kind], [method, url, "refuse"]);
+  // Without the deployment account the guard cannot place the path, so nothing is deleted.
+  const { accountId: _, ...unplaced } = teardown;
+  assert.equal(teardownVerdict("DELETE", `${own}/manifests/${DIGEST}`, unplaced).kind, "refuse");
 });
 
 test("a registry delete outside a rehearsal stage's teardown is refused", () => {

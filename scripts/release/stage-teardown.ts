@@ -119,25 +119,54 @@ const session = (input: TeardownInput, fetcher: typeof fetch) => {
     return found;
   };
 
-  return { account, bearer, applications, registry, images };
+  /** The digest a reference names, and the manifests an index names; none once it is gone. */
+  const manifest = async (path: string, reference: string) => {
+    const read = await registry(`${path}/manifests/${encodeURIComponent(reference)}`, {
+      headers: { Accept: MANIFEST_TYPES },
+    });
+    if (read.status === 404) return undefined;
+    const digest = read.headers.get("docker-content-digest") ?? "";
+    const body = (await read.json().catch(() => null)) as { manifests?: unknown } | null;
+    if (!read.ok || !DIGEST.test(digest) || body === null)
+      throw new Error(`Registry manifest read failed with HTTP ${read.status}`);
+    const children = Array.isArray(body.manifests)
+      ? body.manifests.map((entry: { digest?: unknown } | null) => entry?.digest)
+      : [];
+    if (
+      !children.every((child): child is string => typeof child === "string" && DIGEST.test(child))
+    )
+      throw new Error("A registry index names a manifest without a digest");
+    return { digest, children };
+  };
+
+  return { account, bearer, applications, registry, images, manifest };
 };
 
 /**
- * `delete` removes the stage's applications, then every manifest in its repositories, and ends
- * with the absence check; `verify` is the check alone. The first failure stops the run: what is
- * left stays for the next run to find by name, and the check refuses while anything remains.
+ * What the absence check cannot see: the registry lists manifests only by tag, so one pushed by
+ * digest alone and never tagged is neither found nor deleted. An index's platform manifests are
+ * found through the index, and deleted with it.
+ */
+export const TEARDOWN_NOT_CHECKED =
+  "A registry manifest pushed by digest alone, never tagged, is not checked: the registry lists only tags.";
+
+/**
+ * `delete` removes the stage's applications, then every tagged manifest in its repositories with
+ * the manifests an index names, and ends with the absence check; `verify` is the check alone. The
+ * first failure stops the run: what is left stays for the next run to find by name, and the check
+ * refuses while anything remains.
  */
 export async function teardownStage(
   mode: "delete" | "verify",
   input: TeardownInput,
   fetcher: typeof fetch,
-): Promise<{ applications: string[]; repositories: string[]; images: number }> {
+): Promise<{ applications: string[]; repositories: string[]; manifests: number }> {
   if (!isRehearsalStage(input.stage))
     throw new Error("A teardown runs only on a test-rehearsal-<n> stage");
   if (!input.accountId || !input.token)
     throw new Error("The teardown needs the deploy credentials");
   const cloudflare = session(input, fetcher);
-  const deleted = { applications: [] as string[], repositories: [] as string[], images: 0 };
+  const deleted = { applications: [] as string[], repositories: [] as string[], manifests: 0 };
   if (mode === "delete") {
     for (const app of await cloudflare.applications()) {
       const removed = await fetcher(
@@ -151,21 +180,25 @@ export async function teardownStage(
     for (const { repository, path, tags } of await cloudflare.images()) {
       deleted.repositories.push(repository);
       for (const tag of tags) {
-        const head = await cloudflare.registry(`${path}/manifests/${encodeURIComponent(tag)}`, {
-          method: "HEAD",
-          headers: { Accept: MANIFEST_TYPES },
-        });
         // Another tag on a digest already deleted.
-        if (head.status === 404) continue;
-        const digest = head.headers.get("docker-content-digest") ?? "";
-        if (!head.ok || !DIGEST.test(digest))
-          throw new Error(`Registry manifest read failed with HTTP ${head.status}`);
-        const removed = await cloudflare.registry(`${path}/manifests/${digest}`, {
-          method: "DELETE",
-        });
-        if (!removed.ok && removed.status !== 404)
-          throw new Error(`Registry manifest delete failed with HTTP ${removed.status}`);
-        deleted.images += 1;
+        const tagged = await cloudflare.manifest(path, tag);
+        if (!tagged) continue;
+        // An index first, then the platform manifests it names: no tag reaches those, so once the
+        // index is gone nothing would find them again.
+        const digests = [tagged.digest];
+        for (let next = 0; next < digests.length; next += 1) {
+          const named = next === 0 ? tagged : await cloudflare.manifest(path, digests[next]!);
+          for (const child of named?.children ?? [])
+            if (!digests.includes(child)) digests.push(child);
+        }
+        for (const digest of digests) {
+          const removed = await cloudflare.registry(`${path}/manifests/${digest}`, {
+            method: "DELETE",
+          });
+          if (!removed.ok && removed.status !== 404)
+            throw new Error(`Registry manifest delete failed with HTTP ${removed.status}`);
+          if (removed.ok) deleted.manifests += 1;
+        }
       }
     }
   }
@@ -173,6 +206,6 @@ export async function teardownStage(
   if (remaining.length)
     throw new Error(`${remaining.length} of the stage's container applications remain`);
   if ((await cloudflare.images()).some(({ tags }) => tags.length))
-    throw new Error("The stage's registry images remain");
+    throw new Error("The stage's tagged registry images remain");
   return deleted;
 }
