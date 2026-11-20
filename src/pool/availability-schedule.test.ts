@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
 import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
+import { availabilityCron } from "./availability-config.ts";
 
 const env = {
   POOL_AVAILABILITY_TARGET: "fixture-pool",
@@ -74,7 +75,7 @@ test("disabled monitoring opens no connection and invokes no probe", async (t) =
   });
 });
 
-test("healthy monitoring sends paired check-ins with one identity and no monitor upsert", async (t) => {
+test("healthy monitoring sends paired check-ins with one identity, the first defining the monitor", async (t) => {
   const messages: ReturnType<typeof unpack>[] = [];
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
     messages.push(unpack(init));
@@ -93,7 +94,16 @@ test("healthy monitoring sends paired check-ins with one identity and no monitor
   );
   assert.equal(messages[0]!.payload.check_in_id, messages[1]!.payload.check_in_id);
   assert.equal(messages[0]!.payload.monitor_slug, "pool-availability");
-  assert.doesNotMatch(JSON.stringify(messages), /monitor_config|fixture-pool/);
+  assert.deepEqual(messages[0]!.payload.monitor_config, {
+    schedule: { type: "crontab", value: "* * * * *" },
+    timezone: "UTC",
+    checkin_margin: 1,
+    max_runtime: 1,
+    failure_issue_threshold: 3,
+    recovery_threshold: 1,
+  });
+  assert.equal(messages[1]!.payload.monitor_config, undefined, "only the opening check-in upserts");
+  assert.doesNotMatch(JSON.stringify(messages), /fixture-pool/);
 });
 
 test("the first rejected installation produces an error check-in and fixed guard/reason evidence", async (t) => {
@@ -152,7 +162,7 @@ test("monitor error text and fields reject unbounded or private diagnostic input
     messages.push(unpack(init));
     return new Response(null, { status: 202 });
   });
-  const receipt = await startPoolMonitor(env);
+  const receipt = await startPoolMonitor(env, availabilityCron);
   await capturePoolMonitor(env, receipt, {
     ok: false,
     failures: Array.from({ length: 20 }, () => ({
@@ -174,7 +184,7 @@ test("missing request reliability emits its own incident while availability rema
     messages.push(unpack(init));
     return new Response(null, { status: 202 });
   });
-  const receipt = await startPoolMonitor(env);
+  const receipt = await startPoolMonitor(env, availabilityCron);
   await capturePoolMonitor(env, receipt, {
     ok: true,
     failures: [{ guard: "request_reliability", reason: "collection_unavailable" }],
