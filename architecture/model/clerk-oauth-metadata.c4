@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "The user-management package keeps automatic client registration while that outside service also lists the resources it protects and advertises a browser sign-in scope. Sign-in still requests only its declared scopes, and the host reads no protected-resource list from server metadata, so neither addition changes a grant. The reviewed snapshot pins the complete document, so any other issuer, endpoint, key location, method or capability change still needs review and an explicit re-pin."
+    }
+  }
+}
