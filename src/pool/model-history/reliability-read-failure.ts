@@ -1,9 +1,11 @@
 import type { HistoryDatabase } from "./schema.ts";
 import { historySeriesFailure, type HistorySeriesFailure } from "./series-diagnostics.ts";
 
-// Each statement of the reliability read, by a fragment only that statement contains. A failure
-// names its step this way, so neither SQL text nor parameters reach the log.
+// Each statement of the reliability read, by a fragment it contains; the first match names it, so a
+// failure names its step without SQL text or parameters. The counting statement comes first because
+// it also reads the cutover marker.
 const statements = [
+  ["unknown(class,id,at,home_at,home_failed)", "unknown_outcomes"],
   ["BEGIN", "begin"],
   ["statement_timeout", "timeout_setting"],
   ["to_regclass('basalt_model_terminal_starts')", "terminal_tables"],
@@ -13,8 +15,6 @@ const statements = [
   ["FROM basalt_model_history_cursor", "cursor"],
   ["to_regclass('usage')", "usage_table"],
   ["FROM usage WHERE", "lagging"],
-  ["AS pending", "terminal_pending"],
-  ["AS unmatched_home", "terminal_evidence"],
   ["COMMIT", "commit"],
   ["ROLLBACK", "rollback"],
 ] as const;
