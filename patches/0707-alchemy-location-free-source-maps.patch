@@ -1,15 +1,15 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -8257,3 +8257,86 @@
+@@ -8257,3 +8257,90 @@
           return value;
       const resources = instanceResources[value.instanceType];
       if (resources === undefined)
 +diff --git a/src/Cloudflare/Workers/Sources/Rolldown.ts b/src/Cloudflare/Workers/Sources/Rolldown.ts
-+index 1213fa5..e5a6ab3 100644
++index 1213fa5..3e4a129 100644
 +--- a/src/Cloudflare/Workers/Sources/Rolldown.ts
 ++++ b/src/Cloudflare/Workers/Sources/Rolldown.ts
-+@@ -144,6 +144,25 @@ const configureCloudflarePlugins = (
++@@ -144,6 +144,27 @@ const configureCloudflarePlugins = (
 +   });
 + };
 + 
@@ -17,8 +17,9 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++ * A source's path as the bundler writes it, from the map's own folder, with
 ++ * the two parts that depend on this machine replaced. A dependency in the
 ++ * store is named as if the store sat in the Worker's package directory. A
-++ * module that is not a file, which the bundler resolves against the directory
-++ * the process runs in, keeps its own name.
+++ * module that is not a file has a name such as `builtin:…`; the bundler
+++ * resolves it like a path, against the directory the process was started in,
+++ * and it keeps its own name here.
 ++ */
 ++const stableSourcePath =
 ++  (cwd: string) =>
@@ -28,14 +29,15 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++    const store = file.lastIndexOf("/node_modules/.bun/");
 ++    if (store !== -1)
 ++      return path.relative(folder, path.join(cwd, file.slice(store + 1)));
-++    const name = path.relative(process.cwd(), file);
-++    return /^[a-z][a-z0-9+.-]+:/i.test(name) ? name : source;
+++    const parts = file.split("/");
+++    const name = parts.findIndex((part) => /^[a-z][a-z0-9+.-]+:/i.test(part));
+++    return name === -1 ? source : parts.slice(name).join("/");
 ++  };
 ++
 + export const WorkerBundle = Effect.gen(function* () {
 +   const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
 +   const virtualEntryPlugin = yield* Bundle.virtualEntryPlugin;
-+@@ -233,6 +252,12 @@ export const WorkerBundle = Effect.gen(function* () {
++@@ -233,6 +254,12 @@ export const WorkerBundle = Effect.gen(function* () {
 +     const outputOptions: rolldown.OutputOptions = {
 +       format: "esm",
 +       sourcemap: "hidden",
@@ -49,10 +51,10 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +       keepNames: true,
 +       // Rolldown's default chunking can split top-level initializer modules
 +diff --git a/lib/Cloudflare/Workers/Sources/Rolldown.js b/lib/Cloudflare/Workers/Sources/Rolldown.js
-+index 996bf6b..8eacf56 100644
++index 996bf6b..6f8a443 100644
 +--- a/lib/Cloudflare/Workers/Sources/Rolldown.js
 ++++ b/lib/Cloudflare/Workers/Sources/Rolldown.js
-+@@ -76,6 +76,22 @@ const configureCloudflarePlugins = (plugins, esmExternalRequirePlugin, aliases)
++@@ -76,6 +76,24 @@ const configureCloudflarePlugins = (plugins, esmExternalRequirePlugin, aliases)
 +         return plugin;
 +     });
 + };
@@ -60,8 +62,9 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++ * A source's path as the bundler writes it, from the map's own folder, with
 ++ * the two parts that depend on this machine replaced. A dependency in the
 ++ * store is named as if the store sat in the Worker's package directory. A
-++ * module that is not a file, which the bundler resolves against the directory
-++ * the process runs in, keeps its own name.
+++ * module that is not a file has a name such as `builtin:…`; the bundler
+++ * resolves it like a path, against the directory the process was started in,
+++ * and it keeps its own name here.
 ++ */
 ++const stableSourcePath = (cwd) => (source, sourcemap) => {
 ++    const folder = path.dirname(sourcemap);
@@ -69,13 +72,14 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++    const store = file.lastIndexOf("/node_modules/.bun/");
 ++    if (store !== -1)
 ++        return path.relative(folder, path.join(cwd, file.slice(store + 1)));
-++    const name = path.relative(process.cwd(), file);
-++    return /^[a-z][a-z0-9+.-]+:/i.test(name) ? name : source;
+++    const parts = file.split("/");
+++    const name = parts.findIndex((part) => /^[a-z][a-z0-9+.-]+:/i.test(part));
+++    return name === -1 ? source : parts.slice(name).join("/");
 ++};
 + export const WorkerBundle = Effect.gen(function* () {
 +     const context = yield* Effect.context();
 +     const virtualEntryPlugin = yield* Bundle.virtualEntryPlugin;
-+@@ -148,6 +164,12 @@ export const WorkerBundle = Effect.gen(function* () {
++@@ -148,6 +166,12 @@ export const WorkerBundle = Effect.gen(function* () {
 +         const outputOptions = {
 +             format: "esm",
 +             sourcemap: "hidden",
