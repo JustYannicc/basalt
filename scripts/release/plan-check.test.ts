@@ -2390,3 +2390,46 @@ test("a healing release drops the publication receipt's row the deleted layer le
   const other = (await planned(context, { rows: leftover("SomeOtherReceipt") })).plan;
   assert.ok((await rulesOf(other, healing)).includes("outside-code-only SomeOtherReceipt"));
 });
+
+test("a named removed binding is exactly one plain setting of that name, in every generation State holds", async (context) => {
+  const SID = "POOL_PRESERVE_LEGACY_IMAGE";
+  const healing = {
+    mode: "code-only",
+    removedBindings: [{ fqn: "PoolWorker", sid: SID, reason: "unread" }],
+  };
+  type Recorded = { bindings: { sid: string; data: unknown }[] } & Record<string, unknown>;
+  const worker = () => productionRows().PoolWorker as unknown as Recorded;
+  const withRow = (entries: unknown[] | undefined): Recorded => ({
+    ...worker(),
+    bindings: [
+      ...worker().bindings,
+      ...(entries ? [{ sid: SID, data: { bindings: entries } }] : []),
+    ],
+  });
+  const removed = async (poolWorker: Recorded) => {
+    const rows = { ...productionRows(), PoolWorker: poolWorker } as unknown as ReturnType<
+      typeof productionRows
+    >;
+    const plan = (await planned(context, { rows })).plan;
+    // One violation per wire entry of the row; the verdict is the set of rules.
+    return [...new Set((await rulesOf(plan, healing)).filter((rule) => rule.includes("removed")))];
+  };
+  const plain = { type: "plain_text", name: SID, text: "true" };
+  const other = { type: "plain_text", name: "POOL_IMAGE_HASH", text: "x" };
+  const secret = { type: "secret_text", name: SID };
+  // The control: the named setting, plain text, is admitted.
+  assert.deepEqual(await removed(withRow([plain])), []);
+  // The row holds a plain setting of another name, alone or beside the named one, or one with no name.
+  for (const entries of [[other], [plain, other], [{ type: "plain_text", text: "x" }]])
+    assert.deepEqual(
+      await removed(withRow(entries)),
+      ["worker-binding-removed PoolWorker"],
+      JSON.stringify(entries),
+    );
+  // An interrupted apply: the unfinished generation holds the id as plain text, the last finished
+  // one, which may be what is live, holds a secret under it.
+  assert.deepEqual(
+    await removed({ ...withRow([plain]), status: "updating", old: withRow([secret]) }),
+    ["worker-binding-removed PoolWorker"],
+  );
+});
