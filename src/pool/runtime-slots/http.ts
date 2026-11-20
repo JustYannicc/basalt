@@ -213,7 +213,7 @@ export async function handleRuntimeHandoff(
         await handoff.slots.fence(value.identity);
         break;
       case "unfence": {
-        const unfenced = await handoff.slots.unfence(value.identity);
+        const unfenced = await handoff.unfence(value.identity);
         // A slot handed back to recovery may meet a clock that already needs a person.
         result =
           unfenced.by === "recovery"

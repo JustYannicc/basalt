@@ -335,6 +335,12 @@ export class RuntimeHandoff {
       throw new SlotRefused("selection");
     return this.legacyEndpoint.bootstrapPeer(input, signal);
   }
+  /** A fence stopped the fleet alarm that runs recovery, so an unfence arms it again. */
+  async unfence(identity: SlotIdentity) {
+    const unfenced = await this.slots.unfence(identity);
+    await this.options.selectedChanged?.();
+    return unfenced;
+  }
   async promote(intent: PromotionIntent, envelope: string) {
     const proof = await this.authority.promotion(intent, envelope);
     await this.driver.attest(proof.target, envelope);

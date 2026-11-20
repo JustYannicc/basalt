@@ -6,6 +6,7 @@ import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { PoolAlarms } from "./alarms.ts";
 import { membershipTtlMs } from "./membership-contract.ts";
 import { policyHealthHeader } from "./runtime-health.ts";
+import { startupStopKey } from "./runtime-slots/startup-abort-contract.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Slot {
@@ -326,7 +327,7 @@ test(
 );
 
 test(
-  "an unproven boot takes no Home call and no model call while another boot answers for it",
+  "an unproven boot takes Home calls only while its attested boot answers, and no model call",
   { timeout: 20_000 },
   async (context) => {
     const { f, identity, advance } = await root(context);
@@ -346,6 +347,44 @@ test(
     assert.equal(f.old.calls.home, home, "no Home call reached it");
     assert.equal(f.old.calls.model, models, "no model call reached it");
     assert.equal((await selection(f)).active.unfenced?.proven, false);
+    // The same due Home read, now with the attested boot answering, reaches it.
+    f.old.hooks.health = async () => {};
+    await homePass(f);
+    assert.ok(f.old.calls.home > home, "the attested boot took the Home read");
+    assert.equal(f.old.calls.model, models, "still no model call before it is proven");
+  },
+);
+
+/** Fires only an alarm the pool armed itself, one simulated second at a time. */
+async function productionAlarms(
+  f: Fixture,
+  advance: (milliseconds: number) => void,
+  milliseconds: number,
+) {
+  for (let elapsed = 0; elapsed < milliseconds; elapsed += 1_000) {
+    const at = await f.old.storage.getAlarm();
+    if (at !== null && at <= Date.now()) await f.alarm();
+    await f.settle();
+    advance(1_000);
+  }
+}
+
+test(
+  "an unfence after a long fence brings the root back on the alarms the pool arms itself",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, identity, advance } = await root(context);
+    await pass(f);
+    await f.send("fence", { identity });
+    // A fence stops the fleet alarm that runs recovery; only Home's keeps firing meanwhile.
+    await productionAlarms(f, advance, 3 * membershipTtlMs);
+    assert.equal((await unfence(f, identity)).body.result?.cause, "leases");
+    await productionAlarms(f, advance, 30_000);
+    assert.equal((await selection(f)).active.unfenced?.proven, true);
+    const served = await f.model();
+    assert.equal(served.status, 200, await served.text());
+    assert.deepEqual(f.old.calls.signals, [], "a boot that answers is never stopped");
+    assert.equal(f.old.calls.start, 0);
   },
 );
 
@@ -378,3 +417,21 @@ for (const [path, refuses] of [
       assert.equal(active.unfenced, undefined);
     },
   );
+
+test(
+  "an endpoint's own refusal keeps the fence even when the leases ran out",
+  { timeout: 20_000 },
+  async (context) => {
+    const { f, identity, advance } = await root(context);
+    await f.send("fence", { identity });
+    await fencedPastLeases(f, advance);
+    // The endpoint refuses the target for its own reason: a startup stop recorded for it.
+    const stop = startupStopKey(f.old.target);
+    await f.old.storage.put(stop, { status: "stopping" });
+    const { status: code } = await unfence(f, identity);
+    assert.equal(code, 409);
+    assert.equal((await selection(f)).active.fenced, true, "the fence holds");
+    await f.old.storage.delete(stop);
+    assert.equal((await unfence(f, identity)).body.result?.cause, "leases");
+  },
+);

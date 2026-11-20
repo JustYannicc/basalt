@@ -316,9 +316,21 @@ export class RuntimeSlots {
       .find((slot) => sameIdentity(slot?.identity, identity))?.fencedAt;
     // A fence stops membership renewing, so a clean lease runs out a few seconds in and no proof
     // can pass until a Home read renews it. That read needs the slot unfenced: recovery's turn.
+    // The endpoint is still asked first, so its own refusal keeps the fence as on the proof path.
     if (staleLeases(before, this.clock)) {
+      let refused = false;
+      try {
+        healthy(
+          await this.deps.driver.health(identity, AbortSignal.timeout(2_000)),
+          identity,
+          this.clock,
+        );
+      } catch (refusal) {
+        if (!proofRefusedByRuntime(refusal)) throw refusal;
+        refused = true;
+      }
       if (await this.returnToRecovery(identity, fencedAt))
-        return { by: "recovery", cause: "leases" };
+        return { by: "recovery", cause: refused ? "runtime" : "leases" };
       throw new SlotRefused("policy");
     }
     let proof: Awaited<ReturnType<typeof proveSlot>>;
