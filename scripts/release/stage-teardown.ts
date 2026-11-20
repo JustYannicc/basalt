@@ -42,7 +42,7 @@ const singlePage = (response: Response, what: string) => {
     throw new Error(`The registry ${what} has more than one page; the teardown reads only one`);
 };
 
-const session = (input: TeardownInput, fetcher: typeof fetch) => {
+const session = (input: TeardownInput, fetcher: typeof fetch, mode: "delete" | "verify") => {
   const account = `${API}/accounts/${encodeURIComponent(input.accountId)}`;
   const bearer = { Authorization: `Bearer ${input.token}` };
   let registryAuth: Promise<string> | undefined;
@@ -74,7 +74,11 @@ const session = (input: TeardownInput, fetcher: typeof fetch) => {
         {
           method: "POST",
           headers: { ...bearer, "Content-Type": "application/json" },
-          body: JSON.stringify({ permissions: ["pull", "push"], expiration_minutes: 15 }),
+          // The check alone only lists: it asks for no right to delete.
+          body: JSON.stringify({
+            permissions: mode === "delete" ? ["pull", "push"] : ["pull"],
+            expiration_minutes: 15,
+          }),
         },
       );
       const body = (await response.json().catch(() => null)) as {
@@ -165,7 +169,7 @@ export async function teardownStage(
     throw new Error("A teardown runs only on a test-rehearsal-<n> stage");
   if (!input.accountId || !input.token)
     throw new Error("The teardown needs the deploy credentials");
-  const cloudflare = session(input, fetcher);
+  const cloudflare = session(input, fetcher, mode);
   const deleted = { applications: [] as string[], repositories: [] as string[], manifests: 0 };
   if (mode === "delete") {
     for (const app of await cloudflare.applications()) {

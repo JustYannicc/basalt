@@ -127,6 +127,10 @@ const REASONS = {
     "This run only reads production, so it sends nothing but reads; this request would write.",
     "Find what tried to write during a read. A plan, preflight or count never writes.",
   ],
+  host: [
+    "The host ends in a dot. DNS and TLS take it as the same host, but every rule here compares hosts exactly, so none would apply.",
+    "Send the request to the host without the trailing dot.",
+  ],
   stage: [
     "A disposable stage shares the account, the deploy token and the State store with production, so it may write only what it owns: what its own State rows record, what this run created, or what is named for the stage. This target is none of those, or the guard cannot place it.",
     "If the target is the stage's, name it for the stage or let the stage create it. If it is a new kind of write, teach stage-writes.ts to place it. Never point a stage at a shared resource.",
@@ -595,6 +599,7 @@ const check = (
       method,
       path: template(path),
     });
+    if (host.endsWith(".")) return yield* refuse(at("host", "{id}"), "host", "host", host);
     // Alchemy reads the store's token through an ephemeral edge preview of the store script
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
     if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))

@@ -183,18 +183,27 @@ const teardownVerdict = (method: string, url: string, at: StageScope = teardown)
   stageWriteVerdict(at, () => false, method, new URL(url), undefined);
 
 test("a rehearsal teardown deletes registry manifests only in repositories named for the stage", () => {
-  const own = `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2`;
+  const own = `${REGISTRY}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`;
   assert.equal(teardownVerdict("DELETE", `${own}/manifests/${DIGEST}`).kind, "allow");
   assert.equal(teardownVerdict("DELETE", `${own}/manifests/latest`).kind, "allow");
   assert.equal(
-    teardownVerdict("DELETE", `${REGISTRY}/basalt-test-rehearsal-2-cell/manifests/${DIGEST}`).kind,
+    teardownVerdict(
+      "DELETE",
+      `${REGISTRY}/basalt-test-rehearsal-2-pool-runtime-blue/manifests/${DIGEST}`,
+    ).kind,
     "allow",
   );
   for (const [method, url] of [
     // Another stage, one whose number starts the same, and production.
-    ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-20/manifests/${DIGEST}`],
-    ["DELETE", `${REGISTRY}/basalt-test-rehearsal-20-cell/manifests/${DIGEST}`],
-    ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-3/manifests/${DIGEST}`],
+    [
+      "DELETE",
+      `${REGISTRY}/basalt-rehearsal-poolcontainer-test-rehearsal-20-abcdefghijklmnop/manifests/${DIGEST}`,
+    ],
+    ["DELETE", `${REGISTRY}/basalt-test-rehearsal-20-pool-runtime-blue/manifests/${DIGEST}`],
+    [
+      "DELETE",
+      `${REGISTRY}/basalt-rehearsal-poolcontainer-test-rehearsal-3-abcdefghijklmnop/manifests/${DIGEST}`,
+    ],
     ["DELETE", `${REGISTRY}/basalt-pool-production/manifests/${DIGEST}`],
     // Only a manifest or tag delete: no blob, upload, push or catalog write.
     ["DELETE", `${own}/blobs/${DIGEST}`],
@@ -203,11 +212,14 @@ test("a rehearsal teardown deletes registry manifests only in repositories named
     ["PATCH", `${own}/blobs/uploads/session`],
     // A repository below another, or a name an encoded slash would turn into a path.
     ["DELETE", `${own}/nested/manifests/${DIGEST}`],
-    ["DELETE", `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2%2Fx/manifests/${DIGEST}`],
+    [
+      "DELETE",
+      `${REGISTRY}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop%2Fx/manifests/${DIGEST}`,
+    ],
     // The stage's repository name under another account.
     [
       "DELETE",
-      `https://registry.cloudflare.com/v2/other/basalt-rehearsal-pool-test-rehearsal-2/manifests/${DIGEST}`,
+      `https://registry.cloudflare.com/v2/other/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/manifests/${DIGEST}`,
     ],
   ] as const)
     assert.deepEqual([method, url, teardownVerdict(method, url).kind], [method, url, "refuse"]);
@@ -217,7 +229,7 @@ test("a rehearsal teardown deletes registry manifests only in repositories named
 });
 
 test("a registry delete outside a rehearsal stage's teardown is refused", () => {
-  const url = `${REGISTRY}/basalt-rehearsal-pool-test-rehearsal-2/manifests/${DIGEST}`;
+  const url = `${REGISTRY}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/manifests/${DIGEST}`;
   // The same stage, deploying or destroying its stacks rather than tearing down.
   assert.equal(teardownVerdict("DELETE", url, scope).kind, "refuse");
   // A stage that is not a rehearsal owns nothing by name, whatever the repository says.

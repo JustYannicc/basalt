@@ -33,30 +33,44 @@ interface Fake {
   indexes?: Record<string, string[]>;
   /** An application or manifest digest whose delete answers 500. */
   failDelete?: string;
+  /** The permissions each registry credential request asked for. */
+  permissions?: unknown[];
   sent: string[];
 }
 
 const fake = (overrides: Partial<Fake> = {}): Fake => ({
   applications: [
-    { id: "app-own-cell", name: "basalt-test-rehearsal-2-cell-a" },
-    { id: "app-own-pool", name: "basalt-rehearsal-poolcontainer-test-rehearsal-2-x" },
-    { id: "app-20", name: "basalt-test-rehearsal-20-cell-a" },
-    { id: "app-20-pool", name: "basalt-rehearsal-poolcontainer-test-rehearsal-20-x" },
-    { id: "app-3", name: "basalt-test-rehearsal-3-cell-a" },
+    { id: "app-own-cell", name: "basalt-test-rehearsal-2-pool-runtime-blue" },
+    {
+      id: "app-own-pool",
+      name: "basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop",
+    },
+    { id: "app-20", name: "basalt-test-rehearsal-20-pool-runtime-blue" },
+    {
+      id: "app-20-pool",
+      name: "basalt-rehearsal-poolcontainer-test-rehearsal-20-abcdefghijklmnop",
+    },
+    { id: "app-3", name: "basalt-test-rehearsal-3-pool-runtime-blue" },
     { id: "app-production", name: "basalt-production-cell-a" },
     { id: "app-root", name: "basalt-poolcontainer-production" },
   ],
   repositories: {
     // Two tags on one digest: deleting the digest removes both.
-    [`${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`]: {
+    [`${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`]: {
       a: digest(1),
       b: digest(1),
       c: digest(2),
     },
-    [`${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-20`]: { a: digest(3) },
+    [`${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-20-abcdefghijklmnop`]: {
+      a: digest(3),
+    },
     [`${ACCOUNT}/basalt-pool-production`]: { latest: digest(4) },
-    [`${OTHER_ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`]: { a: digest(5) },
-    [`${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2/nested`]: { a: digest(6) },
+    [`${OTHER_ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`]: {
+      a: digest(5),
+    },
+    [`${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/nested`]: {
+      a: digest(6),
+    },
   },
   sent: [],
   ...overrides,
@@ -95,8 +109,13 @@ const cloudflare =
         method === "POST" &&
         url.pathname ===
           `/client/v4/accounts/${ACCOUNT}/containers/registries/registry.cloudflare.com/credentials`
-      )
+      ) {
+        state.permissions = [
+          ...(state.permissions ?? []),
+          ((await request.json()) as { permissions?: unknown }).permissions,
+        ];
         return json({ success: true, result: { username: "u", password: "p" } });
+      }
     }
     if (url.host === "registry.cloudflare.com") {
       if (url.pathname === "/v2/_catalog")
@@ -173,18 +192,35 @@ const input = (stage = "test-rehearsal-2") => ({ accountId: ACCOUNT, token: "syn
 const writes = (state: Fake) =>
   state.sent.filter((line) => !line.startsWith("GET ") && !line.startsWith("HEAD "));
 
-test("the stage token matches whole: test-rehearsal-2 never owns test-rehearsal-20", () => {
-  assert.equal(stageOwnsName("basalt-test-rehearsal-2-cell", "test-rehearsal-2"), true);
-  assert.equal(stageOwnsName("basalt-rehearsal-api-test-rehearsal-2", "test-rehearsal-2"), true);
+test("a stage owns a name only by its whole shape, never by a prefix or a token", () => {
+  const suffix = "abcdefghijklmnop";
   for (const name of [
-    "basalt-test-rehearsal-20-cell",
-    "basalt-rehearsal-api-test-rehearsal-20",
-    "basalt-rehearsal-api-test-rehearsal-20-x",
+    "basalt-test-rehearsal-2-pool-runtime-blue",
+    "basalt-test-rehearsal-2-pool-runtime-green",
+    `basalt-rehearsal-poolcontainer-test-rehearsal-2-${suffix}`,
+  ])
+    assert.equal(stageOwnsName(name, "test-rehearsal-2"), true, name);
+  for (const name of [
+    // A stage whose number starts the same, and another rehearsal stage.
+    "basalt-test-rehearsal-20-pool-runtime-blue",
+    `basalt-rehearsal-poolcontainer-test-rehearsal-20-${suffix}`,
+    "basalt-test-rehearsal-3-pool-runtime-blue",
+    // Stages that only begin or end with the token: their own fleet and Alchemy names.
+    "basalt-test-rehearsal-2-b-pool-runtime-blue",
+    "basalt-test-rehearsal-2--pool-runtime-blue",
+    `basalt-rehearsal-poolcontainer-test-rehearsal-2-b-${suffix}`,
+    `basalt-rehearsal-poolcontainer-test-x-test-rehearsal-2-${suffix}`,
+    // Near misses of the shapes, and production's names.
+    "basalt-test-rehearsal-2-pool-runtime-red",
+    "basalt-test-rehearsal-2-cell-a",
+    `basalt-rehearsal-poolcontainer-test-rehearsal-2-${suffix.slice(1)}`,
+    `basalt-rehearsal-poolcontainer-test-rehearsal-2-${suffix.toUpperCase()}`,
     "basalt-production-test-rehearsal-2-x",
-    "basalt-api-production",
+    "basalt-production-pool-runtime-blue",
+    "basalt-poolcontainer-production",
   ])
     assert.equal(stageOwnsName(name, "test-rehearsal-2"), false, name);
-  assert.equal(stageOwnsName("basalt-test-pr-7-cell", "test-pr-7"), false);
+  assert.equal(stageOwnsName("basalt-test-pr-7-pool-runtime-blue", "test-pr-7"), false);
 });
 
 test("Alchemy's name for the pool container carries every accepted rehearsal stage whole", async () => {
@@ -213,15 +249,16 @@ test("a teardown deletes only the stage's own applications and images, then prov
     teardownStage("delete", input(), fetcher),
   );
   assert.ok("value" in result, String((result as { error?: unknown }).error));
+  assert.deepEqual(state.permissions, [["pull", "push"]]);
   assert.deepEqual(result.value, {
     applications: [
-      "basalt-test-rehearsal-2-cell-a",
-      "basalt-rehearsal-poolcontainer-test-rehearsal-2-x",
+      "basalt-test-rehearsal-2-pool-runtime-blue",
+      "basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop",
     ],
-    repositories: [`${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`],
+    repositories: [`${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`],
     manifests: 2,
   });
-  const registry = `registry.cloudflare.com/v2/${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`;
+  const registry = `registry.cloudflare.com/v2/${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`;
   const apps = `api.cloudflare.com/client/v4/accounts/${ACCOUNT}/containers`;
   assert.deepEqual(writes(state), [
     `DELETE ${apps}/applications/app-own-cell`,
@@ -240,16 +277,16 @@ test("a teardown deletes only the stage's own applications and images, then prov
       .filter(([, tags]) => Object.keys(tags).length)
       .map(([name]) => name),
     [
-      `${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-20`,
+      `${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-20-abcdefghijklmnop`,
       `${ACCOUNT}/basalt-pool-production`,
-      `${OTHER_ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`,
-      `${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2/nested`,
+      `${OTHER_ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`,
+      `${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/nested`,
     ],
   );
 });
 
 test("an index's platform manifests are deleted with it; a push by digest alone is not seen", async () => {
-  const own = `${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2`;
+  const own = `${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop`;
   const state = fake({
     applications: [],
     repositories: { [own]: { multi: digest(7) } },
@@ -296,10 +333,13 @@ test("the guard refuses another stage's or production's delete, even if the tear
       `${api}/app-root`,
       // Gone already: an application Cloudflare cannot name is not proven the stage's.
       `${api}/app-missing`,
-      `${registry}/basalt-rehearsal-pool-test-rehearsal-20/manifests/${digest(3)}`,
+      `${registry}/basalt-rehearsal-poolcontainer-test-rehearsal-20-abcdefghijklmnop/manifests/${digest(3)}`,
       `${registry}/basalt-pool-production/manifests/${digest(4)}`,
       // The stage's repository name, in another account's path.
-      `https://registry.cloudflare.com/v2/${OTHER_ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2/manifests/${digest(5)}`,
+      `https://registry.cloudflare.com/v2/${OTHER_ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/manifests/${digest(5)}`,
+      // The stage's own application, at another account or on a host that would vouch for itself.
+      `https://api.cloudflare.com/client/v4/accounts/${OTHER_ACCOUNT}/containers/applications/app-own-cell`,
+      `https://other.example/client/v4/accounts/${ACCOUNT}/containers/applications/app-own-cell`,
     ])
       results.push(
         await fetcher(url, { method: "DELETE", headers: { authorization: "Bearer synthetic" } })
@@ -320,19 +360,31 @@ test("the guard refuses another stage's or production's delete, even if the tear
     "refused repository",
     "refused repository",
     "refused account",
+    "refused account",
+    "refused host",
   ]);
-  // Only the reads that placed each application; no delete left the process.
+  // Only the reads that placed each application; no delete left the process, and no read went
+  // to another account or host.
   assert.deepEqual(writes(state), []);
+  assert.ok(
+    state.sent.every((line) => !line.includes(OTHER_ACCOUNT) && !line.includes("other.example")),
+  );
   assert.equal(state.applications.length, 7);
 });
 
 test("a registry delete outside a rehearsal teardown's scope is refused, production's included", async () => {
-  const url = `https://registry.cloudflare.com/v2/${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-2/manifests/${digest(1)}`;
-  for (const [label, config] of [
+  for (const [label, config, host = "registry.cloudflare.com"] of [
     ["production (no stage scope)", {}],
+    ["production, the host spelled with a trailing dot", {}, "registry.cloudflare.com."],
+    [
+      "the stage, the host spelled with a trailing dot",
+      { stage: scope },
+      "registry.cloudflare.com.",
+    ],
     ["the stage outside a teardown", { stage: { ...scope, teardown: false } }],
     ["a PR stage", { stage: { ...scope, stage: "test-pr-7", label: "pr-7" } }],
   ] as const) {
+    const url = `https://${host}/v2/${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-2-abcdefghijklmnop/manifests/${digest(1)}`;
     const state = fake();
     const outcome = await underGuard(state, config, (fetcher) =>
       fetcher(url, { method: "DELETE" }).then(
@@ -375,13 +427,15 @@ test("the absence check refuses while any of the stage's applications or images 
   assert.match(String(left.error), /2 of the stage's container applications remain/u);
 
   const withImage = fake({
-    applications: [{ id: "app-20", name: "basalt-test-rehearsal-20-cell-a" }],
+    applications: [{ id: "app-20", name: "basalt-test-rehearsal-20-pool-runtime-blue" }],
   });
   const tagged = await underGuard(withImage, { stage: scope }, (fetcher) =>
     teardownStage("verify", input(), fetcher),
   );
   assert.ok("error" in tagged);
   assert.match(String(tagged.error), /The stage's tagged registry images remain/u);
+  // The check alone asks the registry for no right to delete.
+  assert.deepEqual(withImage.permissions, [["pull"]]);
   // The check deletes nothing.
   for (const state of [withApplication, withImage])
     assert.deepEqual(
@@ -390,8 +444,12 @@ test("the absence check refuses while any of the stage's applications or images 
     );
 
   const clean = fake({
-    applications: [{ id: "app-20", name: "basalt-test-rehearsal-20-cell-a" }],
-    repositories: { [`${ACCOUNT}/basalt-rehearsal-pool-test-rehearsal-20`]: { a: digest(3) } },
+    applications: [{ id: "app-20", name: "basalt-test-rehearsal-20-pool-runtime-blue" }],
+    repositories: {
+      [`${ACCOUNT}/basalt-rehearsal-poolcontainer-test-rehearsal-20-abcdefghijklmnop`]: {
+        a: digest(3),
+      },
+    },
   });
   const verified = await underGuard(clean, { stage: scope }, (fetcher) =>
     teardownStage("verify", input(), fetcher),
@@ -419,16 +477,16 @@ test("the entry refuses a teardown of production or a non-rehearsal stage before
   }
 });
 
-test("the entry refuses any stage whose names would carry a rehearsal stage's token", async () => {
-  // `basalt-test-rehearsal-2-x-cell` is test-rehearsal-2's by name, so no test-rehearsal-2-x may exist.
-  assert.equal(stageOwnsName("basalt-test-rehearsal-2-x-cell", "test-rehearsal-2"), true);
+test("the entry refuses any stage that names rehearsal without being exactly one", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
   const entry = fileURLToPath(new URL("./deploy.ts", import.meta.url));
   for (const [command, stage] of [
     ["deploy", "test-rehearsal-2-x"],
     ["plan", "test-rehearsal-2-x"],
+    ["deploy", "test-x-test-rehearsal-2"],
     ["destroy", "test-rehearsal-02"],
+    ["deploy", "test-rehearsal-10"],
     ["plan", "test-rehearsal"],
   ] as const) {
     const run = spawnSync(process.execPath, [entry, command, "--stage", stage], {

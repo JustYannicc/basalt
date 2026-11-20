@@ -75,10 +75,10 @@ if (command !== "compare") {
     throw new Error(
       "Use --stage production, a disposable test-* stage, or scale-<n> for the scale stack",
     );
-  } else if (stage.startsWith("test-rehearsal") && !isRehearsalStage(stage)) {
-    // A teardown of test-rehearsal-2 owns names by its stage token, which a test-rehearsal-2-x
-    // stage's names would carry too.
-    throw new Error("A rehearsal stage is exactly test-rehearsal-<n>");
+  } else if (stage.includes("rehearsal") && !isRehearsalStage(stage)) {
+    // A teardown finds a rehearsal stage's leftovers by names that carry its stage whole; a stage
+    // like test-rehearsal-2-x or test-x-test-rehearsal-2 would make those names ambiguous.
+    throw new Error("A rehearsal stage is exactly test-rehearsal-<n>, n from 1 to 9");
   }
 }
 // A teardown deletes by the stage token in names, which only a rehearsal stage's names carry.
@@ -503,8 +503,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                   never
                 >,
               ),
-              // Deletes by the stage token in names; no other command ever sets it.
-              ...(command === "teardown" ? { teardown: true } : {}),
+              // Deletes by the stage token in names; no other command sets it, and the check alone
+              // (`--verify-only`) never does, so the wire refuses any delete it sends.
+              ...(command === "teardown" && !values["verify-only"] ? { teardown: true } : {}),
               accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
             };
           }

@@ -12,18 +12,19 @@ export const rehearsalStack = "basalt-rehearsal";
 export const isRehearsalStage = (stage: string) => REHEARSAL_STAGE.test(stage);
 
 /**
- * Whether a provider name is this rehearsal stage's: the fleet's `basalt-<stage>-` names, or
- * Alchemy's physical names under the rehearsal stacks that carry the stage whole, so
- * `test-rehearsal-2` never owns `test-rehearsal-20`. No other stage owns anything by name.
- * A `test-rehearsal-2-x` stage's names would carry the token too, so the entry refuses any
- * `test-rehearsal` stage that is not exactly `test-rehearsal-<n>`.
+ * Whether a container application or registry repository name is this rehearsal stage's, by its
+ * whole shape, never a prefix: another stage's names may begin or end the same way.
+ * - The fleet's applications, `basalt-<stage>-pool-runtime-<colour>` (src/pool/fleet-deployment.ts).
+ * - Alchemy's container names under the rehearsal stack, `<stack>-<id>-<stage>-<16 base32>`, in
+ *   lowercase (`createContainerApplicationName`). The id is one word, so no stage hides inside it.
+ * A repository takes its application's name. The entry also refuses any stage that names
+ * `rehearsal` without being exactly `test-rehearsal-<n>`.
  */
 export function stageOwnsName(name: string, stage: string): boolean {
   if (!isRehearsalStage(stage)) return false;
   // The stage matched REHEARSAL_STAGE, so it holds no pattern characters.
-  const token = new RegExp(`(?:^|-)${stage}(?:-|$)`, "u");
   return (
-    name.startsWith(`basalt-${stage}-`) ||
-    (name.startsWith(`${rehearsalStack}-`) && token.test(name))
+    ["blue", "green"].some((colour) => name === `basalt-${stage}-pool-runtime-${colour}`) ||
+    new RegExp(`^${rehearsalStack}-[a-z0-9]+-${stage}-[a-z2-7]{16}$`, "u").test(name)
   );
 }

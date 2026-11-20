@@ -3,6 +3,7 @@ import { isRehearsalStage, stageOwnsName } from "./rehearsal-stage.ts";
 
 /** The account's container registry, shared with production. */
 export const REGISTRY_HOST = "registry.cloudflare.com";
+const CLOUDFLARE_API_HOST = "api.cloudflare.com";
 
 /**
  * What a disposable stage owns, so that a write from it can never land on production. Stages and
@@ -190,9 +191,9 @@ export function stageWriteVerdict(
       : isOwned(decoded(user[1]))
         ? { kind: "allow" }
         : refuse(`API token ${decoded(user[1])}`);
-  const account = /^\/accounts\/[^/]+(\/.*)?$/u.exec(api);
+  const account = /^\/accounts\/([^/]+)(\/.*)?$/u.exec(api);
   if (!account) return refuse(`path ${api}`, "path");
-  const rest = account[1] ?? "";
+  const rest = account[2] ?? "";
   // Attaching a hostname: it must be named for the stage, and the Worker must be the stage's.
   if (rest === "/workers/domains")
     return record(body) &&
@@ -210,8 +211,15 @@ export function stageWriteVerdict(
     method === "DELETE" &&
     scope.teardown === true &&
     isRehearsalStage(scope.stage)
-  )
+  ) {
+    // The guard's proof reads the application from the request's own origin and account, so both
+    // must be the deployment's before that read vouches for anything.
+    if (url.hostname.toLowerCase() !== CLOUDFLARE_API_HOST)
+      return refuse(`container application ${decoded(application)}`, "host");
+    if (!scope.accountId || decoded(account[1]!) !== scope.accountId)
+      return refuse(`container application ${decoded(application)}`, "account");
     return { kind: "prove", family: "container application", name: decoded(application) };
+  }
   for (const [pattern, family, mode] of ACCOUNT) {
     const match = pattern.exec(rest);
     if (!match) continue;
