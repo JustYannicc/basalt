@@ -480,6 +480,27 @@ test("retrying a creation request delivers an audience the queue had given up on
   );
 });
 
+test("repeating the request for a pool saved before access jobs existed still sends its audience", async () => {
+  await fixture(({ sql, worker, create }) =>
+    Effect.gen(function* () {
+      yield* Effect.exit(create(firstRequest));
+      const [pool] = yield* pools(sql);
+      assert.ok(pool);
+      // As an earlier release left it: the pool's app and record exist, and no job does.
+      yield* sql`delete from hosted_provisioning`;
+      worker.answer();
+      const retry = yield* Effect.exit(create(firstRequest));
+      assert.ok(Exit.isSuccess(retry));
+      assert.equal(retry.value.id, pool.id);
+      assert.deepEqual(yield* attempts(sql), [["succeeded", 1]]);
+      assert.deepEqual(yield* Effect.promise(() => worker.permissions(pool.id, owner)), {
+        canUse: true,
+        canManage: true,
+      });
+    }),
+  );
+});
+
 test("a pool's waiting or failed access job is not taken for the owner's setup job", async () => {
   await fixture(({ sql, create }) =>
     Effect.gen(function* () {
