@@ -215,11 +215,81 @@ test(
   },
 );
 
-for (const refusal of [true, false])
+test(
+  "a definitive refresh refusal after restart requires sign-in without replaying agent work",
+  { timeout: 30000 },
+  async () => {
+    const f = await fixture();
+    try {
+      f.remote.expireNext(1);
+      await f.login();
+      f.remote.loseRefresh();
+      await command(["agent", "add", "both", "models", "tools"], f.home);
+      await f.start();
+      await f.stop();
+      const file = join(f.home, "credentials.json");
+      assert.equal(JSON.parse(await readFile(file, "utf8")).refreshPending, true);
+      f.remote.refuseRefresh();
+      const origin = await f.start();
+      assert.equal(
+        JSON.parse((await command(["status"], f.home)).stdout).state,
+        "sign-in-required",
+      );
+      assert.equal(f.remote.counts().refreshes, 2);
+      const response = await fetch(`${origin}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await f.token()}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call" }),
+      });
+      assert.equal(response.status, 401);
+      await response.body?.cancel();
+      assert.equal(f.remote.counts().refreshes, 2);
+      assert.equal(f.remote.counts().writes, 0);
+      assert.equal(JSON.parse(await readFile(file, "utf8")).refreshToken, "synthetic-refresh-1");
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+/** Sleep ages a cut-off refresh while its process sees no time pass; this ages the saved start. */
+async function agePendingRefresh(home: string, milliseconds: number) {
+  const file = join(home, "credentials.json");
+  const pending = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(pending.refreshPending, true);
+  pending.refreshStartedAt = Date.now() - milliseconds;
+  await writeFile(file, JSON.stringify(pending), { mode: 0o600 });
+  return file;
+}
+const toolCall = (origin: string, token: string) =>
+  fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call" }),
+  });
+const upgradeStatus = (origin: string, token: string) =>
+  new Promise<number>((resolve, reject) => {
+    const socket = new WebSocket(origin.replace("http:", "ws:") + "/v1/responses", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    socket.on("error", () => undefined);
+    socket.once("unexpected-response", (_request, response) => {
+      response.resume();
+      socket.terminate();
+      resolve(response.statusCode ?? 0);
+    });
+    socket.once("open", () => {
+      socket.terminate();
+      reject(new Error("A device that needs sign-in admitted a WebSocket."));
+    });
+  });
+
+for (const path of ["restart", "Reconnect"] as const) {
   test(
-    refusal
-      ? "a definitive refresh refusal after restart requires sign-in without replaying agent work"
-      : "an exhausted persisted replay budget stops refresh exchanges after restart",
+    `a pending refresh older than the server's replay window requires sign-in on ${path}`,
     { timeout: 30000 },
     async () => {
       const f = await fixture();
@@ -228,34 +298,35 @@ for (const refusal of [true, false])
         await f.login();
         f.remote.loseRefresh();
         await command(["agent", "add", "both", "models", "tools"], f.home);
-        await f.start();
-        await f.stop();
-        const file = join(f.home, "credentials.json");
-        const pending = JSON.parse(await readFile(file, "utf8"));
-        assert.equal(pending.refreshPending, true);
-        if (refusal) f.remote.refuseRefresh();
-        else {
-          pending.refreshStartedAt = Date.now() - 600_001;
-          await writeFile(file, JSON.stringify(pending), { mode: 0o600 });
-        }
-        const origin = await f.start();
+        let origin = await f.start();
+        if (path === "restart") await f.stop();
+        const file = await agePendingRefresh(f.home, 3_600_001);
+        if (path === "restart") origin = await f.start();
+        else assert.equal((await launch(["reconnect"], f.home).exited).code, 1);
+        const token = await f.token();
+        const signInRequired = async () => {
+          assert.equal(
+            JSON.parse((await command(["status"], f.home)).stdout).state,
+            "sign-in-required",
+          );
+          for (const response of [
+            await toolCall(origin, token),
+            await fetch(`${origin}/v1/models`, { headers: { authorization: `Bearer ${token}` } }),
+          ]) {
+            assert.equal(response.status, 401);
+            assert.equal(response.headers.get("retry-after"), null);
+            assert.match(await response.text(), /Sign in again/u);
+          }
+          assert.equal(await upgradeStatus(origin, token), 401);
+        };
+        await signInRequired();
+        assert.equal((await launch(["reconnect"], f.home).exited).code, 1);
+        await signInRequired();
         assert.equal(
-          JSON.parse((await command(["status"], f.home)).stdout).state,
-          refusal ? "sign-in-required" : "disconnected",
+          f.remote.counts().refreshes,
+          1,
+          "A replay the server no longer answers is never sent.",
         );
-        const before = f.remote.counts().refreshes;
-        assert.equal(before, refusal ? 2 : 1);
-        const response = await fetch(`${origin}/mcp`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${await f.token()}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call" }),
-        });
-        assert.equal(response.status, refusal ? 401 : 503);
-        await response.body?.cancel();
-        assert.equal(f.remote.counts().refreshes, before);
         assert.equal(f.remote.counts().writes, 0);
         assert.equal(JSON.parse(await readFile(file, "utf8")).refreshToken, "synthetic-refresh-1");
       } finally {
@@ -263,6 +334,42 @@ for (const refusal of [true, false])
       }
     },
   );
+  test(
+    `a refresh cut off for longer than ten minutes replays inside the server's window on ${path}`,
+    { timeout: 30000 },
+    async () => {
+      const f = await fixture();
+      try {
+        f.remote.expireNext(1);
+        await f.login();
+        f.remote.expireNext(3600);
+        f.remote.loseRefresh();
+        await command(["agent", "add", "both", "models", "tools"], f.home);
+        let origin = await f.start();
+        if (path === "restart") await f.stop();
+        const file = await agePendingRefresh(f.home, 3_540_000);
+        if (path === "restart") origin = await f.start();
+        else assert.equal((await launch(["reconnect"], f.home).exited).code, 0);
+        assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
+        assert.deepEqual(f.remote.refreshTokens(), ["synthetic-refresh-1", "synthetic-refresh-1"]);
+        assert.equal(
+          f.remote.counts().rotations,
+          1,
+          "The server answers the replay with the pair it already issued.",
+        );
+        const saved = JSON.parse(await readFile(file, "utf8"));
+        assert.equal(saved.refreshToken, "synthetic-refresh-2");
+        assert.equal(saved.refreshPending, false);
+        const response = await toolCall(origin, await f.token());
+        assert.equal(response.status, 200);
+        assert.match(await response.text(), /synthetic-tool-receipt/u);
+        assert.equal(f.remote.counts().writes, 1);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+}
 
 test(
   "denied sign-in and a foreign approval URL preserve an existing direct profile",
