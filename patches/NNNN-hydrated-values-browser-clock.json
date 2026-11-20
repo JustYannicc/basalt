@@ -1,7 +1,7 @@
 {
   "identity": "basalt-hydrated-values-browser-clock",
   "file": "NNNN-hydrated-values-browser-clock.patch",
-  "content_sha256": "8be8b8a0d6d84917faa835684a74f3182f5e33f23a1ead3e8b4553e7df78730c",
+  "content_sha256": "2ee2b5ca906cac30f283c19f942e04b8215a252eaff17266953656f772ea31a5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
