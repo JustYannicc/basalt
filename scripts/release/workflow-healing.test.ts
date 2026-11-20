@@ -36,13 +36,17 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   const dir = mkdtempSync(join(tmpdir(), "release-accept-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
-  // Stand-ins for the entry and the smoke: each exits with the code the case gives it.
-  writeFileSync(join(bin, "bun"), '#!/bin/sh\nexit "$ACCEPT_RC"\n');
+  // Stand-ins for the entry and the smoke: each exits with the code the case gives it, and the
+  // entry records its arguments, so the test sees which branch of the step ran.
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$@" >> "$ACCEPT_ARGS"\nexit "$ACCEPT_RC"\n');
   writeFileSync(join(bin, "node"), '#!/bin/sh\necho ran >> "$SMOKE_LOG"\nexit "$SMOKE_RC"\n');
   chmodSync(join(bin, "bun"), 0o755);
   chmodSync(join(bin, "node"), 0o755);
   const policy = join(dir, "policy.json");
-  writeFileSync(policy, JSON.stringify({ acceptance: { rootRestart: { withinSeconds: 420 } } }));
+  writeFileSync(
+    policy,
+    JSON.stringify({ acceptance: { rootRestart: { bound: "healingAcceptanceWithinMs" } } }),
+  );
   for (const [accept, smoke, exit] of [
     ["3", "0", 3],
     ["0", "1", 1],
@@ -51,6 +55,7 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   ] as const) {
     const output = join(dir, `output-${accept}-${smoke}`);
     const log = join(dir, `smoke-${accept}-${smoke}`);
+    const args = join(dir, `accept-${accept}-${smoke}`);
     writeFileSync(output, "");
     const result = runStep(
       script("Accept the release through the live pool"),
@@ -61,12 +66,18 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
         ACCEPT_RC: accept,
         SMOKE_RC: smoke,
         SMOKE_LOG: log,
+        ACCEPT_ARGS: args,
       },
       dir,
     );
     assert.equal(result.status, exit, `accept ${accept}, smoke ${smoke}: ${result.stderr}`);
     assert.equal(readFileSync(log, "utf8"), "ran\n", "the smoke ran");
     assert.equal(readFileSync(output, "utf8"), `smoke=${smoke}\n`);
+    // The healing branch ran: a declared root restart, with the apply's outcome passed on.
+    assert.equal(
+      readFileSync(args, "utf8"),
+      "scripts/release/deploy.ts accept --stage production --expect restart --serving .local/release/serving.json --apply any --root-boot .local/release/root-boot.json --out .local/release/acceptance.json\n",
+    );
   }
   // Without a declared root restart a failed acceptance goes straight to its rollback.
   const plain = join(dir, "plain.json");
@@ -77,6 +88,7 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   ] as const) {
     const output = join(dir, `plain-output-${accept}`);
     const log = join(dir, `plain-smoke-${accept}`);
+    const args = join(dir, `plain-accept-${accept}`);
     writeFileSync(output, "");
     const result = runStep(
       script("Accept the release through the live pool"),
@@ -87,11 +99,46 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
         ACCEPT_RC: accept,
         SMOKE_RC: "0",
         SMOKE_LOG: log,
+        ACCEPT_ARGS: args,
       },
       dir,
     );
     assert.equal(result.status, exit, `accept ${accept}: ${result.stderr}`);
     assert.equal(existsSync(log), smoked, `accept ${accept}: the smoke ran`);
+    assert.equal(
+      readFileSync(args, "utf8"),
+      "scripts/release/deploy.ts accept --stage production --expect any --root-boot .local/release/root-boot.json --out .local/release/acceptance.json\n",
+      "no declared restart",
+    );
+  }
+});
+
+test("a declared root restart's boot read lets the pool not answer; others need its boot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-boot-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$@" >> "$BOOT_ARGS"\n');
+  chmodSync(join(bin, "bun"), 0o755);
+  for (const [policy, extra] of [
+    [
+      { acceptance: { rootRestart: { bound: "healingAcceptanceWithinMs" } } },
+      " --allow-not-serving",
+    ],
+    [{}, ""],
+  ] as const) {
+    const file = join(dir, `policy-${extra.length}.json`);
+    const args = join(dir, `boot-${extra.length}`);
+    writeFileSync(file, JSON.stringify(policy));
+    const result = runStep(
+      script("Record the root's boot before the apply"),
+      { PATH: `${bin}:${process.env.PATH ?? ""}`, POLICY: file, BOOT_ARGS: args },
+      dir,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(args, "utf8"),
+      `scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json${extra}\n`,
+    );
   }
 });
 
