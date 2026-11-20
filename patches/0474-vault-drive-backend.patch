@@ -96,7 +96,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hos
 +import type { DriveBackend } from "@executor-js/sdk/core";
 +import { testStage } from "./stage.ts";
 +// The retained bucket is declared once, by Basalt's reviewed release intent.
-+import { provisionVaultAttachments } from "../../../../../../scripts/release-barrier/vault-attachments.ts";
++import { provisionVaultAttachments } from "../../../../../../infrastructure/vault-attachments.ts";
  import { cloudEncryptionKey } from "./secrets.ts";
  import { providerFailureCode } from "../implementation/provider-failure.ts";
  
