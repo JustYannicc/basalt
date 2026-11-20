@@ -17,6 +17,12 @@
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import { apiTokenCredentials, Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { makeContainerEnv, type AnyContainerApplicationProps } from "alchemy/Cloudflare/Containers";
+// The publication hook re-exports the provider's own comparison (carry 0386), from the module the
+// provider imports.
+import {
+  equalApplicationSettings,
+  equalContainerValues,
+} from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { isResolved } from "alchemy/Diff";
 import { repositoryFromImageRef } from "alchemy/Docker/Registry";
 import type * as Plan from "alchemy/Plan";
@@ -27,16 +33,6 @@ import { Data, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 type Fields = Record<string, unknown>;
-// The provider imports these from a sibling module the package's export map does not name.
-// Resolved next to the provider's own entry, it is the module the provider runs: its source under
-// Bun, its build under Node.
-const entry = import.meta.resolve("alchemy/Cloudflare/Containers");
-const sibling = entry.replace(/\/index\.([jt]s)$/u, "/ContainerConfiguration.$1");
-if (sibling === entry) throw new Error("Alchemy's container entry is no longer an index module");
-const { equalApplicationSettings, equalContainerValues } = (await import(sibling)) as {
-  equalApplicationSettings: (observed: Fields, desired: Fields) => boolean;
-  equalContainerValues: (left: unknown, right: unknown) => boolean;
-};
 
 export class RootSettleRefused extends Data.TaggedError("RootSettleRefused")<{
   readonly check: "root-settle";

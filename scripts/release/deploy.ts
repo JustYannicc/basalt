@@ -659,8 +659,10 @@ try {
           snapshot = yield* planOf("deploy");
         }
         const checked = checkPolicy();
-        // A rehearsal stage pinned to production's root image runs the same read, so it is proven
-        // on a real application before production relies on it.
+        if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
+        // After the plan check, which proves the recorded attachment the read relies on and names
+        // every violation first. A rehearsal stage pinned to production's root image runs the same
+        // read, so it is proven on a real application before production relies on it.
         if (
           checked &&
           command === "plan" &&
@@ -677,7 +679,6 @@ try {
           });
           if (settled) yield* Effect.promise(() => summary(settled));
         }
-        if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
         const digest = planDigest(snapshot.native);
         if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
           return yield* Effect.die(

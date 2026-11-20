@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +32,7 @@ const runStep = (body: string, env: Record<string, string>, cwd: string) =>
     encoding: "utf8",
   });
 
-test("a healing release's acceptance runs the app smoke whatever the pool's acceptance found", () => {
+test("a healing release's acceptance runs the app smoke whatever the pool found; others roll back first", () => {
   const dir = mkdtempSync(join(tmpdir(), "release-accept-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
@@ -61,6 +68,31 @@ test("a healing release's acceptance runs the app smoke whatever the pool's acce
     assert.equal(readFileSync(log, "utf8"), "ran\n", "the smoke ran");
     assert.equal(readFileSync(output, "utf8"), `smoke=${smoke}\n`);
   }
+  // Without a declared root restart a failed acceptance goes straight to its rollback.
+  const plain = join(dir, "plain.json");
+  writeFileSync(plain, "{}");
+  for (const [accept, exit, smoked] of [
+    ["1", 1, false],
+    ["0", 0, true],
+  ] as const) {
+    const output = join(dir, `plain-output-${accept}`);
+    const log = join(dir, `plain-smoke-${accept}`);
+    writeFileSync(output, "");
+    const result = runStep(
+      script("Accept the release through the live pool"),
+      {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        POLICY: plain,
+        GITHUB_OUTPUT: output,
+        ACCEPT_RC: accept,
+        SMOKE_RC: "0",
+        SMOKE_LOG: log,
+      },
+      dir,
+    );
+    assert.equal(result.status, exit, `accept ${accept}: ${result.stderr}`);
+    assert.equal(existsSync(log), smoked, `accept ${accept}: the smoke ran`);
+  }
 });
 
 test("a failed healing release names its outcome, the apply and the app smoke", () => {
@@ -89,7 +121,11 @@ test("a failed healing release names its outcome, the apply and the app smoke", 
   );
   assert.match(person, /^::error::SERVING, NEEDS A PERSON/mu);
   assert.match(person, /needs a person \(restart_failed\)/u);
-  // No record at all, or anything else, is not serving.
-  assert.match(run(undefined, "failure", ""), /^::error::NOT SERVING.*smoke did not run/mu);
-  assert.match(run({ outcome: "not-serving" }, "success", "0"), /^::error::NOT SERVING/mu);
+  assert.match(run({ outcome: "not-serving" }, "failure", "1"), /^::error::NOT SERVING/mu);
+  // No record, or one without an outcome, means nobody read the pool: it never says not serving.
+  for (const record of [undefined, {}]) {
+    const unread = run(record, "failure", "");
+    assert.match(unread, /^::error::NOT CHECKED.*the apply failed.*smoke did not run/mu);
+    assert.doesNotMatch(unread, /NOT SERVING/u);
+  }
 });
