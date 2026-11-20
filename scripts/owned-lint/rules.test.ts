@@ -511,6 +511,104 @@ export const run = () => {
   summary.first = reset.map((recorded) => recorded.rpc);
 };
 `,
+  // A list is answered through a function a served value holds, a member, or a callback too.
+  "scripts/evasions/test/closures.ts": `
+import assert from "node:assert/strict";
+declare function readBody(request: Request): Promise<string>;
+const fixture = { ok: true };
+const fetched: unknown[] = [];
+export const fetchDouble = async (_url: string, init: { body: string }) => {
+  const body = JSON.parse(init.body);
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  fetched.push(user);
+  return { ok: true, status: 200, json: async () => fetched };
+};
+const made: unknown[] = [];
+const makeList = () => () => made;
+const list = makeList();
+export const postMade = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  made.push(user);
+  return new Response("ok");
+};
+export const listMade = (_request: Request) => Response.json(list());
+const gotten: unknown[] = [];
+const db = {
+  get users() {
+    return gotten;
+  },
+};
+export const postGotten = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  gotten.push(user);
+  return Response.json(db.users);
+};
+const state = { users: [] as unknown[] };
+const members = state.users;
+export const postMember = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  members.push(user);
+  return new Response("ok");
+};
+export const listMember = (_request: Request) => Response.json(state.users);
+const written: unknown[] = [];
+const holder: Record<string, unknown> = {};
+holder.users = written;
+export const postWritten = async (request: Request) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  written.push(user);
+  return new Response("ok");
+};
+export const listWritten = (_request: Request) => Response.json(holder);
+const each: unknown[] = [];
+export const postEach = async (request: Request, res: { write(value: string): void; end(): void }) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  each.push(user);
+  each.forEach((row) => res.write(JSON.stringify(row)));
+  res.end();
+};
+const then: unknown[] = [];
+export const postThen = async (request: Request, res: { json(value: unknown): void }) => {
+  const body = JSON.parse(await readBody(request));
+  const user = { name: "" };
+  user.name = body.name; // expect: basalt/no-echo-stub
+  then.push(user);
+  await Promise.resolve(then).then((value) => res.json(value));
+};
+const recorded: { rpc?: string }[] = [];
+export const honestDouble = async (_url: string, init: { body: string }) => {
+  const call: { rpc?: string } = {};
+  recorded.push(call);
+  const body = JSON.parse(init.body);
+  call.rpc = body.method;
+  return { ok: true, status: 200, json: async () => fixture };
+};
+const routed: { rpc?: string }[] = [];
+const route = async (request: Request) => {
+  const call: { rpc?: string } = {};
+  routed.push(call);
+  const body = JSON.parse(await readBody(request));
+  call.rpc = body.method;
+  return Response.json(fixture);
+};
+export const delegates = (request: Request) => route(request);
+export const checks = async () => {
+  const response = await delegates(new Request("https://example.invalid"));
+  assert.ok(response, String(routed.length));
+  routed.forEach((call) => assert.equal(call.rpc, "x"));
+};
+`,
   "src/pool/aliased.test.ts": `
 import { mock as m, test } from "node:test";
 test("aliased", (t) => {
