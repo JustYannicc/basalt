@@ -46,11 +46,16 @@ async function stuck(context: TestContext) {
 }
 
 /** A healing release after its upload: readiness and acceptance's inspect every 5 s, nothing else. */
-async function healingRelease(f: Fixture, advance: (ms: number) => void, withinMs: number) {
+async function healingRelease(
+  f: Fixture,
+  worker: { deploymentReady(): Promise<unknown> },
+  advance: (ms: number) => void,
+  withinMs: number,
+) {
   const fired: number[] = [];
   for (let elapsed = 0; elapsed <= withinMs; elapsed += 1_000) {
     if (elapsed % 5_000 === 0) {
-      await f.worker.deploymentReady().catch(() => {});
+      await worker.deploymentReady().catch(() => {});
       await f.send("inspect");
     }
     // Only an alarm the pool armed itself fires.
@@ -84,7 +89,7 @@ test(
   async (context) => {
     const { f, previous, epoch, advance } = await stuck(context);
     assert.notEqual(await f.old.storage.getAlarm(), null, "an alarm is armed");
-    const fired = await healingRelease(f, advance, within);
+    const fired = await healingRelease(f, f.worker, advance, within);
     assert.ok(fired.length > 0, "the pool's alarm fired");
     assert.deepEqual(await healed(f, previous, epoch), {
       epoch: 1,
@@ -102,7 +107,9 @@ test(
     await f.old.storage.delete("fixture-alarm");
     await f.old.storage.delete("pool-alarm-v1:deadlines");
     assert.equal(await f.old.storage.getAlarm(), null, "no alarm is armed");
-    const fired = await healingRelease(f, advance, within);
+    // The healing release's upload: a new object over the same storage, as after a code update.
+    advance(5_000);
+    const fired = await healingRelease(f, f.reconstruct(), advance, within);
     assert.deepEqual(
       { fired: fired.length, ...(await healed(f, previous, epoch)) },
       { fired: fired.length, epoch: 1, newBoot: true, activeHealth: 200 },

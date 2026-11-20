@@ -33,7 +33,8 @@ export class PoolAlarms {
     return this.armMissing(now);
   }
   private async armMissing(now: number) {
-    if ((await this.storage.getAlarm()) !== null) return;
+    // A set alarm can still be later than a stored deadline, when another writer replaced it.
+    if ((await this.storage.getAlarm()) !== null) return this.rearm();
     // One write for both owners: a `take()` between two writes would see only one of them due.
     await this.storage.transaction(async (transaction) => {
       const raw = await transaction.get(key);

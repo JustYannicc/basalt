@@ -122,3 +122,19 @@ test("an isolate checks for a missing alarm at most once every five seconds", as
   await f.scheduler.ensure();
   assert.equal(f.current(), 5_100);
 });
+
+test("a take racing a missing alarm's arming still finds Home due", async () => {
+  const f = fixture();
+  const [, raced] = await Promise.all([f.scheduler.ensure(), f.scheduler.take()]);
+  const next = await f.scheduler.take();
+  assert.ok(raced.home || next.home, "Home runs in that pass or the next");
+});
+
+test("an alarm another writer moved later is lowered back to the earliest stored deadline", async () => {
+  const f = fixture();
+  await f.scheduler.schedule("fleet", 200);
+  // A lock deadline written straight to the native alarm replaces the earlier fleet one.
+  await f.storage.setAlarm(5_000);
+  await f.scheduler.ensure();
+  assert.equal(f.current(), 200);
+});

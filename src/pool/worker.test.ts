@@ -385,9 +385,22 @@ test("reconstructing a running or stopped object without a request leaves comput
   };
   const timeouts: number[] = [];
   const pending: Promise<unknown>[] = [];
+  const armed: number[] = [];
   let writes = 0,
     starts = 0,
     destroys = 0;
+  // Reconstruction may arm a missing upkeep alarm; it writes nothing else and touches no compute.
+  const storage = {
+    get: async () => undefined,
+    put: async (key: string) => {
+      if (key !== "pool-alarm-v1:deadlines") writes++;
+    },
+    transaction: async <T>(work: (transaction: typeof storage) => Promise<T>) => work(storage),
+    getAlarm: async () => null,
+    setAlarm: async (at: number) => {
+      armed.push(at);
+    },
+  };
   const object = (running: boolean) =>
     new PoolContainer(
       {
@@ -407,12 +420,7 @@ test("reconstructing a running or stopped object without a request leaves comput
         waitUntil: (work: Promise<unknown>) => {
           pending.push(work);
         },
-        storage: {
-          get: async () => undefined,
-          put: async () => {
-            writes++;
-          },
-        },
+        storage,
       },
       env,
     );
@@ -423,6 +431,7 @@ test("reconstructing a running or stopped object without a request leaves comput
   await Promise.all(pending);
   assert.deepEqual(timeouts, []);
   assert.equal(writes, 0);
+  assert.equal(armed.length, 2, "each object arms its missing upkeep alarm");
   assert.equal(starts, 0);
   assert.equal(destroys, 0);
 });
