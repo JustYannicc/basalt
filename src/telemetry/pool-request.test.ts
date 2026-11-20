@@ -15,14 +15,6 @@ function harness(context: TestContext, input: Partial<PoolRequestInput> = {}, ta
     logged.push({ ...value });
   });
   const sent: { url: string; redirect: RequestRedirect | undefined; body: string }[] = [];
-  context.mock.method(
-    globalThis,
-    "fetch",
-    async (url: string | URL | Request, init?: RequestInit) => {
-      sent.push({ url: String(url), redirect: init?.redirect, body: String(init?.body) });
-      return new Response(null, { status: 200 });
-    },
-  );
   let now = 1_000;
   const work: Promise<unknown>[] = [];
   const event = poolRequestEvent(
@@ -46,6 +38,11 @@ function harness(context: TestContext, input: Partial<PoolRequestInput> = {}, ta
     },
     () => now,
     () => 1_700_000_009_000,
+    // The trace endpoint, as the exporter reaches it.
+    async (url, init) => {
+      sent.push({ url, redirect: init.redirect, body: String(init.body) });
+      return new Response(null, { status: 200 });
+    },
   );
   return {
     event,

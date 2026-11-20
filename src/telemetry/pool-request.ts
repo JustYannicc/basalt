@@ -1,7 +1,14 @@
 import { createMiddlewareLogger } from "evlog/toolkit";
 import { initWorkersLogger } from "evlog/workers";
 import type { SentryEnv } from "./sentry-target.ts";
-import { exportSpans, methods, parseTraceparent, randomHex, type OtlpSpan } from "./traces.ts";
+import {
+  exportSpans,
+  methods,
+  parseTraceparent,
+  randomHex,
+  type OtlpSpan,
+  type TraceSend,
+} from "./traces.ts";
 
 /**
  * One wide event per pool request: where its time went between the Worker, the pool's Durable
@@ -139,6 +146,7 @@ export function poolRequestEvent(
   input: PoolRequestInput,
   clock: () => number = () => performance.now(),
   wall: () => number = () => Date.now(),
+  send?: TraceSend,
 ): PoolRequestEvent {
   const method = methods.has(input.method) ? input.method : "OTHER";
   const route = routeLabel.test(input.route) ? input.route : "/other";
@@ -166,7 +174,7 @@ export function poolRequestEvent(
     waitUntil: input.defer,
     // evlog writes the event to the Worker's log itself. Its Sentry drain follows redirects, which
     // this module's exporters refuse, so the diagnostic project receives the event as a trace.
-    drain: () => exportSpans(env, exported),
+    drain: () => exportSpans(env, exported, send),
   });
 
   const emit = async (result: PoolRequestResult, finished: number, finishedAt: number) => {

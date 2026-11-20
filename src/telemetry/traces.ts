@@ -116,8 +116,15 @@ export interface OtlpSpan {
   failed?: boolean;
 }
 
+/** How an export reaches the trace endpoint: the platform's fetch, unless a caller brings its own. */
+export type TraceSend = (url: string, init: RequestInit) => Promise<Response>;
+
 /** One request to the configured EU trace endpoint. Delivery never alters the operation's response. */
-export async function exportSpans(env: TraceEnv, spans: readonly OtlpSpan[]): Promise<void> {
+export async function exportSpans(
+  env: TraceEnv,
+  spans: readonly OtlpSpan[],
+  send: TraceSend = (url, init) => fetch(url, init),
+): Promise<void> {
   const target = sentryOtlpTarget(env);
   if (!target || spans.length === 0) return;
   const data = {
@@ -148,7 +155,7 @@ export async function exportSpans(env: TraceEnv, spans: readonly OtlpSpan[]): Pr
     ],
   };
   try {
-    const response = await fetch(target.url, {
+    const response = await send(target.url, {
       method: "POST",
       headers: { "content-type": "application/json", "x-sentry-auth": target.authHeader },
       body: JSON.stringify(data),
