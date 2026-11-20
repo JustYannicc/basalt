@@ -136,8 +136,8 @@ test("only the healing release declares a root restart, bounded, and it is other
     { name: "TOOLS_SERVICE", resource: "Api" },
   ]);
   assert.deepEqual(
-    allow[0]?.codeOnly?.values.map((value) => value.name),
-    ["EXECUTOR_TELEMETRY"],
+    allow[0]?.codeOnly?.values.map((value) => [value.name, value.fields]),
+    [["EXECUTOR_TELEMETRY", ["version"]]],
   );
   assert.match(allow[0]?.codeOnly?.values[0]?.why ?? "", /build version/u);
   // Its code moves only with its uploads held to the serving bindings, and the reason is written.

@@ -440,7 +440,7 @@ const allowance = (codeOnly: Record<string, unknown> = {}, also: readonly object
           { name: "TOOLS_SERVICE", resource: "Api" },
           { name: "VAULT", resource: "VaultAttachments" },
         ],
-        values: [{ name: "EXECUTOR_TELEMETRY", why: "it carries the release's version" }],
+        values: [{ name: "EXECUTOR_TELEMETRY", fields: ["version"], why: "the release's version" }],
         why: "skew",
         ...codeOnly,
       },
@@ -480,6 +480,25 @@ const withStoreProps = (
   return {
     ...rows,
     ArtifactsCredentials: { ...store, props: change(store.props) } as unknown as ResourceState,
+  };
+};
+/** The same rows with one of the store's recorded binding rows changed. */
+const withStoreBinding = (
+  rows: Readonly<Record<string, ResourceState>>,
+  sid: string,
+  change: (data: { bindings: Record<string, unknown>[] }) => unknown,
+): Record<string, ResourceState> => {
+  const store = rows.ArtifactsCredentials as unknown as {
+    bindings: { sid: string; data: { bindings: Record<string, unknown>[] } }[];
+  };
+  return {
+    ...rows,
+    ArtifactsCredentials: {
+      ...store,
+      bindings: store.bindings.map((binding) =>
+        binding.sid === sid ? { ...binding, data: change(binding.data) } : binding,
+      ),
+    } as unknown as ResourceState,
   };
 };
 const credentialsNode = (plan: Plan.Plan) =>
@@ -577,6 +596,125 @@ test("a code-only allowance admits a reference whose own binding waits on the re
   }
 });
 
+test("a code-only allowance refuses a reference moved onto the resource it names while that resource updates", async (context) => {
+  // State holds another bucket under the entry. The declaration binds the named one, and that
+  // one updates, so neither the entry nor its binding is fully known in the plan.
+  const other = "basalt-production-otherbucket";
+  const rows = withStoreBinding(
+    withStoreProps(await credentialsRows(context), (props) => ({
+      ...props,
+      env: { ...props.env, VAULT: { ...props.env.VAULT, bucketName: other } },
+    })),
+    "VAULT",
+    (data) => ({
+      ...data,
+      bindings: data.bindings.map((entry) => ({ ...entry, bucketName: other })),
+    }),
+  );
+  const { plan } = await makePlan(context, {
+    rows,
+    declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
+  });
+  assert.equal(plan.resources.VaultAttachments?.action, "update");
+  assert.equal(isResolved(credentialsNode(plan).props.env.VAULT), false);
+  const bucket = [{ fqn: "VaultAttachments", action: "update" }];
+  const { rules, message } = await refused(plan, allowance({}, bucket));
+  assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
+  assert.match(message, /bindings\.VAULT: update/u);
+  assert.match(message, /props\.env\.VAULT: /u);
+});
+
+test("a code-only allowance refuses a called Worker that State recorded as another one", async (context) => {
+  // State holds another Worker under the entry; the declaration calls the named one, which
+  // updates, so the entry in the plan waits on the named Worker alone.
+  const settled = await credentialsRows(context);
+  const catalog = (settled.Catalog as unknown as { attr: Record<string, unknown> }).attr;
+  const rows = withStoreBinding(
+    withStoreProps(settled, (props) => ({
+      ...props,
+      env: { ...props.env, TOOLS_SERVICE: { ...catalog } },
+    })),
+    "TOOLS_SERVICE",
+    (data) => ({
+      ...data,
+      bindings: data.bindings.map((entry) => ({ ...entry, service: catalog.workerName })),
+    }),
+  );
+  const plan = await credentialsPlan(context, {}, rows);
+  assert.equal(plan.resources.Api?.action, "update");
+  assert.equal(isResolved(credentialsNode(plan).props.env.TOOLS_SERVICE), false);
+  const { message } = await exceeded(plan);
+  // The entry itself refuses, not only the binding row that happens to be known for a Worker.
+  assert.match(message, /props\.env\.TOOLS_SERVICE: /u);
+  assert.match(message, /bindings\.TOOLS_SERVICE: update/u);
+});
+
+test("a code-only allowance refuses a waiting binding row that carries more than the reference", async (context) => {
+  const { plan } = await makePlan(context, {
+    rows: await credentialsRows(context),
+    declared: { credentials: {}, bucketStorageClass: "InfrequentAccess" },
+  });
+  const row = credentialsNode(plan).bindings.find((binding) => binding.sid === "VAULT") as
+    | { data: { bindings: object[] } }
+    | undefined;
+  assert.ok(row);
+  // Code that contributes a second wire entry under the reference's own row.
+  row.data = {
+    ...row.data,
+    bindings: [...row.data.bindings, { type: "plain_text", name: "MODE", text: "next" }],
+  };
+  const bucket = [{ fqn: "VaultAttachments", action: "update" }];
+  const { rules, message } = await refused(plan, allowance({}, bucket));
+  assert.deepEqual(rules, ["code-only-allowance-exceeded ArtifactsCredentials"]);
+  assert.match(message, /bindings\.VAULT: update/u);
+});
+
+test("a code-only allowance admits only the named field of a value, never the credential beside it", async (context) => {
+  // The redacted value holds the release's version and a telemetry credential.
+  const { message } = await exceeded(await credentialsPlan(context, { token: "token-b" }));
+  assert.match(message, /bindings\.EXECUTOR_TELEMETRY: update/u);
+  assert.match(message, /props\.env\.EXECUTOR_TELEMETRY: <redacted> -> <redacted>/u);
+  await exceeded(await credentialsPlan(context, { version: "2", token: "token-b" }));
+  // A field the policy does not name is not admitted because another one is.
+  await exceeded(await credentialsPlan(context, { version: "2" }), {
+    values: [{ name: "EXECUTOR_TELEMETRY", fields: ["environment"], why: "another field" }],
+  });
+  // The same value as another kind of binding is not the same binding.
+  const plain = await exceeded(
+    await credentialsPlan(context, { version: "2", telemetryPlain: true }),
+  );
+  assert.match(plain.message, /bindings\.EXECUTOR_TELEMETRY: update/u);
+  // A named value has to be there on both sides: State without it means the entry is new.
+  const rows = await credentialsRows(context);
+  const store = rows.ArtifactsCredentials as unknown as { bindings: { sid: string }[] };
+  const { EXECUTOR_TELEMETRY: _dropped, ...env } = (
+    store as unknown as { props: { env: Record<string, Record<string, unknown>> } }
+  ).props.env;
+  const added = await exceeded(
+    await credentialsPlan(
+      context,
+      {},
+      {
+        ...withStoreProps(rows, (props) => ({ ...props, env })),
+        ArtifactsCredentials: {
+          ...withStoreProps(rows, (props) => ({ ...props, env })).ArtifactsCredentials,
+          bindings: store.bindings.filter((binding) => binding.sid !== "EXECUTOR_TELEMETRY"),
+        } as unknown as ResourceState,
+      },
+    ),
+  );
+  assert.match(added.message, /bindings\.EXECUTOR_TELEMETRY: create/u);
+  assert.match(added.message, /props\.env\.EXECUTOR_TELEMETRY: absent -> <redacted>/u);
+  // A secret that is not such a record cannot be named into the list.
+  const secret = await exceeded(await credentialsPlan(context, { secret: "another-secret" }), {
+    values: [
+      { name: "EXECUTOR_TELEMETRY", fields: ["version"], why: "the release's version" },
+      { name: "POOL_APP_SIGNING_KEY", fields: ["version"], why: "not a record" },
+    ],
+  });
+  assert.match(secret.message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
+});
+
 test("a code-only allowance admits a named value that changes with the release, and its binding", async (context) => {
   const plan = await credentialsPlan(context, { version: "2" });
   // A changed value plans its own binding row as an update as well.
@@ -609,6 +747,8 @@ test("a code-only allowance admits the same entry file under another checkout's 
   // Another file is a change of the entry, wherever the checkout sits.
   for (const main of [
     "/runner/_temp/candidate/scripts/release/test/another-worker.ts",
+    // The same characters at the end, without the directory boundary before them.
+    "/runner/_temp/candidatescripts/release/test/plan-worker.ts",
     "/runner/_temp/candidate/scripts/other/test/plan-worker.ts",
     "/runner/_temp/candidate/plan-worker.ts",
   ]) {
@@ -640,6 +780,30 @@ test("a code-only allowance refuses a changed secret, also beside a reference th
     ],
   });
   assert.match(named.message, /props\.env\.POOL_APP_SIGNING_KEY: <redacted> -> <redacted>/u);
+});
+
+test("a code-only allowance cannot be declared with an empty or doubled name, or for the Worker itself", async (context) => {
+  const named = (name: string, why = "a reason") => [{ name, fields: ["version"], why }];
+  await assert.rejects(policy(allowance({ values: named("") })));
+  await assert.rejects(policy(allowance({ values: named("EXECUTOR_TELEMETRY", " ") })));
+  await assert.rejects(
+    policy(allowance({ values: [{ name: "EXECUTOR_TELEMETRY", fields: [], why: "a reason" }] })),
+  );
+  await assert.rejects(policy(allowance({ why: "" })));
+  await assert.rejects(policy(allowance({ references: [{ name: "", resource: "Api" }] })));
+  const plan = await credentialsPlan(context);
+  // One name in both lists would let the looser rule answer for the stricter one.
+  const doubled = await exceeded(plan, {
+    values: [...named("EXECUTOR_TELEMETRY"), ...named("TOOLS_SERVICE")],
+  });
+  assert.match(doubled.message, /policy\.TOOLS_SERVICE: named as a reference and as a value/u);
+  const itself = await exceeded(plan, {
+    references: [
+      { name: "TOOLS_SERVICE", resource: "Api" },
+      { name: "VAULT", resource: "ArtifactsCredentials" },
+    ],
+  });
+  assert.match(itself.message, /policy\.VAULT: names the Worker itself/u);
 });
 
 test("a code-only allowance refuses a changed value that the policy does not name", async (context) => {

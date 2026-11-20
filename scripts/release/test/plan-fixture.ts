@@ -78,6 +78,10 @@ export interface Declaration {
     main?: string;
     secret?: string;
     version?: string;
+    /** The credential inside the redacted value that also carries the version. */
+    token?: string;
+    /** Declares that value as plain text instead of a secret. */
+    telemetryPlain?: boolean;
     mode?: string;
     /** The Worker it calls: the tools Worker, or another one under the same name. */
     calls?: "Api" | "Catalog";
@@ -358,8 +362,12 @@ const program = (declared: Declaration) =>
               POOL_APP_SIGNING_KEY: Redacted.make(
                 declared.credentials.secret ?? "synthetic-signing-secret",
               ),
-              EXECUTOR_TELEMETRY: Redacted.make(
-                JSON.stringify({ version: declared.credentials.version ?? "1" }),
+              EXECUTOR_TELEMETRY: ((text: string) =>
+                declared.credentials?.telemetryPlain ? text : Redacted.make(text))(
+                JSON.stringify({
+                  version: declared.credentials.version ?? "1",
+                  traces: { headers: { authorization: declared.credentials.token ?? "token-a" } },
+                }),
               ),
               POOL_MODE: { mode: declared.credentials.mode ?? "a" },
             }
