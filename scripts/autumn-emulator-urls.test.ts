@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Exit, Schema } from "../.upstream/node_modules/effect/dist/index.js";
-import * as cloudEmulators from "../.upstream/apps/hosted/cloud/src/contracts/emulators.ts";
+import {
+  EmulatedServices,
+  HostedOrLoopbackUrl,
+} from "../.upstream/apps/hosted/cloud/src/contracts/emulators.ts";
 import { AutumnServerUrl } from "../.upstream/apps/hosted/cloud/src/contracts/autumn.ts";
 import { EmulatorFixture } from "../.upstream/e2e/support/emulators.ts";
 import { localAutumnEmulator } from "../.upstream/e2e/support/autumn-emulator.ts";
@@ -46,27 +49,19 @@ const refused = [
 ];
 
 test("Cloud's emulator configuration accepts a loopback Autumn emulator for billing", () => {
-  assert.ok(accepts(cloudEmulators.EmulatedServices, services()));
-  assert.ok(accepts(cloudEmulators.EmulatedServices, billingAt(local)));
-  assert.ok(accepts(cloudEmulators.EmulatedServices, billingAt("http://localhost:41234")));
+  assert.ok(accepts(EmulatedServices, services()));
+  assert.ok(accepts(EmulatedServices, billingAt(local)));
+  assert.ok(accepts(EmulatedServices, billingAt("http://localhost:41234")));
   for (const baseUrl of refused)
-    assert.ok(!accepts(cloudEmulators.EmulatedServices, billingAt(baseUrl)), baseUrl);
+    assert.ok(!accepts(EmulatedServices, billingAt(baseUrl)), baseUrl);
   for (const service of ["mail", "company", "workos"])
     assert.ok(
-      !accepts(
-        cloudEmulators.EmulatedServices,
-        services({ [service]: { baseUrl: local, token: "x" } }),
-      ),
+      !accepts(EmulatedServices, services({ [service]: { baseUrl: local, token: "x" } })),
       service,
     );
 });
 
-test("billing's emulator branch accepts exactly what the emulator configuration does", () => {
-  const { HostedOrLoopbackUrl } = cloudEmulators as Record<
-    string,
-    Schema.ConstraintDecoder<unknown> | undefined
-  >;
-  assert.ok(HostedOrLoopbackUrl, "contracts/emulators.ts exports the emulator endpoint schema");
+test("an emulator endpoint is a hosted instance or a loopback emulator, never Autumn itself", () => {
   assert.ok(accepts(HostedOrLoopbackUrl, local));
   assert.ok(accepts(HostedOrLoopbackUrl, hosted("autumn")));
   for (const baseUrl of [...refused, "https://api.useautumn.com"])

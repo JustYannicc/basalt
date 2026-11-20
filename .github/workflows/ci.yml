@@ -1468,6 +1468,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/postgres.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
@@ -1617,6 +1618,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-state-digests.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-provisioning-completed.json
@@ -1832,6 +1834,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -1862,6 +1865,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-account-recipes:
@@ -2038,6 +2042,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   dashboard-batch:

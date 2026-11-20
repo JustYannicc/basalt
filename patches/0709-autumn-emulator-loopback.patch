@@ -72,44 +72,23 @@ diff --git a/apps/hosted/cloud/src/contracts/emulators.ts b/apps/hosted/cloud/sr
 diff --git a/apps/hosted/cloud/src/infrastructure/billing.ts b/apps/hosted/cloud/src/infrastructure/billing.ts
 --- a/apps/hosted/cloud/src/infrastructure/billing.ts
 +++ b/apps/hosted/cloud/src/infrastructure/billing.ts
-@@ -16,6 +16,7 @@ import { AutumnServerUrl } from "../contracts/autumn.ts";
- import { Config, Effect, Option, Redacted, Schema } from "effect";
- import { productionStage, testStage } from "./stage.ts";
- import { cloudEmulators, testStageEmulatorHost } from "./emulators.ts";
-+import { HostedOrLoopbackUrl } from "../contracts/emulators.ts";
- import { seedBillingCatalog } from "./billing-catalog-seed.ts";
- 
- /** Autumn's own API. Every other allowed endpoint is a private instance of it. */
-@@ -38,6 +39,14 @@ const decodeServerUrl = (value: Redacted.Redacted<string>) =>
-     Effect.as(value),
-   );
- 
-+/** Emulator configuration may also name an Autumn emulator the test harness runs on loopback. */
-+const decodeEmulatorUrl = (value: Redacted.Redacted<string>) =>
-+  Schema.decodeUnknownEffect(HostedOrLoopbackUrl)(Redacted.value(value)).pipe(
-+    Effect.mapError(() => new Error("The billing emulator URL is not an allowed Autumn endpoint")),
-+    Effect.orDie,
-+    Effect.as(value),
-+  );
-+
- /** A production credential is only ever sent to Autumn itself. */
- const assertCredentialEndpoint = (key: Redacted.Redacted<string>, serverUrl: string) =>
-   Redacted.value(key).startsWith("am_sk_live_") && serverUrl !== autumnServer
-@@ -120,7 +129,7 @@ const billingEndpoint = Effect.gen(function* () {
+@@ -120,7 +120,9 @@ const billingEndpoint = Effect.gen(function* () {
      const { billing } = Redacted.value(emulators.value);
      return Option.some({
        catalog,
 -      serverUrl: Effect.succeed(yield* decodeServerUrl(Redacted.make(billing.baseUrl))),
-+      serverUrl: Effect.succeed(yield* decodeEmulatorUrl(Redacted.make(billing.baseUrl))),
++      // cloudEmulators already decoded it as an emulator endpoint, which may be loopback; test
++      // stage and operator endpoints still decode as HTTPS.
++      serverUrl: Effect.succeed(Redacted.make(billing.baseUrl)),
        secretKey: Effect.succeed(Redacted.make(billing.token)),
      } satisfies BillingSettings);
    }
-@@ -191,7 +200,7 @@ export const billingBindings = Effect.gen(function* () {
+@@ -191,7 +193,7 @@ export const billingBindings = Effect.gen(function* () {
    if (Option.isSome(emulators)) {
      const { billing } = Redacted.value(emulators.value);
      return provision(
 -      Output.asOutput(yield* decodeServerUrl(Redacted.make(billing.baseUrl))),
-+      Output.asOutput(yield* decodeEmulatorUrl(Redacted.make(billing.baseUrl))),
++      Output.asOutput(Redacted.make(billing.baseUrl)),
        Output.asOutput(Redacted.make(billing.token)),
      );
    }
@@ -117,25 +96,27 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/autumn-emulator.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,93 @@
 +/**
 + * The Autumn billing emulator a local Cloud runs beside itself when CI provides one, so billing
 + * never waits on a shared outside service. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI;
 + * without it, billing uses the hosted emulator exactly as before.
 + */
-+import { Deferred, Effect, FileSystem, Stream } from "effect";
++import { Effect, FileSystem, Schedule, Stream } from "effect";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import { outputLines } from "./alchemy-dev-output.ts";
 +import { CloudStartFailed } from "./cloud-startup-output.ts";
++import { driver } from "./platform.ts";
 +import { freePort } from "./ports.ts";
 +
 +/** It starts in about a second; the bound allows for a loaded runner. */
 +const startupDeadline = "30 seconds";
 +
 +/**
-+ * Start the emulator for the caller's scope and return its loopback origin, or `undefined` when
-+ * this run uses the hosted one. Its output goes to `autumn-emulator.log`; closing the scope stops
-+ * the process this started.
++ * Start the emulator for the caller's scope and return the loopback origin it is addressed at, or
++ * `undefined` when this run uses the hosted one. emulate has no host option, so it listens on every
++ * interface; only its address is loopback. Its output goes to `autumn-emulator.log`; closing the
++ * scope stops the process this started.
 + */
 +export const localAutumnEmulator = (directory: string) =>
 +  Effect.gen(function* () {
@@ -149,9 +130,11 @@ new file mode 100644
 +    const cwd = `${directory}/autumn-emulator`;
 +    yield* fs.makeDirectory(cwd, { recursive: true, mode: 0o700 });
 +    const log = `${directory}/autumn-emulator.log`;
++    // This Node, not the first `node` on PATH: a harness may put a shim there that exports its own
++    // secrets before it execs Node.
 +    const child = yield* processes.spawn(
 +      ChildProcess.make(
-+        "node",
++        process.execPath,
 +        [entry, "--service", "autumn", "--port", port, "--base-url", origin],
 +        {
 +          cwd,
@@ -163,23 +146,28 @@ new file mode 100644
 +        },
 +      ),
 +    );
-+    const announced = yield* Deferred.make<void>();
 +    yield* outputLines(child).pipe(
-+      Stream.runForEach((line) =>
-+        fs
-+          .writeFileString(log, `${line}\n`, { flag: "a", mode: 0o600 })
-+          .pipe(
-+            Effect.andThen(
-+              line.includes(origin) ? Deferred.succeed(announced, undefined) : Effect.void,
-+            ),
-+          ),
-+      ),
++      Stream.runForEach((line) => fs.writeFileString(log, `${line}\n`, { flag: "a", mode: 0o600 })),
 +      Effect.forkScoped,
 +    );
-+    // The banner follows the listen call. A connection refused before the bind completes is a
-+    // transport failure, which the credential request that follows retries.
++    // emulate prints its banner before Node reports a failed bind, and the port was free only
++    // when freePort released it. Only an answer from emulate's control plane proves it holds it.
++    const answers = driver("ask the local Autumn emulator for its manifest", async (signal) => {
++      const response = await fetch(`${origin}/_emulate/manifest`, { signal });
++      await response.arrayBuffer();
++      return response.status;
++    }).pipe(
++      Effect.flatMap((status) =>
++        status === 200
++          ? Effect.void
++          : Effect.fail(
++              new CloudStartFailed({ operation: `The local Autumn emulator answered ${status}` }),
++            ),
++      ),
++      Effect.retry({ schedule: Schedule.spaced("100 millis") }),
++    );
 +    yield* Effect.raceFirst(
-+      Deferred.await(announced),
++      answers,
 +      child.exitCode.pipe(
 +        Effect.flatMap((code) =>
 +          Effect.fail(
@@ -227,11 +215,14 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
          : Redacted.make(
              EmulatorFixture.make({
                version: 4,
-@@ -520,6 +524,7 @@ export const startCloudEnvironment = (input: {
+@@ -520,6 +524,10 @@ export const startCloudEnvironment = (input: {
            prebuiltFramework: input.prebuilt === true,
            origin: input.origin,
            externalServices: "emulators.dev",
-+          billingEmulator: localBilling === undefined ? "emulators.dev" : "local",
++          // A stage signing in through another Cloud may share that Cloud's local billing.
++          billingEmulator: Redacted.value(fixture).services.billing.baseUrl.startsWith("http:")
++            ? "local"
++            : "emulators.dev",
            inheritedCredentials: false,
            savedAuthProfile: false,
            savedDockerCredentials: false,

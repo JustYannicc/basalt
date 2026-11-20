@@ -62,6 +62,10 @@ function build(root: string, pin: Pin) {
   const sourceArchive = join(downloads, `${pin.commit}.tgz`);
   downloadVerified(pin.archive.url, pin.archive.integrity, sourceArchive);
   extract(sourceArchive, source);
+  // pnpm switches to whatever version the source names, which would come from outside these pins.
+  const manager = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).packageManager;
+  if (manager !== `pnpm@${pin.pnpm.version}`)
+    throw new Error(`The emulate source wants ${manager}, not the pinned pnpm ${pin.pnpm.version}`);
   const pnpmArchive = join(downloads, `pnpm-${pin.pnpm.version}.tgz`);
   downloadVerified(pin.pnpm.url, pin.pnpm.integrity, pnpmArchive);
   const pnpm = join(downloads, `pnpm-${pin.pnpm.version}`);
@@ -84,7 +88,24 @@ function build(root: string, pin: Pin) {
   ]);
   run([...selection, "run", "build"]);
   if (!existsSync(target.entry)) throw new Error("The emulate build produced no CLI entry point");
+  runs(target);
   writeFileSync(target.receipt, `${JSON.stringify({ commit: pin.commit, key: target.key })}\n`);
+}
+
+/**
+ * The CLI loads its unbundled dependencies from the build's own node_modules, so a build or a
+ * restored cache counts only once the CLI starts and reports the version its source declares.
+ */
+function runs(target: ReturnType<typeof autumnEmulatorBuild>) {
+  const declared = JSON.parse(
+    readFileSync(join(target.directory, "source/packages/emulate/package.json"), "utf8"),
+  ).version;
+  const reported = execFileSync(process.execPath, [target.entry, "--version"], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", NO_COLOR: "1" },
+  }).trim();
+  if (reported !== declared)
+    throw new Error(`The Autumn emulator CLI reported ${reported}, not ${declared}`);
 }
 
 function main(mode: string | undefined) {
@@ -99,10 +120,11 @@ function main(mode: string | undefined) {
     const built = existsSync(target.receipt)
       ? JSON.parse(readFileSync(target.receipt, "utf8")).key === target.key
       : false;
-    if (built)
+    if (built) {
+      if (!existsSync(target.entry)) throw new Error("The restored Autumn emulator has no CLI");
+      runs(target);
       console.log(`Restored the Autumn emulator built from ${pin.repository}@${pin.commit}`);
-    else build(root, pin);
-    if (!existsSync(target.entry)) throw new Error("The Autumn emulator CLI is missing");
+    } else build(root, pin);
     if (process.env.GITHUB_ENV)
       appendFileSync(process.env.GITHUB_ENV, `BASALT_E2E_AUTUMN_EMULATOR=${target.entry}\n`);
     console.log(`Local Autumn emulator: ${pin.repository}@${pin.commit}`);
