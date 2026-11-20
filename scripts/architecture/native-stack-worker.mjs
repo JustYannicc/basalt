@@ -109,6 +109,10 @@ try {
     import("alchemy/Output"),
   ]);
   phase = "evaluate";
+  const rootContainerProof =
+    process.env.NATIVE_STACK_ROOT_CONTAINER_PROOF === "true"
+      ? await import("./root-container-plan-proof.mjs")
+      : undefined;
   const planSettles = settlesProof ? await import("./plan-settles-proof.mjs") : undefined;
   const inspect = planSettles
     ? (stack) =>
@@ -125,7 +129,7 @@ try {
     (stack) =>
       Effect.gen(function* () {
         http.assertAllowed();
-        return yield* inspect(stack);
+        return yield* rootContainerProof?.proveRootContainerPlan(stack) ?? inspect(stack);
       }),
     { stage: settings.ALCHEMY_STAGE },
   ).pipe(
