@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import type * as Plan from "alchemy/Plan";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Cause, Effect, Exit } from "effect";
@@ -1246,6 +1247,21 @@ test("the root's attachment that waits on the pool Worker settles only as lane 1
     data: {},
   });
   await refuses("a second binding row", second);
+  // A known value beside the waiting namespace would hide behind the unknown.
+  for (const [deviation, extend] of [
+    ["a field beside the attachment", (data: Record<string, unknown>) => ({ ...data, other: "x" })],
+    [
+      "a field beside the namespace id",
+      (data: Record<string, unknown>) => ({
+        durableObjects: { ...(data.durableObjects as object), className: "Other" },
+      }),
+    ],
+  ] as const) {
+    const plan = (await waits()).plan;
+    const waiting = (plan.resources.PoolContainer as unknown as Mutable).bindings[0]!;
+    waiting.data = extend(waiting.data as Record<string, unknown>);
+    await refuses(deviation, plan);
+  }
   // An unknown that waits on something other than the pool Worker: the command's own outcome.
   const other = (await waits()).plan;
   const pendingCommand = (
@@ -1274,14 +1290,13 @@ test("the class change admits the root's attachment row too, and nothing else on
     await Effect.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
   ).slice(0, 16);
   // By the class change the healing release has recorded the reference's hash on the root.
-  const rows = productionRows();
-  (rows.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
-    referenceHash;
-  const { plan } = await planned(context, {
-    rows: recordsReadiness(rows),
-    declared: { poolWorkerWaitsOnCommand: true },
-  });
-  const rulesFor = async (workerAttachment: boolean) => {
+  const rows = () => {
+    const recorded = productionRows();
+    (recorded.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
+      referenceHash;
+    return recorded;
+  };
+  const rulesFor = async (plan: Plan.Plan, workerAttachment: boolean) => {
     const exit = await Effect.runPromiseExit(
       checkPlan(
         plan,
@@ -1299,10 +1314,50 @@ test("the class change admits the root's attachment row too, and nothing else on
       ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`)
       : [];
   };
-  const admitted = await rulesFor(true);
-  assert.ok(!admitted.includes("pool-container-not-noop PoolContainer"), admitted.join(", "));
-  assert.ok(!admitted.includes("outside-cutover-classes PoolContainer"), admitted.join(", "));
-  const refused = await rulesFor(false);
-  assert.ok(refused.includes("pool-container-not-noop PoolContainer"), refused.join(", "));
-  assert.ok(refused.includes("outside-cutover-classes PoolContainer"), refused.join(", "));
+  type Row = { action: string; bindings: { sid: string; action: string; data: unknown }[] };
+  // The designed cause, on every class change: a class new to the pool Worker has no namespace
+  // yet, so the provider does not promise the class map and the root's attachment waits on the
+  // Worker, whose node then also creates the class. And lane 1's cause, a setting that waits.
+  for (const [cause, plan] of [
+    [
+      "a class new to the pool Worker",
+      (await planned(context, { rows: rows(), declared: { newClass: true } })).plan,
+    ],
+    [
+      "the fleet's classes",
+      (await planned(context, { rows: rows(), declared: { fleetClasses: true } })).plan,
+    ],
+    [
+      "a setting that waits on a command",
+      (
+        await planned(context, {
+          rows: recordsReadiness(rows()),
+          declared: { poolWorkerWaitsOnCommand: true },
+        })
+      ).plan,
+    ],
+  ] as const) {
+    const root = plan.resources.PoolContainer as unknown as Row;
+    assert.equal(root.action, "update", cause);
+    const pending = root.bindings.filter((binding) => binding.action !== "noop");
+    assert.deepEqual(
+      pending.map(({ sid, action }) => `${sid}: ${action}`),
+      ["PoolContainer: update"],
+      cause,
+    );
+    assert.deepEqual(Object.keys(Output.upstreamAny(pending[0]!.data)), ["PoolWorker"], cause);
+    if (cause !== "a setting that waits on a command")
+      assert.ok(
+        (plan.resources.PoolWorker as unknown as Row).bindings.some(
+          (binding) => binding.action === "create",
+        ),
+        `${cause}: the pool Worker creates the class`,
+      );
+    const admitted = await rulesFor(plan, true);
+    assert.ok(!admitted.includes("pool-container-not-noop PoolContainer"), `${cause}: ${admitted}`);
+    assert.ok(!admitted.includes("outside-cutover-classes PoolContainer"), `${cause}: ${admitted}`);
+    const refused = await rulesFor(plan, false);
+    assert.ok(refused.includes("pool-container-not-noop PoolContainer"), `${cause}: ${refused}`);
+    assert.ok(refused.includes("outside-cutover-classes PoolContainer"), `${cause}: ${refused}`);
+  }
 });

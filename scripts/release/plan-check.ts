@@ -424,12 +424,14 @@ export function rootUpdateSettles(
     const upstream = Object.keys(Output.upstreamAny(binding.data));
     if (upstream.length !== 1 || upstream[0] !== policy.poolWorker) return false;
     const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
-    if (
-      propChanges(recordedData, binding.data, ["bindings", binding.sid]).some(
-        (line) => !line.includes("<unresolved>"),
-      )
-    )
-      return false;
+    // The provider writes exactly the namespace here. A comparison stops at data holding an
+    // unknown, so any value beside it, on either row, could differ unseen.
+    const onlyNamespace = (data: unknown) =>
+      record(data) &&
+      Object.keys(data).join() === "durableObjects" &&
+      record(data.durableObjects) &&
+      Object.keys(data.durableObjects).join() === "namespaceId";
+    if (!onlyNamespace(binding.data) || !onlyNamespace(recordedData)) return false;
     // What it will resolve to is already recorded, the same on both rows: a namespace id is
     // permanent for a Worker and a class, so the Worker's update cannot move it.
     const attached =
