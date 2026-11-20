@@ -4,26 +4,29 @@ import type { FleetApplication } from "../../src/pool/runtime-fleet/configuratio
 import { refuse } from "./errors.ts";
 import { runtimeApplicationConfigDigest } from "./runtime-slot-manifest.ts";
 
-/** The pins the controller holds for an application, from its recorded attributes. */
-function runtimeApplicationPins(
-  application: Parameters<typeof runtimeApplicationConfigDigest>[0] & {
-    readonly accountId: string;
-    readonly applicationId: string;
-    readonly durableObjects: { readonly namespaceId: string };
-    readonly version: number | string;
-    readonly configuration: { readonly image: string };
-  },
-  imageInput: string,
-) {
+type PinnedApplication = Parameters<typeof runtimeApplicationConfigDigest>[0] & {
+  readonly accountId: string;
+  readonly applicationId: string;
+  readonly durableObjects: { readonly namespaceId: string };
+  readonly version: number | string;
+  readonly configuration: { readonly image: string };
+};
+
+/** Exactly the pins the controller's provider observation compares (ProviderObservationTarget). */
+export function providerApplicationPins(application: PinnedApplication) {
   return {
     accountId: application.accountId,
     applicationId: application.applicationId,
     namespaceId: application.durableObjects.namespaceId,
     applicationVersion: String(application.version),
     imageDigest: application.configuration.image.split("@")[1]!,
-    imageInput,
     applicationConfigDigest: runtimeApplicationConfigDigest(application),
   };
+}
+
+/** The pins the controller holds for an application, from its recorded attributes. */
+function runtimeApplicationPins(application: PinnedApplication, imageInput: string) {
+  return { ...providerApplicationPins(application), imageInput };
 }
 
 // Lenient: only the fields the controller's observation compares are checked here, so a refusal

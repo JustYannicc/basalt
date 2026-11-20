@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { runtimeRecoveryPath } from "../src/pool/recovery-approval.ts";
 import {
+  BoundProviderObservation,
+  ProviderObservationTarget,
+} from "../src/pool/runtime-provider/observation.ts";
+import {
   ControllerCode,
   SlotIdentity,
   SlotRefused,
@@ -15,7 +19,8 @@ import { runCrashOperator } from "./pool-crash-operator.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "./pool-operations.ts";
 import { nodePoolOperations } from "./pool-operations-node.ts";
 import { BarrierRefusal } from "./pool-fleet/refusal.ts";
-import { sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
+import { sameProvisioningValue } from "./pool-fleet/provisioning-refusal.ts";
+import { providerObservationCause, sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import {
   readReleaseTarget,
   workflowRunLister,
@@ -34,19 +39,29 @@ const CrashPacket = Schema.Struct({
 });
 type CrashPacket = typeof CrashPacket.Type;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const observeActions = ["inspect", "fleet-inspect", "active-health", "witness"] as const;
+const observeActions = [
+  "inspect",
+  "fleet-inspect",
+  "active-health",
+  "witness",
+  "provider-observe",
+] as const;
 type ObserveAction = (typeof observeActions)[number];
+/** A witness names a slot; a provider observation names the application pins it compares. */
+type ObserveSubject = SlotTarget | ProviderObservationTarget;
 type Connect = PoolOperationsTarget["connect"];
 
 export interface DispatchDependencies {
   listRuns(): Promise<readonly { id: number; displayTitle: string }[]>;
-  readTarget(): Promise<ReleaseTarget & { root?: RootApplication }>;
+  readTarget(): Promise<
+    ReleaseTarget & { root?: RootApplication; provider?: ProviderObservationTarget }
+  >;
   observe(
     action: ObserveAction,
     controllerCode: ControllerCode,
     target: ReleaseTarget,
     signingKey: string,
-    slot?: SlotTarget,
+    subject?: ObserveSubject,
   ): Promise<unknown>;
   /**
    * The root PoolContainer's unsigned recovery status read: identity and boot, never a restart.
@@ -178,6 +193,60 @@ function membershipState(inspected: unknown, observedAt: number) {
   };
 }
 
+const providerCauses = [
+  "provider_observation_refused",
+  "provider_fetch_failed",
+  "controller_refused",
+  "reply_unreadable",
+  "outcome_unknown",
+  "target_unavailable",
+] as const;
+type ProviderCause = (typeof providerCauses)[number];
+const providerLine = (cause?: ProviderCause) =>
+  cause
+    ? (`provider observation: does not read (${cause})` as const)
+    : ("provider observation: reads" as const);
+type ProviderLine = ReturnType<typeof providerLine>;
+const providerLines = new Set<string>([providerLine(), ...providerCauses.map(providerLine)]);
+
+/**
+ * The Worker reads the root application with its own POOL_PROVIDER_OBSERVATION_TOKEN binding, as a
+ * heal's restart does at admission and attestation, and compares it to these pins. The reply names
+ * the account, application and digests, so only a closed line ever leaves this function.
+ */
+async function providerObservation(
+  target: ProviderObservationTarget | undefined,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<ProviderLine> {
+  if (!target) return providerLine("target_unavailable");
+  let reply: unknown;
+  try {
+    reply = await send(target);
+  } catch (cause) {
+    // The Worker's failure header outranks the body's reason, which a non-provider 409 also has.
+    return providerLine(
+      providerObservationCause(cause) ??
+        (cause instanceof ControllerRefused
+          ? "controller_refused"
+          : cause instanceof DispatchRefusal
+            ? "reply_unreadable"
+            : "outcome_unknown"),
+    );
+  }
+  try {
+    const { proof } = Schema.decodeUnknownSync(BoundProviderObservation)(reply);
+    // The proof must name exactly the pins sent; its observation digest and time stay unread.
+    sameProvisioningValue(
+      "provider.observation.target",
+      target,
+      Schema.decodeUnknownSync(ProviderObservationTarget)(proof),
+    );
+    return providerLine();
+  } catch {
+    return providerLine("reply_unreadable");
+  }
+}
+
 const RootHealth = Schema.Struct({
   instanceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
   imageHash: Schema.String,
@@ -272,7 +341,7 @@ async function diagnose(input: {
   controllerCode: ControllerCode;
   target: ReleaseTarget;
   deps: DispatchDependencies;
-  send: (action: ObserveAction, slot?: SlotTarget) => Promise<unknown>;
+  send: (action: ObserveAction, subject?: ObserveSubject) => Promise<unknown>;
 }) {
   const fleet = fields(input.fleet);
   const permission = fields(fleet.permission);
@@ -323,6 +392,7 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   let forcedInspect = false;
   let phase = "input validation failed";
   const output: {
+    providerObservation?: ProviderLine;
     observe?: unknown;
     diagnostic?: unknown;
     inspection?: unknown;
@@ -362,13 +432,17 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     if (input.mode === "observe") {
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
-      const { root, ...target } = await readTarget();
-      const send = (action: ObserveAction, slot?: SlotTarget) => {
+      const { root, provider, ...target } = await readTarget();
+      const send = (action: ObserveAction, subject?: ObserveSubject) => {
         phase = `${action} outcome unknown`;
         return deps
-          .observe(action, packet.controllerCode, target, input.signingKey, slot)
+          .observe(action, packet.controllerCode, target, input.signingKey, subject)
           .then((reply) => replyResult(reply, action));
       };
+      // First and never fatal: a heal needs this read whatever state the selection is in.
+      output.providerObservation = await providerObservation(provider, (pins) =>
+        send("provider-observe", pins),
+      );
       const inspected = await send("inspect");
       if (inspected === null || typeof inspected !== "object")
         throw new DispatchRefusal("inspect reply has no result");
@@ -496,10 +570,17 @@ export class ControllerRefused extends Error {
 
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
-  async (action, controllerCode, target, signingKey, slot) => {
+  async (action, controllerCode, target, signingKey, subject) => {
     const at = signedNow();
+    // The closed command union decides which subject an action may carry; any other pairing refuses.
     const command = decodeRuntimeHandoffCommand(
-      { controllerCode, action, at, expiresAt: at + 25_000, ...(slot ? { target: slot } : {}) },
+      {
+        controllerCode,
+        action,
+        at,
+        expiresAt: at + 25_000,
+        ...(subject ? { target: subject } : {}),
+      },
       at,
     );
     // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
@@ -545,6 +626,8 @@ export const observeSender =
         decodeRuntimeHandoffCommand(command, signedNow());
       });
     } catch (cause) {
+      // The provider-observation header is the Worker's own closed cause; keep it.
+      if (providerObservationCause(cause)) throw cause;
       if (refused) throw new ControllerRefused(action, refused);
       throw cause;
     }
@@ -580,7 +663,10 @@ export async function writeDispatchResult(directory: string, result: object) {
 export const logLine = (result: Awaited<ReturnType<typeof runCrashDispatch>>) =>
   `mode=${["observe", "inspect", "apply"].includes(result.mode) ? result.mode : "invalid"} ` +
   `request_id=${uuid.test(result.requestId) ? result.requestId : "invalid"} ` +
-  `ok=${result.ok} forcedInspect=${result.forcedInspect}\n`;
+  `ok=${result.ok} forcedInspect=${result.forcedInspect}\n` +
+  (result.providerObservation && providerLines.has(result.providerObservation)
+    ? `${result.providerObservation}\n`
+    : "");
 
 if (import.meta.main) {
   const env = process.env;

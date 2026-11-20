@@ -16,6 +16,17 @@ import {
 // A refusal body is a fixed code; anything larger or unknown is never copied into evidence.
 const refusalBodyLimit = 2048;
 const providerCodes = new Set(["provider_observation_refused", "provider_fetch_failed"]);
+const providerRefusal = "runtime-provider-observation-";
+
+/** The Worker's closed cause when a provider-observe was refused with its failure header. */
+export function providerObservationCause(error: unknown) {
+  if (!(error instanceof BarrierRefusal) || !error.reason.startsWith(providerRefusal))
+    return undefined;
+  const cause = error.reason.slice(providerRefusal.length);
+  return cause === "provider_observation_refused" || cause === "provider_fetch_failed"
+    ? cause
+    : undefined;
+}
 
 type Action<T> = T extends unknown ? Omit<T, "controllerCode" | "at" | "expiresAt"> : never;
 export type RuntimeCommandAction = Action<RuntimeHandoffCommand>;
@@ -68,7 +79,7 @@ export async function sendRuntimeCommand(
       const reason =
         providerCause === "provider_observation_refused" ||
         providerCause === "provider_fetch_failed"
-          ? `runtime-provider-observation-${providerCause}`
+          ? `${providerRefusal}${providerCause}`
           : "runtime-handoff-response-refused";
       const refusal = provisioningRefusal(reason, "handoff.response.status", 200, response.status);
       // Keep the server's closed refusal vocabulary, so a refused command says why in failure.json.
