@@ -110,11 +110,20 @@ jobs:
           path: .generated/ci/selection.json
           include-hidden-files: true
           if-no-files-found: error
+  # Start order only. Every job outside the long tier (longJobs in scripts/ci/gate.ts) also needs
+  # this job, so the long jobs are queued for runners first.
+  long-started:
+    needs: select
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: "true"
   baseline-probe:
     permissions:
       contents: read
       actions: read
-    needs: select
+    needs: [select, long-started]
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -264,7 +273,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    needs: select
+    needs: [select, long-started]
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -367,7 +376,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    needs: select
+    needs: [select, long-started]
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -442,7 +451,7 @@ jobs:
           fi
           python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
-    needs: select
+    needs: [select, long-started]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -459,7 +468,7 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-mobile')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -477,7 +486,7 @@ jobs:
       - run: bun run --cwd clients/mobile export:ios
       - run: bun run --cwd clients/mobile export:android
   client-desktop:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-desktop')
     env:
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
@@ -521,7 +530,7 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-native-product')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -560,7 +569,7 @@ jobs:
           path: .upstream/.local/testing/**/server.log
           if-no-files-found: warn
   clerk-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'clerk-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -589,7 +598,7 @@ jobs:
           if-no-files-found: error
 
   workos-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'workos-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -618,7 +627,7 @@ jobs:
           if-no-files-found: error
 
   gitlab-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -703,7 +712,7 @@ jobs:
           if-no-files-found: error
 
   vercel-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'vercel-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -730,7 +739,7 @@ jobs:
           if-no-files-found: error
 
   elevenlabs-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'elevenlabs-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -757,7 +766,7 @@ jobs:
           if-no-files-found: error
 
   neon-key-reuse:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'neon-key-reuse')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -784,7 +793,7 @@ jobs:
           if-no-files-found: error
 
   slack-health:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'slack-health')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -904,7 +913,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts-adopted:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-adopted')
     runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-adopted') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 30
@@ -1073,7 +1082,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   host-managed-accounts-cloud-actions:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud-actions')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -1115,7 +1124,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   host-managed-accounts-runtime:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-runtime')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -1169,7 +1178,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-recovery:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1226,7 +1235,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-diagnostics:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-diagnostics')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1287,7 +1296,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'oauth-account-regressions')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1337,7 +1346,7 @@ jobs:
             .generated/oauth-renewal-recovery/ci/*-390.png
           if-no-files-found: warn
   pool-account-recovery:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1382,7 +1391,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   sso-service-binding:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'sso-service-binding')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1518,7 +1527,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-atlassian-adoption:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-atlassian-adoption')
     runs-on: ubuntu-latest
     timeout-minutes: 14
@@ -1560,7 +1569,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -1621,7 +1630,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'compiler-diagnostics')
     runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'compiler-diagnostics') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -1705,7 +1714,7 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   human-in-the-loop-navigation:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-navigation')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1778,7 +1787,7 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   access-editor-reads:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'access-editor-reads')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1818,7 +1827,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-accounts')
     runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'contributed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
@@ -1863,7 +1872,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-account-recipes:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-account-recipes')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -1900,7 +1909,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'personal-data-reporting')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1944,7 +1953,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -2101,7 +2110,7 @@ jobs:
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
   aws-connectors:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -2155,7 +2164,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   gitlab-connectors:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -2191,7 +2200,7 @@ jobs:
           if-no-files-found: error
 
   mcp-apps:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'mcp-apps')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -2232,7 +2241,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   declared-self-host:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -2287,7 +2296,7 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   declared-local:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -2342,7 +2351,7 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   declared-cloud:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -2411,7 +2420,7 @@ jobs:
           warm: "true"
 
   upstream-image:
-    needs: [select, workerd-assets]
+    needs: [select, workerd-assets, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -2450,7 +2459,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   browser-install:
-    needs: select
+    needs: [select, long-started]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -2785,7 +2794,7 @@ jobs:
           df -B1 /
 
   production-build:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-build')
     runs-on: ubuntu-latest
     steps:
@@ -2816,7 +2825,7 @@ jobs:
       - run: npm run typecheck
 
   docs-build:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'docs-build')
     runs-on: ubuntu-latest
     steps:
@@ -2834,7 +2843,7 @@ jobs:
         run: node scripts/docs-fonts/check.ts
 
   upstream-contracts:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
     runs-on: ubuntu-latest
     services:
@@ -2871,6 +2880,7 @@ jobs:
       [
         reuse,
         select,
+        long-started,
         fast,
         browser-install,
         cpa-pipeline,

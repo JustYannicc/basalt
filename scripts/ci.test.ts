@@ -9,7 +9,7 @@ import { carryTargets, changedInputs, jobRoutes, selectPaths } from "./ci/affect
 import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { activeSteps } from "./ci/e2e-workflow.ts";
-import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { conditionalJobs, fastJobs, gateErrors, longJobs } from "./ci/gate.ts";
 import { declaredMatrices } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -216,7 +216,11 @@ test("every workflow job has a gate dependency and declared selection policy", (
   for (const job of heavyJobs) {
     assert.deepEqual(
       jobs[job].needs,
-      job === "upstream-image" ? ["select", "workerd-assets"] : "select",
+      job === "upstream-image"
+        ? ["select", "workerd-assets", "long-started"]
+        : longJobs.includes(job)
+          ? "select"
+          : ["select", "long-started"],
       job,
     );
     assert.equal(jobs[job].if, `contains(fromJSON(needs.select.outputs.jobs), '${job}')`, job);

@@ -20,7 +20,7 @@ test("declared shards pay setup once, then run their planned files within the pl
     assert.equal(job["timeout-minutes"], "${{ matrix.timeout }}", id);
     assert.equal(job.name, "${{ matrix.shard }}", id);
     assert.equal(job.strategy["fail-fast"], false, id);
-    assert.equal(job.needs, "select", id);
+    assert.ok([job.needs].flat().includes("select"), id);
     assert.deepEqual(
       job.steps.slice(3, 7),
       [
@@ -80,7 +80,7 @@ test("declared shards pay setup once, then run their planned files within the pl
 test("sign-in jobs prepare the runtime before bounded browser setup and run independently", () => {
   for (const id of ["clerk-sign-in", "workos-sign-in", "gitlab-sign-in", "planetscale-sign-in"]) {
     const job = workflow.jobs[id];
-    assert.equal(job.needs, "select", id);
+    assert.ok([job.needs].flat().includes("select"), id);
     assert.equal(job.strategy, undefined, id);
     assert.equal(job["timeout-minutes"], id === "planetscale-sign-in" ? 20 : 10, id);
     assert.deepEqual(
@@ -117,7 +117,7 @@ test("HITL partitions retain every target scenario exactly once behind required 
       group.job === "human-in-the-loop-cloud" ? 25 : 15,
       group.job,
     );
-    assert.equal(job.needs, "select");
+    assert.ok([job.needs].flat().includes("select"), group.job);
     assert.ok(heavyJobs.includes(group.job));
     assert.ok(workflow.jobs.check.needs.includes(group.job));
     assert.equal(
