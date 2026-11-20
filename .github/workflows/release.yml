@@ -124,7 +124,10 @@ jobs:
 
   release:
     needs: candidate
-    if: needs.candidate.outputs.release == 'true'
+    # The candidate job takes only a main push or a dispatch from main, and a dispatched candidate
+    # must be a commit on main. `github.ref` is main under both triggers; stating it here lets the
+    # secrets guard see that this job, which holds production's secrets, runs on main's ref only.
+    if: github.ref == 'refs/heads/main' && needs.candidate.outputs.release == 'true'
     runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     permissions:
@@ -375,8 +378,14 @@ jobs:
       # and would stop a restart in progress. The run ends red; a rollback is its own GO.
       - name: Stop on a failed healing release
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'code-restart' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        # Serving but needing a person is its own result: nothing is undone, and the run is not green.
         run: |
-          echo "::error::The healing release failed, or the pool did not serve on a new root boot within its bound. It is not rolled back: the code before it could not restart the pool. The serving versions are in .local/release/serving.json; a rollback is a separate GO."
+          outcome="$(jq -r '.outcome // "not-serving"' .local/release/acceptance.json 2>/dev/null || echo not-serving)"
+          if [ "$outcome" = "serving-needs-person" ]; then
+            echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)). Nothing was undone; look at the recovery with the pool serving."
+            exit 1
+          fi
+          echo "::error::NOT SERVING: the healing release failed, or the pool did not serve on a new root boot within its bound. It is not rolled back: the code before it could not restart the pool. The last read and the stop path are in .local/release/acceptance.json; the serving versions in .local/release/serving.json; a rollback is a separate GO."
           exit 1
       - name: Stop on a failed class change
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
