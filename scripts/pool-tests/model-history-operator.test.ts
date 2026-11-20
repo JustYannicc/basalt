@@ -10,11 +10,15 @@ import pg from "pg";
 import {
   handleModelHistoryOperation,
   historyBackfillPath,
-  historySchemaApplyPath,
   historySchemaCatalogPath,
   historyJournalActivationPath,
   historyJournalReaderVersion,
 } from "../../src/pool/model-history/operator.ts";
+import { withHistoryDatabase } from "../../src/pool/model-history/database.ts";
+import { migrateModelHistory } from "../../src/pool/model-history/schema.ts";
+
+// The schema apply route that predates release-only history steps.
+const removedSchemaApplyPath = "/model-history/schema";
 import {
   historyJournalPrepareVersion,
   historyJournalActivateVersion,
@@ -44,7 +48,7 @@ const adminUrl = process.env.POOL_TEST_ADMIN_URL;
 if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname))
   throw new Error("POOL_TEST_ADMIN_URL must point to isolated local test Postgres");
 
-test("the private schema operator defaults to catalog/count reads and binds writes to the reviewed schema and catalog", async () => {
+test("the private schema operator reads catalogs and counts and has no schema apply route", async () => {
   // CI runs this before the application build, so the fixture owns its deployment bundle.
   execFileSync("bun", ["scripts/pool-worker-build.ts"], { stdio: "inherit" });
   const database = `operator_${randomUUID().replaceAll("-", "")}`;
@@ -118,7 +122,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
       for (const path of [
         historySchemaCatalogPath,
         historyJournalActivationPath,
-        historySchemaApplyPath,
+        removedSchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
         historyImportCompletionPath,
@@ -185,37 +189,20 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         ),
         url.toString(),
       );
-    await db.query('CREATE TABLE "user" (id text)');
-    const rejectedCatalog = await invoke(historySchemaCatalogPath);
-    const rejectedPlan = await rejectedCatalog.json();
-    const errors: unknown[][] = [];
-    const originalError = console.error;
-    console.error = (...args: unknown[]) => {
-      errors.push(args);
-    };
-    try {
-      const rejected = await invoke(historySchemaApplyPath, {
-        go: true,
-        schemaHash: rejectedPlan.schemaHash,
-        catalogHash: rejectedPlan.catalogHash,
-      });
-      assert.equal(rejected.status, 503);
-      assert.equal(await rejected.text(), "");
-      assert.deepEqual(errors, [
-        [
-          "Model history schema apply failed",
-          { type: "PostgresError", code: "42501", resource: { kind: "table", name: "user" } },
-        ],
-      ]);
-      assert.equal(
-        (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
-        null,
-        "failed apply rolls back its schema",
-      );
-    } finally {
-      console.error = originalError;
-      await db.query('DROP TABLE "user"');
-    }
+    // Schema steps are applied only by the release's database step, so even an approval that
+    // matches the current plan finds no apply route and writes nothing.
+    const current = await (await invoke(historySchemaCatalogPath)).json();
+    const removed = await invoke(removedSchemaApplyPath, {
+      go: true,
+      schemaHash: current.schemaHash,
+      catalogHash: current.catalogHash,
+    });
+    assert.equal(removed.status, 404);
+    assert.equal(
+      (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
+      null,
+      "the removed apply route creates no history schema",
+    );
     const dry = await invoke(historySchemaCatalogPath);
     assert.equal(dry.status, 200, await dry.clone().text());
     const plan = (await dry.json()) as {
@@ -236,26 +223,12 @@ test("the private schema operator defaults to catalog/count reads and binds writ
       (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
       null,
     );
-    const approved = { go: true, schemaHash: plan.schemaHash, catalogHash: plan.catalogHash };
-    assert.equal((await invoke(historySchemaApplyPath, { ...approved, go: false })).status, 400);
-    assert.equal(
-      (await invoke(historySchemaApplyPath, { ...approved, schemaHash: "0".repeat(64) })).status,
-      409,
-    );
-    assert.equal(
-      (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
-      null,
-    );
-    assert.equal((await invoke(historySchemaApplyPath, approved)).status, 200);
+    // The release's database step runs this migrator.
+    await withHistoryDatabase(url.toString(), (history) => migrateModelHistory(history));
     assert.equal(
       (await db.query("SELECT count(*)::text AS rows FROM basalt_model_requests")).rows[0].rows,
       "0",
       "schema application must not backfill metadata silently",
-    );
-    assert.equal(
-      (await invoke(historySchemaApplyPath, approved)).status,
-      409,
-      "catalog changes invalidate an old plan",
     );
     const refreshed = (await (await invoke(historySchemaCatalogPath)).json()) as typeof plan;
     assert.equal(refreshed.applied, true);

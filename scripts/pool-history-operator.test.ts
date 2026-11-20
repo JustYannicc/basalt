@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -37,7 +37,7 @@ const report = {
   automaticBackfill: false,
 };
 
-test("operator plans bind the target and a lost apply response cannot issue another write", async () => {
+test("schema plans never apply, and a lost apply response cannot issue another write", async () => {
   const directory = await mkdtemp(join(tmpdir(), "history-operator-fixture-"));
   try {
     const path = join(directory, "plan.json");
@@ -58,28 +58,64 @@ test("operator plans bind the target and a lost apply response cannot issue anot
     await runHistoryOperator(options, account, connect);
     assert.equal(writes, 0);
     assert.equal(JSON.parse(await readFile(path, "utf8")).worker, options.worker);
+    // Schema steps are applied only by a release's database step.
     assert.throws(() =>
-      historyOperatorOptions(["--worker", "fixture-pool", "--plan", path, "--apply"]),
+      historyOperatorOptions(["--worker", "fixture-pool", "--plan", path, "--apply", "--go"]),
+    );
+    await assert.rejects(
+      runHistoryOperator({ ...options, apply: true }, account, connect),
+      /applied only by a release/,
+    );
+    assert.equal(writes, 0);
+    await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
+
+    const backfillPath = join(directory, "backfill.json");
+    const backfill = {
+      status: "dry-run",
+      version: "model_request_backfill_v1",
+      digest: "d".repeat(64),
+      plan: { rows: "2", upperId: "2", privacyReady: true },
+      writes: false,
+    };
+    const backfillConnect = async (_path: string) => ({
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            if (request.method === "GET") return Response.json(backfill);
+            writes++;
+            throw new Error("Response lost after accepting the write");
+          },
+        },
+      },
+      dispose: async () => {},
+    });
+    const backfillArgs = ["--worker", "fixture-pool", "--plan", backfillPath];
+    await runHistoryOperator(
+      historyOperatorOptions([...backfillArgs, "--operation", "backfill"]),
+      account,
+      backfillConnect,
     );
     const applying = historyOperatorOptions([
-      "--worker",
-      "fixture-pool",
-      "--plan",
-      path,
+      ...backfillArgs,
+      "--operation",
+      "backfill",
       "--apply",
       "--go",
     ]);
     await assert.rejects(
-      runHistoryOperator({ ...applying, worker: "another-pool" }, account, connect),
+      runHistoryOperator({ ...applying, worker: "another-pool" }, account, backfillConnect),
     );
     await assert.rejects(
-      runHistoryOperator({ ...applying, operation: "backfill" }, account, connect),
+      runHistoryOperator({ ...applying, operation: "journal-activation" }, account, connect),
     );
     assert.equal(writes, 0);
-    await assert.rejects(runHistoryOperator(applying, account, connect));
+    await assert.rejects(runHistoryOperator(applying, account, backfillConnect));
     assert.equal(writes, 1);
-    assert.equal(JSON.parse(await readFile(`${path}.result.json`, "utf8")).status, "started");
-    await assert.rejects(runHistoryOperator(applying, account, connect));
+    assert.equal(
+      JSON.parse(await readFile(`${backfillPath}.result.json`, "utf8")).status,
+      "started",
+    );
+    await assert.rejects(runHistoryOperator(applying, account, backfillConnect));
     assert.equal(
       writes,
       1,
@@ -137,7 +173,7 @@ test("backfill has its own dry run and requires both apply and go", async () => 
   }
 });
 
-test("recorded v2 catalog previews the additive SQL and applies only its saved hashes", async () => {
+test("recorded v2 catalog previews the additive SQL without applying it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "history-v2-fixture-"));
   try {
     const path = join(directory, "plan.json");
@@ -180,44 +216,18 @@ test("recorded v2 catalog previews the additive SQL and applies only its saved h
     assert.equal(calls.length, 1);
     assert.equal(calls[0]!.method, "GET");
     assert.equal(new URL(calls[0]!.url).pathname, "/model-history/schema/catalog");
-    const applying = { ...options, apply: true };
-    await writeFile(
-      path,
-      JSON.stringify({
-        ...saved,
-        report: { ...saved.report, pendingDdl: ["DROP TABLE basalt_model_requests"] },
-      }),
+    await assert.rejects(
+      runHistoryOperator({ ...options, apply: true }, account, connect),
+      /applied only by a release/,
     );
-    await assert.rejects(runHistoryOperator(applying, account, connect), /statements changed/);
-    assert.equal(calls.length, 1);
-    await writeFile(
-      path,
-      JSON.stringify({
-        ...saved,
-        report: { ...saved.report, applied: true, pendingDdl: [], migrationMarkers: [] },
-      }),
-    );
-    await assert.rejects(runHistoryOperator(applying, account, connect), /plan changed/);
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1]!.method, "GET");
+    assert.equal(calls.length, 1, "a schema apply never reaches the Worker");
     await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
-    await writeFile(path, JSON.stringify(saved));
-    await runHistoryOperator(applying, account, connect);
-    assert.equal(calls.length, 4);
-    assert.equal(calls[2]!.method, "GET");
-    assert.equal(new URL(calls[3]!.url).pathname, "/model-history/schema");
-    assert.deepEqual(await calls[3]!.json(), {
-      schemaHash: v2Catalog.schemaHash,
-      catalogHash: v2Catalog.catalogHash,
-      go: true,
-    });
-    assert.equal(JSON.parse(await readFile(`${path}.result.json`, "utf8")).status, "complete");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("schema catalogs refuse unknown versions and manifests without saving an apply plan", async () => {
+test("schema catalogs refuse unknown versions and manifests without saving a plan", async () => {
   const directory = await mkdtemp(join(tmpdir(), "history-unknown-fixture-"));
   try {
     for (const change of [
@@ -238,30 +248,15 @@ test("schema catalogs refuse unknown versions and manifests without saving an ap
         },
         dispose: async () => {},
       });
-      await assert.rejects(runHistoryOperator(options, account, connect));
+      await assert.rejects(runHistoryOperator(options, account, connect), (error: unknown) => {
+        assert.ok(error instanceof HistoryOperatorFailure);
+        assert.equal(
+          error.field,
+          "catalog" in change ? "report.catalogHash" : `report.${Object.keys(change)[0]}`,
+        );
+        return true;
+      });
       await assert.rejects(readFile(path), { code: "ENOENT" });
-      await writeFile(
-        path,
-        JSON.stringify({
-          accountId: account,
-          worker: options.worker,
-          operation: "schema",
-          report: { ...v2Catalog, ...change },
-        }),
-      );
-      await assert.rejects(
-        runHistoryOperator({ ...options, apply: true }, account, async () => {
-          throw new Error("must reject before connecting");
-        }),
-        (error: unknown) => {
-          assert.ok(error instanceof HistoryOperatorFailure);
-          assert.equal(
-            error.field,
-            "catalog" in change ? "report.catalogHash" : `report.${Object.keys(change)[0]}`,
-          );
-          return true;
-        },
-      );
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -313,67 +308,7 @@ test("v2 previews include the base schema on fresh databases and no DDL after mi
   }
 });
 
-test("v1 refuses edited previews and stale catalog state before any apply request or receipt", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "history-v1-refusal-fixture-"));
-  try {
-    const path = join(directory, "plan.json");
-    const options = historyOperatorOptions(["--worker", "fixture-pool", "--plan", path]);
-    let current = Response.json(report);
-    const calls: Request[] = [];
-    const connect = async (_path: string) => ({
-      env: {
-        POOL_OPERATIONS: {
-          fetch: async (request: Request) => {
-            calls.push(request.clone());
-            assert.equal(request.method, "GET", "edited or stale plans must never reach POST");
-            return current.clone();
-          },
-        },
-      },
-      dispose: async () => {},
-    });
-    const preview = await runHistoryOperator(options, account, connect);
-    const saved = JSON.parse(await readFile(path, "utf8"));
-    const applying = { ...options, apply: true };
-    for (const change of [{ pendingDdl: [] }, { migrationMarkers: [] }]) {
-      await writeFile(path, JSON.stringify({ ...saved, report: { ...saved.report, ...change } }));
-      await assert.rejects(runHistoryOperator(applying, account, connect), /statements changed/);
-      assert.equal(calls.length, 1, "edited previews refuse before opening the binding");
-      await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
-    }
-    assert.ok(Array.isArray(preview.pendingDdl));
-    const appliedReport = {
-      ...saved.report,
-      applied: true,
-      pendingDdl: preview.pendingDdl.slice(0, 1),
-      migrationMarkers: [],
-    };
-    await writeFile(path, JSON.stringify({ ...saved, report: appliedReport }));
-    await assert.rejects(runHistoryOperator(applying, account, connect), /plan changed/);
-    assert.equal(calls.length, 2, "edited applied state refuses after refreshing the catalog");
-    await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
-    await writeFile(path, JSON.stringify(saved));
-    const catalog = {
-      relations: [
-        { name: "basalt_model_history_migrations", kind: "r" },
-        { name: "basalt_model_requests", kind: "p" },
-      ],
-    };
-    current = Response.json({
-      ...report,
-      applied: true,
-      catalog,
-      catalogHash: createHash("sha256").update(JSON.stringify(catalog)).digest("hex"),
-    });
-    await assert.rejects(runHistoryOperator(applying, account, connect), /plan changed/);
-    assert.equal(calls.length, 3, "a changed catalog refuses after refreshing and before POST");
-    await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("v7 remains applicable when an earlier migration marker and index are missing", async () => {
+test("a missing earlier marker and index plan as pending and the release's migrator applies them", async () => {
   const database = new PGlite();
   const db: HistoryDatabase = {
     query: async (text, values) => {
@@ -393,27 +328,12 @@ test("v7 remains applicable when an earlier migration marker and index are missi
   try {
     const path = join(directory, "plan.json");
     const args = ["--worker", "fixture-pool", "--plan", path];
-    let writes = 0;
     const connect = async () => ({
       env: {
         POOL_OPERATIONS: {
           fetch: async (request: Request) => {
-            if (request.method === "GET")
-              return Response.json({ status: "dry-run", ...(await modelHistorySchemaPlan(db)) });
-            writes++;
-            const approved = await modelHistorySchemaPlan(db);
-            assert.deepEqual(await request.json(), {
-              schemaHash: approved.schemaHash,
-              catalogHash: approved.catalogHash,
-              go: true,
-            });
-            await migrateModelHistory(db);
-            return Response.json({
-              status: "complete",
-              version: historySchemaVersion,
-              schemaHash: approved.schemaHash,
-              applied: true,
-            });
+            assert.equal(request.method, "GET", "the operator only plans history schema steps");
+            return Response.json({ status: "dry-run", ...(await modelHistorySchemaPlan(db)) });
           },
         },
       },
@@ -425,15 +345,9 @@ test("v7 remains applicable when an earlier migration marker and index are missi
     assert.equal(preview.applied, false);
     assert.deepEqual(preview.pendingMigrations, [historyAccountTimeSchemaVersion]);
     assert.deepEqual(preview.pendingDdl, historyAccountTimeStatements);
-    assert.equal(writes, 0);
 
-    const result = await runHistoryOperator(
-      historyOperatorOptions([...args, "--apply", "--go"]),
-      account,
-      connect,
-    );
-    assert.equal(result.status, "complete");
-    assert.equal(writes, 1);
+    // The release's database step runs the same migrator.
+    await migrateModelHistory(db);
     assert.equal(
       (
         await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
