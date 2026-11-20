@@ -6,7 +6,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
   /**
    * The default source provider: bundle `props.main` with rolldown.
 +diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
-+index 75ee7f1..4139161 100644
++index 75ee7f1..543fb4b 100644
 +--- a/src/Cloudflare/Workers/WorkerProvider.ts
 ++++ b/src/Cloudflare/Workers/WorkerProvider.ts
 +@@ -4947,6 +4947,7 @@ export const LiveWorkerProvider = () =>
@@ -60,10 +60,10 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++          // bound in two ways (hosted and from another Worker, or from two other
 ++          // Workers) has one entry for two ids, so nothing is promised then.
 ++          // Another Worker's name is an Output in a cycle member's bindings. For a
-++          // binding declared in `env` the resolved props carry it; a name that
-++          // cannot be known is never taken for this Worker's own and promises
-++          // nothing. An entry for a class that is no longer bound stays in the map
-++          // until the next record.
+++          // plain `env` entry the resolved props carry it; a name that cannot be
+++          // known is never taken for this Worker's own and promises nothing. An
+++          // entry for a class that is no longer bound stays in the map until the
+++          // next record.
 ++          const doBindings = (
 ++            bindings: unknown,
 ++            resolved?: Record<string, unknown>,
@@ -144,7 +144,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +           // `workerId` (interrupted precreates a provisional ""). Plan one
 +           // update even when nothing else changed, so reconcile re-records
 +diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
-+index 9f1bdc5..52e1481 100644
++index 9f1bdc5..0542e50 100644
 +--- a/lib/Cloudflare/Workers/WorkerProvider.js
 ++++ b/lib/Cloudflare/Workers/WorkerProvider.js
 +@@ -3624,7 +3624,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
@@ -192,10 +192,10 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 ++            // bound in two ways (hosted and from another Worker, or from two other
 ++            // Workers) has one entry for two ids, so nothing is promised then.
 ++            // Another Worker's name is an Output in a cycle member's bindings. For a
-++            // binding declared in `env` the resolved props carry it; a name that
-++            // cannot be known is never taken for this Worker's own and promises
-++            // nothing. An entry for a class that is no longer bound stays in the map
-++            // until the next record.
+++            // plain `env` entry the resolved props carry it; a name that cannot be
+++            // known is never taken for this Worker's own and promises nothing. An
+++            // entry for a class that is no longer bound stays in the map until the
+++            // next record.
 ++            const doBindings = (bindings, resolved) => (Array.isArray(bindings) ? bindings : [])
 ++                .flatMap((b) => b.data.bindings ?? [])
 ++                .flatMap((binding) => {
