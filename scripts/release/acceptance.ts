@@ -1,4 +1,3 @@
-import { Data } from "effect";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 
 /**
@@ -24,13 +23,6 @@ export async function servingBoot(apiKey: string, client = new PoolAcceptanceCli
 
 /** Recorded before the apply of a release that declares a root restart, when the pool did not answer. */
 export const NOT_SERVING = "not-serving";
-
-export class RootRestartFailed extends Data.TaggedError("RootRestartFailed")<{
-  readonly check: "root-restart";
-  readonly why: string;
-  readonly fix: string;
-  readonly exit: string;
-}> {}
 
 /** What the controller's signed read-only `inspect` says about the active runtime and its recovery. */
 export function recoveryState(result: unknown) {
@@ -64,11 +56,33 @@ export function recoveryState(result: unknown) {
   };
 }
 
+/** What the bounded wait for the controller's recovery found. */
+export type RecoveryVerdict =
+  | {
+      readonly ready: true;
+      readonly boot: string;
+      readonly waitedMs: number;
+      readonly reads: number;
+    }
+  | {
+      readonly ready: false;
+      /** The new boot the controller selected at its last answer, when it selected one. */
+      readonly boot?: string;
+      /** Why recovery did not report ready: its needs-a-person code, or the bound. */
+      readonly reason: string;
+      /** The last read, by field names only. */
+      readonly last: string;
+      readonly waitedMs: number;
+      readonly reads: number;
+    };
+
 /**
  * A healing release: wait, bounded, until the controller's recovery reports `ready` on a boot other
  * than the stuck one. `/v1/models` is no signal: it answers while model calls are still refused,
  * until a membership pass renews the pool's policy. Ready is all three of: a new active boot, no
- * `recovery.restartedAt`, no `recovery.needsPerson`. A recovery that needs a person fails at once.
+ * `recovery.restartedAt`, no `recovery.needsPerson`. A new boot whose recovery needs a person ends
+ * the wait at once; the model calls then say whether the pool serves. On the stuck boot it does not:
+ * that can be the state the release came to heal.
  */
 export async function awaitRecoveryReady(options: {
   readonly inspect: () => Promise<unknown>;
@@ -78,7 +92,7 @@ export async function awaitRecoveryReady(options: {
   readonly intervalMs?: number;
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
-}): Promise<{ readonly boot: string; readonly waitedMs: number; readonly reads: number }> {
+}): Promise<RecoveryVerdict> {
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ??
@@ -87,41 +101,56 @@ export async function awaitRecoveryReady(options: {
   const started = now();
   let last = "no read";
   let reads = 0;
+  let selected: string | undefined;
+  const unfinished = (reason: string) => ({
+    ready: false as const,
+    ...(selected ? { boot: selected } : {}),
+    reason,
+    last,
+    waitedMs: now() - started,
+    reads,
+  });
   while (now() - started <= options.withinMs) {
     reads++;
     try {
       const state = recoveryState(await options.inspect());
-      if (state.needsPerson)
-        throw new RootRestartFailed({
-          check: "root-restart",
-          why: `The controller's recovery needs a person (${state.needsPerson}); it will not finish by itself.`,
-          fix: "Read the controller's recovery state and decide by hand; do not release over it again.",
-          exit: "needs a person",
-        });
-      if (state.bootId && state.bootId !== options.before && !state.restarting)
-        return { boot: state.bootId, waitedMs: now() - started, reads };
+      selected = state.bootId && state.bootId !== options.before ? state.bootId : undefined;
       last = state.waitingForStreams
         ? "waiting for in-flight streams to stand still (up to 5 min)"
         : !state.bootId
           ? "no active boot"
-          : state.bootId === options.before
+          : !selected
             ? "still the stuck boot"
             : "a new boot, recovery not ready";
       if (state.fields.length) last += `; recovery fields: ${state.fields.join(", ")}`;
+      if (selected && state.needsPerson) return unfinished(`needs a person (${state.needsPerson})`);
+      if (selected && !state.restarting)
+        return { ready: true, boot: selected, waitedMs: now() - started, reads };
     } catch (error) {
-      if (error instanceof RootRestartFailed) throw error;
       // A refusal or a dropped read while the runtime restarts; messages can name hosts.
       last = `no answer (${error instanceof Error ? ((error as { reason?: string }).reason ?? error.name) : "unknown"})`;
     }
     await sleep(interval);
   }
-  throw new RootRestartFailed({
-    check: "root-restart",
-    why: `The controller's recovery did not report ready on a new boot within ${Math.round(options.withinMs / 1000)} s of the apply; last read: ${last}.`,
-    fix: "Read the controller's recovery state before anything else; do not release over it again until it reports ready.",
-    exit: `not ready after ${reads} reads`,
-  });
+  return unfinished(`not ready within ${Math.round(options.withinMs / 1000)} s of the apply`);
 }
+
+/**
+ * A healing release ends in one of three outcomes. Healed: recovery ready on a new boot, and every
+ * model call served. Serving, needs a person: a new boot is selected and every model call served,
+ * but recovery needs a person or did not report ready within the bound; nothing is undone, and a
+ * person looks at it with the pool serving. Not serving: anything else.
+ */
+export type HealingOutcome = "healed" | "serving-needs-person" | "not-serving";
+export const healingOutcome = (
+  verdict: RecoveryVerdict,
+  calls: { readonly passed: boolean } | undefined,
+): HealingOutcome =>
+  !verdict.boot || !calls?.passed
+    ? "not-serving"
+    : verdict.ready
+      ? "healed"
+      : "serving-needs-person";
 
 export interface AcceptanceResult {
   readonly passed: boolean;
