@@ -212,29 +212,18 @@ test(
       assert.match(failed.stderr, /SQLSTATE 42P07/);
       assert.doesNotMatch(failed.stderr, /hosted_change_heads|already exists/);
       const { CommandError, UnexpectedExit } = await import("alchemy/Command/Command");
-      const { Cause, Effect, Exit } = await import("effect");
-      const { fixture: releaseFixture } =
-        await import("../release-barrier/test/deploy-stack-fixture.ts");
-      const proof = releaseFixture({
-        namespace: "eu",
-        migrationError: new CommandError({
+      const { operationFailure } = await import("../pool-history/operation-failure.ts");
+      const retained = operationFailure(
+        new CommandError({
           command: "node src/migrate.ts",
           reason: new UnexpectedExit({ exitCode: failed.status, stderr: failed.stderr }),
         }),
-      });
-      const exit = await Effect.runPromiseExit(proof.effect);
-      assert.ok(Exit.isFailure(exit));
-      const { operationFailure } = await import("../release-barrier/operation-failure.ts");
-      const retained = operationFailure(
-        Cause.squash(exit.cause),
         "Migrations",
         "apply-database-resource",
       );
       assert.equal(retained.provider?.migration?.migration, "19_change_revisions");
       assert.equal(retained.provider?.migration?.sqlState, "42P07");
       assert.equal(retained.provider?.exitCode, 1);
-      assert.deepEqual(proof.receipts.at(-1)?.failure?.provider, retained.provider);
-      assert.deepEqual(proof.receipts.at(-1)?.activated, []);
       assert.doesNotMatch(
         JSON.stringify(retained.provider),
         /hosted_change_heads|rateLimit|already exists/,

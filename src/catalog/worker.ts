@@ -58,6 +58,7 @@ export const carriedSources: Readonly<Record<string, { package: string }>> = {
   clerk: clerkSource,
   spotify: spotifySource,
   exa: exaSource,
+  github: githubSource,
 };
 const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
@@ -105,11 +106,6 @@ export async function handleCatalog(
   if (carried !== undefined && Object.hasOwn(carriedSources, carried))
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(carriedSources[carried])),
-      { headers },
-    );
-  if (relative === "apps/github.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(githubSource)),
       { headers },
     );
   const added = [...additions, ...retiredSources(new URL(request.url).origin)].find(
