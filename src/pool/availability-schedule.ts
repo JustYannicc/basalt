@@ -4,6 +4,10 @@ import { awaitProbe, type ProbeResult } from "./availability.ts";
 import { validProbeTarget } from "./availability-config.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { notifyPercentageFailure } from "./reliability-notifications.ts";
+import {
+  reliabilityFailure,
+  reliabilitySessionFailed,
+} from "./model-history/reliability-read-failure.ts";
 
 export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
@@ -25,7 +29,21 @@ export async function runAvailabilityProbe(
           ok: false,
           failures: [{ guard: "runtime", reason: "unavailable" }],
         })),
-        reliability ? awaitProbe(() => reliability(target), signal).catch(() => null) : undefined,
+        reliability
+          ? awaitProbe(() => reliability(target), signal).catch((error: unknown) => {
+              // The read's own session already logged its statement and session failures.
+              const logged =
+                !signal.aborted &&
+                error instanceof Error &&
+                error.message === reliabilitySessionFailed;
+              if (!logged)
+                console.error("POOL_REQUEST_RELIABILITY_READ_FAILED", {
+                  step: "session",
+                  ...(signal.aborted ? { failure: "probe_budget" } : reliabilityFailure(error)),
+                });
+              return null;
+            })
+          : undefined,
       ]);
       result = { ...availability, failures: [...availability.failures] };
       if (measured) result.reliability = measured;
