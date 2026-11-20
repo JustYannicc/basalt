@@ -95,5 +95,7 @@ export const rootContainer = Effect.gen(function* () {
         ),
     /** The same identity, ordered after the application settles, for readiness and receipts. */
     imageInput: application.hash.pipe(Output.map((hash) => pin?.input ?? hash?.image ?? "")),
+    /** The pinned build input, known before apply; absent when the root builds from the context. */
+    pinnedInput: pin?.input,
   };
 });

@@ -54,6 +54,8 @@ export const PlanPolicy = Schema.Struct({
      * pool's own restart then refuses for good.
      */
     imageRelease: Schema.optional(Schema.Literal(true)),
+    /** The pin's build input, supplied by the caller with the image: what the root really runs. */
+    input: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u))),
   }),
   poolWorker: exactFqn,
   artifactsCredentials: exactFqn,
@@ -595,6 +597,27 @@ export const checkPlan = (
         node.bindings.every((binding) => binding.action === "noop")
       );
     };
+    // Readiness after the upload refuses a root whose recorded input differs from what the pool
+    // Worker expects. A pinned root runs the pin's input, so both identities must name it.
+    const pinnedInput = policy.poolContainer.input;
+    const poolWorker = nodes.find((candidate) => candidate.resource.FQN === policy.poolWorker);
+    if (pinnedInput !== undefined && poolWorker) {
+      const declared = record(poolWorker.resource.Props) ? poolWorker.resource.Props : {};
+      const env = record(declared.env) ? declared.env : {};
+      const differ = ["POOL_IMAGE_HASH", "POOL_DESIRED_IMAGE_INPUT"].filter(
+        (key) => env[key] !== pinnedInput,
+      );
+      if (differ.length)
+        violations.push({
+          fqn: poolWorker.resource.FQN,
+          type: poolWorker.resource.Type,
+          action: poolWorker.action,
+          rule: "pool-worker-image-input-not-pinned",
+          change: differ.map((key) => `env.${key}: differs from the root pin's input`),
+          why: "The pool Worker's readiness compares the root's recorded image input with these. The pinned root runs the pin's input, so another value stops the apply after the Worker is uploaded.",
+          fix: "Declare POOL_IMAGE_HASH and POOL_DESIRED_IMAGE_INPUT from the root pin's input.",
+        });
+    }
     // What a code-only allowance does not cover on a row: a binding that changes, or a property
     // that differs other than inside a reference both sides hold.
     const beyondCode = (change: PlanChange, references: ReadonlyArray<string>) => {
