@@ -89,8 +89,8 @@ jobs:
           PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
           PREVIEW_SMOKE_EMAIL: ${{ secrets.PREVIEW_SMOKE_EMAIL }}
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
-          # Lane 2's root pin (production's image by digest); a secret so the whole string is masked.
-          REHEARSAL_ROOT_PIN_2: ${{ secrets.REHEARSAL_ROOT_PIN_2 }}
+          # Lane 2's root image by digest, without the account; the job adds CLOUDFLARE_ACCOUNT_ID.
+          REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
       - name: On failure, print the kept output (redacted)
         if: failure() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts show-output "$STAGE_LABEL"
@@ -103,7 +103,7 @@ jobs:
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
-          REHEARSAL_ROOT_PIN_2: ${{ secrets.REHEARSAL_ROOT_PIN_2 }}
+          REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
       - name: Seal the run's full output
         if: always() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts seal-output "$STAGE_LABEL" "$RUNNER_TEMP/stage-output.enc"
