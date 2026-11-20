@@ -45,7 +45,7 @@ export function reliabilityFailure(error: unknown): {
       return { failure: "history_disabled" };
     if (error.message === "Model history database is unavailable")
       return { failure: "database_unavailable" };
-    // The session rethrows every timeout, of any kind, as this one message.
+    // A session without the history timeout mode rethrows every timeout as this one message.
     if (error.message === "Model history database deadline exceeded")
       return { failure: "history_deadline" };
   }
