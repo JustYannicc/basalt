@@ -57,8 +57,17 @@ export class OutputTail {
 }
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const rootUrl = pathToFileURL(root).href;
-const fromRoot = (text: string) => text.split(rootUrl).join("").split(root).join("");
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+// A path or `file://` URL that starts at the root, not one that only contains its text. It runs
+// before credential values go: `PWD` names the root and would otherwise blank it first.
+const inRoot =
+  root === "/"
+    ? undefined
+    : new RegExp(
+        `(?<![\\w+.-])${escaped(pathToFileURL(root).href)}|(?<![\\w./-])${escaped(root)}`,
+        "gu",
+      );
+const fromRoot = (text: string) => (inRoot ? text.replace(inRoot, "") : text);
 
 const stripAnsi = (text: string) =>
   text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
@@ -169,7 +178,7 @@ function bounded(text: string): string {
 function scrub(text: string, environment: NodeJS.ProcessEnv, kind: Text, limit: number): string {
   // Whole values first: a cut could leave half of one behind.
   // Any other `file://` URL is a machine's path and goes with the rest.
-  let result = bounded(fromRoot(withoutEnvironmentValues(stripAnsi(text), environment)))
+  let result = bounded(withoutEnvironmentValues(fromRoot(stripAnsi(text)), environment))
     .replace(/[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'`<>]+/giu, "[url]")
     // The same without a scheme; a comment's `// ` is followed by a space.
     .replace(/(?<![:/\w])\/\/[^\s"'`<>/][^\s"'`<>]*/gu, "[url]");
@@ -226,7 +235,7 @@ export const publicGuidance = (
  */
 export const publicLine = (text: string, environment: NodeJS.ProcessEnv = process.env): string =>
   scrub(
-    withoutEnvironmentValues(stripAnsi(text), environment)
+    withoutEnvironmentValues(fromRoot(stripAnsi(text)), environment)
       // A shell's line continuation is no part of the value that follows it.
       .replace(/\\\r?\n/gu, " ")
       .replace(/\s+/gu, " ")
@@ -242,7 +251,7 @@ export function publicTail(
   environment: NodeJS.ProcessEnv = process.env,
   lines = tailLines,
 ): string {
-  return withoutEnvironmentValues(stripAnsi(output), environment)
+  return withoutEnvironmentValues(fromRoot(stripAnsi(output)), environment)
     .trimEnd()
     .split("\n")
     .slice(-lines)
