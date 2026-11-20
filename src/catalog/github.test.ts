@@ -44,6 +44,7 @@ type ServedRun = {
   results: Record<string, unknown>;
   oversized: { ok: boolean; error: unknown; sent: number; total: number };
   unapproved: unknown;
+  unlisted: unknown;
   tools: string[];
   minting: string[];
 };
@@ -136,7 +137,6 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
     "$.GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}.secret",
     "$.POST /repos/{owner}/{repo}/actions/runners/registration-token.token",
     "$.POST /applications/{client_id}/token.token",
-    "$.PATCH /applications/{client_id}/token.token",
   ]);
   // GitHub's MCP server answering `get_file_contents` for a private file too large to show, whose
   // link carries a token, and for a private directory, whose JSON listing gives each file's
@@ -150,18 +150,25 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
   const listing = mcp["tools/call get_file_contents lib"];
   assert.deepEqual(credentialPaths(fileTooLarge), ["$.content[0].text"]);
   assert.deepEqual(credentialPaths(listing), ["$.content[0].text"]);
-  const { results, oversized, unapproved, tools, minting } = await servedRun();
+  const { results, oversized, unapproved, unlisted, tools, minting } = await servedRun();
   // Every tool the app lists as minting is a REST tool GitHub's description defines.
   assert.deepEqual(
     minting.filter((name) => !tools.includes(`api.${name}`)),
     [],
     "minting tools the app does not serve",
   );
-  // Checking a token and resetting it answer with the same shape; only the reset mints one.
   assert.deepEqual(
     credentialPaths(results),
-    ["$.api.actions.createRegistrationTokenForRepo.token", "$.api.apps.resetToken.token"],
+    ["$.api.actions.createRegistrationTokenForRepo.token"],
     "only the tools that mint a credential return one",
+  );
+  // GitHub's documented answer to checking a token has the field a minting tool returns. The app
+  // leaves that operation out, so the filter itself is given the answer as the result of a tool
+  // it does not list as minting: the token is not repeated back.
+  assert.deepEqual(
+    unlisted,
+    omit(recorded["POST /applications/{client_id}/token"], "token"),
+    "a tool that is not listed as minting returns no minted field",
   );
   // Everything else GitHub sent arrives unchanged.
   const without = (body: unknown) => JSON.parse(JSON.stringify(body), dropTemporary);
@@ -182,8 +189,6 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
     ),
     "api.actions.createRegistrationTokenForRepo":
       recorded["POST /repos/{owner}/{repo}/actions/runners/registration-token"],
-    "api.apps.checkToken": omit(recorded["POST /applications/{client_id}/token"], "token"),
-    "api.apps.resetToken": recorded["PATCH /applications/{client_id}/token"],
     "mcp.get_file_contents large-file.bin": JSON.parse(
       JSON.stringify(fileTooLarge).replaceAll("?token=synthetic-raw-content-token", ""),
     ),
