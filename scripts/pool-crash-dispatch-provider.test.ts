@@ -21,7 +21,7 @@ import { resolvedApplication } from "./pool-fleet/test/cloudflare-shapes.ts";
 const controllerCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 const reads = "provider observation: reads";
 const closedLine =
-  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_refused|reply_unreadable|outcome_unknown|target_unavailable)\))$/u;
+  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|outcome_unknown|target_unavailable)\))$/u;
 // Distinct from every other identity in the run, so any appearance in the output came from this read.
 const pins = {
   accountId,
@@ -151,7 +151,7 @@ test("a bound provider secret reads, end to end through the controller's handler
       { ...run.deps, readTarget: async () => target },
     );
     assert.equal(result.providerObservation, reads);
-    assert.ok(logLine(result).endsWith(`\n${reads}\n`));
+    assert.ok(logLine(result).includes(`\n${reads}\n`));
     // (b) The Worker side: one GET of the root application with its own binding, no instance
     // list, and the controller's storage exactly as before.
     assert.deepEqual(lane.providerRequests, [
@@ -207,7 +207,9 @@ test("(a) every outcome publishes one closed line and nothing else from the read
       "provider_fetch_failed",
       answering(() => refusal(new ProviderObservationRefused("provider_fetch_failed"))),
     ],
-    ["controller_refused", answering(() => refusal(new SlotRefused("identity")))],
+    // The handoff refuses other controller code, or a command it cannot decode, as identity.
+    ["controller_identity", answering(() => refusal(new SlotRefused("identity")))],
+    ["controller_refused", answering(() => refusal(new SlotRefused("selection")))],
     // A 409 that claims a provider cause in its body but lacks the header is not the Worker's cause.
     [
       "controller_refused",
@@ -239,7 +241,7 @@ test("(a) every outcome publishes one closed line and nothing else from the read
     ["target_unavailable", undefined],
   ];
   const baseline = await runCrashDispatch(input(), world(undefined, async () => ({})).deps);
-  const { providerObservation: _baseline, ...unchanged } = baseline;
+  const { providerObservation: _baseline, restartObservation: _none, ...unchanged } = baseline;
   for (const [cause, observe] of cases) {
     const run = world(observe ? pins : undefined, observe ?? (async () => ({})));
     const result = await runCrashDispatch(input(), run.deps);
@@ -248,12 +250,12 @@ test("(a) every outcome publishes one closed line and nothing else from the read
     assert.match(result.providerObservation ?? "", closedLine);
     assert.equal(run.sent.includes("provider-observe"), observe !== undefined, cause);
     // The rest of the result is exactly what the observe published before this read existed.
-    const { providerObservation: _line, ...rest } = result;
+    const { providerObservation: _line, restartObservation: _restart, ...rest } = result;
     assert.deepEqual({ ...rest, requestId: baseline.requestId }, unchanged, cause);
     const published = JSON.stringify(result) + logLine(result);
     for (const sentinel of sentinels)
       assert.ok(!published.includes(sentinel), `${cause} ${sentinel}`);
-    assert.ok(logLine(result).endsWith(`\n${line}\n`), cause);
+    assert.ok(logLine(result).includes(`\n${line}\n`), cause);
   }
 });
 
@@ -335,4 +337,148 @@ test("(b) observe signs only read commands, and the provider read carries exactl
     } as never),
   );
   assert.equal(commands.length, before);
+});
+
+const restartLine =
+  /^restart read: (passes|refuses \(recorded_pins_differ\)|does not read \([a-z_]+\)|not checked \((no_selected_runtime|selection_unreadable|selected_runtime_not_root|target_unavailable)\))$/u;
+
+/** An observe whose inspect reports this selection; every other read is the fixed world's. */
+function selected(
+  provider: typeof pins | undefined,
+  observe: DispatchDependencies["observe"],
+  selection: unknown,
+) {
+  const run = world(provider, observe);
+  const fixed = run.deps.observe;
+  run.deps.observe = async (action, ...rest) =>
+    action === "inspect"
+      ? (run.sent.push(action), { result: { selection } })
+      : fixed(action, ...rest);
+  return run;
+}
+
+test("(c) the restart read sends the selection's recorded pins, and names drift apart from the token", async () => {
+  const lane = await harness();
+  try {
+    const target = await readReleaseTarget(
+      {
+        CLOUDFLARE_ACCOUNT_ID: accountId,
+        CLOUDFLARE_API_TOKEN: "fixture-token",
+        POOL_DEPLOYMENT_KEY: lane.signingKey,
+      },
+      { origin: lane.cloudflareOrigin, connect: lane.connect, code: lane.code },
+    );
+    const { bootId: _boot, ...recorded } = primary;
+    const before = structuredClone([...lane.storage.values]);
+    const observe = async (selection: unknown) => {
+      const requests = lane.providerRequests.length;
+      const run = selected(target.provider, observeSender(lane.connect), selection);
+      const result = await runCrashDispatch(
+        { ...input(lane.signingKey), packet: JSON.stringify({ controllerCode: lane.code }) },
+        { ...run.deps, readTarget: async () => target },
+      );
+      assert.match(result.restartObservation ?? "", restartLine);
+      assert.ok(logLine(result).endsWith(`\n${result.restartObservation}\n`));
+      return {
+        token: result.providerObservation,
+        restart: result.restartObservation,
+        reads: lane.providerRequests.length - requests,
+      };
+    };
+    const active = (slot: object) => ({ active: { target: slot } });
+    // The recorded pins are the live ones: the Worker reads them twice with its own binding.
+    assert.deepEqual(await observe(active(recorded)), {
+      token: reads,
+      restart: "restart read: passes",
+      reads: 2,
+    });
+    // The runtime was admitted against another version or image: the Worker reads the application
+    // and refuses the comparison, so the token reads, the restart would not, and the line says which.
+    for (const drift of [{ applicationVersion: "56" }, { imageDigest: `sha256:${"5".repeat(64)}` }])
+      assert.deepEqual(await observe(active({ ...recorded, ...drift })), {
+        token: reads,
+        restart: "restart read: refuses (recorded_pins_differ)",
+        reads: 2,
+      });
+    // Nothing selected, a selection this read cannot decode, or one on another application: no
+    // second read is sent, and the line says it was not checked.
+    for (const [selection, cause] of [
+      [null, "no_selected_runtime"],
+      [{ active: {} }, "selection_unreadable"],
+      [active({ ...recorded, applicationId: "app-blue" }), "selected_runtime_not_root"],
+    ] as const)
+      assert.deepEqual(
+        await observe(selection),
+        { token: reads, restart: `restart read: not checked (${cause})`, reads: 1 },
+        cause,
+      );
+    assert.deepEqual([...lane.storage.values], before);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("(c) the restart read's command is the live pins with only the recorded version and image", async () => {
+  const targets: unknown[] = [];
+  const recorded = {
+    format: "pool-runtime-slot-v1",
+    controllerId: "1".repeat(64),
+    instanceId: "1".repeat(64),
+    slotId: "legacy",
+    applicationId: pins.applicationId,
+    applicationVersion: "990",
+    imageDigest: `sha256:${"6".repeat(64)}`,
+    imageInput: "i",
+  };
+  const run = selected(
+    pins,
+    async (_action, _code, _target, _key, subject) => {
+      targets.push(subject);
+      return { result: observation(subject as Partial<typeof pins>) };
+    },
+    { active: { target: recorded } },
+  );
+  const result = await runCrashDispatch(input(), run.deps);
+  assert.equal(result.restartObservation, "restart read: passes");
+  assert.deepEqual(targets, [
+    pins,
+    { ...pins, applicationVersion: "990", imageDigest: recorded.imageDigest },
+  ]);
+  // The log carries the two closed lines and no pin.
+  const published = logLine(result);
+  assert.ok(published.endsWith(`\n${reads}\nrestart read: passes\n`));
+  for (const sentinel of [...sentinels, recorded.imageDigest])
+    assert.ok(!published.includes(sentinel), sentinel);
+});
+
+test("(d) a packet for other controller code reads as the Worker refusing its identity, not the token", async () => {
+  const lane = await harness();
+  try {
+    const target = await readReleaseTarget(
+      {
+        CLOUDFLARE_ACCOUNT_ID: accountId,
+        CLOUDFLARE_API_TOKEN: "fixture-token",
+        POOL_DEPLOYMENT_KEY: lane.signingKey,
+      },
+      { origin: lane.cloudflareOrigin, connect: lane.connect, code: lane.code },
+    );
+    const { bootId: _boot, ...recorded } = primary;
+    const run = selected(target.provider, observeSender(lane.connect), {
+      active: { target: recorded },
+    });
+    const stale = { ...lane.code, candidate: "e".repeat(40) };
+    const result = await runCrashDispatch(
+      { ...input(lane.signingKey), packet: JSON.stringify({ controllerCode: stale }) },
+      { ...run.deps, readTarget: async () => target },
+    );
+    assert.equal(
+      result.providerObservation,
+      "provider observation: does not read (controller_identity)",
+    );
+    assert.equal(result.restartObservation, "restart read: does not read (controller_identity)");
+    // The Worker refused before any provider read.
+    assert.deepEqual(lane.providerRequests, []);
+  } finally {
+    await lane.close();
+  }
 });

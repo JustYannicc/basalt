@@ -14,6 +14,7 @@ import {
   SlotTarget,
 } from "../src/pool/runtime-slots/contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
+import { runtimeFailureCode } from "../src/pool/runtime-route-diagnostic.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { runCrashOperator } from "./pool-crash-operator.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "./pool-operations.ts";
@@ -196,6 +197,7 @@ function membershipState(inspected: unknown, observedAt: number) {
 const providerCauses = [
   "provider_observation_refused",
   "provider_fetch_failed",
+  "controller_identity",
   "controller_refused",
   "reply_unreadable",
   "outcome_unknown",
@@ -208,29 +210,53 @@ const providerLine = (cause?: ProviderCause) =>
     : ("provider observation: reads" as const);
 type ProviderLine = ReturnType<typeof providerLine>;
 const providerLines = new Set<string>([providerLine(), ...providerCauses.map(providerLine)]);
+// The handoff's refusal for a command naming other controller code, or one it cannot decode.
+const identityRefusal = runtimeFailureCode({
+  runtimeStep: "endpoint_route",
+  runtimeReason: "slot_identity",
+});
+
+const uncheckedRestart = [
+  "no_selected_runtime",
+  "selection_unreadable",
+  "selected_runtime_not_root",
+  "target_unavailable",
+] as const;
+type RestartLine =
+  | "restart read: passes"
+  | "restart read: refuses (recorded_pins_differ)"
+  | `restart read: does not read (${ProviderCause})`
+  | `restart read: not checked (${(typeof uncheckedRestart)[number]})`;
+const restartLines = new Set<string>([
+  "restart read: passes",
+  "restart read: refuses (recorded_pins_differ)",
+  ...providerCauses.map((cause) => `restart read: does not read (${cause})`),
+  ...uncheckedRestart.map((cause) => `restart read: not checked (${cause})`),
+]);
 
 /**
  * The Worker reads the root application with its own POOL_PROVIDER_OBSERVATION_TOKEN binding, as a
  * heal's restart does at admission and attestation, and compares it to these pins. The reply names
- * the account, application and digests, so only a closed line ever leaves this function.
+ * the account, application and digests, so only a closed cause ever leaves this function.
  */
-async function providerObservation(
-  target: ProviderObservationTarget | undefined,
+async function providerRead(
+  target: ProviderObservationTarget,
   send: (target: ProviderObservationTarget) => Promise<unknown>,
-): Promise<ProviderLine> {
-  if (!target) return providerLine("target_unavailable");
+): Promise<ProviderCause | undefined> {
   let reply: unknown;
   try {
     reply = await send(target);
   } catch (cause) {
     // The Worker's failure header outranks the body's reason, which a non-provider 409 also has.
-    return providerLine(
+    return (
       providerObservationCause(cause) ??
-        (cause instanceof ControllerRefused
-          ? "controller_refused"
-          : cause instanceof DispatchRefusal
-            ? "reply_unreadable"
-            : "outcome_unknown"),
+      (cause instanceof ControllerRefused
+        ? cause.reason === identityRefusal
+          ? "controller_identity"
+          : "controller_refused"
+        : cause instanceof DispatchRefusal
+          ? "reply_unreadable"
+          : "outcome_unknown")
     );
   }
   try {
@@ -241,10 +267,48 @@ async function providerObservation(
       target,
       Schema.decodeUnknownSync(ProviderObservationTarget)(proof),
     );
-    return providerLine();
+    return undefined;
   } catch {
-    return providerLine("reply_unreadable");
+    return "reply_unreadable";
   }
+}
+
+/** The token read: the live application's own pins, so a refusal speaks for the binding. */
+async function providerObservation(
+  target: ProviderObservationTarget | undefined,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<ProviderLine> {
+  return providerLine(target ? await providerRead(target, send) : "target_unavailable");
+}
+
+/**
+ * The restart's first read, after the stop, compares the live application with the pins recorded
+ * when the selected runtime was admitted. Admission makes the selection's target carry three of
+ * them exactly (application, version, image digest). No deployed reply carries the recorded
+ * namespace or configuration digest, so those two are the live ones: their drift shows only if it
+ * also moved the version. The Worker refuses a dead token and differing pins alike, so the local
+ * comparison names which one it was.
+ */
+async function restartObservation(
+  live: ProviderObservationTarget | undefined,
+  inspected: unknown,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<RestartLine> {
+  if (!live) return "restart read: not checked (target_unavailable)";
+  const selected = selectedTarget(inspected);
+  if (!selected) return "restart read: not checked (no_selected_runtime)";
+  if (!selected.ok) return "restart read: not checked (selection_unreadable)";
+  const { applicationId, applicationVersion, imageDigest } = selected.value;
+  // The heal restarts the root; a selection on another application is not what this reads.
+  if (applicationId !== live.applicationId)
+    return "restart read: not checked (selected_runtime_not_root)";
+  const cause = await providerRead({ ...live, applicationVersion, imageDigest }, send);
+  if (cause === undefined) return "restart read: passes";
+  const differs =
+    applicationVersion !== live.applicationVersion || imageDigest !== live.imageDigest;
+  return differs && cause === "provider_observation_refused"
+    ? "restart read: refuses (recorded_pins_differ)"
+    : `restart read: does not read (${cause})`;
 }
 
 const RootHealth = Schema.Struct({
@@ -393,6 +457,7 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   let phase = "input validation failed";
   const output: {
     providerObservation?: ProviderLine;
+    restartObservation?: RestartLine;
     observe?: unknown;
     diagnostic?: unknown;
     inspection?: unknown;
@@ -444,6 +509,10 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
         send("provider-observe", pins),
       );
       const inspected = await send("inspect");
+      // Never fatal either: whatever the selection reads, the line says why it was not checked.
+      output.restartObservation = await restartObservation(provider, inspected, (pins) =>
+        send("provider-observe", pins),
+      );
       if (inspected === null || typeof inspected !== "object")
         throw new DispatchRefusal("inspect reply has no result");
       const observedAt = deps.now();
@@ -666,6 +735,9 @@ export const logLine = (result: Awaited<ReturnType<typeof runCrashDispatch>>) =>
   `ok=${result.ok} forcedInspect=${result.forcedInspect}\n` +
   (result.providerObservation && providerLines.has(result.providerObservation)
     ? `${result.providerObservation}\n`
+    : "") +
+  (result.restartObservation && restartLines.has(result.restartObservation)
+    ? `${result.restartObservation}\n`
     : "");
 
 if (import.meta.main) {
