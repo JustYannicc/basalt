@@ -6,7 +6,7 @@ test("private operations cross the Node IPC boundary without changing bodies or 
   const platform = await nodePoolOperations(
     "synthetic-account",
     "synthetic-worker",
-    new URL("./release-barrier/test/node-operations-peer.mjs", import.meta.url),
+    new URL("./pool-tests/node-operations-peer.mjs", import.meta.url),
   );
   try {
     const health = await platform.env.POOL_OPERATIONS.fetch(
