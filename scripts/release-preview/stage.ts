@@ -445,6 +445,13 @@ export function overlayExtent(candidate: string) {
   };
 }
 
+/**
+ * The stage has no acceptance key, so the release's own accept can run its restart wait but never
+ * its model calls, and ends not-serving there whatever the pool does. The verdict is the stage's.
+ */
+const healVerdictBasis =
+  "the verdict is the signed inspect after the release: a new boot selected, the epoch moved, active-health 200 and no needs-a-person. The release's own accept is recorded beside it; on this stage it has no acceptance key, so its model calls cannot run and its not-serving line is expected, not this run's verdict";
+
 /** Said in every heal record, beside `overlay`: what production will not run, and what follows. */
 const healOverlayStatement = [
   "the candidate is the trial commit plus a stage-only overlay (`overlay`): production never runs that code, and a heal here proves the trial's mechanism with that overlay in place, not the exact release commit",
@@ -741,10 +748,22 @@ async function healRelease(
       if (bootSeenAt === undefined && witness.boot) bootSeenAt = at;
       if (committedAt === undefined && selection.boot && selection.boot !== pre.boot)
         committedAt = at;
-      if (health.status === 200) {
+      // Healed is all of: active-health 200 on a new boot, at a moved epoch (needs-a-person is
+      // read below and outranks it). A 200 on the stuck boot is recorded and the watch goes on.
+      const moved =
+        typeof selection.epoch === "number" &&
+        typeof pre.epoch === "number" &&
+        selection.epoch > pre.epoch;
+      if (health.status === 200 && selection.boot && selection.boot !== pre.boot && moved) {
         healed = state;
         break;
       }
+      if (health.status === 200 && result.healthyWithoutNewBoot === undefined)
+        result.healthyWithoutNewBoot = {
+          atSeconds: Math.round((at - started) / 1000),
+          sameBoot: selection.boot === pre.boot,
+          epochMoved: moved,
+        };
       // A new boot that never commits ends, after forcedRestartBudgetMs, in needs-a-person: red, named.
       if (timeline.length % 10 === 0) {
         const needs = await workerLogLines(
@@ -759,6 +778,22 @@ async function healRelease(
         }
       }
       await new Promise((done) => setTimeout(done, 2_000));
+    }
+    // The watch reads needs-a-person only every tenth sample; a heal is judged with one more read.
+    if (healed && !result.needsPerson) {
+      const needs = await workerLogLines(
+        subject,
+        source,
+        started,
+        "POOL_SELECTED_RECOVERY_NEEDS_PERSON",
+      ).catch(() => []);
+      const values =
+        (healed.recovery as { values?: Record<string, unknown> } | null | undefined)?.values ?? {};
+      const held = Object.keys(values).find(
+        (key) => /needs/iu.test(key) && values[key] !== null && values[key] !== undefined,
+      );
+      if (needs.length) result.needsPerson = needs;
+      else if (held) result.needsPerson = [{ inspect: held }];
     }
     result.secondsBootToCommit =
       bootSeenAt !== undefined && committedAt !== undefined
@@ -1146,7 +1181,13 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     serve: async () => undefined,
   });
   const started = Date.now();
-  const result: Record<string, unknown> = { mode, lane, stage };
+  const result: Record<string, unknown> = {
+    mode,
+    lane,
+    stage,
+    // First in every heal record: what the verdict rests on, and what it does not.
+    ...(mode === "heal" ? { verdictBasis: healVerdictBasis } : {}),
+  };
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
   const run = async () => {
