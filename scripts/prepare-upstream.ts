@@ -77,6 +77,7 @@ run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/va
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/owned-lint")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/startup-profiler")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-test-runtime")]);
 const modules = join(root, "node_modules");

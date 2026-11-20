@@ -1,0 +1,114 @@
+{
+  "basalt/no-direct-cloudflare-api": {
+    "src/pool/runtime-provider/read.ts": {
+      "count": 2,
+      "reason": "The live pool reads its own container applications at run time; Alchemy acts at deploy time only."
+    }
+  },
+  "basalt/no-strict-provider-decode": {
+    "scripts/pool-credential-bootstrap/contract.ts": {
+      "count": 3,
+      "reason": "Decodes Basalt's own bootstrap plan, packet and result."
+    },
+    "scripts/pool-credential-bootstrap/journal.ts": {
+      "count": 2,
+      "reason": "Decodes Basalt's own bootstrap journal."
+    },
+    "scripts/pool-crash-dispatch.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed crash dispatch inputs."
+    },
+    "scripts/pool-crash-operator.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed operator packet."
+    },
+    "scripts/runtime-recovery/automatic-entry.ts": {
+      "count": 2,
+      "reason": "Decodes Basalt's own recovery target and evidence files."
+    },
+    "scripts/runtime-recovery/automatic.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own recovery target."
+    },
+    "scripts/runtime-recovery/plan.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own recovery plan."
+    },
+    "scripts/scale-test/fleet/readiness-hold.ts": {
+      "count": 1,
+      "reason": "Decodes the pool Worker's own readiness reply, not a provider's."
+    },
+    "src/drive/import-manifest.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own import plan."
+    },
+    "src/drive/import-service.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own drive command."
+    },
+    "src/pool/automatic-recovery.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own recovery budget state."
+    },
+    "src/pool/home-peer-transport.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed peer source."
+    },
+    "src/pool/launch-ledger.ts": {
+      "count": 2,
+      "reason": "Decodes Basalt's own launch ledger rows."
+    },
+    "src/pool/runtime-crash-contract.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed crash command."
+    },
+    "src/pool/runtime-crash-owner.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed crash authorization."
+    },
+    "src/pool/runtime-fleet/configuration.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed fleet configuration."
+    },
+    "src/pool/runtime-fleet/peers.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own peer source."
+    },
+    "src/pool/runtime-slots/admission-proof.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own admission proof."
+    },
+    "src/pool/runtime-slots/adoption-observation.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own adoption observation."
+    },
+    "src/pool/runtime-slots/adoption-readback.ts": {
+      "count": 2,
+      "reason": "Decodes the pool controller's own reply, not a provider's."
+    },
+    "src/pool/runtime-slots/handoff-command.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed handoff command."
+    },
+    "src/pool/runtime-slots/http.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed envelope."
+    },
+    "src/pool/runtime-slots/transport.ts": {
+      "count": 2,
+      "reason": "Decodes Basalt's own signed envelopes."
+    },
+    "src/pool/stopped-approval.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed stop approval."
+    },
+    "src/pool/stopped-handler.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own signed envelope."
+    },
+    "src/pool/stopped-recovery.ts": {
+      "count": 1,
+      "reason": "Decodes Basalt's own stop receipt."
+    }
+  }
+}
