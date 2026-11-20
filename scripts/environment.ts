@@ -369,9 +369,20 @@ export function stageEnvironment(value: StageSubject, source = process.env): Pre
     "POOL_FLEET_BUILD",
     "POOL_FLEET_IMAGES",
     "POOL_ROOT_IMAGE",
+    // Already derived, when another step composed this env (below).
+    "POOL_REHEARSAL_OBSERVATION",
+    "POOL_REHEARSAL_OBSERVATION_TOKEN",
     ...requiredPreviewSecrets,
   ]) {
     if (source[name] !== undefined) deploy[name] = source[name];
+  }
+  // A rehearsal lane's operator-minted observation token, or its explicit "absent"; the stack
+  // refuses a rehearsal stage with neither (src/pool/fleet-observation.ts).
+  if (subject.kind === "rehearsal") {
+    const token = source[`REHEARSAL_OBSERVATION_TOKEN_${subject.number}`]?.trim();
+    const declared = source[`REHEARSAL_OBSERVATION_${subject.number}`]?.trim();
+    if (token) deploy.POOL_REHEARSAL_OBSERVATION_TOKEN = token;
+    if (declared) deploy.POOL_REHEARSAL_OBSERVATION = declared;
   }
 
   Object.assign(deploy, generated, {

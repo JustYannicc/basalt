@@ -385,14 +385,15 @@ test("POOL_FLEET_CLASSES=absent leaves both fleet classes out of PoolWorker and 
   );
 });
 
-test("a standing rehearsal stage binds its own observation token as a plain secret, never through the Secrets Store", async () => {
+test("a standing rehearsal stage binds its operator-minted token as a plain secret, never through the Secrets Store", async () => {
   for (const input of ["", JSON.stringify(images)]) {
-    const stack = await declarations(input, { stage: "test-rehearsal-2" });
-    // Its own token, by the stage's name and production's props; no Secrets Store is declared.
+    const stack = await declarations(input, {
+      stage: "test-rehearsal-2",
+      env: { POOL_REHEARSAL_OBSERVATION_TOKEN: "operator-minted" },
+    });
+    // The deploy credential cannot mint tokens: no token resource and no Secrets Store are declared.
     assert.ok(!("PoolObservationSecrets" in stack.resources));
-    const token = stack.resources.PoolProviderObservationToken!;
-    assert.deepEqual(token.Props, poolObservationTokenProps(accountId, "test-rehearsal-2"));
-    assert.notEqual(token.RemovalPolicy, "retain");
+    assert.ok(!("PoolProviderObservationToken" in stack.resources));
     const binding = stack.bindings.PoolWorker?.find(
       (candidate) => candidate.sid === "pool-provider-observation",
     );
@@ -400,6 +401,25 @@ test("a standing rehearsal stage binds its own observation token as a plain secr
     assert.deepEqual(Object.keys(data?.env ?? {}), ["POOL_PROVIDER_OBSERVATION_TOKEN"]);
     assert.equal(data?.bindings, undefined);
   }
+});
+
+test("a rehearsal stage without its token binds nothing only when it says absent, and refuses otherwise", async () => {
+  const absent = await declarations("", {
+    stage: "test-rehearsal-2",
+    env: { POOL_REHEARSAL_OBSERVATION: "absent" },
+  });
+  assert.ok(!("PoolProviderObservationToken" in absent.resources));
+  assert.equal(await observationBinding(absent), undefined);
+  for (const [env, why] of [
+    [{}, /needs its observation token/u],
+    [{ POOL_REHEARSAL_OBSERVATION_TOKEN: "  " }, /needs its observation token/u],
+    [{ POOL_REHEARSAL_OBSERVATION: "bound" }, /may only be absent/u],
+    [
+      { POOL_REHEARSAL_OBSERVATION_TOKEN: "operator-minted", POOL_REHEARSAL_OBSERVATION: "absent" },
+      /also declares it absent/u,
+    ],
+  ] as const)
+    await assert.rejects(declarations("", { stage: "test-rehearsal-2", env }), why);
 });
 
 test("the plain-secret path is exactly test-rehearsal-1 to -9", async () => {

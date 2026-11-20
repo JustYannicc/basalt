@@ -29,6 +29,15 @@ export function lifecycleEnvironment(
       ? [...requiredPreviewDeploySecrets, "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]
       : requiredPreviewCleanupSecrets),
   ];
+  // A rehearsal lane's observation token or its "absent", as the job names them per lane.
+  if (mode === "deploy")
+    names.push(
+      ...Object.keys(source).filter((name) =>
+        /^(?:REHEARSAL_OBSERVATION(?:_TOKEN)?_[1-9]|POOL_REHEARSAL_OBSERVATION(?:_TOKEN)?)$/u.test(
+          name,
+        ),
+      ),
+    );
   return Object.fromEntries(
     names.flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
   );

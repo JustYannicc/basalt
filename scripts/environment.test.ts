@@ -522,3 +522,35 @@ test("a disposable stage's deadline is epoch milliseconds, passed through only w
   for (const bad of ["1795030000", "17950300000000", "soon", "-1795030000000"])
     assert.throws(() => stageExpiry(bad), /epoch milliseconds/);
 });
+
+test("a rehearsal lane's observation token or its absent reaches the stack, through every env the stage composes", async () => {
+  const { lifecycleEnvironment } = await import("./release-preview/credentials.ts");
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  const lane = { kind: "rehearsal", number: 2 } as const;
+  const minted = { ...source, REHEARSAL_OBSERVATION_TOKEN_2: "operator-minted" };
+  for (const env of [minted, lifecycleEnvironment(minted, "deploy")]) {
+    const { deploy } = stageEnvironment(lane, env);
+    assert.equal(deploy.POOL_REHEARSAL_OBSERVATION_TOKEN, "operator-minted");
+    assert.equal(deploy.POOL_REHEARSAL_OBSERVATION, undefined);
+  }
+  const absent = {
+    ...source,
+    REHEARSAL_OBSERVATION_2: "absent",
+    REHEARSAL_OBSERVATION_TOKEN_2: "",
+  };
+  assert.equal(stageEnvironment(lane, absent).deploy.POOL_REHEARSAL_OBSERVATION, "absent");
+  assert.equal(stageEnvironment(lane, absent).deploy.POOL_REHEARSAL_OBSERVATION_TOKEN, undefined);
+  // Another lane's token is not this lane's, and a PR never gets one.
+  const other = { ...source, REHEARSAL_OBSERVATION_TOKEN_3: "lane-3" };
+  assert.equal(stageEnvironment(lane, other).deploy.POOL_REHEARSAL_OBSERVATION_TOKEN, undefined);
+  assert.equal(
+    stageEnvironment({ kind: "pr", number: 2 }, minted).deploy.POOL_REHEARSAL_OBSERVATION_TOKEN,
+    undefined,
+  );
+});

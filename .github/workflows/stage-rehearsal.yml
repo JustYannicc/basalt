@@ -92,6 +92,10 @@ jobs:
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
           # Lane 2's root image by digest, without the account; the job adds CLOUDFLARE_ACCOUNT_ID.
           REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
+          # Lane 2's observation token, minted by the operator for this stage only. Until it exists the
+          # lane says so; remove the absent line in the commit that follows the mint.
+          REHEARSAL_OBSERVATION_TOKEN_2: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_2 }}
+          REHEARSAL_OBSERVATION_2: absent
       - name: On failure, print the kept output (redacted)
         if: failure() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts show-output "$STAGE_LABEL"
