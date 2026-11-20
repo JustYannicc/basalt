@@ -287,6 +287,25 @@ test("a stack frame inside the checkout is printed from the repository root, in 
   assert.equal(publicTail(`git+${checkout.href}`, none), "[url]");
 });
 
+test("the preview zone and the operator's accounts never print, however short or cased", () => {
+  const environment = {
+    TEST_STAGE_DOMAIN: "b.io",
+    PLANETSCALE_ORGANIZATION: "acme",
+    CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+  };
+  for (const kind of kinds)
+    assert.equal(
+      kind("deployed app.pr-41.B.IO for acme in 0123456789abcdef0123456789abcdef", environment),
+      "deployed [host] for [account] in [account]",
+      kind.name,
+    );
+  // Only whole names: a longer word or host that merely contains one stays.
+  assert.equal(
+    publicTail("acme-corp and acmes at b.iox", environment),
+    "acme-corp and acmes at b.iox",
+  );
+});
+
 test("a line cannot issue a workflow command or span lines", () => {
   assert.equal(publicText("::error::spoofed", none), ": :error::spoofed");
   assert.equal(publicText("   ::stop-commands::token", none), "   : :stop-commands::token");

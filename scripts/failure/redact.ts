@@ -25,6 +25,10 @@ export const tailLines = 60;
 /** The rules run over a bounded line, so none of them can be made slow. */
 const inputLimit = 4096;
 const minimumEnvironmentValue = 8;
+// Not credentials, but they name the operator's zone and accounts, which a public log must not:
+// every host under the zone goes whole, and an account by its value at any length.
+const zoneName = /^TEST_STAGE_DOMAIN$/u;
+const accountName = /^(?:CLOUDFLARE_ACCOUNT_ID|PLANETSCALE_ORGANIZATION)$/u;
 /** An environment variable whose value is removed wherever it appears. */
 export const credentialName =
   /SECRET|TOKEN|KEY|PASS|PWD|AUTH|COOKIE|DSN|CLIENT_ID|DATABASE_URL|CREDENTIAL/i;
@@ -91,6 +95,17 @@ function withoutEnvironmentValues(text: string, environment: NodeJS.ProcessEnv):
     .filter((value) => value.length >= minimumEnvironmentValue)
     .sort((left, right) => right.length - left.length);
   for (const value of new Set(values)) text = text.split(value).join("[redacted]");
+  for (const [name, value] of Object.entries(environment)) {
+    const plain = typeof value === "string" ? value.trim().replace(/^\.+|\.+$/gu, "") : "";
+    if (!plain) continue;
+    if (zoneName.test(name))
+      text = text.replace(
+        new RegExp(`(?<![\\w.-])(?:[\\w-]+\\.)*${escaped(plain)}(?![\\w-])`, "giu"),
+        "[host]",
+      );
+    else if (accountName.test(name))
+      text = text.replace(new RegExp(`(?<![\\w-])${escaped(plain)}(?![\\w-])`, "giu"), "[account]");
+  }
   return text;
 }
 

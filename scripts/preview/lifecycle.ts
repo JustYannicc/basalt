@@ -356,9 +356,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     await main();
     console.log("Preview lifecycle step passed");
   } catch (error) {
+    const [mode] = process.argv.slice(2);
+    const step = ["plan", "deploy", "destroy", "verify"].includes(mode ?? "") ? mode : "lifecycle";
     // To the error output, and to the file a caller that keeps this output private publishes.
     await reportFailure(error, {
-      title: "Preview lifecycle step failed",
+      title: `Preview ${step} step failed`,
       summaryPath: process.env.PREVIEW_FAILURE_REPORT,
     });
     console.error("Remote provider absence is not established");

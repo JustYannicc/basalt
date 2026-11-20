@@ -24,19 +24,16 @@ test("a failed lifecycle step tells the log why it stopped", (context) => {
     },
   );
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /^Preview lifecycle step failed: Error: /);
+  assert.match(result.stderr, /^Preview plan step failed: Error: /);
   assert.match(
     result.stderr,
     /\n {2}why: It carries no cause, so its message is all that is known\./,
   );
-  assert.match(
-    result.stderr,
-    /\n::error title=Preview lifecycle step failed::Preview lifecycle step failed/,
-  );
+  assert.match(result.stderr, /\n::error title=Preview plan step failed::Preview plan step failed/);
   assert.match(result.stderr, /\nRemote provider absence is not established\n$/);
   // The same report, for a caller that keeps this output private to publish.
   const written = readFileSync(report, "utf8");
-  assert.match(written, /^## Preview lifecycle step failed\n/u);
+  assert.match(written, /^## Preview plan step failed\n/u);
   assert.match(written, /why: It carries no cause, so its message is all that is known\./u);
 });
 

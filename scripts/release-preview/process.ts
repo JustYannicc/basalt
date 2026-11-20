@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { appendFile, open, readFile } from "node:fs/promises";
-import { credentialName, redactCredentials } from "../failure/redact.ts";
+import { appendFile, open, type FileHandle } from "node:fs/promises";
+import { credentialName, publicGuidance } from "../failure/redact.ts";
 
 /** Where a step writes its cleaned failure report for the caller to publish. */
 export const failureReportVariable = "PREVIEW_FAILURE_REPORT";
@@ -20,15 +20,11 @@ type Operation = {
 type Publish = { environment: NodeJS.ProcessEnv; write(text: string): void };
 
 /**
- * A credential's own value, and each string inside one that is JSON: a subscription file's
- * `access_token` can be printed alone. The step never held the ones moved into files. The zone
- * previews run under goes too: a tail keeps a hostname written bare, and every preview host is in it.
+ * The runner's environment with each string inside a JSON credential added: a subscription file's
+ * `access_token` can be printed alone, and the step never held the credentials moved into files.
  */
-function credentials(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const found: NodeJS.ProcessEnv = {
-    ...environment,
-    PREVIEW_ZONE_SECRET: environment.TEST_STAGE_DOMAIN,
-  };
+export function publicEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const found: NodeJS.ProcessEnv = { ...environment };
   const leaves = (value: unknown, name: string): void => {
     if (typeof value === "string") found[`${name}_${Object.keys(found).length}`] = value;
     else if (value && typeof value === "object")
@@ -45,14 +41,25 @@ function credentials(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return found;
 }
 
+const reportBytes = 64 * 1024;
+
 /**
- * Only the report the step cleaned itself goes out, never its output, and it is cleaned again with
+ * Only the report the step cleaned itself goes out, never its output. It is read through the file
+ * this process made, bounded, and each line goes through the rules for a line written here with
  * every credential this process holds.
  */
-async function publishReport(path: string, publish: Publish): Promise<void> {
-  const report = await readFile(path, "utf8").catch(() => "");
-  if (!report.trim()) return;
-  const text = redactCredentials(report.slice(0, 64 * 1024), credentials(publish.environment));
+async function publishReport(report: FileHandle, publish: Publish): Promise<void> {
+  const { size } = await report.stat();
+  const buffer = Buffer.alloc(Math.min(size, reportBytes));
+  const { bytesRead } = await report.read(buffer, 0, buffer.length, 0);
+  let raw = buffer.subarray(0, bytesRead).toString("utf8");
+  if (size > reportBytes) raw = `${raw.slice(0, raw.lastIndexOf("\n") + 1)}[cut]\n`;
+  if (!raw.trim()) return;
+  const environment = publicEnvironment(publish.environment);
+  const text = raw
+    .split("\n")
+    .map((line) => publicGuidance(line, environment))
+    .join("\n");
   publish.write(text);
   const summary = publish.environment.GITHUB_STEP_SUMMARY;
   if (summary)
@@ -72,6 +79,8 @@ export async function privateOperation(
   if (!/^[a-z-]+$/.test(operation.label)) throw new Error("Invalid preview operation label");
   const log = await open(operation.logPath, "wx", 0o600);
   const reportPath = `${operation.logPath}.report`;
+  // Made here, before the step runs, so what is read back is this file whatever the step does.
+  const report = await open(reportPath, "wx+", 0o600);
   try {
     if (operation.signal?.aborted) throw new Error(`Preview ${operation.label} cancelled`);
     const child = spawn(operation.command, operation.args, {
@@ -135,12 +144,13 @@ export async function privateOperation(
       operation.signal?.removeEventListener("abort", abort);
       await Promise.all(writes);
     }
-    if (cancelled || timedOut || oversized || code !== 0) await publishReport(reportPath, publish);
+    if (cancelled || timedOut || oversized || code !== 0) await publishReport(report, publish);
     if (cancelled) throw new Error(`Preview ${operation.label} cancelled`);
     if (timedOut) throw new Error(`Preview ${operation.label} timed out`);
     if (oversized) throw new Error(`Preview ${operation.label} exceeded its output limit`);
     if (code !== 0) throw new Error(`Preview ${operation.label} failed`);
   } finally {
     await log.close();
+    await report.close();
   }
 }
