@@ -660,7 +660,13 @@ try {
           snapshot = yield* planOf("deploy");
         }
         const checked = checkPolicy();
-        if (checked && command === "plan" && stage === "production") {
+        // A rehearsal stage pinned to production's root image runs the same read, so it is proven
+        // on a real application before production relies on it.
+        if (
+          checked &&
+          command === "plan" &&
+          (stage === "production" || /^test-rehearsal-[1-9][0-9]*$/u.test(stage))
+        ) {
           // The provider decides at apply, after the pool Worker's upload, whether the root's row
           // modifies the application; the plan makes the same read and comparison first.
           const root = yield* Effect.promise(() => import("./root-settle-check.ts"));
