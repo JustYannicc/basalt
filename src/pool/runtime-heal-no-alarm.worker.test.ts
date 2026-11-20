@@ -106,12 +106,16 @@ test(
     const { f, previous, epoch, advance } = await stuck(context);
     await f.old.storage.delete("fixture-alarm");
     await f.old.storage.delete("pool-alarm-v1:deadlines");
+    await f.settle();
+    assert.equal(await f.old.storage.getAlarm(), null, "no alarm is armed");
     // No new object: the release's readiness read and inspect must arm it themselves.
     const fired = await healingRelease(f, f.worker, advance, within);
-    assert.deepEqual(
-      { fired: fired.length, ...(await healed(f, previous, epoch)) },
-      { fired: fired.length, epoch: 1, newBoot: true, activeHealth: 200 },
-    );
+    assert.ok(fired.length > 0, "an alarm the pool armed itself fired");
+    assert.deepEqual(await healed(f, previous, epoch), {
+      epoch: 1,
+      newBoot: true,
+      activeHealth: 200,
+    });
   },
 );
 
@@ -126,9 +130,11 @@ test(
     // The healing release's upload: a new object over the same storage, as after a code update.
     advance(5_000);
     const fired = await healingRelease(f, f.reconstruct(), advance, within);
-    assert.deepEqual(
-      { fired: fired.length, ...(await healed(f, previous, epoch)) },
-      { fired: fired.length, epoch: 1, newBoot: true, activeHealth: 200 },
-    );
+    assert.ok(fired.length > 0, "an alarm the pool armed itself fired");
+    assert.deepEqual(await healed(f, previous, epoch), {
+      epoch: 1,
+      newBoot: true,
+      activeHealth: 200,
+    });
   },
 );
