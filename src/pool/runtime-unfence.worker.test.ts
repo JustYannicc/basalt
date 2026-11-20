@@ -308,7 +308,7 @@ test(
     await f.send("fence", { identity });
     await fencedPastLeases(f, advance);
     const { body } = await unfence(f, identity);
-    assert.equal(body.result?.cause, "leases");
+    assert.equal(body.result?.cause, "runtime", "its health read refused, whatever the leases");
     for (let elapsed = 0; elapsed <= unservingBoundMs; elapsed += 2_000) {
       await pass(f);
       advance(2_000);
@@ -374,7 +374,9 @@ test(
   { timeout: 60_000 },
   async (context) => {
     const { f, identity, advance } = await root(context);
+    // Production's state before the fence: the fleet and Home cadences both alive.
     await pass(f);
+    await homePass(f);
     await f.send("fence", { identity });
     // A fence stops the fleet alarm that runs recovery; only Home's keeps firing meanwhile.
     await productionAlarms(f, advance, 3 * membershipTtlMs);
