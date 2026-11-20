@@ -283,7 +283,7 @@ test("a healing release waits for the root's new boot within its policy's bound,
   );
   assert.match(
     step("Accept the release through the live pool"),
-    /expect=\(--expect restart --serving \.local\/release\/serving\.json\)/u,
+    /expect=\(--expect restart --serving \.local\/release\/serving\.json --apply "\$\{\{ steps\.apply\.outcome \}\}"\)/u,
   );
   assert.match(step("Accept the release through the live pool"), /acceptance\.rootRestart\.bound/u);
   // Acceptance only reads, so a failed healing apply is still accepted; every other policy is not.

@@ -361,7 +361,7 @@ jobs:
         run: |
           within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
-          if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json); fi
+          if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json --apply "${{ steps.apply.outcome }}"); fi
           bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
           node scripts/smoke.ts
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
