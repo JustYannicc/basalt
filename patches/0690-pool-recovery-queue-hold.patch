@@ -1,0 +1,61 @@
+diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
+--- a/e2e/tests/pool-account-recovery.spec.ts
++++ b/e2e/tests/pool-account-recovery.spec.ts
+@@ -65,11 +65,25 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
+         );
+         const owner = session.user.id;
+-        const deferJobs = () =>
+-          rows(
+-            `update hosted_provisioning set available_at = now() + interval '1 day'
+-            where organization_id = $1 and status = 'queued'`,
+-            [actors.organization.id],
++        // The actors belong to this case alone, and their user jobs have no team. A started job
++        // ends in a follow-up dispatch.
++        const deferral = {
++          sql: `update hosted_provisioning set available_at = now() + interval '1 day'
++            where status = 'queued' and (organization_id = $1
++              or user_id in (select "userId" from member where "organizationId" = $1))`,
++          params: [actors.organization.id],
++        };
++        const deferJobs = () => database.run(deferral);
++        // Any dispatch claims every ready job of any team, and role and verification updates
++        // queue ready jobs by trigger. Commit each such update together with its deferral, never
++        // interrupted between: the case's finalizers would otherwise wait on the open transaction.
++        const queueDeferred = (sql: string, params: readonly string[]) =>
++          Effect.uninterruptible(
++            Effect.gen(function* () {
++              yield* database.hold({ sql, params });
++              yield* database.hold(deferral);
++              yield* database.release;
++            }),
+           );
+         // Onboarding has not started these jobs. Keep them out of request-finalizer dispatch.
+         yield* deferJobs();
+@@ -163,23 +177,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+             yield* record({ app: app.id });
+             yield* noRecovery;
+             yield* record({ app: app.id, version: app.activeVersion });
+-            yield* rows(
++            yield* queueDeferred(
+               `update member set role = 'admin' where "organizationId" = $1 and "userId" = $2`,
+               [actors.organization.id, owner],
+             );
+-            yield* rows(
+-              `update hosted_provisioning set available_at = now() + interval '1 day'
+-            where organization_id = $1 and user_id = $2 and kind = 'member' and status = 'queued'`,
+-              [actors.organization.id, owner],
+-            );
+             yield* noRecovery;
+-            yield* rows(
++            yield* queueDeferred(
+               `update member set role = 'owner' where "organizationId" = $1 and "userId" = $2`,
+               [actors.organization.id, owner],
+             );
+             yield* rows(`update "user" set "emailVerified" = false where id = $1`, [owner]);
+             yield* noRecovery;
+-            yield* rows(`update "user" set "emailVerified" = true where id = $1`, [owner]);
++            yield* queueDeferred(`update "user" set "emailVerified" = true where id = $1`, [owner]);
+           }),
+         );
+         // The app's second version models an owner-edited pool. Repair must keep that source.

@@ -4,6 +4,7 @@ export type Step = {
   "continue-on-error"?: boolean;
   "working-directory"?: string;
 };
+type Matrix = Record<string, unknown> & { include?: Record<string, unknown>[] };
 export type Workflow = {
   jobs: Record<
     string,
@@ -11,15 +12,32 @@ export type Workflow = {
       if?: string | boolean;
       "continue-on-error"?: boolean;
       steps?: Step[];
-      strategy?: { matrix?: unknown };
+      strategy?: { matrix?: Matrix | string };
     }
   >;
 };
 
-const conditionCanRun = (condition: string | boolean | undefined, job = false) => {
+// A step gated on a matrix value runs in every shard whose row carries that value.
+const matrixCanRun = (expression: string, matrix: Matrix | string | undefined) => {
+  const match =
+    /^contains\(matrix\.(\w+), '([\w-]+)'\)$/.exec(expression) ??
+    /^matrix\.(\w+) == '?([\w-]+)'?$/.exec(expression);
+  if (!match || typeof matrix !== "object") return false;
+  const [, key = "", value] = match;
+  return [matrix[key], ...(matrix.include ?? []).map((row) => row[key])]
+    .flat()
+    .some((candidate) => String(candidate) === value);
+};
+
+const conditionCanRun = (
+  condition: string | boolean | undefined,
+  job = false,
+  matrix?: Matrix | string,
+) => {
   if (condition === undefined || condition === true) return true;
   if (typeof condition !== "string") return false;
   const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1");
+  if (matrixCanRun(expression, matrix)) return true;
   return (
     [
       "true",
@@ -40,7 +58,9 @@ export const activeSteps = (job: Workflow["jobs"][string] | undefined) =>
     ? []
     : (job?.steps ?? []).filter(
         (step): step is Step & { run: string } =>
-          typeof step.run === "string" && !step["continue-on-error"] && conditionCanRun(step.if),
+          typeof step.run === "string" &&
+          !step["continue-on-error"] &&
+          conditionCanRun(step.if, false, job?.strategy?.matrix),
       );
 
 // Only executable command positions count. Mentioning a path in echo, comments or artifacts is not coverage.
