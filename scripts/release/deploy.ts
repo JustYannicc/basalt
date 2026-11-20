@@ -827,25 +827,31 @@ try {
         if (mismatch) return yield* Effect.fail(mismatch);
         // One GET of the branch's parameters, which the apply's first database step compares and,
         // when the pooler differs, patches. A difference or an unreadable answer is reported only.
-        const pool = yield* poolParameters
-          .readPoolParameters({
-            organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
-            tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
-            token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
-            database: "basalt",
-            branch: "main",
-          })
-          .pipe(
-            Effect.match({
-              onFailure: () => "unreadable" as const,
-              onSuccess: (report) => report,
-            }),
-          );
+        // Production only: its branch is fixed below, and only production's preflight is read-only.
+        const pool =
+          stage !== "production"
+            ? ("not-production" as const)
+            : yield* poolParameters
+                .readPoolParameters({
+                  organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
+                  tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
+                  token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
+                  database: "basalt",
+                  branch: "main",
+                })
+                .pipe(
+                  Effect.match({
+                    onFailure: () => "unreadable" as const,
+                    onSuccess: (report) => report,
+                  }),
+                );
         yield* Effect.promise(() =>
           summary(
-            pool === "unreadable"
-              ? "Pool parameters: unreadable; the apply's first database step is not predicted"
-              : poolParameters.poolParameterLine(pool),
+            pool === "not-production"
+              ? "Pool parameters: read on production only"
+              : pool === "unreadable"
+                ? "Pool parameters: unreadable; the apply's first database step is not predicted"
+                : poolParameters.poolParameterLine(pool),
           ),
         );
         return {

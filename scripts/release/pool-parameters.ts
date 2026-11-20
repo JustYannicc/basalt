@@ -42,8 +42,13 @@ export function poolParameterReport(
     return {
       setting: `${namespace}.${name}`,
       declared,
-      // Only plain settings reach the report; anything else is shown by its type alone.
-      value: type === "string" || type === "number" || type === "boolean" ? value : null,
+      // Only plain, short settings reach the report; anything else is shown by its type alone.
+      value:
+        (type === "string" && (value as string).length <= 32) ||
+        type === "number" ||
+        type === "boolean"
+          ? value
+          : null,
       type,
       status: value === declared ? ("equal" as const) : ("differs" as const),
     };

@@ -79,6 +79,12 @@ test("a differing pooler value warns of a reload, a missing one is absent, and o
   );
   assert.equal(report.poolerReload, true);
   assert.equal(report.budgetRefuses, true);
+  // A long string is reported by its type only.
+  const long = poolParameterReport(answer(String, { pool_mode: "x".repeat(33) }));
+  assert.deepEqual(
+    [long.settings.find((entry) => entry.setting === "pgbouncer.pool_mode")!.value],
+    [null],
+  );
   assert.match(poolParameterLine(report), /not in transaction pooling, so .* would refuse/);
 });
 
