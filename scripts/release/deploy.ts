@@ -24,7 +24,6 @@ import type { StageScope } from "./stage-writes.ts";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { resolvePathFlags } from "./entry-paths.ts";
-import { redactSecrets } from "./redact.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
@@ -71,10 +70,6 @@ resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
-// Resolved before the entry moves into the cloud app, as the path flags are.
-const boxOutput = process.env.BASALT_BOX_OUTPUT
-  ? resolve(process.env.BASALT_BOX_OUTPUT)
-  : undefined;
 
 if (command !== "compare") {
   if (stage === "production") {
@@ -102,9 +97,8 @@ if (command === "teardown" && !isRehearsalStage(stage))
 
 /**
  * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
- * gitignored .local, in the stage runner's own sealed output when it gives one, redacted in the box
- * release slot's kept output when it gives one, and sealed with the deployment key next to the
- * uploaded records on production.
+ * gitignored .local, in the stage runner's own sealed output when it gives one, and sealed with the
+ * deployment key next to the uploaded records on production.
  */
 const keepPrivate = async (name: string, detail: string) => {
   await mkdir(resolve(root, ".local/release"), { recursive: true });
@@ -114,22 +108,6 @@ const keepPrivate = async (name: string, detail: string) => {
       resolve(process.env.BASALT_STAGE_OUTPUT_DIR, `release-${name}.txt`),
       `${detail}\n`,
     );
-  // A box release slot keeps this directory past its container, readable by the box owner only;
-  // the plain copy above dies with the container. Writing it never changes the run's outcome.
-  if (boxOutput)
-    await mkdir(resolve(boxOutput, "release"), { recursive: true, mode: 0o700 })
-      .then(() =>
-        appendFile(
-          resolve(boxOutput, "release", `${name}.txt`),
-          `${redactSecrets(detail, process.env)}\n`,
-          { mode: 0o600 },
-        ),
-      )
-      .catch((error: unknown) =>
-        console.error(
-          `The ${name} detail could not be kept on the box (${(error as { code?: string }).code ?? "unknown"})`,
-        ),
-      );
   const key = process.env.EXECUTOR_ENCRYPTION_KEY;
   if (stage === "production" && key)
     try {

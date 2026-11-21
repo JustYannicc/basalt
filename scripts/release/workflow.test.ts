@@ -145,6 +145,7 @@ test("a plan runs the apply's read-only steps too, so an apply is never their fi
   for (const entry of writes)
     assert.match(entry.if ?? "", /env\.MODE == 'apply'/u, entry.name ?? "(unnamed step)");
   assert.match(step("Check the apply's tools are present"), /for tool in gh jq bun node; do/u);
+  assert.match(step("Check the apply's tools are present"), /gh api rate_limit/u);
   assert.equal(condition("Check the apply's tools are present"), undefined);
   const [tools, prepare] = order("Check the apply's tools are present", "Prepare");
   assert.ok(tools! < prepare!);
