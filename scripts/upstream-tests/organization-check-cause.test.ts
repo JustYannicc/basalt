@@ -20,9 +20,12 @@ const { Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler } =
 const sqlRequire = createRequire(
   new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
 );
-const { PgliteClient } = await import(sqlRequire.resolve("@effect/sql-pglite/PgliteClient"));
+const {
+  PgliteClient,
+}: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-pglite/dist/PgliteClient.js") =
+  await import(sqlRequire.resolve("@effect/sql-pglite/PgliteClient"));
 const { cloudAuthOptions } = await load("apps/hosted/cloud/src/implementation/auth-options.ts");
-// Typed, so the root type check covers the check and the decision it maps.
+// Typed, so the root type check covers the check, the decision it maps and their services.
 const {
   organizationCreationCheck,
 }: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/organization-check.ts") =
@@ -32,13 +35,27 @@ const {
 }: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/onboarding.ts") = await load(
   "apps/hosted/cloud/src/implementation/onboarding.ts",
 );
-const { companyLookupDisabled } = await load(
-  "apps/hosted/cloud/src/implementation/company-profile.ts",
+const {
+  companyLookupDisabled,
+}: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/company-profile.ts") =
+  await load("apps/hosted/cloud/src/implementation/company-profile.ts");
+const {
+  v1MembershipLive,
+}: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/v1-membership.ts") =
+  await load("apps/hosted/cloud/src/implementation/v1-membership.ts");
+const {
+  migrateOnboarding,
+}: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/migrations.ts") = await load(
+  "apps/hosted/cloud/src/implementation/migrations.ts",
 );
-const { v1MembershipLive } = await load("apps/hosted/cloud/src/implementation/v1-membership.ts");
-const { migrateOnboarding } = await load("apps/hosted/cloud/src/implementation/migrations.ts");
-const { BlobStore } = await load("packages/sdk/src/core.ts");
-const { memoryBlobStore } = await load("packages/sdk/src/implementation/memory-blobs.ts");
+const { BlobStore }: typeof import("../../.upstream/packages/sdk/src/core.ts") = await load(
+  "packages/sdk/src/core.ts",
+);
+const {
+  memoryBlobStore,
+}: typeof import("../../.upstream/packages/sdk/src/implementation/memory-blobs.ts") = await load(
+  "packages/sdk/src/implementation/memory-blobs.ts",
+);
 
 const url = "http://localhost:3000";
 const password = "fixture-password-1234";
@@ -131,6 +148,7 @@ const organizationEndpoint = (
           Effect.provide(Layer.mergeAll(companyLookupDisabled, v1)),
           Effect.provide(FetchHttpClient.layer),
         );
+        const services = yield* Effect.context<never>();
         const base = cloudAuthOptions(
           {
             url,
@@ -165,7 +183,7 @@ const organizationEndpoint = (
           undefined,
           // The cloud runs this check in the calling request's runtime; here the log is captured.
           (userId: string) =>
-            Effect.runPromise(
+            Effect.runPromiseWith(services)(
               organizationCreationCheck(onboarding, userId).pipe(
                 Effect.provide(Logger.layer([capture])),
               ),
@@ -224,7 +242,7 @@ const organizationEndpoint = (
           );
         yield* run({ sql, logs, signIn, create });
       }),
-    ).pipe(Effect.provide(pgliteLayer())) as Effect.Effect<void, SqlError.SqlError>,
+    ).pipe(Effect.provide(pgliteLayer())),
   );
 
 const reasons = (logs: ReadonlyArray<Logged>) =>
