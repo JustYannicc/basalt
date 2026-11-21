@@ -270,6 +270,10 @@ jobs:
       # uploads a preview of its proxy Worker (about eight per run, outside the wire guard). The
       # reply is not tied to its request by a nonce; the path has no cache.
       - name: Read the provider observation before a declared root restart
+        id: provider
+        # A plan still runs its read-only plan after a failed read, and the run fails after it
+        # ("Stop on an unread provider observation"); an apply stops here.
+        continue-on-error: ${{ env.MODE == 'plan' }}
         env: &provider-observation-env
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -281,7 +285,8 @@ jobs:
           POOL_CRASH_COORDINATOR_GO: release run ${{ github.run_id }} attempt ${{ github.run_attempt }} reads the provider observation before a declared root restart
           POOL_CRASH_TEMPORARY_DIRECTORY: ${{ runner.temp }}
         run: &provider-observation-run |
-          if [ -z "$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")" ]; then exit 0; fi
+          # Whether the policy declares a root restart at all, whatever the declaration's fields.
+          if ! jq -e '.acceptance.rootRestart | type == "object"' "$POLICY" >/dev/null; then exit 0; fi
           if [ -z "$POOL_CRASH_PACKET" ]; then
             echo "::error::A release that declares a root restart needs the serving_controller input: the controller code of the pool Worker deployed now."
             exit 1
@@ -307,9 +312,9 @@ jobs:
           if jq -es --arg request "$request" 'length == 1 and .[0].requestId == $request and .[0].providerObservation == "provider observation: reads" and .[0].restartObservation == "restart read: passes"' "$result" >/dev/null 2>&1; then
             exit 0
           fi
+          # The dispatcher's own cause is public: fixed refusal text and closed codes.
+          cause="$(field error)"
           if [ -z "$token" ]; then
-            # The dispatcher's own cause is public: fixed refusal text and closed codes.
-            cause="$(field error)"
             echo "::error::provider observation: not read, ${cause:-the dispatcher left no result}: the heal would stop the root without restarting it."
             exit 1
           fi
@@ -326,16 +331,16 @@ jobs:
           esac
           case "$restart" in
             "restart read: refuses (recorded_pins_differ)")
-              echo "::error::${restart}: the live root application's version or image digest differs from the pins recorded when the selected runtime was admitted, so the restart's first read would refuse after the stop."
+              echo "::error::${restart}${cause:+ (the dispatcher stopped at: $cause)}: the live root application's version or image digest differs from the pins recorded when the selected runtime was admitted, so the restart's first read would refuse after the stop."
               ;;
             "restart read: not checked (no_selected_runtime)")
-              echo "::error::${restart}: the pool has no selected runtime, so there is nothing to heal. On a stage this passes only after the adopt."
+              echo "::error::${restart}${cause:+ (the dispatcher stopped at: $cause)}: the pool has no selected runtime, so there is nothing to heal. On a stage this passes only after the adopt."
               ;;
             "restart read: passes")
               echo "::error::The dispatcher's result is not exactly one document for this run's request with the two lines."
               ;;
             *)
-              echo "::error::${restart:-restart read: not read}: the heal would stop the root without restarting it."
+              echo "::error::${restart:-restart read: not read}${cause:+ (the dispatcher stopped at: $cause)}: the heal would stop the root without restarting it."
               ;;
           esac
           exit 1
@@ -355,6 +360,11 @@ jobs:
           printf 'digest=%s\nattempt=%s\n' "$digest" "$attempt" >> "$GITHUB_OUTPUT"
           # The apply step reads these from the job env, so its own env carries only the secrets.
           printf 'PLAN_DIGEST=%s\nATTEMPT=%s\n' "$digest" "$attempt" >> "$GITHUB_ENV"
+      - name: Stop on an unread provider observation
+        if: always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'
+        run: |
+          echo "::error::The provider observation did not read (see its step above); the plan above ran for review only."
+          exit 1
       # Nothing below runs against a pegged database (the history import pauses at the same 60%).
       - name: Refuse while the pool database is busy
         env: *release-secrets
@@ -402,7 +412,7 @@ jobs:
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
         # pool that does not answer; every other release needs the root's boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
       # The restore target if the class change fails. Reading it also arms a restore to it for ten
       # minutes, the window the class change runs in.
@@ -449,9 +459,9 @@ jobs:
         # A declared root restart first waits, bounded by the policy, for the root's new boot; then every
         # request must succeed on that one boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
-          if [ -n "$within" ]; then expect=(--expect restart --within "$within" --serving .local/release/serving.json); fi
+          if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json --apply "${{ steps.apply.outcome }}"); fi
           rc=0
           bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json || rc=$?
           # A failed acceptance goes straight to its rollback. A declared root restart has none, so

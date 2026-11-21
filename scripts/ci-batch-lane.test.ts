@@ -11,7 +11,7 @@ const workflow = parse(
 const lane = workflow.jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env
   .FULL_SUITE;
 const repository = "fixture/repository";
-const fullLabels = ["ci:full", "ci:boat", "release-update"];
+const fullLabels = ["ci:full", "release-update"];
 const labelSets = Array.from({ length: 1 << fullLabels.length }, (_, mask) =>
   fullLabels.filter((_, bit) => mask & (1 << bit)),
 );

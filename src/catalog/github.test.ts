@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-metadata.ts";
 import { onServedFramework } from "./framework.ts";
 import { githubSource } from "./github.ts";
 import reviews from "./oauth-reviews.json" with { type: "json" };

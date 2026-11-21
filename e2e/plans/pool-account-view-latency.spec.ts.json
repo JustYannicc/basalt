@@ -38,6 +38,8 @@
     ".upstream/e2e/support/sql-wire-proof.ts",
     "apps/pool/index.ts",
     "apps/pool/provider-account-view.ts",
+    "src/pool/worker.ts",
+    "src/pool/alarms.ts",
     ".upstream/e2e/support/sql-wire-requests.ts",
     ".upstream/e2e/support/sql-wire-cohorts.ts",
     ".upstream/e2e/support/pool-account-view-query.ts",

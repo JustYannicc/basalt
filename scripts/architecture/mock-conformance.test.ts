@@ -43,7 +43,7 @@ const workflow = `jobs:
       - env:
           CI_NEEDS: \${{ toJSON(needs) }}
           CI_JOBS: \${{ needs.select.outputs.jobs }}
-          CI_BOAT_JOBS: \${{ needs.select.outputs.boat_jobs }}
+          CI_BOX_JOBS: \${{ needs.select.outputs.box_jobs }}
         run: node scripts/ci/gate.ts
 `;
 function fixture() {
@@ -177,7 +177,7 @@ test("aggregate gate invocation and exact inputs must unconditionally propagate 
       "CI_JOBS: ${{ needs.select.outputs.jobs }}",
       "CI_JOBS: ${{ needs.select.outputs.other }}",
     ),
-    workflow.replace("needs.select.outputs.boat_jobs", "needs.select.outputs.other"),
+    workflow.replace("needs.select.outputs.box_jobs", "needs.select.outputs.other"),
     workflow.replace("      - env:", "      - shell: bash -c {0}\n        env:"),
   ]) {
     const f = fixture();
