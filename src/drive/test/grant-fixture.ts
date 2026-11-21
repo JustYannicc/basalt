@@ -12,6 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { betterAuth } from "better-auth";
+import { isAPIError } from "better-auth/api";
 import { getMigrations } from "better-auth/db/migration";
 import { organization as organizations } from "better-auth/plugins/organization";
 import {
@@ -23,7 +24,7 @@ import {
   type DatabaseConnection,
   type QueryResult,
 } from "kysely";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { GrantId, mcpResource, requestedMcpAddress } from "@executor-js/mcp-auth";
 import type { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connections";
@@ -128,9 +129,12 @@ export const grantStore = (organization: string) =>
     });
     const owner = { userId: user.id, resource: organization };
     // The host's own adapter over the grant store's listings, as the dashboard's API reads them.
-    // Failures reach it as the host passes them, so its status mapping reads the endpoint's own.
+    // An endpoint's own error reaches it as the host passes it, so its status mapping holds.
     const store = mcpConnectionStore((call) =>
-      Effect.tryPromise({ try: () => call(auth.api), catch: (cause) => cause }),
+      Effect.tryPromise({
+        try: () => call(auth.api),
+        catch: (cause) => (isAPIError(cause) ? cause : new Cause.UnknownError(cause)),
+      }),
     );
     const reply = async (response: Response, status = 200) => {
       const body = await response.text();
