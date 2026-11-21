@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "The database pool policy declares Postgres max_connections beside the shared pooler budget. Whenever a release runs the budget step, which reruns when its script or policy changes, it only verifies max_connections on main and refuses a mismatch before any write, because changing it restarts Postgres; test stages keep their own size. A separate recovery entry point applies both the pooler budget and max_connections to a branch that is not serving, waits for the change and reads both back, and refuses main and every test stage's database and branches. No release step ever restarts production's Postgres."
+    }
+  }
+}
