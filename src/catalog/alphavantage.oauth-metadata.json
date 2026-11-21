@@ -1,0 +1,27 @@
+{
+  "issuer": "https://mcp.alphavantage.co",
+  "authorization_endpoint": "https://mcp.alphavantage.co/authorize",
+  "token_endpoint": "https://mcp.alphavantage.co/token",
+  "registration_endpoint": "https://mcp.alphavantage.co/register",
+  "scopes_supported": [
+    "alphavantage:read"
+  ],
+  "response_types_supported": [
+    "code"
+  ],
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "code_challenge_methods_supported": [
+    "S256"
+  ],
+  "token_endpoint_auth_methods_supported": [
+    "none",
+    "client_secret_basic",
+    "client_secret_post"
+  ],
+  "subject_types_supported": [
+    "public"
+  ]
+}
