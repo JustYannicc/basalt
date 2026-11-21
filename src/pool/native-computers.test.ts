@@ -479,3 +479,58 @@ test("a restored audience keeps a model device that was approved before its key 
   (await p.model(computer.id, device)).release();
   assert.equal(p.f.server.keys.length, 1);
 });
+
+test("a device with no model key revokes while Home is stopped and leaves no revoking row", async () => {
+  const p = protocol();
+  const intent = await p.f.intent(owner);
+  p.f.server.stopped = true;
+  const devices = [
+    { grant: "native:tools-only", tools: true, models: false },
+    { grant: "native:models-pending", tools: false, models: true },
+  ];
+  for (const device of devices) {
+    const response = await p.control("register", { ...device, intent, name: device.grant });
+    assert.equal(response.status, 200, await response.clone().text());
+    const { computer } = (await response.json()) as { computer: { id: string } };
+    const identity = { grant: device.grant, computer: computer.id, pool: pool.pool };
+    const revoked = await p.control("revoke", identity);
+    assert.equal(revoked.status, 200, `${device.grant}: ${await revoked.clone().text()}`);
+    assert.equal((await p.f.registry())[computer.id]?.state, "revoked", device.grant);
+    assert.equal((await p.control("check", identity)).status, 401, device.grant);
+  }
+});
+
+test("a device holding a model key still revokes it through Home", async () => {
+  const p = protocol();
+  const { computer } = await p.register();
+  (await p.model(computer.id)).release();
+  assert.equal(p.f.server.keys.length, 1);
+  p.f.server.stopped = true;
+  const identity = { computer: computer.id, pool: pool.pool };
+  assert.equal((await p.control("revoke", identity)).status, 503);
+  assert.equal((await p.f.registry())[computer.id]?.state, "revoking");
+  p.f.server.stopped = false;
+  assert.equal((await p.control("revoke", identity)).status, 200);
+  assert.equal(p.f.server.keys.length, 0);
+  assert.equal((await p.f.registry())[computer.id]?.state, "revoked");
+});
+
+test("Connect cannot revoke a tools-only device behind its sign-in's back", async () => {
+  const p = protocol();
+  const intent = await p.f.intent(owner);
+  const response = await p.control("register", {
+    grant: "native:tools-only",
+    intent,
+    name: "Tools only",
+    tools: true,
+    models: false,
+  });
+  const { computer } = (await response.json()) as { computer: { id: string } };
+  // Its tools answer to its grant at the tools service, so only revoking that grant revokes it.
+  const refused = await p.f.action("revoke", owner, intent, { id: computer.id });
+  assert.equal(refused.status, 409, await refused.clone().text());
+  assert.equal((await p.f.registry())[computer.id]?.state, "active");
+  const identity = { grant: "native:tools-only", computer: computer.id, pool: pool.pool };
+  assert.equal((await p.control("revoke", identity)).status, 200);
+  assert.equal((await p.f.registry())[computer.id]?.state, "revoked");
+});
