@@ -235,8 +235,9 @@ async function createLink(
     );
     return linkResponse(request, result);
   } catch (error) {
-    // Revoke the new personal token if the handoff fails.
-    await deleteTools(request, env, key.id);
+    // Revoke the new personal token if the handoff fails. A refused setup keeps no computer to
+    // remove later, so the person still needs the first error even if this revoke fails.
+    await deleteTools(request, env, key.id).catch(() => {});
     throw error;
   }
 }
