@@ -121,8 +121,15 @@ export class PlanAllowances {
             parse(bodies).map(async (entry) => ({
               ...entry,
               sourceId: id,
+              // A key this source never stated keeps the seed's revision for the same value,
+              // whichever source the seed row came from.
               revision:
-                old.find(
+                [
+                  ...old,
+                  ...this.seed.entries.filter(
+                    (value) => !old.some((known) => allowanceKey(known) === allowanceKey(value)),
+                  ),
+                ].find(
                   (value) =>
                     allowanceKey(value) === allowanceKey(entry) &&
                     value.full === entry.full &&
@@ -170,12 +177,24 @@ export class PlanAllowances {
   }
   async read(): Promise<PlanAllowanceCatalog> {
     const state = await this.storage.get<State>(stateKey);
+    const refreshed = Object.values(state?.sources ?? {}).flatMap((source) => source.entries);
+    // A source's later revocation also ends a seed row for that key from another source.
+    const revoked = (entry: PlanAllowance) =>
+      refreshed.some(
+        (value) =>
+          value.verification === "unknown" &&
+          allowanceKey(value) === allowanceKey(entry) &&
+          (value.fetchedAt ?? 0) > (entry.fetchedAt ?? 0),
+      );
     const entries = [
       ...this.seed.entries.filter((entry) => {
         const id = entry.sourceId;
-        return !id || !state?.sources[id] || state.sources[id]!.state === "unavailable";
+        return (
+          (!id || !state?.sources[id] || state.sources[id]!.state === "unavailable") &&
+          !revoked(entry)
+        );
       }),
-      ...Object.values(state?.sources ?? {}).flatMap((source) => source.entries),
+      ...refreshed,
     ];
     const now = this.now();
     const active = entries.filter(
