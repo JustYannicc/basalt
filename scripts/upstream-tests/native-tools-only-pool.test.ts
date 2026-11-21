@@ -168,7 +168,7 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
   const [computer] = Object.keys(await d.p.registry());
   // A device without a model key holds nothing at Home, so a stopped container changes nothing.
   d.p.server.stopped = true;
-  const answers: { path: string; status: number }[] = [];
+  const answers: { path: string; status: number; refusal: string }[] = [];
   const removed = await handleSetup(
     new Request(
       `${origin}/setup/v1/computers/${computer}?intent=${encodeURIComponent(d.intent)}`,
@@ -179,7 +179,11 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
       TOOLS_SERVICE: {
         fetch: async (request) => {
           const response = await d.f.handler(request);
-          const call = { path: new URL(request.url).pathname, status: response.status };
+          const call = {
+            path: new URL(request.url).pathname,
+            status: response.status,
+            refusal: response.ok ? "" : await response.clone().text(),
+          };
           answers.push(call);
           return response;
         },
