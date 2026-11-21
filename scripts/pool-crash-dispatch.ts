@@ -47,6 +47,7 @@ const observeActions = [
   "witness",
   "provider-observe",
 ] as const;
+const modes = ["observe", "inspect", "apply", "recovery-reset"];
 type ObserveAction = (typeof observeActions)[number];
 /** A witness names a slot; a provider observation names the application pins it compares. */
 type ObserveSubject = SlotTarget | ProviderObservationTarget;
@@ -69,6 +70,13 @@ export interface DispatchDependencies {
    * Only meaningful without a selection; the controller refuses it once one exists.
    */
   rootHealth(target: ReleaseTarget): Promise<unknown>;
+  /** Clears the controller's forced-restart limit and its needs-a-person mark; nothing else. */
+  resetRecovery(
+    controllerCode: ControllerCode,
+    target: ReleaseTarget,
+    signingKey: string,
+    operationId: string,
+  ): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   crash(request: {
     packet: CrashPacket & ReleaseTarget;
@@ -465,8 +473,8 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   } = {};
   let error: string | null = null;
   try {
-    if (!["observe", "inspect", "apply"].includes(input.mode))
-      throw new DispatchRefusal("mode must be observe, inspect or apply");
+    if (!modes.includes(input.mode))
+      throw new DispatchRefusal("mode must be observe, inspect, apply or recovery-reset");
     if (!uuid.test(input.requestId)) throw new DispatchRefusal("request_id must be a UUID");
     assertGo(input.coordinatorGo);
     let parsed: unknown;
@@ -541,6 +549,34 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
           deps,
           send,
         }),
+        input.accountId,
+      );
+    } else if (input.mode === "recovery-reset") {
+      const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
+      await preflight();
+      const { root: _root, provider: _provider, ...target } = await readTarget();
+      // What is about to be cleared is recorded first, so the result shows the state it replaced.
+      phase = "inspect outcome unknown";
+      const inspected = replyResult(
+        await deps.observe("inspect", packet.controllerCode, target, input.signingKey),
+        "inspect",
+      );
+      const before =
+        inspected && typeof inspected === "object" && "recovery" in inspected
+          ? inspected.recovery
+          : null;
+      phase = "recovery-reset outcome unknown; inspect shows whether it applied";
+      output.observe = redactAccount({ recovery: before }, input.accountId);
+      output.result = redactAccount(
+        replyResult(
+          await deps.resetRecovery(
+            packet.controllerCode,
+            target,
+            input.signingKey,
+            `recovery-reset-${input.requestId}`,
+          ),
+          "recovery-reset",
+        ),
         input.accountId,
       );
     } else {
@@ -639,68 +675,84 @@ export class ControllerRefused extends Error {
 
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
-  async (action, controllerCode, target, signingKey, subject) => {
-    const at = signedNow();
-    // The closed command union decides which subject an action may carry; any other pairing refuses.
-    const command = decodeRuntimeHandoffCommand(
-      {
-        controllerCode,
-        action,
-        at,
-        expiresAt: at + 25_000,
-        ...(subject ? { target: subject } : {}),
-      },
-      at,
+  (action, controllerCode, target, signingKey, subject) =>
+    signedCommand(
+      connect,
+      action,
+      controllerCode,
+      target,
+      signingKey,
+      subject ? { target: subject } : {},
     );
-    // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
-    // refused; a defect, auth rejection or bridge failure must not read as a refusal.
-    let refused: string | undefined;
-    const observed: NonNullable<Connect> = async (path) => {
-      const platform = await (connect
-        ? connect(path)
-        : nodePoolOperations(target.accountId, target.worker));
-      const service = platform.env.POOL_OPERATIONS;
-      return {
-        ...platform,
-        env: {
-          POOL_OPERATIONS: {
-            fetch: async (request: Request) => {
-              const response = await service.fetch(request);
-              if (response.status === 409) {
-                const body: unknown = await response
-                  .clone()
-                  .json()
-                  .catch(() => undefined);
-                if (
-                  body &&
-                  typeof body === "object" &&
-                  "error" in body &&
-                  body.error === "runtime-handoff-refused"
-                )
-                  refused =
-                    "reason" in body &&
-                    typeof body.reason === "string" &&
-                    /^[a-z0-9_-]{1,64}$/u.test(body.reason)
-                      ? body.reason
-                      : "unspecified";
-              }
-              return response;
-            },
+
+export const recoveryResetSender =
+  (connect?: Connect): DispatchDependencies["resetRecovery"] =>
+  (controllerCode, target, signingKey, operationId) =>
+    signedCommand(connect, "recovery-reset", controllerCode, target, signingKey, { operationId });
+
+async function signedCommand(
+  connect: Connect | undefined,
+  action: string,
+  controllerCode: ControllerCode,
+  target: ReleaseTarget,
+  signingKey: string,
+  fields: { target?: ObserveSubject; operationId?: string },
+) {
+  const at = signedNow();
+  // The closed command union decides which subject an action may carry; any other pairing refuses.
+  const command = decodeRuntimeHandoffCommand(
+    { controllerCode, action, at, expiresAt: at + 25_000, ...fields },
+    at,
+  );
+  // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
+  // refused; a defect, auth rejection or bridge failure must not read as a refusal.
+  let refused: string | undefined;
+  const observed: NonNullable<Connect> = async (path) => {
+    const platform = await (connect
+      ? connect(path)
+      : nodePoolOperations(target.accountId, target.worker));
+    const service = platform.env.POOL_OPERATIONS;
+    return {
+      ...platform,
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const response = await service.fetch(request);
+            if (response.status === 409) {
+              const body: unknown = await response
+                .clone()
+                .json()
+                .catch(() => undefined);
+              if (
+                body &&
+                typeof body === "object" &&
+                "error" in body &&
+                body.error === "runtime-handoff-refused"
+              )
+                refused =
+                  "reason" in body &&
+                  typeof body.reason === "string" &&
+                  /^[a-z0-9_-]{1,64}$/u.test(body.reason)
+                    ? body.reason
+                    : "unspecified";
+            }
+            return response;
           },
         },
-      };
+      },
     };
-    try {
-      return await sendRuntimeCommand(command, signingKey, { ...target, connect: observed }, () => {
-        decodeRuntimeHandoffCommand(command, signedNow());
-      });
-    } catch (cause) {
-      // The provider-observation header is the Worker's own closed cause; keep it.
-      if (providerObservationCause(cause)) throw cause;
-      if (refused) throw new ControllerRefused(action, refused);
-      throw cause;
-    }
   };
+  try {
+    return await sendRuntimeCommand(command, signingKey, { ...target, connect: observed }, () => {
+      decodeRuntimeHandoffCommand(command, signedNow());
+    });
+  } catch (cause) {
+    // The provider-observation header is the Worker's own closed cause; keep it.
+    if (providerObservationCause(cause)) throw cause;
+    if (refused) throw new ControllerRefused(action, refused);
+    throw cause;
+  }
+}
 
 /** Unsigned GET of the root container's recovery status; the POST path is the only one that restarts. */
 export const rootHealthReader =
@@ -730,7 +782,7 @@ export async function writeDispatchResult(directory: string, result: object) {
 
 // Free-form inputs never reach the log, so a dispatch cannot inject workflow commands.
 export const logLine = (result: Awaited<ReturnType<typeof runCrashDispatch>>) =>
-  `mode=${["observe", "inspect", "apply"].includes(result.mode) ? result.mode : "invalid"} ` +
+  `mode=${modes.includes(result.mode) ? result.mode : "invalid"} ` +
   `request_id=${uuid.test(result.requestId) ? result.requestId : "invalid"} ` +
   `ok=${result.ok} forcedInspect=${result.forcedInspect}\n` +
   (result.providerObservation && providerLines.has(result.providerObservation)
@@ -764,6 +816,7 @@ if (import.meta.main) {
         observe: observeSender(),
         crash: crashSender(temporary),
         rootHealth: rootHealthReader(),
+        resetRecovery: recoveryResetSender(),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: Date.now,
       },
