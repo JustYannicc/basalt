@@ -25,7 +25,8 @@ import { lastSuccessAt } from "./last-success.ts";
 import { poolUsageSummary } from "./summary.ts";
 import { summaryInput } from "./summary-input.ts";
 import { HistoryDeadline } from "./series-deadline.ts";
-import { historyPhase, historySeriesDiagnostics } from "./series-diagnostics.ts";
+import { historyPhase } from "./series-diagnostics.ts";
+import { watchHistoryRead, type HistoryReadAction } from "./read-failure.ts";
 
 export const poolUsageSeriesPath = `${controlBasePath}/usage/series`;
 export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
@@ -45,11 +46,28 @@ export async function handleUsageSeries(
     currentPrices?: (
       targets: readonly { provider: string; model: string }[],
     ) => Promise<OverviewPriceTable>;
+    /** A read that answered 5xx, so it reaches error reporting. */
+    failed?: (action: HistoryReadAction) => void;
   },
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
-  const diagnostics = path === poolUsageSeriesPath ? historySeriesDiagnostics() : undefined;
-  const deadline = diagnostics ? new HistoryDeadline(5_000, request.signal) : undefined;
+  const action: HistoryReadAction =
+    path === poolUsageSummaryPath
+      ? "poolUsageSummary"
+      : path === poolUsageSeriesPath
+        ? "poolUsageSeries"
+        : path === poolOverviewPath
+          ? "poolOverview"
+          : path === poolPersonalOverviewPath
+            ? "poolPersonalOverview"
+            : "lastSuccessAt";
+  const watch = watchHistoryRead(
+    action,
+    action === "poolUsageSeries" ? "series" : action === "poolUsageSummary" ? "summary" : undefined,
+  );
+  const diagnostics = watch.diagnostics;
+  const deadline =
+    action === "poolUsageSeries" ? new HistoryDeadline(5_000, request.signal) : undefined;
   const bounded = <T>(work: () => Promise<T>) => (deadline ? deadline.run(work) : work());
   try {
     if (request.method !== "POST")
@@ -58,16 +76,6 @@ export async function handleUsageSeries(
     if (bytes === undefined)
       return fail(413, "invalid_query", "The usage assertion exceeds its limit.");
     const body: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    const action =
-      path === poolUsageSummaryPath
-        ? "poolUsageSummary"
-        : path === poolUsageSeriesPath
-          ? "poolUsageSeries"
-          : path === poolOverviewPath
-            ? "poolOverview"
-            : path === poolPersonalOverviewPath
-              ? "poolPersonalOverview"
-              : "lastSuccessAt";
     // This DO validates the signed host assertion. Membership is read by the host.
     const payload = await historyPhase(diagnostics, "signed_envelope_validation", () =>
       bounded(async () => {
@@ -169,8 +177,12 @@ export async function handleUsageSeries(
       seriesAuthority(input.authority);
       summaryInput(input);
       return json(
-        await withHistoryDatabase(access.connectionString, (db) =>
-          poolUsageSummary(db, input, access.currentPrices),
+        await historyPhase(diagnostics, "summary_read", () =>
+          withHistoryDatabase(
+            access.connectionString,
+            (db) => poolUsageSummary(db, input, access.currentPrices),
+            { diagnostics },
+          ),
         ),
       );
     }
@@ -256,7 +268,9 @@ export async function handleUsageSeries(
         },
         400,
       );
-    return failureResponse(error);
+    const response = failureResponse(error);
+    watch.answered(error, response, access.failed);
+    return response;
   } finally {
     deadline?.dispose();
   }
