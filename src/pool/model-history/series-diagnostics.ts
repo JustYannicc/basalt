@@ -1,5 +1,9 @@
 import { ControlFailure } from "../json.ts";
-import { historyTimeoutReason, type HistoryTimeoutReason } from "./series-deadline.ts";
+import {
+  HistoryTooLarge,
+  historyTimeoutReason,
+  type HistoryTimeoutReason,
+} from "./series-deadline.ts";
 
 export type HistorySeriesPhase =
   | "signed_envelope_validation"
@@ -13,6 +17,7 @@ export type HistorySeriesFailure =
   | "unauthorized"
   | "invalid_input"
   | "database_error"
+  | "history_too_large"
   | "transport"
   | "unknown";
 export interface HistorySeriesObservation {
@@ -29,6 +34,7 @@ export interface HistorySeriesDiagnostics {
 export function historySeriesFailure(error: unknown): HistorySeriesFailure {
   const timeout = historyTimeoutReason(error);
   if (timeout) return timeout;
+  if (error instanceof HistoryTooLarge) return "history_too_large";
   if (error instanceof ControlFailure) {
     if (error.status === 401 || error.status === 403) return "unauthorized";
     if (error.status === 400) return "invalid_input";
