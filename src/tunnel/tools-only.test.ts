@@ -44,13 +44,13 @@ const toolList = { jsonrpc: "2.0", id: 1, result: { tools: [{ name: "synthetic_t
 
 test("a tools-only tunnel opens and calls a tool while the pool service fails", async () => {
   let poolCalls = 0;
-  const gateway: { path: string; method: string }[] = [];
+  const gateway: { path: string; method: string; bearer: string | null }[] = [];
   const env: TunnelEnvironment = {
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     TOOLS_SERVICE: {
       fetch: async (request) => {
         const path = new URL(request.url).pathname;
-        const call = { path, method: request.method };
+        const call = { path, method: request.method, bearer: request.headers.get("authorization") };
         gateway.push(call);
         return path === "/api/auth/native/access"
           ? Response.json(toolsOnly)
@@ -102,9 +102,10 @@ test("a tools-only tunnel opens and calls a tool while the pool service fails", 
   );
   assert.deepEqual(JSON.parse(Buffer.concat(data).toString()), toolList);
   assert.equal(frames.at(-1)?.type, "end");
+  // With no lease, the tools gateway's check of the device's own bearer guards every tool call.
   assert.deepEqual(gateway, [
-    { path: "/api/auth/native/access", method: "GET" },
-    { path: "/mcp", method: "POST" },
+    { path: "/api/auth/native/access", method: "GET", bearer: "Bearer synthetic-native" },
+    { path: "/mcp", method: "POST", bearer: "Bearer synthetic-native" },
   ]);
   assert.equal(poolCalls, 0);
   assert.deepEqual(socket.closed, [], "the session stays open for the next call");

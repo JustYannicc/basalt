@@ -515,7 +515,7 @@ test("a device holding a model key still revokes it through Home", async () => {
   assert.equal((await p.f.registry())[computer.id]?.state, "revoked");
 });
 
-test("Connect cannot revoke a tools-only device behind its sign-in's back", async () => {
+test("Connect's revoke of a keyless native device names its grant and needs no Home", async () => {
   const p = protocol();
   const intent = await p.f.intent(owner);
   const response = await p.control("register", {
@@ -526,11 +526,23 @@ test("Connect cannot revoke a tools-only device behind its sign-in's back", asyn
     models: false,
   });
   const { computer } = (await response.json()) as { computer: { id: string } };
-  // Its tools answer to its grant at the tools service, so only revoking that grant revokes it.
-  const refused = await p.f.action("revoke", owner, intent, { id: computer.id });
-  assert.equal(refused.status, 409, await refused.clone().text());
-  assert.equal((await p.f.registry())[computer.id]?.state, "active");
-  const identity = { grant: "native:tools-only", computer: computer.id, pool: pool.pool };
-  assert.equal((await p.control("revoke", identity)).status, 200);
+  p.f.server.stopped = true;
+  const revoked = await p.f.action("revoke", owner, intent, { id: computer.id });
+  assert.equal(revoked.status, 200, await revoked.clone().text());
+  // Its tools answer to that grant at the tools service, so the setup host revokes it next.
+  assert.deepEqual(await revoked.json(), { toolsKeyId: null, grant: "native:tools-only" });
+  assert.equal((await p.f.action("revoked", owner, intent, { id: computer.id })).status, 200);
   assert.equal((await p.f.registry())[computer.id]?.state, "revoked");
+});
+
+test("revoking a model device after a lost mint reply removes the key Home kept", async () => {
+  const p = protocol();
+  const { computer } = await p.register();
+  p.f.server.mintReplyFailure = true;
+  await assert.rejects(p.model(computer.id), /unavailable/);
+  p.f.server.mintReplyFailure = false;
+  assert.equal(p.f.server.keys.length, 1, "Home made a key whose reply was lost");
+  assert.equal((await p.f.registry())[computer.id]?.keyId, undefined);
+  assert.equal((await p.control("revoke", { computer: computer.id, pool: pool.pool })).status, 200);
+  assert.equal(p.f.server.keys.length, 0);
 });

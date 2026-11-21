@@ -10,6 +10,7 @@ import { fixture } from "./native-device-fixture.ts";
 import { fixture as poolFixture, pool } from "../../src/pool/test/computers.ts";
 import { nativeControlPath } from "../../src/pool/native-contract.ts";
 import { failureResponse } from "../../src/pool/json.ts";
+import { handleSetup } from "../../src/setup/host.ts";
 
 const origin = "http://localhost:3000";
 const form = { "content-type": "application/x-www-form-urlencoded" };
@@ -107,7 +108,7 @@ async function device(t: TestContext, models: boolean) {
         resource: `${origin}/native`,
       }),
     });
-  return { ...running, f, team, tokens, access, refresh };
+  return { ...running, f, team, intent, tokens, access, refresh };
 }
 
 test("a tools-only device keeps its access check and refresh while the pool's control plane fails", async (t) => {
@@ -160,4 +161,31 @@ test("a device with models still asks the pool on every check and refresh", asyn
   assert.equal(d.asked(), down + 1);
   assert.equal((await d.refresh(d.tokens.refresh_token)).status, 503);
   assert.ok(d.asked() > down + 1, "the refresh asked the pool too");
+});
+
+test("revoking a tools-only device on Connect signs it out at the tools service", async (t) => {
+  const d = await device(t, false);
+  const { policy } = await (await d.access(d.tokens.access_token)).json();
+  // A device without a model key holds nothing at Home, so a stopped container changes nothing.
+  d.p.server.stopped = true;
+  const removed = await handleSetup(
+    new Request(
+      `${origin}/setup/v1/computers/${policy.computer}?intent=${encodeURIComponent(d.intent)}`,
+      { method: "DELETE", headers: { cookie: d.f.cookies, origin } },
+    ),
+    {
+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
+      TOOLS_SERVICE: { fetch: (request) => d.f.handler(request) },
+      POOL_SERVICE: {
+        fetch: (request) => {
+          d.p.advance(Date.now() - d.p.now());
+          return d.p.setup(request);
+        },
+      },
+    },
+  );
+  assert.equal(removed.status, 200, await removed.clone().text());
+  assert.equal((await d.access(d.tokens.access_token)).status, 401);
+  assert.equal((await d.refresh(d.tokens.refresh_token)).status, 400);
+  assert.equal((await d.p.registry())[policy.computer]?.state, "revoked");
 });
