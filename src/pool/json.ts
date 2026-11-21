@@ -18,8 +18,11 @@ export interface PoolFailureDiagnostic {
     | "timeout"
     | "runtime_unhealthy"
     | "storage"
+    | "runtime_refused"
     | "unknown";
   backendStatus?: number;
+  /** The selected runtime's closed refusal code, e.g. `runtime_endpoint_identity_slot_identity`. */
+  runtime?: string;
   reason?: NativePolicyReason;
   leaseMs?: number;
   phase?: NativePolicyInstallObservation["phase"];
@@ -40,6 +43,7 @@ const diagnosticFailures = new Set<PoolFailureDiagnostic["failure"]>([
   "timeout",
   "runtime_unhealthy",
   "storage",
+  "runtime_refused",
   "unknown",
 ]);
 
@@ -70,6 +74,11 @@ export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagn
       diagnostic.reason === "lease_window" &&
       isNativePolicyLeaseMs(diagnostic.leaseMs)
         ? { leaseMs: diagnostic.leaseMs }
+        : {}),
+      ...(diagnostic.failure === "runtime_refused" &&
+      // Built only from the closed step and reason lists in runtime-route-diagnostic.ts.
+      /^runtime_[a-z_]{1,80}$/u.test(diagnostic.runtime ?? "")
+        ? { runtime: diagnostic.runtime }
         : {}),
       ...(typeof backendStatus === "number" &&
       Number.isInteger(backendStatus) &&
