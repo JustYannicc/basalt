@@ -79,6 +79,40 @@ test("the origin is the stage's own: https, carrying its stage label, never prod
   }
 });
 
+test("a resolver drops every trailing dot, so production's zone with several is still production's", async () => {
+  // URL decodes percent escapes and maps the ideographic and full-width stops to dots first.
+  for (const tail of ["..", "...", ".%2E", "%2E%2E", ".。", "．｡"])
+    await assert.rejects(
+      registerRehearsalAcceptanceDevice(
+        { ...input, origin: `https://rehearsal-3.${brand.zone}${tail}` },
+        untouched,
+      ),
+      /production's host/u,
+      JSON.stringify(tail),
+    );
+  // No resolver names a host with an empty label, so none is sent to.
+  for (const origin of [
+    "https://app..rehearsal-3.stage.example",
+    "https://app.rehearsal-3..stage.example",
+  ])
+    await assert.rejects(
+      registerRehearsalAcceptanceDevice({ ...input, origin }, untouched),
+      /empty label/u,
+      origin,
+    );
+  for (const origin of [
+    "https://app.rehearsal-3.stage.example..",
+    "https://app.rehearsal-3.stage.example.。/",
+  ]) {
+    let sent: string | undefined;
+    await registerRehearsalAcceptanceDevice({ ...input, origin }, async (url) => {
+      sent = String(url);
+      return new Response(null, { status: 403 });
+    }).catch(() => {});
+    assert.equal(sent, `https://app.rehearsal-3.stage.example${nativeControlPath}`, origin);
+  }
+});
+
 test("the stage pool's own registration makes a models-only device the release then signs for", async () => {
   const f = fixture();
   const device = await registerRehearsalAcceptanceDevice(

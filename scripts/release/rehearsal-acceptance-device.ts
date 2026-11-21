@@ -46,11 +46,14 @@ function rehearsalOnly(stage: string) {
 function stageOrigin(stage: string, value: string) {
   const origin = URL.parse(value);
   if (origin?.protocol !== "https:") throw new Error("Give the stage's https origin");
-  // URL lowercases the host; a trailing dot names the same host.
-  const host = origin.hostname.replace(/\.$/u, "");
+  // URL lowercases the host, decodes percent escapes and maps the ideographic and full-width stops
+  // to dots. A resolver drops every trailing dot, so they all name the same host.
+  const host = origin.hostname.replace(/\.+$/u, "");
+  const labels = host.split(".");
+  if (labels.includes("")) throw new Error("The origin's host has an empty label");
   if (host === brand.zone || host.endsWith(`.${brand.zone}`))
     throw new Error("The origin is production's host or under its zone");
-  if (!host.split(".").includes(stage.replace(/^test-/u, "")))
+  if (!labels.includes(stage.replace(/^test-/u, "")))
     throw new Error("The origin's host does not carry the stage's label (rehearsal-<n>)");
   origin.hostname = host;
   return origin;
