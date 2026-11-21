@@ -217,20 +217,22 @@ export function patternForConfig(file: string, root = repository) {
   return "^(?:" + [...new Set(titles)].map(escape).join("|") + ")$";
 }
 
-export function declaredMatrices(selected: readonly string[] | null = null, root = repository) {
-  const { groups, files } = readDeclarations(root);
+/** Every (group, file) pair a declared matrix job runs, keyed by that job. */
+export function declaredRuns(
+  selected: readonly string[] | null = null,
+  declarations = readDeclarations(),
+) {
+  const { groups, files } = declarations;
   return Object.fromEntries(
     targets.map((target) => [
       "declared-" + target,
-      {
-        include: Object.entries(files)
-          .filter(([file]) => selected === null || selected.includes(file))
-          .flatMap(([file, entry]) =>
-            [...new Set(Object.values(entry.runs).flat())]
-              .filter((id) => groups[id]!.matrix && groups[id]!.target === target)
-              .map((group) => ({ file, group, key: group.replaceAll(":", "-") })),
-          ),
-      },
+      Object.entries(files)
+        .filter(([file]) => selected === null || selected.includes(file))
+        .flatMap(([file, entry]) =>
+          [...new Set(Object.values(entry.runs).flat())]
+            .filter((id) => groups[id]!.matrix && groups[id]!.target === target)
+            .map((group) => ({ group, file })),
+        ),
     ]),
   );
 }

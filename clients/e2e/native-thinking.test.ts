@@ -104,7 +104,7 @@ test("revoke cancels native thinking and refuses subsequent HTTP and WebSocket o
         reject(new Error("Revoked WebSocket admitted."));
       });
     });
-    assert.equal(status, 503);
+    assert.equal(status, 401);
     assert.equal(calls, 1);
   } finally {
     await f.close();

@@ -78,11 +78,54 @@ test("known reference units and unknown tiers never acquire a shared guessed uni
   );
 });
 
-test("expired seed facts become unknown independently of background refresh", () => {
-  const weight = capacityWeight("codex", "Pro (Max)", 604_800, { now: clock + 30 * 86_400_000 });
-  assert.equal(weight.known, false);
-  assert.equal(weight.multiplier, 1);
-  assert.match(weight.unit.id, /promax/);
+test("expired facts keep their last known value until a source decides", () => {
+  const current = capacityWeight("codex", "Pro (Max)", 604_800);
+  const aged = clock + 30 * 86_400_000;
+  const weight = capacityWeight("codex", "Pro (Max)", 604_800, { now: aged });
+  assert.equal(weight.known, true);
+  assert.equal(weight.multiplier, current.multiplier);
+  assert.deepEqual(weight.unit, current.unit);
+  assert.equal(weight.revision, current.revision);
+  assert.ok(weight.allowance!.expiresAt! <= aged);
+  assert.match(weight.allowance!.detail!, /source expired/);
+});
+
+test("a newer revocation or a live row still decides over an expired value", () => {
+  const now = clock + 30 * 86_400_000;
+  const entry = {
+    vendor: "openai",
+    plan: "promax",
+    windowSeconds: 604_800,
+    full: 50,
+    unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+    kind: "vendor" as const,
+    verification: "verified" as const,
+    sources: ["https://example.test/allowances.json"],
+    checkedAt: clock - 86_400_000,
+    fetchedAt: clock,
+    expiresAt: clock + 86_400_000,
+    revision: "synthetic-50",
+  };
+  const revoked = { ...entry, full: null, verification: "unknown" as const, fetchedAt: clock + 1 };
+  const unknown = capacityWeight("codex", "Pro (Max)", 604_800, {
+    now,
+    catalog: { entries: [entry, revoked] },
+  });
+  assert.equal(unknown.known, false);
+  const unlimited = {
+    ...entry,
+    full: null,
+    unlimited: true,
+    checkedAt: now - 1,
+    expiresAt: now + 1,
+  };
+  assert.equal(
+    capacityWeight("codex", "Pro (Max)", 604_800, {
+      now,
+      catalog: { entries: [entry, unlimited] },
+    }).known,
+    false,
+  );
 });
 
 test("Max 20x counts as twenty weekly units under the pool's plan policy", () => {
@@ -98,4 +141,77 @@ test("Max 20x counts as twenty weekly units under the pool's plan policy", () =>
     assert.equal(capacityWeight(provider, "Ultra", 604_800).multiplier, 10);
     assert.equal(capacityWeight(provider, "Ultra", 604_800).revision, "2026-11-09");
   }
+});
+
+test("an expired plan keeps the row that last decided, not the latest fetched", () => {
+  const expiry = clock + 86_400_000;
+  const row = {
+    vendor: "anthropic",
+    plan: "max_20x",
+    windowSeconds: 18_000,
+    unit: { id: "claude-pro-equivalent", label: "Pro-eq" },
+    sources: ["https://example.test/allowances.json"],
+  };
+  const policy = {
+    ...row,
+    full: 20,
+    kind: "policy" as const,
+    verification: "policy" as const,
+    checkedAt: clock - 86_400_000,
+    fetchedAt: clock - 86_400_000,
+    expiresAt: expiry,
+    revision: "policy-20",
+  };
+  const calibration = {
+    ...row,
+    full: 900_000,
+    unit: { id: "observed-tokens", label: "tokens" },
+    kind: "account-calibration" as const,
+    verification: "verified" as const,
+    checkedAt: expiry - 4 * 3_600_000,
+    fetchedAt: expiry + 3_600_000,
+    expiresAt: expiry - 2 * 3_600_000,
+    revision: "calibration-900000",
+  };
+  const weight = capacityWeight("claude", "Max 20x", 18_000, {
+    now: expiry + 2 * 3_600_000,
+    catalog: { entries: [policy, calibration] },
+  });
+  assert.equal(weight.revision, "policy-20");
+  assert.equal(weight.multiplier, 20);
+  const otherRevocation = {
+    ...policy,
+    full: null,
+    kind: "dataset" as const,
+    verification: "unknown" as const,
+    sourceId: "dataset",
+    fetchedAt: expiry + 3_600_000,
+    revision: "dataset-revoked",
+  };
+  assert.equal(
+    capacityWeight("claude", "Max 20x", 18_000, {
+      now: expiry + 2 * 3_600_000,
+      catalog: { entries: [{ ...policy, sourceId: "pool-policy" }, otherRevocation] },
+    }).revision,
+    "policy-20",
+  );
+
+  const disagreeing = {
+    ...row,
+    windowSeconds: 604_800,
+    checkedAt: clock - 86_400_000,
+    fetchedAt: clock,
+    expiresAt: expiry,
+    verification: "verified" as const,
+  };
+  const contradicted = capacityWeight("claude", "Max 20x", 604_800, {
+    now: expiry + 3_600_000,
+    catalog: {
+      entries: [
+        { ...disagreeing, full: 20, kind: "dataset" as const, revision: "dataset-20" },
+        { ...disagreeing, full: 15, kind: "vendor" as const, revision: "vendor-15" },
+      ],
+    },
+  });
+  assert.equal(contradicted.known, false);
 });
