@@ -38,6 +38,8 @@ interface Dependencies {
   now: () => number;
   run: <A>(work: (registry: Registry) => Promise<A>) => Promise<A>;
   save: (registry: Registry) => Promise<unknown>;
+  /** Revokes the computer's Home keys, shared with upkeep finishing a left-behind revoke. */
+  revokeKeys: (computer: StoredComputer) => Promise<void>;
 }
 interface Identity {
   user: string;
@@ -86,12 +88,12 @@ export async function revocableKeys(computer: StoredComputer, home: ComputerHome
   return home.find(computer.id).catch((error: unknown) => {
     console.error(
       "Native revocation could not look for an unrecorded model key",
-      mintFailure(error),
+      homeFailure(error),
     );
     return [];
   });
 }
-const mintFailure = (error: unknown) =>
+export const homeFailure = (error: unknown) =>
   error instanceof HomeTransportFailure
     ? error.errorClass
     : error instanceof BackendFailure
@@ -202,8 +204,7 @@ export class NativeComputers {
         delete computer.link;
         await this.deps.save(registry);
         // The saved state stops requests and active streams before Home cleanup can fail.
-        for (const id of await revocableKeys(computer, this.deps.home))
-          await this.deps.home.revoke(id);
+        await this.deps.revokeKeys(computer);
         delete computer.native.key;
         computer.state = "revoked";
         computer.revokedAt ??= new Date(this.deps.now()).toISOString();
@@ -367,7 +368,7 @@ export class NativeComputers {
     const first = await this.forward(request, url, value, caller);
     if (!(first instanceof KeyRequest)) return first;
     await this.provision(first).catch((error: unknown) => {
-      console.error("Native model key could not be minted", mintFailure(error));
+      console.error("Native model key could not be minted", homeFailure(error));
     });
     const second = await this.forward(request, url, value, caller);
     return second instanceof KeyRequest ? modelsUnavailable() : second;

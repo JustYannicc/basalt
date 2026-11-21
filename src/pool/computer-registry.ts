@@ -31,6 +31,8 @@ export interface StoredComputer {
   switchingTo?: string;
   link?: SealedLink;
   beforeRemoval?: { state: StoredComputer["state"]; link?: SealedLink };
+  /** Upkeep revoked its Home keys; a web setup's tools token still waits for the person's revoke. */
+  homeKeysRevokedAt?: string;
 }
 export interface ComputerStorage {
   get<T>(key: string): Promise<T | undefined>;
