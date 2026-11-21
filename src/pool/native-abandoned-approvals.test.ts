@@ -8,7 +8,7 @@ import { signEnvelope } from "./token.ts";
 const minute = 60_000;
 type Fixture = ReturnType<typeof fixture>;
 
-/** The row an approval wrote before its model key, as releases before #1580 left it when minting failed. */
+/** The row approvals wrote before minting, as releases before #1580 left it when the mint failed. */
 async function leftIssuing(f: Fixture, id: string, extra: Partial<StoredComputer> = {}) {
   const at = new Date(f.now()).toISOString();
   const row: StoredComputer = {
@@ -62,7 +62,7 @@ test("an issuing row of an approval still in progress stays through upkeep", asy
   const f = fixture();
   await leftIssuing(f, "approving");
   const written = f.now();
-  // A device request can be approved for ten minutes after it starts; the bound keeps a wide margin.
+  // A device request can be approved for ten minutes after it starts; the bound keeps a margin.
   for (const at of [10, 59]) {
     f.advance(written + at * minute - f.now());
     await f.expire();
