@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { Effect, Layer, Logger, Option, Redacted, References } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { SqlClient } from "effect/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import { load } from "./pool-access-fixture.ts";
 
@@ -22,10 +22,16 @@ const sqlRequire = createRequire(
 );
 const { PgliteClient } = await import(sqlRequire.resolve("@effect/sql-pglite/PgliteClient"));
 const { cloudAuthOptions } = await load("apps/hosted/cloud/src/implementation/auth-options.ts");
-const { organizationCreationCheck } = await load(
-  "apps/hosted/cloud/src/implementation/organization-check.ts",
+// Typed, so the root type check covers the check and the decision it maps.
+const {
+  organizationCreationCheck,
+}: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/organization-check.ts") =
+  await load("apps/hosted/cloud/src/implementation/organization-check.ts");
+const {
+  makeOnboarding,
+}: typeof import("../../.upstream/apps/hosted/cloud/src/implementation/onboarding.ts") = await load(
+  "apps/hosted/cloud/src/implementation/onboarding.ts",
 );
-const { makeOnboarding } = await load("apps/hosted/cloud/src/implementation/onboarding.ts");
 const { companyLookupDisabled } = await load(
   "apps/hosted/cloud/src/implementation/company-profile.ts",
 );
@@ -62,9 +68,12 @@ const organizationEndpoint = (
   run: (fixture: {
     readonly sql: SqlClient.SqlClient;
     readonly logs: ReadonlyArray<Logged>;
-    readonly signIn: (email: string, verified: boolean) => Effect.Effect<Headers>;
+    readonly signIn: (
+      email: string,
+      verified: boolean,
+    ) => Effect.Effect<Headers, SqlError.SqlError>;
     readonly create: (headers: Headers, slug: string) => Effect.Effect<Response>;
-  }) => Effect.Effect<void, unknown, never>,
+  }) => Effect.Effect<void, SqlError.SqlError>,
 ) =>
   Effect.runPromise(
     Effect.scoped(
@@ -177,11 +186,11 @@ const organizationEndpoint = (
         const auth = betterAuth(options);
         const signIn = (email: string, verified: boolean) =>
           Effect.gen(function* () {
-            const signed = yield* Effect.promise(() =>
+            const signed = yield* Effect.promise<{ readonly user: { readonly id: string } }>(() =>
               auth.api.signUpEmail({ body: { name: "Fixture Person", email, password } }),
             );
             yield* sql`update "user" set "emailVerified" = true where id = ${signed.user.id}`;
-            const response: Response = yield* Effect.promise(() =>
+            const response = yield* Effect.promise<Response>(() =>
               auth.api.signInEmail({ asResponse: true, body: { email, password } }),
             );
             assert.equal(response.status, 200, yield* Effect.promise(() => response.text()));
@@ -215,7 +224,7 @@ const organizationEndpoint = (
           );
         yield* run({ sql, logs, signIn, create });
       }),
-    ).pipe(Effect.provide(pgliteLayer())) as Effect.Effect<void, unknown, never>,
+    ).pipe(Effect.provide(pgliteLayer())) as Effect.Effect<void, SqlError.SqlError>,
   );
 
 const reasons = (logs: ReadonlyArray<Logged>) =>
