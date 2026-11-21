@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-location-free-source-maps",
+  "file": "0707-alchemy-location-free-source-maps.patch",
+  "content_sha256": "4e5d9346eea46fdaddf3a1e440405063f47fab50b2e161858e28f54c61a6b7d9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release builds a Worker to the same bytes from any checkout and dependency store location; remove after the two-checkout source/lib proof passes without it."
+}
