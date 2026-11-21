@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { heavyJobs } from "./ci/areas.ts";
+import { boatJobs } from "./ci/boat.ts";
 import { readDeclarations } from "./ci/declarations.ts";
 import { gateErrors } from "./ci/gate.ts";
 import { selectPaths } from "./ci/affected.ts";
@@ -214,4 +215,49 @@ test("account usage has its own required budget without changing its approved pr
     .filter((proof: { scenario: string }) => proof.scenario === "accountCompactRows");
   assert.equal(proofs.length, 2);
   assert.ok(proofs.every((proof: { job: string }) => proof.job === "account-usage"));
+});
+
+test("account acquisition's self-host proof runs in two required jobs with the same setup", () => {
+  const declarations = readDeclarations();
+  for (const [id, job, timeout] of [
+    [
+      "account-acquisition:reusable-acquisition-and-retained-account-compatibility",
+      "account-acquisition",
+      30,
+    ],
+    [
+      "account-observations:driver-readings-health-and-observation-compatibility",
+      "account-observations",
+      25,
+    ],
+  ] as const) {
+    assert.equal(declarations.groups[id]!.job, job, id);
+    const definition = workflow.jobs[job];
+    assert.equal(definition["timeout-minutes"], timeout, job);
+    assert.equal(definition.needs, "select", job);
+    assert.ok(heavyJobs.includes(job) && boatJobs.includes(job), job);
+    assert.ok(workflow.jobs.check.needs.includes(job), job);
+    assert.deepEqual(
+      definition.steps
+        .filter((step: { run?: string }) => step.run?.includes("e2e-pattern.ts " + id))
+        .map((step: { run: string }) => step.run),
+      [
+        `bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts ${id})" --workers 1`,
+      ],
+      id,
+    );
+  }
+  const [acquisition, observations] = ["account-acquisition", "account-observations"].map(
+    (id) => workflow.jobs[id].steps,
+  );
+  assert.deepEqual(observations.slice(0, 6), acquisition.slice(0, 6));
+  assert.deepEqual(observations.slice(-2, -1), acquisition.slice(-2, -1));
+  assert.equal(observations.at(-1).with.name, "account-observations-e2e");
+  assert.ok(
+    acquisition.some(
+      (step: { run?: string }) =>
+        step.run ===
+        'bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:local-account-lifetime-and-observation-provenance)" --workers 1',
+    ),
+  );
 });

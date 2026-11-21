@@ -8,6 +8,7 @@ export const boatJobs = [
   "host-managed-accounts-cloud-actions",
   "production-ops",
   "account-acquisition",
+  "account-observations",
   "compiler-diagnostics",
   "pool-runtime",
   "catalog-compat",

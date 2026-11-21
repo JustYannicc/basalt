@@ -2632,6 +2632,7 @@ jobs:
         declared-local,
         declared-cloud,
         account-acquisition,
+        account-observations,
         account-usage,
         clerk-sign-in,
         workos-sign-in,
@@ -2723,6 +2724,7 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
     runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-acquisition') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     # Measured 12.6-20.5 minutes on hosted runners in six full Checks; the slowest was cut at 20.
+    # Its observation half now runs in account-observations.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -2738,11 +2740,11 @@ jobs:
         run: bun run e2e:prepare
       - name: Install Chromium for the account tests
         uses: ./.github/actions/setup-browser
-      - name: Verify reusable acquisition, health and retained account compatibility
+      - name: Verify reusable acquisition and retained account compatibility
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:reusable-acquisition-health-and-retained-account-compatibility)"
+          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:reusable-acquisition-and-retained-account-compatibility)"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
@@ -2756,6 +2758,46 @@ jobs:
         if: always()
         with:
           name: account-acquisition-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  account-observations:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-observations')
+    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-observations') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    # About 1.5x the slower half of the split: at the slowest measured full Check's pace, this job
+    # plans 11.3 minutes and account-acquisition 12.9.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated account test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install Chromium for the account tests
+        uses: ./.github/actions/setup-browser
+      - name: Verify driver readings, health and observation compatibility
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts account-observations:driver-readings-health-and-observation-compatibility)"
+          --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: account-observations-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
