@@ -12,6 +12,7 @@ import {
   logLine,
   observeLimitMs,
   observeSender,
+  recoveryResetSender,
   runCrashDispatch,
   type DispatchDependencies,
   type DispatchInput,
@@ -74,6 +75,9 @@ function world(provider: typeof pins | undefined, observe: DispatchDependencies[
     }),
     rootHealth: async () => {
       throw new Error("root health unavailable");
+    },
+    resetRecovery: async () => {
+      throw new Error("observe never resets recovery");
     },
     sleep: async () => {},
     observe: async (action, ...rest) => {
@@ -633,4 +637,18 @@ test("(f) an observe read waits 30 s for its answer; any other command keeps 15 
   t.mock.timers.tick(15_001);
   await drain(mutating, 5_000);
   assert.equal(mutating(), "AbortError", "the default limit is 15 s");
+  // A recovery reset writes, so it keeps 15 s too.
+  const reset = hung();
+  const resetting = settled(
+    recoveryResetSender(reset.connect)(
+      controllerCode,
+      target,
+      signingKey,
+      `recovery-reset-${crypto.randomUUID()}`,
+    ),
+  );
+  await reset.started;
+  t.mock.timers.tick(15_001);
+  await drain(resetting, 5_000);
+  assert.equal(resetting(), "AbortError", "a recovery reset keeps 15 s");
 });

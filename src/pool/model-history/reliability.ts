@@ -151,23 +151,29 @@ export async function readPoolReliabilityWindows(
       ${
         terminalReady
           ? `UNION ALL
-      SELECT s.pool,$3::character(64) AS source,s.client_key,
+      SELECT f.pool,$3::character(64) AS source,f.client_key,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS failed,f.status AS status_code,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS unassigned,NULL::text AS raw_at,f.finished_at
-      FROM basalt_model_terminal_finishes f
-      CROSS JOIN LATERAL (SELECT s.pool,s.request_id,s.client_key FROM basalt_model_terminal_starts s
-        WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+      FROM (
+        SELECT s.pool,s.request_id,s.client_key,f.outcome,f.status,f.finished_at
+        FROM basalt_model_terminal_finishes f
+        CROSS JOIN LATERAL (SELECT s.pool,s.request_id,s.client_key FROM basalt_model_terminal_starts s
+          WHERE s.request_id=f.request_id AND s.pool=$1 LIMIT 1) s
+        WHERE ${finishedTimeRange}
+          AND f.outcome <> 'unavailable'
+          -- recent_home holds at least one Home attempt of every request that finished in the window
+          -- and has one.
+          AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)
+        -- Only the few finishes still without a Home row reach the refusal probe below, which reads
+        -- every Home partition.
+        OFFSET 0
+      ) f
       -- A Home attempt or a gateway refusal with this id already counts the request. A keyed probe:
       -- as a NOT EXISTS the planner anti-joins the pool's whole history.
       LEFT JOIN LATERAL (SELECT true AS counted FROM basalt_model_requests h
-        WHERE h.pool=s.pool AND h.source=ANY($2::character(64)[]) AND h.source<>$3
-          AND h.request_id IS NOT NULL AND h.request_id=s.request_id::text LIMIT 1) refusal ON true
-      WHERE ${finishedTimeRange}
-        AND f.outcome <> 'unavailable'
-        AND refusal.counted IS NULL
-        -- recent_home holds at least one Home attempt of every request that finished in the window
-        -- and has one.
-        AND NOT EXISTS (SELECT 1 FROM recent_home h WHERE h.request_id=s.request_id::text)`
+        WHERE h.pool=f.pool AND h.source=ANY($2::character(64)[]) AND h.source<>$3
+          AND h.request_id IS NOT NULL AND h.request_id=f.request_id::text LIMIT 1) refusal ON true
+      WHERE refusal.counted IS NULL`
           : ""
       }
     )
