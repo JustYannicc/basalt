@@ -72,6 +72,7 @@ function workspace(parent: string, name: string) {
     `import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 const [step, output] = process.argv.slice(2);
+if (process.env.FAKE_FAIL === step) process.exit(3);
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.BUILD_MS ?? 0));
 mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, step + ' ' + process.env.BUILD_MARK);
 if (step === 'e2e:runtime') writeFileSync(output + '.map', '{}');
@@ -288,3 +289,45 @@ test("box jobs share one cache directory per Check; hosted jobs name none", () =
   assert.match(step, /\[ -n "\$\{BASALT_BOX_SHARED:-\}" \] && \[ -d "\$BASALT_BOX_SHARED" \]/);
   assert.equal(action.match(/EXECUTOR_E2E_CACHE/g)?.length, 1);
 });
+
+const locksIn = (directory: string): string[] =>
+  existsSync(directory)
+    ? readdirSync(directory, { recursive: true, encoding: "utf8" }).filter((name) =>
+        name.endsWith(".lock"),
+      )
+    : [];
+
+test(
+  "a failed or killed build releases its lock, so the next run neither waits nor hangs",
+  sandbox(async (parent) => {
+    const root = workspace(parent, "a");
+    const shared = join(parent, "shared");
+    const cache = { CI: "true", EXECUTOR_E2E_CACHE: shared };
+    const failed = spawnSync(process.execPath, ["scripts/e2e-prepare.ts"], {
+      cwd: root,
+      env: base(parent, { ...cache, FAKE_FAIL: "apps:build" }),
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    assert.notEqual(failed.status, 0);
+    assert.deepEqual(locksIn(shared), []);
+    // With the default five-minute bound, a leftover lock would stall this run past its timeout.
+    const started = Date.now();
+    const output = prepareSync(root, parent, cache);
+    assert.doesNotMatch(output, /Waiting for another job/);
+    assert.ok(Date.now() - started < 30_000);
+    // A holder killed mid-build releases its lock too.
+    rmSync(shared, { recursive: true });
+    const child = spawn(process.execPath, ["scripts/e2e-prepare.ts"], {
+      cwd: root,
+      env: base(parent, { ...cache, BUILD_MS: "5000" }),
+    });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    for (let tries = 0; locksIn(shared).length === 0 && tries < 100; tries++)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(locksIn(shared).length, 1);
+    child.kill("SIGTERM");
+    await exited;
+    assert.deepEqual(locksIn(shared), []);
+  }),
+);

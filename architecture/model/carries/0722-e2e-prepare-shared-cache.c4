@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "e2e:prepare builds each step once for every job that names the same cache: in CI the cache is used only when EXECUTOR_E2E_CACHE names one, and an unset or empty variable builds every step as before. The first job takes a lock per step and key, a directory created atomically; the others wait for its entry and restore it, and a lock older than its bound is taken over. An entry is keyed on every input of its step, so a changed input never restores an old entry. When route generation changes the self-host web key during its build, the outputs are stored under the key the waiters claimed as well. Box jobs share one directory per Check run, so one Check cannot restore another's outputs."
+      constraint "e2e:prepare builds each step once for every job that names the same cache: in CI the cache is used only when EXECUTOR_E2E_CACHE names one, and an unset or empty variable builds every step as before. The first job takes a lock per step and key, a directory created atomically and marked with its owner; the others wait for its entry and restore it. A holder releases its own lock however it ends, including a failed build and SIGINT or SIGTERM, and a lock older than its bound is taken over. An entry is keyed on every input of its step, so a changed input never restores an old entry. When route generation changes the self-host web key during its build, the outputs are stored under the key the waiters claimed as well. Box jobs use one directory per Check run, which keeps Checks from reusing each other's outputs by accident; it is not a boundary between jobs, since every CI container on the box can write the shared mount."
     }
   }
 }

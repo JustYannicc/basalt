@@ -27,7 +27,8 @@ runs:
         path: ${{ steps.binary.outputs.archive }}
         key: ${{ steps.binary.outputs.key }}
     # On the box, every CI container sees one writable directory; this Check's jobs share their own
-    # e2e:prepare cache in it, so each step builds once per Check. Hosted runners build their own.
+    # e2e:prepare cache in it, so each step builds once per Check. Hosted runners build their own, and
+    # the release runners, self-hosted too, get no BASALT_BOX_SHARED from the box.
     - name: Share e2e build outputs among this Check's jobs on the box
       if: runner.environment == 'self-hosted'
       shell: bash

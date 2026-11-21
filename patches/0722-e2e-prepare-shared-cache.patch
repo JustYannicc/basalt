@@ -24,30 +24,59 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const cacheRoot =
    process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");
  
-@@ -245,6 +250,42 @@ const store = (step: Step, entry: string) => {
+@@ -245,6 +250,71 @@ const store = (step: Step, entry: string) => {
      fs.rmSync(path.join(directory, old.name), { recursive: true, force: true });
  };
  
-+/** A lock older than this is a dead holder's: the next waiter removes it and builds. */
-+const staleLock = Number(process.env.EXECUTOR_E2E_LOCK_STALE_MS) || 20 * 60_000;
++/**
++ * A lock older than this is a dead holder's: the next waiter removes it and builds. Taking over
++ * from a live holder costs only a duplicate build, since stores are atomic, so the bound is short.
++ */
++const staleLock = Number(process.env.EXECUTOR_E2E_LOCK_STALE_MS) || 5 * 60_000;
 +const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
++const owner = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2)}`;
++/** The lock this process holds, released on every way out. */
++let held: string | undefined;
++const release = () => {
++  if (held === undefined) return;
++  const lock = held;
++  held = undefined;
++  try {
++    // A waiter may have taken the lock over; only its own lock is removed.
++    if (fs.readFileSync(path.join(lock, "owner"), "utf8") === owner)
++      fs.rmSync(lock, { recursive: true, force: true });
++  } catch {}
++};
++process.on("exit", release);
++for (const signal of ["SIGINT", "SIGTERM"] as const)
++  process.on(signal, () => {
++    release();
++    process.exit(signal === "SIGINT" ? 130 : 143);
++  });
 +
 +/**
 + * Waits until `entry` exists, or holds its lock. Returns true to restore the entry, false once
 + * this process holds the lock and must build. A directory is the lock: creating one is atomic.
 + */
 +const claim = (entry: string, lock: string) => {
++  let waiting = false;
 +  for (;;) {
 +    if (fs.existsSync(entry)) return true;
 +    try {
 +      fs.mkdirSync(path.dirname(lock), { recursive: true });
 +      fs.mkdirSync(lock);
++      held = lock;
++      fs.writeFileSync(path.join(lock, "owner"), owner);
 +      // Another holder may have stored the entry between the check and the claim.
 +      if (!fs.existsSync(entry)) return false;
-+      fs.rmSync(lock, { recursive: true, force: true });
++      release();
 +      return true;
 +    } catch (error) {
 +      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
++    }
++    if (!waiting) {
++      console.log(`Waiting for another job's build of ${path.basename(path.dirname(lock))}.`);
++      waiting = true;
 +    }
 +    let age = 0;
 +    try {
@@ -67,7 +96,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
  const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
  
-@@ -276,7 +317,10 @@ function prepare() {
+@@ -276,7 +346,10 @@ function prepare() {
      if (key !== undefined) keys.set(step.name, key);
      let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
      if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
@@ -79,14 +108,14 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
      if (restored) {
        restore(step, entry);
        // Recently used entries are the last to be removed.
-@@ -302,6 +346,10 @@ function prepare() {
+@@ -302,6 +375,10 @@ function prepare() {
        fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
      }
      if (!restored && entry !== undefined) store(step, entry);
 +    // Route generation can change the key while building; the outputs still answer the inputs
 +    // the waiters keyed on, so they are stored under that key too.
 +    if (!restored && claimed !== undefined && claimed !== entry) store(step, claimed);
-+    if (!restored && lock !== undefined) fs.rmSync(lock, { recursive: true, force: true });
++    release();
      summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
    }
    console.log(
