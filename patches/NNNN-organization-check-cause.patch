@@ -1,0 +1,57 @@
+diff --git a/apps/hosted/cloud/src/implementation/organization-check.ts b/apps/hosted/cloud/src/implementation/organization-check.ts
+new file mode 100644
+index 0000000..6d98c69
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/organization-check.ts
+@@ -0,0 +1,17 @@
++import { APIError } from "better-auth/api";
++import { Effect } from "effect";
++import type { Onboarding } from "../contracts/onboarding.ts";
++
++/** Better Auth's create check. Fails closed: an unanswered check refuses the create. */
++export const organizationCreationCheck = (
++  onboarding: Pick<typeof Onboarding.Service, "allowsOrganization">,
++  userId: string,
++) =>
++  onboarding.allowsOrganization(userId).pipe(
++    Effect.mapError(
++      () =>
++        new APIError("SERVICE_UNAVAILABLE", {
++          message: "We could not check your account. Try again.",
++        }),
++    ),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index 060abd7..f83918e 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -3,6 +3,7 @@ import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
+ import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
+ import { authObservability } from "../implementation/auth-observability.ts";
+ import { withOrganizationAccessRequest } from "../implementation/organization-access-request.ts";
++import { organizationCreationCheck } from "../implementation/organization-check.ts";
+ import { AsyncLocalStorage } from "node:async_hooks";
+ import { APIError } from "better-auth/api";
+ import { OrganizationId } from "@executor-js/hosted-server";
+@@ -144,20 +145,9 @@ export const cloudAuth = (
+             Effect.provideService(CurrentUsage, { source: "dashboard" }),
+           ),
+         ),
+-      // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
+       onboarding === undefined
+         ? undefined
+-        : (userId) =>
+-            runCallback(
+-              onboarding.allowsOrganization(userId).pipe(
+-                Effect.mapError(
+-                  () =>
+-                    new APIError("SERVICE_UNAVAILABLE", {
+-                      message: "We could not check your account. Try again.",
+-                    }),
+-                ),
+-              ),
+-            ),
++        : (userId) => runCallback(organizationCreationCheck(onboarding, userId)),
+       {
+         onRefreshRejected: observation.refreshRejected,
+         // A person approved a new agent, by consent or by a device's code: the agent can connect.

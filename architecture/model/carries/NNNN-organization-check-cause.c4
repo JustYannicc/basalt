@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Creating an organization fails closed on the account check. An account whose email is not verified is refused with a status and message that say to verify it, because retrying cannot help; a v1 lookup or store that does not answer stays the retryable 503. Every failed check logs its reason, never the email, account or token."
+    }
+  }
+}
