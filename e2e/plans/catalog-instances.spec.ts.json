@@ -1,9 +1,26 @@
 {
   "scenarios": {
-    "catalogInstances": {
+    "catalogInstancesTracker": {
+      "fixtures": "actors",
+      "title": "catalog instances open each named tracker from one entry on desktop and phone",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned catalog for the UI journey."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises hosted service claims and organization inventory."
+        }
+      }
+    },
+    "catalogInstancesPool": {
       "fixtures": "actors",
       "legacyStorage": true,
-      "title": "catalog instances keep every service family reachable and create another explicitly",
+      "title": "catalog instances keep a retained pool reachable and create another pool explicitly",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -17,10 +34,35 @@
           "reason": "This scenario exercises hosted service claims and organization inventory."
         }
       }
+    },
+    "catalogInstancesMail": {
+      "fixtures": "actors",
+      "title": "catalog instances reuse mail on Add and create another without copying its links",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned catalog for the UI journey."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises hosted service claims and organization inventory."
+        }
+      }
     }
   },
   "runs": {
-    "catalogInstances": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
+    "catalogInstancesTracker": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "catalogInstancesPool": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ],
+    "catalogInstancesMail": [
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
+    ]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
