@@ -72,6 +72,10 @@ func writeHead(w http.ResponseWriter, resp *http.Response) {
 		header[name] = append([]string(nil), values...)
 	}
 	stripHop(header)
+	// A nil Content-Type stops the server from sniffing one the node never sent.
+	if _, ok := header["Content-Type"]; !ok {
+		header["Content-Type"] = nil
+	}
 	for name := range resp.Trailer {
 		header.Add("Trailer", name)
 	}

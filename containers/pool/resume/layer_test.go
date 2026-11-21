@@ -224,6 +224,21 @@ func TestUpstreamCutAbortsInsteadOfEndingCleanly(t *testing.T) {
 	}
 }
 
+func TestNoHeaderTheNodeDidNotSend(t *testing.T) {
+	upstream := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["Content-Type"] = nil
+		_, _ = w.Write([]byte("<html>plain bytes</html>"))
+	})
+	layer := newLayerServer(t, upstream)
+	direct, _ := rawCall(t, upstream.server.URL, "GET /v1/models HTTP/1.1\r\nHost: pool\r\n\r\n")
+	through, _ := rawCall(t, layer.URL, "GET /v1/models HTTP/1.1\r\nHost: pool\r\n\r\n")
+	for name := range through.Header {
+		if name != "Date" && name != "Content-Length" && direct.Header.Get(name) != through.Header.Get(name) {
+			t.Fatalf("header %s: direct %q, through the layer %q", name, direct.Header.Get(name), through.Header.Get(name))
+		}
+	}
+}
+
 func TestTrailersPassThrough(t *testing.T) {
 	upstream := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Trailer", "X-Final")
