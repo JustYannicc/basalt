@@ -260,7 +260,7 @@ jobs:
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
           # Not secret: the registered models-only device acceptance signs a fresh assertion for,
           # per model call, with POOL_APP_SIGNING_KEY.
-          POOL_ACCEPTANCE_DEVICE: ${{ vars.POOL_ACCEPTANCE_DEVICE }}
+          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
         run: bun scripts/release/deploy.ts preflight --stage production
       # A declared root restart stops the stuck root, and the restart after it reads the provider
       # with the pool Worker's own token. Two reads through that Worker, before anything is planned

@@ -104,7 +104,7 @@ test("an acceptance that could not test stops the run red without rolling back",
   );
 });
 
-test("release acceptance signs for a device named by a variable; no stored model key remains", () => {
+test("release acceptance signs for a device named by a masked secret; no stored model key remains", () => {
   assert.doesNotMatch(workflow, /POOL_ACCEPTANCE_KEY/u);
   for (const name of [
     "Record the root's boot before the apply",
@@ -114,7 +114,8 @@ test("release acceptance signs for a device named by a variable; no stored model
     const env = parsedSteps.find((entry) => entry.name === name)?.env as
       | Record<string, string>
       | undefined;
-    assert.equal(env?.POOL_ACCEPTANCE_DEVICE, "${{ vars.POOL_ACCEPTANCE_DEVICE }}", name);
+    // A secret, not a variable: GitHub prints a step's env in its log and masks only secrets.
+    assert.equal(env?.POOL_ACCEPTANCE_DEVICE, "${{ secrets.POOL_ACCEPTANCE_DEVICE }}", name);
     assert.equal(env?.POOL_APP_SIGNING_KEY, "${{ secrets.POOL_APP_SIGNING_KEY }}", name);
     // Mid-rotation acceptance signs with the previous key, which both Workers accept.
     assert.equal(

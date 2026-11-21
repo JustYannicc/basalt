@@ -38,7 +38,7 @@ const misnamed = (why: string) =>
   new AcceptanceDeviceRefused({
     field: "POOL_ACCEPTANCE_DEVICE",
     why,
-    fix: "set the POOL_ACCEPTANCE_DEVICE repository variable to the device's JSON: computer, grant, user and pool",
+    fix: "set the POOL_ACCEPTANCE_DEVICE secret to the device's JSON: computer, grant, user and pool",
   });
 
 /**
