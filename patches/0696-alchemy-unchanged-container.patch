@@ -1,0 +1,310 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -7954,3 +7954,306 @@
+  }) => (importPath: string) => string;
+  /**
+   * The default source provider: bundle `props.main` with rolldown.
++diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
++index 75ee7f1..543fb4b 100644
++--- a/src/Cloudflare/Workers/WorkerProvider.ts
+++++ b/src/Cloudflare/Workers/WorkerProvider.ts
++@@ -4947,6 +4947,7 @@ export const LiveWorkerProvider = () =>
++           olds,
++           output,
++           newBindings,
+++          oldBindings,
++         }) {
++           const { accountId } = yield* yield* CloudflareEnvironment;
++           // Effect-valued `env` entries (tagged Worker classes / resource
++@@ -5094,35 +5095,98 @@ export const LiveWorkerProvider = () =>
++                   )
++                 : undefined;
++           const urlStable = newUrl !== undefined && newUrl === output.url;
++-          // `durableObjectNamespaces` maps each hosted DO class name to the
++-          // namespace id Cloudflare assigned it. Those ids are permanent for
++-          // the lifetime of a (worker, class) pair, so the map only changes
++-          // when a class is added or removed — never on a plain code/config
++-          // update. Carry it forward as a stable whenever the set of local DO
++-          // class names is unchanged, for the same reason as `url` above:
++-          // downstream resources that bind a DO namespace via
++-          // `worker.durableObjectNamespaces[name]` (e.g. a Container attached
++-          // to a DO) must resolve it to a concrete value during planning.
++-          // Otherwise the binding holds an unresolved Output, which
++-          // `diffBindings` treats as "changed", spuriously re-updating the
++-          // bound resource on every deploy. Class names are structural (not the
++-          // namespace id), so this comparison holds even when `newBindings` is
++-          // otherwise unresolved.
++-          const newDoClassNames = Array.isArray(newBindings)
++-            ? getExpectedDurableObjectClassNames(
++-                (newBindings as ResourceBinding<Worker["Binding"]>[]).flatMap(
++-                  (b) => b.data.bindings ?? [],
++-                ),
++-                workerName,
++-              ).sort()
++-            : [];
++-          const oldDoClassNames = Object.keys(
++-            output.durableObjectNamespaces ?? {},
++-          ).sort();
+++          // `durableObjectNamespaces` has one namespace id per Durable Object class
+++          // name this Worker binds: the classes it hosts and, because a settings read
+++          // returns an id for those bindings too, classes another Worker hosts. An id
+++          // is permanent for a Worker and a class. Carry the map forward as a stable
+++          // while each class bound now has a recorded id and was bound the same way
+++          // before: hosted here in both, or from the same other Worker in both.
+++          // Downstream resources that bind a DO namespace via
+++          // `worker.durableObjectNamespaces[name]` (e.g. a Container attached to a
+++          // DO) then resolve it during planning instead of re-updating on every
+++          // deploy. A class this Worker starts to host has no id of its own yet,
+++          // even when the map holds that name for another Worker's class. A name
+++          // bound in two ways (hosted and from another Worker, or from two other
+++          // Workers) has one entry for two ids, so nothing is promised then.
+++          // Another Worker's name is an Output in a cycle member's bindings. For a
+++          // plain `env` entry the resolved props carry it; a name that cannot be
+++          // known is never taken for this Worker's own and promises nothing. An
+++          // entry for a class that is no longer bound stays in the map until the
+++          // next record.
+++          const doBindings = (
+++            bindings: unknown,
+++            resolved?: Record<string, unknown>,
+++          ) =>
+++            (Array.isArray(bindings)
+++              ? (bindings as ResourceBinding<Worker["Binding"]>[])
+++              : []
+++            )
+++              .flatMap((b) => b.data.bindings ?? [])
+++              .flatMap((binding) => {
+++                if (
+++                  binding.type !== "durable_object_namespace" ||
+++                  !binding.className
+++                )
+++                  return [];
+++                const declared = binding.scriptName as unknown;
+++                const known = (
+++                  resolved?.[binding.name] as
+++                    | { scriptName?: unknown }
+++                    | undefined
+++                )?.scriptName;
+++                return [
+++                  {
+++                    className: binding.className,
+++                    scriptName:
+++                      declared === undefined ||
+++                      typeof declared === "string" ||
+++                      typeof known !== "string"
+++                        ? declared
+++                        : known,
+++                  },
+++                ];
+++              });
+++          const hostedHere = (binding: { scriptName: unknown }) =>
+++            binding.scriptName === undefined ||
+++            binding.scriptName === workerName;
+++          const sameSource = (
+++            one: { scriptName: unknown },
+++            other: { scriptName: unknown },
+++          ) =>
+++            hostedHere(one)
+++              ? hostedHere(other)
+++              : typeof one.scriptName === "string" &&
+++                one.scriptName === other.scriptName;
+++          const oneSourcePerName = (all: ReturnType<typeof doBindings>) =>
+++            all.every((one) =>
+++              all.every(
+++                (other) =>
+++                  one.className !== other.className || sameSource(one, other),
+++              ),
+++            );
+++          const recordedDoNamespaces = output.durableObjectNamespaces ?? {};
+++          const oldDoBindings = doBindings(oldBindings);
+++          const newDoBindings = doBindings(
+++            newBindings,
+++            news.env as Record<string, unknown> | undefined,
+++          );
++           const doNamespacesStable =
++             oldWorkerName === workerName &&
++-            newDoClassNames.length === oldDoClassNames.length &&
++-            newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
+++            (Array.isArray(newBindings)
+++              ? oneSourcePerName(oldDoBindings) &&
+++                oneSourcePerName(newDoBindings) &&
+++                newDoBindings.every(
+++                  (binding) =>
+++                    Object.hasOwn(recordedDoNamespaces, binding.className) &&
+++                    typeof recordedDoNamespaces[binding.className] ===
+++                      "string" &&
+++                    oldDoBindings.some(
+++                      (old) =>
+++                        old.className === binding.className &&
+++                        sameSource(binding, old),
+++                    ),
+++                )
+++              : Object.keys(recordedDoNamespaces).length === 0);
++           // Rows persisted by older releases carried the script *name* in
++           // `workerId` (interrupted precreates a provisional ""). Plan one
++           // update even when nothing else changed, so reconcile re-records
++diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
++index 9f1bdc5..0542e50 100644
++--- a/lib/Cloudflare/Workers/WorkerProvider.js
+++++ b/lib/Cloudflare/Workers/WorkerProvider.js
++@@ -3624,7 +3624,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++                 ]
++                 : []))));
++         }),
++-        diff: Effect.fn(function* ({ id, fqn, news: desired, olds, output, newBindings, }) {
+++        diff: Effect.fn(function* ({ id, fqn, news: desired, olds, output, newBindings, oldBindings, }) {
++             const { accountId } = yield* yield* CloudflareEnvironment;
++             // Effect-valued `env` entries (tagged Worker classes / resource
++             // Effects — the circular-bindings pattern) never resolve at plan
++@@ -3752,27 +3752,63 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
++                             urlHostname(u).startsWith(`${workerName}.`))
++                         : undefined;
++             const urlStable = newUrl !== undefined && newUrl === output.url;
++-            // `durableObjectNamespaces` maps each hosted DO class name to the
++-            // namespace id Cloudflare assigned it. Those ids are permanent for
++-            // the lifetime of a (worker, class) pair, so the map only changes
++-            // when a class is added or removed — never on a plain code/config
++-            // update. Carry it forward as a stable whenever the set of local DO
++-            // class names is unchanged, for the same reason as `url` above:
++-            // downstream resources that bind a DO namespace via
++-            // `worker.durableObjectNamespaces[name]` (e.g. a Container attached
++-            // to a DO) must resolve it to a concrete value during planning.
++-            // Otherwise the binding holds an unresolved Output, which
++-            // `diffBindings` treats as "changed", spuriously re-updating the
++-            // bound resource on every deploy. Class names are structural (not the
++-            // namespace id), so this comparison holds even when `newBindings` is
++-            // otherwise unresolved.
++-            const newDoClassNames = Array.isArray(newBindings)
++-                ? getExpectedDurableObjectClassNames(newBindings.flatMap((b) => b.data.bindings ?? []), workerName).sort()
++-                : [];
++-            const oldDoClassNames = Object.keys(output.durableObjectNamespaces ?? {}).sort();
+++            // `durableObjectNamespaces` has one namespace id per Durable Object class
+++            // name this Worker binds: the classes it hosts and, because a settings read
+++            // returns an id for those bindings too, classes another Worker hosts. An id
+++            // is permanent for a Worker and a class. Carry the map forward as a stable
+++            // while each class bound now has a recorded id and was bound the same way
+++            // before: hosted here in both, or from the same other Worker in both.
+++            // Downstream resources that bind a DO namespace via
+++            // `worker.durableObjectNamespaces[name]` (e.g. a Container attached to a
+++            // DO) then resolve it during planning instead of re-updating on every
+++            // deploy. A class this Worker starts to host has no id of its own yet,
+++            // even when the map holds that name for another Worker's class. A name
+++            // bound in two ways (hosted and from another Worker, or from two other
+++            // Workers) has one entry for two ids, so nothing is promised then.
+++            // Another Worker's name is an Output in a cycle member's bindings. For a
+++            // plain `env` entry the resolved props carry it; a name that cannot be
+++            // known is never taken for this Worker's own and promises nothing. An
+++            // entry for a class that is no longer bound stays in the map until the
+++            // next record.
+++            const doBindings = (bindings, resolved) => (Array.isArray(bindings) ? bindings : [])
+++                .flatMap((b) => b.data.bindings ?? [])
+++                .flatMap((binding) => {
+++                if (binding.type !== "durable_object_namespace" ||
+++                    !binding.className)
+++                    return [];
+++                const declared = binding.scriptName;
+++                const known = resolved?.[binding.name]?.scriptName;
+++                return [
+++                    {
+++                        className: binding.className,
+++                        scriptName: declared === undefined ||
+++                            typeof declared === "string" ||
+++                            typeof known !== "string"
+++                            ? declared
+++                            : known,
+++                    },
+++                ];
+++            });
+++            const hostedHere = (binding) => binding.scriptName === undefined ||
+++                binding.scriptName === workerName;
+++            const sameSource = (one, other) => hostedHere(one)
+++                ? hostedHere(other)
+++                : typeof one.scriptName === "string" &&
+++                    one.scriptName === other.scriptName;
+++            const oneSourcePerName = (all) => all.every((one) => all.every((other) => one.className !== other.className || sameSource(one, other)));
+++            const recordedDoNamespaces = output.durableObjectNamespaces ?? {};
+++            const oldDoBindings = doBindings(oldBindings);
+++            const newDoBindings = doBindings(newBindings, news.env);
++             const doNamespacesStable = oldWorkerName === workerName &&
++-                newDoClassNames.length === oldDoClassNames.length &&
++-                newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
+++                (Array.isArray(newBindings)
+++                    ? oneSourcePerName(oldDoBindings) &&
+++                        oneSourcePerName(newDoBindings) &&
+++                        newDoBindings.every((binding) => Object.hasOwn(recordedDoNamespaces, binding.className) &&
+++                            typeof recordedDoNamespaces[binding.className] ===
+++                                "string" &&
+++                            oldDoBindings.some((old) => old.className === binding.className &&
+++                                sameSource(binding, old)))
+++                    : Object.keys(recordedDoNamespaces).length === 0);
++             // Rows persisted by older releases carried the script *name* in
++             // `workerId` (interrupted precreates a provisional ""). Plan one
++             // update even when nothing else changed, so reconcile re-records
++diff --git a/src/Cloudflare/Containers/ContainerConfiguration.ts b/src/Cloudflare/Containers/ContainerConfiguration.ts
++index a791444..2faf0d0 100644
++--- a/src/Cloudflare/Containers/ContainerConfiguration.ts
+++++ b/src/Cloudflare/Containers/ContainerConfiguration.ts
++@@ -14,10 +14,25 @@ const instanceResources: Record<string, readonly [number, number, number]> = {
++   "standard-4": [4, 12288, 20],
++ };
++ 
++-const comparableValue = (value: unknown) => {
++-  if (value === null || typeof value !== "object" ||
++-    !("image" in value) || typeof value.image !== "string" ||
++-    !("instanceType" in value) || typeof value.instanceType !== "string") return value;
+++// Cloudflare fills these in on readback when a declaration leaves them out.
+++const privateNetwork = { assign_ipv4: "none", assign_ipv6: "none", mode: "private" };
+++const emptyList = (value: unknown) => Array.isArray(value) && value.length === 0;
+++const withoutReadbackDefaults = (value: Record<string, unknown>) => {
+++  const { command, entrypoint, network, runtime, ...rest } = value;
+++  return {
+++    ...rest,
+++    ...(emptyList(command) ? {} : { command }),
+++    ...(emptyList(entrypoint) ? {} : { entrypoint }),
+++    ...(deepEqual(network, privateNetwork) ? {} : { network }),
+++    ...(runtime === "firecracker" ? {} : { runtime }),
+++  };
+++};
+++
+++const comparableValue = (input: unknown) => {
+++  if (input === null || typeof input !== "object" ||
+++    !("image" in input) || typeof input.image !== "string") return input;
+++  const value = withoutReadbackDefaults(input as Record<string, unknown>);
+++  if (!("instanceType" in value) || typeof value.instanceType !== "string") return value;
++   const resources = instanceResources[value.instanceType];
++   if (resources === undefined) return value;
++   const [vcpu, memoryMib, diskGB] = resources;
++diff --git a/lib/Cloudflare/Containers/ContainerConfiguration.js b/lib/Cloudflare/Containers/ContainerConfiguration.js
++index 98d9763..a5ade39 100644
++--- a/lib/Cloudflare/Containers/ContainerConfiguration.js
+++++ b/lib/Cloudflare/Containers/ContainerConfiguration.js
++@@ -12,10 +12,25 @@ const instanceResources = {
++     "standard-3": [2, 8192, 16],
++     "standard-4": [4, 12288, 20],
++ };
++-const comparableValue = (value) => {
++-    if (value === null || typeof value !== "object" ||
++-        !("image" in value) || typeof value.image !== "string" ||
++-        !("instanceType" in value) || typeof value.instanceType !== "string")
+++// Cloudflare fills these in on readback when a declaration leaves them out.
+++const privateNetwork = { assign_ipv4: "none", assign_ipv6: "none", mode: "private" };
+++const emptyList = (value) => Array.isArray(value) && value.length === 0;
+++const withoutReadbackDefaults = (value) => {
+++    const { command, entrypoint, network, runtime, ...rest } = value;
+++    return {
+++        ...rest,
+++        ...(emptyList(command) ? {} : { command }),
+++        ...(emptyList(entrypoint) ? {} : { entrypoint }),
+++        ...(deepEqual(network, privateNetwork) ? {} : { network }),
+++        ...(runtime === "firecracker" ? {} : { runtime }),
+++    };
+++};
+++const comparableValue = (input) => {
+++    if (input === null || typeof input !== "object" ||
+++        !("image" in input) || typeof input.image !== "string")
+++        return input;
+++    const value = withoutReadbackDefaults(input);
+++    if (!("instanceType" in value) || typeof value.instanceType !== "string")
++         return value;
++     const resources = instanceResources[value.instanceType];
++     if (resources === undefined)

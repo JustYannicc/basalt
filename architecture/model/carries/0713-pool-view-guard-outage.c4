@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "A pool overview request whose first head read fails drops any stored result for that request and answers from one uncached read in the same request, so a pool that does not answer shows the app's own answer instead of a storage error. That read keeps its normal request and source authority checks and is never stored. A stored result is served only under readable, equal heads. Expired pre-read snapshots and a failed registration lookup still fail closed. No storage migration or protocol change."
+    }
+  }
+}

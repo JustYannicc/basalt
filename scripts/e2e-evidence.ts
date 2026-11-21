@@ -21,6 +21,7 @@ const diagnosticFiles = new Set([
   "physical-state-digests.ndjson",
   "physical-provisioning-completed.json",
   "sso-idp.log",
+  "autumn-emulator.log",
 ]);
 
 /** Assertion captures share the connector scrubber; arbitrary values never enter retained reports. */

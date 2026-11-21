@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "63ce3252864b0bd1933b10cd1e65ffac65d312f9279ae1c59a2f3c6a4083e582" }
+    metadata { bindings "c5dfcabc10f3a373184bc35f7375abd61d4849b01fe4a52273ba857435d1d481" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -11,13 +11,6 @@ deployment {
       storage resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b "Site Assets" {
         app = instanceOf assetsService {
           metadata { resource "resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b" }
-        }
-      }
-    }
-    zone group-55fe64b854913132 "Build" {
-      workflow resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef "Pool Image Publication Receipt" {
-        app = instanceOf basalt.build {
-          metadata { resource "resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef" }
         }
       }
     }
@@ -58,13 +51,28 @@ deployment {
       }
     }
     zone group-174079402e0ed306 "Model gateway" {
+      storage resource-1b2e51b245a4b8292afba75d0313d225d371d69fa0dcdebad2820f7e68990723 "Pool Observation Secrets" {
+        app = instanceOf basalt.modelGateway {
+          metadata { resource "resource-1b2e51b245a4b8292afba75d0313d225d371d69fa0dcdebad2820f7e68990723" }
+        }
+      }
       worker resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b "Pool Worker" {
         app = instanceOf basalt.modelGateway {
           metadata { resource "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }
         }
+        durableObject resource-2d818455e94cf72ab0eaf8d9c05a82053c1a1c9c13915e520b1ed255aa1a6763 "Pool Runtime Green" {
+          app = instanceOf basalt.poolRuntime {
+            metadata { resource "resource-2d818455e94cf72ab0eaf8d9c05a82053c1a1c9c13915e520b1ed255aa1a6763" }
+          }
+        }
         durableObject resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2 "Pool Container" {
           app = instanceOf basalt.poolController {
             metadata { resource "resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2" }
+          }
+        }
+        durableObject resource-fa7235e17973da715bc94c7c4eca80038ddf36f3ab914eda710f6cd435871814 "Pool Runtime Blue" {
+          app = instanceOf basalt.poolRuntime {
+            metadata { resource "resource-fa7235e17973da715bc94c7c4eca80038ddf36f3ab914eda710f6cd435871814" }
           }
         }
       }
@@ -351,11 +359,6 @@ views {
   deployment view deployment_group_2703341ef73f1544 {
     title "Basalt/Deployment/Asset service"
     include deployed.group-2703341ef73f1544.*
-    autoLayout TopBottom
-  }
-  deployment view deployment_group_55fe64b854913132 {
-    title "Basalt/Deployment/Build"
-    include deployed.group-55fe64b854913132.*
     autoLayout TopBottom
   }
   deployment view worker_resource_150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2 {

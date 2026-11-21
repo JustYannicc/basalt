@@ -20,6 +20,8 @@ interface WindowState {
   pending?: readonly [AllowanceObservation, AllowanceObservation];
   samples: CalibrationSample[];
   allowance?: PlanAllowance;
+  /** The last estimate, kept after it lapses so a re-formed estimate of the same size keeps its revision. */
+  lastAllowance?: PlanAllowance;
 }
 interface Consumption {
   events: readonly MeasuredConsumption[];
@@ -31,6 +33,12 @@ interface AccountInput {
   quota: QuotaObservation;
 }
 const key = (account: string) => `pool-account-allowance-v1:${account}`;
+/** A lapsed estimate older than this is re-baselined, so the size band cannot hide a lasting cut. */
+const carryMs = 7 * 86_400_000;
+const lapsed = (state: WindowState, now: number) => {
+  const value = state.allowance ?? state.lastAllowance;
+  return value && value.checkedAt !== null && now - value.checkedAt < carryMs ? value : undefined;
+};
 
 /** Independent account measurements are shared across pools, never inferred from API prices. */
 export class AccountAllowanceMeasurements {
@@ -95,9 +103,15 @@ export class AccountAllowanceMeasurements {
           previous.last.resetAt === right.resetAt &&
           previous.last.remaining >= right.remaining &&
           right.at >= previous.last.at;
+        const carried =
+          previous?.last.vendor === right.vendor &&
+          previous.last.plan === right.plan &&
+          previous.last.mode === right.mode
+            ? lapsed(previous, now)
+            : undefined;
         const state: WindowState = compatible
           ? { ...previous, samples: [...previous.samples] }
-          : { last: right, samples: [] };
+          : { last: right, samples: [], ...(carried ? { lastAllowance: carried } : {}) };
         if (state.pending && state.pending[1].at <= now - 60_000) {
           const [left, right] = state.pending;
           const rejected = events?.rejected.some(
@@ -116,6 +130,7 @@ export class AccountAllowanceMeasurements {
           } else {
             // Missing or contradictory consumption invalidates the estimate, not just this interval.
             state.samples = [];
+            if (state.allowance) state.lastAllowance = state.allowance;
             delete state.allowance;
           }
           delete state.pending;
@@ -135,15 +150,25 @@ export class AccountAllowanceMeasurements {
           windowSeconds: reading.windowSeconds,
           samples: state.samples,
           now,
-          previous: state.allowance,
+          previous: state.allowance ?? lapsed(state, now),
         });
-        if (allowance)
+        if (allowance) {
           state.allowance = {
             ...allowance,
             expiresAt: Math.min(allowance.expiresAt!, right.resetAt),
           };
-        else delete state.allowance;
+          delete state.lastAllowance;
+        } else {
+          if (state.allowance) state.lastAllowance = state.allowance;
+          delete state.allowance;
+        }
         next.push(state);
+      }
+      // A window this poll could not read keeps its lapsed estimate for when it returns.
+      for (const state of old) {
+        const kept = lapsed(state, now);
+        if (kept && !next.some((value) => value.last.windowSeconds === state.last.windowSeconds))
+          next.push({ last: state.last, samples: [], lastAllowance: kept });
       }
       await this.storage.put(key(account.id), next);
       result.set(

@@ -1,0 +1,409 @@
+diff --git a/e2e/support/browser-clock.ts b/e2e/support/browser-clock.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/browser-clock.ts
+@@ -0,0 +1,36 @@
++import type { Page } from "playwright";
++
++/**
++ * Playwright's controlled clock keeps fractional timer delays, such as a jittered reconnect, so its
++ * `Date.now()` can land between milliseconds; a browser truncates delays and reports whole ones.
++ * Effect converts `Date.now()` to a `BigInt` for every span, so a fractional value fails a request
++ * before it is sent. Runs after the clock replaces `Date`, so it wraps the controlled one.
++ */
++const wholeMilliseconds = () => {
++  const now = Date.now;
++  Date.now = () => Math.floor(now.call(Date));
++};
++
++/** The only way scenarios install the browser clock; `executor/clock-through-helper` enforces it. */
++export const installClock = (page: Page, options?: Parameters<Page["clock"]["install"]>[0]) => {
++  const context = page.context();
++  return context.clock
++    .install(options)
++    .then(() => context.addInitScript(wholeMilliseconds))
++    .then(() =>
++      Promise.all(
++        context
++          .pages()
++          .flatMap((open) => open.frames())
++          .map((frame) =>
++            frame.evaluate(wholeMilliseconds).catch((error: unknown) => {
++              // A frame that navigates meanwhile gets the init script on its next document.
++              if (frame.isDetached() || /context was destroyed|navigat/i.test(String(error)))
++                return;
++              throw error;
++            }),
++          ),
++      ),
++    )
++    .then(() => undefined);
++};
+diff --git a/.oxlintrc.jsonc b/.oxlintrc.jsonc
+--- a/.oxlintrc.jsonc
++++ b/.oxlintrc.jsonc
+@@ -97,9 +97,17 @@
+     },
+     {
+       "files": ["e2e/**"],
+-      "rules": { "executor/no-manual-effect-runtime-in-tests": "error" },
++      "rules": {
++        "executor/no-manual-effect-runtime-in-tests": "error",
++        "executor/clock-through-helper": "error",
++      },
+     },
+     {
++      // The helper itself installs the clock.
++      "files": ["e2e/support/browser-clock.ts"],
++      "rules": { "executor/clock-through-helper": "off" },
++    },
++    {
+       // The evidence viewer is a browser app, not a scenario.
+       "files": ["e2e/viewer/**"],
+       "rules": { "executor/no-manual-effect-runtime-in-tests": "off" },
+diff --git a/e2e/support/query-transition.ts b/e2e/support/query-transition.ts
+--- a/e2e/support/query-transition.ts
++++ b/e2e/support/query-transition.ts
+@@ -1,6 +1,7 @@
+ import { Deferred, Effect } from "effect";
+ import type { Route } from "playwright";
+ import { Browser } from "./browser.ts";
++import { installClock } from "./browser-clock.ts";
+ import { driver } from "./platform.ts";
+ 
+ /**
+@@ -89,7 +90,7 @@
+ export const idleReconciliationMillis = 30_000;
+ /** Install before navigation so scenarios can reach periodic reconciliation without waiting. */
+ export const installBrowserClock = Effect.flatMap(Browser, (browser) =>
+-  browser.use("Control the browser clock", (page) => page.context().clock.install()),
++  browser.use("Control the browser clock", (page) => installClock(page)),
+ );
+ /** Deliver the next idle reconciliation to every page in the browser context. */
+ export const advanceToReconciliation = Effect.flatMap(Browser, (browser) =>
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -136,6 +136,10 @@
+                 ? /Observation service account|Observed identity/
+                 : label;
+             yield* installBrowserClock;
++            // A fractional timer delay can leave the controlled clock between two milliseconds.
++            yield* browser.use("Start the outage between two milliseconds", (page) =>
++              page.context().clock.setSystemTime(Date.now() + 0.5),
++            );
+             const polling = yield* pollingSettlement(f.account, menuName, mode);
+             yield* browser.login(f.actors.owner);
+             const loaded = yield* Effect.forkChild(polling.join(1));
+diff --git a/e2e/support/local-name-account-check.ts b/e2e/support/local-name-account-check.ts
+--- a/e2e/support/local-name-account-check.ts
++++ b/e2e/support/local-name-account-check.ts
+@@ -6,6 +6,7 @@
+ import { appsManifest } from "./apps-release.ts";
+ import { providerAppsCatalog } from "./provider-apps-catalog.ts";
+ import { accountNameField, accountNamePrompt, nameAccountDialog } from "./name-account.ts";
++import { installClock } from "./browser-clock.ts";
+ 
+ /** An ordinary local connection whose external check is held, refused and retried. */
+ export const localNameAccountCheck = (width: number) =>
+@@ -50,7 +51,7 @@
+     );
+     const pairing = yield* session.send("POST", "/auth/pair", undefined, headers);
+     const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
+-    yield* browser.use("Control the account-check deadline", (page) => page.clock.install());
++    yield* browser.use("Control the account-check deadline", (page) => installClock(page));
+     yield* browser.use("Pair the local account-check browser", (page) =>
+       page.goto(url).then(() => page.getByRole("heading", { name: /^Apps/ }).waitFor()),
+     );
+diff --git a/e2e/support/mcp-app-browser.ts b/e2e/support/mcp-app-browser.ts
+--- a/e2e/support/mcp-app-browser.ts
++++ b/e2e/support/mcp-app-browser.ts
+@@ -4,6 +4,7 @@
+ import type { Page, Route } from "playwright";
+ import { randomUUID } from "node:crypto";
+ import type { Browser } from "./browser.ts";
++import { installClock } from "./browser-clock.ts";
+ 
+ const renderer = (page: Page) => page.frameLocator('iframe[title="Executor view"]');
+ const guest = (page: Page) =>
+@@ -178,7 +179,7 @@
+ 
+ export const retryMcpApp = (browser: Browser["Service"]) =>
+   Effect.gen(function* () {
+-    yield* browser.use("Control the renderer loading deadline", (page) => page.clock.install());
++    yield* browser.use("Control the renderer loading deadline", (page) => installClock(page));
+     yield* browser.use("Fail one sandbox document", (page) =>
+       page.route("**/_executor/mcp-sandbox?policy=*", (route) => route.abort("failed"), {
+         times: 1,
+diff --git a/e2e/support/mcp-app-renewal.ts b/e2e/support/mcp-app-renewal.ts
+--- a/e2e/support/mcp-app-renewal.ts
++++ b/e2e/support/mcp-app-renewal.ts
+@@ -1,6 +1,7 @@
+ import { expect } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import type { Browser } from "./browser.ts";
++import { installClock } from "./browser-clock.ts";
+ 
+ const guest = (page: import("playwright").Page) =>
+   page
+@@ -11,7 +12,7 @@
+ export const prepareRenewalDraft = (browser: Browser["Service"], peer: string) =>
+   Effect.gen(function* () {
+     yield* browser.use("Keep the client wall clock five minutes behind the server", (page) =>
+-      page.clock.install({ time: Date.now() - 5 * 60 * 1000 }),
++      installClock(page, { time: Date.now() - 5 * 60 * 1000 }),
+     );
+     yield* browser.use("Open the retained app before callback expiry", (page) => page.goto(peer));
+     yield* browser.use("Wait for the live retained guest", (page) =>
+diff --git a/e2e/tests/billing-polling.spec.ts b/e2e/tests/billing-polling.spec.ts
+--- a/e2e/tests/billing-polling.spec.ts
++++ b/e2e/tests/billing-polling.spec.ts
+@@ -12,6 +12,7 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { batchedReads, batchPath } from "../support/read-batches.ts";
+ import { scenarios } from "../test-plan.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ /** Simulated time, advanced with the browser's clock in small steps. */
+ const idleMinutes = 3;
+@@ -101,7 +102,7 @@
+ 
+         yield* browser.login(actors.owner);
+         yield* browser.use("Control the browser clock and observe billing reads", (page) =>
+-          page.clock.install().then(() => observe(page)),
++          installClock(page).then(() => observe(page)),
+         );
+         yield* browser.use("Open billing", (page) =>
+           page.goto(`/org/${actors.organization.slug}/billing`),
+diff --git a/e2e/tests/dashboard-request-volume.spec.ts b/e2e/tests/dashboard-request-volume.spec.ts
+--- a/e2e/tests/dashboard-request-volume.spec.ts
++++ b/e2e/tests/dashboard-request-volume.spec.ts
+@@ -13,6 +13,7 @@
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { batchedReads, batchPath, type BatchedRead } from "../support/read-batches.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ /** Reads mounted on every app tab; each one used to repeat every five seconds. */
+ const shared = ["app", "links", "inventory"] as const;
+@@ -164,7 +165,7 @@
+ 
+         yield* browser.login(actors.owner);
+         yield* browser.use("Control the browser clock and observe shared reads", (page) =>
+-          page.clock.install().then(() => observe(page)),
++          installClock(page).then(() => observe(page)),
+         );
+         yield* openThroughBrowser(
+           "Open the app overview",
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -2,6 +2,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import type { Page, Request, Route } from "playwright";
++import { installClock } from "../support/browser-clock.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+@@ -607,7 +608,7 @@
+         yield* browser.use("Hold the next app document", (page) =>
+           page.route(`${failing.url}/`, failLater),
+         );
+-        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
++        yield* browser.use("Control the frame loading deadline", (page) => installClock(page));
+         const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
+         const failingLocation = yield* browser.use("Hold the failing app's location", (page) =>
+           holdLocation(page, actors.organization.id, failing.app.id),
+diff --git a/e2e/tests/hidden-section-reads.spec.ts b/e2e/tests/hidden-section-reads.spec.ts
+--- a/e2e/tests/hidden-section-reads.spec.ts
++++ b/e2e/tests/hidden-section-reads.spec.ts
+@@ -9,6 +9,7 @@
+ import { scenarios } from "../test-plan.ts";
+ import { batchedReads, batchPath } from "../support/read-batches.ts";
+ import type { Request } from "playwright";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Hidden section reads", (it) => {
+   for (const width of [1280, 390]) {
+@@ -39,8 +40,7 @@
+           };
+           yield* browser.login(actors.owner);
+           yield* browser.use("Observe real queue reads with the browser clock", (page) =>
+-            page.clock
+-              .install()
++            installClock(page)
+               .then(() =>
+                 page.route(
+                   (url) => queueRead(url.pathname),
+diff --git a/e2e/tests/hitl-intent-prefetch.spec.ts b/e2e/tests/hitl-intent-prefetch.spec.ts
+--- a/e2e/tests/hitl-intent-prefetch.spec.ts
++++ b/e2e/tests/hitl-intent-prefetch.spec.ts
+@@ -10,6 +10,7 @@
+ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { batchedReads, batchPath } from "../support/read-batches.ts";
+ import { scenarios } from "../test-plan.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ type QueueRead = "workflowInputs.list" | "schedules.runs";
+ const queueEndpoint = /^\/api\/organizations\/[^/]+\/(?:workflow-inputs|scheduled-runs)$/;
+@@ -75,8 +76,7 @@
+           yield* browser.login(actors.owner);
+           yield* Effect.acquireRelease(
+             browser.use("Observe queue reads with the browser clock", (page) =>
+-              page.clock
+-                .install()
++              installClock(page)
+                 .then(() =>
+                   // An active route sends a matching batched read as its own request.
+                   page.route(
+diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
+--- a/e2e/tests/hitl-intent-scope.spec.ts
++++ b/e2e/tests/hitl-intent-scope.spec.ts
+@@ -2,6 +2,7 @@
+ import { Deferred, Effect, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+ import type { Locator, Page, Request } from "playwright";
++import { installClock } from "../support/browser-clock.ts";
+ import { body } from "../support/api.ts";
+ import { Target } from "../support/platform.ts";
+ import { Browser } from "../support/browser.ts";
+@@ -159,8 +160,7 @@
+           yield* browser.login(actors.owner);
+           yield* Effect.acquireRelease(
+             browser.use("Observe queue reads with the browser clock", (page) =>
+-              page.clock
+-                .install()
++              installClock(page)
+                 .then(() =>
+                   // An active route sends a matching batched read as its own request.
+                   page.route(
+diff --git a/e2e/tests/query-refresh.spec.ts b/e2e/tests/query-refresh.spec.ts
+--- a/e2e/tests/query-refresh.spec.ts
++++ b/e2e/tests/query-refresh.spec.ts
+@@ -13,6 +13,7 @@
+ import type { Route } from "playwright";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
+   it.effect(scenarios.membersRefresh.title, (context) =>
+@@ -257,7 +258,7 @@
+         let directoryReads = 0;
+         yield* browser.login(actors.owner);
+         yield* browser.use("Control the browser clock and count directory reads", (page) =>
+-          page.clock.install().then(() =>
++          installClock(page).then(() =>
+             page.on("request", (request) => {
+               if (request.method() === "GET" && directory.test(new URL(request.url()).pathname))
+                 directoryReads += 1;
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -13,6 +13,7 @@
+ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { batchedReads, batchPath } from "../support/read-batches.ts";
+ import { scenarios } from "../test-plan.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ type SettingsRead = "members" | "invitations" | "billing";
+ const membersPath = "/api/auth/organization/list-members";
+@@ -111,7 +112,7 @@
+           yield* browser.login(session);
+           yield* Effect.acquireRelease(
+             browser.use("Observe settings reads with the browser clock", (page) =>
+-              page.clock.install().then(() => {
++              installClock(page).then(() => {
+                 page.on("request", record);
+                 page.on("requestfinished", finished);
+                 page.on("requestfailed", failed);
+diff --git a/e2e/tests/superseded-reads.spec.ts b/e2e/tests/superseded-reads.spec.ts
+--- a/e2e/tests/superseded-reads.spec.ts
++++ b/e2e/tests/superseded-reads.spec.ts
+@@ -7,6 +7,7 @@
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { scenarios } from "../test-plan.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ /** Billing's overview is the page's only polled read, so each poll sends it on its own. */
+ const overview = "**/api/organizations/*/billing";
+@@ -60,7 +61,7 @@
+ 
+         yield* browser.login(actors.owner);
+         yield* browser.use("Control the browser clock and observe billing reads", (page) =>
+-          page.clock.install().then(() => observe(page)),
++          installClock(page).then(() => observe(page)),
+         );
+         yield* browser.use("Open billing", (page) =>
+           page.goto(`/org/${actors.organization.slug}/billing`),
+diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
+--- a/e2e/tests/workflow-input-browser.spec.ts
++++ b/e2e/tests/workflow-input-browser.spec.ts
+@@ -12,6 +12,7 @@
+ import { workflowDisplayFiles } from "../support/workflow-display-app.ts";
+ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
++import { installClock } from "../support/browser-clock.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Human workflow requests", (it) => {
+   it.effect(scenarios.workflowInputBrowser.title, (context) =>
+@@ -353,9 +354,7 @@
+           page.getByRole("alert").first().waitFor(),
+         );
+         expect((yield* f.rows()).body).toEqual([]);
+-        yield* browser.use("Control the display's elapsed lifetime", (page) =>
+-          page.clock.install(),
+-        );
++        yield* browser.use("Control the display's elapsed lifetime", (page) => installClock(page));
+         yield* browser.use("Advance close to callback expiry without replaying timers", (page) =>
+           page.clock.fastForward(14.6 * 60000),
+         );
+diff --git a/scripts/oxlint-plugin.ts b/scripts/oxlint-plugin.ts
+--- a/scripts/oxlint-plugin.ts
++++ b/scripts/oxlint-plugin.ts
+@@ -508,6 +508,36 @@
+   }),
+ });
+ 
++/** `<anything>.clock.install(...)`, from a page or its browser context. */
++const installsClock = (callee: ESTree.Node) =>
++  callee.type === "MemberExpression" &&
++  !callee.computed &&
++  callee.property.type === "Identifier" &&
++  callee.property.name === "install" &&
++  callee.object.type === "MemberExpression" &&
++  !callee.object.computed &&
++  callee.object.property.type === "Identifier" &&
++  callee.object.property.name === "clock";
++
++const clockThroughHelper = defineRule({
++  meta: {
++    type: "problem",
++    docs: {
++      description:
++        "Install Playwright's browser clock explicitly only through installClock; methods that install it implicitly are not checked.",
++    },
++    messages: {
++      direct:
++        "Use installClock from e2e/support/browser-clock.ts: Playwright's controlled Date.now() can return fractional milliseconds, which fail every Effect span, and the helper keeps it whole like a browser.",
++    },
++  },
++  create: (context) => ({
++    CallExpression(node) {
++      if (installsClock(node.callee)) context.report({ node: node.callee, messageId: "direct" });
++    },
++  }),
++});
++
+ /** The flags `Schema.isPattern` can export: Unicode, optionally with `d`, `g` or `y`. */
+ const exportableFlags = /^[dg]*uy?$/u;
+ 
+@@ -556,5 +586,6 @@
+     "account-middleware-through-helper": accountMiddlewareThroughHelper,
+     "exportable-schema-pattern": exportableSchemaPattern,
+     "authored-code-through-adapter": authoredCodeThroughAdapter,
++    "clock-through-helper": clockThroughHelper,
+   },
+ });

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runtimeProofFixture } from "../../scripts/release-barrier/test/runtime-proof-fixture.ts";
-import { canonical, digest } from "../../scripts/release-barrier/manifest.ts";
-import { runtimeApplicationConfigDigest } from "../../scripts/release-barrier/runtime-slot-provider-proof.ts";
+import { runtimeProofFixture } from "../../scripts/pool-fleet/test/runtime-proof-fixture.ts";
+import { canonical, digest } from "../../scripts/pool-fleet/manifest.ts";
+import { runtimeApplicationConfigDigest } from "../../scripts/pool-fleet/runtime-slot-manifest.ts";
 import { decodeProviderApplication } from "./runtime-provider/application.ts";
 import { providerDigest } from "./runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "./runtime-provider/settings.ts";

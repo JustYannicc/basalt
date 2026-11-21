@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  appendFileSync,
+  cpSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { arch } from "node:os";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadVerified, verifyArchive } from "./verified-download.mjs";
 
@@ -79,6 +88,36 @@ export function preparePoolCompatibilityContext(
   );
 }
 
+// The prepared context pins the compatibility images' inputs (base images by digest, release
+// archives by SHA-256) and the recipe files say which target becomes which tag with which flags, so
+// together they key the built-image cache: any changed path, mode or byte builds them again. The
+// frozen Dockerfile's few unpinned Alpine packages keep the versions of the build that filled the
+// cache, as the historical image kept those of its own build.
+export const compatibilityImageRecipe = [
+  ".github/actions/pool-compatibility-images/action.yml",
+  "scripts/ci/pool-image-build.sh",
+];
+
+export function compatibilityImagesKey(context: string, architecture: string, root: string) {
+  const hash = createHash("sha256").update(architecture);
+  for (const file of compatibilityImageRecipe)
+    hash.update(JSON.stringify([file])).update(readFileSync(join(root, file)));
+  const files = readdirSync(context, { recursive: true, encoding: "utf8" }).sort();
+  for (const file of files) {
+    const path = join(context, file);
+    const stat = lstatSync(path);
+    if (stat.isDirectory()) continue;
+    if (!stat.isFile())
+      throw new Error("Unexpected non-file in pool compatibility context: " + file);
+    hash.update(JSON.stringify([relative(context, path), stat.mode & 0o777, stat.size]));
+    hash.update(readFileSync(path));
+  }
+  return `pool-compatibility-images-v1-${architecture}-${hash.digest("hex")}`;
+}
+
+const dockerArchitectures: Partial<Record<string, string>> = { x64: "amd64", arm64: "arm64" };
+const dockerArchitecture = () => dockerArchitectures[arch()] ?? arch();
+
 function main(mode: string | undefined) {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   if (!process.env.RUNNER_TEMP) throw new Error("Expected runner temp directory");
@@ -108,6 +147,11 @@ function main(mode: string | undefined) {
   } else if (mode === "context" && process.argv[3]) {
     preparePoolCompatibilityContext(root, process.argv[3], cache, manifest);
     console.log("Compatibility image build consumes verified archives offline");
+    if (process.env.GITHUB_OUTPUT)
+      appendFileSync(
+        process.env.GITHUB_OUTPUT,
+        `context=${process.argv[3]}\nkey=${compatibilityImagesKey(process.argv[3], dockerArchitecture(), root)}\n`,
+      );
   } else throw new Error("Expected identify, warm, verify or context with its path");
 }
 
