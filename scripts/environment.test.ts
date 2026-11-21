@@ -554,3 +554,22 @@ test("a rehearsal lane's observation token or its absent reaches the stack, thro
     undefined,
   );
 });
+
+test("carry 0719's switch is set on every disposable stage and refused for production", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  for (const subject of [
+    { kind: "rehearsal", number: 4 },
+    { kind: "pr", number: 9 },
+  ] as const)
+    assert.equal(stageEnvironment(subject, source).deploy.EXECUTOR_APP_HOST_ROUTER, "basalt");
+  assert.throws(
+    () => deployEnvironment({ EXECUTOR_APP_HOST_ROUTER: "basalt" }),
+    /Unsupported production override: EXECUTOR_APP_HOST_ROUTER/,
+  );
+});
