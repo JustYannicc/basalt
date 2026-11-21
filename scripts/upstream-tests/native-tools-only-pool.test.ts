@@ -168,6 +168,7 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
   const [computer] = Object.keys(await d.p.registry());
   // A device without a model key holds nothing at Home, so a stopped container changes nothing.
   d.p.server.stopped = true;
+  const answers: { path: string; status: number }[] = [];
   const removed = await handleSetup(
     new Request(
       `${origin}/setup/v1/computers/${computer}?intent=${encodeURIComponent(d.intent)}`,
@@ -175,7 +176,14 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
     ),
     {
       POOL_APP_SIGNING_KEY: "ab".repeat(32),
-      TOOLS_SERVICE: { fetch: (request) => d.f.handler(request) },
+      TOOLS_SERVICE: {
+        fetch: async (request) => {
+          const response = await d.f.handler(request);
+          const call = { path: new URL(request.url).pathname, status: response.status };
+          answers.push(call);
+          return response;
+        },
+      },
       POOL_SERVICE: {
         fetch: (request) => {
           d.p.advance(Date.now() - d.p.now());
@@ -184,7 +192,7 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
       },
     },
   );
-  assert.equal(removed.status, 200, await removed.clone().text());
+  assert.equal(removed.status, 200, `${await removed.clone().text()} ${JSON.stringify(answers)}`);
   const grant = await d.f.adapter.findOne<{ revoked: boolean }>({
     model: "mcpGrant",
     where: [{ field: "userId", value: d.f.userId }],

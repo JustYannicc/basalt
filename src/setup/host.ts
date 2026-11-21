@@ -177,9 +177,9 @@ async function deleteTools(request: Request, env: SetupEnv, keyId: string): Prom
 async function revokeGrant(request: Request, env: SetupEnv, id: string): Promise<void> {
   const response = await native(request, env, "mcp/grants/revoke", { id });
   await response.body?.cancel();
-  // The session was just checked, so 401 means the grant is already revoked or was never recorded.
-  if (response.ok || response.status === 401) return;
-  throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
+  // Fails closed: a device whose grant may still be live must not be reported as removed.
+  if (!response.ok)
+    throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
 }
 
 function quote(value: string): string {
