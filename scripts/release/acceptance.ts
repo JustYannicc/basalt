@@ -1,4 +1,19 @@
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import {
+  healingAcceptanceWithinMs,
+  healingReadinessWithinMs,
+} from "../../src/pool/runtime-slots/forced-restart-timing.ts";
+
+/**
+ * How long a healing release waits for recovery on a new boot. After a failed apply, readiness
+ * never proved that the controller object adopted the new code, so the wait budgets that adoption
+ * too. It ends at the first ready read either way.
+ */
+export function healingWait(applyOutcome: string | undefined) {
+  return applyOutcome === "failure"
+    ? { name: "healingReadinessWithinMs", seconds: healingReadinessWithinMs / 1_000 }
+    : { name: "healingAcceptanceWithinMs", seconds: healingAcceptanceWithinMs / 1_000 };
+}
 
 /**
  * The release's own acceptance through the public pool: one warm-up, a concurrent burst, one final
@@ -132,7 +147,9 @@ export async function awaitRecoveryReady(options: {
     }
     await sleep(interval);
   }
-  return unfinished(`not ready within ${Math.round(options.withinMs / 1000)} s of the apply`);
+  return unfinished(
+    `not ready within ${Math.round(options.withinMs / 1000)} s of acceptance's start`,
+  );
 }
 
 /**

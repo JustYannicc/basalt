@@ -4,6 +4,8 @@ import type { TransactionStorage } from "./runtime-slots/storage.ts";
 const Time = Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)));
 const Deadlines = Schema.Struct({ home: Time, fleet: Time });
 const key = "pool-alarm-v1:deadlines";
+// An isolate checks for a missing alarm at most this often, so the check costs a request nothing.
+const ensureSpacingMs = 5_000;
 interface Storage extends TransactionStorage {
   getAlarm(): Promise<number | null>;
   setAlarm(at: number): Promise<void>;
@@ -13,9 +15,37 @@ interface Storage extends TransactionStorage {
 export class PoolAlarms {
   private storage: Storage;
   private now: () => number;
+  private ensuredAt = -Infinity;
   constructor(storage: Storage, now = Date.now) {
     this.storage = storage;
     this.now = now;
+  }
+  /**
+   * With no alarm set, both owners run now. Each owner re-arms its own deadline, but nothing does
+   * once a handler failed past the platform's retries or no owner ever armed one, and then
+   * recovery and membership upkeep never run again: a code upload alone runs nothing. Returns
+   * nothing, and starts no work, when this isolate already checked within the spacing.
+   */
+  ensure(): Promise<void> | undefined {
+    const now = this.now();
+    if (now - this.ensuredAt < ensureSpacingMs) return undefined;
+    this.ensuredAt = now;
+    return this.armMissing(now);
+  }
+  private async armMissing(now: number) {
+    // A set alarm can still be later than a stored deadline, when another writer replaced it.
+    if ((await this.storage.getAlarm()) !== null) return this.rearm();
+    // One write for both owners: a `take()` between two writes would see only one of them due.
+    await this.storage.transaction(async (transaction) => {
+      const raw = await transaction.get(key);
+      const value =
+        raw === undefined ? { home: null, fleet: null } : Schema.decodeUnknownSync(Deadlines)(raw);
+      await transaction.put(key, {
+        home: value.home === null ? now : Math.min(now, value.home),
+        fleet: value.fleet === null ? now : Math.min(now, value.fleet),
+      });
+    });
+    await this.rearm();
   }
   async schedule(owner: "home" | "fleet", at: number) {
     if (!Number.isSafeInteger(at) || at < 0) throw new Error("Invalid pool alarm deadline");
