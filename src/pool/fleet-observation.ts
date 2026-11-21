@@ -11,25 +11,14 @@ export const poolObservationStore = () =>
   Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
 
 /**
- * The account token the observation secret holds. Provisioning created this row with exactly these
- * props, so declaring them here makes a plain plan adopt it as a noop instead of orphaning it.
- * Its value is never bound: the Worker reads it from the Secrets Store.
+ * The operator's credential bootstrap owns the account token and writes its value into the store
+ * (scripts/pool-credential-bootstrap.ts); deployment binds the account store and stable name. No
+ * stack declares the token: production's State never held one, so a declaration would mint a new
+ * account token whose value nothing stores.
  */
-export const poolObservationToken = (accountId: string, stage: string) => {
-  const token = Cloudflare.ApiToken.AccountApiToken(
-    "PoolProviderObservationToken",
-    poolObservationTokenProps(accountId, stage),
-  );
-  // Production keeps the token provisioning created; a disposable stage's token goes with the stage.
-  return stage === "production" ? token.pipe(retain()) : token;
-};
-
-/** Provisioning owns the secret value; deployment binds the account store and stable name. */
 export const bindPoolObservationSecret = (worker: Cloudflare.Worker) =>
   Effect.gen(function* () {
     const stage = yield* Stage;
-    const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
-    yield* poolObservationToken(accountId, stage);
     const store = yield* poolObservationStore();
     yield* worker.bind("pool-provider-observation", {
       bindings: [
@@ -52,6 +41,7 @@ export const bindPoolObservation = (worker: Cloudflare.Worker, fleetDeclared: bo
     if (fleetDeclared || (yield* Stage) === "production") yield* bindPoolObservationSecret(worker);
   });
 
+/** The read-only account token the bootstrap mints: Containers Read on the deployment account. */
 export function poolObservationTokenProps(accountId: string, stage: string) {
   return {
     accountId,

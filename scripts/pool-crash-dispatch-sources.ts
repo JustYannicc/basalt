@@ -1,6 +1,9 @@
 import { Schema } from "effect";
+import { decodeProviderApplication } from "../src/pool/runtime-provider/application.ts";
+import { ProviderObservationTarget } from "../src/pool/runtime-provider/observation.ts";
 import type { ControllerCode } from "../src/pool/runtime-slots/contract.ts";
 import type { PoolOperationsTarget } from "./pool-operations.ts";
+import { providerApplicationPins } from "./pool-fleet/pins.ts";
 import { BarrierRefusal } from "./pool-fleet/refusal.ts";
 
 // Live production sources for the crash dispatch: the run history and the deployed release target.
@@ -23,6 +26,28 @@ export type RootApplication = {
   imageDigest: string;
   imageInput: string;
 };
+
+/**
+ * The pins the Worker's provider observation compares, from the same live root application read and
+ * through the controller's own decoder, so a refusal speaks for the Worker's binding rather than for
+ * drift between two records. A rolling, unattached or unpinned application has no target the
+ * controller would accept, so none is built.
+ */
+export function providerTarget(
+  raw: unknown,
+  accountId: string,
+): ProviderObservationTarget | undefined {
+  try {
+    const application = decodeProviderApplication(raw);
+    if (application.activeRolloutId || application.accountId !== accountId) return undefined;
+    return Schema.decodeUnknownSync(ProviderObservationTarget, { onExcessProperty: "error" })(
+      // Same cast as pins.ts: an unattached application has no namespace, so this throws to undefined.
+      providerApplicationPins(application as Parameters<typeof providerApplicationPins>[0]),
+    );
+  } catch {
+    return undefined;
+  }
+}
 
 /** The dispatch title is the only durable record a fresh runner has of earlier nonces. */
 export const workflowRunLister =
@@ -71,7 +96,7 @@ export async function readReleaseTarget(
     connect?: PoolOperationsTarget["connect"];
     code?: ControllerCode;
   } = {},
-): Promise<ReleaseTarget & { root: RootApplication }> {
+): Promise<ReleaseTarget & { root: RootApplication; provider?: ProviderObservationTarget }> {
   const { CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: apiToken } = env;
   if (!accountId || !apiToken)
     throw new BarrierRefusal("crash-dispatch-release-state-credentials-unavailable", "PoolWorker");
@@ -81,7 +106,7 @@ export async function readReleaseTarget(
     import("./pool-fleet/controller.ts"),
   ]);
   const access = { accountId, apiToken, fetch: io.fetch ?? globalThis.fetch, origin: io.origin };
-  const { worker, root } = await Effect.runPromise(
+  const { worker, root, provider } = await Effect.runPromise(
     Effect.gen(function* () {
       const worker = yield* cloudflare.poolWorkerName(access);
       const bindings = yield* cloudflare.workerPlainBindings(access, worker);
@@ -90,14 +115,16 @@ export async function readReleaseTarget(
         "POOL_CONTAINER_APPLICATION_ID",
       );
       const imageInput = yield* cloudflare.requireBinding(bindings, "POOL_IMAGE_HASH");
+      const raw = yield* cloudflare.containerApplication(access, applicationId);
       const application = Schema.decodeUnknownSync(
         Schema.Struct({
           version: Schema.Number,
           configuration: Schema.Struct({ image: Schema.String }),
         }),
-      )(yield* cloudflare.containerApplication(access, applicationId));
+      )(raw);
       return {
         worker,
+        provider: providerTarget(raw, accountId),
         root: {
           applicationId,
           applicationVersion: String(application.version),
@@ -132,5 +159,5 @@ export async function readReleaseTarget(
     // Signed with this checkout's code; the dispatch's own inspect, signed with the packet's code,
     // reports any refusal. The Worker's bindings still name the root.
   }
-  return { accountId, worker, root: selected ?? root };
+  return { accountId, worker, root: selected ?? root, ...(provider ? { provider } : {}) };
 }

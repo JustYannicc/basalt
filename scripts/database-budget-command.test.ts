@@ -25,10 +25,8 @@ test("the second bridge is bounded by remaining overall time before it can open"
   const prior = join(directory, "ready.json"),
     path = join(directory, "verification.json");
   try {
-    await writeFile(
-      prior,
-      JSON.stringify({ startedAt: 0, readyReceivedAt: clock, ready: runtime }),
-    );
+    // Readiness arrived at 0; this second bridge opens 170 s later, 100 s before the overall bound.
+    await writeFile(prior, JSON.stringify({ startedAt: 0, readyReceivedAt: 0, ready: runtime }));
     let finish!: () => void;
     const opening = new Promise<void>((resolve) => {
       finish = resolve;
