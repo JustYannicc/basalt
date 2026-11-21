@@ -13,12 +13,30 @@ export interface ReliabilityCounts {
   }[];
 }
 
+/** Requests whose outcome no record establishes. They count as possible failures. */
+export interface UnknownOutcomes {
+  /** Distinct requests; one in two classes counts once. */
+  readonly requests: number;
+  /** Started more than ten minutes ago with no finish. */
+  readonly pending: number;
+  /** Finished without an observable outcome. */
+  readonly unavailable: number;
+  /** A Home row with no finished start. */
+  readonly unmatched: number;
+  /** Not among the window's counted requests: no Home attempt of theirs is recorded. */
+  readonly uncounted: number;
+  /** Not already counted as failed, so their unknown outcome could still be a failure. */
+  readonly couldFail: number;
+}
+
 export interface PoolReliability {
   readonly from: string;
   readonly to: string;
   readonly classification: "ready" | "pending";
   readonly real: ReliabilityCounts;
   readonly proof: ReliabilityCounts;
+  /** Present on the objective's windows when terminal collection is ready. */
+  readonly unknown?: UnknownOutcomes;
 }
 
 export interface PoolReliabilitySlo {
