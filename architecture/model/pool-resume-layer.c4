@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "The resumable-stream front layer listens on its own port and receives only finite model calls the controller marks resumable and resume reads. Model sockets, unmarked calls, the model lifetime socket and node health stay on the node's port untouched. The layer forwards request and answer bytes unchanged, opens one node connection per call and closes it when the upstream ends, so the legacy drain counts each call through the layer exactly once and never an idle connection. An upstream that fails mid-answer aborts the caller's connection instead of ending it. Until buffering is admitted it never offers resume and answers every resume read with gone. The supervisor runs the layer outside the Home and node generation: its exit never ends the container, it restarts alone with backoff, and readiness names resume only while the layer answers its own health check. An image without the layer never names resume."
+    }
+  }
+}

@@ -60,6 +60,7 @@ class Readiness:
         self._key = management_key.encode("utf-8")
         self._monotonic_ns = monotonic_ns
         self._services_ready = False
+        self._resume_available = False
         self._service_audit_revision = 0
         self._policy_observations_enabled = True
         self._policy_healthy = False
@@ -76,6 +77,10 @@ class Readiness:
             self._services_ready = value and (
                 audit_revision is None or audit_revision == self._service_audit_revision
             )
+
+    def set_resume_available(self, value: bool) -> None:
+        with self._lock:
+            self._resume_available = value
 
     def service_audit_revision(self) -> int:
         with self._lock:
@@ -226,11 +231,10 @@ class Readiness:
             )
             ready = self._services_ready and policy_live
             lease_ms = max(0, min(1500, remaining_ns // 1_000_000)) if ready else 0
-            return (
-                ready,
-                {"boot_id": self.boot_id, "started_at": self.started_at},
-                lease_ms,
-            )
+            payload = {"boot_id": self.boot_id, "started_at": self.started_at}
+            if self._resume_available:
+                payload["resume"] = "v1"
+            return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:
         prefix = "Bearer "

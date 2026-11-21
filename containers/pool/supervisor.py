@@ -40,8 +40,10 @@ from .pool_contract import (
     home_boot_requires_import,
     management_ready,
     require_tmpfs,
+    resume_layer_healthy,
 )
 from .readiness import Readiness, start_ready_server
+from .resume_layer import RESUME_BINARY, ResumeLayer
 from .service_health import ServiceHealth
 from .recovery import HomeExited, HomeRecovery
 from .recovery_deadline import RecoveryCancelled, current_deadline, operation_timeout
@@ -234,6 +236,7 @@ def main(stop: threading.Event | None = None) -> int:
     readiness = None
     policy_monitor_thread = None
     home_peers = None
+    resume: ResumeLayer | None = None
     stop = threading.Event() if stop is None else stop
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
@@ -391,8 +394,26 @@ def main(stop: threading.Event | None = None) -> int:
         health = ServiceHealth(management_key, node_id)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
+        def spawn_resume_layer() -> Child:
+            # An image without the layer never advertises resume; the controller keeps today's path.
+            if not os.access(RESUME_BINARY, os.X_OK):
+                raise FileNotFoundError(RESUME_BINARY)
+            return Child(
+                "resume",
+                [RESUME_BINARY],
+                child_environment("resume", management_key),
+                ROOT / "resume",
+            )
+
+        # Outside `children`: the layer's exit never ends the container or a Home generation.
+        resume = ResumeLayer(
+            spawn_resume_layer,
+            resume_layer_healthy,
+            lambda child, exit_code: report_exit(child, exit_code, FailureCategory.RUNTIME),
+        )
         while not stop.wait(2):
             observed_at = time.monotonic()
+            readiness.set_resume_available(resume.tick())
             failed = [(child, child.process.poll()) for child in children]
             failed = [(child, code) for child, code in failed if code is not None]
             if failed:
@@ -467,8 +488,12 @@ def main(stop: threading.Event | None = None) -> int:
         if not recovery_cleanup_done and ready_server is not None:
             ready_server.shutdown()
             ready_server.server_close()
-        if not recovery_cleanup_done:
-            terminate_children(children)
+        # One shared stop grace: the controller's supervisor stop bound covers a single wait.
+        owned = [] if recovery_cleanup_done else list(children)
+        if resume is not None and resume.child is not None:
+            owned.append(resume.child)
+        if owned:
+            terminate_children(owned)
         (ROOT / "bootstrap.yaml").unlink(missing_ok=True)
         (ROOT / "cluster.yaml").unlink(missing_ok=True)
         for signum, handler in original_signals.items():
