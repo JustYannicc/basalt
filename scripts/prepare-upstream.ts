@@ -14,6 +14,7 @@ import { run } from "./process.ts";
 import { readPatchManifest } from "./releases/patches.ts";
 import { prepareUpstreamCheckout } from "./upstream-cache.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
+import { sharedStepCache, withSharedStep, worktreeKey } from "./shared-step-cache.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { writePoolWorkerRevision } from "./pool-worker-revision.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
@@ -61,7 +62,11 @@ writeFileSync(
 writeFileSync(join(upstream, obsidianPluginVersionPath), obsidianPluginVersionSource(root));
 // The pool Worker imports the release above, so its revision is computed after it is written.
 writePoolWorkerRevision(root, upstream);
-await installUpstreamDependencies(upstream, pin.commit, process.argv.includes("--cache-hit-only"));
+const dependencies = await installUpstreamDependencies(
+  upstream,
+  pin.commit,
+  process.argv.includes("--cache-hit-only"),
+);
 if (process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true" && process.env.GITHUB_ENV) {
   for (const [key, value] of Object.entries(checkRuntimeEnvironment(upstream)))
     appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
@@ -86,8 +91,25 @@ else if (!lstatSync(modules).isSymbolicLink())
 const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: upstream, encoding: "utf8" });
 if (revision.stdout.trim() !== pin.commit)
   throw new Error("Upstream checkout differs from the pin");
-// Native stack discovery imports the authoring Worker's generated reference.
-run("bun", ["run", "--cwd", "apps/hosted/cloud", "framework:build"], upstream);
+// Native stack discovery imports the authoring Worker's generated reference. On the box the jobs of
+// one Check build it once: it depends only on the patched tree, the dependencies and the toolchain.
+const frameworkCache = sharedStepCache("framework");
+withSharedStep(
+  {
+    cache: frameworkCache,
+    key:
+      frameworkCache === undefined
+        ? ""
+        : worktreeKey(upstream, {
+            dependencies: dependencies.key,
+            node: process.version,
+            bun: spawnSync("bun", ["--version"], { encoding: "utf8" }).stdout.trim(),
+          }),
+    root: upstream,
+    outputs: ["apps/hosted/cloud/.generated/executor-authoring.json"],
+  },
+  () => run("bun", ["run", "--cwd", "apps/hosted/cloud", "framework:build"], upstream),
+);
 mkdirSync(join(upstream, ".local"), { recursive: true });
 writeFileSync(
   join(upstream, ".local/e2e-finalizer.json"),
