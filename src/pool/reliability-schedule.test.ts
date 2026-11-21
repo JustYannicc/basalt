@@ -87,9 +87,11 @@ for (const state of ["breached", "unavailable"] as const)
       proof_requests: 45,
       proof_failed: 15,
     });
-    assert.doesNotMatch(
-      JSON.stringify(envelopes),
-      /fixture-pool|client_key|source_record|monitor_config/,
+    assert.doesNotMatch(JSON.stringify(envelopes), /fixture-pool|client_key|source_record/);
+    assert.deepEqual(
+      checks.map((entry) => entry.monitor_config !== undefined),
+      [true, false],
+      "only the opening check-in defines the monitor",
     );
   });
 

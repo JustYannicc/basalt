@@ -1,14 +1,16 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
-import { poolLifecycle } from "../lifecycle.ts";
+import { PoolRuntimeUnhealthy, poolLifecycle } from "../lifecycle.ts";
 import { SlotRefused } from "./contract.ts";
 import { runtimePolicyAssertion } from "./policy-assertion.ts";
 import type { RuntimeConfiguration, RuntimeEnvironment } from "./configuration.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 import { installNativePolicy } from "../native-policy-install.ts";
+import { reportPoolFailure } from "../json.ts";
 import { readRuntimeHealth } from "../runtime-health.ts";
 import { policyUsePrefix, type NativeMembershipPolicy } from "../membership-contract.ts";
 import { signEnvelope } from "../token.ts";
+import { ReadinessReadFailure } from "../runtime-health.ts";
 
 /** Authenticated ports use the selected boot's preserved settings, not new controller bindings. */
 export class RuntimeChannel {
@@ -37,18 +39,32 @@ export class RuntimeChannel {
       signal,
       undefined,
       trace,
-    ).catch((error: unknown) => refuseRuntime("endpoint_health", error));
+    ).catch((error: unknown) => {
+      if (!(error instanceof ReadinessReadFailure)) refuseRuntime("endpoint_health", error);
+      // A readiness read that failed in transport or returned an unparsable body is degraded
+      // readiness: it refuses like a 503 so the caller can wait. Its refusal looks like any other
+      // 503, so this line is what tells a broken readiness port apart.
+      console.error("POOL_RUNTIME_READINESS_READ_FAILED " + JSON.stringify({ kind: error.kind }));
+      refuseRuntime("endpoint_health", new PoolRuntimeUnhealthy());
+    });
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new SlotRefused("unhealthy");
     return status;
   }
-  install(configuration: RuntimeConfiguration, policy: NativeMembershipPolicy) {
+  async install(configuration: RuntimeConfiguration, policy: NativeMembershipPolicy) {
     if (!this.ctx.container) throw new SlotRefused("unhealthy");
-    return installNativePolicy(
-      this.ctx.container,
-      { signingKey: configuration.signingKey, managementKey: configuration.managementKey },
-      policy,
-    );
+    try {
+      return await installNativePolicy(
+        this.ctx.container,
+        { signingKey: configuration.signingKey, managementKey: configuration.managementKey },
+        policy,
+      );
+    } catch (error) {
+      // The refusal reaches the controller as a plain 409, which drops the plugin's closed reason
+      // (for example a projection outside its lease window). Record it here, where it is known.
+      reportPoolFailure(error);
+      throw error;
+    }
   }
   async native(
     configuration: RuntimeConfiguration,

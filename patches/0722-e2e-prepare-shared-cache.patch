@@ -1,0 +1,148 @@
+diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
+--- a/scripts/e2e-prepare.ts
++++ b/scripts/e2e-prepare.ts
+@@ -8,7 +8,9 @@
+  * Node and Bun versions and the environment variables the builds read.
+  *
+  * The cache lives in `$EXECUTOR_E2E_CACHE`, or `~/.cache/executor-e2e-prepare`. CI and
+- * `--no-cache` build every step without reading or writing it.
++ * `--no-cache` build every step without reading or writing it, unless CI names a cache in
++ * `$EXECUTOR_E2E_CACHE`: jobs that share that directory then build each step once. The first
++ * takes a lock per step and key; the others wait for its entry and restore it.
+  */
+ import { execFileSync, spawnSync } from "node:child_process";
+ import { createHash } from "node:crypto";
+@@ -114,7 +116,10 @@ process.env.EXECUTOR_DASHBOARD_SOURCEMAP = "hidden";
+ /** Entries kept per step. Older ones are removed after a store. */
+ const keep = 20;
+ 
+-const useCache = !process.env.CI && !process.argv.includes("--no-cache");
++// CI uses a cache only one it names itself, so a runner never reads another's default cache.
++const useCache =
++  (!process.env.CI || Boolean(process.env.EXECUTOR_E2E_CACHE)) &&
++  !process.argv.includes("--no-cache");
+ const cacheRoot =
+   process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");
+ 
+@@ -226,7 +231,7 @@ const restore = (step: Step, entry: string) => {
+ 
+ /** Writes the entry beside its final path and renames it, so a reader never sees a partial one. */
+ const store = (step: Step, entry: string) => {
+-  const partial = `${entry}.${process.pid}.partial`;
++  const partial = `${entry}.${scratch}.partial`;
+   fs.rmSync(partial, { recursive: true, force: true });
+   for (const output of step.outputs) copy(output, path.join(partial, output));
+   try {
+@@ -238,13 +243,88 @@ const store = (step: Step, entry: string) => {
+   const directory = path.dirname(entry);
+   const entries = fs
+     .readdirSync(directory)
+-    .filter((name) => !name.endsWith(".partial"))
++    .filter((name) => !/\.(partial|lock|pending)$/.test(name))
+     .map((name) => ({ name, time: fs.statSync(path.join(directory, name)).mtimeMs }))
+     .sort((a, b) => b.time - a.time);
+   for (const old of entries.slice(keep))
+     fs.rmSync(path.join(directory, old.name), { recursive: true, force: true });
+ };
+ 
++/**
++ * A lock older than this is a dead holder's: the next waiter removes it and builds. Taking over
++ * from a live holder costs only a duplicate build, since stores are atomic, so the bound is short.
++ */
++const staleLock = Number(process.env.EXECUTOR_E2E_LOCK_STALE_MS) || 5 * 60_000;
++const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
++const owner = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2)}`;
++/** Unique across the box's containers, whose process ids repeat: names scratch directories. */
++const scratch = owner.replace(/[^\w.-]/g, "_");
++/** The lock this process holds, released on every way out. */
++let held: string | undefined;
++const release = () => {
++  if (held === undefined) return;
++  const lock = held;
++  held = undefined;
++  try {
++    // A waiter may have taken the lock over; only its own lock is removed.
++    if (fs.readFileSync(path.join(lock, "owner"), "utf8") === owner)
++      fs.rmSync(lock, { recursive: true, force: true });
++  } catch {}
++};
++// A failed step exits through process.exit, and an uncaught error exits too; both run this. The
++// script never yields to the event loop, so a signal kills it outright, and its lock then waits
++// out the stale bound.
++process.on("exit", release);
++
++/**
++ * Waits until `entry` exists, or holds its lock. Returns true to restore the entry, false once
++ * this process holds the lock and must build. A directory is the lock: creating one is atomic.
++ */
++const claim = (entry: string, lock: string) => {
++  let waiting = false;
++  for (;;) {
++    if (fs.existsSync(entry)) return true;
++    // The lock appears with its owner already inside: a renamed directory, never an empty one.
++    const pending = `${lock}.${scratch}.pending`;
++    fs.mkdirSync(pending, { recursive: true });
++    fs.writeFileSync(path.join(pending, "owner"), owner);
++    try {
++      fs.renameSync(pending, lock);
++      held = lock;
++      // Another holder may have stored the entry between the check and the claim.
++      if (!fs.existsSync(entry)) return false;
++      release();
++      return true;
++    } catch (error) {
++      fs.rmSync(pending, { recursive: true, force: true });
++      const code = (error as NodeJS.ErrnoException).code;
++      if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EPERM") throw error;
++    }
++    if (!waiting) {
++      console.log(`Waiting for another job's build of ${path.basename(path.dirname(lock))}.`);
++      waiting = true;
++    }
++    let age = 0;
++    try {
++      age = Date.now() - fs.statSync(lock).mtimeMs;
++    } catch {
++      continue;
++    }
++    if (age > staleLock) {
++      console.log(`Taking over a lock held for ${Math.round(age / 1000)}s: ${lock}`);
++      try {
++        fs.rmSync(lock, { recursive: true, force: true });
++      } catch (error) {
++        // Another waiter's claim landed during the removal; its lock stands.
++        const code = (error as NodeJS.ErrnoException).code;
++        if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
++      }
++      continue;
++    }
++    sleep(500);
++  }
++};
++
+ const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
+ const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
+ 
+@@ -276,7 +356,10 @@ function prepare() {
+     if (key !== undefined) keys.set(step.name, key);
+     let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
+     if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
+-    const restored = entry !== undefined && fs.existsSync(entry);
++    // Waiters hold out for the entry under the key known before the build.
++    const claimed = entry;
++    const lock = claimed === undefined ? undefined : `${claimed}.lock`;
++    const restored = claimed !== undefined && claim(claimed, lock!);
+     if (restored) {
+       restore(step, entry);
+       // Recently used entries are the last to be removed.
+@@ -302,6 +385,10 @@ function prepare() {
+       fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
+     }
+     if (!restored && entry !== undefined) store(step, entry);
++    // Route generation can change the key while building; the outputs still answer the inputs
++    // the waiters keyed on, so they are stored under that key too.
++    if (!restored && claimed !== undefined && claimed !== entry) store(step, claimed);
++    release();
+     summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
+   }
+   console.log(

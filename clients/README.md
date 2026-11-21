@@ -16,7 +16,7 @@ node clients/cli/main.mjs run
 
 Sign-in opens the system browser. Confirm the code, name the device, choose an accessible model pool and approve models, personal tools or both. Use `login https://<server>` for another server, or `--no-browser` to open the printed short-lived approval URL on another machine. The URL contains no reusable credential.
 
-The connection renews its grant and saves rotated credentials before using them. A lost renewal response can be retried for up to ten minutes without signing in again; a definitive authentication refusal requires fresh sign-in. `revoke` confirms server-side device revocation before removing the saved grant. `sign-out` removes local credentials without revoking the device. Stop the running connection before signing in again or importing direct credentials. Profile settings, local agent credentials and the local port survive sign-in.
+The connection renews its grant and saves rotated credentials before using them. A renewal whose answer was lost is sent again after any length of sleep or offline time. You are asked to sign in again only when the server refuses the saved grant. `revoke` confirms server-side device revocation before removing the saved grant. `sign-out` removes local credentials without revoking the device. Stop the running connection before signing in again or importing direct credentials. Profile settings, local agent credentials and the local port survive sign-in.
 
 ## Direct credentials
 
@@ -37,9 +37,9 @@ node clients/cli/main.mjs agent add coding-agent models tools
 node clients/cli/main.mjs run
 ```
 
-On headless Linux, explicitly add `--storage file` to `login` or `import-direct`. `--home <private-directory>` selects a separate profile for every command. The directory must have permissions `0700`; files containing credentials must have `0600`.
+On headless Linux, explicitly add `--storage file` to `login` or `import-direct`. Without `--home`, commands use the CLI's own profile in `~/.local/state/signalbox/client`; when that profile has never been set up and the desktop app has signed in on this computer, they act on the app's connection instead. `--home <private-directory>` selects a separate profile for every command. The directory must have permissions `0700`; files containing credentials must have `0600`.
 
-`agent add` saves a private local credential file and prints its path. Configure an agent with the connection's printed loopback origin and that local token. Model requests use `/v1`; tools use `/mcp`. Remote credentials never belong in an agent's configuration. Stdio agents run:
+`agent add <id> models|tools [models|tools]` gives one app or agent on this computer its own local key, for example a dictation or writing app with a custom model setting. It prints the connection's loopback addresses and the key, once: OpenAI-compatible apps take the `/v1` base URL, Anthropic-compatible apps the bare origin, and MCP clients the `/mcp` URL. Before the connection has run once there is no address yet; `run` prints it. The running connection accepts a new key at once and refuses the next request from a removed one, without a restart. Remote credentials never belong in an agent's configuration. Stdio agents run:
 
 ```sh
 node clients/cli/main.mjs stdio --agent coding-agent

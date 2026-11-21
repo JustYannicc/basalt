@@ -43,11 +43,15 @@ const {
     request: Request,
     env: object,
     lookupHomeApiKey?: HomeApiKeyLookup,
+    defer?: (work: Promise<unknown>) => void,
   ): Promise<Response>;
 } = await import(workerModule);
 hooks.deregister();
 
-function poolStub(connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool") {
+function poolStub(
+  connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool",
+  respond = async (_request: Request) => new Response("forwarded", { status: 202 }),
+) {
   const calls = { lookups: 0, forwarded: [] as Request[] };
   const env = {
     POOL_DATABASE_URL: "postgres://fixture:fixture@database.invalid/basalt_pool",
@@ -62,7 +66,7 @@ function poolStub(connectionString = "postgres://fixture:fixture@hyperdrive.inva
             return {
               fetch: async (request: Request) => {
                 calls.forwarded.push(request);
-                return new Response("forwarded", { status: 202 });
+                return respond(request);
               },
             };
           },
@@ -372,4 +376,39 @@ test("raw ingress strips private lifetime headers and offer while preserving pub
   assert.equal(calls.forwarded.length, 1);
   assert.equal(calls.forwarded[0]!.headers.get("x-basalt-model-lifetime-id"), null);
   assert.equal(calls.forwarded[0]!.headers.get("Sec-WebSocket-Protocol"), "raw.one, raw.two");
+});
+
+test("a controller reset at the Worker entry is survived by one send to a new instance", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  let sends = 0;
+  const { env, calls } = poolStub(undefined, async (request) => {
+    if (++sends === 1)
+      throw new Error(
+        "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.",
+      );
+    return new Response(await request.text(), { status: 200 });
+  });
+  const deferred: Promise<unknown>[] = [];
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      headers: { "X-Api-Key": "valid-home-key" },
+      body: '{"model":"claude-opus-5-5"}',
+    }),
+    env,
+    async () => true,
+    (work) => deferred.push(work),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '{"model":"claude-opus-5-5"}');
+  assert.equal(calls.lookups, 2);
+  assert.equal(calls.forwarded.length, 2);
+  await Promise.all(deferred);
+  const saved = log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_CONTROLLER_INTERRUPTED")
+    .map((call) => JSON.parse(String(call.arguments[1])));
+  assert.deepEqual(
+    saved.map((line) => [line.outcome, line.saved]),
+    [["replayed", true]],
+  );
 });

@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { coverageErrors, coverageInventory, type ExceptionGroup } from "./ci/e2e-coverage.ts";
-import { readDeclarations } from "./ci/declarations.ts";
+import { patternForGroup, readDeclarations } from "./ci/declarations.ts";
 import { type Workflow } from "./ci/e2e-workflow.ts";
-import { filesForTarget, scenarios } from "../.upstream/e2e/test-plan.ts";
+import { filesForTarget, patternForTarget, scenarios } from "../.upstream/e2e/test-plan.ts";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -70,9 +70,7 @@ function fixture(
         strategy: {
           matrix: "${{ fromJSON(needs.select.outputs.matrices)['declared-self-host'] }}",
         },
-        steps: [
-          { run: 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"' },
-        ],
+        steps: [{ run: 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"' }],
       },
     },
   };
@@ -136,18 +134,47 @@ test("deleted runner steps, disabled steps and disconnected matrices lose covera
     step.if = false;
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
     delete step.if;
-    step.run = 'echo \'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"\'';
-    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
-    step.run =
-      'node --version # bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
-    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
-    step.run = 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
+    for (const run of [
+      "echo 'bun scripts/ci/run-declared.ts \"${{ matrix.runs }}\"'",
+      'node --version # bun scripts/ci/run-declared.ts "${{ matrix.runs }}"',
+      // The per-file form no longer matches what select emits, and an extra word could filter.
+      'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"',
+      'bun scripts/ci/run-declared.ts "${{ matrix.runs }}" declared:self-host',
+      "bun scripts/ci/run-declared.ts ${{ matrix.runs }}",
+    ]) {
+      step.run = run;
+      assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/, run);
+    }
+    step.run = 'bun scripts/ci/run-declared.ts "${{ matrix.runs }}"';
+    assert.deepEqual(coverageErrors(inventory(), []), []);
     for (const condition of [false, "false", "${{ false }}", "${{ 1 == 2 }}"]) {
       job.if = condition;
       assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
     }
     delete job.if;
     job.strategy!.matrix = { include: [] };
+    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
+  }));
+
+test("a sharded step covers only pairs the planner hands to one of its own job's shards", () =>
+  fixture((root, workflow, inventory) => {
+    assert.deepEqual(coverageErrors(inventory(), []), []);
+    // The same step in another matrix job runs that job's shards, which never carry this pair.
+    writeFileSync(
+      join(root, "scripts/ci/e2e-groups.json"),
+      JSON.stringify({
+        "declared:self-host": {
+          job: "declared-local",
+          target: "self-host",
+          mode: "managed",
+          matrix: true,
+        },
+      }),
+    );
+    workflow.jobs["declared-local"] = {
+      ...workflow.jobs["declared-self-host"]!,
+      strategy: { matrix: "${{ fromJSON(needs.select.outputs.matrices)['declared-local'] }}" },
+    };
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
   }));
 
@@ -342,6 +369,74 @@ test("both MCP budget scenarios are selected and lose coverage when their real r
       id,
     );
   }
+});
+
+test("account acquisition's two self-host groups run every test of the group they split once", () => {
+  // The reusable acquisition, health and retained account compatibility group before the split.
+  const former = [
+    "account-acquisition-cleanup.spec.ts#accountAcquisitionCleanup",
+    "account-acquisition-cleanup.spec.ts#accountAcquisitionFailurePrivacy",
+    "account-acquisition-cleanup.spec.ts#accountAcquisitionIdentity",
+    "account-acquisition-cleanup.spec.ts#accountAcquisitionStartPrivacy",
+    "account-acquisition-health.spec.ts#accountAcquisitionHealth",
+    "account-acquisition-observations.spec.ts#accountAcquisitionObservations",
+    "account-acquisition-observations.spec.ts#accountAcquisitionOptional",
+    "account-acquisition-observations.spec.ts#accountObservationHealthRecovery",
+    "account-acquisition-owner-purge.spec.ts#accountAcquisitionOwnerPurge",
+    "account-acquisition.spec.ts#accountAcquisition",
+    "account-acquisition.spec.ts#accountAcquisitionRecovery",
+    "account-create-before-link.spec.ts#accountCreateBeforeLink",
+    "account-failure-observations.spec.ts#accountFailureFirstReading",
+    "account-failure-observations.spec.ts#accountFailureParserStages",
+    "account-failure-observations.spec.ts#accountFailureProviderStatuses",
+    "account-failure-observations.spec.ts#accountFailureSourceSeparation",
+    "account-naming.spec.ts#pastedCredentialsNamedAfterSaving",
+    "account-observation-migration.spec.ts#accountObservationMigration",
+    "account-observation-protocol.spec.ts#accountObservationLegacyDeclaration",
+    "account-observation-protocol.spec.ts#accountObservationProtocol",
+    "account-observation-protocol.spec.ts#accountObservationProtocol18",
+    "account-observations.spec.ts#accountObservations",
+    "grok-subscription.spec.ts#grokSubscriptionDesktop",
+    "grok-subscription.spec.ts#grokSubscriptionMobile",
+    "interactive-accounts.spec.ts#interactiveAccounts",
+    "native-account-create-before-link.spec.ts#nativeAccountCreateBeforeLink",
+    "pool-account-selection.spec.ts#poolAccountSelection",
+    "pool-retained-subscriptions.spec.ts#poolRetainedSubscriptions",
+    "pool-select-only-ui.spec.ts#poolSelectOnlyUi",
+    "provider-apps.spec.ts#providerApps",
+  ];
+  const declarations = readDeclarations(repository);
+  const runs = new Map<string, string[]>();
+  for (const id of [
+    "account-acquisition:reusable-acquisition-and-retained-account-compatibility",
+    "account-observations:driver-readings-health-and-observation-compatibility",
+  ]) {
+    const { target, mode } = declarations.groups[id]!;
+    assert.deepEqual([target, mode], ["self-host", "managed"], id);
+    // What the runner step selects: e2e/run.ts includes these files and filters them by name.
+    const name = patternForGroup(id, undefined, repository);
+    const files = filesForTarget(target, "all", mode, name);
+    const names = new RegExp(patternForTarget(target, "all", name, mode));
+    for (const [key, scenario] of Object.entries(scenarios))
+      if (
+        scenario.targets[target].status === "scheduled" &&
+        files.includes(`e2e/tests/${scenario.file}`) &&
+        names.test(scenario.title)
+      ) {
+        const test = `${scenario.file}#${key}`;
+        runs.set(test, [...(runs.get(test) ?? []), id]);
+      }
+  }
+  assert.deepEqual([...runs.keys()].sort(), former);
+  for (const [test, ids] of runs) assert.equal(ids.length, 1, test);
+  // The coverage gate credits each test to the same one self-host group.
+  const credited = new Map(realInventory().map((record) => [record.id, record.groups ?? []]));
+  for (const [test, ids] of runs)
+    assert.deepEqual(
+      credited.get(test)?.filter((id) => declarations.groups[id]!.target === "self-host"),
+      ids,
+      test,
+    );
 });
 
 test("Obsidian helpers retain coverage only while their production proof runs", () => {
