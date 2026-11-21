@@ -347,3 +347,121 @@ test("verification's own readiness call waits through a refusal", async () => {
     assert.equal(time.state.pauses, 1);
   });
 });
+
+/** A readiness connection over a bridge whose every request is answered by `answer`. */
+const over =
+  (answer: (request: Request) => Response | Promise<Response>, closed: () => void) =>
+  (options: Parameters<typeof openDeploymentReadiness>[0]) =>
+    openDeploymentReadiness({
+      ...options,
+      connect: async () => ({
+        env: { POOL_OPERATIONS: { fetch: async (request: Request) => answer(request) } },
+        dispose: async () => closed(),
+      }),
+    });
+
+test("a readiness bridge that fails is opened again inside the deadline, and readiness completes", async () => {
+  await workspace(async (path) => {
+    const time = scheduler();
+    let opens = 0,
+      closed = 0;
+    const result = await runDatabaseBudgetCommand(source(path), ["--ready"], {
+      now: time.now,
+      deadline: time.deadline,
+      open: (options) => {
+        opens++;
+        const first = opens === 1;
+        return over(
+          (request) => {
+            // The first bridge fails in the bridge itself; a fresh one reaches the Worker.
+            if (first) throw new Error("Private operations Node bridge exited");
+            return handleDeploymentReadiness(request, target, key, async () => ({ ...runtime }));
+          },
+          () => closed++,
+        )(options);
+      },
+    });
+    assert.equal(result.outcome, "converged");
+    assert.equal(opens, 2, "one fresh bridge");
+    assert.equal(
+      closed,
+      2,
+      "the failed bridge is closed before the next opens, and the last at the end",
+    );
+    assert.equal(time.state.pauses, 1, "it waits one pause before it opens again");
+  });
+});
+
+test("readiness opens no second bridge for an answer, a refusal it does not wait through, or its deadline", async () => {
+  for (const [label, answer] of [
+    ["a 401", () => new Response(null, { status: 401 })],
+    ["a 404", () => new Response(null, { status: 404 })],
+    ["a reply that does not decode", () => Response.json({ nothing: true })],
+    ["another candidate's runtime", () => Response.json({ ...runtime, candidate: "0".repeat(40) })],
+  ] as const)
+    await workspace(async (path) => {
+      const time = scheduler();
+      let opens = 0;
+      const run = runDatabaseBudgetCommand(source(path), ["--ready"], {
+        now: time.now,
+        deadline: time.deadline,
+        open: (options) => {
+          opens++;
+          return over(answer, () => {})(options);
+        },
+      });
+      await assert.rejects(run, DatabaseBudgetFailure, label);
+      assert.equal(opens, 1, label);
+    });
+  // Its own deadline ends the call in flight: that is the wait ending, not the bridge failing.
+  await workspace(async (path) => {
+    const time = scheduler();
+    let opens = 0;
+    const run = runDatabaseBudgetCommand(source(path), ["--ready"], {
+      now: time.now,
+      deadline: time.deadline,
+      open: (options) => {
+        opens++;
+        return over(
+          () => {
+            setImmediate(() => time.expire());
+            return new Promise<Response>(() => {});
+          },
+          () => {},
+        )(options);
+      },
+    });
+    await assert.rejects(run, DatabaseBudgetFailure);
+    assert.equal(opens, 1, "the deadline");
+  });
+});
+
+test("a readiness bridge that keeps failing is opened again only inside the deadline", async () => {
+  await workspace(async (path) => {
+    const time = scheduler();
+    let opens = 0,
+      closed = 0;
+    const run = runDatabaseBudgetCommand(source(path), ["--ready"], {
+      now: time.now,
+      deadline: time.deadline,
+      open: (options) => {
+        opens++;
+        return over(
+          () => {
+            throw new Error("Private operations Node bridge exited");
+          },
+          () => closed++,
+        )(options);
+      },
+    });
+    await assert.rejects(run, (error) => {
+      assert.ok(error instanceof DatabaseBudgetFailure);
+      assert.equal(error.receipt.outcome, "readiness-error");
+      assert.equal(error.receipt.elapsedMs, databaseReadinessCommandMs);
+      return true;
+    });
+    // One bridge, then one more after each pause the deadline lets through.
+    assert.ok(opens > 1 && opens <= refusedCalls, String(opens));
+    assert.equal(closed, opens, "every bridge it opened is closed");
+  });
+});
