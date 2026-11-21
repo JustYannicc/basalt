@@ -397,7 +397,8 @@ test("reconstructing a running or stopped object without a request leaves comput
   let writes = 0,
     starts = 0,
     destroys = 0;
-  // Reconstruction may arm a missing upkeep alarm; it writes nothing else and touches no compute.
+  // With no runtime selected, reconstruction arms no upkeep alarm, writes nothing and touches no
+  // compute.
   const values = new Map<string, unknown>();
   const storage: StubStorage = {
     get: async (key: string) => values.get(key),
@@ -441,7 +442,7 @@ test("reconstructing a running or stopped object without a request leaves comput
   await Promise.all(pending);
   assert.deepEqual(timeouts, []);
   assert.equal(writes, 0);
-  assert.equal(armed.length, 2, "each object arms its missing upkeep alarm");
+  assert.deepEqual(armed, [], "nothing is selected, so no object arms an upkeep alarm");
   assert.equal(starts, 0);
   assert.equal(destroys, 0);
 });

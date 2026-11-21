@@ -21,20 +21,24 @@ export class PoolAlarms {
     this.now = now;
   }
   /**
-   * With no alarm set, both owners run now. Each owner re-arms its own deadline, but nothing does
-   * once a handler failed past the platform's retries or no owner ever armed one, and then
-   * recovery and membership upkeep never run again: a code upload alone runs nothing. Returns
+   * With no alarm set and a runtime selected, both owners run now. Each owner re-arms its own
+   * deadline, but nothing does once a handler failed past the platform's retries or no owner ever
+   * armed one, and then recovery never runs again: a code upload alone runs nothing. Returns
    * nothing, and starts no work, when this isolate already checked within the spacing.
    */
-  ensure(): Promise<void> | undefined {
+  ensure(selected: () => Promise<boolean>): Promise<void> | undefined {
     const now = this.now();
     if (now - this.ensuredAt < ensureSpacingMs) return undefined;
     this.ensuredAt = now;
-    return this.armMissing(now);
+    return this.armMissing(now, selected);
   }
-  private async armMissing(now: number) {
+  private async armMissing(now: number, selected: () => Promise<boolean>) {
     // A set alarm can still be later than a stored deadline, when another writer replaced it.
     if ((await this.storage.getAlarm()) !== null) return this.rearm();
+    // With nothing selected there is nothing to recover, and the adopt that selects a runtime arms
+    // the fleet itself. A Home pass armed now would commit pool reports inside the very call that
+    // built the object, so a reader that compares change revisions around its query reads twice.
+    if (!(await selected())) return;
     // One write for both owners: a `take()` between two writes would see only one of them due.
     await this.storage.transaction(async (transaction) => {
       const raw = await transaction.get(key);
