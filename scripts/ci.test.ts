@@ -274,7 +274,8 @@ test("fast-only and full gates reject missing work and dishonest lane selections
           result:
             fastJobs.includes(job) ||
             selected.includes(job) ||
-            (job === "workerd-assets" && selected.includes("upstream-image"))
+            (job === "workerd-assets" && selected.includes("upstream-image")) ||
+            (job === "owned-units" && selected === heavyJobs)
               ? "success"
               : "skipped",
         },
@@ -289,6 +290,15 @@ test("fast-only and full gates reject missing work and dishonest lane selections
       assert.ok(gateErrors({ ...needs([]), [job]: { result } }, [], [], false).length);
   assert.ok(
     gateErrors({ ...needs([]), "production-build": { result: "success" } }, [], [], false).length,
+  );
+  // The complete owned unit suite runs in every full suite and in no fast lane.
+  assert.deepEqual(
+    gateErrors({ ...needs(heavyJobs), "owned-units": { result: "skipped" } }, heavyJobs, [], true),
+    ["owned-units: expected success, got skipped"],
+  );
+  assert.deepEqual(
+    gateErrors({ ...needs([]), "owned-units": { result: "success" } }, [], [], false),
+    ["owned-units: expected skipped, got success"],
   );
 });
 

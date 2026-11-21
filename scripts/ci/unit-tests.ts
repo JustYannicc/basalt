@@ -36,6 +36,19 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     .split("\0")
     .filter((file) => existsSync(file) && patterns.some((pattern) => matchesGlob(file, pattern)));
   if (!tests.length) throw new Error("Owned unit suite contains no test files");
+  // `--shard=2/3` runs the whole owned suite's second third, for a full suite split across jobs.
+  const shard = process.argv.slice(2).find((arg) => arg.startsWith("--shard="));
+  if (shard !== undefined) {
+    const value = shard.slice("--shard=".length);
+    const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value);
+    if (!match || Number(match[1]) > Number(match[2]))
+      throw new Error(`Expected a shard like --shard=2/3, got ${shard}`);
+    console.log(`Owned unit suite, shard ${value} of ${tests.length} files`);
+    execFileSync(process.execPath, [...options, `--test-shard=${value}`, ...tests], {
+      stdio: "inherit",
+    });
+    process.exit(0);
+  }
   let selected = tests;
   try {
     selected = selectUnitTests(

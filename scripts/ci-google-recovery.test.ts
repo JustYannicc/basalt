@@ -127,7 +127,10 @@ test("account selection and the full aggregate require both Google halves", () =
       [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
         job,
         {
-          result: conditionalJobs.includes(job) && job !== "workerd-assets" ? "skipped" : "success",
+          result:
+            conditionalJobs.includes(job) && !["workerd-assets", "owned-units"].includes(job)
+              ? "skipped"
+              : "success",
         },
       ]),
     );

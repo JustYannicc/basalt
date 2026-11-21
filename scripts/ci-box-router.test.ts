@@ -671,7 +671,12 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
   const needs = Object.fromEntries(
     [...fastJobs, ...heavyJobs, ...conditionalJobs].map((id) => [
       id,
-      { result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success" },
+      {
+        result:
+          conditionalJobs.includes(id) && !["workerd-assets", "owned-units"].includes(id)
+            ? "skipped"
+            : "success",
+      },
     ]),
   );
   const box = ["declared-cloud-3", "declared-self-host-1"];

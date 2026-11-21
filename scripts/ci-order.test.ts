@@ -67,7 +67,12 @@ test("a long-started that did not succeed fails the gate, with or without the jo
   const passed = Object.fromEntries(
     expected.map((id) => [
       id,
-      { result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success" },
+      {
+        result:
+          conditionalJobs.includes(id) && !["workerd-assets", "owned-units"].includes(id)
+            ? "skipped"
+            : "success",
+      },
     ]),
   );
   assert.deepEqual(gateErrors(passed, heavyJobs, [], true), []);
