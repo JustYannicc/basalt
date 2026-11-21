@@ -135,6 +135,16 @@ function redactAccount<T>(value: T, accountId: string): T {
 const BRIDGE_FAILURE =
   /^Private operations Node bridge (exited|disconnected|send failed|failed|startup timed out|closed)$/u;
 
+/** The HTTP status of a reply the shared RPC refused, as a number and nothing else from it. */
+function httpStatus(error: BarrierRefusal) {
+  if (error.reason !== "runtime-handoff-response-refused") return "";
+  const entry = error.delta?.changed.find((change) => change.path === "handoff.response.http");
+  const status = entry && "new" in entry ? entry.new : undefined;
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+    ? ` HTTP ${status}`
+    : "";
+}
+
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
   const bridge = error instanceof Error ? BRIDGE_FAILURE.exec(error.message)?.[1] : undefined;
@@ -142,7 +152,7 @@ function publicError(error: unknown, phase: string) {
     error instanceof ControllerRefused
       ? `: runtime-handoff-refused (${error.reason})`
       : error instanceof BarrierRefusal
-        ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}`
+        ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}${httpStatus(error)}`
         : error instanceof SlotRefused
           ? `: ${error.reason}`
           : // No reply within the request's own time limit.
@@ -212,6 +222,9 @@ const providerCauses = [
   "controller_identity",
   "controller_refused",
   "reply_unreadable",
+  "no_reply",
+  "bridge_failed",
+  "response_refused",
   "outcome_unknown",
   "target_unavailable",
 ] as const;
@@ -269,7 +282,15 @@ async function providerRead(
           : "controller_refused"
         : cause instanceof DispatchRefusal
           ? "reply_unreadable"
-          : "outcome_unknown")
+          : // The Worker answered, but with neither a 200 nor the handoff's own 409.
+            cause instanceof BarrierRefusal
+            ? "response_refused"
+            : cause instanceof DOMException &&
+                (cause.name === "AbortError" || cause.name === "TimeoutError")
+              ? "no_reply"
+              : cause instanceof Error && BRIDGE_FAILURE.test(cause.message)
+                ? "bridge_failed"
+                : "outcome_unknown")
     );
   }
   try {
@@ -654,6 +675,10 @@ export class ControllerRefused extends Error {
   }
 }
 
+// Every observe command is a read. The Worker caps its own provider read at 15 s, so the client
+// waits past that for the Worker's named answer instead of giving up first.
+export const observeLimitMs = 30_000;
+
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
   async (action, controllerCode, target, signingKey, subject) => {
@@ -708,9 +733,18 @@ export const observeSender =
       };
     };
     try {
-      return await sendRuntimeCommand(command, signingKey, { ...target, connect: observed }, () => {
-        decodeRuntimeHandoffCommand(command, signedNow());
-      });
+      return await sendRuntimeCommand(
+        command,
+        signingKey,
+        { ...target, connect: observed },
+        () => {
+          decodeRuntimeHandoffCommand(command, signedNow());
+        },
+        undefined,
+        undefined,
+        undefined,
+        observeLimitMs,
+      );
     } catch (cause) {
       // The provider-observation header is the Worker's own closed cause; keep it.
       if (providerObservationCause(cause)) throw cause;

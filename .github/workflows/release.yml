@@ -330,10 +330,10 @@ jobs:
           esac
           case "$restart" in
             "restart read: refuses (recorded_pins_differ)")
-              echo "::error::${restart}: the live root application's version or image digest differs from the pins recorded when the selected runtime was admitted, so the restart's first read would refuse after the stop."
+              echo "::error::${restart}${cause:+, $cause}: the live root application's version or image digest differs from the pins recorded when the selected runtime was admitted, so the restart's first read would refuse after the stop."
               ;;
             "restart read: not checked (no_selected_runtime)")
-              echo "::error::${restart}: the pool has no selected runtime, so there is nothing to heal. On a stage this passes only after the adopt."
+              echo "::error::${restart}${cause:+, $cause}: the pool has no selected runtime, so there is nothing to heal. On a stage this passes only after the adopt."
               ;;
             "restart read: passes")
               echo "::error::The dispatcher's result is not exactly one document for this run's request with the two lines."

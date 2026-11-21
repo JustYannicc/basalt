@@ -241,6 +241,17 @@ test("a declared root restart reads the provider twice first, and refuses unless
   assert.match(refuses("half", lines(token)), /^::error::restart read: not read: /mu);
   // Line 2 missing or not passing: the dispatcher's own public cause is printed with it.
   assert.match(
+    refuses(
+      "drift with a cause",
+      lines(
+        token,
+        "restart read: refuses (recorded_pins_differ)",
+        "active-health outcome unknown: runtime-handoff-response-refused (PoolRuntime) HTTP 503",
+      ),
+    ),
+    /^::error::restart read: refuses \(recorded_pins_differ\), active-health outcome unknown: runtime-handoff-response-refused \(PoolRuntime\) HTTP 503: /mu,
+  );
+  assert.match(
     refuses("inspect", lines(token, undefined, "inspect outcome unknown: AbortError")),
     /^::error::restart read: not read, inspect outcome unknown: AbortError: the heal would stop/mu,
   );

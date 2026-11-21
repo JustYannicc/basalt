@@ -10,18 +10,20 @@ import { openEnvelope } from "../src/pool/token.ts";
 import { providerTarget, readReleaseTarget } from "./pool-crash-dispatch-sources.ts";
 import {
   logLine,
+  observeLimitMs,
   observeSender,
   runCrashDispatch,
   type DispatchDependencies,
   type DispatchInput,
 } from "./pool-crash-dispatch.ts";
+import { sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import { accountId, harness, primary, worker } from "./pool-fleet/test/harness.ts";
 import { resolvedApplication } from "./pool-fleet/test/cloudflare-shapes.ts";
 
 const controllerCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 const reads = "provider observation: reads";
 const closedLine =
-  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|outcome_unknown|target_unavailable)\))$/u;
+  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|no_reply|bridge_failed|response_refused|outcome_unknown|target_unavailable)\))$/u;
 // Distinct from every other identity in the run, so any appearance in the output came from this read.
 const pins = {
   accountId,
@@ -220,14 +222,29 @@ test("(a) every outcome publishes one closed line and nothing else from the read
         ),
       ),
     ],
+    // Any answer but a 200 or the handoff's own 409, here a defect: the Worker answered, not the provider.
     [
-      "outcome_unknown",
+      "response_refused",
       answering(() =>
         Response.json(
           { error: "runtime-defect", detail: "body-sentinel" },
           { status: 500, headers: { [providerObservationFailureHeader]: "provider_fetch_failed" } },
         ),
       ),
+    ],
+    // No answer within the request's own time limit.
+    [
+      "no_reply",
+      async () => {
+        throw new DOMException("Operation aborted", "AbortError");
+      },
+    ],
+    // The Node bridge's own fixed failures.
+    [
+      "bridge_failed",
+      async () => {
+        throw new Error("Private operations Node bridge exited");
+      },
     ],
     [
       "outcome_unknown",
@@ -525,4 +542,95 @@ test("(e) an inspect that fails after the token read names line 2 and keeps a cl
     );
     assert.ok(!(JSON.stringify(result) + logLine(result)).includes("body-sentinel"), label);
   }
+});
+
+test("(f) a reply the shared RPC refuses carries its HTTP status and nothing else from it", async () => {
+  const run = world(pins, async () => ({ result: observation() }));
+  const fixed = run.deps.observe;
+  const unavailable = answering(
+    () => new Response(JSON.stringify({ detail: "body-sentinel" }), { status: 503 }),
+  );
+  run.deps.observe = async (action, ...rest) =>
+    action === "inspect" ? unavailable(action, ...rest) : fixed(action, ...rest);
+  const result = await runCrashDispatch(input(), run.deps);
+  assert.equal(
+    result.error,
+    "inspect outcome unknown: runtime-handoff-response-refused (PoolRuntime) HTTP 503",
+  );
+  assert.equal(result.restartObservation, "restart read: not checked (selection_unavailable)");
+  assert.ok(!JSON.stringify(result).includes("body-sentinel"));
+});
+
+test("(f) an observe read waits 30 s for its answer; any other command keeps 15 s", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // The bridge's close removes a temporary directory: real file I/O over several loop turns.
+  const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  // Bounded by real time (setTimeout is mocked): long enough for the close, never a hang.
+  const drain = async (state: () => string, ms: number) => {
+    const end = performance.now() + ms;
+    while (state() === "pending" && performance.now() < end) await turn();
+  };
+  /** A bridge whose answer never comes: its request fails only when the client gives up. */
+  const hung = () => {
+    let sent!: () => void;
+    const started = new Promise<void>((resolve) => (sent = resolve));
+    // A Request follows its caller's signal only while it is reachable; a real bridge holds it in
+    // its pending call, and so does this one.
+    const held: Request[] = [];
+    const connect = async () => ({
+      dispose: async () => {},
+      env: {
+        POOL_OPERATIONS: {
+          fetch: (request: Request) =>
+            new Promise<Response>((_, reject) => {
+              held.push(request);
+              sent();
+              request.signal.addEventListener(
+                "abort",
+                () => reject(new DOMException("Operation aborted", "AbortError")),
+                { once: true },
+              );
+            }),
+        },
+      },
+    });
+    return { started, connect };
+  };
+  const settled = (promise: Promise<unknown>) => {
+    let state = "pending";
+    promise.then(
+      () => (state = "answered"),
+      (error: unknown) => (state = error instanceof DOMException ? error.name : String(error)),
+    );
+    return () => state;
+  };
+  const signingKey = randomBytes(32).toString("hex");
+  const target = { accountId, worker: "synthetic-pool" };
+  assert.equal(observeLimitMs, 30_000);
+  const read = hung();
+  const observed = settled(
+    observeSender(read.connect)("inspect", controllerCode, target, signingKey),
+  );
+  await read.started;
+  t.mock.timers.tick(15_001);
+  await drain(observed, 250);
+  assert.equal(observed(), "pending", "a read is still waiting after 15 s");
+  t.mock.timers.tick(15_000);
+  await drain(observed, 5_000);
+  assert.equal(observed(), "AbortError", "a read gives up after 30 s");
+  // The shared RPC's own limit, which every mutating command uses, stays 15 s.
+  const write = hung();
+  const at = Date.now() - 2_000;
+  const mutating = settled(
+    sendRuntimeCommand(
+      { controllerCode, action: "inspect", at, expiresAt: at + 25_000 },
+      signingKey,
+      { ...target, connect: write.connect },
+      () => {},
+    ),
+  );
+  await write.started;
+  t.mock.timers.tick(15_001);
+  await drain(mutating, 5_000);
+  assert.equal(mutating(), "AbortError", "the default limit is 15 s");
 });
