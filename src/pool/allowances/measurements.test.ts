@@ -139,3 +139,72 @@ test("unknown tiers on unrelated accounts do not block this account's matched in
   }
   assert.equal(entries[0]?.full, 10_000);
 });
+
+test("an estimate that lapses at a window reset re-forms at the same size with its revision", async () => {
+  const steady = {
+    async data(path: string) {
+      if (path === "/capabilities")
+        return { capabilities: { usage_summary_cursor_v1: true, usage_token_breakdown_v2: true } };
+      const url = new URL(path, "https://fixture.invalid");
+      const from = Date.parse(url.searchParams.get("from")!),
+        to = Date.parse(url.searchParams.get("to")!);
+      return {
+        items: Array.from({ length: Math.ceil((to - from) / 60_000) }, (_, index) => ({
+          id: String(from + index * 60_000),
+          timestamp: new Date(from + index * 60_000).toISOString(),
+          credential: { credential_id: "synthetic-grok" },
+          provider: "xai",
+          service_tier: "standard",
+          model: "synthetic-model",
+          token_breakdown: {
+            quality: "complete",
+            input: { uncached_tokens: 80, cache_read_tokens: 0, cache_write_tokens: 0 },
+            output: { total_tokens: 20 },
+            total_tokens: 100,
+          },
+        })),
+        next: null,
+      };
+    },
+  };
+  const measurements = new AccountAllowanceMeasurements(new Memory(), steady);
+  const estimate = async (at: number, remaining: number, resetAt?: number) => {
+    const current = account(at, remaining, resetAt);
+    return (await measurements.observe([current], at)).get(current.id)![0];
+  };
+  let first;
+  for (let index = 0; index <= 4; index++)
+    first = await estimate(start + index * step, 1 - index * 0.05);
+  assert.equal(first?.full, 10_000);
+  const reset = start + 604_800_000 + step;
+  assert.equal(await estimate(start + 5 * step, 1, reset), undefined);
+  // The next window burns slightly faster, an estimate within the same size band.
+  let again;
+  for (let index = 1; index <= 4; index++)
+    again = await estimate(start + (5 + index) * step, 1 - index * 0.055, reset);
+  assert.equal(again?.full, first.full);
+  assert.equal(again?.revision, first.revision);
+  assert.equal(again?.unit.id, first.unit.id);
+
+  // A poll without this window's reset time keeps the lapsed estimate for its return.
+  const unread = account(start + 10 * step, 0.7, reset);
+  const quota = {
+    ...unread.quota,
+    windows: unread.quota.windows.map((window) => ({ ...window, resetAt: null })),
+  };
+  await measurements.observe([{ ...unread, quota }], start + 10 * step);
+  const next = start + 604_800_000 * 2 + step;
+  let returned;
+  for (let index = 0; index <= 4; index++)
+    returned = await estimate(start + (11 + index) * step, 1 - index * 0.052, next);
+  assert.equal(returned?.revision, first.revision);
+
+  // After a week without an estimate the next one re-baselines instead of inheriting the size.
+  const later = start + 8 * 86_400_000;
+  const far = later + 604_800_000;
+  let rebased;
+  for (let index = 0; index <= 4; index++)
+    rebased = await estimate(later + index * step, 1 - index * 0.055, far);
+  assert.notEqual(rebased?.revision, first.revision);
+  assert.equal(rebased?.full, Math.round(500 / 0.055));
+});

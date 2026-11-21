@@ -212,10 +212,7 @@ test("both halves prepare independently, retain evidence and keep the same limit
   assert.deepEqual(accounts.steps.slice(0, 6), pool.steps.slice(0, 6));
   for (const [index, job] of [accounts, pool].entries()) {
     assert.equal(job.needs, "select");
-    assert.equal(
-      job["runs-on"],
-      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${ids[index]}') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}`,
-    );
+    assert.equal(job["runs-on"], "ubuntu-latest");
     assert.equal(job["timeout-minutes"], 30);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
     assert.deepEqual(job.steps.at(-2), accounts.steps.at(-2));

@@ -22,7 +22,7 @@ const workflow = `jobs:
       - env:
           CI_NEEDS: \${{ toJSON(needs) }}
           CI_JOBS: \${{ needs.select.outputs.jobs }}
-          CI_BOAT_JOBS: \${{ needs.select.outputs.boat_jobs }}
+          CI_BOX_JOBS: \${{ needs.select.outputs.box_jobs }}
         run: node scripts/ci/gate.ts
 `;
 const group = { job: "account-acquisition", target: "self-host", mode: "managed" };
