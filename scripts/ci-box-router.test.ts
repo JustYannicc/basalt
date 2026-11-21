@@ -16,6 +16,7 @@ import {
   githubObserver,
   heartbeatMarker,
   heartbeatPath,
+  namedJobs,
   routeBox,
   routedJob,
   type BoxInput,
@@ -111,7 +112,7 @@ const selected = [
   "declared-self-host",
   "pool-runtime",
   "host-managed-accounts-pool",
-  "account-acquisition",
+  "catalog-compat",
   "client-desktop",
 ];
 const input = (overrides: Partial<BoxInput> = {}): BoxInput => ({
@@ -135,7 +136,7 @@ test("box first: a healthy box fills its free slots with the longest shards", as
   assert.equal(routed.label, "basalt-box");
   assert.equal(
     routed.summary,
-    "Box routing: box first. 2 declared shards go to the self-hosted runners (2 of 2 slots free) " +
+    "Box routing: box first. 2 jobs go to the self-hosted runners (2 of 2 slots free) " +
       "because the box reported healthy with a CI budget of 2 (release slot busy); 3 run hosted, " +
       "while 60 hosted jobs are active elsewhere: declared-cloud-1, declared-cloud-2.",
   );
@@ -268,7 +269,7 @@ test("a shard that could pass its timeout at the slow end is skipped", async () 
   assert.deepEqual(routed.jobs, []);
   assert.match(
     routed.summary,
-    /because no declared shard fits its timeout at 2× its planned minutes/,
+    /because no routable job fits its timeout at 2× its planned minutes/,
   );
   assert.equal(fitsTimeout({ id: "a", minutes: 10, timeout: Number.NaN }), false);
 });
@@ -394,24 +395,37 @@ test("unset, zero or malformed variables route nothing", async () => {
   assert.equal(typeof boxSettings(input()), "object");
 });
 
-test("only declared shard rows can route, and free slots and timeouts bound the real plan", async () => {
-  // Every job type ran slower on the box; shards need the fewest cores and fill its slots.
-  for (const job of [...heavyJobs, ...fastJobs]) assert.equal(routedJob(job), undefined, job);
+/** Every box_jobs id a named job can take: its own name, or one id per matrix leg. */
+const namedIds = Object.entries(namedJobs).flatMap(([job, { minutes }]) =>
+  typeof minutes === "number" ? [job] : Object.keys(minutes).map((leg) => `${job}:${leg}`),
+);
+
+test("declared shard rows and benched named jobs route, and free slots and timeouts bound the real plan", async () => {
+  const routable = [...declaredJobs, ...Object.keys(namedJobs)];
+  for (const job of [...heavyJobs, ...fastJobs])
+    assert.equal(
+      routedJob(job),
+      typeof namedJobs[job]?.minutes === "number" ? job : undefined,
+      job,
+    );
   const real = declaredMatrices();
   const plan = checkPlan(heavyJobs, real);
   assert.deepEqual(
     plan.shards.map((shard) => shard.id).sort(),
-    declaredJobs.flatMap((job) => real[job]!.include.map((row) => row.shard)).sort(),
+    [
+      ...declaredJobs.flatMap((job) => real[job]!.include.map((row) => row.shard)),
+      ...namedIds,
+    ].sort(),
   );
-  for (const shard of plan.shards) assert.ok(declaredJobs.includes(routedJob(shard.id)!), shard.id);
+  for (const shard of plan.shards) assert.ok(routable.includes(routedJob(shard.id)!), shard.id);
   const { box, calls } = observer();
   const none = await routeBox(
-    input({ selected: heavyJobs.filter((job) => !declaredJobs.includes(job)) }),
+    input({ selected: heavyJobs.filter((job) => !routable.includes(job)) }),
     box,
     () => now,
   );
   assert.deepEqual(none.jobs, []);
-  assert.match(none.summary, /runs no declared e2e shards/);
+  assert.match(none.summary, /runs no job the box can take/);
   assert.deepEqual(calls, { heartbeat: 0, active: 0 });
   const fitting = plan.shards.filter(fitsTimeout).sort((a, b) => b.minutes - a.minutes);
   for (const slots of [1, 2, 3, 5])
@@ -609,17 +623,40 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
 const shardExpression =
   "${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}";
 
-test("only declared shard jobs use the router expression; every other job runs hosted", () => {
+const namedExpression = (key: string) =>
+  `\${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), ${key}) && needs.select.outputs.box_label || 'ubuntu-latest' }}`;
+
+test("declared shard jobs and benched named jobs use the router expression; every other job runs hosted", () => {
   for (const id of declaredJobs) {
     assert.ok(heavyJobs.includes(id), id);
     assert.equal(workflow.jobs[id]["runs-on"], shardExpression, id);
     assert.equal(workflow.jobs[id].name, "${{ matrix.shard }}", id);
     assert.ok(workflow.jobs.check.needs.includes(id), id);
   }
+  for (const [id, { minutes, timeout }] of Object.entries(namedJobs)) {
+    const job = workflow.jobs[id];
+    assert.ok(heavyJobs.includes(id), id);
+    assert.ok(workflow.jobs.check.needs.includes(id), id);
+    assert.ok([job.needs].flat().includes("select"), id);
+    // The table's timeout is the job's own, GitHub's 360 minutes when it sets none.
+    assert.equal(job["timeout-minutes"] ?? 360, timeout, id);
+    if (typeof minutes === "number") {
+      assert.equal(job["runs-on"], namedExpression(`'${id}'`), id);
+      assert.equal(job.strategy, undefined, id);
+    } else {
+      // Matrix legs route one by one, under the leg names the workflow's matrix declares.
+      assert.equal(job["runs-on"], namedExpression(`format('${id}:{0}', matrix.scope)`), id);
+      assert.deepEqual(
+        job.strategy.matrix.include.map((row: { scope: string }) => row.scope).sort(),
+        Object.keys(minutes).sort(),
+        id,
+      );
+    }
+  }
   for (const [id, job] of Object.entries<{ "runs-on": string; strategy?: { matrix?: unknown } }>(
     workflow.jobs,
   )) {
-    if (declaredJobs.includes(id)) continue;
+    if (declaredJobs.includes(id) || id in namedJobs) continue;
     assert.equal(
       job["runs-on"],
       id === "client-desktop" ? "${{ matrix.os }}" : "ubuntu-latest",
@@ -627,6 +664,36 @@ test("only declared shard jobs use the router expression; every other job runs h
     );
   }
   assert.ok(!read(".github/workflows/ci.yml").includes("scripts/ci/job-durations.json"));
+});
+
+test("a named job routes by its exact id, and the gate accepts it only when the job is selected", () => {
+  assert.equal(routedJob("production-ops-identity:credentials"), "production-ops-identity");
+  assert.equal(routedJob("human-in-the-loop-cloud"), "human-in-the-loop-cloud");
+  for (const invalid of [
+    "production-ops-identity",
+    "production-ops-identity:nope",
+    "production-ops-identity:credentials:x",
+    "human-in-the-loop-cloud:credentials",
+    "human-in-the-loop",
+    ":credentials",
+  ])
+    assert.equal(routedJob(invalid), undefined, invalid);
+  // Every named row fits its timeout at the slow end, so the table never lists a dead row.
+  for (const shard of checkPlan(Object.keys(namedJobs), {}).shards)
+    assert.ok(fitsTimeout(shard), shard.id);
+  const needs = Object.fromEntries(
+    [...fastJobs, ...heavyJobs, ...conditionalJobs].map((id) => [
+      id,
+      { result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success" },
+    ]),
+  );
+  assert.deepEqual(gateErrors(needs, heavyJobs, namedIds, true), []);
+  const without = heavyJobs.filter((job) => job !== "production-ops-identity");
+  assert.ok(
+    gateErrors(needs, without, ["production-ops-identity:credentials"]).includes(
+      "Invalid box-job selection",
+    ),
+  );
 });
 
 test("no workflow names the box or release runner labels outside the heartbeat's default", () => {

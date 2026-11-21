@@ -21,10 +21,38 @@ const sampleSkew = 2 * 60_000;
 const sharedLabels = ["self-hosted", "basalt-release"];
 const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
 
-/** Only declared e2e shard rows route. Every job type runs slower on the box, and a shard needs
- * only 1.0–1.4 cores, so shards alone keep its CI slots busy. */
+/** Declared e2e shard rows route, planned from their files' measured durations. */
 export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
-/** A declared shard row: its name in box_jobs, its planned hosted minutes and its job timeout. */
+/**
+ * Other jobs route only once a box bench has run them at hosted speed. `minutes` is the slowest
+ * hosted run in full Check 44894443635 (account-acquisition: the planned time after its split);
+ * `timeout` is the job's own, which the workflow test keeps equal to ci.yml. A matrix job routes
+ * leg by leg, as `<job>:<leg>`.
+ */
+export const namedJobs: Record<
+  string,
+  { minutes: number | Record<string, number>; timeout: number }
+> = {
+  "production-ops-identity": {
+    minutes: {
+      credentials: 8.3,
+      release: 6.3,
+      "without-server": 6.2,
+      host: 6.0,
+      database: 5.9,
+      role: 5.9,
+      physical: 5.1,
+      diagnostics: 4.0,
+    },
+    timeout: 25,
+  },
+  "account-acquisition": { minutes: 12.9, timeout: 30 },
+  // No timeout of its own, so GitHub's 360 minutes.
+  "upstream-contracts": { minutes: 11.3, timeout: 360 },
+  "human-in-the-loop-cloud": { minutes: 10.5, timeout: 25 },
+  "host-managed-accounts-local": { minutes: 9.4, timeout: 20 },
+};
+/** A routable row: its name in box_jobs, its planned hosted minutes and its job timeout. */
 export type BoxShard = { id: string; minutes: number; timeout: number };
 export type Matrices = Record<
   string,
@@ -55,30 +83,44 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-/** The selection's declared shard rows with their planned minutes and timeouts. */
+/** The selection's routable rows with their planned minutes and timeouts. */
 export function checkPlan(
   selected: readonly string[],
   matrices: Matrices,
   durations = readDeclaredDurations(),
 ) {
   const estimate = estimator(durations);
-  const shards: BoxShard[] = selected.flatMap((job) =>
-    declaredJobs.includes(job)
-      ? (matrices[job]?.include ?? []).map((row) => ({
-          id: row.shard,
-          minutes:
-            setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
-          timeout: row.timeout,
-        }))
-      : [],
-  );
+  const shards: BoxShard[] = selected.flatMap((job): BoxShard[] => {
+    if (declaredJobs.includes(job))
+      return (matrices[job]?.include ?? []).map((row) => ({
+        id: row.shard,
+        minutes:
+          setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
+        timeout: row.timeout,
+      }));
+    const named = namedJobs[job];
+    if (!named) return [];
+    const { minutes, timeout } = named;
+    return typeof minutes === "number"
+      ? [{ id: job, minutes, timeout }]
+      : Object.entries(minutes).map(([leg, legMinutes]) => ({
+          id: `${job}:${leg}`,
+          minutes: legMinutes,
+          timeout,
+        }));
+  });
   return { shards };
 }
 
-/** The declared job a box_jobs id belongs to, or undefined when it names no declared shard. */
+/** The job a box_jobs id belongs to, or undefined when it names no routable row. */
 export function routedJob(id: string) {
   const job = shardJob(id);
-  return job && declaredJobs.includes(job) ? job : undefined;
+  if (job && declaredJobs.includes(job)) return job;
+  const [name = "", leg, ...rest] = id.split(":");
+  const minutes = namedJobs[name]?.minutes;
+  if (minutes === undefined || rest.length) return undefined;
+  const legs = typeof minutes === "number" ? undefined : Object.keys(minutes);
+  return (legs ? leg !== undefined && legs.includes(leg) : leg === undefined) ? name : undefined;
 }
 
 /** A shard goes to the box only if it would still finish inside its own timeout at the slow end. */
@@ -172,7 +214,7 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
   if (typeof settings === "string") return none(settings);
   try {
     const plan = checkPlan(input.selected, input.matrices, input.durations);
-    if (!plan.shards.length) return none("this Check runs no declared e2e shards");
+    if (!plan.shards.length) return none("this Check runs no job the box can take");
     const box = heartbeatBudget(await observe.heartbeat(), now());
     if (typeof box === "string") return none(box);
     const active = await observe.active();
@@ -185,13 +227,13 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
     const jobs = fillBox(plan.shards, free);
     if (!jobs.length)
-      return none(`no declared shard fits its timeout at ${boxSlowdown}× its planned minutes`);
+      return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
     const hosted = plan.shards.length - jobs.length;
     return {
       jobs,
       label: settings.label,
       summary:
-        `Box routing: box first. ${jobs.length} declared shards go to the self-hosted runners ` +
+        `Box routing: box first. ${jobs.length} jobs go to the self-hosted runners ` +
         `(${slots}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
         `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };

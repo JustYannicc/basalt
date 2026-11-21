@@ -710,7 +710,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-local') && needs.select.outputs.box_label || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1283,7 +1283,7 @@ jobs:
   production-ops-identity:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), format('production-ops-identity:{0}', matrix.scope)) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -1463,7 +1463,7 @@ jobs:
   human-in-the-loop-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-cloud')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'human-in-the-loop-cloud') && needs.select.outputs.box_label || 'ubuntu-latest' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -2557,7 +2557,7 @@ jobs:
   upstream-contracts:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'upstream-contracts') && needs.select.outputs.box_label || 'ubuntu-latest' }}
     services:
       postgres:
         image: postgres:17.7-alpine
@@ -2731,7 +2731,7 @@ jobs:
   account-acquisition:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'account-acquisition') && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Measured 12.6-20.5 minutes on hosted runners in six full Checks; the slowest was cut at 20.
     # Its observation half now runs in account-observations.
     timeout-minutes: 30
