@@ -136,7 +136,7 @@ export function withSharedStep(step: SharedStep, build: () => void) {
   // builds as it would without one.
   let restored: boolean;
   try {
-    restored = restoreOrClaim(step);
+    restored = restoreOrClaim({ ...step, cache: step.cache });
   } catch (error) {
     console.log(`Shared cache unavailable, building: ${(error as Error).message}`);
     release();
@@ -145,7 +145,7 @@ export function withSharedStep(step: SharedStep, build: () => void) {
   if (restored) return;
   build();
   try {
-    storeEntry(step);
+    storeEntry({ ...step, cache: step.cache });
   } catch (error) {
     console.log(`Shared cache not written: ${(error as Error).message}`);
   } finally {
@@ -155,9 +155,9 @@ export function withSharedStep(step: SharedStep, build: () => void) {
 
 let key = "";
 
-function restoreOrClaim(step: SharedStep) {
+function restoreOrClaim(step: SharedStep & { readonly cache: string }) {
   key = step.key();
-  const entry = join(step.cache!, key);
+  const entry = join(step.cache, key);
   const lock = `${entry}.lock`;
   mkdirSync(step.cache, { recursive: true });
   if (!claim(entry, lock)) return false;
@@ -170,8 +170,8 @@ function restoreOrClaim(step: SharedStep) {
   return true;
 }
 
-function storeEntry(step: SharedStep) {
-  const entry = join(step.cache!, key);
+function storeEntry(step: SharedStep & { readonly cache: string }) {
+  const entry = join(step.cache, key);
   // Written beside the entry and renamed, so a reader never sees a partial one.
   const partial = `${entry}.${scratch}.partial`;
   rmSync(partial, { recursive: true, force: true });
