@@ -24,6 +24,7 @@ import type { StageScope } from "./stage-writes.ts";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { resolvePathFlags } from "./entry-paths.ts";
+import { redactSecrets } from "./redact.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
@@ -97,8 +98,9 @@ if (command === "teardown" && !isRehearsalStage(stage))
 
 /**
  * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
- * gitignored .local, in the stage runner's own sealed output when it gives one, and sealed with the
- * deployment key next to the uploaded records on production.
+ * gitignored .local, in the stage runner's own sealed output when it gives one, redacted in the box
+ * release slot's kept output when it gives one, and sealed with the deployment key next to the
+ * uploaded records on production.
  */
 const keepPrivate = async (name: string, detail: string) => {
   await mkdir(resolve(root, ".local/release"), { recursive: true });
@@ -108,6 +110,18 @@ const keepPrivate = async (name: string, detail: string) => {
       resolve(process.env.BASALT_STAGE_OUTPUT_DIR, `release-${name}.txt`),
       `${detail}\n`,
     );
+  // A box release slot keeps this directory past its container, readable by the box owner only;
+  // the plain copy above dies with the container. Writing it never changes the run's outcome.
+  const box = process.env.BASALT_BOX_OUTPUT;
+  if (box)
+    await mkdir(resolve(box, "release"), { recursive: true })
+      .then(() =>
+        appendFile(
+          resolve(box, "release", `${name}.txt`),
+          `${redactSecrets(detail, process.env)}\n`,
+        ),
+      )
+      .catch(() => {});
   const key = process.env.EXECUTOR_ENCRYPTION_KEY;
   if (stage === "production" && key)
     try {
