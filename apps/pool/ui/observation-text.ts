@@ -3,6 +3,7 @@
 // at the copy, so no host UI package is needed at runtime. Kept apart from the table so unit tests
 // load no JSX.
 export {
+  formatMoment,
   orderedWindows,
   resetCountText,
   resetEffect,

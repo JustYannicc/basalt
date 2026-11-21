@@ -134,6 +134,8 @@ appendFileSync('built.log', step + '\\n');
         env: {
           ...environment,
           CI: ci ? "true" : "",
+          // CI names no cache, as hosted Check jobs don't, so it builds every step.
+          ...(ci ? { EXECUTOR_E2E_CACHE: "" } : {}),
           ...(failedStep ? { FAKE_FAIL: failedStep } : {}),
         },
         encoding: "utf8",

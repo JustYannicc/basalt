@@ -1,0 +1,309 @@
+diff --git a/apps/hosted/server/src/contracts/account-resets.ts b/apps/hosted/server/src/contracts/account-resets.ts
+index 37633a3e3..cbf90e792 100644
+--- a/apps/hosted/server/src/contracts/account-resets.ts
++++ b/apps/hosted/server/src/contracts/account-resets.ts
+@@ -10,6 +10,18 @@ import {
+   RequireOrganization,
+ } from "./organization.ts";
+ 
++const ResetKind = /* @__PURE__ */ (() =>
++  Schema.Literals(["session", "weekly", "full", "model", "unknown"]))();
++const ResetScope = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    kind: Schema.Literals(["account", "model", "unknown"]),
++    id: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isMaxLength(64))),
++  }))();
++/** What a credit refills. Optional while a pool from before kinds answers. */
++const ResetKindFields = /* @__PURE__ */ (() => ({
++  kind: Schema.optionalKey(ResetKind),
++  scope: Schema.optionalKey(ResetScope),
++}))();
+ export const ResetCredit = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     id: Schema.NonEmptyString,
+@@ -21,6 +33,7 @@ export const ResetCredit = /* @__PURE__ */ (() =>
+     clears: Schema.NullOr(
+       Schema.Array(Schema.Literals(["five_hour", "seven_day", "seven_day_overage_included"])),
+     ),
++    ...ResetKindFields,
+   }))();
+ export type ResetCredit = typeof ResetCredit.Type;
+ export const ResetCredits = /* @__PURE__ */ (() =>
+@@ -63,6 +76,19 @@ export const ResetAttempt = /* @__PURE__ */ (() =>
+   }))();
+ export type ResetAttempt = typeof ResetAttempt.Type;
+ 
++export const ResetUsePayload = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    creditId: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
++    requestId: Schema.String.check(
++      Schema.isPattern(
++        /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/u,
++      ),
++    ),
++    // The kind the person confirmed; the pool refuses, unspent, a credit of another kind.
++    ...ResetKindFields,
++  }))();
++export type ResetUsePayload = typeof ResetUsePayload.Type;
++
+ export const AccountResetUnavailable = /* @__PURE__ */ (() =>
+   ApiError.define({
+     tag: "AccountResetUnavailable",
+@@ -110,14 +136,7 @@ export const HostedAccountResets = /* @__PURE__ */ (() =>
+     .add(
+       HttpApiEndpoint.post("use", `${prefix}/reset`, {
+         params,
+-        payload: Schema.Struct({
+-          creditId: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+-          requestId: Schema.String.check(
+-            Schema.isPattern(
+-              /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/u,
+-            ),
+-          ),
+-        }),
++        payload: ResetUsePayload,
+         success: ResetResult,
+         error: [...errors, Forbidden],
+       })
+diff --git a/apps/hosted/server/src/implementation/account-resets.ts b/apps/hosted/server/src/implementation/account-resets.ts
+index b8521c8a7..bcca29859 100644
+--- a/apps/hosted/server/src/implementation/account-resets.ts
++++ b/apps/hosted/server/src/implementation/account-resets.ts
+@@ -14,6 +14,7 @@ import {
+   AccountResetBackend,
+   AccountResetRefused,
+   AccountResetUnavailable,
++  type ResetUsePayload,
+   ResetAttempt,
+   ResetCredits,
+   ResetResult,
+@@ -105,7 +106,7 @@ const send = <A>(
+   grant: AccountProof<"inspect"> | AccountProof<"use">,
+   action: "resets" | "resets/attempt" | "resets/use",
+   schema: Schema.ConstraintDecoder<A, never>,
+-  payload?: { readonly creditId: string; readonly requestId: string },
++  payload?: ResetUsePayload,
+ ) =>
+   Effect.gen(function* () {
+     const resolved = yield* target(pool, grant, payload !== undefined);
+diff --git a/apps/hosted/web/src/contracts/account-resets.ts b/apps/hosted/web/src/contracts/account-resets.ts
+index ab7ee0fa0..2f43c238a 100644
+--- a/apps/hosted/web/src/contracts/account-resets.ts
++++ b/apps/hosted/web/src/contracts/account-resets.ts
+@@ -6,6 +6,7 @@ export type {
+   ResetCredits,
+   ResetResult,
+ } from "@executor-js/hosted-server/account-resets";
++import type { ResetUsePayload } from "@executor-js/hosted-server/account-resets";
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { HostedClient } from "./api.ts";
+@@ -27,7 +28,7 @@ const attempt = Atom.family((params: Target) =>
+   ),
+ );
+ const use = Atom.family((params: Target) =>
+-  HostedClient.runtime.fn((payload: { readonly creditId: string; readonly requestId: string }) =>
++  HostedClient.runtime.fn((payload: ResetUsePayload) =>
+     Effect.flatMap(HostedClient, (client) => client.accountResets.use({ params, payload })),
+   ),
+ );
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index fccc25e97..db5bcf2a7 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -25,6 +25,7 @@ export {
+   planLabel,
+   resetCountText,
+   resetEffect,
++  resetPlacement,
+   resetWindow,
+   span,
+   windowView,
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 5d98df232..0e85fc4c1 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -1,7 +1,12 @@
+ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+-import { bankedResets, orderedWindows, resetWindow } from "./account-observation-format.ts";
++import {
++  bankedResets,
++  orderedWindows,
++  resetPlacement,
++  resetWindow,
++} from "./account-observation-format.ts";
+ import { useResetControl, type AccountResetActions } from "./account-reset-control.tsx";
+ import { UsageCell } from "./account-usage-cell.tsx";
+ import { cn } from "../lib/utils.ts";
+@@ -101,6 +106,8 @@ export function ObservationReadings({
+   ) : (
+     <ResetCells
+       actions={resetActions}
++      // The count sits on the longest window; its control spends only resets that refill it.
++      accepts={(credit) => target !== undefined && resetPlacement(credit, windows) === target}
+       count={resets.count}
+       title={resets.title}
+       stale={stale}
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+index 963e52fa2..368a890ff 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+@@ -458,6 +458,36 @@ export const resetWindow = (windows: readonly Window[]) =>
+     undefined,
+   )?.id;
+ 
++/**
++ * The window a banked reset refills, which is the only one it may be spent from: a model's reset
++ * on that model's own window, a 5-hour reset on the account's 5-hour window, weekly and full resets
++ * on its 7-day window, and an account reset of no named kind on its longest window. A reset whose
++ * window wasn't reported, or whose scope is unknown, has no place, so it is never spent from a
++ * window it doesn't refill. A source that predates kinds names neither and keeps the longest
++ * window.
++ */
++export function resetPlacement(
++  reset: { readonly kind?: string | undefined; readonly scope?: Balance["scope"] | undefined },
++  windows: readonly Window[],
++): string | undefined {
++  if (reset.kind === undefined && reset.scope === undefined) return resetWindow(windows);
++  if (reset.kind === "model" || reset.scope?.kind === "model")
++    return resetWindow(
++      windows.filter((entry) => isModelWindow(entry) && entry.scope?.id === reset.scope?.id),
++    );
++  if (reset.scope?.kind !== "account") return undefined;
++  const own = windows.filter((entry) => !isModelWindow(entry));
++  const lasting = (seconds: number) =>
++    own.find((entry) => periodSeconds(entry.period) === seconds)?.id;
++  if (reset.kind === "session") return lasting(18_000);
++  // A reporter that names no periods keeps the longest-window rule it had before kinds.
++  if (reset.kind === "weekly" || reset.kind === "full")
++    return own.some((entry) => periodSeconds(entry.period) > 0)
++      ? lasting(604_800)
++      : resetWindow(own);
++  return resetWindow(own);
++}
++
+ const offerings = {
+   subscription: "Subscription",
+   metered_api: "Metered API",
+diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+index 7f151bec9..a9d917032 100644
+--- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
++++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+@@ -33,6 +33,9 @@ export interface ResetCreditView {
+   readonly expiresAt: string | null;
+   /** True: applies now. Null: the provider has not said. False: not spendable now. */
+   readonly usableNow: boolean | null;
++  /** What it refills, when the product names it; the cell spends only what its window refills. */
++  readonly kind?: ResetKind | undefined;
++  readonly scope?: ResetScope | undefined;
+ }
+ export interface ResetResultView {
+   readonly requestId: string;
+@@ -75,7 +78,30 @@ export interface AccountResetActions {
+   readonly use: (spend: Spend) => Promise<ResetUse>;
+ }
+ 
+-type Spend = { readonly creditId: string; readonly requestId: string };
++type ResetKind = "session" | "weekly" | "full" | "model" | "unknown";
++type ResetScope = { readonly kind: "account" | "model" | "unknown"; readonly id?: string };
++/**
++ * One intended spend. `kind` and `scope` are what the person confirmed; the server refuses, unspent,
++ * a credit that has become anything else.
++ */
++type Spend = {
++  readonly creditId: string;
++  readonly requestId: string;
++  readonly kind?: ResetKind;
++  readonly scope?: ResetScope;
++};
++const kinds: readonly ResetKind[] = ["session", "weekly", "full", "model", "unknown"];
++const scopes: readonly ResetScope["kind"][] = ["account", "model", "unknown"];
++/** A remembered spend's confirmed kind, kept only when it is well formed. */
++const confirmedKind = (value: object): Pick<Spend, "kind" | "scope"> => {
++  const { kind, scope } = value as { kind?: unknown; scope?: unknown };
++  const named = kinds.find((entry) => entry === kind);
++  if (named === undefined || typeof scope !== "object" || scope === null) return {};
++  const { kind: area, id } = scope as { kind?: unknown; id?: unknown };
++  const where = scopes.find((entry) => entry === area);
++  if (where === undefined || (id !== undefined && typeof id !== "string")) return {};
++  return { kind: named, scope: id === undefined ? { kind: where } : { kind: where, id } };
++};
+ /**
+  * A spend without a settled answer. `unknown`: the server holds it without an answer.
+  * `unrecorded`: the server has no record of it, so it may never have arrived. `unread`: its
+@@ -183,7 +209,11 @@ const memory = {
+         "requestId" in value &&
+         typeof value.creditId === "string" &&
+         typeof value.requestId === "string"
+-        ? { creditId: value.creditId, requestId: value.requestId }
++        ? {
++            creditId: value.creditId,
++            requestId: value.requestId,
++            ...confirmedKind(value),
++          }
+         : undefined;
+     } catch {
+       return undefined;
+@@ -206,6 +236,7 @@ const memory = {
+  */
+ export function useResetControl({
+   actions,
++  accepts,
+   count,
+   title,
+   stale,
+@@ -215,6 +246,8 @@ export function useResetControl({
+   format,
+ }: {
+   readonly actions: AccountResetActions;
++  /** Whether a credit refills the window this control sits on; only those are offered. */
++  readonly accepts: (credit: ResetCreditView) => boolean;
+   readonly count: number;
+   readonly title: string;
+   readonly stale: boolean;
+@@ -339,13 +372,21 @@ export function useResetControl({
+       }
+       if (!attempt.ok) return setState({ kind: "refused", message: attempt.message });
+       if (!catalog.ok) return setState({ kind: "refused", message: catalog.message });
+-      // The catalog's total counts unusable grants too; only these may be offered.
+-      const offered = catalog.value.credits.filter(
+-        (credit) => credit.usableNow !== false && credit.remaining > 0,
++      // The catalog's total counts unusable grants and other windows' resets too; only these may
++      // be offered, so a press here never spends a reset that refills a different limit.
++      const here = catalog.value.credits.filter(
++        (credit) => credit.remaining > 0 && accepts(credit),
+       );
++      const offered = here.filter((credit) => credit.usableNow !== false);
+       const [credit] = offered;
+       if (credit === undefined)
+-        return setState({ kind: "refused", message: "No banked reset can be used right now" });
++        return setState({
++          kind: "refused",
++          message:
++            here.length === 0
++              ? "None of this account's banked resets refills this limit"
++              : "No banked reset for this limit can be used right now",
++        });
+       setState({
+         kind: "confirm",
+         provider: catalog.value.provider,
+@@ -403,7 +444,16 @@ export function useResetControl({
+         onCancel={() => setState({ kind: "idle" })}
+         onConfirm={() => {
+           if (state.kind === "confirm")
+-            send({ creditId: state.credit.id, requestId: crypto.randomUUID() }, false);
++            send(
++              {
++                creditId: state.credit.id,
++                requestId: crypto.randomUUID(),
++                ...(state.credit.kind === undefined || state.credit.scope === undefined
++                  ? {}
++                  : { kind: state.credit.kind, scope: state.credit.scope }),
++              },
++              false,
++            );
+         }}
+         title="Use a banked reset?"
+         action="Use reset"

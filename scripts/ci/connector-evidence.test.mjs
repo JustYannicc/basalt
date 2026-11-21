@@ -318,6 +318,58 @@ test("guidance launch failures retain their closed class in the collected artifa
   }
 });
 
+test("a failure keeps its class whatever directory its stack and paths name", () => {
+  const classify = (template, checkout) => {
+    const message = template.replaceAll("{checkout}", checkout);
+    const error = new Error(message);
+    error.stack = [
+      `Error: ${message}`,
+      `    at proveCompanyGuidance (${checkout}/scripts/connectors-tests/zendesk-company-guidance.mjs:31:8)`,
+      `    at async main (${checkout}/scripts/connectors-tests/run.ts:12:3)`,
+    ].join("\n");
+    return describeGuidanceFailure(error, "company-guidance").publicLine;
+  };
+  for (const [template, kind, marker] of [
+    ["No usable sandbox!", "runtime", "sandbox"],
+    ["unexpected fixture state", "runtime", "other"],
+    ["Timeout 30000ms exceeded", "timeout", "timeout"],
+    ["ENOENT: no such file or directory, open '{checkout}/run.json'", "runtime", "other"],
+    ["Cannot find module 'file://{checkout}/e2e/missing.mjs'", "module-load", "other"],
+  ])
+    for (const checkout of [
+      "/home/runner/work/basalt",
+      "/home/runner/timeout/basalt",
+      "/srv/ECONNREFUSED-SyntaxError-EACCES/basalt",
+    ])
+      assert.equal(
+        classify(template, checkout),
+        `CONNECTORS_PROOF_FAILURE phase=company-guidance kind=${kind} at=zendesk-company-guidance.mjs:31 error=Error marker=${marker}`,
+        `${template} in ${checkout}`,
+      );
+});
+
+test("a failure is classified by its cause chain, not only its outer message", () => {
+  const timeout = new Error("page.goto: Timeout 30000ms exceeded");
+  timeout.name = "TimeoutError";
+  const wrapped = new Error("company guidance did not load", { cause: timeout });
+  assert.match(
+    describeGuidanceFailure(wrapped, "company-guidance").publicLine,
+    / kind=timeout .* error=Error marker=timeout$/,
+  );
+  const refused = Object.assign(new AggregateError([], ""), { code: "ECONNREFUSED" });
+  assert.match(
+    describeGuidanceFailure(new Error("tenant unreachable", { cause: refused }), "company-guidance")
+      .publicLine,
+    / kind=connection .* marker=other$/,
+  );
+  const cyclic = new Error("cyclic failure");
+  cyclic.cause = cyclic;
+  assert.match(
+    describeGuidanceFailure(cyclic, "company-guidance").publicLine,
+    / kind=runtime .* marker=other$/,
+  );
+});
+
 test("unknown error names and markers cannot enter connector artifacts", () => {
   for (const suffix of [
     `error=${tenant} marker=other`,
