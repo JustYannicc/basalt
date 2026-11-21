@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { generateDeployment } from "./deployment.ts";
 import { stackFingerprint } from "./fingerprint.ts";
 import { nativeFixture } from "./native-stack-fixture-helpers.ts";
@@ -11,6 +11,8 @@ import { readGeneratedInventory } from "./generated-inventory.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
+// Every test evaluates the fixture stack in a subprocess, as native-stack.test.ts does.
+vi.setConfig({ testTimeout: 40_000 });
 const declaration = (extra = "") => `yield* Cloudflare.Worker("Api", {
   main: new URL("./worker.ts", import.meta.url).pathname, ${extra}
 });`;
