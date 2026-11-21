@@ -173,6 +173,19 @@ export class NativeComputers {
       const caller = identity(value);
       return await this.deps.run(async (registry) => {
         if (value.action === "check") {
+          const row = Object.hasOwn(registry, caller.computer)
+            ? registry[caller.computer]
+            : undefined;
+          // Revoked by its person, not taken by access removal: the host ends the device's grant
+          // when it hears this, since a tools-only grant's own checks never ask the pool.
+          if (
+            row?.user === caller.user &&
+            row.pool === caller.pool &&
+            row.native?.grant === caller.grant &&
+            !row.removalPending &&
+            (row.state === "revoking" || row.state === "revoked")
+          )
+            return fail(410, "unauthorized", "This device was revoked.");
           const computer = await this.active(registry, caller);
           if (value.display !== true) return json({ active: true });
           const display = await nativePoolDisplay(

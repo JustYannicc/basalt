@@ -58,7 +58,8 @@ export class ComputerLeftovers {
           this.retryAt.delete(id);
       const due = Object.values(registry)
         .filter(
-          (computer) => leftBehind(computer, start) && (this.retryAt.get(computer.id) ?? 0) <= start,
+          (computer) =>
+            leftBehind(computer, start) && (this.retryAt.get(computer.id) ?? 0) <= start,
         )
         .sort((a, b) => (this.retryAt.get(a.id) ?? 0) - (this.retryAt.get(b.id) ?? 0))
         .map((computer) => structuredClone(computer));
