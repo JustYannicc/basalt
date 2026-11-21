@@ -173,3 +173,47 @@ test("an API token delete is refused through the real base path too", async (t) 
   assert.equal(outcome, "API token token-id");
   assert.deepEqual(server.received, []);
 });
+
+test("a stage's destroy deletes exactly the API token its own State and plan record, and no other", async (t) => {
+  const server = await startServer({});
+  t.after(server.close);
+  const token = (id: string) => `${server.base}/accounts/${ACCOUNT}/tokens/${id}`;
+  const outcomes = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const guard = yield* install({
+          // The stage's own State records its minted token; its destroy plan names the same id.
+          stage: { ...scope, owned: ["tok-stage", "tok-recorded-only"] },
+          deletable: [
+            { kind: "API token", id: "tok-stage" },
+            { kind: "API token", id: "tok-planned-only" },
+          ],
+        });
+        const out: string[] = [];
+        for (const id of ["tok-stage", "tok-recorded-only", "tok-planned-only", "tok-production"])
+          out.push(
+            yield* Effect.promise(() =>
+              guard.fetch(token(id), { method: "DELETE" }).then(
+                (response) => `${id} sent ${response.status}`,
+                (error: unknown) =>
+                  error instanceof WireRefused ? `${id} refused` : `${id} ${String(error)}`,
+              ),
+            ),
+          );
+        return out;
+      }),
+    ),
+  );
+  assert.deepEqual(outcomes, [
+    "tok-stage sent 200",
+    // State records it, but the destroy plan does not delete it.
+    "tok-recorded-only refused",
+    // The plan names it, but the stage's own State never recorded it.
+    "tok-planned-only refused",
+    "tok-production refused",
+  ]);
+  assert.deepEqual(
+    server.received.map((r) => `${r.method} ${r.path}`),
+    [`DELETE /accounts/${ACCOUNT}/tokens/tok-stage`],
+  );
+});
