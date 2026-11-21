@@ -126,6 +126,26 @@ async function ownPool(
   }
   return undefined;
 }
+/**
+ * The person's tools-only devices, which the tools service approves and revokes without the pool,
+ * so the pool lists one it never heard of and marks one it missed revoking. Undefined when
+ * unavailable or too large for the pool's setup request: the list still works without them.
+ */
+async function toolsOnlyDevices(request: Request, env: SetupEnv): Promise<unknown[] | undefined> {
+  try {
+    const response = await native(request, env, "native/devices");
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const devices = record(await response.json()).devices;
+    // The pool refuses setup requests over 64,000 characters; its signed envelope grows by a third.
+    return Array.isArray(devices) && JSON.stringify(devices).length <= 32_000 ? devices : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Lists still work while the organization list is unavailable; only minting needs it. */
 const ownPoolIfAvailable = (request: Request, env: SetupEnv, person: string) =>
   ownPool(request, env, person).catch(() => undefined);
@@ -191,6 +211,15 @@ async function deleteTools(request: Request, env: SetupEnv, keyId: string): Prom
   // Native delete conceals foreign keys with the same code. The signed pool record owns keyId.
   if (response.status === 404 && result.code === "KEY_NOT_FOUND") return;
   throw new SetupError(502, "Could not revoke the tools token. Retry removing this computer.");
+}
+
+/** A native device signs in with its own grant; revoking it as the person ends that sign-in. */
+async function revokeGrant(request: Request, env: SetupEnv, id: string): Promise<void> {
+  const response = await native(request, env, "mcp/grants/revoke", { id });
+  await response.body?.cancel();
+  // Fails closed: a device whose grant may still be live must not be reported as removed.
+  if (!response.ok)
+    throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
 }
 
 function quote(value: string): string {
@@ -417,8 +446,9 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
-    // The list only needs the session; start it now so it overlaps the pool calls below.
+    // The list only needs the session; start these now so they overlap the pool calls below.
     if (method === "GET") void organizationList(request, env);
+    const devices = method === "GET" ? toolsOnlyDevices(request, env) : undefined;
     // Revoking needs no pool lookup; listing, minting and refreshing record the person's own pool.
     const selection = await body(
       await pool(request, env, "validate", { user: person, intent: input.intent }),
@@ -458,7 +488,10 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
       return response;
     }
     if (method === "GET") {
-      const result = await body(await pool(request, env, "computers", payload));
+      const known = await devices;
+      const result = await body(
+        await pool(request, env, "computers", { ...payload, ...(known && { native: known }) }),
+      );
       if (!Array.isArray(result.computers)) throw new SetupError(502, "Could not list computers.");
       return json({
         computers: result.computers.map(computerSummary),
@@ -468,6 +501,12 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     }
     const revoke = { ...payload, id: computer![1] };
     const result = await body(await pool(request, env, "revoke", revoke));
+    const grant = result.grant;
+    if (grant !== undefined) {
+      if (!text(grant, 512) || !grant.startsWith("native:"))
+        throw new SetupError(502, "Could not revoke this computer. Try again.");
+      await revokeGrant(request, env, grant);
+    }
     // A models-only computer has no tools token to delete.
     if (result.toolsKeyId !== null) {
       if (!text(result.toolsKeyId, 512))
