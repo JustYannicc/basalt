@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 
 const workflow = readFileSync(
   new URL("../../.github/workflows/release.yml", import.meta.url),
   "utf8",
 );
+const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+/** The release job's steps as Actions reads them, with every YAML alias resolved. */
+const parsedSteps = (
+  parse(workflow) as {
+    jobs: { release: { steps: { name?: string; run?: string; env?: object; with?: object }[] } };
+  }
+).jobs.release.steps;
 const step = (name: string) => {
   const start = workflow.indexOf(`- name: ${name}`);
   assert.ok(start >= 0, `missing step ${name}`);
@@ -198,23 +206,29 @@ test("every production entry call the workflow makes is one the entry accepts", 
 test("production secrets reach only the steps that run the entry", () => {
   const env = /\n    env:\n([\s\S]*?)\n    steps:/u.exec(job("release"))?.[1] ?? "";
   assert.doesNotMatch(env, /secrets\./u, "no secret in the job env");
-  const secretSteps = workflow
-    .split("\n      - ")
-    .filter((block) => /secrets\.|\*release-secrets/u.test(block))
-    .map((block) => /^name: (.*)$/mu.exec(block)?.[1] ?? block.split("\n")[0]);
-  for (const name of secretSteps)
+  // Parsed, so a step that takes its env through any YAML alias counts too.
+  const secretSteps = parsedSteps.filter((entry) =>
+    JSON.stringify({ env: entry.env, run: entry.run, with: entry.with }).includes("secrets."),
+  );
+  for (const entry of secretSteps)
     assert.match(
-      step(name),
-      /scripts\/release\/deploy\.ts |scripts\/pool-fleet\/dispatch\.ts/u,
-      name,
+      entry.run ?? "",
+      /scripts\/release\/deploy\.ts |scripts\/pool-fleet\/dispatch\.ts|scripts\/pool-crash-dispatch\.ts/u,
+      entry.name ?? "unnamed step",
     );
+  const secretNames = secretSteps.map((entry) => entry.name);
   for (const name of [
     "Prepare",
     "Build and measure Worker startup",
     "Keep the plan and the counts",
-  ])
-    assert.doesNotMatch(step(name), /secrets\.|release-secrets/u, name);
-  assert.equal(secretSteps.length, 12);
+  ]) {
+    assert.ok(
+      parsedSteps.some((entry) => entry.name === name),
+      `missing step ${name}`,
+    );
+    assert.ok(!secretNames.includes(name), name);
+  }
+  assert.equal(secretSteps.length, 14);
 });
 
 test("the root pin's full reference, which carries the account, never enters the workflow", () => {

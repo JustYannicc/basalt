@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { RuntimeFleetConfiguration } from "../../../src/pool/runtime-fleet/configuration.ts";
 import { RuntimeFleetState } from "../../../src/pool/runtime-fleet/state.ts";
 import { RuntimeProviderReader } from "../../../src/pool/runtime-provider/read.ts";
+import { observeBoundProvider } from "../../../src/pool/runtime-provider/observation.ts";
 import { handleRuntimeHandoff, type HandoffFleet } from "../../../src/pool/runtime-slots/http.ts";
 import { crashNonceKey } from "../../../src/pool/runtime-crash-contract.ts";
 import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
@@ -71,6 +72,8 @@ export interface HarnessOptions {
   turnStatus?: number;
   /** Simulates the controller starting a ready cell once the fleet is enabled. */
   startCell?: boolean;
+  /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
+  providerSecret?: string | null;
 }
 
 export async function harness(options: HarnessOptions = {}) {
@@ -184,6 +187,11 @@ export async function harness(options: HarnessOptions = {}) {
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
   let restart = 0;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
+  const providerRequests: string[] = [];
+  const providerSecret = {
+    get: async () =>
+      options.providerSecret === undefined ? "observation-token" : options.providerSecret,
+  };
   // The real controller command handler over the real fleet configuration; only the slot layer is a stub.
   const fleet: HandoffFleet = {
     configure: (operationId, value) => configuration.configure(operationId, value),
@@ -219,6 +227,21 @@ export async function harness(options: HarnessOptions = {}) {
       submission: (await storage.get(crashNonceKey(nonce))) ?? null,
       target: null,
     }),
+    // Production's own provider-observe path; only the Cloudflare API host is moved to the fixture.
+    observeProvider: async (target, signal) => {
+      const original = globalThis.fetch;
+      globalThis.fetch = (input, init) => {
+        const url = String(input);
+        if (!url.startsWith("https://api.cloudflare.com/")) return original(input, init);
+        providerRequests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+        return original(url.replace("https://api.cloudflare.com", cloudflare.origin), init);
+      };
+      try {
+        return await observeBoundProvider(providerSecret, target, signal);
+      } finally {
+        globalThis.fetch = original;
+      }
+    },
   };
   // The real bookmark rules over a storage double that has the platform's recovery calls.
   const bookmarks = new StorageBookmarks({
@@ -323,6 +346,7 @@ export async function harness(options: HarnessOptions = {}) {
     deps,
     actions,
     crashes,
+    providerRequests,
     storage,
     configuration,
     cloudflareReads,

@@ -99,10 +99,21 @@ test("only the healing release declares a root restart, bounded, and it is other
   // No reviewed policy is an image release of the root: every one refuses any row on it.
   for (const name of ["release", "code", "code-restart", "cutover-code", "cutover-classes"])
     assert.equal((await read(name)).check.poolContainer.imageRelease, undefined, name);
+  // Only the healing release admits the root's row the old layer left: its recorded hash alone.
+  for (const name of ["release", "code", "cutover-code", "cutover-classes"])
+    assert.equal((await read(name)).check.poolContainer.recordedHashOnly, undefined, name);
+  // The attachment the plan cannot know while the pool Worker updates: the heal and the class change.
+  for (const name of ["release", "code", "cutover-code"])
+    assert.equal((await read(name)).check.poolContainer.workerAttachment, undefined, name);
+  assert.equal((await read("cutover-classes")).check.poolContainer.workerAttachment, true);
   // No general loosening: apart from its named commands, the two connections that wait on them
   // and the bulk-import store's code, it is the code policy.
-  const { commands, allow, ...rest } = healing.check;
-  const { commands: _none, allow: codeAllow, ...codeRest } = code.check;
+  const { commands, allow, poolContainer, removedBindings, ...rest } = healing.check;
+  const { commands: _none, allow: codeAllow, poolContainer: codeRoot, ...codeRest } = code.check;
+  const { recordedHashOnly, workerAttachment, ...root } = poolContainer;
+  assert.equal(recordedHashOnly, true);
+  assert.equal(workerAttachment, true);
+  assert.deepEqual(root, codeRoot);
   const { fixedBindings, ...wire } = healing.wire;
   assert.deepEqual(codeAllow, []);
   assert.deepEqual(
@@ -111,18 +122,33 @@ test("only the healing release declares a root restart, bounded, and it is other
   );
   assert.ok(commands?.includes("Migrations") && commands.includes("PoolDatabase"));
   assert.deepEqual(
-    allow.map((entry) => [
-      entry.fqn,
-      entry.action,
-      entry.unresolvedOnly,
-      entry.codeOnly?.references,
-    ]),
+    allow.map((entry) => [entry.fqn, entry.action, entry.unresolvedOnly]),
     [
-      ["ArtifactsCredentials", "update", undefined, ["env"]],
-      ["DatabaseConnection", "update", true, undefined],
-      ["PoolModelDatabaseConnection", "update", true, undefined],
+      ["ArtifactsCredentials", "update", undefined],
+      ["DatabaseConnection", "update", true],
+      // The deleted release layer's receipt: a command whose delete only drops its State row.
+      ["PoolImagePublicationReceipt", "delete", undefined],
+      ["PoolModelDatabaseConnection", "update", true],
     ],
   );
+  // The one setting only the deleted layer read, by name; no other policy drops any binding.
+  assert.deepEqual(
+    removedBindings?.map((entry) => [entry.fqn, entry.sid]),
+    [["PoolWorker", "POOL_PRESERVE_LEGACY_IMAGE"]],
+  );
+  for (const name of ["release", "code", "cutover-code", "cutover-classes"])
+    assert.equal((await read(name)).check.removedBindings, undefined, name);
+  // The store's Worker names what it holds of other resources, and the one value that moves
+  // with every release; a secret is in neither list.
+  assert.deepEqual(allow[0]?.codeOnly?.references, [
+    { name: "POOL_AUTH_DATABASE", resource: "PoolModelDatabaseConnection" },
+    { name: "TOOLS_SERVICE", resource: "Api" },
+  ]);
+  assert.deepEqual(
+    allow[0]?.codeOnly?.values.map((value) => [value.name, value.fields]),
+    [["EXECUTOR_TELEMETRY", ["version"]]],
+  );
+  assert.match(allow[0]?.codeOnly?.values[0]?.why ?? "", /build version/u);
   // Its code moves only with its uploads held to the serving bindings, and the reason is written.
   assert.deepEqual(fixedBindings, ["ArtifactsCredentials"]);
   assert.match(allow[0]?.codeOnly?.why ?? "", /version skew/u);
