@@ -297,9 +297,12 @@ test("once the pool answers, Connect lists a tools-only device approved while it
   h.fail();
   assert.equal((await h.decide(false)).status, 200);
   const tokens = await h.issue();
-  const { policy } = (await (await h.access(tokens.access_token)).json()) as {
-    policy: { computer: string };
-  };
+  // Read from the grant row: an access check here would be remembered past the revoke below.
+  const grant = await h.f.adapter.findOne<{ policy: string }>({
+    model: "mcpGrant",
+    where: [{ field: "userId", value: h.f.userId }],
+  });
+  const policy = JSON.parse(grant!.policy) as { computer: string };
   assert.deepEqual(await h.p.registry(), {}, "the failing pool heard nothing");
   h.recover();
   const computers = await h.listed();
