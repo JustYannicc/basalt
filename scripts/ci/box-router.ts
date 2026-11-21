@@ -1,17 +1,14 @@
 import { shardJob } from "./retry-history.ts";
 import { estimator, readDeclaredDurations, setupMinutes, shardRuns } from "./shards.ts";
 
-// Check sends declared e2e shards to the self-hosted runners only on the first attempt of a main or
-// batch push, only while the box's own heartbeat is fresh, healthy and grants a CI budget, only
-// into free box slots, and only the part of the Check that would push hosted runners past their
-// cap. Every other job, and everything by default, runs hosted.
+// Box first: on the first attempt of a main or batch push, or of this repository's own pull
+// request, Check fills the self-hosted runners' free CI slots with routable jobs, longest first,
+// while the box's own heartbeat is fresh, healthy and grants a CI budget. Hosted runners take the
+// rest. Everything runs hosted by default, on a re-run, for fork pull requests, and on any error.
 //
 // Switch-back: deleting BASALT_CI_BOX_SLOTS, or setting it to 0, sends every job hosted on the
 // next Check. A shard already queued for the box can't move back to hosted; the 10-minute
 // heartbeat window and the free-slot count bound how much work can be stuck there.
-
-/** Concurrent hosted jobs for this repository when BASALT_CI_HOSTED_CAP is unset. */
-export const defaultHostedCap = 40;
 /** Jobs ran at 1.45–1.98× their hosted time on a loaded box (1.06× idle); the timeout check
  * assumes the slow end. */
 export const boxSlowdown = 2.0;
@@ -26,14 +23,6 @@ const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
 /** Only declared e2e shard rows route. Every job type runs slower on the box, and a shard needs
  * only 1.0–1.4 cores, so shards alone keep its CI slots busy. */
 export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
-/** Matrix jobs start one hosted job per leg; tests pin these counts to the workflow. */
-export const matrixLegs: Record<string, number> = {
-  "client-desktop": 2,
-  "pool-runtime": 2,
-  "pool-inventory": 3,
-  "production-ops-identity": 8,
-};
-
 /** A declared shard row: its name in box_jobs, its planned hosted minutes and its job timeout. */
 export type BoxShard = { id: string; minutes: number; timeout: number };
 export type Matrices = Record<
@@ -49,15 +38,15 @@ export type BoxInput = {
   ref: string;
   /** GITHUB_RUN_ATTEMPT; only the first attempt routes. */
   attempt?: string;
+  /** This repository, and a pull request's head repository; only the same repository routes. */
+  repository?: string;
+  headRepository?: string;
   slots?: string;
   label?: string;
-  hostedCap?: string;
   selected: readonly string[];
   matrices: Matrices;
   /** Measured seconds per declared file; defaults to scripts/ci/declared-durations.json. */
   durations?: Record<string, number>;
-  /** Jobs this Check runs beside its heavy selection. */
-  fixedJobs: number;
 };
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -65,7 +54,7 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-/** The selection's shard rows with their planned minutes, and every hosted job it starts. */
+/** The selection's declared shard rows with their planned minutes and timeouts. */
 export function checkPlan(
   selected: readonly string[],
   matrices: Matrices,
@@ -82,13 +71,7 @@ export function checkPlan(
         }))
       : [],
   );
-  const others = selected.filter((job) => !declaredJobs.includes(job));
-  // A selected image also starts its workerd-assets job.
-  const assets = selected.includes("upstream-image") ? 1 : 0;
-  return {
-    shards,
-    jobs: others.reduce((sum, job) => sum + (matrixLegs[job] ?? 1), shards.length + assets),
-  };
+  return { shards };
 }
 
 /** The declared job a box_jobs id belongs to, or undefined when it names no declared shard. */
@@ -110,17 +93,21 @@ export function fillBox(shards: readonly BoxShard[], limit: number) {
 }
 
 export function boxSettings(
-  input: Pick<BoxInput, "event" | "ref" | "attempt" | "slots" | "label" | "hostedCap">,
+  input: Pick<
+    BoxInput,
+    "event" | "ref" | "attempt" | "slots" | "label" | "repository" | "headRepository"
+  >,
 ) {
-  // Pull requests never route, whatever the variables say. The box runs jobs in privileged
-  // containers on a host that also runs release work, so unmerged pull-request code must not run
-  // there until the CI slots are isolated.
-  if (input.event === "pull_request") return "pull requests never run on the self-hosted runners";
-  if (
+  // A fork's pull request never routes: its code is not this repository's. Same-repository pull
+  // requests do, each job in a fresh container; the box's own budget keeps release work first.
+  if (input.event === "pull_request") {
+    if (!input.repository || input.headRepository !== input.repository)
+      return "fork pull requests never run on the self-hosted runners";
+  } else if (
     input.event !== "push" ||
     !(input.ref === "refs/heads/main" || input.ref.startsWith("refs/heads/batch/"))
   )
-    return "only main and batch pushes can route";
+    return "only main and batch pushes and this repository's pull requests can route";
   // "Re-run failed jobs" reuses this run's outputs; a re-run must not trust an old box decision.
   if (input.attempt !== "1") return "a re-run always runs hosted";
   if (!/^[1-9]\d{0,2}$/.test(input.slots ?? ""))
@@ -128,10 +115,7 @@ export function boxSettings(
   const label = input.label ?? "";
   if (!/^[\w.-]+$/.test(label) || refusedLabels.includes(label.toLowerCase()))
     return "BASALT_CI_BOX_LABEL is unset or names a label other runners share";
-  const cap = input.hostedCap ? Number(input.hostedCap) : defaultHostedCap;
-  if (!/^\d*$/.test(input.hostedCap ?? "") || !Number.isSafeInteger(cap))
-    return "BASALT_CI_HOSTED_CAP is not a whole number";
-  return { slots: Number(input.slots), label, cap };
+  return { slots: Number(input.slots), label };
 }
 
 /** The last marked status line of a heartbeat log, if it parses. */
@@ -188,13 +172,9 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
   try {
     const plan = checkPlan(input.selected, input.matrices, input.durations);
     if (!plan.shards.length) return none("this Check runs no declared e2e shards");
-    const own = input.fixedJobs + plan.jobs;
     const box = heartbeatBudget(await observe.heartbeat(), now());
     if (typeof box === "string") return none(box);
     const active = await observe.active();
-    const load = `${active.hosted} hosted jobs are active and this Check adds ${own}, against a cap of ${settings.cap}`;
-    const excess = active.hosted + own - settings.cap;
-    if (excess <= 0) return none(load);
     // BASALT_CI_BOX_SLOTS caps what the box's own budget grants.
     const limit = Math.min(settings.slots, box.budget);
     const free = Math.max(0, limit - active.box);
@@ -202,15 +182,17 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
     const budget = `a CI budget of ${box.budget}${box.why}`;
     if (!free)
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
-    const jobs = fillBox(plan.shards, Math.min(excess, free));
+    const jobs = fillBox(plan.shards, free);
     if (!jobs.length)
       return none(`no declared shard fits its timeout at ${boxSlowdown}× its planned minutes`);
+    const hosted = plan.shards.length - jobs.length;
     return {
       jobs,
       label: settings.label,
       summary:
-        `Box routing: ${jobs.length} declared shards go to the self-hosted runners (${slots}) ` +
-        `because the box reported healthy with ${budget} and ${load}: ${jobs.join(", ")}.`,
+        `Box routing: box first. ${jobs.length} declared shards go to the self-hosted runners ` +
+        `(${slots}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
+        `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };
   } catch (error) {
     return none("the box state could not be read: " + (error as Error).message);

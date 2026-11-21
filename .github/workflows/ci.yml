@@ -93,11 +93,11 @@ jobs:
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          # Routing reads only push events; pull requests always run hosted.
+          # Box first for main and batch pushes and this repository's pull requests; forks run hosted.
           BOX_SLOTS: ${{ vars.BASALT_CI_BOX_SLOTS }}
           BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
-          HOSTED_CAP: ${{ vars.BASALT_CI_HOSTED_CAP }}
-          GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
