@@ -110,22 +110,29 @@ test("a lost refresh response replays the old token and saves the server's same 
   await f.controller.close();
 });
 
-test("a definitive refresh refusal requires sign-in and is not replayed", async (t) => {
-  const f = fixture(t);
-  await f.controller.initialize();
-  f.expire();
-  f.refuseRefresh(400, "invalid_grant");
-  const attempt = f.controller.foreground(true);
-  await advance(t, 100);
-  await attempt;
-  assert.equal(f.controller.getSnapshot().connection?.state, "sign-in-required");
-  f.notifyNetwork(true);
-  await advance(t, 60_000);
-  assert.equal(f.refreshReads(), 1);
-  await f.controller.close();
-});
+for (const [status, code] of [
+  [400, "invalid_grant"],
+  [401, "invalid_client"],
+  [400, "unauthorized_client"],
+  [400, "invalid_scope"],
+  [400, "invalid_target"],
+] as const)
+  test(`a definitive refresh refusal requires sign-in and is not replayed: ${status} ${code}`, async (t) => {
+    const f = fixture(t);
+    await f.controller.initialize();
+    f.expire();
+    f.refuseRefresh(status, code);
+    const attempt = f.controller.foreground(true);
+    await advance(t, 100);
+    await attempt;
+    assert.equal(f.controller.getSnapshot().connection?.state, "sign-in-required");
+    f.notifyNetwork(true);
+    await advance(t, 60_000);
+    assert.equal(f.refreshReads(), 1);
+    await f.controller.close();
+  });
 
-test("unknown refresh outcomes stop automatic replay after ten minutes without signing out", async (t) => {
+test("unknown refresh outcomes keep replaying past the server's window; only a refusal asks for sign-in", async (t) => {
   const f = fixture(t);
   await f.controller.initialize();
   f.expire();
@@ -133,14 +140,24 @@ test("unknown refresh outcomes stop automatic replay after ten minutes without s
   const attempt = f.controller.foreground(true);
   await advance(t, 610_000);
   await attempt;
-  const reads = f.refreshReads();
-  assert.ok(reads > 1);
+  const early = f.refreshReads();
   await advance(t, 60_000);
-  assert.equal(f.refreshReads(), reads);
-  assert.equal(f.controller.getSnapshot().connection?.state, "disconnected");
-  assert.equal(f.controller.getSnapshot().reconnecting, false);
+  assert.ok(f.refreshReads() > early, "Ten minutes without an answer does not end replay.");
+  await advance(t, 2_940_000);
+  const reads = f.refreshReads();
+  await advance(t, 60_000);
+  // Without an answer the server has refused nothing, and a sign-in would not reach it either.
+  assert.ok(f.refreshReads() > reads, "An hour without an answer does not end replay.");
+  assert.equal(f.controller.getSnapshot().connection?.state, "connected");
   assert.equal(f.saved().refreshToken, "fixture-refresh");
   assert.equal(f.saved().refreshPending, true);
+  f.failRefresh(undefined);
+  f.refuseRefresh(400, "invalid_grant");
+  const refused = f.refreshReads();
+  await advance(t, 60_000);
+  assert.equal(f.controller.getSnapshot().connection?.state, "sign-in-required");
+  assert.equal(f.controller.getSnapshot().error, "Sign in again to reconnect this phone.");
+  assert.equal(f.refreshReads(), refused + 1, "One send meets the refusal; none follow it.");
   await f.controller.close();
 });
 

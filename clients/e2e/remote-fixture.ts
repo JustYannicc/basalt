@@ -89,8 +89,11 @@ export async function remoteFixture() {
         return;
       }
       if (input.mode === "unknown") {
-        response.writeHead(502, { "content-type": "application/json", "x-should-retry": "false" });
-        response.end(JSON.stringify({ error: { code: "upstream_outcome_unknown", retryable: false } }));
+        // The pool's answer for a model call cut after dispatch (clients/contracts/model-error.ts).
+        response.writeHead(502, { "content-type": "application/json", "retry-after": "1" });
+        response.end(
+          JSON.stringify({ error: { code: "upstream_outcome_unknown", retryable: true } }),
+        );
         return;
       }
       if (input.mode === "error") {

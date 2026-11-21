@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "When every allowance row for a plan has expired, capacity sizing keeps what the shared resolver decided at the last live instant, with its value, unit and revision, and the pool view reads it as expired. Aging alone never restarts a demand cohort; a live row, a contradiction at that instant or a later revocation from the deciding source still decides."
+    }
+  }
+}

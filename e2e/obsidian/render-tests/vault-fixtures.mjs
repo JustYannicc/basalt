@@ -29,11 +29,12 @@ export const vaultConnection = (vault, id, tools) => ({
   updatedAt: "2026-11-11T09:47:00.000Z",
 });
 
-/** A device's grant through one of those connections. */
+/** A device's grant through one of those connections, issued by device authorization. */
 export const device = (id, connection, lastActiveAt, name = "Signalbox Obsidian Sync") => ({
   id,
   name,
   connectedAt: "2026-11-11T09:47:00.000Z",
   lastActiveAt,
   access: { kind: "connection", connection, name: "Obsidian device" },
+  issuedToDevice: true,
 });

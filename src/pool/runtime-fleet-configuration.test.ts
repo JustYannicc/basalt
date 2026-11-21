@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
-import { runtimeProofFixture } from "../../scripts/release-barrier/test/runtime-proof-fixture.ts";
+import { runtimeProofFixture } from "../../scripts/pool-fleet/test/runtime-proof-fixture.ts";
 import {
   RuntimeFleetConfiguration,
   type FleetConfiguration,

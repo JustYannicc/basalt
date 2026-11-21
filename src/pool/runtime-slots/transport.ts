@@ -18,6 +18,7 @@ import {
 } from "./contract.ts";
 import { RuntimeEndpoint } from "./endpoint.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import { RuntimeDistance } from "../runtime-distance.ts";
 
 export interface RuntimeStub {
   fetch(request: Request): Promise<Response>;
@@ -33,7 +34,13 @@ const Policy = Schema.Struct({
 const Health = Schema.Struct({
   identity: SlotIdentity,
   leaseMs: Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1500)),
+  // An older runtime omits it; a malformed one is dropped below rather than failing the read.
+  database: Schema.optional(Schema.Unknown),
 });
+const distance = (value: unknown) => {
+  const decoded = Schema.decodeUnknownOption(RuntimeDistance)(value);
+  return decoded._tag === "Some" ? { database: decoded.value } : {};
+};
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
@@ -83,7 +90,7 @@ export class BoundSlotDriver implements SlotDriver {
       const health = Schema.decodeUnknownSync(Health)(await response.json());
       const policyLeaseUntil = requestedAt + health.leaseMs;
       if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
-      return { identity: health.identity, policyLeaseUntil };
+      return { identity: health.identity, policyLeaseUntil, ...distance(health.database) };
     } catch (error) {
       failEndpointResponse(response, error);
       throw error;
@@ -141,6 +148,24 @@ export class BoundSlotDriver implements SlotDriver {
   }
   async witness(target: SlotTarget) {
     return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
+  }
+  async stopRefusing(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
+    const response = await this.call(
+      identity,
+      "stop-refusing",
+      { identity, refusingSince },
+      signal,
+    );
+    return Schema.decodeUnknownSync(
+      Schema.Struct({
+        stopped: Schema.Boolean,
+        hard: Schema.Boolean,
+        limited: Schema.optional(Schema.Boolean),
+        waiting: Schema.optional(
+          Schema.Struct({ active: Schema.Number, stillSince: Schema.Number }),
+        ),
+      }),
+    )(await response.json());
   }
   async abortStartup(intent: StartupStopIntent, inspect: boolean) {
     const response = await this.call(
@@ -323,6 +348,13 @@ export async function runtimeRequest(
       );
       if (action === "/install") await endpoint.install(identity, policy, request.signal);
       else await endpoint.native(identity, policy, request.signal);
+    } else if (action === "/stop-refusing") {
+      const { identity, refusingSince } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({ identity: SlotIdentity, refusingSince: Schema.Number }),
+        )(value),
+      );
+      return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
     } else if (action === "/drain") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
