@@ -173,13 +173,22 @@ async function deleteTools(request: Request, env: SetupEnv, keyId: string): Prom
   throw new SetupError(502, "Could not revoke the tools token. Retry removing this computer.");
 }
 
-/** A native device signs in with its own grant; revoking it as the person ends that sign-in. */
-async function revokeGrant(request: Request, env: SetupEnv, id: string): Promise<void> {
-  const response = await native(request, env, "mcp/grants/revoke", { id });
-  await response.body?.cancel();
+/**
+ * A native device signs in with its own grant. Revoking it as the person, by its computer, ends
+ * that sign-in at the tools service before the pool is asked, and the tools service retries the
+ * pool's cleanup itself. Answers whether the computer was a native device.
+ */
+async function revokeDevice(request: Request, env: SetupEnv, computer: string): Promise<boolean> {
+  const response = await native(request, env, "native/devices/revoke", { computer });
   // Fails closed: a device whose grant may still be live must not be reported as removed.
-  if (!response.ok)
+  if (!response.ok) {
+    await response.body?.cancel();
     throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
+  }
+  const result = await body(response);
+  if (typeof result.revoked !== "boolean")
+    throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
+  return result.revoked;
 }
 
 function quote(value: string): string {
@@ -301,6 +310,8 @@ export async function handleSetupPage(request: Request, env: SetupEnv): Promise<
 
 /** Only /setup/v1/* and /setup/claim/:token belong to this adapter. */
 export async function handleSetup(request: Request, env: SetupEnv): Promise<Response> {
+  // Once a native device is signed out, the pool's steps are cleanup the tools service retries.
+  let signedOut = false;
   try {
     const url = new URL(request.url);
     if (request.headers.has("authorization"))
@@ -406,6 +417,7 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
+    if (method === "DELETE" && computer) signedOut = await revokeDevice(request, env, computer[1]);
     // The list only needs the session; start it now so it overlaps the pool calls below.
     if (method === "GET") void organizationList(request, env);
     // Revoking needs no pool lookup; listing, minting and refreshing record the person's own pool.
@@ -457,12 +469,6 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     }
     const revoke = { ...payload, id: computer![1] };
     const result = await body(await pool(request, env, "revoke", revoke));
-    const grant = result.grant;
-    if (grant !== undefined) {
-      if (!text(grant, 512) || !grant.startsWith("native:"))
-        throw new SetupError(502, "Could not revoke this computer. Try again.");
-      await revokeGrant(request, env, grant);
-    }
     // A models-only computer has no tools token to delete.
     if (result.toolsKeyId !== null) {
       if (!text(result.toolsKeyId, 512))
@@ -472,6 +478,7 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     await pool(request, env, "revoked", revoke);
     return json({ success: true });
   } catch (error) {
+    if (signedOut) return json({ success: true });
     return error instanceof SetupError
       ? json({ error: error.message }, error.status)
       : json({ error: "Setup is temporarily unavailable. Try again." }, 502);

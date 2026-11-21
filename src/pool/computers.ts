@@ -547,8 +547,8 @@ export class Computers {
     await this.save(registry);
     for (const key of await revocableKeys(computer, this.deps.home))
       await this.deps.home.revoke(key);
-    // A native device signs in with its own grant, which the setup host revokes next: a tools-only
-    // device's tools answer to that grant, not to this registry.
+    // A native device signs in with its own grant, which the setup host revokes at the tools
+    // service before asking here: a tools-only device's tools answer to that grant.
     return json({
       toolsKeyId: computer.toolsKeyId ?? null,
       ...(computer.native && { grant: computer.native.grant }),

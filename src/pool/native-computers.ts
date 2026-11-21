@@ -186,8 +186,18 @@ export class NativeComputers {
         const computer = Object.hasOwn(registry, caller.computer)
           ? registry[caller.computer]
           : undefined;
-        if (!computer || computer.user !== caller.user || computer.native?.grant !== caller.grant)
+        // The host repeats a revoke until it is confirmed. A device that is gone, or finished
+        // revoking, needs Home no more.
+        if (!computer) return json({ revoked: true });
+        if (computer.user !== caller.user || computer.native?.grant !== caller.grant)
           return fail(404, "not_found", "This native device does not exist.");
+        if (computer.state === "revoked") {
+          if (computer.native.key) {
+            delete computer.native.key;
+            await this.deps.save(registry);
+          }
+          return json({ revoked: true });
+        }
         computer.state = "revoking";
         delete computer.link;
         await this.deps.save(registry);
