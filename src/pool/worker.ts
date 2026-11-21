@@ -132,6 +132,7 @@ import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
+import { CodeHandover, decodeControllerCode, handoverRefusal } from "./code-handover.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -188,6 +189,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private managementWarming?: Promise<void>;
   private memberships: NativeMemberships;
   private modelStreams = new NativeStreams();
+  private handover: CodeHandover;
   private protection: RuntimeProtection;
   private importRemoval: ImportRemoval;
   private recovery: RuntimeRecovery;
@@ -217,6 +219,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       afterReply: (work) => {
         setTimeout(work, 250);
       },
+    });
+    this.handover = new CodeHandover({
+      own: { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
+      storage: ctx.storage,
+      inFlight: () => this.modelStreams.active,
+      abort: (reason) => ctx.abort(reason),
+      defer: (work) => ctx.waitUntil(work.catch(() => console.error("POOL_CODE_HANDOVER_PENDING"))),
     });
     this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
     this.changes = new PoolChanges(
@@ -782,7 +791,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
-  deploymentIdentity() {
+  /** `caller`: the deployed entrypoint's own code, passed only by its signed adoption read. */
+  deploymentIdentity(caller?: unknown) {
+    const code = caller === undefined ? undefined : decodeControllerCode(caller);
+    if (code) this.handover.offer(code);
     return {
       candidate: productionOpsRelease,
       workerInput: poolWorkerRevision,
@@ -1039,6 +1051,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
     const port = poolPort(new URL(request.url).pathname);
+    // Refused before it takes a stream lease, so the handover's count only falls.
+    if (port === 8317 && this.handover.draining) return Promise.resolve(handoverRefusal(request));
     return forwardPoolRequest(request, port, {
       ...(appModel === undefined ? {} : { appModel }),
       env: this.env,
@@ -1172,8 +1186,12 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         },
         this.env.POOL_DEPLOYMENT_KEY ?? "",
         (phase) =>
+          // The envelope named exactly this code, so only a signed adoption read starts a handover.
           phase === "adoption"
-            ? singleton(this.env).deploymentIdentity()
+            ? singleton(this.env).deploymentIdentity({
+                candidate: productionOpsRelease,
+                workerInput: poolWorkerRevision,
+              })
             : singleton(this.env).deploymentReady(),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
