@@ -71,16 +71,16 @@
   },
   "runs": {
     "accountAcquisitionStartPrivacy": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-acquisition:reusable-acquisition-and-retained-account-compatibility"
     ],
     "accountAcquisitionFailurePrivacy": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-acquisition:reusable-acquisition-and-retained-account-compatibility"
     ],
     "accountAcquisitionIdentity": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-acquisition:reusable-acquisition-and-retained-account-compatibility"
     ],
     "accountAcquisitionCleanup": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-acquisition:reusable-acquisition-and-retained-account-compatibility"
     ]
   },
   "inputs": [

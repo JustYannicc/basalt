@@ -46,10 +46,7 @@ const conditionCanRun = (
       "needs.select.outputs.full_suite == 'true'",
       "needs.select.outputs.full_suite != 'true'",
     ].includes(expression) ||
-    (job &&
-      /^contains\(fromJSON\(needs\.select\.outputs\.(?:hosted_jobs|jobs)\), '[\w-]+'\)$/.test(
-        expression,
-      ))
+    (job && /^contains\(fromJSON\(needs\.select\.outputs\.jobs\), '[\w-]+'\)$/.test(expression))
   );
 };
 

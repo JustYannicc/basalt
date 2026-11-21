@@ -98,7 +98,7 @@ test("Google recovery and diagnostics retain every original command, environment
 test("both Google halves retain browser setup, ten-minute budgets and independent evidence", () => {
   assert.deepEqual(recovery.steps.slice(0, 6), diagnostics.steps.slice(0, 6));
   for (const [index, job] of [recovery, diagnostics].entries()) {
-    assert.equal(job.needs, "select");
+    assert.ok([job.needs].flat().includes("select"));
     assert.equal(job["runs-on"], "ubuntu-latest");
     assert.equal(job["timeout-minutes"], 10);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
