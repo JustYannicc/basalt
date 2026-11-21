@@ -5,6 +5,9 @@ import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
+import { decodeResumeTarget } from "./stream-resume.ts";
+import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { forwardRecoverably } from "./runtime-fleet/retry.ts";
 
 const responseModule = "./native-response.worker.ts";
 const { nativeResponse } = (await import(responseModule)) as {
@@ -332,4 +335,72 @@ test("with no sibling, a primary that just failed admission is asked again, not 
   const response = await f.fleet.forward(request(), "pool", primary, () => {});
   assert.equal(await response.text(), "legacy");
   await f.settle();
+});
+
+test("an answer the runtime can resume names that runtime as its resume target, and nothing else does", async () => {
+  const f = fixture(3, 1);
+  const identity = await f.add();
+  const cell = f.cell(identity);
+  cell.forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    return new Response("runtime", { headers: { "X-Basalt-Resume": "v1" } });
+  };
+  const fromRuntime = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.deepEqual(decodeResumeTarget(fromRuntime.headers.get("X-Basalt-Resume-Target")), {
+    kind: "runtime",
+    identity,
+  });
+  assert.equal(await fromRuntime.text(), "runtime");
+  cell.forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    return new Response("plain");
+  };
+  const plain = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(plain.headers.get("X-Basalt-Resume-Target"), null);
+  await plain.text();
+  await f.settle();
+
+  const alone = fixture();
+  const fromPrimary = await alone.fleet.forward(
+    request(),
+    "pool",
+    async () => new Response("legacy", { headers: { "X-Basalt-Resume": "v1" } }),
+    () => {},
+  );
+  assert.equal(fromPrimary.headers.get("X-Basalt-Resume-Target"), "primary");
+  await fromPrimary.text();
+  await alone.settle();
+});
+
+test("a runtime whose front layer fails keeps serving: no quarantine and no recovery", async () => {
+  const f = fixture(3, 1);
+  const identity = await f.add();
+  const lost = new Error("Network connection lost.");
+  rememberRuntimeFailure("resume_layer", lost);
+  f.cell(identity).forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    throw lost;
+  };
+  await assert.rejects(
+    f.fleet.forward(request(), "pool", f.legacy, () => {}),
+    lost,
+  );
+  await f.settle();
+  assert.ok((await f.state.inspect()).every((row) => row.phase !== "quarantined"));
+
+  let recoveries = 0;
+  await assert.rejects(
+    forwardRecoverably(
+      request(),
+      async () => {
+        throw lost;
+      },
+      () => {},
+      async () => {
+        recoveries++;
+      },
+    ),
+    lost,
+  );
+  assert.equal(recoveries, 0);
 });

@@ -138,6 +138,15 @@ import {
   HandoverCount,
   handoverRefusal,
 } from "./code-handover.ts";
+import {
+  decodeResumeInput,
+  resumeGone,
+  resumeRequest,
+  resumeRoute,
+  toLayer,
+} from "./stream-resume.ts";
+import { resumedAnswer } from "./stream-resume.worker.ts";
+import { resumedTerminal } from "./terminal-recording.worker.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -856,6 +865,36 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     } finally {
       this.handoffsInFlight--;
     }
+  }
+
+  /** The rest of an answer an earlier instance of this object was streaming when it ended (#1642). */
+  async resume(input: unknown): Promise<Response> {
+    const parsed = decodeResumeInput(input);
+    // A resume is a model call: while this object hands over it is refused like one.
+    if (!parsed || this.handover.draining) return resumeGone();
+    const request = resumeRequest(parsed);
+    return this.handoverCount.track(request, async () => {
+      const container = this.ctx.container;
+      const answer =
+        parsed.target.kind === "runtime"
+          ? await this.fleet.resume(parsed.target.identity, request)
+          : await this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
+              // A stopped container's answers went with it; never start one to look.
+              if (!container?.running) return resumeGone();
+              const routed = resumeRoute(forwarded, 8317, await (await this.lifecycle).warm());
+              if (routed === "gone") return resumeGone();
+              prepared();
+              return toLayer(routed.request, (request, port) =>
+                container.getTcpPort(port).fetch(request),
+              );
+            });
+      if (answer.status !== 200) return answer;
+      return resumedAnswer(answer, {
+        from: parsed.from,
+        lease: this.modelStreams.acquire(crypto.randomUUID(), "", request.signal),
+        finish: resumedTerminal(this.env, parsed.requestId, (work) => this.ctx.waitUntil(work)),
+      });
+    });
   }
 
   /** Arms the upkeep alarm if nothing has, without holding the caller. */

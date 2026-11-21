@@ -1,4 +1,8 @@
-import { refuseRuntime, rememberRuntimeFailure } from "../runtime-route-diagnostic.ts";
+import {
+  refuseRuntime,
+  rememberRuntimeFailure,
+  runtimeFailureDiagnostic,
+} from "../runtime-route-diagnostic.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import {
@@ -9,6 +13,7 @@ import {
 } from "../runtime-slots/contract.ts";
 import { FleetRefused, RuntimeFleetState } from "./state.ts";
 import { FleetDispatches } from "./dispatches.ts";
+import { resumeGone, stampResumeTarget } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
@@ -273,7 +278,9 @@ export class RuntimeFleet {
       // With no sibling capacity the primary is the only route. A recent primary failure or a failed
       // recovery warm-up is only a hint: the request's own fresh admission on the primary decides.
       // Start legacy admission before reading pressure so the triggering request is counted too.
-      const response = legacy(request, beforeDispatch);
+      const response = legacy(request, beforeDispatch).then((answer) =>
+        stampResumeTarget(answer, { kind: "primary" }),
+      );
       this.grow();
       return response;
     }
@@ -283,7 +290,9 @@ export class RuntimeFleet {
     this.grow();
     try {
       if (reservation.kind === "primary") {
-        const response = await legacy(request, beforeDispatch);
+        const response = stampResumeTarget(await legacy(request, beforeDispatch), {
+          kind: "primary",
+        });
         return this.deps.wrap(response, {
           signal: request.signal,
           onClose: () => {},
@@ -298,11 +307,14 @@ export class RuntimeFleet {
       if (!sameIdentity(await cell.selected(), reservation.identity))
         throw new FleetRefused("uncertain");
       step = "fleet_forward";
-      const response = await cell.forward(request, 8317, pool, () => {
-        this.failures.assertAvailable(reservation.identity);
-        beforeDispatch();
-        dispatched();
-      });
+      const response = stampResumeTarget(
+        await cell.forward(request, 8317, pool, () => {
+          this.failures.assertAvailable(reservation.identity);
+          beforeDispatch();
+          dispatched();
+        }),
+        { kind: "runtime", identity: reservation.identity },
+      );
       return this.deps.wrap(response, {
         signal: request.signal,
         onClose: () => {},
@@ -314,7 +326,9 @@ export class RuntimeFleet {
       });
     } catch (error) {
       rememberRuntimeFailure(step, error);
-      if (reservation.kind === "primary") {
+      // A failed front layer leaves the runtime serving: no primary failure, no recovery.
+      const layer = runtimeFailureDiagnostic(error, step).runtimeStep === "resume_layer";
+      if (reservation.kind === "primary" && !layer) {
         this.primaryFailed = true;
         this.primaryFailure++;
         if (this.deps.recoverPrimary) this.deps.defer(this.recoverPrimary().catch(() => {}));
@@ -335,6 +349,12 @@ export class RuntimeFleet {
     } finally {
       dispatched();
     }
+  }
+  /** The rest of a resumable answer from the runtime that served it; "gone" once it no longer runs. */
+  async resume(identity: SlotIdentity, request: Request) {
+    const cell = this.cell(identity);
+    if (!sameIdentity(await cell.selected(), identity)) return resumeGone();
+    return cell.forward(request, 8317, undefined, () => {});
   }
   async install(policy: NativeMembershipPolicy) {
     const rows = await this.deps.state.inspect();

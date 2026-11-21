@@ -1,4 +1,5 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
+import { resumeLayerPort } from "../stream-resume.ts";
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { PoolRuntimeUnhealthy, poolLifecycle } from "../lifecycle.ts";
 import { SlotRefused } from "./contract.ts";
@@ -98,7 +99,7 @@ export class RuntimeChannel {
   async fetch(
     configuration: RuntimeConfiguration,
     request: Request,
-    port: 8317 | 8327 | 8318,
+    port: 8317 | 8327 | 8318 | typeof resumeLayerPort,
     trace?: RuntimeReadTrace,
   ) {
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "endpoint_request";
@@ -116,12 +117,13 @@ export class RuntimeChannel {
       const target = port === 8327 && configuration.homePeerOrdinal !== undefined ? 8329 : port;
       step = "port_lookup";
       const destination = this.port(target);
-      step = "port_dispatch";
+      step = target === resumeLayerPort ? "resume_layer" : "port_dispatch";
       return await runtimeReadStep(
         trace,
         "port_headers",
         () => destination.fetch(new Request(request, { headers })),
-        target === 8317 ? undefined : target,
+        // Only the readiness and management ports are traced reads; model calls never are.
+        target === 8318 || target === 8327 || target === 8329 ? target : undefined,
       );
     } catch (error) {
       if (port === 8317 && this.ctx.container?.running === false)
