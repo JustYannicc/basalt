@@ -43,6 +43,29 @@ const retiredSources = (origin: string): readonly Addition[] => [
   gitlabMcp,
   atlassianAddition(origin),
 ];
+/** Carried app sources the feed serves itself, by app id, never from the publisher. */
+export const carriedSources: Readonly<Record<string, { package: string }>> = {
+  slack: slackSource,
+  gitlab: gitlabSource,
+  miro: miroSource,
+  cloudflare: cloudflareSource,
+  elevenlabs: elevenlabsSource,
+  neon: neonSource,
+  sentry: sentrySource,
+  canva: canvaSource,
+  vercel: vercelSource,
+  notion: notionSource,
+  workos: workosSource,
+  planetscale: planetscaleSource,
+  plaid: plaidSource,
+  clerk: clerkSource,
+  spotify: spotifySource,
+  exa: exaSource,
+  firecrawl: firecrawlSource,
+  gmail: gmailSource,
+  google: googleSource,
+  github: githubSource,
+};
 const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
@@ -85,104 +108,10 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(consumer)),
       { headers },
     );
-  if (relative === "apps/slack.json")
+  const carried = relative.match(/^apps\/([a-zA-Z0-9_-]+)\.json$/)?.[1];
+  if (carried !== undefined && Object.hasOwn(carriedSources, carried))
     return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(slackSource)),
-      { headers },
-    );
-  if (relative === "apps/gitlab.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(gitlabSource)),
-      { headers },
-    );
-  if (relative === "apps/miro.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(miroSource)),
-      { headers },
-    );
-  if (relative === "apps/cloudflare.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(cloudflareSource)),
-      { headers },
-    );
-  if (relative === "apps/elevenlabs.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(elevenlabsSource)),
-      { headers },
-    );
-  if (relative === "apps/neon.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(neonSource)),
-      { headers },
-    );
-  if (relative === "apps/sentry.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(sentrySource)),
-      { headers },
-    );
-  if (relative === "apps/canva.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(canvaSource)),
-      { headers },
-    );
-  if (relative === "apps/vercel.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(vercelSource)),
-      { headers },
-    );
-  if (relative === "apps/notion.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(notionSource)),
-      { headers },
-    );
-  if (relative === "apps/workos.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(workosSource)),
-      { headers },
-    );
-  if (relative === "apps/planetscale.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(planetscaleSource)),
-      { headers },
-    );
-  if (relative === "apps/plaid.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(plaidSource)),
-      { headers },
-    );
-  if (relative === "apps/clerk.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(clerkSource)),
-      { headers },
-    );
-  if (relative === "apps/spotify.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(spotifySource)),
-      { headers },
-    );
-  if (relative === "apps/gmail.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(gmailSource)),
-      { headers },
-    );
-  if (relative === "apps/google.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(googleSource)),
-      { headers },
-    );
-  if (relative === "apps/exa.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(exaSource)),
-      { headers },
-    );
-  if (relative === "apps/firecrawl.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(firecrawlSource)),
-      { headers },
-    );
-  if (relative === "apps/github.json")
-    return new Response(
-      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(githubSource)),
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(carriedSources[carried])),
       { headers },
     );
   const added = [...additions, ...retiredSources(new URL(request.url).origin)].find(
