@@ -245,7 +245,7 @@ test(
         rmSync(join(shared, step, entry), { recursive: true });
         if (step === "hosted:self-host:web:build") continue;
         const lock = join(shared, step, `${entry}.lock`);
-        mkdirSync(lock);
+        holdLock(lock);
         locks.push(lock);
       }
     const old = new Date(Date.now() - 60_000);
@@ -262,7 +262,7 @@ test(
     const parked = join(parent, "parked");
     cpSync(join(shared, step, entry!), parked, { recursive: true });
     rmSync(join(shared, step, entry!), { recursive: true });
-    mkdirSync(held);
+    holdLock(held);
     rmSync(join(parent, "built.log"));
     const waiting = prepare(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "600000" });
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -290,6 +290,12 @@ test("box jobs share one cache directory per Check; hosted jobs name none", () =
   assert.equal(action.match(/EXECUTOR_E2E_CACHE/g)?.length, 1);
 });
 
+/** A lock as a live holder leaves it: a directory with its owner inside. */
+const holdLock = (lock: string) => {
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, "owner"), "another job");
+};
+
 const locksIn = (directory: string): string[] =>
   existsSync(directory)
     ? readdirSync(directory, { recursive: true, encoding: "utf8" }).filter((name) =>
@@ -298,7 +304,7 @@ const locksIn = (directory: string): string[] =>
     : [];
 
 test(
-  "a failed or killed build releases its lock, so the next run neither waits nor hangs",
+  "a failed build releases its lock; a killed one dies at once and its lock is taken over",
   sandbox(async (parent) => {
     const root = workspace(parent, "a");
     const shared = join(parent, "shared");
@@ -316,18 +322,28 @@ test(
     const output = prepareSync(root, parent, cache);
     assert.doesNotMatch(output, /Waiting for another job/);
     assert.ok(Date.now() - started < 30_000);
-    // A holder killed mid-build releases its lock too.
+    // A holder killed mid-build dies at once, as the signal's default does; the next run takes its
+    // lock over once the bound has passed.
     rmSync(shared, { recursive: true });
+    // No pipes: the killed run's own build keeps running for a moment and would hold them open.
     const child = spawn(process.execPath, ["scripts/e2e-prepare.ts"], {
       cwd: root,
       env: base(parent, { ...cache, BUILD_MS: "5000" }),
+      stdio: "ignore",
     });
-    const exited = new Promise((resolve) => child.once("exit", resolve));
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      child.once("exit", (_code, signal) => resolve(signal)),
+    );
     for (let tries = 0; locksIn(shared).length === 0 && tries < 100; tries++)
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(locksIn(shared).length, 1);
+    const killed = Date.now();
     child.kill("SIGTERM");
-    await exited;
+    assert.equal(await exited, "SIGTERM");
+    assert.ok(Date.now() - killed < 2_000);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const after = prepareSync(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "1000" });
+    assert.match(after, /Taking over a lock held for \d+s/);
     assert.deepEqual(locksIn(shared), []);
   }),
 );

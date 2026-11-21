@@ -24,7 +24,15 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const cacheRoot =
    process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");
  
-@@ -245,6 +250,71 @@ const store = (step: Step, entry: string) => {
+@@ -238,13 +243,80 @@ const store = (step: Step, entry: string) => {
+   const directory = path.dirname(entry);
+   const entries = fs
+     .readdirSync(directory)
+-    .filter((name) => !name.endsWith(".partial"))
++    .filter((name) => !/\.(partial|lock|pending)$/.test(name))
+     .map((name) => ({ name, time: fs.statSync(path.join(directory, name)).mtimeMs }))
+     .sort((a, b) => b.time - a.time);
+   for (const old of entries.slice(keep))
      fs.rmSync(path.join(directory, old.name), { recursive: true, force: true });
  };
  
@@ -47,12 +55,10 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +      fs.rmSync(lock, { recursive: true, force: true });
 +  } catch {}
 +};
++// A failed step exits through process.exit, and an uncaught error exits too; both run this. The
++// script never yields to the event loop, so a signal kills it outright, and its lock then waits
++// out the stale bound.
 +process.on("exit", release);
-+for (const signal of ["SIGINT", "SIGTERM"] as const)
-+  process.on(signal, () => {
-+    release();
-+    process.exit(signal === "SIGINT" ? 130 : 143);
-+  });
 +
 +/**
 + * Waits until `entry` exists, or holds its lock. Returns true to restore the entry, false once
@@ -62,17 +68,21 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +  let waiting = false;
 +  for (;;) {
 +    if (fs.existsSync(entry)) return true;
++    // The lock appears with its owner already inside: a renamed directory, never an empty one.
++    const pending = `${lock}.${process.pid}.pending`;
++    fs.mkdirSync(pending, { recursive: true });
++    fs.writeFileSync(path.join(pending, "owner"), owner);
 +    try {
-+      fs.mkdirSync(path.dirname(lock), { recursive: true });
-+      fs.mkdirSync(lock);
++      fs.renameSync(pending, lock);
 +      held = lock;
-+      fs.writeFileSync(path.join(lock, "owner"), owner);
 +      // Another holder may have stored the entry between the check and the claim.
 +      if (!fs.existsSync(entry)) return false;
 +      release();
 +      return true;
 +    } catch (error) {
-+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
++      fs.rmSync(pending, { recursive: true, force: true });
++      const code = (error as NodeJS.ErrnoException).code;
++      if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EPERM") throw error;
 +    }
 +    if (!waiting) {
 +      console.log(`Waiting for another job's build of ${path.basename(path.dirname(lock))}.`);
@@ -96,7 +106,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
  const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
  
-@@ -276,7 +346,10 @@ function prepare() {
+@@ -276,7 +348,10 @@ function prepare() {
      if (key !== undefined) keys.set(step.name, key);
      let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
      if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
@@ -108,7 +118,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
      if (restored) {
        restore(step, entry);
        // Recently used entries are the last to be removed.
-@@ -302,6 +375,10 @@ function prepare() {
+@@ -302,6 +377,10 @@ function prepare() {
        fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
      }
      if (!restored && entry !== undefined) store(step, entry);
