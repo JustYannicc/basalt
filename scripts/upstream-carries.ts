@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { run } from "./process.ts";
+import { run, runBuffered } from "./process.ts";
 
 type Pin = { repository: string; commit: string };
 type Carry = { name: string; bytes: Buffer; file: string };
@@ -126,10 +126,10 @@ function replay(upstream: string, carries: readonly Carry[]) {
   for (const { name, bytes, file } of carries) {
     const added = additions(bytes);
     // Carries may replace a file another carry created earlier in the replay.
-    if (added.length) run("git", ["clean", "-f", "--", ...added], upstream);
+    if (added.length) runBuffered("git", ["clean", "-f", "--", ...added], upstream);
     try {
-      run("git", ["apply", "--check", file], upstream);
-      run("git", ["apply", file], upstream);
+      runBuffered("git", ["apply", "--check", file], upstream);
+      runBuffered("git", ["apply", file], upstream);
     } catch (error) {
       throw new Error(`Carry ${name} does not apply`, { cause: error });
     }

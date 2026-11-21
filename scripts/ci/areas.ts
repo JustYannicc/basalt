@@ -113,6 +113,7 @@ export const sharedInputs = [
   "scripts/upstream-carries.ts",
   "scripts/pool-test-runtime/**",
   "scripts/process.ts",
+  "scripts/failure/{child,process-tee,redact}.ts",
   "scripts/releases/patches.json",
   ".upstream/package.json",
   ".upstream/bun.lock",

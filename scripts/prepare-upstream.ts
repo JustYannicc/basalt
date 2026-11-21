@@ -75,6 +75,7 @@ run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/ru
 // The vault page render tests bundle the Obsidian app's UI with its served packages.
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/vault-page")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/failure")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/startup-profiler")]);
