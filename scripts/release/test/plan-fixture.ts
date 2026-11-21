@@ -31,6 +31,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Context, Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { poolObservationTokenProps } from "../../../src/pool/fleet-observation.ts";
+import { poolDatabaseReadiness } from "../../../src/pool/database.ts";
+import { poolWorkerAcceptance } from "../../../src/pool/database-budget.ts";
+import { databasePoolBudget } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts";
 
 export const accountId = "0".repeat(32);
 export const applicationId = "11111111-1111-4111-8111-111111111111";
@@ -66,6 +69,13 @@ export interface Declaration {
    * (`POOL_DATABASE_READY`): a setting the plan cannot know while that command runs.
    */
   poolWorkerWaitsOnCommand?: boolean;
+  /**
+   * Declares the pool database command as the stack does (`poolDatabaseReadiness`), with the real
+   * pool size command, and PoolWorker reading its readiness as production's does. A tools
+   * migration stand-in reads `toolsSource`, as the real one reads the hosted sources. PoolWorker's
+   * readiness wait and acceptance are the stack's own (`poolWorkerAcceptance`).
+   */
+  poolDatabase?: { toolsSource?: string; budgetDatabase?: string };
   /** Adds plain env values to ArtifactsCredentials, which State never recorded. */
   credentialsEnv?: Record<string, string>;
   /** Binds a second class on ArtifactsCredentials, which State never recorded. */
@@ -277,7 +287,21 @@ async function cloudflare(context: TestContext, shadow: boolean) {
   return { base: `http://127.0.0.1:${address.port}`, requests };
 }
 
-const providers = (base: string) =>
+/**
+ * Runs no process: records each command the apply would run, in order, and answers as a command
+ * that succeeded. Everything else about the command is Alchemy's own provider.
+ */
+const recordingExecutor = (runs: string[]) =>
+  Layer.succeed(Command.CommandExecutor, {
+    spawn: () => Effect.die(new Error("the plan fixture spawns no process")),
+    run: (props) =>
+      Effect.sync(() => {
+        runs.push(props.command);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }),
+  } as Command.CommandExecutor["Service"]);
+
+const providers = (base: string, commandRuns?: string[]) =>
   Layer.effect(
     Cloudflare.Providers,
     Provider.collection([
@@ -300,7 +324,9 @@ const providers = (base: string) =>
         Cloudflare.D1.DatabaseProvider(),
         Cloudflare.SecretsStore.SecretsStoreProvider(),
         Cloudflare.ApiToken.AccountApiTokenProvider(),
-        Command.providers(),
+        commandRuns
+          ? Command.ExecProvider().pipe(Layer.provide(recordingExecutor(commandRuns)))
+          : Command.providers(),
       ),
     ),
     Layer.provideMerge(
@@ -363,9 +389,12 @@ const program = (declared: Declaration) =>
     if (declared.observationStore !== false)
       yield* Cloudflare.SecretsStore.Store("PoolObservationSecrets", {}).pipe(retain());
     const databaseCommand =
-      declared.databaseCommand !== false
+      declared.databaseCommand !== false && !declared.poolDatabase
         ? yield* Command.Exec("PoolDatabase", { command: "node --version", memo: false })
         : undefined;
+    const poolDatabaseReady = declared.poolDatabase
+      ? yield* poolDatabaseCommands(declared.poolDatabase)
+      : undefined;
     const called = declared.credentials
       ? {
           Api: yield* Cloudflare.Worker("Api", service),
@@ -448,7 +477,7 @@ const program = (declared: Declaration) =>
       observability: { logs: { enabled: true } },
     } as never);
     const ledger = "ledger" in declared ? declared.ledger : { className: "PoolLedger" };
-    return yield* Cloudflare.Worker("PoolWorker", {
+    const worker = yield* Cloudflare.Worker("PoolWorker", {
       main: entry,
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
@@ -483,7 +512,48 @@ const program = (declared: Declaration) =>
         ...(declared.poolWorkerWaitsOnCommand && databaseCommand
           ? { POOL_DATABASE_READY: databaseCommand.hash.pipe(Output.map(() => "ready")) }
           : {}),
+        ...(poolDatabaseReady ? { POOL_DATABASE_READY: poolDatabaseReady } : {}),
       },
+    });
+    if (poolDatabaseReady)
+      yield* poolWorkerAcceptance(worker, {
+        adminUrl: syntheticAdminUrl,
+        runtimeLogin: Output.literal("pool-runtime"),
+        candidate: "0".repeat(40),
+        accountId,
+        key: Redacted.make("synthetic-deployment-key"),
+        workerInput: "synthetic-worker-input",
+        imageHash: Output.literal("synthetic-image-input"),
+      });
+    return worker;
+  });
+
+const syntheticAdminUrl = Redacted.make("postgres://admin@pool-database.invalid/postgres");
+
+/**
+ * The pool database command as production declares it, beside the real pool size command and a
+ * tools migration keyed on the sources it reads (here one value standing for them).
+ */
+const poolDatabaseCommands = (options: NonNullable<Declaration["poolDatabase"]>) =>
+  Effect.gen(function* () {
+    const budget = yield* databasePoolBudget(
+      "RuntimeDatabaseBudget",
+      options.budgetDatabase ?? "synthetic-database",
+      "main",
+    );
+    yield* Command.Exec("Migrations", {
+      command: "node src/migrate.ts",
+      cwd: buildContext,
+      env: {
+        HOSTED_SOURCES: options.toolsSource ?? "a",
+        DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")),
+      },
+      memo: { include: ["**"] },
+    });
+    return yield* poolDatabaseReadiness({
+      adminUrl: syntheticAdminUrl,
+      runtimeRole: "pool-runtime",
+      budget,
     });
   });
 
@@ -828,6 +898,11 @@ export interface PlanInput {
    * application's hash-only PATCH (which settling PoolWorker applies first) with the recorded read.
    */
   shadow?: boolean;
+  /**
+   * Applies commands without running them: each command the apply runs is appended here. Without
+   * it the fixture's commands are Alchemy's own, which would run their processes.
+   */
+  commandRuns?: string[];
 }
 
 /** Plans the declared stack against the given State with Alchemy's real planner and providers. */
@@ -840,7 +915,7 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
     scope.stack,
     {
       // The test providers carry fewer services than a real stack declares; only their behaviour matters here.
-      providers: providers(api.base) as never,
+      providers: providers(api.base, input.commandRuns) as never,
       state: Layer.succeed(State, Effect.succeed(memory)),
     },
     program(input.declared ?? {}),
