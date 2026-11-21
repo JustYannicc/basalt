@@ -408,12 +408,14 @@ def main(stop: threading.Event | None = None) -> int:
         # Outside `children`: the layer's exit never ends the container or a Home generation.
         resume = ResumeLayer(
             spawn_resume_layer,
-            resume_layer_healthy,
             lambda child, exit_code: report_exit(child, exit_code, FailureCategory.RUNTIME),
         )
         while not stop.wait(2):
             observed_at = time.monotonic()
-            readiness.set_resume_available(resume.tick())
+            running = resume.tick()
+            readiness.set_resume_available(
+                resume.observe_health(running and resume_layer_healthy())
+            )
             failed = [(child, child.process.poll()) for child in children]
             failed = [(child, code) for child, code in failed if code is not None]
             if failed:

@@ -357,7 +357,11 @@ def _node_healthy(management_key: str) -> bool:
 
 
 def resume_layer_healthy() -> bool:
-    status, payload = request_json(f"{RESUME_URL}/__basalt/resume/healthz", "GET", "", timeout=1)
+    """Never raises: a probe failure only withdraws resume, it must not end the supervisor."""
+    try:
+        status, payload = request_json(f"{RESUME_URL}/__basalt/resume/healthz", "GET", "", timeout=1)
+    except Exception:
+        return False
     return status == 200 and payload.get("status") == "ok"
 
 

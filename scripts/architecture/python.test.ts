@@ -189,6 +189,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "recovery_deadline.py",
       "recovery_http.py",
       "recovery_signals.py",
+      "resume_layer.py",
       "__init__.py",
     ].map((file) => [
       `containers/pool/${file}`,

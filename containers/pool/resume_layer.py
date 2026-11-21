@@ -27,15 +27,16 @@ class LayerChild(Protocol):
 
 
 class ResumeLayer:
+    """Each supervisor tick: `tick()` reaps or starts the layer, then the caller probes a running
+    layer and passes the result to `observe_health`, which says whether to advertise resume."""
+
     def __init__(
         self,
         spawn: Callable[[], LayerChild],
-        healthy: Callable[[], bool],
         report_exit: Callable[[LayerChild, int], None],
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._spawn = spawn
-        self._healthy = healthy
         self._report_exit = report_exit
         self._clock = clock
         self._child: LayerChild | None = None
@@ -48,38 +49,37 @@ class ResumeLayer:
         return self._child
 
     def tick(self) -> bool:
-        """Advance supervision by one observation; return whether resume may be advertised."""
+        """Reap an exit or start the layer; return whether a layer is running to be probed."""
         now = self._clock()
         child = self._child
         if child is not None:
             exit_code = child.process.poll()
-            if exit_code is not None:
-                self._child = None
-                self._healthy_since = None
-                self._schedule_restart(now)
-                self._report_exit(child, exit_code)
-                return False
-            if not self._probe():
-                self._healthy_since = None
-                return False
-            if self._healthy_since is None:
-                self._healthy_since = now
-            elif now - self._healthy_since >= STABLE_SECONDS:
-                self._backoff = FIRST_BACKOFF_SECONDS
-            return True
-        if now < self._next_start:
-            return False
-        try:
-            self._child = self._spawn()
-        except OSError:
+            if exit_code is None:
+                return True
+            self._child = None
+            self._healthy_since = None
             self._schedule_restart(now)
+            self._report_exit(child, exit_code)
+            return False
+        if now >= self._next_start:
+            try:
+                self._child = self._spawn()
+            except OSError:
+                self._schedule_restart(now)
+        # A layer that just started answers health on a later tick.
         return False
 
-    def _probe(self) -> bool:
-        try:
-            return self._healthy()
-        except Exception:
+    def observe_health(self, healthy: bool) -> bool:
+        """Record this tick's probe of a running layer; return whether resume may be advertised."""
+        now = self._clock()
+        if not healthy or self._child is None:
+            self._healthy_since = None
             return False
+        if self._healthy_since is None:
+            self._healthy_since = now
+        elif now - self._healthy_since >= STABLE_SECONDS:
+            self._backoff = FIRST_BACKOFF_SECONDS
+        return True
 
     def _schedule_restart(self, now: float) -> None:
         self._next_start = now + self._backoff
