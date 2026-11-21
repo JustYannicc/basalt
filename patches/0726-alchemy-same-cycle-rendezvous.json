@@ -7,5 +7,5 @@
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "alchemy-dependency-upgrade",
-  "requires": "A pinned Alchemy release lets only members of one dependency cycle read each other's early attributes during an apply, so a member reading another cycle waits for its reconciled attributes (one upload unless that cycle itself converges); remove after both source/lib proofs pass."
+  "requires": "A pinned Alchemy release lets only one dependency cycle's members read each other's early attributes, so a reader in another cycle waits for reconciled ones (one upload unless that cycle converges); remove after source/lib proofs pass."
 }
