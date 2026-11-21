@@ -353,3 +353,66 @@ test("tools-only native approval mints no model key and cannot widen on replay",
     401,
   );
 });
+
+test("native approval with models answers at once while the pool container is stopped", async () => {
+  const p = protocol();
+  const intent = await p.f.intent(owner);
+  p.f.server.stopped = true;
+  const response = await p.control("register", { intent, name: "Stopped container", tools: true });
+  assert.deepEqual(
+    Object.values(await p.f.registry()).map((computer) => computer.state),
+    ["active"],
+    "A stopped container must leave no issuing computer behind",
+  );
+  assert.equal(response.status, 200, await response.clone().text());
+  const approved = (await response.json()) as {
+    pool: string;
+    models: boolean;
+    toolsOrganization: string;
+  };
+  assert.equal(approved.pool, pool.pool);
+  assert.equal(approved.models, true);
+  assert.equal(approved.toolsOrganization, pool.organization);
+  assert.equal(p.f.server.keys.length, 0);
+});
+
+test("concurrent first model requests share one minted key", async () => {
+  const p = protocol();
+  const { computer } = await p.register();
+  const leases = await Promise.all([p.model(computer.id), p.model(computer.id)]);
+  assert.equal(p.f.server.keys.length, 1);
+  for (const lease of leases) {
+    assert.equal(
+      lease.request.headers.get("authorization"),
+      `Bearer ${String(p.f.server.keys[0]!.api_key)}`,
+    );
+    lease.release();
+  }
+});
+
+test("a device revoked while its model key is minted keeps no key", async () => {
+  const p = protocol();
+  const { computer } = await p.register();
+  let reached!: () => void;
+  const minting = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let open!: () => void;
+  p.f.server.onMint = reached;
+  p.f.server.mintGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const request = p.model(computer.id);
+  await Promise.race([
+    minting,
+    request.then(
+      () => {},
+      () => {},
+    ),
+  ]);
+  assert.equal((await p.control("revoke", { computer: computer.id, pool: pool.pool })).status, 200);
+  open();
+  await assert.rejects(request, /no longer connected/);
+  assert.equal(p.f.server.keys.length, 0);
+  assert.equal((await p.f.registry())[computer.id]?.native?.key, undefined);
+});

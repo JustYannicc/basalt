@@ -45,6 +45,10 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     patchReplyFailure: false,
     patchFailure: false,
     mintReplyFailure: false,
+    /** The pool worker's Home fetch throws, never answers, while its container is not running. */
+    stopped: false,
+    mintGate: undefined as Promise<void> | undefined,
+    onMint: undefined as (() => void) | undefined,
     revokeGate: undefined as Promise<void> | undefined,
     onRevoke: undefined as (() => void) | undefined,
     nextKey: 70,
@@ -55,6 +59,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
   };
   const home = new ComputerHome(
     new HomeClient(async (path, init) => {
+      if (server.stopped) throw new Error("Pool container unavailable");
       const url = new URL(`https://home.example${path}`);
       const endpoint = url.pathname.slice("/v8/management".length);
       const method = init?.method ?? "GET";
@@ -84,6 +89,8 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
       }
       if (endpoint === "/access/api-keys") {
         if (method === "POST") {
+          server.onMint?.();
+          await server.mintGate;
           const key = { ...body, api_key_id: server.nextKey++, id: server.nextKey - 1 };
           server.keys.push(key);
           if (server.mintReplyFailure) return Response.json({ error: "failed" }, { status: 500 });
