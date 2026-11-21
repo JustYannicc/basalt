@@ -1,7 +1,7 @@
 {
   "identity": "basalt-autumn-emulator-loopback",
   "file": "0709-autumn-emulator-loopback.patch",
-  "content_sha256": "983ec08b17da28c3fbe6fa6ee13c04e15e4c90183f454efaeef975e7e82b1e5d",
+  "content_sha256": "aaf8cd1413d4e357fcd3f9510a420e248e31d23b6cddb1ced7bc7ee937515571",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

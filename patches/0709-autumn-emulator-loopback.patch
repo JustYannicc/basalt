@@ -285,17 +285,19 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
      workos: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
    }),
  });
-@@ -286,6 +289,9 @@ interface EmulatorTarget {
+@@ -286,6 +289,11 @@ interface EmulatorTarget {
  const emulatorTarget = (origin: string): EmulatorTarget | undefined => {
    const url = URL.parse(origin);
    if (url === null) return undefined;
-+  // A local emulator's address grants nothing and names no service or instance.
-+  if (Schema.is(LoopbackUrl)(origin))
++  // This run's own local emulator (the Autumn one) is a bare loopback origin: its address grants
++  // nothing and names no service or instance. A loopback URL whose path names them is labelled
++  // like a hosted instance, as the emulator-failure reports read it.
++  if (Schema.is(LoopbackUrl)(origin) && url.pathname.split("/").every((segment) => segment === ""))
 +    return { label: `local ${url.host}`, service: "local", instanceId: undefined };
    const labels = url.hostname.split(".").slice(0, -2);
    const [service, instance] =
      labels.length > 0 ? labels : url.pathname.split("/").filter((segment) => segment.length > 0);
-@@ -458,7 +464,11 @@ export const provisionEmulatorRequest = <A>(
+@@ -458,7 +466,11 @@ export const provisionEmulatorRequest = <A>(
   * Cloud deployment at `origin`. Cloud's providers return sign-in to its edge, which stands in
   * for `executor.sh`, so that is the one callback each sign-in client registers.
   */
@@ -308,7 +310,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
    Effect.gen(function* () {
      const instance = `executor-onboarding-${randomUUID()}`;
      const create = (service: string) =>
-@@ -509,12 +519,12 @@ export const createEmulatorFixture = (origin: string) =>
+@@ -509,12 +521,12 @@ export const createEmulatorFixture = (origin: string) =>
        discovery,
      });
      const github = yield* oauth("github");
@@ -324,7 +326,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
            "/_emulate/credentials",
            {
              type: "api-key",
-@@ -522,7 +532,7 @@ export const createEmulatorFixture = (origin: string) =>
+@@ -522,7 +534,7 @@ export const createEmulatorFixture = (origin: string) =>
            },
            Schema.Struct({ credential: Schema.Struct({ token: Schema.NonEmptyString }) }),
          );
@@ -333,7 +335,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
        });
      return Redacted.make(
        EmulatorFixture.make({
-@@ -534,7 +544,11 @@ export const createEmulatorFixture = (origin: string) =>
+@@ -534,7 +546,11 @@ export const createEmulatorFixture = (origin: string) =>
            mail: yield* keyed("resend"),
            company: yield* keyed("context"),
            // Cloud accepts only Autumn-shaped keys; a private instance is keyed like the sandbox.
