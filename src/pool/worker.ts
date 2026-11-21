@@ -28,6 +28,7 @@ import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
 import { runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
+import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { installNativePolicy } from "./native-policy-install.ts";
@@ -836,7 +837,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     // A running alarm handler or Home pass re-arms its own deadline when it ends; the platform
     // reads the alarm as unset meanwhile, and arming then would only pull both owners to now.
     if (this.alarmInFlight || this.homeUpkeepTask) return;
-    const work = this.alarms.ensure();
+    // The raw key, so a selection that no longer decodes still arms the recovery that reports it.
+    const work = this.alarms.ensure(
+      async () => (await this.ctx.storage.get(slotSelectionKey)) !== undefined,
+    );
     if (work) this.ctx.waitUntil(work.catch(() => console.error("POOL_ALARM_ENSURE_PENDING")));
   }
 

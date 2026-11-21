@@ -103,7 +103,8 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
       },
     },
   };
-  // The probe may arm a missing upkeep alarm; it writes nothing else and warms or repairs nothing.
+  // With no runtime selected the probe arms no upkeep alarm, writes nothing, and warms or repairs
+  // nothing.
   const background: Promise<unknown>[] = [];
   const armed: number[] = [];
   let alarm: number | null = null;
@@ -167,8 +168,8 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   );
   await worker.scheduled({ cron: "* * * * *" }, env);
   await Promise.all(background);
-  assert.equal(armed.length, 1, "a missing upkeep alarm is armed once");
-  assert.deepEqual(deadlines, { home: armed[0], fleet: armed[0] });
+  assert.deepEqual(armed, [], "nothing is selected, so no upkeep alarm is armed");
+  assert.equal(deadlines, undefined);
   assert.equal(probeTarget, state.pool);
   assert.ok(f.home.calls.some((call) => call.path.endsWith("/quota/credentials/auth-a")));
   assert.deepEqual(native.sort(), ["/native-policy/check", "/ready"]);
