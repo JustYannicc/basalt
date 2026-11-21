@@ -9,13 +9,14 @@
  *   bun scripts/release/deploy.ts apply    --stage <s> [--config <f>] [--policy <f>] [--include <fqn>]... --plan-digest <sha256> --attempt <id>
  *   bun scripts/release/deploy.ts deploy   --stage test-… [--config <f>] [--policy <f>] [--include <fqn>]...  (plan, check, apply in one run)
  *   bun scripts/release/deploy.ts destroy  --stage test-… [--config <f>]
+ *   bun scripts/release/deploy.ts teardown --stage test-rehearsal-<n> [--verify-only]
  *   bun scripts/release/deploy.ts backup   --stage production --name <backup name>
  *   bun scripts/release/deploy.ts snapshot --stage <s> --out <file>
  *   bun scripts/release/deploy.ts compare  --before <file> --after <file>
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
@@ -24,15 +25,12 @@ import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
+import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
+import { stackConfig } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
-const configs = [
-  "alchemy.run.ts",
-  "scripts/preview/stack/alchemy.database.ts",
-  "scripts/preview/stack/alchemy.cleanup.ts",
-];
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -56,22 +54,12 @@ const { positionals, values } = parseArgs({
     within: { type: "string" },
     serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
+    "verify-only": { type: "boolean" },
   },
 });
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
-// Accept a config relative to the working directory (the cloud dir, as previews call it) or the repo root.
-// The scale test deploys a frozen candidate with this checkout's scale stack, matched by its path suffix.
-const config = values.config
-  ? ([relative(root, resolve(values.config)), relative(root, resolve(root, values.config))].find(
-      (path) => configs.includes(path),
-    ) ??
-    (resolve(values.config).endsWith("/scripts/scale-test/stack.ts")
-      ? resolve(values.config)
-      : values.config))
-  : "alchemy.run.ts";
-const scaleStack = config.endsWith("/scripts/scale-test/stack.ts");
-if (!configs.includes(config) && !scaleStack) throw new Error(`Unknown stack config ${config}`);
+const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
 
 if (command !== "compare") {
   if (stage === "production") {
@@ -80,14 +68,22 @@ if (command !== "compare") {
       !/^[a-f0-9]{40}$/u.test(process.env.BASALT_RELEASE_CANDIDATE ?? "")
     )
       throw new Error("Production releases run only in GitHub Actions on an immutable candidate");
-    if (command === "destroy") throw new Error("Production is never destroyed");
+    if (command === "destroy" || command === "teardown")
+      throw new Error("Production is never destroyed");
     if (command === "deploy") throw new Error("Production applies only a reviewed plan digest");
   } else if (scaleStack ? !/^scale-[0-9]+$/u.test(stage) : !/^test-[a-z0-9-]+$/u.test(stage)) {
     throw new Error(
       "Use --stage production, a disposable test-* stage, or scale-<n> for the scale stack",
     );
+  } else if (stage.includes("rehearsal") && !isRehearsalStage(stage)) {
+    // A teardown finds a rehearsal stage's leftovers by names that carry its stage whole; a stage
+    // like test-rehearsal-2-x or test-x-test-rehearsal-2 would make those names ambiguous.
+    throw new Error("A rehearsal stage is exactly test-rehearsal-<n>, n from 1 to 9");
   }
 }
+// A teardown deletes by the stage token in names, which only a rehearsal stage's names carry.
+if (command === "teardown" && !isRehearsalStage(stage))
+  throw new Error("A teardown runs only on a test-rehearsal-<n> stage");
 
 /**
  * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
@@ -510,6 +506,10 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                   never
                 >,
               ),
+              // Deletes by the stage token in names; no other command sets it, and the check alone
+              // (`--verify-only`) never does, so the wire refuses any delete it sends.
+              ...(command === "teardown" && !values["verify-only"] ? { teardown: true } : {}),
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
             };
           }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
@@ -763,6 +763,29 @@ try {
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
+  } else if (command === "teardown") {
+    const { teardownStage, TEARDOWN_NOT_CHECKED } = await import("./stage-teardown.ts");
+    const result = await run(
+      Effect.tryPromise(() =>
+        teardownStage(
+          values["verify-only"] ? "verify" : "delete",
+          {
+            accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+            token: process.env.CLOUDFLARE_API_TOKEN ?? "",
+            stage,
+          },
+          // Read when the effect runs, inside `run`: the guard's fetch, never the bare one.
+          globalThis.fetch,
+        ),
+      ),
+    );
+    // Names carry the stage and stay in the private record; the public summary keeps counts.
+    await keepPrivate("teardown", safeJson(result, 2));
+    await summary(
+      values["verify-only"]
+        ? `Checked stage ${stage}: none of its container applications or tagged registry images remain. ${TEARDOWN_NOT_CHECKED}`
+        : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.manifests} registry manifests in ${result.repositories.length} repositories deleted; none tagged remain. ${TEARDOWN_NOT_CHECKED}`,
+    );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");
     const backup = await run(
