@@ -102,24 +102,42 @@ test("lifecycle warmth retains its Home deadline behind an earlier fleet alarm",
   assert.deepEqual(await new PoolAlarms(f.storage, f.now).take(), { home: true, fleet: false });
 });
 
+const selected = async () => true;
+
+test("a missing alarm is armed only while a runtime is selected", async () => {
+  const f = fixture();
+  let asked = 0;
+  await f.scheduler.ensure(async () => (asked++, false));
+  assert.equal(asked, 1);
+  assert.equal(f.current(), null, "nothing is selected, so nothing is armed");
+  assert.equal(await f.storage.get("pool-alarm-v1:deadlines"), undefined, "and nothing is written");
+  // An alarm that is set is only lowered, whatever is selected, so the check is not needed.
+  const armed = fixture(5_000);
+  await armed.scheduler.schedule("fleet", 200);
+  await armed.storage.setAlarm(5_000);
+  await armed.scheduler.ensure(async () => (asked++, false));
+  assert.equal(asked, 1, "a set alarm asks for no selection");
+  assert.equal(armed.current(), 200);
+});
+
 test("a missing alarm is armed for both owners at once, and an armed one is left alone", async () => {
   const f = fixture();
-  await f.scheduler.ensure();
-  assert.equal(f.current(), 100, "nothing was armed, so both owners run now");
+  await f.scheduler.ensure(selected);
+  assert.equal(f.current(), 100, "a runtime is selected and nothing was armed, so both run now");
   assert.deepEqual(await f.scheduler.take(), { home: true, fleet: true });
   const armed = fixture(5_000);
-  await armed.scheduler.ensure();
+  await armed.scheduler.ensure(selected);
   assert.equal(armed.current(), 5_000, "an armed alarm keeps its deadline");
 });
 
 test("an isolate checks for a missing alarm at most once every five seconds", async () => {
   const f = fixture(5_000);
-  await f.scheduler.ensure();
+  await f.scheduler.ensure(selected);
   f.fire(4_000);
-  await f.scheduler.ensure();
+  await f.scheduler.ensure(selected);
   assert.equal(f.current(), null, "within five seconds of the last check, no read and no arm");
   f.fire(5_100);
-  await f.scheduler.ensure();
+  await f.scheduler.ensure(selected);
   assert.equal(f.current(), 5_100);
 });
 
@@ -137,7 +155,7 @@ test("arming a missing alarm writes both owners at once, so a take right after i
     }
     return result;
   }) as typeof transaction;
-  await f.scheduler.ensure();
+  await f.scheduler.ensure(selected);
   assert.deepEqual(raced, { home: true, fleet: true });
 });
 
@@ -146,6 +164,6 @@ test("an alarm another writer moved later is lowered back to the earliest stored
   await f.scheduler.schedule("fleet", 200);
   // A lock deadline written straight to the native alarm replaces the earlier fleet one.
   await f.storage.setAlarm(5_000);
-  await f.scheduler.ensure();
+  await f.scheduler.ensure(selected);
   assert.equal(f.current(), 200);
 });
