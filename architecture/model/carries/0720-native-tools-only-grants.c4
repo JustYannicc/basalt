@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A native grant without models asks the pool nothing. Its access checks, token issuance and refreshes, and tool calls are decided by the grant, its consent and token rows and live membership in its tools organization, so they keep working while the pool's control plane fails. Its access answer's display carries the account and the grant's pool id with an empty name and no pool choices. A grant with models still asks the pool on every check, refresh and tool call, and the pool's outage refuses it as unavailable. Revoking the grant still revokes its computer at the pool."
+    }
+  }
+}

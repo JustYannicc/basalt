@@ -174,7 +174,13 @@ export class NativeComputers {
         delete computer.link;
         await this.deps.save(registry);
         // The saved state stops requests and active streams before Home cleanup can fail.
-        const keys = computer.keyId ? [computer.keyId] : await this.deps.home.find(computer.id);
+        // A device with no model key, tools only or not minted yet, has nothing at Home: a stopped
+        // container must not hold up its revocation. A mint still running revokes its own key.
+        const keys = computer.keyId
+          ? [computer.keyId]
+          : computer.native.key
+            ? await this.deps.home.find(computer.id)
+            : [];
         for (const id of keys) await this.deps.home.revoke(id);
         delete computer.native.key;
         computer.state = "revoked";

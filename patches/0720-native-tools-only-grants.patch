@@ -1,0 +1,54 @@
+diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
+--- a/apps/hosted/server/src/implementation/bearer-access.ts
++++ b/apps/hosted/server/src/implementation/bearer-access.ts
+@@ -397,16 +397,18 @@ const oauthAccess = (
+         Config.withDefault(origin),
+         Effect.mapError(() => unavailable),
+       );
+-      yield* checkNativeComputer(
+-        key.value,
+-        poolOrigin,
+-        NativeGrantAccess.make({
+-          id: grantId,
+-          userId: row.subject,
+-          clientId: row.tokenClient,
+-          policy: native,
+-        }),
+-      ).pipe(Effect.mapError((error) => (error.statusCode === 503 ? unavailable : unauthorized)));
++      // A tools-only device is the person's own tools: the grant and membership above decide it.
++      if (native.models)
++        yield* checkNativeComputer(
++          key.value,
++          poolOrigin,
++          NativeGrantAccess.make({
++            id: grantId,
++            userId: row.subject,
++            clientId: row.tokenClient,
++            policy: native,
++          }),
++        ).pipe(Effect.mapError((error) => (error.statusCode === 503 ? unavailable : unauthorized)));
+       return {
+         userId: row.subject,
+         clientId: row.tokenClient,
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -169,7 +169,8 @@ export const nativeGrantHost = (
+     known.set(answer, facts);
+     return facts;
+   };
+-  // The pool's check below always runs: it alone answers for the device and its pool.
++  // A grant with models asks the pool every time: it alone answers for the device and its pool.
++  // A tools-only grant is the person's own tools, so this server's grant and membership decide it.
+   const check = (
+     ctx: GenericEndpointContext,
+     access: NativeGrantAccess,
+@@ -182,6 +183,8 @@ export const nativeGrantHost = (
+         yield* membership(ctx, access.userId, organization);
+         if (facts !== undefined) facts.membership = true;
+       }
++      if (!access.policy.models)
++        return display ? { pool: { id: access.policy.pool, name: "" }, pools: [] } : undefined;
+       let teams = display ? facts?.teams : undefined;
+       if (display && teams === undefined) {
+         teams = yield* currentTeams(ctx, access.userId);

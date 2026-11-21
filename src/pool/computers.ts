@@ -542,6 +542,9 @@ export class Computers {
   }
   private async revoke(registry: Registry, user: string, id: unknown): Promise<Response> {
     const computer = this.own(registry, user, id);
+    // Its tools answer to its grant at the tools service, never to this registry.
+    if (computer.native && !computer.native.models)
+      return fail(409, "busy", "Sign this device out on the device to revoke it.");
     computer.state = computer.state === "revoked" ? "revoked" : "revoking";
     delete computer.link;
     await this.save(registry);
