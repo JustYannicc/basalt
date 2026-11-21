@@ -23,6 +23,7 @@ import type { StateService } from "alchemy/State/State";
 import type { StageScope } from "./stage-writes.ts";
 import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
+import { resolvePathFlags } from "./entry-paths.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
@@ -57,6 +58,14 @@ const { positionals, values } = parseArgs({
     "verify-only": { type: "boolean" },
   },
 });
+// Before the entry moves into the cloud app (below): a relative path names a file in the directory
+// the command was started in, not one inside the cloud app. `--config` is not here: stackConfig
+// resolves it, with its own fallback to the repo root.
+resolvePathFlags(
+  values,
+  ["policy", "out", "before", "after", "from", "root-boot", "serving"],
+  process.cwd(),
+);
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
@@ -380,7 +389,7 @@ Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: sta
 // Alchemy captures the working directory once, when its first module loads (alchemy/Util/Node.ts
 // `initialCwd`), and resolves every command's relative cwd from it. The stack's commands are
 // declared relative to the cloud app, so the entry moves there before anything loads Alchemy.
-const policyPath = values.policy ? resolve(values.policy) : undefined;
+const policyPath = values.policy;
 process.chdir(cloud);
 const { decodeReleasePolicy } = await import("./policy.ts");
 const { initialCwd } = await import("alchemy/Util/Node");
