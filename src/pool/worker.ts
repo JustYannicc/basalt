@@ -1012,6 +1012,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         accountLabels: (pool) => this.usageAccountLabels.read(pool),
         currentPrices: (targets) => this.overviewPrices.readTable(targets),
+        failed: () =>
+          this.ctx.waitUntil(captureError(this.env, "pool_usage_read_failed", pathname)),
       });
     if (
       pathname === managedUsagePath ||
