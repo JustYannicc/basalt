@@ -104,7 +104,10 @@ test("affected selection and the full aggregate cannot skip the audited partitio
     [...fastJobs, ...heavyJobs, ...conditionalJobs].map((id) => [
       id,
       {
-        result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success",
+        result:
+          conditionalJobs.includes(id) && !["workerd-assets", "owned-units"].includes(id)
+            ? "skipped"
+            : "success",
       },
     ]),
   );

@@ -2186,6 +2186,34 @@ jobs:
         with:
           prepare-upstream: "true"
 
+  # The complete owned unit suite of a full suite, split three ways: it took about 7 of fast's 13–16
+  # hosted minutes. A pull request's fast lane runs only the focused owned tests, inside fast.
+  owned-units:
+    needs: [select, long-started]
+    if: needs.select.outputs.full_suite == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Run the complete owned unit suite, one shard
+        timeout-minutes: 15
+        run: node scripts/ci/unit-tests.ts --shard=${{ matrix.shard }}/3
+
   fast:
     needs: select
     runs-on: ubuntu-latest
@@ -2272,10 +2300,6 @@ jobs:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci/unit-tests.ts
-      - name: Run the complete owned unit suite
-        timeout-minutes: 15
-        if: needs.select.outputs.full_suite == 'true'
-        run: npm run check
       - name: Check app source snapshots against verified pins and hashes
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -2594,6 +2618,7 @@ jobs:
         select,
         long-started,
         fast,
+        owned-units,
         browser-install,
         cpa-pipeline,
         workerd-assets,

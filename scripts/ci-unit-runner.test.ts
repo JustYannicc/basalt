@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -145,4 +146,76 @@ test('held first', async (t) => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("shards of the owned suite run every test file once between them", async () => {
+  const root = fixture();
+  try {
+    const options = ["--test", "--test-timeout=5000", `--test-reporter=${reporter}`];
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ scripts: { check: `node ${options.join(" ")} scripts/*.test.mjs` } }),
+    );
+    const files = Array.from({ length: 7 }, (_, index) => `t${index}`);
+    for (const name of files)
+      writeFileSync(
+        join(root, `scripts/${name}.test.mjs`),
+        `import { appendFileSync } from 'node:fs';
+import { test } from 'node:test';
+test('${name}', () => appendFileSync(${JSON.stringify(join(root, "ran.log"))}, '${name}\\n'));
+`,
+      );
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "ignore" });
+    git("init", "-q");
+    git("add", ".");
+    const ran = () =>
+      execFileSync("cat", [join(root, "ran.log")], { encoding: "utf8" })
+        .trim()
+        .split("\n");
+    const counts = new Map<string, number>();
+    for (const shard of ["1/3", "2/3", "3/3"]) {
+      rmSync(join(root, "ran.log"), { force: true });
+      const result = await run(root, [runner, `--shard=${shard}`]);
+      assert.equal(result.code, 0, result.output);
+      assert.match(result.output, new RegExp(`shard ${shard} of 7 files`));
+      for (const name of ran()) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    assert.deepEqual([...counts.keys()].sort(), files);
+    assert.ok(
+      [...counts.values()].every((count) => count === 1),
+      JSON.stringify([...counts]),
+    );
+    for (const shard of ["0/3", "4/3", "x", "1/0", "2"]) {
+      const refused = await run(root, [runner, `--shard=${shard}`]);
+      assert.notEqual(refused.code, 0, shard);
+      assert.match(refused.output, /Expected a shard like --shard=2\/3/, shard);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a full suite runs the complete owned suite in owned-units' legs, and fast runs it no more", () => {
+  const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const job = workflow.jobs["owned-units"];
+  const legs: number[] = job.strategy.matrix.shard;
+  assert.deepEqual(
+    legs,
+    Array.from({ length: legs.length }, (_, index) => index + 1),
+  );
+  assert.equal(job.strategy["fail-fast"], false);
+  assert.equal(job.if, "needs.select.outputs.full_suite == 'true'");
+  const run = job.steps.map((step: { run?: string }) => step.run).filter(Boolean);
+  assert.deepEqual(run, [
+    "npm run prepare:upstream",
+    `node scripts/ci/unit-tests.ts --shard=\${{ matrix.shard }}/${legs.length}`,
+  ]);
+  assert.ok(workflow.jobs.check.needs.includes("owned-units"));
+  // fast keeps the focused owned tests for a pull request, and no longer runs the whole suite.
+  const fast = workflow.jobs.fast.steps.map((step: { run?: string }) => step.run ?? "");
+  assert.ok(!fast.some((command: string) => /(^|\n)\s*npm run check\s*($|\n)/.test(command)));
+  assert.ok(fast.includes("node scripts/ci/unit-tests.ts"));
 });

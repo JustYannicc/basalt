@@ -11,7 +11,7 @@ export const fastJobs = [
   "client-connection",
   "browser-install",
 ];
-export const conditionalJobs = ["workerd-assets"];
+export const conditionalJobs = ["workerd-assets", "owned-units"];
 
 // The long tier: jobs that start as soon as `select` finishes. Every other job the selector starts
 // also needs the trivial `long-started` job, so when a full Check queues more jobs than there are
@@ -64,6 +64,8 @@ export function gateErrors(
     const required =
       fastJobs.includes(job) ||
       (job === "workerd-assets" && selected.includes("upstream-image")) ||
+      // The complete owned unit suite runs only in a full suite; a fast lane runs focused tests.
+      (job === "owned-units" && full === true) ||
       selected.includes(job);
     if (needs[job]?.result !== (required ? "success" : "skipped"))
       errors.push(

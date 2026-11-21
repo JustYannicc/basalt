@@ -152,7 +152,10 @@ test("source selection and the aggregate cannot skip either Cloud account job", 
     [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
       {
-        result: conditionalJobs.includes(job) && job !== "workerd-assets" ? "skipped" : "success",
+        result:
+          conditionalJobs.includes(job) && !["workerd-assets", "owned-units"].includes(job)
+            ? "skipped"
+            : "success",
       },
     ]),
   );

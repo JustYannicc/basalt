@@ -57,7 +57,8 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
             job === "reuse" ||
             fastJobs.includes(job) ||
             selected.includes(job) ||
-            (job === "workerd-assets" && selected.includes("upstream-image"))
+            (job === "workerd-assets" && selected.includes("upstream-image")) ||
+            (job === "owned-units" && full)
               ? "success"
               : "skipped",
         },
