@@ -47,15 +47,28 @@ export function deviceCode(input: string): string | undefined {
     : undefined;
 }
 
+/** Where the page's requests go: its own origin in the browser, the real hosts in a test. */
+export interface DeviceTransport {
+  readonly origin: string;
+  fetch(path: string, init: RequestInit): Promise<Response>;
+}
+const browser: DeviceTransport = {
+  get origin() {
+    return location.origin;
+  },
+  fetch: (path, init) => fetch(path, init),
+};
+
 type AppPath = `api/auth/${string}` | `setup/v1/${string}`;
 async function read(
+  transport: DeviceTransport,
   path: AppPath,
   signal: AbortSignal,
   input?: { code: string; accept: boolean; headers?: HeadersInit },
 ) {
   let response: Response;
   try {
-    response = await fetch(`/${path}`, {
+    response = await transport.fetch(`/${path}`, {
       method: input ? "POST" : "GET",
       credentials: "same-origin",
       cache: "no-store",
@@ -110,8 +123,9 @@ async function read(
   }
 }
 
-export async function readDeviceRequest(code: string, signal: AbortSignal) {
+export async function readDeviceRequest(code: string, signal: AbortSignal, transport = browser) {
   const raw = await read(
+    transport,
     "api/auth/get-session?disableCookieCache=true&disableRefresh=true",
     signal,
   );
@@ -120,10 +134,10 @@ export async function readDeviceRequest(code: string, signal: AbortSignal) {
   if (!session.user.emailVerified)
     throw new DeviceApprovalError("request", "Verify your email, then reopen this device request.");
   const pending = Schema.decodeUnknownSync(Pending)(
-    await read(`api/auth/device/request?user_code=${encodeURIComponent(code)}`, signal),
+    await read(transport, `api/auth/device/request?user_code=${encodeURIComponent(code)}`, signal),
   );
   if (
-    pending.resource !== `${location.origin}/native` ||
+    pending.resource !== `${transport.origin}/native` ||
     !pending.scopes.includes("native") ||
     pending.scopes.some((scope) => scope !== "native" && scope !== "offline_access")
   )
@@ -133,6 +147,7 @@ export async function readDeviceRequest(code: string, signal: AbortSignal) {
     );
   const client = Schema.decodeUnknownSync(Client)(
     await read(
+      transport,
       `api/auth/oauth2/public-client?client_id=${encodeURIComponent(pending.clientId)}`,
       signal,
     ),
@@ -145,10 +160,12 @@ export async function readDeviceRequest(code: string, signal: AbortSignal) {
 }
 
 export type DeviceRequest = Awaited<ReturnType<typeof readDeviceRequest>>;
-export async function readDevicePools(signal: AbortSignal) {
-  const { intent } = Schema.decodeUnknownSync(Context)(await read("setup/v1/context", signal));
+export async function readDevicePools(signal: AbortSignal, transport = browser) {
+  const { intent } = Schema.decodeUnknownSync(Context)(
+    await read(transport, "setup/v1/context", signal),
+  );
   const { pools } = Schema.decodeUnknownSync(Choices)(
-    await read(`setup/v1/computers?intent=${encodeURIComponent(intent)}`, signal),
+    await read(transport, `setup/v1/computers?intent=${encodeURIComponent(intent)}`, signal),
   );
   if (!pools.length)
     throw new DeviceApprovalError(
@@ -176,8 +193,9 @@ export async function decideDevice(
     models: boolean;
     tools: boolean;
   },
+  transport = browser,
 ) {
-  const value = await read("api/auth/device/decide", signal, {
+  const value = await read(transport, "api/auth/device/decide", signal, {
     code,
     accept,
     ...(selection
@@ -221,8 +239,10 @@ export async function reviewDeviceDecision(
   original: DeviceRequest,
   signal: AbortSignal,
   selection?: DeviceSelection,
+  _held?: DevicePools,
+  transport = browser,
 ) {
-  const current = await readDeviceRequest(code, signal);
+  const current = await readDeviceRequest(code, signal, transport);
   if (current.account.id !== original.account.id || current.clientId !== original.clientId)
     return {
       kind: "review",
@@ -230,7 +250,7 @@ export async function reviewDeviceDecision(
       message: "Your account or device request changed. Review it again before deciding.",
     } as const;
   if (selection) {
-    const available = await readDevicePools(signal);
+    const available = await readDevicePools(signal, transport);
     if (!available.pools.some((entry) => entry.id === selection.pool))
       return {
         kind: "review",
@@ -248,14 +268,16 @@ export async function reviewDeviceDecision(
         "request",
         "Choose a device name and at least one kind of access.",
       );
-    const status = await decideDevice(code, true, signal, {
-      ...selection,
-      name: selection.name.trim(),
-      intent: available.intent,
-    });
+    const status = await decideDevice(
+      code,
+      true,
+      signal,
+      { ...selection, name: selection.name.trim(), intent: available.intent },
+      transport,
+    );
     return { kind: "decided", status } as const;
   }
-  const status = await decideDevice(code, false, signal);
+  const status = await decideDevice(code, false, signal, undefined, transport);
   return { kind: "decided", status } as const;
 }
 
