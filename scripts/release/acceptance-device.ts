@@ -6,7 +6,8 @@ import { hostAssertionTtlMs, isSigningKey, signEnvelope } from "../../src/pool/t
 
 /**
  * The registered models-only device release acceptance signs for, as the tools service's edge
- * signs for a person's device (src/native-model.ts). Its ids are not secret; the signing key is.
+ * signs for a person's device (src/native-model.ts). Its ids come from a masked secret and, like the
+ * signing key, never reach a public line.
  */
 export const AcceptanceDevice = Schema.Struct({
   computer: Schema.NonEmptyString,
