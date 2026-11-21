@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-host-router",
+  "file": "0719-app-host-router.patch",
+  "content_sha256": "be773b4daa6a9d07bbd3aee62275558e45077cc516ba3119ee995832fb08eeb8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

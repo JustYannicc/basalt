@@ -219,6 +219,8 @@ export function deployEnvironment(
     "PREVIEW_SMOKE_EMAIL",
     "PREVIEW_SMOKE_PASSWORD",
     "EXECUTOR_ROLE_HOSTS_DOMAIN",
+    // Carry 0719's switch is for disposable stages, whose app host Basalt's router serves.
+    "EXECUTOR_APP_HOST_ROUTER",
   ]) {
     if (source[name]?.trim()) throw new Error(`Unsupported production override: ${name}`);
   }
@@ -369,6 +371,8 @@ export function previewEnvironment(pullRequest: number, source = process.env): P
     EXECUTOR_APP_UI_EMBEDDED: "true",
     EXECUTOR_APP_UI_MANAGED_ROUTE: "false",
     TEST_STAGE_DOMAIN: domain,
+    // Basalt's Router serves the app host: the upstream role hosts leave it alone (carry 0719).
+    EXECUTOR_APP_HOST_ROUTER: "basalt",
     TEST_STAGE_DATABASE_PROVIDER: "planetscale",
     TEST_STAGE_DATABASE: databaseName,
     TEST_STAGE_PASSWORD_SIGN_IN: "true",
