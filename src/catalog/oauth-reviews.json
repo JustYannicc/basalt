@@ -884,7 +884,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://clerk.clerk.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "a21b4169c2ce5b3ccbc15672b9819ed9ee843146d2415cae7980c827b69ba3f7"
+          "metadataSha256": "6aa0f1966e8c3f3a1c1e0fd5e15861b8c9f4b5ac37c7ddb1ac64b90397c75cd6"
         }
       }
     },
