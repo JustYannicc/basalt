@@ -7,7 +7,16 @@ import {
   type StoredComputer,
 } from "./computer-registry.ts";
 import { PoolDirectory } from "./directory.ts";
-import { fail, failureResponse, json, object, text } from "./json.ts";
+import {
+  BackendFailure,
+  ControlFailure,
+  fail,
+  failureResponse,
+  HomeTransportFailure,
+  json,
+  object,
+  text,
+} from "./json.ts";
 import { openNativeKey, sealNativeKey } from "./native-key.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { nativePoolDisplay } from "./native-display.ts";
@@ -47,6 +56,31 @@ const identity = (value: Record<string, unknown>): Identity => {
 };
 const keyIdentity = (computer: StoredComputer) =>
   JSON.stringify([computer.id, computer.native?.grant, computer.pool, computer.user]);
+/** A model device approved before its key could be minted. */
+class KeyRequest {
+  readonly computer: string;
+  readonly user: string;
+  readonly pool: string;
+  readonly owner: string;
+  readonly identity: string;
+  constructor(computer: StoredComputer, owner: string) {
+    this.computer = computer.id;
+    this.user = computer.user;
+    this.pool = computer.pool;
+    this.owner = owner;
+    this.identity = keyIdentity(computer);
+  }
+}
+const modelsUnavailable = () =>
+  fail(503, "backend_unavailable", "Models are unavailable right now. Try again shortly.", 2);
+const mintFailure = (error: unknown) =>
+  error instanceof HomeTransportFailure
+    ? error.errorClass
+    : error instanceof BackendFailure
+      ? `backend ${error.backendStatus}`
+      : error instanceof ControlFailure
+        ? error.code
+        : "unknown";
 
 /** Native devices share the existing computer registry, key lifecycle and access-removal queue. */
 export class NativeComputers {
@@ -54,6 +88,7 @@ export class NativeComputers {
     this.streams.abortPool(pool);
   }
   private streams = new NativeStreams();
+  private minting = new Map<string, Promise<void>>();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
     this.deps = deps;
@@ -77,6 +112,7 @@ export class NativeComputers {
       return fail(401, "unauthorized", "A current native host assertion is required.");
     return value;
   }
+  /** A model device whose key is not minted yet stays connected; its tools need no key. */
   private async active(registry: Registry, caller: Identity) {
     const row = Object.hasOwn(registry, caller.computer) ? registry[caller.computer] : undefined;
     if (
@@ -85,8 +121,7 @@ export class NativeComputers {
       row.pool !== caller.pool ||
       row.native?.grant !== caller.grant ||
       row.state !== "active" ||
-      row.removalPending ||
-      (row.native.models && !row.native.key)
+      row.removalPending
     )
       return fail(401, "unauthorized", "This device is no longer connected.");
     const directory = await PoolDirectory.load(this.deps.storage, this.deps.now());
@@ -209,12 +244,13 @@ export class NativeComputers {
         return reply(previous);
       }
       const at = new Date(this.deps.now()).toISOString();
+      // The model key is minted on first model use, so a stopped container cannot fail approval.
       const computer: StoredComputer = {
         id: crypto.randomUUID(),
         name,
         user,
         pool,
-        state: "issuing",
+        state: "active",
         createdAt: at,
         boundAt: at,
         firstModelRequestAt: null,
@@ -228,21 +264,46 @@ export class NativeComputers {
       };
       registry[computer.id] = computer;
       await this.deps.save(registry);
-      if (models) {
-        const issued = await this.deps.home.mint(user, pool, computer.id, entry.owner);
-        computer.keyId = issued.keyId;
-        computer.userId = issued.userId;
-        await this.deps.save(registry);
-        computer.native!.key = await sealNativeKey(
-          this.deps.signingKey,
-          issued.key,
-          keyIdentity(computer),
-        );
-      }
-      computer.state = "active";
-      await this.deps.save(registry);
       return reply(computer);
     });
+  }
+  /** One mint per computer at a time; every waiting model request shares its outcome. */
+  private provision(request: KeyRequest): Promise<void> {
+    const running = this.minting.get(request.computer);
+    if (running) return running;
+    const work = this.mint(request).finally(() => this.minting.delete(request.computer));
+    this.minting.set(request.computer, work);
+    return work;
+  }
+  /** Home is called outside the registry queue, so a slow container holds up no other device. */
+  private async mint(request: KeyRequest) {
+    const issued = await this.deps.home.mint(
+      request.user,
+      request.pool,
+      request.computer,
+      request.owner,
+    );
+    const key = await sealNativeKey(this.deps.signingKey, issued.key, request.identity);
+    const kept = await this.deps.run(async (registry) => {
+      const computer = Object.hasOwn(registry, request.computer)
+        ? registry[request.computer]
+        : undefined;
+      if (
+        computer?.state !== "active" ||
+        computer.removalPending ||
+        !computer.native?.models ||
+        computer.native.key ||
+        keyIdentity(computer) !== request.identity
+      )
+        return false;
+      computer.keyId = issued.keyId;
+      computer.userId = issued.userId;
+      computer.native.key = key;
+      await this.deps.save(registry);
+      return true;
+    });
+    // Revoked or removed while Home was minting: nobody may keep this key.
+    if (!kept) await this.deps.home.revoke(issued.keyId);
   }
   async session(request: Request) {
     if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")
@@ -265,13 +326,28 @@ export class NativeComputers {
     if (value.method !== request.method || value.path !== url.pathname + url.search)
       return fail(401, "unauthorized", "The native assertion belongs to another request.");
     const caller = identity(value);
+    const first = await this.forward(request, url, value, caller);
+    if (!(first instanceof KeyRequest)) return first;
+    await this.provision(first).catch((error: unknown) => {
+      console.error("Native model key could not be minted", mintFailure(error));
+    });
+    const second = await this.forward(request, url, value, caller);
+    return second instanceof KeyRequest ? modelsUnavailable() : second;
+  }
+  private forward(request: Request, url: URL, value: Record<string, unknown>, caller: Identity) {
     return this.deps.run(async (registry) => {
       const computer = await this.active(registry, caller);
       if (!computer.native?.models)
         return fail(403, "unauthorized", "This device was approved for tools only.");
+      if (!computer.native.key) {
+        const pool = (await PoolDirectory.load(this.deps.storage, this.deps.now())).entry(
+          computer.pool,
+        );
+        return pool ? new KeyRequest(computer, pool.owner) : modelsUnavailable();
+      }
       const key = await openNativeKey(
         this.deps.signingKey,
-        computer.native!.key!,
+        computer.native.key,
         keyIdentity(computer),
         this.deps.previousSigningKey,
       );

@@ -83,8 +83,9 @@ test("native approval reaches the real pool in workerd and refuses redirects", a
               assert.deepEqual(result.body, { status: "approved" });
               assert.equal(result.grants, 1);
               assert.equal(result.consents, 1);
+              // Approval never waits on the container; the first model use mints the key.
               assert.deepEqual(result.state.computers, [
-                { state: "active", models: true, hasSealedKey: true },
+                { state: "active", models: true, hasSealedKey: false },
               ]);
             }
           } finally {

@@ -77,6 +77,8 @@ test("native registration retains the model key on the server and survives resta
   const p = protocol();
   const registered = await p.register();
   assert.equal(registered.toolsOrganization, pool.organization);
+  assert.equal(p.f.server.keys.length, 0, "Approval mints nothing; the first model use does");
+  (await p.model(registered.computer.id)).release();
   const computer = (await p.f.registry())[registered.computer.id]!;
   const homeKey = String(p.f.server.keys[0]!.api_key);
   assert.equal(JSON.stringify(registered).includes(homeKey), false);
@@ -250,7 +252,7 @@ test("replayed native registration keeps one computer and cannot substitute its 
   const replayed = await p.control("register", values);
   assert.equal(replayed.status, 200);
   assert.deepEqual(await replayed.json(), original);
-  assert.equal(p.f.server.keys.length, 1);
+  assert.equal(p.f.server.keys.length, 0);
   assert.equal(Object.keys(await p.f.registry()).length, 1);
   const foreign = { ...pool, pool: "another-owned-pool", organization: "another-organization" };
   const foreignIntent = await p.f.intent(owner, foreign);
@@ -264,7 +266,7 @@ test("replayed native registration keeps one computer and cannot substitute its 
     ).status,
     403,
   );
-  assert.equal(p.f.server.keys.length, 1);
+  assert.equal(p.f.server.keys.length, 0);
   assert.equal(
     (await p.f.registry())[original.computer.id]?.native?.toolsOrganization,
     pool.organization,
@@ -314,6 +316,7 @@ test("native tools stay on the user's own intent while models may use a shared p
     ).status,
     403,
   );
+  (await p.model(approved.computer.id, { pool: shared.pool })).release();
   assert.equal(p.f.server.keys.length, 1);
 });
 
