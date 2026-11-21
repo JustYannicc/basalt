@@ -140,7 +140,11 @@ test("only the selected workerd warming job can populate a missing archive cache
     workflow.jobs["workerd-assets"].if,
     "contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')",
   );
-  assert.deepEqual(workflow.jobs["upstream-image"].needs, ["select", "workerd-assets"]);
+  assert.deepEqual(workflow.jobs["upstream-image"].needs, [
+    "select",
+    "workerd-assets",
+    "long-started",
+  ]);
   const action = parse(
     readFileSync(new URL("../.github/actions/workerd-assets/action.yml", import.meta.url), "utf8"),
   );

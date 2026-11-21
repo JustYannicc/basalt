@@ -2,8 +2,39 @@ import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
 import { checkedOutIdentity, retainReuseEvidence, validReuseEvidence } from "./reuse.ts";
 
-export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "browser-install"];
+export const fastJobs = [
+  "select",
+  "long-started",
+  "fast",
+  "cpa-pipeline",
+  "client-connection",
+  "browser-install",
+];
 export const conditionalJobs = ["workerd-assets"];
+
+// The long tier: jobs that start as soon as `select` finishes. Every other job the selector starts
+// also needs the trivial `long-started` job, so when a full Check queues more jobs than there are
+// runners, the jobs that set its wall time are queued first. Membership: a non-declared job whose
+// successful hosted runs average 10 minutes or more in full Checks 44515987650 and 44504964672
+// (first attempts), plus workerd-assets, the short head of the upstream-image chain.
+export const longJobs = [
+  "fast",
+  "pool-runtime",
+  "host-managed-accounts-pool",
+  "account-acquisition",
+  "host-managed-accounts",
+  "production-ops-migrations",
+  "catalog-compat",
+  "host-managed-accounts-local",
+  "production-ops",
+  "human-in-the-loop-cloud",
+  "host-managed-accounts-cloud",
+  "human-in-the-loop",
+  "planetscale-sign-in",
+  "dashboard-batch",
+  "account-usage",
+  "workerd-assets",
+];
 
 export function gateErrors(
   needs: Record<string, { result: string }>,
