@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
   chmodSync,
@@ -20,7 +20,7 @@ import {
   omitReleaseLifecycles,
   releaseOnlyDependencies,
 } from "./ci/dependency-lifecycles.ts";
-import { desktopAssetKey } from "./ci/desktop-release-assets.ts";
+import { desktopAssetKey, electronBuilderConfig } from "./ci/desktop-release-assets.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 
 test("Check and release preparations reuse only their own dependency generations", async () => {
@@ -221,4 +221,134 @@ test("the CI guard refuses release hosts for fetch, HTTP and direct socket resol
     ],
     { stdio: "pipe" },
   );
+});
+
+const desktopManifest = new URL("../clients/desktop/package.json", import.meta.url);
+
+test("the electron-builder config is package.json's build plus only the Electron checksums", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "basalt-builder-config-"));
+  try {
+    const checksums = { "electron-v1.0.0-linux-x64.zip": "a".repeat(64) };
+    mkdirSync(join(fixture, "node_modules", "electron"), { recursive: true });
+    writeFileSync(join(fixture, "package.json"), readFileSync(desktopManifest));
+    writeFileSync(join(fixture, "node_modules/electron/checksums.json"), JSON.stringify(checksums));
+    const { build } = JSON.parse(readFileSync(desktopManifest, "utf8"));
+    // With mirrorOptions instead, ElectronFramework keeps only the mirror and drops the checksums.
+    assert.deepEqual(electronBuilderConfig(createRequire(join(fixture, "package.json"))), {
+      ...build,
+      electronDownload: { unsafelyDisableChecksums: false, checksums },
+    });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+const installedElectron = new URL(
+  "../clients/desktop/node_modules/electron/checksums.json",
+  import.meta.url,
+);
+test(
+  "the generated electron-builder config carries the locked electron's checksums",
+  { skip: !existsSync(installedElectron) && "needs clients/desktop dependencies" },
+  () => {
+    const fixture = mkdtempSync(join(tmpdir(), "basalt-builder-config-"));
+    try {
+      const output = join(fixture, "electron-builder.json");
+      const script = new URL("./ci/desktop-release-assets.ts", import.meta.url).pathname;
+      execFileSync(process.execPath, [script, "builder-config", output], { stdio: "pipe" });
+      const config = JSON.parse(readFileSync(output, "utf8"));
+      const checksums = JSON.parse(readFileSync(installedElectron, "utf8"));
+      assert.deepEqual(config, {
+        ...JSON.parse(readFileSync(desktopManifest, "utf8")).build,
+        electronDownload: { unsafelyDisableChecksums: false, checksums },
+      });
+      const lock = readFileSync(new URL("../clients/desktop/bun.lock", import.meta.url), "utf8");
+      const version = /^    "electron": \["electron@([^"\s]+)"/m.exec(lock)![1];
+      for (const platform of ["linux-x64", "win32-x64"])
+        assert.match(checksums[`electron-v${version}-${platform}.zip`], /^[0-9a-f]{64}$/);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  },
+);
+
+type Step = { name?: string; shell?: string; run?: string };
+const workflowSteps = (workflow: string, job: string): Step[] => {
+  const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
+  const path = new URL("../.github/workflows/" + workflow, import.meta.url);
+  return parse(readFileSync(path, "utf8")).jobs[job].steps;
+};
+
+test("both Electron packaging steps package from the generated config in bash", () => {
+  const config = '"$RUNNER_TEMP/electron-builder.json"';
+  for (const { workflow, job, step, overrides } of [
+    {
+      workflow: "ci.yml",
+      job: "client-desktop",
+      step: "Package the unsigned development client",
+      overrides: "",
+    },
+    {
+      workflow: "clients-release.yml",
+      job: "desktop",
+      step: "Package the app",
+      // Published builds carry the permanent identifiers; -c values merge over the --config file.
+      overrides: " -c.appId=run.signalbox.client -c.productName=Signalbox",
+    },
+  ]) {
+    const steps = workflowSteps(workflow, job);
+    const packaging = steps.find((entry) => entry.name === step);
+    assert.ok(packaging?.run, workflow);
+    // PowerShell would split a native argument like -c.appId at its dot on Windows.
+    assert.equal(packaging.shell, "bash", workflow);
+    const lines = packaging.run.trim().split("\n");
+    const generate = lines.indexOf(
+      `node scripts/ci/desktop-release-assets.ts builder-config ${config}`,
+    );
+    const command = `bun run --cwd clients/desktop package:\${{ matrix.platform }} --config ${config}${overrides}`;
+    const packages = lines.findIndex(
+      (line) => line === command || line.startsWith(command + " 2>&1 | tee "),
+    );
+    assert.ok(generate >= 0 && generate < packages, workflow);
+    const electronBuilderSteps = steps.filter((entry) => /\bpackage:/.test(entry.run ?? ""));
+    assert.deepEqual(electronBuilderSteps, [packaging], workflow);
+  }
+});
+
+test("Check's packaging fails when electron-builder fails or fetches SHASUMS256.txt", () => {
+  const step = workflowSteps("ci.yml", "client-desktop").find(
+    (entry) => entry.name === "Package the unsigned development client",
+  );
+  assert.ok(step?.run);
+  const fixture = mkdtempSync(join(tmpdir(), "basalt-package-guard-"));
+  try {
+    const bin = join(fixture, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\n", { mode: 0o755 });
+    // DEBUG output reaches stderr, so the fake writes there.
+    writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$OUTPUT" >&2\nexit "$STATUS"\n', {
+      mode: 0o755,
+    });
+    const script = join(fixture, "package.sh");
+    writeFileSync(script, step.run.replaceAll("${{ matrix.platform }}", "linux"));
+    // Without pipefail from the runner, so the step must keep electron-builder's status itself.
+    const packaging = (output: string, status: number) =>
+      spawnSync("bash", ["--noprofile", "--norc", "-e", script], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          RUNNER_TEMP: fixture,
+          OUTPUT: output,
+          STATUS: String(status),
+        },
+      }).status;
+    assert.equal(packaging("@electron/get:index Cache hit", 0), 0);
+    assert.equal(
+      packaging("@electron/get:index Downloading https://mirror/v1/SHASUMS256.txt", 0),
+      1,
+    );
+    assert.equal(packaging("build failed", 3), 3);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
