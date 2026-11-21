@@ -87,6 +87,15 @@ test("native approval reaches the real pool in workerd and refuses redirects", a
               assert.deepEqual(result.state.computers, [
                 { state: "active", models: true, hasSealedKey: false },
               ]);
+              const pool = await runtime.getWorker("pool");
+              const model = await pool.fetch("http://pool/fixture/model");
+              assert.equal(model.status, 200, await model.clone().text());
+              const after = (await (await pool.fetch("http://pool/fixture/state")).json()) as {
+                computers: unknown[];
+              };
+              assert.deepEqual(after.computers, [
+                { state: "active", models: true, hasSealedKey: true },
+              ]);
             }
           } finally {
             await runtime.dispose();

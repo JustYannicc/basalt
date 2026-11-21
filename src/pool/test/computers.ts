@@ -23,7 +23,9 @@ export const pool = {
 type Row = Record<string, unknown>;
 export class Memory implements ComputerStorage {
   values = new Map<string, unknown>();
+  onGet: ((key: string) => void) | undefined;
   async get<T>(key: string) {
+    this.onGet?.(key);
     return structuredClone(this.values.get(key)) as T | undefined;
   }
   async put(key: string, value: unknown) {

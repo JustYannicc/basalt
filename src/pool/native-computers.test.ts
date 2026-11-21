@@ -249,10 +249,11 @@ test("replayed native registration keeps one computer and cannot substitute its 
   const first = await p.control("register", values);
   assert.equal(first.status, 200);
   const original = (await first.json()) as { computer: { id: string }; toolsOrganization: string };
+  (await p.model(original.computer.id)).release();
   const replayed = await p.control("register", values);
   assert.equal(replayed.status, 200);
   assert.deepEqual(await replayed.json(), original);
-  assert.equal(p.f.server.keys.length, 0);
+  assert.equal(p.f.server.keys.length, 1);
   assert.equal(Object.keys(await p.f.registry()).length, 1);
   const foreign = { ...pool, pool: "another-owned-pool", organization: "another-organization" };
   const foreignIntent = await p.f.intent(owner, foreign);
@@ -266,7 +267,7 @@ test("replayed native registration keeps one computer and cannot substitute its 
     ).status,
     403,
   );
-  assert.equal(p.f.server.keys.length, 0);
+  assert.equal(p.f.server.keys.length, 1);
   assert.equal(
     (await p.f.registry())[original.computer.id]?.native?.toolsOrganization,
     pool.organization,
@@ -379,11 +380,39 @@ test("native approval with models answers at once while the pool container is st
   assert.equal(p.f.server.keys.length, 0);
 });
 
-test("concurrent first model requests share one minted key", async () => {
+test("a model request arriving during a mint shares it instead of minting again", async () => {
   const p = protocol();
+  const intent = await p.f.intent(owner);
   const { computer } = await p.register();
-  const leases = await Promise.all([p.model(computer.id), p.model(computer.id)]);
-  assert.equal(p.f.server.keys.length, 1);
+  let reached!: () => void;
+  const minting = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let open!: () => void;
+  p.f.server.onMint = reached;
+  p.f.server.mintGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const first = p.model(computer.id);
+  await minting;
+  let reading!: () => void;
+  const read = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+  p.f.storage.onGet = (key) => {
+    if (key === "computer-registry-v1") reading();
+  };
+  const second = p.model(computer.id);
+  await read;
+  p.f.storage.onGet = undefined;
+  // Queued behind the second request's registry read: it has joined the mint or started its own.
+  assert.equal((await p.f.action("computers", owner, intent)).status, 200);
+  open();
+  const leases = await Promise.all([first, second]);
+  const mints = p.f.server.calls.filter(
+    (call) => call.path === "/access/api-keys" && call.method === "POST",
+  );
+  assert.equal(mints.length, 1, "Concurrent first model requests must mint once");
   for (const lease of leases) {
     assert.equal(
       lease.request.headers.get("authorization"),
@@ -418,4 +447,35 @@ test("a device revoked while its model key is minted keeps no key", async () => 
   await assert.rejects(request, /no longer connected/);
   assert.equal(p.f.server.keys.length, 0);
   assert.equal((await p.f.registry())[computer.id]?.native?.key, undefined);
+});
+
+test("a restored audience keeps a model device that was approved before its key existed", async () => {
+  const p = protocol();
+  const audience = (users: string[]) => ({
+    action: "audience" as const,
+    pools: [{ ...pool, users }],
+  });
+  assert.equal((await p.f.access(audience(pool.users))).status, 200);
+  const intent = await p.f.intent(member);
+  const device = { user: member, grant: "native:member-models" };
+  p.f.server.stopped = true;
+  const response = await p.control("register", {
+    ...device,
+    intent,
+    name: "Member models",
+    tools: false,
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const { computer } = (await response.json()) as { computer: { id: string } };
+  const identity = { ...device, computer: computer.id, pool: pool.pool };
+  // The removal cannot reach Home while the container is stopped, so it stays pending.
+  assert.equal((await p.f.access(audience([owner]))).status, 503);
+  assert.equal((await p.f.registry())[computer.id]?.removalPending, true);
+  p.f.advance(1);
+  assert.equal((await p.f.access(audience(pool.users))).status, 200);
+  assert.equal((await p.f.registry())[computer.id]?.state, "active");
+  assert.equal((await p.control("check", identity)).status, 200);
+  p.f.server.stopped = false;
+  (await p.model(computer.id, device)).release();
+  assert.equal(p.f.server.keys.length, 1);
 });
