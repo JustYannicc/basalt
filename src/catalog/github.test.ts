@@ -40,16 +40,86 @@ const credentialPaths = (value: unknown, path = "$"): string[] =>
           )
         : [];
 
-test("GitHub tool results carry no credential, except one a tool exists to mint", async () => {
-  // The publisher, if asked, answers with the package it published.
-  const served = await handleCatalog(
-    new Request("https://catalog.example.test/catalog/apps/github.json"),
-    async (input) => {
-      assert.equal(String(input), "https://catalog.executor.sh/apps/github.json");
-      return new Response(bytes("published.json").toString());
-    },
+type ServedRun = {
+  results: Record<string, unknown>;
+  oversized: { ok: boolean; error: unknown; sent: number; total: number };
+  unapproved: unknown;
+  unlisted: unknown;
+  tools: string[];
+  minting: string[];
+};
+let ran: Promise<ServedRun> | undefined;
+/** What the package the catalog serves did with GitHub's recorded answers, run once for every test. */
+const servedRun = () =>
+  (ran ??= (async () => {
+    // The publisher, if asked, answers with the package it published.
+    const served = await handleCatalog(
+      new Request("https://catalog.example.test/catalog/apps/github.json"),
+      async (input) => {
+        assert.equal(String(input), "https://catalog.executor.sh/apps/github.json");
+        return new Response(bytes("published.json").toString());
+      },
+    );
+    assert.equal(served.status, 200);
+    const directory = mkdtempSync(join(tmpdir(), "github-served-"));
+    try {
+      const source = join(directory, "github.json");
+      const output = join(directory, "results.json");
+      writeFileSync(source, await served.text());
+      execFileSync(
+        "bun",
+        [new URL("./tests/github-runtime.mjs", import.meta.url).pathname, root, source, output],
+        { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      return JSON.parse(readFileSync(output, "utf8")) as ServedRun;
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  })());
+
+// GitHub answers these only for an OAuth or GitHub app's own client ID and secret, sent as Basic
+// credentials: its REST reference marks exactly these five as taking Basic authentication. A
+// connected account holds a bearer token, which they refuse. Operations that take a GitHub App's
+// JWT as the bearer token are a different case and stay listed.
+const appCredentialTools = [
+  "api.apps.checkToken",
+  "api.apps.deleteAuthorization",
+  "api.apps.deleteToken",
+  "api.apps.resetToken",
+  "api.apps.scopeToken",
+];
+
+test("GitHub's REST tools leave out the operations that take an app's client ID and secret", async () => {
+  // The description the run reads declares all five under these paths, as GitHub's does, and
+  // nothing else there.
+  const description = JSON.parse(
+    readFileSync(new URL("./tests/github-openapi.json", import.meta.url), "utf8"),
+  ) as { paths: Record<string, Record<string, { operationId: string }>> };
+  const operations = Object.entries(description.paths).flatMap(([path, item]) =>
+    Object.values(item).map(({ operationId }) => ({ path, operationId })),
   );
-  assert.equal(served.status, 200);
+  const appOnly = operations.filter(({ path }) => path.startsWith("/applications/{client_id}/"));
+  assert.deepEqual(appOnly.map(({ operationId }) => operationId).sort(), [
+    "apps/check-token",
+    "apps/delete-authorization",
+    "apps/delete-token",
+    "apps/reset-token",
+    "apps/scope-token",
+  ]);
+  const { tools } = await servedRun();
+  const api = tools.filter((name) => name.startsWith("api."));
+  assert.deepEqual(
+    api.filter((name) => appCredentialTools.includes(name)),
+    [],
+    "tools no connected account can call",
+  );
+  // Every other operation is still a tool, among them a read and a mutation a person's token calls.
+  assert.equal(api.length, operations.length - appOnly.length);
+  for (const name of ["api.repos.get", "api.actions.createRegistrationTokenForRepo"])
+    assert.ok(api.includes(name), `${name} is no longer listed`);
+});
+
+test("GitHub tool results carry no credential, except one a tool exists to mint", async () => {
   // GitHub's documented bodies, with synthetic token values and the repository marked private,
   // as GitHub sends the clone token only for private repositories. Its example omits the optional
   // `temp_download_token`, so the first runner download carries one as GitHub's schema declares.
@@ -68,7 +138,6 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
     "$.GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}.secret",
     "$.POST /repos/{owner}/{repo}/actions/runners/registration-token.token",
     "$.POST /applications/{client_id}/token.token",
-    "$.PATCH /applications/{client_id}/token.token",
   ]);
   // GitHub's MCP server answering `get_file_contents` for a private file too large to show, whose
   // link carries a token, and for a private directory, whose JSON listing gives each file's
@@ -82,80 +151,64 @@ test("GitHub tool results carry no credential, except one a tool exists to mint"
   const listing = mcp["tools/call get_file_contents lib"];
   assert.deepEqual(credentialPaths(fileTooLarge), ["$.content[0].text"]);
   assert.deepEqual(credentialPaths(listing), ["$.content[0].text"]);
-  const directory = mkdtempSync(join(tmpdir(), "github-served-"));
-  try {
-    const source = join(directory, "github.json");
-    const output = join(directory, "results.json");
-    writeFileSync(source, await served.text());
-    execFileSync(
-      "bun",
-      [new URL("./tests/github-runtime.mjs", import.meta.url).pathname, root, source, output],
-      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    const { results, oversized, unapproved, tools, minting } = JSON.parse(
-      readFileSync(output, "utf8"),
-    ) as {
-      results: Record<string, unknown>;
-      oversized: { ok: boolean; error: unknown; sent: number; total: number };
-      unapproved: unknown;
-      tools: string[];
-      minting: string[];
-    };
-    // Every tool the app lists as minting is a REST tool GitHub's description defines.
-    assert.deepEqual(
-      minting.filter((name) => !tools.includes(`api.${name}`)),
-      [],
-      "minting tools the app does not serve",
-    );
-    // Checking a token and resetting it answer with the same shape; only the reset mints one.
-    assert.deepEqual(
-      credentialPaths(results),
-      ["$.api.actions.createRegistrationTokenForRepo.token", "$.api.apps.resetToken.token"],
-      "only the tools that mint a credential return one",
-    );
-    // Everything else GitHub sent arrives unchanged.
-    const without = (body: unknown) => JSON.parse(JSON.stringify(body), dropTemporary);
-    const file = recorded["GET /repos/{owner}/{repo}/contents/{path}"] as Record<string, unknown>;
-    assert.deepEqual(results, {
-      "api.repos.get": without(recorded["GET /repos/{owner}/{repo}"]),
-      "api.repos.listForAuthenticatedUser": without(recorded["GET /user/repos"]),
-      "api.actions.listRunnerApplicationsForRepo": without(
-        recorded["GET /repos/{owner}/{repo}/actions/runners/downloads"],
-      ),
-      "api.repos.getContent": {
-        ...file,
-        download_url: "https://raw.githubusercontent.com/octokit/octokit.rb/master/README.md",
-      },
-      "api.secretScanning.getAlert": omit(
-        recorded["GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}"],
-        "secret",
-      ),
-      "api.actions.createRegistrationTokenForRepo":
-        recorded["POST /repos/{owner}/{repo}/actions/runners/registration-token"],
-      "api.apps.checkToken": omit(recorded["POST /applications/{client_id}/token"], "token"),
-      "api.apps.resetToken": recorded["PATCH /applications/{client_id}/token"],
-      "mcp.get_file_contents large-file.bin": JSON.parse(
-        JSON.stringify(fileTooLarge).replaceAll("?token=synthetic-raw-content-token", ""),
-      ),
-      "mcp.get_file_contents lib": JSON.parse(
-        JSON.stringify(listing).replaceAll("?token=synthetic-raw-content-token", ""),
-      ),
-    });
-    assert.deepEqual(
-      unapproved,
-      { ok: false, error: "HostToolApprovalRequired", reached: [] },
-      "an unapproved minting call still waits for approval",
-    );
-    // The router refuses a body over its 16 MiB limit; nothing reads all of it into memory first.
-    assert.equal(oversized.ok, false, "an oversized body is refused");
-    assert.ok(oversized.sent > 0, "the oversized body was requested");
-    assert.ok(
-      oversized.sent < oversized.total,
-      `read ${oversized.sent} of ${oversized.total} bytes: ${JSON.stringify(oversized.error)}`,
-    );
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+  const { results, oversized, unapproved, unlisted, tools, minting } = await servedRun();
+  // Every tool the app lists as minting is a REST tool GitHub's description defines.
+  assert.deepEqual(
+    minting.filter((name) => !tools.includes(`api.${name}`)),
+    [],
+    "minting tools the app does not serve",
+  );
+  assert.deepEqual(
+    credentialPaths(results),
+    ["$.api.actions.createRegistrationTokenForRepo.token"],
+    "only the tools that mint a credential return one",
+  );
+  // GitHub's documented answer to checking a token has the field a minting tool returns. The app
+  // leaves that operation out, so the filter itself is given the answer as the result of a tool
+  // it does not list as minting: the token is not repeated back.
+  assert.deepEqual(
+    unlisted,
+    omit(recorded["POST /applications/{client_id}/token"], "token"),
+    "a tool that is not listed as minting returns no minted field",
+  );
+  // Everything else GitHub sent arrives unchanged.
+  const without = (body: unknown) => JSON.parse(JSON.stringify(body), dropTemporary);
+  const file = recorded["GET /repos/{owner}/{repo}/contents/{path}"] as Record<string, unknown>;
+  assert.deepEqual(results, {
+    "api.repos.get": without(recorded["GET /repos/{owner}/{repo}"]),
+    "api.repos.listForAuthenticatedUser": without(recorded["GET /user/repos"]),
+    "api.actions.listRunnerApplicationsForRepo": without(
+      recorded["GET /repos/{owner}/{repo}/actions/runners/downloads"],
+    ),
+    "api.repos.getContent": {
+      ...file,
+      download_url: "https://raw.githubusercontent.com/octokit/octokit.rb/master/README.md",
+    },
+    "api.secretScanning.getAlert": omit(
+      recorded["GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}"],
+      "secret",
+    ),
+    "api.actions.createRegistrationTokenForRepo":
+      recorded["POST /repos/{owner}/{repo}/actions/runners/registration-token"],
+    "mcp.get_file_contents large-file.bin": JSON.parse(
+      JSON.stringify(fileTooLarge).replaceAll("?token=synthetic-raw-content-token", ""),
+    ),
+    "mcp.get_file_contents lib": JSON.parse(
+      JSON.stringify(listing).replaceAll("?token=synthetic-raw-content-token", ""),
+    ),
+  });
+  assert.deepEqual(
+    unapproved,
+    { ok: false, error: "HostToolApprovalRequired", reached: [] },
+    "an unapproved minting call still waits for approval",
+  );
+  // The router refuses a body over its 16 MiB limit; nothing reads all of it into memory first.
+  assert.equal(oversized.ok, false, "an oversized body is refused");
+  assert.ok(oversized.sent > 0, "the oversized body was requested");
+  assert.ok(
+    oversized.sent < oversized.total,
+    `read ${oversized.sent} of ${oversized.total} bytes: ${JSON.stringify(oversized.error)}`,
+  );
 });
 
 test("GitHub's carried package serves without its publisher and replays exactly", async () => {
