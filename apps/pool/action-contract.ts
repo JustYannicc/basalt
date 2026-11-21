@@ -1,3 +1,5 @@
+import type { ResetMetadata, ResetScope } from "./reset-observation-contract.ts";
+
 export type ResetWindow = "five_hour" | "seven_day" | "seven_day_overage_included";
 
 export interface ResetCredit {
@@ -10,6 +12,19 @@ export interface ResetCredit {
   readonly requiresLimit: boolean;
   /** Null for Codex, which decides which limited windows the reset clears. */
   readonly clears: readonly ResetWindow[] | null;
+  /**
+   * What the credit refills. Claude grants follow the rule the pool's Home applies to its reset
+   * observations (CLIProxyAPI carry 0526); a Codex credit is the account's, since Codex picks which
+   * of the account's limits it clears.
+   */
+  readonly kind: ResetMetadata["kind"];
+  readonly scope: ResetScope;
+}
+
+/** The kind a person confirmed spending; a credit of any other kind is refused unspent. */
+export interface ResetConfirmation {
+  readonly kind: ResetMetadata["kind"];
+  readonly scope: ResetScope;
 }
 
 export interface ResetCredits {
@@ -19,8 +34,19 @@ export interface ResetCredits {
   readonly credits: readonly ResetCredit[];
 }
 
-export type ResetOutcome = "reset" | "already_redeemed" | "already_used" | "nothing_to_reset" | "no_credit"
-  | "not_limited" | "cooldown" | "ineligible" | "unavailable" | "rate_limited" | "auth_error" | "unknown";
+export type ResetOutcome =
+  | "reset"
+  | "already_redeemed"
+  | "already_used"
+  | "nothing_to_reset"
+  | "no_credit"
+  | "not_limited"
+  | "cooldown"
+  | "ineligible"
+  | "unavailable"
+  | "rate_limited"
+  | "auth_error"
+  | "unknown";
 
 export interface ResetResult {
   readonly requestId: string;
