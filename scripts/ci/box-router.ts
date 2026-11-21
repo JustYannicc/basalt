@@ -47,8 +47,7 @@ export const namedJobs: Record<
     timeout: 25,
   },
   "account-acquisition": { minutes: 12.9, timeout: 30 },
-  // No timeout of its own, so GitHub's 360 minutes.
-  "upstream-contracts": { minutes: 11.3, timeout: 360 },
+  "upstream-contracts": { minutes: 11.3, timeout: 25 },
   "human-in-the-loop-cloud": { minutes: 10.5, timeout: 25 },
   "host-managed-accounts-local": { minutes: 9.4, timeout: 20 },
 };
@@ -233,7 +232,7 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
       jobs,
       label: settings.label,
       summary:
-        `Box routing: box first. ${jobs.length} jobs go to the self-hosted runners ` +
+        `Box routing: box first. ${jobs.length} ${jobs.length === 1 ? "job goes" : "jobs go"} to the self-hosted runners ` +
         `(${slots}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
         `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };

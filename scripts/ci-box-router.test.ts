@@ -144,7 +144,10 @@ test("box first: a healthy box fills its free slots with the longest shards", as
     assert.equal((await route({ ref })).jobs.length, 2, ref);
   const one = await route({}, observer({ box: 1 }).box);
   assert.deepEqual(one.jobs, ["declared-cloud-1"]);
-  assert.match(one.summary, /\(1 of 2 slots free\)/);
+  assert.match(
+    one.summary,
+    /box first\. 1 job goes to the self-hosted runners \(1 of 2 slots free\)/,
+  );
   // The box's budget of 2 still bounds five configured slots.
   assert.equal((await route({ slots: "5" })).jobs.length, 2);
   assert.equal(
@@ -638,8 +641,9 @@ test("declared shard jobs and benched named jobs use the router expression; ever
     assert.ok(heavyJobs.includes(id), id);
     assert.ok(workflow.jobs.check.needs.includes(id), id);
     assert.ok([job.needs].flat().includes("select"), id);
-    // The table's timeout is the job's own, GitHub's 360 minutes when it sets none.
-    assert.equal(job["timeout-minutes"] ?? 360, timeout, id);
+    // The table's timeout is the job's own, which every named job sets: a hung job would hold a
+    // box slot for as long as it is allowed to run.
+    assert.equal(job["timeout-minutes"], timeout, id);
     if (typeof minutes === "number") {
       assert.equal(job["runs-on"], namedExpression(`'${id}'`), id);
       assert.equal(job.strategy, undefined, id);

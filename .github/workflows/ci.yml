@@ -2558,6 +2558,9 @@ jobs:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
     runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'upstream-contracts') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    # About 2x its slowest measured hosted run (11.3 minutes), so a hung run never holds a runner
+    # for GitHub's default six hours.
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:17.7-alpine
