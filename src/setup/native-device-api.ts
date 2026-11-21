@@ -27,9 +27,12 @@ const Choices = Schema.Struct({
   ),
 });
 const Decision = Schema.Struct({ status: Schema.Literals(["approved", "denied"]) });
+const PoolUnavailable = Schema.Struct({ reason: Schema.Literal("NATIVE_POOL_UNAVAILABLE") });
+const unconfirmed =
+  "The decision could not be confirmed. Return to your device to check its status.";
 
 export class DeviceApprovalError extends Error {
-  readonly kind: "signed-out" | "unavailable" | "request" | "uncertain";
+  readonly kind: "signed-out" | "unavailable" | "request" | "uncertain" | "models-unavailable";
   constructor(kind: DeviceApprovalError["kind"], message: string) {
     super(message);
     this.kind = kind;
@@ -75,11 +78,16 @@ async function read(
   if (response.status === 401)
     throw new DeviceApprovalError("signed-out", "Sign in to review this device.");
   if (!response.ok) {
-    if (input && response.status >= 500)
-      throw new DeviceApprovalError(
-        "uncertain",
-        "The decision could not be confirmed. Return to your device to check its status.",
-      );
+    if (input && response.status >= 500) {
+      // The host names a pool outage. It recorded no decision, so the device code stays pending.
+      const body: unknown = await response.json().catch(() => undefined);
+      throw Schema.is(PoolUnavailable)(body)
+        ? new DeviceApprovalError(
+            "models-unavailable",
+            "Models are unavailable right now. Connect with tools only?",
+          )
+        : new DeviceApprovalError("uncertain", unconfirmed);
+    }
     const request = path.startsWith("api/auth/device/");
     throw new DeviceApprovalError(
       request ? "request" : "unavailable",
@@ -97,9 +105,7 @@ async function read(
   } catch {
     throw new DeviceApprovalError(
       input ? "uncertain" : "unavailable",
-      input
-        ? "The decision could not be confirmed. Return to your device to check its status."
-        : "Signalbox returned an unreadable response. Try again.",
+      input ? unconfirmed : "Signalbox returned an unreadable response. Try again.",
     );
   }
 }
@@ -185,15 +191,21 @@ export async function decideDevice(
           },
         }
       : {}),
+  }).catch((error: unknown) => {
+    // Tools only is offered once, and only to an approval that asked for models and tools.
+    if (
+      error instanceof DeviceApprovalError &&
+      error.kind === "models-unavailable" &&
+      !(selection?.models && selection.tools)
+    )
+      throw new DeviceApprovalError("uncertain", unconfirmed);
+    throw error;
   });
   let result: typeof Decision.Type;
   try {
     result = Schema.decodeUnknownSync(Decision)(value);
   } catch {
-    throw new DeviceApprovalError(
-      "uncertain",
-      "The decision could not be confirmed. Return to your device to check its status.",
-    );
+    throw new DeviceApprovalError("uncertain", unconfirmed);
   }
   if (result.status !== (accept ? "approved" : "denied"))
     throw new DeviceApprovalError(

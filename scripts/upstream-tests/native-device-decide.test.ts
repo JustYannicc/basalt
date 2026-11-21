@@ -46,6 +46,7 @@ test("a failed native dependency returns a typed nonempty decision error", async
     code: "DEVICE_APPROVAL_UNAVAILABLE",
     stage: "native_control_request",
     failure: "transport",
+    reason: "NATIVE_POOL_UNAVAILABLE",
     message:
       "We could not confirm this device connection. Check its status on your device before trying again.",
   });
@@ -96,6 +97,26 @@ test("a pool control failure on register answers with the reason code", async ()
         "We could not confirm this device connection. Check its status on your device before trying again.",
     });
   }
+});
+
+test("a pool refusal keeps its own code and is not reported as the pool being down", async () => {
+  using f = await fixture(async () =>
+    Response.json(
+      { error: "invalid_session", message: "Choose a computer name and native access." },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    ),
+  );
+  const response = await f.request(
+    "/device/decide",
+    { user_code: f.user_code, accept: true },
+    selection,
+  );
+  assert.equal(response.status, 503);
+  const value = await response.json();
+  assert.equal(value.dependencyCode, "invalid_session");
+  assert.equal(value.dependencyStatus, 400);
+  assert.equal("reason" in value, false);
+  assert.equal(JSON.stringify(value).includes("Choose a computer"), false);
 });
 
 test("after a pool outage answer the same code approves with tools only", async () => {
@@ -193,6 +214,7 @@ test("native dependency diagnostics distinguish status, timeout and invalid resp
     const value = await response.json();
     assert.deepEqual(value, {
       ...expected,
+      reason: "NATIVE_POOL_UNAVAILABLE",
       code: "DEVICE_APPROVAL_UNAVAILABLE",
       message:
         "We could not confirm this device connection. Check its status on your device before trying again.",

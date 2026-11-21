@@ -1,0 +1,104 @@
+diff --git a/apps/hosted/server/src/implementation/native-control-error.ts b/apps/hosted/server/src/implementation/native-control-error.ts
+--- a/apps/hosted/server/src/implementation/native-control-error.ts
++++ b/apps/hosted/server/src/implementation/native-control-error.ts
+@@ -6,9 +6,17 @@ export const nativeControlFailure = (
+   action: string,
+   details: DeviceFailureDetails,
+   unauthorized = false,
+-) =>
+-  Effect.logWarning("native.control.failed").pipe(
+-    Effect.annotateLogs({ action, ...details }),
++) => {
++  // A pool refusal it chose to send (4xx) or a host signing fault is not the pool being down.
++  const poolUnavailable =
++    !unauthorized &&
++    details.stage !== "native_control_signing" &&
++    (details.dependencyStatus === undefined || details.dependencyStatus >= 500);
++  const reported = poolUnavailable
++    ? { ...details, reason: "NATIVE_POOL_UNAVAILABLE" as const }
++    : details;
++  return Effect.logWarning("native.control.failed").pipe(
++    Effect.annotateLogs({ action, ...reported }),
+     Effect.andThen(
+       Effect.fail(
+         new APIError(unauthorized ? "UNAUTHORIZED" : "SERVICE_UNAVAILABLE", {
+@@ -16,11 +24,12 @@ export const nativeControlFailure = (
+           message: unauthorized
+             ? "This device connection is no longer available."
+             : "The device connection service is unavailable. Check your device before trying again.",
+-          ...details,
++          ...reported,
+         }),
+       ),
+     ),
+   );
++};
+ 
+ export const nativeControlCall = <A>(
+   action: string,
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -6,6 +6,7 @@ import {
+   authCall,
+   type NativeGrantHost,
+ } from "@executor-js/mcp-auth/oauth";
++import { DeviceDependencyCode } from "@executor-js/mcp-auth/device";
+ import { APIError } from "better-auth/api";
+ import { Clock, Effect, Option, Redacted, Schema } from "effect";
+ import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+@@ -24,6 +25,7 @@ const Created = Schema.Struct({
+   toolsOrganization: Schema.optionalKey(Schema.NonEmptyString),
+ });
+ const Membership = Schema.Struct({ role: Schema.String });
++const PoolRefusal = Schema.Struct({ error: DeviceDependencyCode });
+ 
+ const control = <A>(
+   secret: Redacted.Redacted<string>,
+@@ -51,6 +53,12 @@ const control = <A>(
+       }),
+     );
+     if (!response.ok) {
++      // Only the pool's own refusal class leaves the host; its message and edge pages stay here.
++      const refusal = response.headers.get("content-type")?.startsWith("application/json")
++        ? Schema.decodeUnknownOption(PoolRefusal)(
++            yield* Effect.promise(() => response.json().catch(() => undefined)),
++          )
++        : Option.none();
+       yield* Effect.promise(
+         () => response.body?.cancel().catch(() => undefined) ?? Promise.resolve(),
+       );
+@@ -60,6 +68,7 @@ const control = <A>(
+           stage: "native_control_response",
+           failure: "status",
+           dependencyStatus: response.status,
++          ...(Option.isSome(refusal) ? { dependencyCode: refusal.value.error } : {}),
+         },
+         response.status === 401 || response.status === 403,
+       );
+diff --git a/packages/mcp-auth/src/contracts/device.ts b/packages/mcp-auth/src/contracts/device.ts
+--- a/packages/mcp-auth/src/contracts/device.ts
++++ b/packages/mcp-auth/src/contracts/device.ts
+@@ -84,6 +84,11 @@ export type DeviceRequestView = typeof DeviceRequestView.Type;
+ export const DeviceDecision = Schema.Struct({ status: Schema.Literals(["approved", "denied"]) });
+ export type DeviceDecision = typeof DeviceDecision.Type;
+ 
++/** An identifier only, so a dependency's message or body text never fits. */
++export const DeviceDependencyCode = Schema.String.check(
++  Schema.isPattern(/^[A-Za-z][A-Za-z0-9_]{0,63}$/u),
++);
++
+ /** Bounded diagnostics only. Never include a code, intent, credential or upstream response body. */
+ export const DeviceFailureDetails = Schema.Struct({
+   stage: Schema.Literals([
+@@ -108,6 +113,10 @@ export const DeviceFailureDetails = Schema.Struct({
+   dependencyStatus: Schema.optionalKey(
+     Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 })),
+   ),
++  /** The dependency's own refusal class, never its message. */
++  dependencyCode: Schema.optionalKey(DeviceDependencyCode),
++  /** The native pool was unreachable, timed out, failed or answered unreadably. */
++  reason: Schema.optionalKey(Schema.Literal("NATIVE_POOL_UNAVAILABLE")),
+ });
+ export type DeviceFailureDetails = typeof DeviceFailureDetails.Type;
+ 

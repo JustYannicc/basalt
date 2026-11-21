@@ -49,6 +49,7 @@ export function NativeDevice() {
   const [models, setModels] = useState(true);
   const [tools, setTools] = useState(true);
   const [problem, setProblem] = useState("");
+  const [toolsOnly, setToolsOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const mutation = useRef(false);
   const lifetime = useRef<AbortController | null>(null);
@@ -113,18 +114,19 @@ export function NativeDevice() {
     reload();
   }
 
-  async function decide(accept: boolean) {
+  async function decide(accept: boolean, withModels = models) {
     if (mutation.current || !code || view.kind !== "ready") return;
     mutation.current = true;
     setBusy(true);
     setProblem("");
+    setToolsOnly(false);
     try {
       const signal = lifetime.current!.signal;
       const result = await reviewDeviceDecision(
         code,
         view.request,
         signal,
-        accept ? { name, pool, models, tools } : undefined,
+        accept ? { name, pool, models: withModels, tools } : undefined,
       );
       if (signal.aborted) return;
       if (result.kind === "review") {
@@ -140,7 +142,10 @@ export function NativeDevice() {
       if (lifetime.current?.signal.aborted) return;
       if (error instanceof DeviceApprovalError && error.kind === "uncertain")
         setView({ kind: "uncertain" });
-      else if (error instanceof DeviceApprovalError && error.kind === "signed-out")
+      else if (error instanceof DeviceApprovalError && error.kind === "models-unavailable") {
+        setProblem(error.message);
+        setToolsOnly(true);
+      } else if (error instanceof DeviceApprovalError && error.kind === "signed-out")
         setView({ kind: "signed-out" });
       else setProblem(deviceProblem(error));
     } finally {
@@ -304,6 +309,20 @@ export function NativeDevice() {
               {problem && (
                 <div className="grid gap-2">
                   <Problem>{problem}</Problem>
+                  {toolsOnly && (
+                    <div>
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => {
+                          setModels(false);
+                          void decide(true, false);
+                        }}
+                      >
+                        Connect with tools only
+                      </Button>
+                    </div>
+                  )}
                   {!choices && (
                     <div className="flex flex-wrap items-center gap-4">
                       <Button variant="outline" disabled={busy} onClick={reload}>
