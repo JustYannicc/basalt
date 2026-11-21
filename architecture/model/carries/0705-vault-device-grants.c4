@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A vault's devices query lists only its device grants. The vault object records the sync of any grant that makes the plugin's sync calls; the host's drive backend reads grant storage from the request's own database and keeps a grant only when device authorization issued it (its client registered only for the device grant and refresh), it is held through a connection for that app alone, run as the app, and neither the grant nor its connection is revoked. The tools a connection selects never decide it, because an agent's connection can select exactly a device's tools. A grant record the backend cannot read fails the query rather than being left out. The vault object, the drive protocol and the plugin are unchanged, and a revoked device leaves the list at once. The Accounts tab still classifies devices by connection shape and tools."
+    }
+  }
+}
