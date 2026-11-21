@@ -53,7 +53,7 @@ test("upkeep removes issuing rows that failed approvals left without a key", asy
   const f = fixture();
   await leftIssuing(f, "first-try");
   await leftIssuing(f, "retry");
-  f.advance(2 * 60 * minute);
+  f.advance(61 * minute);
   await f.expire();
   assert.deepEqual(Object.keys(await f.registry()), []);
 });
@@ -61,10 +61,14 @@ test("upkeep removes issuing rows that failed approvals left without a key", asy
 test("an issuing row of an approval still in progress stays through upkeep", async () => {
   const f = fixture();
   await leftIssuing(f, "approving");
-  // A device request can be approved for ten minutes after it starts.
-  f.advance(10 * minute);
-  await f.expire();
-  assert.equal((await f.registry()).approving?.state, "issuing");
+  const written = f.now();
+  // A device request can be approved for ten minutes after it starts; the bound keeps a wide margin.
+  for (const at of [10, 59]) {
+    f.advance(written + at * minute - f.now());
+    await f.expire();
+    assert.equal((await f.registry()).approving?.state, "issuing", `${at} minutes`);
+  }
+  assert.deepEqual(f.removals, []);
 });
 
 test("upkeep keeps active devices, issuing rows that hold a key, and web setups", async () => {

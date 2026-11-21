@@ -102,9 +102,9 @@ export class NativeComputers {
     this.streams.sync(registry);
   }
   /**
-   * Approvals used to write an `issuing` row and then mint its key; a failed mint left the row,
-   * and the host never recorded its grant. Nobody ever received a key for one, so the row goes. A
-   * key a lost mint reply left at Home is unreachable either way, and deleting the person clears it.
+   * A keyless `issuing` native row is an approval whose mint failed before the pool answered: the
+   * host never recorded its grant and nobody received a key, so the row goes. A key a lost mint
+   * reply left at Home is unreachable either way, and deleting the person clears it.
    */
   removeAbandoned(registry: Registry): number {
     const before = this.deps.now() - abandonedApproval;
