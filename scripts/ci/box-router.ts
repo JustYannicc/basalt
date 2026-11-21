@@ -8,7 +8,8 @@ import { estimator, readDeclaredDurations, setupMinutes, shardRuns } from "./sha
 //
 // Switch-back: deleting BASALT_CI_BOX_SLOTS, or setting it to 0, sends every job hosted on the
 // next Check. A shard already queued for the box can't move back to hosted; the 10-minute
-// heartbeat window and the free-slot count bound how much work can be stuck there.
+// heartbeat window and the free-slot count bound how much work can be stuck there, though two
+// Checks whose select jobs overlap read the same free slots and can each fill them.
 /** Jobs ran at 1.45–1.98× their hosted time on a loaded box (1.06× idle); the timeout check
  * assumes the slow end. */
 export const boxSlowdown = 2.0;
