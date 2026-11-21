@@ -630,7 +630,8 @@ export async function destroyStage(
     ...(subject.kind === "rehearsal"
       ? ([
           ["applications", () => services.stageApplications("delete", config, config.providers)],
-          ["images", () => services.stageImages("delete", config, config.providers)],
+          // No images step until Cloudflare's documentation settles that a manifest delete removes
+          // the digest from the named repository only: a stage can hold production's root digest.
         ] as const)
       : []),
     ["database", () => services.destroyStack("database", config, config.providers)],
@@ -682,7 +683,7 @@ export async function verifyStageAbsent(
   await services.verifyProviders(config, inventory, config.providers);
   if (subject.kind === "rehearsal") {
     await services.stageApplications("verify", config, config.providers);
-    await services.stageImages("verify", config, config.providers);
+    // Images stay until their delete is proven scoped to the stage's repository (see destroyStage).
     await services.stageOutputs("verify", config, config.providers);
   }
   if (inventoryResourceCount(inventory) === 0)

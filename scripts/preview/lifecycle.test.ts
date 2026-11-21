@@ -180,13 +180,11 @@ test("a rehearsal deploys only its database parent, then destroys and verifies i
     assert.deepEqual(calls, [
       "destroy:basalt:test-rehearsal-17:test-rehearsal-17",
       "applications:delete:test-rehearsal-17",
-      "images:delete:test-rehearsal-17",
       "destroy:database:test-rehearsal-17:test-rehearsal-17",
       "artifacts:basalt-preview-rehearsal-17-apps",
       "outputs:delete:test-rehearsal-17",
       "verify:test-rehearsal-17",
       "applications:verify:test-rehearsal-17",
-      "images:verify:test-rehearsal-17",
       "outputs:verify:test-rehearsal-17",
     ]);
     await assert.rejects(readFile(manifestPath(root, subject)), /ENOENT/);
@@ -354,4 +352,10 @@ test("a rehearsal whose applications delete refuses still removes its database",
   const { calls, outcome } = await rehearsalDestroy("none", "applications");
   assert.ok(outcome instanceof AggregateError);
   assert.deepEqual(calls, ["destroy:basalt", "applications:delete", "destroy:database"]);
+});
+
+test("a rehearsal destroy never runs the images step, and its verify does not read images", async () => {
+  const { calls, outcome } = await rehearsalDestroy("none");
+  assert.equal(outcome, undefined);
+  assert.ok(!calls.some((call) => call.startsWith("images:")));
 });
