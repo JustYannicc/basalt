@@ -190,6 +190,12 @@ export class NativeComputers {
         const computer = Object.hasOwn(registry, caller.computer)
           ? registry[caller.computer]
           : undefined;
+        // A tools-only device revoked before its approval's report arrived: keep it revoked, so
+        // the late report can't list it as active.
+        if (!computer && value.models === false && this.learn(registry, caller.user, value, true)) {
+          await this.deps.save(registry);
+          return json({ revoked: true });
+        }
         if (!computer || computer.user !== caller.user || computer.native?.grant !== caller.grant)
           return fail(404, "not_found", "This native device does not exist.");
         computer.state = "revoking";
@@ -293,38 +299,54 @@ export class NativeComputers {
     });
   }
   /**
-   * Lists a tools-only device the tools service approved without this pool, for Connect's list and
-   * its revoke. Its grant alone authorizes it, so nothing here is checked against the directory. A
-   * grant's row is never recreated, replaced or reactivated. True when a row was added.
+   * Records what the tools service reports about a tools-only device it approved or revoked
+   * without this pool, for Connect's list and its revoke. Its grant alone authorizes it, so
+   * nothing here is checked against the directory. A device is added once; after that only a
+   * reported revocation changes its row, and nothing revives a revoked one. True when a row changed.
    */
-  learn(registry: Registry, user: string, device: Record<string, unknown>) {
+  learn(registry: Registry, user: string, device: Record<string, unknown>, revoked = false) {
     const grant = text(device.grant),
       computer = text(device.computer),
       pool = text(device.pool),
       toolsOrganization = text(device.toolsOrganization);
+    if (!grant?.startsWith("native:")) return false;
+    const at = new Date(this.deps.now()).toISOString();
+    const known = Object.values(registry).find((row) => row.native?.grant === grant);
+    if (known) {
+      if (
+        !(revoked || device.revoked === true) ||
+        known.user !== user ||
+        known.native?.models !== false ||
+        known.state === "revoked" ||
+        known.state === "removed"
+      )
+        return false;
+      known.state = "revoked";
+      known.revokedAt ??= at;
+      delete known.link;
+      return true;
+    }
     if (
-      !grant?.startsWith("native:") ||
+      device.revoked === true ||
       !computer ||
       !/^[A-Za-z0-9_-]{1,512}$/.test(computer) ||
       !pool ||
       !toolsOrganization ||
-      Object.hasOwn(registry, computer) ||
-      Object.values(registry).some((row) => row.native?.grant === grant)
+      Object.hasOwn(registry, computer)
     )
       return false;
-    const at = new Date(this.deps.now()).toISOString();
     registry[computer] = {
       id: computer,
       // Connect's list names it before anyone renames it, when the tools service sent no name.
       name: computerName(device.name) ?? "Tools-only device",
       user,
       pool,
-      state: "active",
+      state: revoked ? "revoked" : "active",
       createdAt: at,
       boundAt: at,
       firstModelRequestAt: null,
       firstToolCallAt: null,
-      revokedAt: null,
+      revokedAt: revoked ? at : null,
       native: { grant, models: false, toolsOrganization },
     };
     return true;

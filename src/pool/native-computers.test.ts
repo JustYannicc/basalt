@@ -576,3 +576,46 @@ test("the tools service's report of a tools-only device lists it once and never 
   assert.equal((await learn({})).status, 200);
   assert.equal((await p.f.registry())[device.computer]?.state, "revoked");
 });
+
+test("a tools-only device revoked before its approval's report arrives stays revoked", async () => {
+  const p = protocol();
+  const device = {
+    grant: "native:revoked-first",
+    computer: "b".repeat(32),
+    pool: pool.pool,
+    toolsOrganization: pool.organization,
+  };
+  // A models device the pool doesn't know is still unknown; a tools-only one is recorded revoked.
+  assert.equal((await p.control("revoke", { ...device, grant: "native:models" })).status, 404);
+  assert.equal((await p.control("revoke", { ...device, models: false })).status, 200);
+  assert.equal((await p.control("learn", { ...device, name: "Late report" })).status, 200);
+  const row = (await p.f.registry())[device.computer];
+  assert.equal(row?.state, "revoked");
+  assert.ok(row?.revokedAt);
+});
+
+test("Connect's report of a revoked grant revokes its tools-only row and adds no revoked device", async () => {
+  const p = protocol();
+  const live = {
+    grant: "native:signed-out-elsewhere",
+    computer: "c".repeat(32),
+    pool: pool.pool,
+    toolsOrganization: pool.organization,
+  };
+  const intent = await p.f.intent(owner);
+  const list = async (native: Record<string, unknown>[]) => {
+    const response = await p.f.action("computers", owner, intent, { native });
+    assert.equal(response.status, 200, await response.clone().text());
+    return ((await response.json()) as { computers: { id: string; state: string }[] }).computers;
+  };
+  assert.deepEqual(
+    (await list([live])).map(({ id, state }) => [id, state]),
+    [[live.computer, "active"]],
+  );
+  const never = { ...live, grant: "native:never-listed", computer: "d".repeat(32), revoked: true };
+  const listed = await list([{ ...live, revoked: true }, never]);
+  assert.deepEqual(
+    listed.map(({ id, state }) => [id, state]),
+    [[live.computer, "revoked"]],
+  );
+});

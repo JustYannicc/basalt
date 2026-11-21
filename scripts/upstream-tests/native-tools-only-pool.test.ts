@@ -8,7 +8,13 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
 import { fixture } from "./native-device-fixture.ts";
-import { fixture as poolFixture, pool } from "../../src/pool/test/computers.ts";
+import {
+  fixture as poolFixture,
+  pool,
+  previousKey,
+  signingKey,
+} from "../../src/pool/test/computers.ts";
+import { signIntent } from "../../src/pool/setup-links.ts";
 import { nativeControlPath } from "../../src/pool/native-contract.ts";
 import { failureResponse } from "../../src/pool/json.ts";
 import { handleSetup } from "../../src/setup/host.ts";
@@ -79,12 +85,12 @@ async function host(t: TestContext) {
   });
   running.p.advance(Date.now() - running.p.now());
   const intent = await running.p.intent(f.userId, { ...pool, owner: f.userId, organization: team });
-  const decide = (models: boolean) =>
+  const decide = (models: boolean, setup = intent) =>
     f.request(
       "/device/decide",
       { user_code: f.user_code, accept: true },
       {
-        "x-basalt-native-intent": intent,
+        "x-basalt-native-intent": setup,
         "x-basalt-native-name": models ? "Models device" : "Work laptop",
         "x-basalt-native-pool": pool.pool,
         "x-basalt-native-models": String(models),
@@ -267,7 +273,7 @@ test("a tools-only device is approved and reaches its tools while the pool's con
   assert.equal(await tunnelLease(tunnel, h.env, admitted), undefined);
   const refreshed = await h.refresh(tokens.refresh_token);
   assert.equal(refreshed.status, 200, await refreshed.clone().text());
-  // The pool's outage cost nothing: approving told it at most once, and nothing waited on it.
+  // Approving only reported the device to the pool, once, and went ahead without its answer.
   assert.ok(h.asked() <= asked + 1, `the pool was asked ${h.asked() - asked} times`);
 });
 
@@ -333,8 +339,64 @@ test("a tools-only device signs out while the pool fails, whether or not the poo
   const signedOut = await known.signOut(known.tokens.access_token);
   assert.equal(signedOut.status, 200, await signedOut.clone().text());
   assert.equal((await known.access(known.tokens.access_token)).status, 401);
-  // Connect still lists it until the person removes it there, which finishes without the grant.
+  // Once the pool answers, Connect shows it revoked, and removing it finds its sign-in ended.
   known.recover();
+  const [listed] = await known.listed();
+  assert.equal(listed?.id, computer);
+  assert.equal(listed?.state, "revoked");
   assert.equal((await known.connect(`/${computer}`, "DELETE")).status, 200);
   assert.equal((await known.p.registry())[computer!]?.state, "revoked");
+});
+
+test("a tools-only approval is refused for anything but the person's own current Connect intent", async (t) => {
+  const h = await host(t);
+  const other = (
+    await h.f.adapter.create<{ id: string }>({
+      model: "organization",
+      data: { name: "Not mine", slug: "not-mine", createdAt: new Date() },
+    })
+  ).id;
+  const now = Date.now();
+  const own = { user: h.f.userId, owner: h.f.userId, pool: pool.pool, organization: h.team };
+  const valid = await signIntent(signingKey, { ...own, expiresAt: now + 60_000 });
+  const refused = {
+    "another person's pool": await signIntent(signingKey, {
+      ...own,
+      owner: "another-person",
+      expiresAt: now + 60_000,
+    }),
+    "another person's intent": await signIntent(signingKey, {
+      ...own,
+      user: "another-person",
+      expiresAt: now + 60_000,
+    }),
+    "an expired intent": await signIntent(signingKey, { ...own, expiresAt: now - 1_000 }),
+    "an intent past the setup window": await signIntent(signingKey, {
+      ...own,
+      expiresAt: now + 10 * 60_000,
+    }),
+    "a changed signature": `${valid.slice(0, -2)}${valid.endsWith("AA") ? "BB" : "AA"}`,
+    "another key's signature": await signIntent(previousKey, { ...own, expiresAt: now + 60_000 }),
+    "an organization they're not a member of": await signIntent(signingKey, {
+      ...own,
+      organization: other,
+      expiresAt: now + 60_000,
+    }),
+  };
+  const asked = h.asked();
+  for (const [label, setup] of Object.entries(refused)) {
+    const response = await h.decide(false, setup);
+    assert.equal(response.status, 401, `${label}: ${await response.text()}`);
+  }
+  assert.equal(
+    await h.f.adapter.findOne({
+      model: "mcpGrant",
+      where: [{ field: "userId", value: h.f.userId }],
+    }),
+    null,
+    "nothing was approved",
+  );
+  assert.equal(h.asked(), asked, "the pool was asked nothing");
+  // The same request still approves with the person's own intent.
+  assert.equal((await h.decide(false, valid)).status, 200);
 });

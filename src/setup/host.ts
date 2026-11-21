@@ -127,8 +127,9 @@ async function ownPool(
   return undefined;
 }
 /**
- * The person's tools-only devices, which the tools service approves without the pool, so the pool
- * lists one it never heard of. Undefined when unavailable: the list still works without them.
+ * The person's tools-only devices, which the tools service approves and revokes without the pool,
+ * so the pool lists one it never heard of and marks one it missed revoking. Undefined when
+ * unavailable or too large for the pool's setup request: the list still works without them.
  */
 async function toolsOnlyDevices(request: Request, env: SetupEnv): Promise<unknown[] | undefined> {
   try {
@@ -138,7 +139,8 @@ async function toolsOnlyDevices(request: Request, env: SetupEnv): Promise<unknow
       return undefined;
     }
     const devices = record(await response.json()).devices;
-    return Array.isArray(devices) ? devices : undefined;
+    // The pool refuses setup requests over 64,000 characters; its signed envelope grows by a third.
+    return Array.isArray(devices) && JSON.stringify(devices).length <= 32_000 ? devices : undefined;
   } catch {
     return undefined;
   }
@@ -195,10 +197,8 @@ async function deleteTools(request: Request, env: SetupEnv, keyId: string): Prom
 async function revokeGrant(request: Request, env: SetupEnv, id: string): Promise<void> {
   const response = await native(request, env, "mcp/grants/revoke", { id });
   await response.body?.cancel();
-  // Fails closed: a device whose grant may still be live must not be reported as removed. A 401
-  // after this request's session check means the grant is already revoked, for example signed out
-  // on the device while the pool was down, so its sign-in has ended.
-  if (!response.ok && response.status !== 401)
+  // Fails closed: a device whose grant may still be live must not be reported as removed.
+  if (!response.ok)
     throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
 }
 

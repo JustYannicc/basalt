@@ -85,14 +85,15 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
        let teams = display ? facts?.teams : undefined;
        if (display && teams === undefined) {
          teams = yield* currentTeams(ctx, access.userId);
-@@ -203,6 +225,79 @@ export const nativeGrantHost = (
+@@ -203,6 +225,80 @@ export const nativeGrantHost = (
        );
        return result.display;
      });
 +  /**
 +   * Tells the pool about a tools-only device this server approved, so Connect lists it under its
 +   * chosen name. Nothing waits on it: a pool that misses it learns the device from the person's
-+   * next Connect list.
++   * next Connect list. Its bound stays well under the cloud's 10-second wait for background work,
++   * so a hanging pool doesn't report unsettled work on every approval.
 +   */
 +  const announce = async (value: Readonly<Record<string, unknown>>) => {
 +    try {
@@ -106,7 +107,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
 +        headers: { "content-type": "application/json" },
 +        body: JSON.stringify({ envelope }),
 +        redirect: "manual",
-+        signal: AbortSignal.timeout(15_000),
++        signal: AbortSignal.timeout(3_000),
 +      });
 +      await response.body?.cancel();
 +      if (!response.ok) console.warn("native.learn.failed", { status: response.status });
@@ -165,7 +166,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
    return {
      audience: `${origin}/native`,
      approve: (ctx, userId, grant) =>
-@@ -224,6 +319,7 @@ export const nativeGrantHost = (
+@@ -224,6 +320,7 @@ export const nativeGrantHost = (
                message: "Choose a device name, pool and tools access.",
              }),
            );
@@ -173,9 +174,19 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
          const created = yield* control(
            secret,
            poolOrigin,
-@@ -304,6 +400,11 @@ export const nativeGrantHost = (
+@@ -302,8 +399,20 @@ export const nativeGrantHost = (
+         secret,
+         poolOrigin,
          "revoke",
-         computerIdentity(access),
+-        computerIdentity(access),
++        {
++          ...computerIdentity(access),
++          // A pool that never heard of a tools-only device records it revoked, so a report of its
++          // approval that arrives later can't list it as active.
++          ...(access.policy.models
++            ? {}
++            : { models: false, toolsOrganization: access.policy.toolsOrganization }),
++        },
          Schema.Struct({ revoked: Schema.Literal(true) }),
 -      ).pipe(Effect.asVoid),
 +      ).pipe(
@@ -379,35 +390,47 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
    readonly check: (
      context: GenericEndpointContext,
      access: NativeGrantAccess,
-@@ -203,6 +206,34 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+@@ -203,6 +206,46 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
    };
    return {
      extension,
 +    /**
-+     * The person's live tools-only devices. This server approves them without the pool, so the
-+     * pool's Connect list learns a device it never heard of from here.
++     * The person's tools-only devices, live and revoked. This server approves and revokes them
++     * without the pool, so the pool's Connect list learns from here a device it never heard of and
++     * a revocation it missed. Live devices are read apart from revoked ones, so old revocations
++     * can't crowd a live device out.
 +     */
 +    devices: (ctx: GenericEndpointContext, userId: string) =>
-+      authCall(() =>
-+        ctx.context.adapter.findMany({
-+          model: "mcpGrant",
-+          where: [
-+            { field: "userId", value: userId },
-+            { field: "resource", value: host.audience },
-+            { field: "revoked", value: false },
-+          ],
-+          limit: 100,
-+        }),
++      Effect.forEach([false, true], (revoked) =>
++        authCall(() =>
++          ctx.context.adapter.findMany({
++            model: "mcpGrant",
++            where: [
++              { field: "userId", value: userId },
++              { field: "resource", value: host.audience },
++              { field: "revoked", value: revoked },
++            ],
++            limit: 100,
++          }),
++        ),
 +      ).pipe(
-+        Effect.map((rows) =>
-+          rows.flatMap((value) => {
++        Effect.map((pages) =>
++          pages.flat().flatMap((value) => {
 +            const row = Schema.decodeUnknownOption(Stored)(value);
 +            const policy = Option.flatMap(row, ({ policy }) =>
 +              Schema.decodeUnknownOption(Schema.fromJsonString(NativeGrantPolicy))(policy),
 +            );
 +            if (Option.isNone(row) || Option.isNone(policy) || policy.value.models) return [];
 +            const { computer, pool, toolsOrganization } = policy.value;
-+            return [{ grant: row.value.id, computer, pool, toolsOrganization }];
++            return [
++              {
++                grant: row.value.id,
++                computer,
++                pool,
++                toolsOrganization,
++                revoked: row.value.revoked,
++              },
++            ];
 +          }),
 +        ),
 +      ),
@@ -447,3 +470,26 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        getMcpGrantAccess: createAuthEndpoint(
          "/mcp/grant-access",
          { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },
+@@ -1612,6 +1626,22 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+             Effect.gen(function* () {
+               const userId = yield* browser(ctx);
+               const { id } = yield* parse(Schema.Struct({ id: GrantId }), ctx.body);
++              // A device can be signed out while its pool is down; removing it from the pool's
++              // Connect list afterwards finds its own grant already revoked, which is done.
++              if (isNativeGrant(id)) {
++                const existing = yield* authCall(() =>
++                  ctx.context.adapter.findOne({
++                    model: "mcpGrant",
++                    where: [{ field: "id", value: id }],
++                  }),
++                ).pipe(Effect.map(Schema.decodeUnknownOption(Record)));
++                if (
++                  Option.isSome(existing) &&
++                  existing.value.userId === userId &&
++                  existing.value.revoked
++                )
++                  return { revoked: true };
++              }
+               const row = yield* get(ctx, id);
+               if (row.userId !== userId) return yield* Effect.fail(new APIError("FORBIDDEN"));
+               yield* revoke(ctx, id);
