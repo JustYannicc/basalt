@@ -56,6 +56,8 @@ function fixture(
         if (/^\/api\/organizations\/[^/]+\/apps\/[^/]+\/access$/.test(path))
           return json({ creator: "user-1", audience: { kind: "private" } });
         if (path === "/api/auth/api-key/delete") return json({ success: true });
+        // A computer set up with a link, not a native device: no native grant names it.
+        if (path === "/api/auth/native/devices/revoke") return json({ revoked: false });
         throw Error(`Unexpected native path: ${path}`);
       },
     },
@@ -863,14 +865,16 @@ test("paired revocation runs model revoke, native tools delete, then finalizatio
     f.calls.map((c) => c.path),
     [
       "/api/auth/get-session",
+      "/api/auth/native/devices/revoke",
       "/__setup/v1/validate",
       "/__setup/v1/revoke",
       "/api/auth/api-key/delete",
       "/__setup/v1/revoked",
     ],
   );
-  assert.equal(f.calls[2]!.input.id, "computer-1");
-  assert.deepEqual(f.calls[3]!.input, { keyId: "tools-key-1" });
+  assert.deepEqual(f.calls[1]!.input, { computer: "computer-1" });
+  assert.equal(f.calls[3]!.input.id, "computer-1");
+  assert.deepEqual(f.calls[4]!.input, { keyId: "tools-key-1" });
 });
 
 test("failed tools revoke never finalizes; retry accepts native KEY_NOT_FOUND only", async () => {
@@ -999,7 +1003,13 @@ test("revoking a models-only computer skips the tools token delete", async () =>
   assert.equal(response.status, 200);
   assert.deepEqual(
     f.calls.map((c) => c.path),
-    ["/api/auth/get-session", "/__setup/v1/validate", "/__setup/v1/revoke", "/__setup/v1/revoked"],
+    [
+      "/api/auth/get-session",
+      "/api/auth/native/devices/revoke",
+      "/__setup/v1/validate",
+      "/__setup/v1/revoke",
+      "/__setup/v1/revoked",
+    ],
   );
 });
 

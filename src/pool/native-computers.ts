@@ -38,6 +38,8 @@ interface Dependencies {
   now: () => number;
   run: <A>(work: (registry: Registry) => Promise<A>) => Promise<A>;
   save: (registry: Registry) => Promise<unknown>;
+  /** Revokes the computer's Home keys, shared with upkeep finishing a left-behind revoke. */
+  revokeKeys: (computer: StoredComputer) => Promise<void>;
 }
 interface Identity {
   user: string;
@@ -73,7 +75,25 @@ class KeyRequest {
 }
 const modelsUnavailable = () =>
   fail(503, "backend_unavailable", "Models are unavailable right now. Try again shortly.", 2);
-const mintFailure = (error: unknown) =>
+/**
+ * The Home keys revoking this computer removes. A tools-only device never has one, so a stopped
+ * container cannot hold up its revocation. A model device whose key was never recorded may hold
+ * one from a lost mint reply; looking for it is best-effort, and a mint still running revokes its
+ * own key once it sees the device revoked.
+ */
+export async function revocableKeys(computer: StoredComputer, home: ComputerHome) {
+  if (computer.keyId) return [computer.keyId];
+  if (!computer.native) return home.find(computer.id);
+  if (!computer.native.models) return [];
+  return home.find(computer.id).catch((error: unknown) => {
+    console.error(
+      "Native revocation could not look for an unrecorded model key",
+      homeFailure(error),
+    );
+    return [];
+  });
+}
+export const homeFailure = (error: unknown) =>
   error instanceof HomeTransportFailure
     ? error.errorClass
     : error instanceof BackendFailure
@@ -153,6 +173,19 @@ export class NativeComputers {
       const caller = identity(value);
       return await this.deps.run(async (registry) => {
         if (value.action === "check") {
+          const row = Object.hasOwn(registry, caller.computer)
+            ? registry[caller.computer]
+            : undefined;
+          // Revoked by its person, not taken by access removal: the host ends the device's grant
+          // when it hears this, since a tools-only grant's own checks never ask the pool.
+          if (
+            row?.user === caller.user &&
+            row.pool === caller.pool &&
+            row.native?.grant === caller.grant &&
+            !row.removalPending &&
+            (row.state === "revoking" || row.state === "revoked")
+          )
+            return fail(410, "unauthorized", "This device was revoked.");
           const computer = await this.active(registry, caller);
           if (value.display !== true) return json({ active: true });
           const display = await nativePoolDisplay(
@@ -168,14 +201,23 @@ export class NativeComputers {
         const computer = Object.hasOwn(registry, caller.computer)
           ? registry[caller.computer]
           : undefined;
-        if (!computer || computer.user !== caller.user || computer.native?.grant !== caller.grant)
+        // The host repeats a revoke until it is confirmed. A device that is gone, or finished
+        // revoking, needs Home no more.
+        if (!computer) return json({ revoked: true });
+        if (computer.user !== caller.user || computer.native?.grant !== caller.grant)
           return fail(404, "not_found", "This native device does not exist.");
+        if (computer.state === "revoked") {
+          if (computer.native.key) {
+            delete computer.native.key;
+            await this.deps.save(registry);
+          }
+          return json({ revoked: true });
+        }
         computer.state = "revoking";
         delete computer.link;
         await this.deps.save(registry);
         // The saved state stops requests and active streams before Home cleanup can fail.
-        const keys = computer.keyId ? [computer.keyId] : await this.deps.home.find(computer.id);
-        for (const id of keys) await this.deps.home.revoke(id);
+        await this.deps.revokeKeys(computer);
         delete computer.native.key;
         computer.state = "revoked";
         computer.revokedAt ??= new Date(this.deps.now()).toISOString();
@@ -339,7 +381,7 @@ export class NativeComputers {
     const first = await this.forward(request, url, value, caller);
     if (!(first instanceof KeyRequest)) return first;
     await this.provision(first).catch((error: unknown) => {
-      console.error("Native model key could not be minted", mintFailure(error));
+      console.error("Native model key could not be minted", homeFailure(error));
     });
     const second = await this.forward(request, url, value, caller);
     return second instanceof KeyRequest ? modelsUnavailable() : second;

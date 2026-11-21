@@ -13,6 +13,7 @@ import {
 } from "./computer-registry.ts";
 export type { ComputerStorage } from "./computer-registry.ts";
 import { PoolDirectory } from "./directory.ts";
+import { ComputerLeftovers } from "./computer-leftovers.ts";
 import { readAccess } from "./access.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
@@ -32,7 +33,7 @@ import {
   observePendingUsage,
   type UsageObservationEvent,
 } from "./usage-observation.ts";
-import { NativeComputers } from "./native-computers.ts";
+import { NativeComputers, revocableKeys } from "./native-computers.ts";
 
 interface Dependencies {
   retirePool?(pool: string, at: number): Promise<void>;
@@ -59,10 +60,19 @@ export class Computers {
   private deps: Dependencies;
   private native: NativeComputers;
   private queue: Promise<unknown> = Promise.resolve();
+  private leftovers: ComputerLeftovers;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.native = new NativeComputers({
       ...deps,
+      now: () => this.now(),
+      run: (work) => this.run(work),
+      save: (registry) => this.save(registry),
+      revokeKeys: (computer) => this.leftovers.revokeKeys(computer),
+    });
+    this.leftovers = new ComputerLeftovers({
+      home: deps.home,
+      keys: (computer) => revocableKeys(computer, deps.home),
       now: () => this.now(),
       run: (work) => this.run(work),
       save: (registry) => this.save(registry),
@@ -121,6 +131,8 @@ export class Computers {
       await directory.prune(this.now());
       await directory.provisionPending(this.deps.home);
     });
+    // Outside the registry queue: it asks Home, and a stopped container must hold up no device.
+    await this.leftovers.finish();
   }
   private own(registry: Registry, user: string, id: unknown): StoredComputer {
     const computer =
@@ -545,9 +557,13 @@ export class Computers {
     computer.state = computer.state === "revoked" ? "revoked" : "revoking";
     delete computer.link;
     await this.save(registry);
-    const keys = computer.keyId ? [computer.keyId] : await this.deps.home.find(computer.id);
-    for (const key of keys) await this.deps.home.revoke(key);
-    return json({ toolsKeyId: computer.toolsKeyId ?? null });
+    await this.leftovers.revokeKeys(computer);
+    // A native device signs in with its own grant, which the setup host revokes at the tools
+    // service before asking here: a tools-only device's tools answer to that grant.
+    return json({
+      toolsKeyId: computer.toolsKeyId ?? null,
+      ...(computer.native && { grant: computer.native.grant }),
+    });
   }
   private async switchPool(
     registry: Registry,
