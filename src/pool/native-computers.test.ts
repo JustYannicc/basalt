@@ -515,6 +515,20 @@ test("a device holding a model key still revokes it through Home", async () => {
   assert.equal((await p.f.registry())[computer.id]?.state, "revoked");
 });
 
+test("a revoke the host repeats for a revoked device answers at once while Home is stopped", async () => {
+  const p = protocol();
+  const { computer } = await p.register();
+  (await p.model(computer.id)).release();
+  const identity = { computer: computer.id, pool: pool.pool };
+  assert.equal((await p.control("revoke", identity)).status, 200);
+  assert.equal(p.f.server.keys.length, 0);
+  p.f.server.stopped = true;
+  const again = await p.control("revoke", identity);
+  assert.equal(again.status, 200, await again.clone().text());
+  assert.deepEqual(await again.json(), { revoked: true });
+  assert.equal((await p.f.registry())[computer.id]?.state, "revoked");
+});
+
 test("Connect's revoke of a keyless native device names its grant and needs no Home", async () => {
   const p = protocol();
   const intent = await p.f.intent(owner);
