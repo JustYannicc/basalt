@@ -195,6 +195,8 @@ if (command === "boot" || command === "accept") {
           JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
         ).boot
       : undefined;
+    // The boot read recorded a boot only when the pool served it for the acceptance device.
+    const admitted = rootBoot !== undefined && rootBoot !== NOT_SERVING;
     const expect = values.expect ?? "same-boot";
     if (!["same-boot", "two-runtimes", "any", "restart"].includes(expect))
       throw new Error(`Unknown --expect ${expect}`);
@@ -293,6 +295,7 @@ if (command === "boot" || command === "accept") {
       // After a declared restart, every request must be served by the one new boot.
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
+      admitted,
       client,
     }).catch(async (error: unknown) => {
       if (!verdict) throw error;

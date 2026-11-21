@@ -28,6 +28,12 @@ export interface AcceptanceOptions {
   readonly model?: string;
   readonly burst?: number;
   readonly expect: "same-boot" | "two-runtimes" | "any";
+  /**
+   * This run's boot read before the apply was served for the acceptance device. A 401 or 403 after
+   * it is then a serving failure, not an untested release: the release is the likeliest thing that
+   * changed. A 429 is its user's cap either way.
+   */
+  readonly admitted?: boolean;
   /** The root's boot read before the apply: no release may restart the root, whatever it serves. */
   readonly rootBoot?: string;
   readonly client?: PoolAcceptanceClient;
@@ -178,7 +184,8 @@ export async function awaitRecoveryReady(options: {
  * model call served. Serving, needs a person: a new boot is selected and every model call served,
  * but recovery needs a person or did not report ready within the bound; nothing is undone, and a
  * person looks at it with the pool serving. Could not test: a new boot is selected, but the pool
- * refused the acceptance device. Not serving: anything else.
+ * refused the acceptance device on its user's cap, or when this run's boot read never reached it.
+ * Not serving: anything else.
  */
 export type HealingOutcome = "healed" | "serving-needs-person" | "could-not-test" | "not-serving";
 export const healingOutcome = (
@@ -219,10 +226,15 @@ const percentile = (values: number[], fraction: number) => {
 
 const refusedFor = (statuses: readonly number[]) =>
   `refused for the acceptance device (HTTP ${statuses.join(", ")})`;
+/** A request the pool refused after this run's boot read admitted the device: a serving failure. */
+const refusedAfterAdmission = (error: unknown) =>
+  `${error instanceof Error ? error.message : String(error)}: refused the acceptance device this run's boot read admitted`;
 
 export async function runAcceptance(options: AcceptanceOptions): Promise<AcceptanceResult> {
   const client = options.client ?? new PoolAcceptanceClient();
   const requests = (options.burst ?? 25) + 2;
+  // The pool refusing the device tested nothing, unless this run's boot read admitted it.
+  const testedNothing = (status: number) => status === 429 || !options.admitted;
   let catalog;
   try {
     catalog = await client.modelCatalog(options.credential);
@@ -230,15 +242,18 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
     // A catalog that does not answer is the pool not serving; a refused device tested nothing.
     const refused = deviceRefusal(error);
     if (refused === undefined) throw error;
+    const untested = testedNothing(refused);
+    const cause = untested ? `/v1/models was ${refusedFor([refused])}` : refusedAfterAdmission(error);
     return {
       passed: false,
-      couldNotTest: true,
-      refused: [refused],
-      requests: 0,
-      failures: [],
+      couldNotTest: untested,
+      refused: untested ? [refused] : [],
+      // Nothing was tested, or the one request it sent failed.
+      requests: untested ? 0 : 1,
+      failures: untested ? [] : [cause],
       boots: [],
       firstByteMs: { p50: 0, p95: 0 },
-      cause: `/v1/models was ${refusedFor([refused])}`,
+      cause,
     };
   }
   const model = options.model ?? catalog.ids[0];
@@ -258,7 +273,8 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
       timings.push(result.firstByteMs);
     } catch (error) {
       const refused = deviceRefusal(error);
-      if (refused !== undefined) refusals.push(refused);
+      if (refused !== undefined && testedNothing(refused)) refusals.push(refused);
+      else if (refused !== undefined) failures.push(refusedAfterAdmission(error));
       else failures.push(error instanceof Error ? error.message : String(error));
     }
   };

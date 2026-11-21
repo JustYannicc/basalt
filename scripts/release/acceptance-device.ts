@@ -65,21 +65,10 @@ export const refusedDevice = (status: number) =>
   });
 
 /**
- * Signs one fresh assertion per model request, bound to that request's method and path with its
- * query. Only release acceptance's boot and accept commands make one.
+ * The key acceptance signs with. Mid-rotation the Worker serving before the apply knows only the
+ * previous key, and the one after it accepts the previous key too (src/pool/token.ts openEnvelope).
  */
-export function acceptanceCredential(
-  env: NodeJS.ProcessEnv,
-  now: () => number = Date.now,
-): ModelAuth {
-  const raw = env.POOL_ACCEPTANCE_DEVICE?.trim();
-  if (!raw) throw misnamed("unset");
-  // The decode error quotes the value, so only the verdict leaves here.
-  const decoded = decodeDevice(raw);
-  if (Exit.isFailure(decoded)) throw misnamed("malformed");
-  const { computer, grant, user, pool } = decoded.value;
-  // Mid-rotation the Worker serving before the apply knows only the previous key, and the one after
-  // it accepts the previous key too (src/pool/token.ts openEnvelope).
+export function acceptanceSigningKey(env: NodeJS.ProcessEnv) {
   const key = env.POOL_APP_SIGNING_KEY_PREVIOUS || env.POOL_APP_SIGNING_KEY || "";
   if (!isSigningKey(key))
     throw new AcceptanceDeviceRefused({
@@ -87,6 +76,29 @@ export function acceptanceCredential(
       why: "unset or not 32 bytes of lowercase hex",
       fix: "give the step the pool's app signing key",
     });
+  return key;
+}
+
+/** The registered acceptance device `POOL_ACCEPTANCE_DEVICE` names. */
+export function acceptanceDevice(env: NodeJS.ProcessEnv): AcceptanceDevice {
+  const raw = env.POOL_ACCEPTANCE_DEVICE?.trim();
+  if (!raw) throw misnamed("unset");
+  // The decode error quotes the value, so only the verdict leaves here.
+  const decoded = decodeDevice(raw);
+  if (Exit.isFailure(decoded)) throw misnamed("malformed");
+  return decoded.value;
+}
+
+/**
+ * Signs one fresh assertion per model request, bound to that request's method and path with its
+ * query. Release acceptance's boot and accept commands and the fleet lane's model calls make one.
+ */
+export function acceptanceCredential(
+  env: NodeJS.ProcessEnv,
+  now: () => number = Date.now,
+): ModelAuth {
+  const { computer, grant, user, pool } = acceptanceDevice(env);
+  const key = acceptanceSigningKey(env);
   return async (method, path) => ({
     [nativeModelHeader]: await signEnvelope(key, nativeModelPrefix, {
       user,

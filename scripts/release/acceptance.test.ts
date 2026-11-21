@@ -398,3 +398,50 @@ test("a refused device stops the boot read before the apply, even where the pool
     live.close();
   }
 });
+
+test("after this run's boot read admitted the device, a 401 or 403 is a serving failure", async () => {
+  // The boot read before the apply was served for the device, so the release is the likeliest
+  // thing that changed: the policy's rollback takes it, as it would a 5xx.
+  for (const answer of [{ catalog: 401 }, { catalog: 403 }, { 1: 403 }, { 27: 401 }]) {
+    const live = await pool({ answer });
+    try {
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted: true,
+        client: live.client,
+      });
+      assert.equal(result.passed, false, JSON.stringify(answer));
+      assert.equal(result.couldNotTest, false, JSON.stringify(answer));
+      assert.deepEqual(result.refused, [], JSON.stringify(answer));
+      assert.equal(result.failures.length, 1, JSON.stringify(answer));
+      assert.match(
+        result.cause ?? "",
+        /HTTP 40[13].*the acceptance device this run's boot read admitted/u,
+      );
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a 429 after an admitted boot read is its user's cap: still could-not-test", async () => {
+  for (const answer of [{ catalog: 429 }, { 9: 429 }]) {
+    const live = await pool({ answer });
+    try {
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted: true,
+        client: live.client,
+      });
+      assert.equal(result.couldNotTest, true, JSON.stringify(answer));
+      assert.deepEqual(result.refused, [429], JSON.stringify(answer));
+      assert.equal(result.failures.length, 0, JSON.stringify(answer));
+    } finally {
+      live.close();
+    }
+  }
+});

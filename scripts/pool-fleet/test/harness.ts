@@ -10,6 +10,7 @@ import { handleRuntimeHandoff, type HandoffFleet } from "../../../src/pool/runti
 import { crashNonceKey } from "../../../src/pool/runtime-crash-contract.ts";
 import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
+import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
 import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
@@ -293,8 +294,16 @@ export async function harness(options: HarnessOptions = {}) {
   });
 
   let turns = 0;
+  /** How each model call was authorized: the lane's credential, never a bearer. */
+  const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
   const pool = await listen(async (request) => {
     const path = new URL(request.url!, "http://local").pathname;
+    if (path === "/v1/models" || path === "/v1/chat/completions")
+      modelCalls.push({
+        call: `${request.method} ${path}`,
+        authorization: request.headers.authorization ?? null,
+        assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
+      });
     const isEnabled = await enabled();
     const boot = (index: number) =>
       options.boot?.(index, isEnabled) ?? (isEnabled ? "cell-boot" : "primary-boot");
@@ -338,7 +347,7 @@ export async function harness(options: HarnessOptions = {}) {
     }),
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
-      apiKey: "acceptance-key",
+      credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
       access: { token: "pool-token", owner: "acceptance" },
     },
     sleep: async () => {},
@@ -347,6 +356,7 @@ export async function harness(options: HarnessOptions = {}) {
   });
   return {
     deps,
+    modelCalls,
     actions,
     crashes,
     providerRequests,

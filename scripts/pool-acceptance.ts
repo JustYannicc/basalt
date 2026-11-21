@@ -2,6 +2,7 @@ import { PoolAcceptanceClient } from "./pool-acceptance/client.ts";
 import { observeRestart } from "./pool-acceptance/restart-observation.ts";
 import {
   AcceptanceFailure,
+  isAcceptancePool,
   type Conversation,
   type ModelCatalog,
   type PoolAccess,
@@ -164,7 +165,7 @@ async function configFromEnvironment(): Promise<AcceptanceConfig> {
   let poolAccess: PoolAccess | undefined;
   if (mode === "full") {
     const pool = process.env.POOL_ACCEPTANCE_POOL?.trim();
-    if (!pool || !/^acceptance-[a-zA-Z0-9-]+$/.test(pool)) {
+    if (!pool || !isAcceptancePool(pool)) {
       throw new AcceptanceFailure("POOL_ACCEPTANCE_POOL must name a dedicated acceptance-<run> pool");
     }
     poolAccess = {

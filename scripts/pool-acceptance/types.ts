@@ -25,6 +25,12 @@ export type PoolAccess = {
   readonly owner: string;
 };
 
+/**
+ * A pool made only for acceptance. Usage is read there with an owner token minted from the app
+ * signing key, which is never minted for a pool that holds people's work.
+ */
+export const isAcceptancePool = (pool: string) => /^acceptance-[a-zA-Z0-9-]+$/u.test(pool);
+
 export type ModelCatalog = {
   readonly boot: string;
   readonly ids: string[];

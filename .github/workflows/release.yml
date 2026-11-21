@@ -525,8 +525,29 @@ jobs:
           exit 1
       - name: Stop on a failed class change
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        # The acceptance record keeps counts, never messages (they can name hosts), so the cause comes
+        # from the accept step's outputs and the record's counts; that step's log has the rest.
+        env:
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          ACCEPTANCE: ${{ steps.accept.outputs.acceptance }}
+          SMOKE: ${{ steps.accept.outputs.smoke }}
         run: |
-          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          record=.local/release/acceptance.json
+          cause=""
+          if [ "$APPLY_OUTCOME" = "failure" ]; then
+            cause="the apply failed (its step is named above)"
+          elif [ "$ACCEPTANCE" = "could-not-test" ]; then
+            refused="$(jq -r '.refused // [] | map(tostring) | join(", ")' "$record" 2>/dev/null || true)"
+            if [ -n "$refused" ]; then cause="the pool refused the acceptance device (HTTP $refused), so nothing was tested"
+            else cause="the acceptance device was refused or misnamed before any model call, so nothing was tested"; fi
+          elif [ -n "$SMOKE" ] && [ "$SMOKE" != "0" ]; then
+            cause="every model call passed; the public app smoke failed"
+          elif [ ! -s "$record" ]; then
+            cause="acceptance stopped before it wrote a record; the accept step names why"
+          else
+            cause="$(jq -r 'if (.failed // 0) > 0 then "\(.failed) of \(.requests) model requests failed" elif .passed == false then "the boot the root had before the apply did not serve after it: the root restarted" else empty end' "$record" 2>/dev/null || true)"
+          fi
+          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: ${cause:-the accept step names it}"
           exit 1
       - name: Count accounts and history after
         env: *release-secrets
