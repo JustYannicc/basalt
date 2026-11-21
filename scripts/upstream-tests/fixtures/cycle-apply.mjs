@@ -58,13 +58,12 @@ const deployments = (providers) => {
   return {
     apply: (stack) =>
       run(
-        Effect.flatMap(Plan.make(stack), (plan) =>
-          Effect.as(Apply.apply(plan), changes(plan)),
-        ),
+        Effect.flatMap(Plan.make(stack), (plan) => Effect.as(Apply.apply(plan), changes(plan))),
         stack,
       ),
     plan: (stack) => run(Effect.map(Plan.make(stack), changes), stack),
-    recorded: (fqn) => Effect.flatMap(memory, (state) => state.get({ stack: name, stage: name, fqn })),
+    recorded: (fqn) =>
+      Effect.flatMap(memory, (state) => state.get({ stack: name, stage: name, fqn })),
   };
 };
 
