@@ -126,6 +126,24 @@ async function ownPool(
   }
   return undefined;
 }
+/**
+ * The person's tools-only devices, which the tools service approves without the pool, so the pool
+ * lists one it never heard of. Undefined when unavailable: the list still works without them.
+ */
+async function toolsOnlyDevices(request: Request, env: SetupEnv): Promise<unknown[] | undefined> {
+  try {
+    const response = await native(request, env, "native/devices");
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const devices = record(await response.json()).devices;
+    return Array.isArray(devices) ? devices : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Lists still work while the organization list is unavailable; only minting needs it. */
 const ownPoolIfAvailable = (request: Request, env: SetupEnv, person: string) =>
   ownPool(request, env, person).catch(() => undefined);
@@ -177,8 +195,10 @@ async function deleteTools(request: Request, env: SetupEnv, keyId: string): Prom
 async function revokeGrant(request: Request, env: SetupEnv, id: string): Promise<void> {
   const response = await native(request, env, "mcp/grants/revoke", { id });
   await response.body?.cancel();
-  // Fails closed: a device whose grant may still be live must not be reported as removed.
-  if (!response.ok)
+  // Fails closed: a device whose grant may still be live must not be reported as removed. A 401
+  // after this request's session check means the grant is already revoked, for example signed out
+  // on the device while the pool was down, so its sign-in has ended.
+  if (!response.ok && response.status !== 401)
     throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
 }
 
@@ -406,8 +426,9 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
-    // The list only needs the session; start it now so it overlaps the pool calls below.
+    // The list only needs the session; start these now so they overlap the pool calls below.
     if (method === "GET") void organizationList(request, env);
+    const devices = method === "GET" ? toolsOnlyDevices(request, env) : undefined;
     // Revoking needs no pool lookup; listing, minting and refreshing record the person's own pool.
     const selection = await body(
       await pool(request, env, "validate", { user: person, intent: input.intent }),
@@ -447,7 +468,10 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
       return response;
     }
     if (method === "GET") {
-      const result = await body(await pool(request, env, "computers", payload));
+      const known = await devices;
+      const result = await body(
+        await pool(request, env, "computers", { ...payload, ...(known && { native: known }) }),
+      );
       if (!Array.isArray(result.computers)) throw new SetupError(502, "Could not list computers.");
       return json({
         computers: result.computers.map(computerSummary),

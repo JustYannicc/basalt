@@ -33,7 +33,40 @@ diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hoste
 diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
 --- a/apps/hosted/server/src/implementation/native-grant-host.ts
 +++ b/apps/hosted/server/src/implementation/native-grant-host.ts
-@@ -169,7 +169,8 @@ export const nativeGrantHost = (
+@@ -16,6 +16,8 @@ import {
+ } from "./native-grant-display.ts";
+ import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
+ import { nativeControlCall, nativeControlFailure } from "./native-control-error.ts";
++// Apart from the import above, whose lines later carries match as context.
++import { computerName, openSetupIntent } from "./pool-token.ts";
+ 
+ const Created = Schema.Struct({
+   computer: Schema.Struct({ id: Schema.NonEmptyString }),
+@@ -147,6 +149,23 @@ const currentTeams = (ctx: GenericEndpointContext, userId: string) =>
+     return JSON.stringify(teams).length > teamBytes ? undefined : teams;
+   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+ 
++/**
++ * A tools-only device's id at the pool, from its grant alone. Every later report of the device names
++ * the same row, so a repeat can't add a second one. Grant ids are new random UUIDs, the pool's own
++ * ids are hyphenated UUIDs and these are 32 hex digits, so no two devices share an id. The id
++ * authorizes nothing: the pool checks each row's person and grant, and this server the grant.
++ */
++const toolsComputer = (grant: string) =>
++  Effect.promise(() =>
++    crypto.subtle.digest("SHA-256", new TextEncoder().encode(`native-tools-computer:${grant}`)),
++  ).pipe(
++    Effect.map((digest) =>
++      Array.from(new Uint8Array(digest).slice(0, 16), (byte) =>
++        byte.toString(16).padStart(2, "0"),
++      ).join(""),
++    ),
++  );
++
+ /** Database facts read for one remembered bearer answer; they are dropped with it. */
+ interface Facts {
+   membership?: true;
+@@ -169,7 +188,8 @@ export const nativeGrantHost = (
      known.set(answer, facts);
      return facts;
    };
@@ -43,7 +76,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
    const check = (
      ctx: GenericEndpointContext,
      access: NativeGrantAccess,
-@@ -182,6 +183,8 @@ export const nativeGrantHost = (
+@@ -182,6 +202,8 @@ export const nativeGrantHost = (
          yield* membership(ctx, access.userId, organization);
          if (facts !== undefined) facts.membership = true;
        }
@@ -52,10 +85,218 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
        let teams = display ? facts?.teams : undefined;
        if (display && teams === undefined) {
          teams = yield* currentTeams(ctx, access.userId);
+@@ -203,6 +225,79 @@ export const nativeGrantHost = (
+       );
+       return result.display;
+     });
++  /**
++   * Tells the pool about a tools-only device this server approved, so Connect lists it under its
++   * chosen name. Nothing waits on it: a pool that misses it learns the device from the person's
++   * next Connect list.
++   */
++  const announce = async (value: Readonly<Record<string, unknown>>) => {
++    try {
++      const envelope = await signEnvelope(Redacted.value(secret), nativeControlPrefix, {
++        ...value,
++        action: "learn",
++        expiresAt: Date.now() + hostAssertionTtlMs,
++      });
++      const response = await fetch(new URL(nativeControlPath, poolOrigin), {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ envelope }),
++        redirect: "manual",
++        signal: AbortSignal.timeout(15_000),
++      });
++      await response.body?.cancel();
++      if (!response.ok) console.warn("native.learn.failed", { status: response.status });
++    } catch {
++      console.warn("native.learn.failed", { status: null });
++    }
++  };
++  /**
++   * A tools-only device is the person's own tools, so this server approves it without the pool:
++   * the pool's signed setup intent names the person's organization and pool, and live membership
++   * there decides it, as the pool's own registration did.
++   */
++  const approveTools = (
++    ctx: GenericEndpointContext,
++    userId: string,
++    grant: string,
++    intent: string,
++    name: string,
++  ) =>
++    Effect.gen(function* () {
++      const now = yield* Clock.currentTimeMillis;
++      const setup = yield* Effect.tryPromise(() =>
++        openSetupIntent(Redacted.value(secret), intent, userId, now),
++      ).pipe(Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")));
++      // Personal tools are approved only from the person's own Connect page.
++      if (setup === undefined || setup.owner !== userId)
++        return yield* Effect.fail(new APIError("UNAUTHORIZED"));
++      const device = computerName(name);
++      if (device === undefined)
++        return yield* Effect.fail(
++          new APIError("BAD_REQUEST", { message: "Choose a device name, pool and tools access." }),
++        );
++      yield* membership(ctx, userId, setup.organization);
++      // The device uses no pool; the intent's own pool is only where Connect lists it.
++      const policy = NativeGrantPolicy.make({
++        kind: "native",
++        models: false,
++        computer: yield* toolsComputer(grant),
++        pool: setup.pool,
++        toolsOrganization: setup.organization,
++      });
++      yield* Effect.promise(() =>
++        ctx.context.runInBackgroundOrAwait(
++          announce({
++            user: userId,
++            grant,
++            name: device,
++            computer: policy.computer,
++            pool: policy.pool,
++            toolsOrganization: setup.organization,
++          }),
++        ),
++      );
++      return policy;
++    });
+   return {
+     audience: `${origin}/native`,
+     approve: (ctx, userId, grant) =>
+@@ -224,6 +319,7 @@ export const nativeGrantHost = (
+               message: "Choose a device name, pool and tools access.",
+             }),
+           );
++        if (models === "false") return yield* approveTools(ctx, userId, grant, intent, name);
+         const created = yield* control(
+           secret,
+           poolOrigin,
+@@ -304,6 +400,11 @@ export const nativeGrantHost = (
+         "revoke",
+         computerIdentity(access),
+         Schema.Struct({ revoked: Schema.Literal(true) }),
+-      ).pipe(Effect.asVoid),
++      ).pipe(
++        Effect.asVoid,
++        // A tools-only device's grant alone authorizes it, so revoking the grant ends it whatever
++        // the pool answers; a pool that never heard of it answers that it doesn't exist.
++        Effect.catch((error) => (access.policy.models ? Effect.fail(error) : Effect.void)),
++      ),
+   };
+ };
+diff --git a/e2e/support/native-grants.ts b/e2e/support/native-grants.ts
+--- a/e2e/support/native-grants.ts
++++ b/e2e/support/native-grants.ts
+@@ -1,3 +1,4 @@
++import { createHmac } from "node:crypto";
+ import { expect } from "@effect/vitest";
+ import { Crypto, Effect, Redacted, Schema } from "effect";
+ import { Base64Url } from "effect/encoding";
+@@ -34,6 +35,15 @@ export const NativeAccess = Schema.Struct({
+     toolsOrganization: Schema.optionalKey(Schema.String),
+   }),
+ });
++const signingKey = "ab".repeat(32);
++/** A Connect page's setup intent, signed as the pool signs it; the host verifies tools-only ones. */
++const setupIntent = (claims: Record<string, unknown>) => {
++  const signed = `sbci1.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
++  const signature = createHmac("sha256", Buffer.from(signingKey, "hex"))
++    .update(signed)
++    .digest("base64url");
++  return `${signed}.${signature}`;
++};
+ export const startNativeProtocol = (session: Session) =>
+   Effect.gen(function* () {
+     const api = yield* Api,
+@@ -46,11 +56,15 @@ export const startNativeProtocol = (session: Session) =>
+     const upstream = yield* nativePool(actors.organization.id, pool);
+     yield* serverControl("stop");
+     yield* serverControl("environment", 200, {
+-      POOL_APP_SIGNING_KEY: "ab".repeat(32),
++      POOL_APP_SIGNING_KEY: signingKey,
+       BASALT_POOL_ORIGIN: upstream.origin,
+     });
+     yield* serverControl("start");
+     const anonymous = yield* api.session();
++    const approver = (yield* body(
++      Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++      yield* api.request(session, "GET", "/api/auth/get-session?disableCookieCache=true"),
++    )).user.id;
+     const form = (path: string, fields: Record<string, string>) =>
+       Effect.scoped(
+         Effect.gen(function* () {
+@@ -116,7 +130,13 @@ export const startNativeProtocol = (session: Session) =>
+             accept: true,
+           },
+           {
+-            "x-basalt-native-intent": "approved-native-intent",
++            "x-basalt-native-intent": setupIntent({
++              user: approver,
++              pool,
++              owner: approver,
++              organization: actors.organization.id,
++              expiresAt: Date.now() + 60_000,
++            }),
+             "x-basalt-native-name": "Native protocol device",
+             "x-basalt-native-pool": pool,
+             "x-basalt-native-tools": String(tools),
+diff --git a/e2e/support/native-pool.ts b/e2e/support/native-pool.ts
+--- a/e2e/support/native-pool.ts
++++ b/e2e/support/native-pool.ts
+@@ -23,6 +23,7 @@ const Assertion = Schema.Struct({
+ export const nativePool = (organization: string, pool: string) =>
+   Effect.gen(function* () {
+     let refused = false;
++    let down = false;
+     let created = 0;
+     let displayEnabled = true;
+     let teams: ReadonlyArray<{ readonly id: string; readonly name: string }> | undefined;
+@@ -41,6 +42,8 @@ export const nativePool = (organization: string, pool: string) =>
+           "POST",
+           "/native/v1/control",
+           Effect.gen(function* () {
++            // A failing control plane, as the pool Worker answers while its controller is down.
++            if (down) return HttpServerResponse.empty({ status: 503 });
+             const request = yield* HttpServerRequest.HttpServerRequest;
+             const { envelope } = yield* request.json.pipe(
+               Effect.flatMap(Schema.decodeUnknownEffect(Envelope)),
+@@ -56,7 +59,7 @@ export const nativePool = (organization: string, pool: string) =>
+             );
+             if (value.action === "register") {
+               if (
+-                value.intent !== "approved-native-intent" ||
++                !value.intent?.startsWith("sbci1.") ||
+                 (value.pool !== undefined && value.pool !== pool)
+               )
+                 return HttpServerResponse.empty({ status: 403 });
+@@ -123,6 +126,11 @@ export const nativePool = (organization: string, pool: string) =>
+           refused = value;
+           if (value) for (const grant of sessions.keys()) close(grant);
+         }),
++      /** Every control call fails until it is set back. */
++      down: (value: boolean) =>
++        Effect.sync(() => {
++          down = value;
++        }),
+       created: Effect.sync(() => created),
+       /** The teams the host sent with the last display check. */
+       teams: Effect.sync(() => teams),
 diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
 --- a/e2e/tests/native-grants.spec.ts
 +++ b/e2e/tests/native-grants.spec.ts
-@@ -138,7 +138,8 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+@@ -113,6 +113,9 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+           mcp = yield* McpClient;
+         const p = yield* startNativeProtocol(actors.owner);
+         expect((yield* p.start(false)).status).toBe(400);
++        // A tools-only device is approved and used while the pool's control plane fails: its
++        // grant and membership decide it, and the pool lists it later.
++        yield* p.upstream.down(true);
+         const tokens = yield* approveNative(p, true, false);
+         const burst = yield* Effect.all(
+           Array.from({ length: 130 }, () =>
+@@ -138,7 +141,8 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
            ),
          );
          expect(access.display?.account).toEqual(session.user);
@@ -65,7 +306,7 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
          expect(access.display?.pools).toEqual([]);
          const foreignBrowser = yield* body(
            NativeAccess,
-@@ -151,11 +152,11 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+@@ -151,11 +155,11 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
            ),
          );
          expect(foreignBrowser.display?.account).toEqual(session.user);
@@ -82,15 +323,26 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
  
          expect(access.policy.pool).toBe(p.pool);
          expect(access.policy.toolsOrganization).toBe(actors.organization.id);
-@@ -172,6 +173,7 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+@@ -172,6 +176,8 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
          );
          expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
          expect((yield* body(DeviceInventory, inventory)).accounts).toEqual([]);
 +        yield* p.upstream.refuse(false);
++        yield* p.upstream.down(false);
          expect(
            (yield* p.api.request(
              p.anonymous,
-@@ -431,6 +433,12 @@ export default defineApp({}, { tools: router({
+@@ -348,7 +354,8 @@ export default defineApp({}, { tools: router({
+             p.headers(renewed.access_token),
+           )).status,
+         ).toBe(200);
+-        expect(yield* p.upstream.created).toBe(2);
++        // Neither tools-only approval registered at the pool.
++        expect(yield* p.upstream.created).toBe(0);
+         expect(
+           (yield* p.api.request(
+             p.anonymous,
+@@ -431,6 +438,12 @@ export default defineApp({}, { tools: router({
            { id: p.pool, name: "Native protocol pool" },
            { id: "shared-native-pool", name: "Shared native pool" },
          ]);
@@ -106,6 +358,15 @@ diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
 diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
 --- a/packages/mcp-auth/src/implementation/native-grants.ts
 +++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -6,7 +6,7 @@ import {
+   type Scope,
+ } from "@better-auth/oauth-provider";
+ import { APIError } from "better-auth/api";
+-import { Clock, Effect, Schema } from "effect";
++import { Clock, Effect, Option, Schema } from "effect";
+ import { GrantId } from "../contracts/grant.ts";
+ import type { NativeGrantDisplay } from "../contracts/native-display.ts";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
 @@ -37,7 +37,10 @@ export interface NativeGrantHost {
      userId: string,
      grant: GrantId,
@@ -118,6 +379,41 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
    readonly check: (
      context: GenericEndpointContext,
      access: NativeGrantAccess,
+@@ -203,6 +206,34 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+   };
+   return {
+     extension,
++    /**
++     * The person's live tools-only devices. This server approves them without the pool, so the
++     * pool's Connect list learns a device it never heard of from here.
++     */
++    devices: (ctx: GenericEndpointContext, userId: string) =>
++      authCall(() =>
++        ctx.context.adapter.findMany({
++          model: "mcpGrant",
++          where: [
++            { field: "userId", value: userId },
++            { field: "resource", value: host.audience },
++            { field: "revoked", value: false },
++          ],
++          limit: 100,
++        }),
++      ).pipe(
++        Effect.map((rows) =>
++          rows.flatMap((value) => {
++            const row = Schema.decodeUnknownOption(Stored)(value);
++            const policy = Option.flatMap(row, ({ policy }) =>
++              Schema.decodeUnknownOption(Schema.fromJsonString(NativeGrantPolicy))(policy),
++            );
++            if (Option.isNone(row) || Option.isNone(policy) || policy.value.models) return [];
++            const { computer, pool, toolsOrganization } = policy.value;
++            return [{ grant: row.value.id, computer, pool, toolsOrganization }];
++          }),
++        ),
++      ),
+     revoke: (ctx: GenericEndpointContext, id: GrantId) =>
+       stored(ctx, id).pipe(Effect.flatMap(({ access }) => host.revoke(ctx, access))),
+     create: (ctx: GenericEndpointContext, userId: string, clientId: string) =>
 diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
 --- a/packages/mcp-auth/src/implementation/oauth.ts
 +++ b/packages/mcp-auth/src/implementation/oauth.ts
@@ -131,3 +427,23 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
                    const access = yield* native.authenticate(ctx, { display: true, remember: true });
                    yield* nativeAccessBudget(ctx, {
                      device: access.policy.computer,
+@@ -1209,6 +1210,19 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+                 }),
+               ),
+       ),
++      listNativeDevices: createAuthEndpoint(
++        "/native/devices",
++        { method: "GET", requireHeaders: true },
++        (ctx) =>
++          native === undefined
++            ? Promise.reject(new APIError("NOT_FOUND"))
++            : runAuth(
++                browser(ctx).pipe(
++                  Effect.flatMap((userId) => native.devices(ctx, userId)),
++                  Effect.map((devices) => ({ devices })),
++                ),
++              ),
++      ),
+       getMcpGrantAccess: createAuthEndpoint(
+         "/mcp/grant-access",
+         { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },

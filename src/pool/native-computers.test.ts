@@ -546,3 +546,33 @@ test("revoking a model device after a lost mint reply removes the key Home kept"
   assert.equal((await p.control("revoke", { computer: computer.id, pool: pool.pool })).status, 200);
   assert.equal(p.f.server.keys.length, 0);
 });
+
+test("the tools service's report of a tools-only device lists it once and never revives it", async () => {
+  const p = protocol();
+  const device = {
+    grant: "native:tools-only-learned",
+    computer: "a".repeat(32),
+    pool: pool.pool,
+    toolsOrganization: pool.organization,
+    name: "Work laptop",
+  };
+  const learn = (values: Record<string, unknown>) => p.control("learn", { ...device, ...values });
+  assert.equal((await learn({})).status, 200);
+  const listed = (await p.f.registry())[device.computer];
+  assert.equal(listed?.name, "Work laptop");
+  assert.equal(listed?.state, "active");
+  assert.deepEqual(listed?.native, {
+    grant: device.grant,
+    models: false,
+    toolsOrganization: pool.organization,
+  });
+  // A repeat, or another grant claiming the same id, changes nothing.
+  assert.equal((await learn({ name: "Renamed" })).status, 200);
+  assert.equal((await learn({ grant: "native:someone-else" })).status, 200);
+  assert.equal((await p.f.registry())[device.computer]?.name, "Work laptop");
+  assert.equal(Object.keys(await p.f.registry()).length, 1);
+  // Once revoked, the device stays revoked whatever the tools service reports later.
+  assert.equal((await p.control("revoke", device)).status, 200);
+  assert.equal((await learn({})).status, 200);
+  assert.equal((await p.f.registry())[device.computer]?.state, "revoked");
+});

@@ -336,6 +336,11 @@ export class Computers {
               name: directory.entry(intent.pool)?.name ?? "",
             });
           case "computers":
+            // The tools service approves a tools-only device without this pool; the person's own
+            // devices it reports join the list here, and listing saves them.
+            if (Array.isArray(payload.native) && payload.native.length <= 100)
+              for (const device of payload.native)
+                if (object(device)) this.native.learn(registry, user, device);
             return json({ computers: await this.listLocked(registry, user), pools });
           case "links": {
             // A link may name any pool this person can use; it defaults to the intent's own pool.

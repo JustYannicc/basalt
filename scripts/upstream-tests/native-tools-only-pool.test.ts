@@ -150,7 +150,20 @@ async function host(t: TestContext) {
     assert.equal(response.status, 200, await response.clone().text());
     return ((await response.json()) as { computers: Record<string, unknown>[] }).computers;
   };
-  return { ...running, f, team, intent, decide, issue, access, refresh, signOut, env, connect, listed };
+  return {
+    ...running,
+    f,
+    team,
+    intent,
+    decide,
+    issue,
+    access,
+    refresh,
+    signOut,
+    env,
+    connect,
+    listed,
+  };
 }
 
 /** A device approved through the real decide endpoint, with its first tokens. */
@@ -264,7 +277,10 @@ test("a device with models is still refused while the pool's control plane fails
   const approved = await h.decide(true);
   assert.equal(approved.status, 503, await approved.clone().text());
   assert.equal(
-    await h.f.adapter.findOne({ model: "mcpGrant", where: [{ field: "userId", value: h.f.userId }] }),
+    await h.f.adapter.findOne({
+      model: "mcpGrant",
+      where: [{ field: "userId", value: h.f.userId }],
+    }),
     null,
     "nothing was approved",
   );

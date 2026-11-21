@@ -181,6 +181,10 @@ export class NativeComputers {
           );
           return json({ active: true, display });
         }
+        if (value.action === "learn") {
+          if (this.learn(registry, caller.user, value)) await this.deps.save(registry);
+          return json({ learned: true });
+        }
         if (value.action !== "revoke")
           return fail(404, "not_found", "This native endpoint does not exist.");
         const computer = Object.hasOwn(registry, caller.computer)
@@ -287,6 +291,43 @@ export class NativeComputers {
       await this.deps.save(registry);
       return reply(computer);
     });
+  }
+  /**
+   * Lists a tools-only device the tools service approved without this pool, for Connect's list and
+   * its revoke. Its grant alone authorizes it, so nothing here is checked against the directory. A
+   * grant's row is never recreated, replaced or reactivated. True when a row was added.
+   */
+  learn(registry: Registry, user: string, device: Record<string, unknown>) {
+    const grant = text(device.grant),
+      computer = text(device.computer),
+      pool = text(device.pool),
+      toolsOrganization = text(device.toolsOrganization);
+    if (
+      !grant?.startsWith("native:") ||
+      !computer ||
+      !/^[A-Za-z0-9_-]{1,512}$/.test(computer) ||
+      !pool ||
+      !toolsOrganization ||
+      Object.hasOwn(registry, computer) ||
+      Object.values(registry).some((row) => row.native?.grant === grant)
+    )
+      return false;
+    const at = new Date(this.deps.now()).toISOString();
+    registry[computer] = {
+      id: computer,
+      // Connect's list names it before anyone renames it, when the tools service sent no name.
+      name: computerName(device.name) ?? "Tools-only device",
+      user,
+      pool,
+      state: "active",
+      createdAt: at,
+      boundAt: at,
+      firstModelRequestAt: null,
+      firstToolCallAt: null,
+      revokedAt: null,
+      native: { grant, models: false, toolsOrganization },
+    };
+    return true;
   }
   /** One mint per computer at a time; every waiting model request shares its outcome. */
   private provision(request: KeyRequest): Promise<void> {
