@@ -8,6 +8,9 @@ views {
       Connect's coding-agent guides request /setup/v1/context; the host verifies the native cookie session, finds the caller's own pool,
       checks its creator and queries its existing computerContext operation. The host verifies that
       returned intent's signature, caller and pool before returning it. This read creates no keys.
+      The native approval page asks with fallback=tools: while the pool doesn't answer, the host signs
+      the caller's own intent from the tools service's creator record and marks it
+      NATIVE_POOL_UNAVAILABLE, so only a tools-only device can be approved.
       The old root /setup page only redirects to the caller's own organization's Connect page. The HTTP
       host checks the native cookie session and creates a personal
       tools PAT pinned to the organization holding the caller's own pool, also on a shared pool.

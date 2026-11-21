@@ -15,7 +15,11 @@ const Pending = Schema.Struct({
   scopes: Schema.Array(Schema.String),
 });
 const Client = Schema.Struct({ client_name: Schema.optionalKey(Schema.String) });
-const Context = Schema.Struct({ intent: Text });
+const Context = Schema.Struct({
+  intent: Text,
+  /** The host signed the intent itself because the pool did not answer: only tools can be approved. */
+  reason: Schema.optionalKey(Schema.Literal("NATIVE_POOL_UNAVAILABLE")),
+});
 const Choices = Schema.Struct({
   pools: Schema.Array(
     Schema.Struct({
@@ -30,6 +34,9 @@ const Decision = Schema.Struct({ status: Schema.Literals(["approved", "denied"])
 const PoolUnavailable = Schema.Struct({ reason: Schema.Literal("NATIVE_POOL_UNAVAILABLE") });
 const unconfirmed =
   "The decision could not be confirmed. Return to your device to check its status.";
+export const modelsUnavailable = "Models are unavailable right now. Connect with tools only?";
+/** The host refuses a setup intent five minutes after it was signed; the page reuses one for less. */
+const heldIntentMs = 4 * 60_000;
 
 export class DeviceApprovalError extends Error {
   readonly kind: "signed-out" | "unavailable" | "request" | "uncertain" | "models-unavailable";
@@ -95,10 +102,7 @@ async function read(
       // The host names a pool outage. It recorded no decision, so the device code stays pending.
       const body: unknown = await response.json().catch(() => undefined);
       throw Schema.is(PoolUnavailable)(body)
-        ? new DeviceApprovalError(
-            "models-unavailable",
-            "Models are unavailable right now. Connect with tools only?",
-          )
+        ? new DeviceApprovalError("models-unavailable", modelsUnavailable)
         : new DeviceApprovalError("uncertain", unconfirmed);
     }
     const request = path.startsWith("api/auth/device/");
@@ -160,19 +164,30 @@ export async function readDeviceRequest(code: string, signal: AbortSignal, trans
 }
 
 export type DeviceRequest = Awaited<ReturnType<typeof readDeviceRequest>>;
+async function readSetupIntent(signal: AbortSignal, transport: DeviceTransport) {
+  const context = Schema.decodeUnknownSync(Context)(
+    await read(transport, "setup/v1/context?fallback=tools", signal),
+  );
+  return { intent: context.intent, readAt: Date.now(), toolsOnly: context.reason !== undefined };
+}
 export async function readDevicePools(signal: AbortSignal, transport = browser) {
-  const { intent } = Schema.decodeUnknownSync(Context)(
-    await read(transport, "setup/v1/context", signal),
-  );
-  const { pools } = Schema.decodeUnknownSync(Choices)(
-    await read(transport, `setup/v1/computers?intent=${encodeURIComponent(intent)}`, signal),
-  );
-  if (!pools.length)
+  const setup = await readSetupIntent(signal, transport);
+  // Without the pool there are no pools to choose from, and only tools can be approved.
+  const { pools } = setup.toolsOnly
+    ? Choices.make({ pools: [] })
+    : Schema.decodeUnknownSync(Choices)(
+        await read(
+          transport,
+          `setup/v1/computers?intent=${encodeURIComponent(setup.intent)}`,
+          signal,
+        ),
+      );
+  if (!pools.length && !setup.toolsOnly)
     throw new DeviceApprovalError(
       "unavailable",
       "No pools are available. Open Connections to set up your pool, then try again.",
     );
-  return { intent, pools };
+  return { ...setup, pools };
 }
 export type DevicePools = Awaited<ReturnType<typeof readDevicePools>>;
 export interface DeviceSelection {
@@ -239,7 +254,8 @@ export async function reviewDeviceDecision(
   original: DeviceRequest,
   signal: AbortSignal,
   selection?: DeviceSelection,
-  _held?: DevicePools,
+  /** The choices the page holds, read for `original`. */
+  held?: DevicePools,
   transport = browser,
 ) {
   const current = await readDeviceRequest(code, signal, transport);
@@ -250,7 +266,41 @@ export async function reviewDeviceDecision(
       message: "Your account or device request changed. Review it again before deciding.",
     } as const;
   if (selection) {
+    const name = selection.name.trim();
+    if (
+      !name ||
+      name.length > 60 ||
+      !/^[\x20-\x7e]+$/u.test(name) ||
+      (!selection.models && !selection.tools)
+    )
+      throw new DeviceApprovalError(
+        "request",
+        "Choose a device name and at least one kind of access.",
+      );
+    // A tools-only device asks the pool nothing, so it reuses the intent the page holds while that
+    // is fresh, and never reads the pool list: approving tools only must work while the pool is down.
+    if (!selection.models) {
+      const setup =
+        held && Date.now() - held.readAt < heldIntentMs
+          ? held
+          : await readSetupIntent(signal, transport);
+      const status = await decideDevice(
+        code,
+        true,
+        signal,
+        { ...selection, name, intent: setup.intent },
+        transport,
+      );
+      return { kind: "decided", status } as const;
+    }
     const available = await readDevicePools(signal, transport);
+    if (available.toolsOnly)
+      throw selection.tools
+        ? new DeviceApprovalError("models-unavailable", modelsUnavailable)
+        : new DeviceApprovalError(
+            "unavailable",
+            "Models are unavailable right now. Try again later.",
+          );
     if (!available.pools.some((entry) => entry.id === selection.pool))
       return {
         kind: "review",
@@ -258,21 +308,11 @@ export async function reviewDeviceDecision(
         available,
         message: "That pool is no longer available. Choose a pool and review access again.",
       } as const;
-    if (
-      !selection.name.trim() ||
-      selection.name.trim().length > 60 ||
-      !/^[\x20-\x7e]+$/u.test(selection.name.trim()) ||
-      (!selection.models && !selection.tools)
-    )
-      throw new DeviceApprovalError(
-        "request",
-        "Choose a device name and at least one kind of access.",
-      );
     const status = await decideDevice(
       code,
       true,
       signal,
-      { ...selection, name: selection.name.trim(), intent: available.intent },
+      { ...selection, name, intent: available.intent },
       transport,
     );
     return { kind: "decided", status } as const;

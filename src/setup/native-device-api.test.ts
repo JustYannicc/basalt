@@ -91,17 +91,14 @@ test("native approval refuses a different audience and wider scopes before any d
 test("approval uses a fresh intent and the selected shared pool while retaining explicit tool access", async () => {
   using f = fixture();
   const original = await readDeviceRequest("BCDF-GHJK", signal());
-  const result = await reviewDeviceDecision("BCDF-GHJK", original, signal(), {
-    ...selection,
-    models: false,
-  });
+  const result = await reviewDeviceDecision("BCDF-GHJK", original, signal(), selection);
   assert.deepEqual(result, { kind: "decided", status: "approved" });
   const decision = decisionCalls(f.calls);
   assert.equal(decision.length, 1);
   const headers = new Headers(decision[0]!.input.headers);
   assert.equal(headers.get("x-basalt-native-intent"), "fresh-intent");
   assert.equal(headers.get("x-basalt-native-pool"), "shared-pool");
-  assert.equal(headers.get("x-basalt-native-models"), "false");
+  assert.equal(headers.get("x-basalt-native-models"), "true");
   assert.equal(headers.get("x-basalt-native-tools"), "true");
   assert.equal(headers.has("authorization"), false);
   assert.equal(

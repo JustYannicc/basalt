@@ -14,7 +14,7 @@ import {
 import { emitProductEvent } from "./product-events.ts";
 import { poolPicks, teamsOf } from "./pool-choices.ts";
 import { brand } from "../../brand.ts";
-import { computerName, readIntent } from "../pool/setup-links.ts";
+import { computerName, readIntent, setupTtl, signIntent } from "../pool/setup-links.ts";
 export type { SetupEnv } from "./session.ts";
 
 /** Only public computer metadata can leave the browser endpoints. */
@@ -142,8 +142,27 @@ async function setupContext(request: Request, env: SetupEnv): Promise<Response> 
     `/api/organizations/${encodeURIComponent(own.organization)}/apps/${encodeURIComponent(own.pool)}/data/query`,
     { name: "computerContext", input: {} },
   );
-  if (!response.ok) throw new SetupError(502, "Could not complete setup. Try again.");
-  const result = await body(response);
+  const result = response.ok ? await body(response) : undefined;
+  if (!result) await response.body?.cancel();
+  // The native approval page asks for this: a tools-only device never needs the pool, so while the
+  // pool doesn't answer it gets the claims the pool signs for its owner, taken from the tools
+  // service's record that the person created it. The pool checks them again on any setup action.
+  if (
+    new URL(request.url).searchParams.get("fallback") === "tools" &&
+    (result
+      ? result.ok === false && result.error === "backend_unavailable"
+      : response.status >= 500)
+  ) {
+    const intent = await signIntent(env.POOL_APP_SIGNING_KEY, {
+      pool: own.pool,
+      owner: person,
+      organization: own.organization,
+      user: person,
+      expiresAt: Date.now() + setupTtl,
+    });
+    return json({ intent, reason: "NATIVE_POOL_UNAVAILABLE" });
+  }
+  if (!result) throw new SetupError(502, "Could not complete setup. Try again.");
   const href = record(result.value).href;
   const target = typeof href === "string" ? URL.parse(href) : null;
   if (

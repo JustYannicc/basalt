@@ -5,6 +5,7 @@ import {
   deviceCode,
   deviceProblem,
   DeviceApprovalError,
+  modelsUnavailable,
   readDevicePools,
   readDeviceRequest,
   reviewDeviceDecision,
@@ -73,11 +74,16 @@ export function NativeDevice() {
           const available = await readDevicePools(controller.signal);
           if (controller.signal.aborted) return;
           setChoices(available);
-          setPool((selected) =>
-            available.pools.some((entry) => entry.id === selected)
-              ? selected
-              : (available.pools.find((entry) => entry.mine) ?? available.pools[0])!.id,
-          );
+          // The pool did not answer: there is no pool to pick, and only tools can be approved.
+          if (available.toolsOnly) {
+            setProblem(modelsUnavailable);
+            setToolsOnly(true);
+          } else
+            setPool((selected) =>
+              available.pools.some((entry) => entry.id === selected)
+                ? selected
+                : (available.pools.find((entry) => entry.mine) ?? available.pools[0])!.id,
+            );
         } catch (error) {
           if (!controller.signal.aborted) setProblem(deviceProblem(error));
         }
@@ -96,6 +102,7 @@ export function NativeDevice() {
   function reload() {
     setView({ kind: "loading" });
     setProblem("");
+    setToolsOnly(false);
     setChoices(undefined);
     setRevision((value) => value + 1);
   }
@@ -127,16 +134,17 @@ export function NativeDevice() {
         view.request,
         signal,
         accept ? { name, pool, ...access } : undefined,
+        choices,
       );
       if (signal.aborted) return;
       if (result.kind === "review") {
         setView({ kind: "ready", request: result.request });
         setProblem(result.message);
-        if (result.available) {
-          const available = result.available;
-          setChoices(available);
+        const available = result.available;
+        // A changed account brings no choices: the ones held were read for the previous account.
+        setChoices(available);
+        if (available)
           setPool((available.pools.find((entry) => entry.mine) ?? available.pools[0])!.id);
-        }
       } else setView({ kind: result.status });
     } catch (error) {
       if (lifetime.current?.signal.aborted) return;
@@ -246,11 +254,11 @@ export function NativeDevice() {
                     <select
                       id="native-pool"
                       className={`${field} max-w-[65%]`}
-                      disabled={!choices || busy || !models}
+                      disabled={!choices?.pools.length || busy || !models}
                       value={pool}
                       onChange={(event) => setPool(event.target.value)}
                     >
-                      {!choices && (
+                      {!choices?.pools.length && (
                         <option value="">{problem ? "Pools unavailable" : "Loading pools…"}</option>
                       )}
                       {choices?.pools.map((entry) => (
@@ -338,7 +346,9 @@ export function NativeDevice() {
               )}
               <div className="flex flex-wrap gap-2">
                 <Button
-                  disabled={busy || !choices || !pool || !validName || (!models && !tools)}
+                  disabled={
+                    busy || !choices || (models && !pool) || !validName || (!models && !tools)
+                  }
                   onClick={() => void decide(true)}
                 >
                   {busy ? "Confirming…" : "Connect device"}
