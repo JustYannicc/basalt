@@ -147,6 +147,8 @@ test("a different deployed code hands the controller over: model calls are refus
   assert.equal((await modelCall()).status, 200, "the pool serves before the handover");
   await drain();
   assert.equal(runtime.calls, 1);
+  // The first warm may restart the fixture's container; only what the handover does is counted.
+  const before = { starts: runtime.starts, destroys: runtime.destroys };
 
   // The adoption read of an entrypoint on this same code changes nothing.
   worker.deploymentIdentity({ candidate: productionOpsRelease, workerInput: poolWorkerRevision });
@@ -168,7 +170,7 @@ test("a different deployed code hands the controller over: model calls are refus
   assert.equal(runtime.calls, 1, "the refused call never reached the runtime");
   assert.deepEqual(
     { starts: runtime.starts, destroys: runtime.destroys, running: container.running },
-    { starts: 0, destroys: 0, running: true },
-    "the container and its boot are untouched",
+    { ...before, running: true },
+    "the handover neither stops nor starts the container",
   );
 });
