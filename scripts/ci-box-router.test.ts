@@ -32,6 +32,8 @@ const heartbeatSource = read(".github/workflows/box-heartbeat.yml");
 const heartbeatWorkflow = parse(heartbeatSource);
 
 const now = Date.parse("2026-11-19T12:00:00Z");
+// routeBox waits between heartbeat reads when the newest is stale; tests never sleep for real.
+const noWait = async () => {};
 const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
 // The box's status object, trimmed to the fields a test varies.
 const statusLine = (at: string, healthy: unknown, fields: Record<string, unknown> = {}) =>
@@ -126,7 +128,7 @@ const input = (overrides: Partial<BoxInput> = {}): BoxInput => ({
   ...overrides,
 });
 const route = (overrides: Partial<BoxInput> = {}, box = observer().box) =>
-  routeBox(input(overrides), box, () => now);
+  routeBox(input(overrides), box, () => now, noWait);
 
 test("box first: a healthy box fills its free slots with the longest shards", async () => {
   // 0 box jobs active: both slots take the two longest shards; hosted runs the other three.
@@ -409,6 +411,7 @@ test("only declared shard rows can route, and free slots and timeouts bound the 
     input({ selected: heavyJobs.filter((job) => !declaredJobs.includes(job)) }),
     box,
     () => now,
+    noWait,
   );
   assert.deepEqual(none.jobs, []);
   assert.match(none.summary, /runs no declared e2e shards/);
@@ -420,6 +423,7 @@ test("only declared shard rows can route, and free slots and timeouts bound the 
         input({ slots: String(slots), selected: heavyJobs, matrices: real, durations: undefined }),
         observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box,
         () => now,
+        noWait,
       );
       const free = Math.max(0, Math.min(slots, 3) - busy);
       assert.equal(routed.jobs.length, Math.min(free, fitting.length), `${slots}/${busy}`);
@@ -583,16 +587,16 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/99/")));
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/5/")));
   // The box's budget of 2 is held by the two box jobs.
-  const busy = await routeBox(input({ slots: "3" }), box, () => now);
+  const busy = await routeBox(input({ slots: "3" }), box, () => now, noWait);
   assert.deepEqual(busy.jobs, []);
   assert.match(busy.summary, /no box slot is free \(2 box jobs are active, 0 of 2 slots free/);
   routes["/actions/jobs/60/logs"] = "2026-11-19T11:59:00.0000000Z " + budgetLog({ ci_budget: 6 });
-  const routed = await routeBox(input({ slots: "3" }), box, () => now);
+  const routed = await routeBox(input({ slots: "3" }), box, () => now, noWait);
   assert.deepEqual(routed.jobs, ["declared-cloud-1"]);
   assert.match(routed.summary, /while 3 hosted jobs are active elsewhere/);
 
   delete routes["/actions/runs?status=queued&per_page=100&page=1"];
-  const failed = await routeBox(input(), githubObserver(env, fetcher), () => now);
+  const failed = await routeBox(input(), githubObserver(env, fetcher), () => now, noWait);
   assert.deepEqual(failed.jobs, []);
   assert.match(failed.summary, /GitHub returned 404 for \/actions\/runs/);
   // With only untrusted or off-box runs left, nothing vouches for the box.
@@ -611,12 +615,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
       githubObserver(env, fetcher).heartbeat(),
       /no completed heartbeat run from the box/,
     );
-    const none = await routeBox(
-      input(),
-      githubObserver(env, fetcher),
-      () => now,
-      async () => {},
-    );
+    const none = await routeBox(input(), githubObserver(env, fetcher), () => now, noWait);
     assert.deepEqual(none.jobs, []);
   }
   // A Check's start triggers a heartbeat from the default branch's file: trusted whatever branch
