@@ -139,9 +139,21 @@ function redactAccount<T>(value: T, accountId: string): T {
 
 // Raw messages from the bridge can name the account or worker; only fixed codes reach a public artifact.
 // The Node bridge's own fixed failures (pool-operations-node.ts), so a transport fault never reads as
-// a Worker that did not answer.
+// a Worker that did not answer: its lifecycle, and a request its child could not complete, which
+// carries only a closed error name.
 const BRIDGE_FAILURE =
   /^Private operations Node bridge (exited|disconnected|send failed|failed|startup timed out|closed)$/u;
+const BRIDGE_REQUEST_FAILED = "Private operations request failed";
+const BRIDGE_ERROR_NAMES = new Set(["Error", "TypeError", "AbortError", "TimeoutError"]);
+/** The bridge's own failure as closed text, or undefined for anything else. */
+function bridgeFailure(error: unknown) {
+  if (!(error instanceof Error)) return undefined;
+  const lifecycle = BRIDGE_FAILURE.exec(error.message)?.[1];
+  if (lifecycle) return lifecycle;
+  return error.message === BRIDGE_REQUEST_FAILED
+    ? `request failed (${BRIDGE_ERROR_NAMES.has(error.name) ? error.name : "Error"})`
+    : undefined;
+}
 
 /** The HTTP status of a reply the shared RPC refused, as a number and nothing else from it. */
 function httpStatus(error: BarrierRefusal) {
@@ -153,9 +165,35 @@ function httpStatus(error: BarrierRefusal) {
     : "";
 }
 
+/**
+ * A read lost between this process and the Worker, with no answer the Worker classified: the
+ * bridge failed, nothing answered in time, or something answered other than the Worker's 200 or
+ * its own 409 (the proxy, the edge, or a Worker defect). Each attempt opens its own bridge, so
+ * only these are worth another one.
+ */
+const lostOnTheWay = (cause: unknown) =>
+  !providerObservationCause(cause) &&
+  ((cause instanceof BarrierRefusal &&
+    cause.reason === "runtime-handoff-response-refused" &&
+    // A 409 is the Worker's own refusal form, an answer.
+    httpStatus(cause) !== " HTTP 409") ||
+    (cause instanceof DOMException &&
+      (cause.name === "AbortError" || cause.name === "TimeoutError")) ||
+    bridgeFailure(cause) !== undefined);
+/** Attempts in all for one observe read; commands that write are never sent twice. */
+export const observeAttempts = 3;
+/** How many attempts an observe read took, keyed by the reply or the error it ended with. */
+const attemptsTaken = new WeakMap<object, number>();
+export const attemptsOf = (value: unknown) =>
+  (value !== null && typeof value === "object" && attemptsTaken.get(value)) || 1;
+const retriedLine = new RegExp(
+  `^(?:${observeActions.join("|")}) [2-${observeAttempts}] attempts$`,
+  "u",
+);
+
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
-  const bridge = error instanceof Error ? BRIDGE_FAILURE.exec(error.message)?.[1] : undefined;
+  const bridge = bridgeFailure(error);
   const code =
     error instanceof ControllerRefused
       ? `: runtime-handoff-refused (${error.reason})`
@@ -290,13 +328,14 @@ async function providerRead(
           : "controller_refused"
         : cause instanceof DispatchRefusal
           ? "reply_unreadable"
-          : // The Worker answered, but with neither a 200 nor the handoff's own 409.
+          : // Something answered other than the Worker's 200 or the handoff's own 409: the proxy,
+            // the edge, or a Worker defect. The error's HTTP status tells which.
             cause instanceof BarrierRefusal
             ? "response_refused"
             : cause instanceof DOMException &&
                 (cause.name === "AbortError" || cause.name === "TimeoutError")
               ? "no_reply"
-              : cause instanceof Error && BRIDGE_FAILURE.test(cause.message)
+              : bridgeFailure(cause) !== undefined
                 ? "bridge_failed"
                 : "outcome_unknown")
     );
@@ -500,6 +539,7 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   const output: {
     providerObservation?: ProviderLine;
     restartObservation?: RestartLine;
+    retried?: string[];
     observe?: unknown;
     diagnostic?: unknown;
     inspection?: unknown;
@@ -540,11 +580,25 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
       const { root, provider, ...target } = await readTarget();
-      const send = (action: ObserveAction, subject?: ObserveSubject) => {
+      // The observe sender sends a read lost on the way again; this records how many attempts.
+      const send = async (action: ObserveAction, subject?: ObserveSubject) => {
         phase = `${action} outcome unknown`;
-        return deps
-          .observe(action, packet.controllerCode, target, input.signingKey, subject)
-          .then((reply) => replyResult(reply, action));
+        try {
+          const reply = await deps.observe(
+            action,
+            packet.controllerCode,
+            target,
+            input.signingKey,
+            subject,
+          );
+          const attempts = attemptsOf(reply);
+          if (attempts > 1) (output.retried ??= []).push(`${action} ${attempts} attempts`);
+          return replyResult(reply, action);
+        } catch (cause) {
+          const attempts = attemptsOf(cause);
+          if (attempts > 1) phase = `${action} outcome unknown after ${attempts} attempts`;
+          throw cause;
+        }
       };
       // First and never fatal: a heal needs this read whatever state the selection is in.
       output.providerObservation = await providerObservation(provider, (pins) =>
@@ -715,18 +769,39 @@ export class ControllerRefused extends Error {
 // waits past that for the Worker's named answer instead of giving up first.
 export const observeLimitMs = 30_000;
 
+/**
+ * Every command here is a read, so one lost on the way (`lostOnTheWay`) is sent again, signed anew
+ * and on its own fresh bridge, up to `observeAttempts` in all. An answer the Worker classified is
+ * never sent again. Commands that write go through their own senders and are sent once.
+ */
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
-  (action, controllerCode, target, signingKey, subject) =>
-    signedCommand(
-      connect,
-      action,
-      controllerCode,
-      target,
-      signingKey,
-      subject ? { target: subject } : {},
-      observeLimitMs,
-    );
+  async (action, controllerCode, target, signingKey, subject) => {
+    // The closed list of reads, whatever a caller passes: anything else is sent once.
+    const attempts = (observeActions as readonly string[]).includes(action) ? observeAttempts : 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        // Signed anew each attempt: a command expires 25 s after it is signed.
+        const reply = await signedCommand(
+          connect,
+          action,
+          controllerCode,
+          target,
+          signingKey,
+          subject ? { target: subject } : {},
+          observeLimitMs,
+        );
+        if (attempt > 1 && reply !== null && typeof reply === "object")
+          attemptsTaken.set(reply, attempt);
+        return reply;
+      } catch (cause) {
+        if (attempt < attempts && lostOnTheWay(cause)) continue;
+        if (attempt > 1 && cause !== null && typeof cause === "object")
+          attemptsTaken.set(cause, attempt);
+        throw cause;
+      }
+    }
+  };
 
 // A reset writes, so it keeps the shared RPC's own limit.
 export const recoveryResetSender =
@@ -844,6 +919,9 @@ export const logLine = (result: Awaited<ReturnType<typeof runCrashDispatch>>) =>
     : "") +
   (result.restartObservation && restartLines.has(result.restartObservation)
     ? `${result.restartObservation}\n`
+    : "") +
+  (result.retried?.length && result.retried.every((line) => retriedLine.test(line))
+    ? `retried: ${result.retried.join("; ")}\n`
     : "");
 
 if (import.meta.main) {

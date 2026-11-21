@@ -296,11 +296,11 @@ test("a declared root restart reads the provider twice first, and refuses unless
         "active-health outcome unknown: runtime-handoff-response-refused (PoolRuntime) HTTP 503",
       ),
     ),
-    /^::error::restart read: refuses \(recorded_pins_differ\), active-health outcome unknown: runtime-handoff-response-refused \(PoolRuntime\) HTTP 503: /mu,
+    /^::error::restart read: refuses \(recorded_pins_differ\) \(the dispatcher stopped at: active-health outcome unknown: runtime-handoff-response-refused \(PoolRuntime\) HTTP 503\): /mu,
   );
   assert.match(
     refuses("inspect", lines(token, undefined, "inspect outcome unknown: AbortError")),
-    /^::error::restart read: not read, inspect outcome unknown: AbortError: the heal would stop/mu,
+    /^::error::restart read: not read \(the dispatcher stopped at: inspect outcome unknown: AbortError\): the heal would stop/mu,
   );
   assert.match(
     refuses(
@@ -311,7 +311,7 @@ test("a declared root restart reads the provider twice first, and refuses unless
         "inspect outcome unknown: bridge exited",
       ),
     ),
-    /^::error::restart read: not checked \(selection_unavailable\), inspect outcome unknown: bridge exited: the heal/mu,
+    /^::error::restart read: not checked \(selection_unavailable\) \(the dispatcher stopped at: inspect outcome unknown: bridge exited\): the heal/mu,
   );
   // The dispatcher left nothing, or refused before any read: its own public cause is printed.
   assert.match(
