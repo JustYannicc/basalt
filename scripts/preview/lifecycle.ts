@@ -609,17 +609,13 @@ export async function destroyStage(
   const captured = withPreviewProviderInventory(current, providerInventory, config.stage);
   const inventory = mergePreviewInventories(manifest.remoteInventory, captured, config.stage);
   // The seed fixture's stack exists only where a seeded adopt ran, and the release entry has no
-  // config for it. With none of its State captured there is nothing to destroy; any of it, or a
-  // read that did not return that stack, refuses before any step.
+  // config for it. With none of its State captured (not even an output row) there is nothing to
+  // destroy; any row of it, or a read that did not return that stack, refuses before any step.
   if (subject.kind === "rehearsal") {
     const fixture = current.stacks[rehearsalFixtureStack];
     if (fixture === undefined)
       throw new Error("The fixture stack's State was not read; no teardown step runs");
-    if (
-      (inventory.stacks[rehearsalFixtureStack] ?? fixture).some(
-        (entry) => !entry.path.endsWith("/output"),
-      )
-    )
+    if ((inventory.stacks[rehearsalFixtureStack] ?? fixture).length > 0)
       throw new Error(
         "The fixture stack holds State the release entry cannot destroy; no teardown step runs",
       );

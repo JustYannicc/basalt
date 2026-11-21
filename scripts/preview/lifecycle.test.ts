@@ -256,7 +256,7 @@ test("the stage brand replaces only the brand object's host and zone in the real
 });
 
 /** A rehearsal stage's destroy, with the fixture stack's State as the reader returns it. */
-async function rehearsalDestroy(fixture: "none" | "one" | "unread") {
+async function rehearsalDestroy(fixture: "none" | "one" | "output" | "unread") {
   const root = await mkdtemp(join(tmpdir(), "rehearsal-fixture-"));
   const source = environment();
   const subject = { kind: "rehearsal", number: 17 } as const;
@@ -275,7 +275,11 @@ async function rehearsalDestroy(fixture: "none" | "one" | "unread") {
           ? {}
           : {
               "basalt-rehearsal-fixture":
-                fixture === "one" ? [row("basalt-rehearsal-fixture", "SeedAccount")] : [],
+                fixture === "one"
+                  ? [row("basalt-rehearsal-fixture", "SeedAccount")]
+                  : fixture === "output"
+                    ? [{ path: "basalt-rehearsal-fixture/test-rehearsal-17/output", value: {} }]
+                    : [],
             }),
       }),
     }),
@@ -311,6 +315,12 @@ test("(a) a rehearsal stage with no fixture State skips the fixture step, and th
 
 test("(b) a rehearsal stage with fixture State refuses before any delete", async () => {
   const { calls, outcome } = await rehearsalDestroy("one");
+  assert.match(String(outcome), /fixture stack holds State/u);
+  assert.deepEqual(calls, []);
+});
+
+test("(b2) a fixture stack holding only its output row refuses too: any fixture row refuses", async () => {
+  const { calls, outcome } = await rehearsalDestroy("output");
   assert.match(String(outcome), /fixture stack holds State/u);
   assert.deepEqual(calls, []);
 });
