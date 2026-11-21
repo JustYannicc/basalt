@@ -76,6 +76,7 @@ export function NativeDevice() {
           setChoices(available);
           // The pool did not answer: there is no pool to pick, and only tools can be approved.
           if (available.toolsOnly) {
+            setPool("");
             setProblem(modelsUnavailable);
             setToolsOnly(true);
           } else
@@ -259,7 +260,9 @@ export function NativeDevice() {
                       onChange={(event) => setPool(event.target.value)}
                     >
                       {!choices?.pools.length && (
-                        <option value="">{problem ? "Pools unavailable" : "Loading pools…"}</option>
+                        <option value="">
+                          {problem || choices?.toolsOnly ? "Pools unavailable" : "Loading pools…"}
+                        </option>
                       )}
                       {choices?.pools.map((entry) => (
                         <option key={entry.id} value={entry.id}>
@@ -332,7 +335,8 @@ export function NativeDevice() {
                       </Button>
                     </div>
                   )}
-                  {!choices && (
+                  {/* Trying again reads the pool again, the way back to models. */}
+                  {(!choices || choices.toolsOnly) && (
                     <div className="flex flex-wrap items-center gap-4">
                       <Button variant="outline" disabled={busy} onClick={reload}>
                         Try again

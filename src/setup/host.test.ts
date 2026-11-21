@@ -381,13 +381,19 @@ test("the approval page gets the person's own intent for tools only while the po
     );
     assert.ok(!f.calls.some((c) => c.path.endsWith("/create")));
   }
-  // A pool that answered is never replaced: its refusal or a bad intent stays a failure.
-  for (const value of [
-    { ok: false, error: "unauthorized", message: "This pool isn't linked to its access account." },
-    { ok: true, value: { href: `${origin}/setup#intent=forged` } },
+  // A pool that answered is never replaced: its refusal, a bad intent or a 4xx stays a failure.
+  for (const answer of [
+    () =>
+      json({
+        ok: false,
+        error: "unauthorized",
+        message: "This pool isn't linked to its access account.",
+      }),
+    () => json({ ok: true, value: { href: `${origin}/setup#intent=forged` } }),
+    () => json({ error: "Forbidden" }, 403),
   ]) {
     const f = fixture({
-      tools: ({ path }) => (path.endsWith("/data/query") ? json(value) : undefined),
+      tools: ({ path }) => (path.endsWith("/data/query") ? answer() : undefined),
     });
     assert.equal((await f.request("/setup/v1/context?fallback=tools")).status, 502);
   }

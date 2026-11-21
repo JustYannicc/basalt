@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fixture } from "./native-device-fixture.ts";
 import { signIntent } from "../../src/pool/setup-links.ts";
+import { nativeControlPrefix } from "../../src/pool/native-contract.ts";
+import { openEnvelope } from "../../src/pool/token.ts";
 
 const selection = {
   "x-basalt-native-intent": "synthetic-intent",
@@ -123,16 +125,24 @@ test("a pool refusal keeps its own code and is not reported as the pool being do
 test("after a pool outage answer the same code approves with tools only", async () => {
   let attempts = 0;
   let team = "";
+  const actions: (string | undefined)[] = [];
   using f = await fixture(
-    async () =>
-      ++attempts === 1
+    async (request) => {
+      const { envelope } = (await request.json()) as { envelope: string };
+      const opened = (await openEnvelope("ab".repeat(32), nativeControlPrefix, envelope)) as
+        | { action?: string }
+        | undefined;
+      const call = { action: opened?.action };
+      actions.push(call.action);
+      return ++attempts === 1
         ? poolOutage()
         : Response.json({
             computer: { id: "computer-fixture" },
             pool: "pool-fixture",
             models: false,
             toolsOrganization: team,
-          }),
+          });
+    },
     undefined,
     undefined,
     { organizations: true },
@@ -170,7 +180,8 @@ test("after a pool outage answer the same code approves with tools only", async 
   const retried = await decide("false");
   assert.equal(retried.status, 200, await retried.clone().text());
   assert.deepEqual(await retried.json(), { status: "approved" });
-  assert.equal(attempts, 2);
+  // The tools-only retry registers nothing; the pool hears of the device only as a report.
+  assert.equal(actions.filter((action) => action === "register").length, 1);
 });
 
 test("native dependency diagnostics distinguish status, timeout and invalid responses", async () => {

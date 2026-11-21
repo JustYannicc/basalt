@@ -145,8 +145,9 @@ async function setupContext(request: Request, env: SetupEnv): Promise<Response> 
   const result = response.ok ? await body(response) : undefined;
   if (!result) await response.body?.cancel();
   // The native approval page asks for this: a tools-only device never needs the pool, so while the
-  // pool doesn't answer it gets the claims the pool signs for its owner, taken from the tools
-  // service's record that the person created it. The pool checks them again on any setup action.
+  // pool doesn't answer or reports itself unavailable (as it also does while a computer's removal
+  // is unfinished), it gets the claims the pool signs for its owner, taken from the tools service's
+  // record that the person created it. The pool checks them like its own on later setup actions.
   if (
     new URL(request.url).searchParams.get("fallback") === "tools" &&
     (result

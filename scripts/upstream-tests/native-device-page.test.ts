@@ -206,6 +206,18 @@ test("with the pool down before the page opens, the person can still approve too
     reviewDeviceDecision(h.f.user_code, request, signal(), choice, held, h.browser),
     (error: unknown) => error instanceof DeviceApprovalError && error.kind === "models-unavailable",
   );
+  await assert.rejects(
+    reviewDeviceDecision(
+      h.f.user_code,
+      request,
+      signal(),
+      { ...choice, tools: false },
+      held,
+      h.browser,
+    ),
+    (error: unknown) => error instanceof DeviceApprovalError && error.kind === "unavailable",
+  );
+  assert.equal(h.paths.includes("/api/auth/device/decide"), false);
   const approved = await settled(
     reviewDeviceDecision(
       h.f.user_code,
@@ -219,4 +231,28 @@ test("with the pool down before the page opens, the person can still approve too
   assert.deepEqual(approved, { kind: "decided", status: "approved" });
   const policy = await h.toolsGrant();
   assert.equal(policy.toolsOrganization, h.team);
+});
+
+test("a held intent four minutes old is read again for tools only, still without the pool list", async (t) => {
+  const h = await page(t);
+  h.down();
+  const request = await settled(readDeviceRequest(h.f.user_code, signal(), h.browser));
+  const held = await settled(readDevicePools(signal(), h.browser));
+  const before = h.paths.length;
+  // The host refuses an intent five minutes after it was signed; the page stops reusing one at four.
+  const approved = await settled(
+    reviewDeviceDecision(
+      h.f.user_code,
+      request,
+      signal(),
+      { ...choice, pool: "", models: false },
+      { ...held, readAt: Date.now() - 4 * 60_000 },
+      h.browser,
+    ),
+  );
+  assert.deepEqual(approved, { kind: "decided", status: "approved" });
+  assert.deepEqual(
+    h.paths.slice(before).filter((path) => path.startsWith("/setup/")),
+    ["/setup/v1/context"],
+  );
 });
