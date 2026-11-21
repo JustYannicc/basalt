@@ -179,7 +179,8 @@ const lostOnTheWay = (cause: unknown) =>
     httpStatus(cause) !== " HTTP 409") ||
     (cause instanceof DOMException &&
       (cause.name === "AbortError" || cause.name === "TimeoutError")) ||
-    bridgeFailure(cause) !== undefined);
+    bridgeFailure(cause) !== undefined ||
+    cause instanceof CommandExpiredLocally);
 /** Attempts in all for one observe read; commands that write are never sent twice. */
 export const observeAttempts = 3;
 /** How many attempts an observe read took, keyed by the reply or the error it ended with. */
@@ -207,7 +208,9 @@ function publicError(error: unknown, phase: string) {
             ? `: ${error.name}`
             : bridge
               ? `: bridge ${bridge}`
-              : "";
+              : error instanceof CommandExpiredLocally
+                ? ": expired before it was sent"
+                : "";
   return `${phase}${code}`;
 }
 
@@ -270,6 +273,7 @@ const providerCauses = [
   "reply_unreadable",
   "no_reply",
   "bridge_failed",
+  "expired_unsent",
   "response_refused",
   "outcome_unknown",
   "target_unavailable",
@@ -337,7 +341,9 @@ async function providerRead(
               ? "no_reply"
               : bridgeFailure(cause) !== undefined
                 ? "bridge_failed"
-                : "outcome_unknown")
+                : cause instanceof CommandExpiredLocally
+                  ? "expired_unsent"
+                  : "outcome_unknown")
     );
   }
   try {
@@ -755,6 +761,13 @@ export const crashSender =
     }
   };
 
+/** A command that expired here before it was sent: it never reached the Worker. */
+export class CommandExpiredLocally extends Error {
+  constructor() {
+    super("Runtime handoff command expired before it was sent");
+  }
+}
+
 /** The controller answered with its own handoff refusal (409 runtime-handoff-refused). */
 export class ControllerRefused extends Error {
   /** The controller's fixed runtime failure code, safe to publish. */
@@ -818,12 +831,16 @@ async function signedCommand(
   fields: { target?: ObserveSubject; operationId?: string },
   limitMs?: number,
 ) {
-  const at = signedNow();
   // The closed command union decides which subject an action may carry; any other pairing refuses.
-  const command = decodeRuntimeHandoffCommand(
-    { controllerCode, action, at, expiresAt: at + 25_000, ...fields },
-    at,
-  );
+  const build = () => {
+    const at = signedNow();
+    return decodeRuntimeHandoffCommand(
+      { controllerCode, action, at, expiresAt: at + 25_000, ...fields },
+      at,
+    );
+  };
+  // Once before any bridge opens, so a command the union refuses never opens one.
+  build();
   // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
   // refused; a defect, auth rejection or bridge failure must not read as a refusal.
   let refused: string | undefined;
@@ -864,11 +881,18 @@ async function signedCommand(
   };
   try {
     return await sendRuntimeCommand(
-      command,
+      // Signed once the bridge is open: a bridge may take up to 30 s to start, and a command lives
+      // 25 s from its signature.
+      async () => build(),
       signingKey,
       { ...target, connect: observed },
-      () => {
-        decodeRuntimeHandoffCommand(command, signedNow());
+      (frozen) => {
+        // The shape was decoded when it was built, so only its time can fail here.
+        try {
+          decodeRuntimeHandoffCommand(frozen, signedNow());
+        } catch {
+          throw new CommandExpiredLocally();
+        }
       },
       undefined,
       undefined,

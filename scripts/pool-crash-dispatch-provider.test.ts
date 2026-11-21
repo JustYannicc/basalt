@@ -25,7 +25,7 @@ import { resolvedApplication } from "./pool-fleet/test/cloudflare-shapes.ts";
 const controllerCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 const reads = "provider observation: reads";
 const closedLine =
-  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|no_reply|bridge_failed|response_refused|outcome_unknown|target_unavailable)\))$/u;
+  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|no_reply|bridge_failed|expired_unsent|response_refused|outcome_unknown|target_unavailable)\))$/u;
 // Distinct from every other identity in the run, so any appearance in the output came from this read.
 const pins = {
   accountId,
@@ -818,4 +818,62 @@ test("(g) a read lost on the way is sent again, signed anew on a fresh bridge, t
     ),
   );
   assert.equal(direct, 1);
+});
+
+test("(h) a command is signed once its bridge is open, and one that expires before it is sent is sent again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const signingKey = randomBytes(32).toString("hex");
+  const target = { accountId, worker: "synthetic-pool" };
+  const arrived: { at: number; expiresAt: number; now: number }[] = [];
+  /** A bridge that takes `startMs` to open and answers every request it gets. */
+  const slow = (startMs: number) => async () => {
+    t.mock.timers.tick(startMs);
+    return {
+      dispose: async () => {},
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const { envelope } = (await request.json()) as { envelope: string };
+            const command = (await openEnvelope(
+              signingKey,
+              deploymentReadinessPrefix,
+              envelope,
+            )) as {
+              at: number;
+              expiresAt: number;
+            };
+            arrived.push({ at: command.at, expiresAt: command.expiresAt, now: Date.now() });
+            return Response.json({ result: { selection: null } });
+          },
+        },
+      },
+    };
+  };
+  // A bridge that takes longer to start than a command lives still sends one current on arrival.
+  const reply = await observeSender(slow(26_000))("inspect", controllerCode, target, signingKey);
+  assert.deepEqual(reply, { result: { selection: null } });
+  assert.equal(arrived.length, 1);
+  assert.ok(arrived[0]!.expiresAt > arrived[0]!.now, "current when it arrives");
+  assert.ok(arrived[0]!.at >= arrived[0]!.now - 5_000, "signed after the bridge opened");
+  // A command that expires between its signature and its send never reached the Worker: it is
+  // sent again, never reported as the Worker refusing its identity.
+  const sign = SubtleCrypto.prototype.sign;
+  let stalled = false;
+  t.mock.method(
+    crypto.subtle,
+    "sign",
+    async function (this: SubtleCrypto, ...args: Parameters<SubtleCrypto["sign"]>) {
+      const signature = await sign.apply(this, args);
+      if (!stalled) {
+        stalled = true;
+        t.mock.timers.tick(26_000);
+      }
+      return signature;
+    },
+  );
+  arrived.length = 0;
+  const resent = await observeSender(slow(0))("inspect", controllerCode, target, signingKey);
+  assert.equal(attemptsOf(resent), 2);
+  assert.equal(arrived.length, 1, "the expired one was never sent");
+  assert.ok(arrived[0]!.expiresAt > arrived[0]!.now);
 });
