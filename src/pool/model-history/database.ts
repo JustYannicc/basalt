@@ -51,8 +51,11 @@ export async function withHistoryDatabase<T>(
     } catch (error) {
       const reason = historyTimeoutReason(error);
       if (!reason) throw error;
+      // The driver's error stays the cause, so a failed read can still name its Postgres code.
       const timeout =
-        error instanceof HistoryTimeoutFailure ? error : new HistoryTimeoutFailure(reason);
+        error instanceof HistoryTimeoutFailure
+          ? error
+          : Object.assign(new HistoryTimeoutFailure(reason), { cause: error });
       // Postgres answered a cancelled statement, so the session still works: a caller's savepoint
       // can recover it. Only a timeout on this side leaves the socket in an unknown state.
       if (!serverCancelled(error)) deadline.stop(timeout);

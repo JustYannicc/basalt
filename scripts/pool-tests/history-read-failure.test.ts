@@ -79,6 +79,7 @@ test("the failed statement is named by its step, and the rollback after it does 
       status: 503,
       failure: "statement_timeout",
       elapsedMs: 5_011,
+      sqlstate: "57014",
       statement: 7,
       statementMs: 5_000,
       step: "capture",
@@ -114,5 +115,48 @@ test("a statement that failed inside a recovered savepoint never takes the blame
   );
   assert.deepEqual(failures(errors.mock.calls), [
     { action: "poolUsageSummary", status: 503, failure: "unknown", elapsedMs: 0 },
+  ]);
+});
+
+test("a read that cannot connect names the connect step and the cause it carries", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  t.mock.method(console, "info", () => {});
+  const watch = watchHistoryRead("poolUsageSummary", "summary", () => 0);
+  const refused = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+  await assert.rejects(
+    watch.diagnostics!.run("database_connect", async () => {
+      throw refused;
+    }),
+  );
+  watch.answered(refused, new Response(null, { status: 503 }));
+  assert.deepEqual(failures(errors.mock.calls), [
+    {
+      action: "poolUsageSummary",
+      status: 503,
+      failure: "transport",
+      elapsedMs: 0,
+      step: "connect",
+    },
+  ]);
+});
+
+test("the Postgres code is read through a deadline error's causes", (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const watch = watchHistoryRead("poolOverview", undefined, () => 0);
+  const timeout = Object.assign(new HistoryTimeoutFailure("statement_timeout"), {
+    cause: statementTimeout(),
+  });
+  watch.answered(
+    new Error("Model history database deadline exceeded", { cause: timeout }),
+    new Response(null, { status: 503 }),
+  );
+  assert.deepEqual(failures(errors.mock.calls), [
+    {
+      action: "poolOverview",
+      status: 503,
+      failure: "statement_timeout",
+      elapsedMs: 0,
+      sqlstate: "57014",
+    },
   ]);
 });

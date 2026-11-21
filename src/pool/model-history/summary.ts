@@ -274,6 +274,7 @@ export async function poolUsageSummary(
     return result;
   } catch (error) {
     mark("rollback");
+    // A broken session cannot let the rollback replace the cause.
     await db.query("ROLLBACK").catch(() => {});
     throw error;
   }
