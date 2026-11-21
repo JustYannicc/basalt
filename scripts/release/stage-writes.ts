@@ -256,6 +256,14 @@ export const ownIdentities = (rows: ReadonlyArray<unknown>) => {
             value.length > 0
           )
             owned.add(value);
+    // A Worker's zone routes are recorded inside its row (`attr.routes[]`, Alchemy's Worker
+    // attributes); removing one sends DELETE /zones/{zone}/workers/routes/{id}.
+    if (/^Cloudflare\.Worker$/u.test(String(row.resourceType ?? "")))
+      for (const generation of [row, row.old])
+        if (record(generation) && record(generation.attr) && Array.isArray(generation.attr.routes))
+          for (const route of generation.attr.routes)
+            if (record(route) && typeof route.id === "string" && route.id.length > 0)
+              owned.add(route.id);
   }
   return [...owned].sort();
 };

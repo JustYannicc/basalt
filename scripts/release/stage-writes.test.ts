@@ -261,3 +261,32 @@ test("a teardown deletes a container application only once Cloudflare names it f
     "refuse",
   );
 });
+
+test("a stage owns the zone routes its own Workers' rows record, and no other route", () => {
+  const rows = [
+    {
+      resourceType: "Cloudflare.Worker",
+      attr: {
+        workerName: "basalt-rehearsal-api-x",
+        routes: [
+          { id: "route-own", pattern: "app.rehearsal-4.example.dev/*", zoneId: "zone" },
+          { pattern: "no-id/*" },
+        ],
+      },
+    },
+    // Another type's nested `routes` never counts.
+    {
+      resourceType: "Cloudflare.DNS.Record",
+      attr: { recordId: "rec-1", routes: [{ id: "route-dns" }] },
+    },
+  ];
+  const stageOwned = ownIdentities(rows);
+  assert.ok(stageOwned.includes("route-own"));
+  assert.ok(!stageOwned.includes("route-dns"));
+  const isOwned = (value: string) => stageOwned.includes(value);
+  const remove = (id: string) =>
+    stageWriteVerdict(scope, isOwned, "DELETE", new URL(`${ZONE}/workers/routes/${id}`), undefined)
+      .kind;
+  assert.equal(remove("route-own"), "allow");
+  assert.equal(remove("route-production"), "refuse");
+});
