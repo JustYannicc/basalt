@@ -80,7 +80,8 @@ test("revoke cancels native thinking and refuses subsequent HTTP and WebSocket o
     await command(["revoke"], f.home);
     const cancelled = await pending;
     assert.equal(cancelled.status, 502);
-    assert.equal(cancelled.headers.get("x-should-retry"), "false");
+    // A retry after revocation meets the explicit 401 below, which tells the person to sign in.
+    assert.equal(cancelled.headers.get("x-should-retry"), null);
     await cancelled.body?.cancel();
     const refused = await fetch(`${origin}/v1/models`, {
       headers: { authorization: `Bearer ${token}` },
@@ -103,7 +104,7 @@ test("revoke cancels native thinking and refuses subsequent HTTP and WebSocket o
         reject(new Error("Revoked WebSocket admitted."));
       });
     });
-    assert.equal(status, 503);
+    assert.equal(status, 401);
     assert.equal(calls, 1);
   } finally {
     await f.close();
