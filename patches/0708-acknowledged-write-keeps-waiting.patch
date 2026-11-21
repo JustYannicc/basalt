@@ -1,0 +1,25 @@
+diff --git a/packages/ui/src/contracts/mutations.ts b/packages/ui/src/contracts/mutations.ts
+--- a/packages/ui/src/contracts/mutations.ts
++++ b/packages/ui/src/contracts/mutations.ts
+@@ -5,6 +5,7 @@ import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
+  * Publish server-confirmed changes before a mutation completes. Refresh failures
+  * retain that confirmed value alongside the typed read error; a later successful
+  * read replaces it. Writes patch existing data only, never fabricate a record.
++ * A write keeps the query waiting while its source has a read in flight.
+  * Products may discard previous data on an authoritative access-denied failure.
+  */
+ export const acknowledgedQuery = <A, E>(
+@@ -33,7 +34,12 @@ export const acknowledgedQuery = <A, E>(
+         return;
+       }
+       const current = AsyncResult.value(result);
+-      if (Option.isSome(current)) get.setSelf(AsyncResult.success(update(current.value)));
++      if (Option.isNone(current)) return;
++      // When a read is already in flight, it answers after this write. The refresh that follows a
++      // confirmed save restarts it without changing the source's waiting value, so nothing rebuilds
++      // this query: it carries `waiting` itself until that read settles.
++      const { waiting } = get.get(source);
++      get.setSelf(AsyncResult.success(update(current.value), { waiting }));
+     },
+     (refresh) => refresh(source),
+   );
