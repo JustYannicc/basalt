@@ -3,6 +3,7 @@ import type { PoolUsageSummaryResult } from "../../../apps/pool/usage-overview-c
 import type { PoolUsageSeriesInput, PoolUsageSeriesResult } from "./series-contract.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { historyObject, timestamp } from "./record.ts";
+import { HistoryTooLarge } from "./series-deadline.ts";
 import { authorizeSeries, seriesAuthority } from "./series-input.ts";
 import { homeAccountMappingProven } from "./series-mapping.ts";
 import { homeCaptureCoverage } from "./capture-coverage.ts";
@@ -14,6 +15,7 @@ import {
   maxSummaryCostRows,
   maxSummaryModelRows,
   maxSummaryProviderRows,
+  maxSummaryWindowRows,
   summaryDailyQuery,
   summaryPriceTargets,
   summarySelection,
@@ -37,6 +39,7 @@ export async function poolUsageSummary(
   now = Date.now(),
   /** Labels the statements that follow, so a failure names its step rather than an ordinal. */
   mark: (step: HistoryReadStep) => void = () => {},
+  windowRows = maxSummaryWindowRows,
 ): Promise<PoolUsageSummaryResult> {
   const parsed = summaryInput(raw);
   const value = historyObject(raw);
@@ -52,9 +55,10 @@ export async function poolUsageSummary(
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
     let selection = await summarySelection(pool, readFrom, input.to, authority);
-    const targetQuery = summaryPriceTargets(selection);
+    const targetQuery = summaryPriceTargets(selection, windowRows);
     mark("targets");
     const targets = (await db.query(targetQuery.text, targetQuery.values)).rows;
+    if (targets.some((row) => row.window_rows !== null)) throw new HistoryTooLarge();
     const priceUnavailableReason =
       targets.length > 100
         ? "More than 100 provider/model pairs need prices; money estimates are unavailable."
@@ -270,7 +274,7 @@ export async function poolUsageSummary(
     return result;
   } catch (error) {
     mark("rollback");
-    // After a timeout the session is already stopped; the rollback must not replace the cause.
+    // A broken session cannot let the rollback replace the cause.
     await db.query("ROLLBACK").catch(() => {});
     throw error;
   }

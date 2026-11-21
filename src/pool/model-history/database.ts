@@ -26,6 +26,12 @@ async function createClient(connectionString: string): Promise<HistoryDatabaseCl
   });
 }
 
+function serverCancelled(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+  return code === "57014" || code === "55P03";
+}
+
 /** One bounded session, never a driver error or SQL parameter in the log. */
 export async function withHistoryDatabase<T>(
   connectionString: string | undefined,
@@ -50,7 +56,9 @@ export async function withHistoryDatabase<T>(
         error instanceof HistoryTimeoutFailure
           ? error
           : Object.assign(new HistoryTimeoutFailure(reason), { cause: error });
-      deadline.stop(timeout);
+      // Postgres answered a cancelled statement, so the session still works: a caller's savepoint
+      // can recover it. Only a timeout on this side leaves the socket in an unknown state.
+      if (!serverCancelled(error)) deadline.stop(timeout);
       throw timeout;
     }
   };
