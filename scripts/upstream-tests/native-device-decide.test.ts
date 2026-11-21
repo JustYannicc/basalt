@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fixture } from "./native-device-fixture.ts";
+import { signIntent } from "../../src/pool/setup-links.ts";
 
 const selection = {
   "x-basalt-native-intent": "synthetic-intent",
@@ -146,11 +147,24 @@ test("after a pool outage answer the same code approves with tools only", async 
     model: "member",
     data: { organizationId: team, userId: f.userId, role: "owner", createdAt: new Date() },
   });
+  // A tools-only approval checks the person's own Connect intent itself, so it must be real.
+  const intent = await signIntent("ab".repeat(32), {
+    user: f.userId,
+    owner: f.userId,
+    pool: "pool-fixture",
+    organization: team,
+    expiresAt: Date.now() + 60_000,
+  });
   const decide = (models: string) =>
     f.request(
       "/device/decide",
       { user_code: f.user_code, accept: true },
-      { ...selection, "x-basalt-native-models": models, "x-basalt-native-tools": "true" },
+      {
+        ...selection,
+        "x-basalt-native-intent": intent,
+        "x-basalt-native-models": models,
+        "x-basalt-native-tools": "true",
+      },
     );
   assert.equal((await decide("true")).status, 503);
   const retried = await decide("false");
