@@ -178,7 +178,6 @@ test("a rehearsal deploys only its database parent, then destroys and verifies i
     await destroyStage(root, subject, source, live);
     await verifyStageAbsent(root, subject, source, live);
     assert.deepEqual(calls, [
-      "destroy:fixture:test-rehearsal-17:test-rehearsal-17",
       "destroy:basalt:test-rehearsal-17:test-rehearsal-17",
       "applications:delete:test-rehearsal-17",
       "images:delete:test-rehearsal-17",
@@ -254,4 +253,74 @@ test("the stage brand replaces only the brand object's host and zone in the real
       ),
     /seam changed/,
   );
+});
+
+/** A rehearsal stage's destroy, with the fixture stack's State as the reader returns it. */
+async function rehearsalDestroy(fixture: "none" | "one" | "unread") {
+  const root = await mkdtemp(join(tmpdir(), "rehearsal-fixture-"));
+  const source = environment();
+  const subject = { kind: "rehearsal", number: 17 } as const;
+  const calls: string[] = [];
+  const row = (stack: string, fqn: string) => ({
+    path: `${stack}/test-rehearsal-17/${fqn}`,
+    value: { resourceType: "Cloudflare.Worker", attr: { workerName: fqn } },
+  });
+  const record = (name: string) => async () => void calls.push(name);
+  const live: LifecycleServices = {
+    stateReader: () => ({
+      read: async () => ({
+        "basalt-rehearsal": [row("basalt-rehearsal", "Router")],
+        "basalt-preview-database": [],
+        ...(fixture === "unread"
+          ? {}
+          : {
+              "basalt-rehearsal-fixture":
+                fixture === "one" ? [row("basalt-rehearsal-fixture", "SeedAccount")] : [],
+            }),
+      }),
+    }),
+    captureProviders: async () => ({ complete: true, containers: [], domains: [] }),
+    build: async () => assert.fail("no build"),
+    deploy: async () => assert.fail("no deploy"),
+    destroyStack: async (stack) => void calls.push(`destroy:${stack}`),
+    deleteArtifacts: record("artifacts"),
+    verifyProviders: record("verify"),
+    stageApplications: async (mode) => void calls.push(`applications:${mode}`),
+    stageImages: async (mode) => void calls.push(`images:${mode}`),
+    stageOutputs: async (mode) => void calls.push(`outputs:${mode}`),
+  };
+  try {
+    await planStage(root, subject, source);
+    await updatePreviewManifest(manifestPath(root, subject), subject, "deploying");
+    const outcome = await destroyStage(root, subject, source, live).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    return { calls, outcome };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("(a) a rehearsal stage with no fixture State skips the fixture step, and the next step runs", async () => {
+  const { calls, outcome } = await rehearsalDestroy("none");
+  assert.equal(outcome, undefined);
+  assert.ok(!calls.includes("destroy:fixture"));
+  assert.equal(calls[0], "destroy:basalt");
+});
+
+test("(b) a rehearsal stage with fixture State refuses before any delete", async () => {
+  const { calls, outcome } = await rehearsalDestroy("one");
+  assert.match(String(outcome), /fixture stack holds State/u);
+  assert.deepEqual(calls, []);
+});
+
+test("(c) a fixture stack the read did not return refuses: a failed read is never no rows", async () => {
+  const { calls, outcome } = await rehearsalDestroy("unread");
+  // The inventory's exact-keys check refuses first; the destroy's own guard is the second line.
+  assert.match(
+    String(outcome),
+    /fixture stack's State was not read|Preview state response has unexpected fields/u,
+  );
+  assert.deepEqual(calls, []);
 });
