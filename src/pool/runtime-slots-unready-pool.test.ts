@@ -81,12 +81,16 @@ test("a pool that is not ready does not block staging and promoting a candidate"
 });
 
 test(
-  "a pool that is not ready does not block recovering the selected runtime",
+  "a pool that is not ready does not block a recovery pass that runs alone",
   { timeout: 10_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     await f.bootstrap();
+    // A fresh object's own first alarm runs Home and fleet together. Settle it first, so the one
+    // pass below is recovery's alone: a Home pass repairing the pool would move the digest under it.
+    await f.alarm();
+    await f.settle();
     const rows = (await f.old.storage.get<Record<string, MembershipState>>(nativeMembershipKey))!;
     await f.old.storage.put(nativeMembershipKey, { ...rows, ...unready() });
     f.old.crash();

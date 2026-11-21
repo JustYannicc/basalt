@@ -2,11 +2,18 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../../.upstream"
 playwright=./node_modules/.bin/playwright
+archives="$RUNNER_TEMP/playwright-apt"
+shopt -s nullglob
 install_cached_deps() {
-  shopt -s nullglob
-  debs=("$RUNNER_TEMP/playwright-apt/"*.deb)
+  debs=("$archives/"*.deb)
   if ((${#debs[@]})); then
-    sudo dpkg --install "${debs[@]}"
+    # All or nothing, offline. With no sources apt sees only the installed packages and these debs,
+    # plans the whole set before dpkg runs, and stops if a dependency is missing or a package would
+    # be downgraded or removed. dpkg alone would leave a package unpacked but unconfigured, and every
+    # later apt call, and job, would fail on it. (--no-download refuses local debs outright.)
+    mkdir -p "$RUNNER_TEMP/apt-no-sources"
+    sudo apt-get install -y --no-install-recommends --no-remove -o Dir::Etc::SourceList=/dev/null \
+      -o Dir::Etc::SourceParts="$RUNNER_TEMP/apt-no-sources" "${debs[@]}"
   fi
   # A partial cache must fail offline rather than silently starting downloads.
   "$playwright" install-deps --dry-run chromium
@@ -15,7 +22,17 @@ if [[ "${1:-false}" == true ]]; then
   install_cached_deps
   exit
 fi
-mkdir -p "$RUNNER_TEMP/playwright-apt"
+mkdir -p "$archives"
+# Debs restored from an older image's cache failed the offline install; download a fresh set.
+stale=("$archives/"*.deb)
+restored=()
+if ((${#stale[@]})); then
+  for deb in "${stale[@]}"; do
+    base="${deb##*/}"
+    restored+=("${base%%_*}")
+  done
+  rm -f "${stale[@]}"
+fi
 sudo tee /etc/apt/apt.conf.d/99-playwright-ci > /dev/null <<EOF_APT
 Dir::Cache::archives "$RUNNER_TEMP/playwright-apt";
 APT::Keep-Downloaded-Packages "true";
@@ -41,3 +58,22 @@ if ! download_deps; then
   download_deps
 fi
 install_cached_deps
+# The download skips packages the failed offline install already applied. Fetch their current debs
+# too, or the saved cache lacks them and every later job, on this image and the next, goes back to
+# the archive.
+missing=()
+if ((${#restored[@]})); then
+  for name in "${restored[@]}"; do
+    fresh=("$archives/${name}_"*.deb)
+    # madison lists only what the archive offers, so a package it no longer has is skipped.
+    if ((${#fresh[@]} == 0)) && [[ -n "$(apt-cache madison "$name")" ]]; then
+      missing+=("$name")
+    fi
+  done
+fi
+if ((${#missing[@]})); then
+  if ! (cd "$archives" && timeout --kill-after=5s 30s apt-get download "${missing[@]}"); then
+    echo "::warning::Couldn't fetch ${missing[*]} for the deb cache, so this job saves none."
+    rm -f "$archives/"*.deb
+  fi
+fi
