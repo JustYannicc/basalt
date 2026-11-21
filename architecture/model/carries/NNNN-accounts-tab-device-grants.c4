@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "The agents listing says of every grant whether device authorization issued it, read from its client's registration (the device grant and refresh alone), by the same rule the drive backend's devices query applies to grant storage. A vault app's Accounts tab, and every view built from its device list (the Apps card, the Accounts search pointer, Connect's header), lists a grant as a device only when device authorization issued it through a connection for that app alone, run as the app, whatever tools that connection now selects. An agent's grant is never a device, even one holding only the sync tools or connecting through Connect Obsidian's own connection. Renaming a vault after its device's report still reads only connections limited to the sync tools."
+      constraint "The agents listing says of every grant whether device authorization issued it, read from its client's registration (the device grant and refresh alone), by the same rule the drive backend's devices query applies to grant storage. A vault app's Accounts tab, and every view built from its device list (the Apps card, the Accounts search pointer, Connect's header), lists a grant as a device only when device authorization issued it through a connection for that app alone, run as the app, whatever tools that connection now selects. A grant whose client also registered for browser sign-in, as agents' clients do, is never a device, even one holding only the sync tools or connecting through Connect Obsidian's own connection. Renaming a vault after its device's report still reads only connections limited to the sync tools."
     }
   }
 }

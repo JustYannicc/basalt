@@ -76,7 +76,7 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web
      only.tools.kind === "selected" &&
      only.tools.names.length > 0 &&
      only.tools.names.every((name) => syncTools.has(name))
-@@ -39,9 +47,10 @@ export const isVaultConnection = (app: AppId, connection: Connection) => {
+@@ -39,9 +47,11 @@ export const isVaultConnection = (app: AppId, connection: Connection) => {
  };
  
  /**
@@ -85,12 +85,13 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web
 - * are not this vault's devices.
 + * The member's devices syncing this app's vault, oldest first, by the drive's own rule for its
 + * devices: grants device authorization issued, held through a connection for this app alone, run
-+ * as the app, whatever tools its owner has since chosen. An agent's grant is not a device even
-+ * when it holds only the sync tools, or connects through Connect Obsidian's own connection.
++ * as the app, whatever tools its owner has since chosen. A grant whose client also registered for
++ * browser sign-in, as agents' clients do, is not a device even when it holds only the sync tools
++ * or connects through Connect Obsidian's own connection.
   */
  export function obsidianDevices(
    app: AppId,
-@@ -50,12 +59,14 @@ export function obsidianDevices(
+@@ -50,12 +60,14 @@ export function obsidianDevices(
  ): ObsidianDevice[] {
    const vault = new Set(
      connections

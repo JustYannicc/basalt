@@ -1,7 +1,7 @@
 {
   "identity": "basalt-accounts-tab-device-grants",
   "file": "NNNN-accounts-tab-device-grants.patch",
-  "content_sha256": "8915384b286aa9b52780ddff7f806c0f55feab65d56b6d7409671a533f706112",
+  "content_sha256": "5bec2b39d392ea32f586e3ba1aecd4ce3f581ce5312fc54b50059d654a2536ed",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

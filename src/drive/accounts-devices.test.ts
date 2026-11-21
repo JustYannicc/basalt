@@ -58,6 +58,12 @@ test("the Accounts tab lists a vault's Connect Obsidian devices, never an agent'
         (yield* grants.connection(scoped("agent-tools", { kind: "all" }))).url,
         "Agent",
       );
+      // Devices that leave: one whose grant is revoked, one whose connection is.
+      const laptop = yield* grants.connectDevice(obsidian, "Laptop");
+      yield* grants.revokeGrant(laptop);
+      const retired = yield* grants.connection(scoped("obsidian-retired", { kind: "all" }));
+      const old = yield* grants.connectDevice(retired, "Old phone");
+      yield* grants.revokeConnection(retired.id);
       const ids = { mac, phone, tablet, reader, borrower, everything };
       const { connections, agents } = yield* grants.listings();
       return {
@@ -65,12 +71,12 @@ test("the Accounts tab lists a vault's Connect Obsidian devices, never an agent'
         listed: agents.map((agent) => agent.id),
         issuedToDevice: agents.filter((agent) => agent.issuedToDevice).map((agent) => agent.id),
         shown: obsidianDevices(vault.id, connections, agents).map((device) => device.agent),
-        // What devices() keeps of the same grants, read from the same grant storage.
-        kept: yield* vaultDeviceGrants(sql, vault.id, Object.values(ids)),
+        // What devices() keeps of the same grants, revoked ones included, from the same storage.
+        kept: yield* vaultDeviceGrants(sql, vault.id, [...Object.values(ids), laptop, old]),
       };
     }),
   );
-  // The listing holds every grant, the agents' included.
+  // The listing holds every current grant, the agents' included, and no revoked one.
   assert.deepEqual([...listed].sort(), Object.values(ids).sort());
   const devices = [ids.mac, ids.phone, ids.tablet].sort();
   assert.deepEqual([...shown].sort(), devices);

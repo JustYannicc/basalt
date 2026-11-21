@@ -128,7 +128,10 @@ export const grantStore = (organization: string) =>
     });
     const owner = { userId: user.id, resource: organization };
     // The host's own adapter over the grant store's listings, as the dashboard's API reads them.
-    const store = mcpConnectionStore((call) => Effect.tryPromise(() => call(auth.api)));
+    // Failures reach it as the host passes them, so its status mapping reads the endpoint's own.
+    const store = mcpConnectionStore((call) =>
+      Effect.tryPromise({ try: () => call(auth.api), catch: (cause) => cause }),
+    );
     const reply = async (response: Response, status = 200) => {
       const body = await response.text();
       assert.equal(response.status, status, body);
