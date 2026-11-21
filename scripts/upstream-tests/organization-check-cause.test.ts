@@ -180,11 +180,14 @@ const organizationEndpoint = (
             const signed = yield* Effect.promise(() =>
               auth.api.signUpEmail({ body: { name: "Fixture Person", email, password } }),
             );
-            yield* sql`update "user" set "emailVerified" = ${verified} where id = ${signed.user.id}`;
+            yield* sql`update "user" set "emailVerified" = true where id = ${signed.user.id}`;
             const response: Response = yield* Effect.promise(() =>
               auth.api.signInEmail({ asResponse: true, body: { email, password } }),
             );
             assert.equal(response.status, 200, yield* Effect.promise(() => response.text()));
+            // Cloud password sign-in needs a verified email; the session outlives a later change.
+            if (!verified)
+              yield* sql`update "user" set "emailVerified" = false where id = ${signed.user.id}`;
             return new Headers({
               cookie: response.headers
                 .getSetCookie()
