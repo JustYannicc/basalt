@@ -163,6 +163,7 @@ if (command === "boot" || command === "accept") {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
     const {
+      acceptanceExit,
       awaitRecoveryReady,
       bootBeforeApply,
       healingOutcome,
@@ -170,8 +171,7 @@ if (command === "boot" || command === "accept") {
       NOT_SERVING,
       runAcceptance,
     } = await import("./acceptance.ts");
-    const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } =
-      await import("./acceptance-device.ts");
+    const { acceptanceCredential, refusalFix } = await import("./acceptance-device.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
@@ -180,12 +180,12 @@ if (command === "boot" || command === "accept") {
     const credential = acceptanceCredential(process.env);
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
-      // Only a release that declares a root restart may start on a pool that does not answer.
+      // Only a release that declares a root restart may start on a pool that does not serve the read.
       const boot = await bootBeforeApply(credential, client, values["allow-not-serving"] === true);
       await output(resolve(values.out ?? ""), { boot });
       await summary(
         boot === NOT_SERVING
-          ? "The pool does not answer before the apply; this release declares a root restart."
+          ? "The pool did not serve the boot read before the apply (no answer, an error status, or a 429). This release declares a root restart, so it goes on, but without that boot acceptance cannot confirm the root restarted."
           : "The root's boot is recorded before the apply.",
       );
       process.exit(0);
@@ -197,8 +197,10 @@ if (command === "boot" || command === "accept") {
           ).boot
         : undefined;
     let rootBoot = await bootRecord(values["root-boot"]);
+    // What a healing release's outcome compares with, before rootBoot becomes its new boot.
+    const bootBefore = rootBoot ?? NOT_SERVING;
     // The boot read writes its record only when the pool did not refuse the device (a refusal stops
-    // the run there): it served the device, or for a declared restart did not answer at all. So
+    // the run there): it served the device, or for a declared restart did not serve at all. So
     // after the apply a 401 or 403 is the release's. `--admitted` passes that record without
     // requiring its boot, for the rollback's read of the version it put back.
     const admitted = rootBoot !== undefined || (await bootRecord(values.admitted)) !== undefined;
@@ -207,7 +209,7 @@ if (command === "boot" || command === "accept") {
       throw new Error(`Unknown --expect ${expect}`);
     if (rootBoot === NOT_SERVING && expect !== "restart")
       throw new Error(
-        "The pool did not answer before the apply, and this release declares no restart",
+        "The pool did not serve the boot read before the apply, and this release declares no restart",
       );
     let restart: Record<string, unknown> | undefined;
     // Which bound a healing release waited within, named in its summary line.
@@ -317,9 +319,10 @@ if (command === "boot" || command === "accept") {
       await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
       process.exit(1);
     });
-    // A healing release ends healed, serving but needing a person, could not test, or not serving.
+    // A healing release ends healed, serving but needing a person or with its restart unconfirmed,
+    // could not test, or not serving.
     const outcome = verdict
-      ? healingOutcome(verdict, result)
+      ? healingOutcome(verdict, result, bootBefore)
       : result.couldNotTest
         ? "could-not-test"
         : undefined;
@@ -333,30 +336,26 @@ if (command === "boot" || command === "accept") {
       firstByteMs: result.firstByteMs,
       ...(outcome ? { outcome } : {}),
       ...(restart ? { restart } : {}),
-      ...(outcome === "not-serving" && stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
+      // How the stuck runtime was stopped, if it was: the evidence a person reads for either.
+      ...((outcome === "not-serving" || outcome === "serving-restart-unconfirmed") && stopPathsOf
+        ? { stopPaths: await stopPathsOf() }
+        : {}),
     };
     if (values.out) await output(resolve(values.out), view);
     const waited = bound ? ` Bound: ${bound.seconds} s (${bound.name}).` : "";
     await summary(
-      (outcome === "serving-needs-person"
-        ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
-        : outcome === "could-not-test"
-          ? `ACCEPTANCE COULD NOT TEST: ${refusalFix(result.refused)}. Nothing was undone. ${safeJson(view)}`
-          : outcome === "not-serving"
-            ? `NOT SERVING after the healing release: ${safeJson(view)}`
-            : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
+      (outcome === "serving-restart-unconfirmed"
+        ? `SERVING, RESTART UNCONFIRMED: the root's boot before the release could not be read, so nothing shows the release restarted the root. Every model call served${verdict?.ready ? "" : `; the controller's recovery ${String(restart?.reason)}`}. Nothing was undone; a person reads the stop path with the pool serving. ${safeJson(view)}`
+        : outcome === "serving-needs-person"
+          ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
+          : outcome === "could-not-test"
+            ? `ACCEPTANCE COULD NOT TEST: ${refusalFix(result.refused)}. Nothing was undone. ${safeJson(view)}`
+            : outcome === "not-serving"
+              ? `NOT SERVING after the healing release: ${safeJson(view)}`
+              : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
     );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
-    // Exits 3 and 4 are their own results: not green, and not a failure to undo.
-    process.exit(
-      outcome === "serving-needs-person"
-        ? 3
-        : outcome === "could-not-test"
-          ? COULD_NOT_TEST_EXIT
-          : result.passed
-            ? 0
-            : 1,
-    );
+    process.exit(acceptanceExit(outcome, result.passed));
   } catch (error) {
     await stop(error);
     // A refused or misnamed acceptance device tested nothing, so it is never a failure to undo.

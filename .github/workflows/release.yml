@@ -413,7 +413,7 @@ jobs:
         env: *release-secrets
         if: env.MODE == 'apply'
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
-        # pool that does not answer; every other release needs the root's boot.
+        # pool that does not serve the read; every other release needs the root's boot.
         run: |
           within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
@@ -510,6 +510,9 @@ jobs:
           case "$outcome" in
             healed)
               echo "::error::HEALED, but the run is red: the pool serves on the new root boot with recovery ready; $apply and $app."
+              ;;
+            serving-restart-unconfirmed)
+              echo "::error::SERVING, RESTART UNCONFIRMED: the root's boot before the release could not be read, so nothing shows the release restarted the root; every model call served, $apply and $app. Nothing was undone; the stop path in .local/release/acceptance.json says whether the stuck runtime was stopped."
               ;;
             serving-needs-person)
               echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)); $apply and $app. Nothing was undone; look at the recovery with the pool serving."

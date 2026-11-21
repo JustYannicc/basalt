@@ -238,6 +238,18 @@ test("a failed healing release names its outcome, the apply and the app smoke", 
   assert.match(untested, /^::error::COULD NOT TEST/mu);
   assert.match(untested, /the release's acceptance device hit its user's cap: check the cap/u);
   assert.doesNotMatch(untested, /NOT SERVING|still registered/u);
+  // Every model call served, but no boot was read before the release to show the root restarted.
+  const unconfirmed = run(
+    { outcome: "serving-restart-unconfirmed", restart: { ready: true } },
+    "success",
+    "0",
+  );
+  assert.match(
+    unconfirmed,
+    /^::error::SERVING, RESTART UNCONFIRMED: the root's boot before the release could not be read/mu,
+  );
+  assert.match(unconfirmed, /the apply succeeded and the public app smoke passed/u);
+  assert.doesNotMatch(unconfirmed, /HEALED|NOT SERVING|NOT CHECKED/u);
   // No record, or one without an outcome, means nobody read the pool: it never says not serving.
   for (const record of [undefined, {}]) {
     const unread = run(record, "failure", "");
