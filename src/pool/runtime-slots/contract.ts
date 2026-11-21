@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import type { RuntimeDistance } from "../runtime-distance.ts";
 
 const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 const Counter = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
@@ -57,10 +58,21 @@ export const PromotionIntent = Schema.Struct({
   policyDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
 });
 export type PromotionIntent = typeof PromotionIntent.Type;
+const slotRefusals = [
+  "identity",
+  "selection",
+  "policy",
+  "unhealthy",
+  "draining",
+  "uncertain",
+] as const;
+export const PromotionRefusal = Schema.Literals([...slotRefusals, "timeout", "unclassified"]);
+export type PromotionRefusal = typeof PromotionRefusal.Type;
 export const PromotionReceipt = Schema.Struct({
   format: Schema.Literal("pool-promotion-receipt-v1"),
   intent: PromotionIntent,
   status: Schema.Literals(["started", "promoted", "refused"]),
+  reason: Schema.optional(PromotionRefusal),
   at: Schema.Number,
   epoch: Counter,
   policies: Schema.Array(PolicyRevision),
@@ -79,6 +91,7 @@ export interface SlotHealth {
   identity: SlotIdentity;
   // Uses the controller's monotonic clock, like RuntimeProtection.
   policyLeaseUntil: number;
+  database?: RuntimeDistance;
 }
 export interface SlotDriver {
   start(target: SlotTarget, signal: AbortSignal): Promise<SlotHealth>;
@@ -116,7 +129,7 @@ export const RuntimeRetirementObservation = Schema.Struct({
 });
 export type RuntimeRetirementObservation = typeof RuntimeRetirementObservation.Type;
 export class SlotRefused extends Error {
-  readonly reason: "identity" | "selection" | "policy" | "unhealthy" | "draining" | "uncertain";
+  readonly reason: (typeof slotRefusals)[number];
   constructor(reason: SlotRefused["reason"]) {
     super(`Pool runtime slot refused: ${reason}`);
     this.reason = reason;

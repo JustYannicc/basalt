@@ -1,3 +1,4 @@
+import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
 import { RuntimeCrash } from "../runtime-crash.ts";
 import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
@@ -39,6 +40,8 @@ import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
 import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
+import { pendingFields } from "../pending-failure.ts";
+import { recoveryPassMs } from "../runtime-slots/forced-restart-timing.ts";
 
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
@@ -267,6 +270,7 @@ export class PoolRuntimeFleet {
       balancePrimary: true,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
+      primaryDistance: async () => (await this.deps.handoff.status())?.database,
       recoverPrimary: () => this.deps.handoff.supervise(),
       demandAt: (at) => {
         if (this.deps.schedule) this.deps.ctx.waitUntil(this.deps.schedule(at));
@@ -396,10 +400,17 @@ export class PoolRuntimeFleet {
   }
   async recoverAdmission(signal: AbortSignal) {
     if (!(await this.deps.handoff.selected())) return false;
+    // Advisory, as for model forwarding: the caller re-reads the membership authority next.
     await awaitProbe(
       () => (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()),
       signal,
-    );
+    ).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      console.warn(
+        "POOL_RUNTIME_RECOVERY_DECLINED",
+        runtimeFailureDiagnostic(error, "fleet_forward"),
+      );
+    });
     return true;
   }
   async install(policy: NativeMembershipPolicy) {
@@ -412,7 +423,7 @@ export class PoolRuntimeFleet {
     if (!this.deps.schedule) return;
     const permission = await this.configuration.inspect();
     const now = Date.now();
-    if (await this.deps.handoff.selected()) await this.deps.schedule(now + 2_000);
+    if (await this.deps.handoff.selected()) await this.deps.schedule(now + recoveryPassMs);
     if (!permission) return;
     const deadlines = (await this.state.inspect())
       .map((row) => {
@@ -452,8 +463,9 @@ export class PoolRuntimeFleet {
   async upkeep() {
     try {
       this.deps.ctx.waitUntil(
-        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(() =>
-          console.error("POOL_SELECTED_RECOVERY_PENDING"),
+        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(
+          (error: unknown) =>
+            console.error("POOL_SELECTED_RECOVERY_PENDING", JSON.stringify(pendingFields(error))),
         ),
       );
       await this.primaryHeadroom();

@@ -20,7 +20,7 @@
   },
   "runs": {
     "accountAcquisitionHealth": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ]
   },
   "inputs": [
