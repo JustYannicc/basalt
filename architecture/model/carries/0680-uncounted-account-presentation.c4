@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "A selected account's view, which a pool page reads through the reserved accountView connection to present that account to its viewer, is not counted as tool-call traffic for the account. The hosted app-call hook states the flag on every hop and sets it only for that authorized presentation call, so every other completed tool call, including one nested in a presentation call, keeps its accounting. Rendering a pool page therefore adds no requests to an account and commits no traffic revision that would make open views read again."
+    }
+  }
+}
