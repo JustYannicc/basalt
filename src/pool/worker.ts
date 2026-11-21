@@ -171,6 +171,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private peers: RuntimeHomePeerTransport;
   private alarms: PoolAlarms;
   private homeUpkeepTask?: Promise<void>;
+  private alarmInFlight = false;
   private control: PoolControl;
   private mirrorHome: HomeClient;
   private homeDatabasePool: HomeDatabasePoolMonitor;
@@ -497,6 +498,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       release: productionOpsRelease,
       databaseOrigin: `${database.hostname}:${database.port || "5432"}${database.pathname}`,
     });
+    // The first event after a code update or eviction runs here, before any alarm could. Last, so
+    // an object that can't construct arms nothing.
+    this.ensureAlarm();
   }
 
   private managementReady(): Promise<void> {
@@ -566,6 +570,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async availabilityProbe(pool: string, includeRuntime = false) {
+    this.ensureAlarm();
     const selected = await this.handoff.selected();
     const identity: ProbeRuntimeIdentity = {
       source: selected ? "selected" : "legacy",
@@ -649,6 +654,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async alarm() {
     const trace = new PoolUpkeepTrace("alarm");
+    this.alarmInFlight = true;
+    try {
+      await this.upkeepAlarm(trace);
+    } finally {
+      this.alarmInFlight = false;
+    }
+  }
+  private async upkeepAlarm(trace: PoolUpkeepTrace) {
     await trace.run("alarm", async () => {
       trace.event("deadlines", await this.alarms.inspect());
       const due = await this.alarms.take();
@@ -789,6 +802,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async deploymentReady() {
+    this.ensureAlarm();
     return {
       ...this.deploymentIdentity(),
       ...(await this.handoff.deploymentReady(() =>
@@ -802,6 +816,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async runtimeHandoff(request: Request) {
+    this.ensureAlarm();
     return handleRuntimeHandoff(
       request,
       this.handoff,
@@ -816,7 +831,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     );
   }
 
+  /** Arms the upkeep alarm if nothing has, without holding the caller. */
+  private ensureAlarm() {
+    // A running alarm handler or Home pass re-arms its own deadline when it ends; the platform
+    // reads the alarm as unset meanwhile, and arming then would only pull both owners to now.
+    if (this.alarmInFlight || this.homeUpkeepTask) return;
+    const work = this.alarms.ensure();
+    if (work) this.ctx.waitUntil(work.catch(() => console.error("POOL_ALARM_ENSURE_PENDING")));
+  }
+
   async fetch(request: Request): Promise<Response> {
+    this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
       return readCommittedPoolChanges(request, {

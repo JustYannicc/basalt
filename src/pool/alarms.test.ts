@@ -101,3 +101,51 @@ test("lifecycle warmth retains its Home deadline behind an earlier fleet alarm",
   f.fire(300_100);
   assert.deepEqual(await new PoolAlarms(f.storage, f.now).take(), { home: true, fleet: false });
 });
+
+test("a missing alarm is armed for both owners at once, and an armed one is left alone", async () => {
+  const f = fixture();
+  await f.scheduler.ensure();
+  assert.equal(f.current(), 100, "nothing was armed, so both owners run now");
+  assert.deepEqual(await f.scheduler.take(), { home: true, fleet: true });
+  const armed = fixture(5_000);
+  await armed.scheduler.ensure();
+  assert.equal(armed.current(), 5_000, "an armed alarm keeps its deadline");
+});
+
+test("an isolate checks for a missing alarm at most once every five seconds", async () => {
+  const f = fixture(5_000);
+  await f.scheduler.ensure();
+  f.fire(4_000);
+  await f.scheduler.ensure();
+  assert.equal(f.current(), null, "within five seconds of the last check, no read and no arm");
+  f.fire(5_100);
+  await f.scheduler.ensure();
+  assert.equal(f.current(), 5_100);
+});
+
+test("arming a missing alarm writes both owners at once, so a take right after its write sees both due", async () => {
+  const f = fixture();
+  let raced: { home: boolean; fleet: boolean } | undefined;
+  let racing = false;
+  const transaction = f.storage.transaction;
+  // A take that lands right after the arming's first write, as an alarm handler can.
+  f.storage.transaction = (async (work: Parameters<typeof transaction>[0]) => {
+    const result = await transaction(work);
+    if (!racing) {
+      racing = true;
+      raced = await f.scheduler.take();
+    }
+    return result;
+  }) as typeof transaction;
+  await f.scheduler.ensure();
+  assert.deepEqual(raced, { home: true, fleet: true });
+});
+
+test("an alarm another writer moved later is lowered back to the earliest stored deadline", async () => {
+  const f = fixture();
+  await f.scheduler.schedule("fleet", 200);
+  // A lock deadline written straight to the native alarm replaces the earlier fleet one.
+  await f.storage.setAlarm(5_000);
+  await f.scheduler.ensure();
+  assert.equal(f.current(), 200);
+});
