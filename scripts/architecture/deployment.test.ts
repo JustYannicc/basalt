@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { generateDeployment } from "./deployment.ts";
 import { stackFingerprint } from "./fingerprint.ts";
 import { nativeFixture } from "./native-stack-fixture-helpers.ts";
@@ -11,8 +11,8 @@ import { readGeneratedInventory } from "./generated-inventory.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
-// Each generateDeployment evaluates the fixture stack in a subprocess, as native-stack.test.ts does.
-const stackEvaluation = 40_000;
+// Every test evaluates the fixture stack in a subprocess, as native-stack.test.ts does.
+vi.setConfig({ testTimeout: 40_000 });
 const declaration = (extra = "") => `yield* Cloudflare.Worker("Api", {
   main: new URL("./worker.ts", import.meta.url).pathname, ${extra}
 });`;
@@ -64,14 +64,14 @@ test("source-only edits change the fresh fingerprint without changing the genera
   expect(await generateDeployment(f.root)).toBe(before);
   expect(readGeneratedInventory(f.root)).toEqual(inventory);
   expect(before).not.toContain("fingerprint");
-}, stackEvaluation);
+});
 
 test("binding changes still change the committed deployment digest", async () => {
   const f = fixture();
   const before = await generateDeployment(f.root);
   f.write(declaration('env: { NEW_BINDING: "fixture" },'));
   expect(await generateDeployment(f.root)).not.toBe(before);
-}, stackEvaluation);
+});
 
 test("generated inventory rejects a different evaluator and malformed resource metadata", async () => {
   const f = fixture();
@@ -82,7 +82,7 @@ test("generated inventory rejects a different evaluator and malformed resource m
   expect(readGeneratedInventory(f.root)).toBeUndefined();
   writeFileSync(path, valid.replace(/"id":"resource-[a-f0-9]+"/, '"id":"invalid"'));
   expect(() => readGeneratedInventory(f.root)).toThrow("Invalid generated stack inventory");
-}, stackEvaluation);
+});
 
 test("resource and model drift still fail in both directions", async () => {
   const f = fixture();
@@ -97,7 +97,7 @@ test("resource and model drift still fail in both directions", async () => {
     readFileSync(f.model, "utf8").replace(/metadata \{ resources [^}]+\}/, ""),
   );
   await expect(generateDeployment(f.root)).rejects.toThrow("unmodelledResources");
-}, stackEvaluation);
+});
 
 test("source changes during generation fail instead of returning a mixed snapshot", async () => {
   const f = fixture();
@@ -107,4 +107,4 @@ test("source changes during generation fail instead of returning a mixed snapsho
     'export default { fetch() { return new Response("changed"); } };',
   );
   await expect(generating).rejects.toThrow("Source changed during deployment generation");
-}, stackEvaluation);
+});
