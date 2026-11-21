@@ -6,9 +6,11 @@ import {
   compare,
   configProblems,
   count,
-  directiveProblems,
+  nativeRules,
+  optionChanges,
   ratchet,
 } from "./baseline.ts";
+import { directiveProblems } from "./directives.ts";
 
 const finding = (rule: string, file: string, line = 1) => ({
   rule,
@@ -55,6 +57,15 @@ test("an allowlist entry covers exactly its count, for the rules that offer one"
   );
 });
 
+test("a baseline entry that is not a count fails instead of passing every finding", () => {
+  // SAFETY: a hand-edited baseline.json can hold any JSON value; this is the one under test.
+  const baseline = { [spread]: { "src/a.ts": "x" } } as never;
+  assert.match(
+    compare([finding(spread, "src/a.ts"), finding(spread, "src/a.ts", 2)], baseline, {})[0]!,
+    /src\/a\.ts under basalt\/no-spread-into-provider-request is not a count of findings/u,
+  );
+});
+
 test("landmines keeps its own counts and a parse failure is never baselined", () => {
   const problems = compare(
     [
@@ -66,35 +77,6 @@ test("landmines keeps its own counts and a parse failure is never baselined", ()
   );
   assert.match(problems[0]!, /^src\/a\.test\.ts:3 landmines-testing\/no-flake-masking/u);
   assert.match(problems[1]!, /^src\/b\.ts:2 oxlint\/parse/u);
-});
-
-test("only a single `//` comment naming upstream rules may disable anything", () => {
-  // Assembled so this file carries no directive of its own.
-  const off = (tool: string, scope = "") => `${tool}-disable${scope}`;
-  const text = [
-    `// ${off("oxlint", "-next-line")}`,
-    `/* ${off("eslint")} basalt/no-echo-stub */`,
-    `// ${off("oxlint", "-next-line")} landmines-testing/no-fixed-sleep -- slow`,
-    `// ${off("eslint", "-next-line")} typescript/no-explicit-any`,
-    `/* ${off("oxlint", "-next-line")} typescript/no-explicit-any,`,
-    "  basalt/no-discarded-child-output */",
-    `/* ${off("oxlint")} unicorn/no-null */ /* ${off("oxlint")} */`,
-    `<!-- ${off("oxlint", "-next-line")}`,
-    `const quoted = "${off("oxlint")}";`,
-  ].join("\n");
-  assert.deepEqual(
-    directiveProblems("src/a.ts", text).map((problem) => problem.split(" ")[0]),
-    [
-      "src/a.ts:1",
-      "src/a.ts:2",
-      "src/a.ts:3",
-      "src/a.ts:5",
-      "src/a.ts:7",
-      "src/a.ts:7",
-      "src/a.ts:8",
-      "src/a.ts:9",
-    ],
-  );
 });
 
 const state = (lintChanged = false, changed = (file: string) => file === "src/touched.ts") => ({
@@ -165,6 +147,8 @@ const plugins = [
   { name: "basalt", specifier: "./plugin/basalt.mjs" },
   { name: "landmines-testing", specifier: "@interfere/landmines/testing" },
   { name: "landmines-structure", specifier: "@interfere/landmines/structure" },
+  { name: "anti-slop", specifier: "./vendor/anti-slop/index.ts" },
+  { name: "anti-slop-effect", specifier: "./vendor/anti-slop/effect/index.ts" },
 ];
 
 test("the configuration loads the pinned plugins, keeps what the base enforced, and nothing else", () => {
@@ -194,8 +178,105 @@ test("the configuration loads the pinned plugins, keeps what the base enforced, 
   const swapped = plugins.map((plugin) => ({ ...plugin, specifier: "./empty.mjs" }));
   assert.match(
     configProblems({ jsPlugins: swapped, rules: {} }, undefined)[0]!,
-    /pinned basalt and landmines plugins/u,
+    /pinned plugins: basalt, landmines-testing, landmines-structure, anti-slop, anti-slop-effect\./u,
   );
+  assert.match(
+    configProblems({ jsPlugins: plugins.slice(0, 4), rules: {} }, undefined)[0]!,
+    /must load exactly the pinned plugins/u,
+  );
+});
+
+test("a built-in rule is written once, with its plugin listed, so no other spelling can switch it off", () => {
+  const rules = { "oxc/no-accumulating-spread": "error", "basalt/no-echo-stub": "error" };
+  assert.deepEqual(configProblems({ jsPlugins: plugins, plugins: ["oxc"], rules }, undefined), []);
+  for (const config of [
+    { jsPlugins: plugins, plugins: [], rules },
+    { jsPlugins: plugins, rules },
+    { jsPlugins: plugins, plugins: ["oxc"], rules: { "no-accumulating-spread": "error" } },
+    { jsPlugins: plugins, plugins: ["oxc"], rules: { ...rules, "no-accumulating-spread": "off" } },
+    {
+      jsPlugins: plugins,
+      plugins: ["oxc"],
+      rules: { ...rules, "eslint/no-accumulating-spread": "off" },
+    },
+    // oxlint strips the prefix, so this switches the anti-slop rule off.
+    {
+      jsPlugins: plugins,
+      plugins: ["oxc"],
+      rules: { ...rules, "eslint-plugin-anti-slop/no-reflect-get": "off" },
+    },
+    { jsPlugins: plugins, plugins: [], rules: { "oxc/no-accumulating-spread": "off" } },
+  ])
+    assert.match(
+      configProblems(config, undefined).join("\n"),
+      /names no pinned JS plugin, so write it as a built-in rule, once, as <plugin>\/<rule> with its plugin listed in "plugins"/u,
+      JSON.stringify(config),
+    );
+  for (const off of ["off", "allow", 0])
+    assert.deepEqual(
+      configProblems(
+        { jsPlugins: plugins, plugins: ["oxc"], rules: { "oxc/no-accumulating-spread": off } },
+        undefined,
+      ),
+      [],
+    );
+  assert.deepEqual(
+    configProblems(
+      { jsPlugins: plugins, plugins: [], rules: { "eslint/no-debugger": 2 } },
+      undefined,
+    ),
+    [],
+  );
+});
+
+test("an anti-slop or built-in owned rule takes no disable comment either", () => {
+  const off = (scope: string, tool = "oxlint") => `${tool}-disable${scope}`;
+  const native = nativeRules({
+    jsPlugins: plugins,
+    rules: {
+      "oxc/no-accumulating-spread": "error",
+      "anti-slop/no-reflect-get": "error",
+      "eslint/no-debugger": "off",
+    },
+  });
+  assert.deepEqual([...native], ["no-accumulating-spread"]);
+  // oxlint applies a disable comment to a built-in rule under any prefix.
+  const text = [
+    `// ${off("-next-line")} anti-slop/no-reflect-get`,
+    `// ${off("-next-line")} anti-slop-effect/prefer-effect-match`,
+    `// ${off("-next-line")} oxc/no-accumulating-spread`,
+    `// ${off("-next-line")} no-accumulating-spread`,
+    `// ${off("-next-line")} eslint/no-accumulating-spread`,
+    `// ${off("")} typescript/no-accumulating-spread`,
+    `// ${off("-next-line")} typescript/no-explicit-any`,
+  ].join("\n");
+  assert.deepEqual(
+    directiveProblems("src/a.ts", text, native).map((problem) => problem.split(" ")[0]),
+    ["src/a.ts:1", "src/a.ts:2", "src/a.ts:3", "src/a.ts:4", "src/a.ts:5", "src/a.ts:6"],
+  );
+});
+
+test("changed options of an enforced rule are listed, apart from landmines' own counts", () => {
+  const fixed = "landmines-testing/no-fixed-sleep";
+  const typeofRule = "anti-slop/no-runtime-typeof";
+  const base = {
+    rules: {
+      [typeofRule]: ["error", { allowInTypeGuards: true }],
+      [fixed]: ["error", { allow: { "src/a.test.ts": 2 } }],
+      "anti-slop/require-readable-spacing": "off",
+    },
+  };
+  const current = {
+    rules: {
+      [typeofRule]: ["error", { allowInTypeGuards: true, allowExistenceChecks: true }],
+      [fixed]: ["error", { allow: { "src/a.test.ts": 1 } }],
+      "anti-slop/require-readable-spacing": ["error", { anything: true }],
+    },
+  };
+  assert.deepEqual(optionChanges(current, base), [
+    `${typeofRule} options [{"allowInTypeGuards":true}] -> [{"allowInTypeGuards":true,"allowExistenceChecks":true}]`,
+  ]);
+  assert.deepEqual(optionChanges(base, base), []);
 });
 
 test("new or raised allowlist entries are listed for review with their reasons", () => {
@@ -271,4 +352,12 @@ test("against the base, policy combines the config, allowlist and both ratchets"
     baseline: { [spread]: { "src/a.ts": 1 }, "basalt/later": { "src/b.ts": 3 } },
   };
   assert.deepEqual(basePolicy(enabled, base).problems, []);
+  const loosened = {
+    ...enabled,
+    config: { jsPlugins: plugins, rules: { [spread]: ["error", { ignore: ["*"] }] } },
+  };
+  assert.match(
+    basePolicy(loosened, base).notices.join("\n"),
+    /Rule options changed, review what they now find: basalt\/no-spread-into-provider-request options \[\] -> \[\{"ignore":\["\*"\]\}\]/u,
+  );
 });

@@ -1,7 +1,6 @@
 import type { ConnectionView, CredentialSource } from "../contracts/connection.ts";
 import { readDeviceCredentials } from "../contracts/device.ts";
 import type { SocketFactory } from "../contracts/transport.ts";
-import { RefreshReplayBudgetError } from "../connection/device-refresh.ts";
 import { deviceConnection } from "../connection/device.ts";
 import { signInDevice, type ProofKeyCrypto } from "../connection/device-oauth.ts";
 import { connectionHealth } from "../connection/health.ts";
@@ -57,7 +56,6 @@ export function mobileController(ports: MobilePorts) {
   const recovery = reconnectRecovery({
     allowed: () => foreground && automatic && !command && source !== undefined,
     terminal,
-    retryable: (error) => !(error instanceof RefreshReplayBudgetError),
     random: () => Math.random(),
     attempt: async (signal) => {
       await source?.reconnect(signal);

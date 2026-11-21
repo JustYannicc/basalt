@@ -1,0 +1,99 @@
+{
+  "initialize": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {
+      "tools": {}
+    },
+    "serverInfo": {
+      "name": "github-mcp-server",
+      "title": "GitHub MCP Server",
+      "version": "1.0.0"
+    }
+  },
+  "tools/list": {
+    "tools": [
+      {
+        "annotations": {
+          "idempotentHint": false,
+          "readOnlyHint": true,
+          "title": "Get file or directory contents"
+        },
+        "description": "Get the contents of a file or directory from a GitHub repository",
+        "inputSchema": {
+          "properties": {
+            "fields": {
+              "description": "Subset of fields to return for each entry when the path is a directory. If omitted, all fields are returned. Ignored when the path is a single file. Use this to reduce response size when listing directories and you only need specific fields, e.g. just 'name' and 'type'.",
+              "items": {
+                "enum": [
+                  "type",
+                  "name",
+                  "path",
+                  "size",
+                  "sha",
+                  "url",
+                  "git_url",
+                  "html_url",
+                  "download_url"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "owner": {
+              "description": "Repository owner (username or organization)",
+              "type": "string",
+              "x-mcp-header": "owner"
+            },
+            "path": {
+              "default": "/",
+              "description": "Path to file/directory",
+              "type": "string"
+            },
+            "ref": {
+              "description": "Accepts optional git refs such as `refs/tags/{tag}`, `refs/heads/{branch}` or `refs/pull/{pr_number}/head`",
+              "type": "string"
+            },
+            "repo": {
+              "description": "Repository name",
+              "type": "string",
+              "x-mcp-header": "repo"
+            },
+            "sha": {
+              "description": "Accepts optional commit SHA. If specified, it will be used instead of ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "owner",
+            "repo"
+          ],
+          "type": "object"
+        },
+        "name": "get_file_contents"
+      }
+    ]
+  },
+  "tools/call get_file_contents large-file.bin": {
+    "content": [
+      {
+        "type": "text",
+        "text": "File large-file.bin is too large to display (2097152 bytes). Use the download URL to fetch the content: https://raw.githubusercontent.com/octocat/Hello-World/main/large-file.bin?token=synthetic-raw-content-token (SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+      },
+      {
+        "type": "resource_link",
+        "uri": "repo://octocat/Hello-World/refs/heads/main/contents/large-file.bin",
+        "name": "large-file.bin",
+        "title": "File: large-file.bin",
+        "size": 2097152
+      }
+    ]
+  },
+  "tools/call get_file_contents lib": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[{\"type\":\"file\",\"size\":625,\"name\":\"octokit.rb\",\"path\":\"lib/octokit.rb\",\"sha\":\"fff6fe3a23bf1c8ea0692b4a883af99bee26fd3b\",\"url\":\"https://api.github.com/repos/octokit/octokit.rb/contents/lib/octokit.rb\",\"git_url\":\"https://api.github.com/repos/octokit/octokit.rb/git/blobs/fff6fe3a23bf1c8ea0692b4a883af99bee26fd3b\",\"html_url\":\"https://github.com/octokit/octokit.rb/blob/master/lib/octokit.rb\",\"download_url\":\"https://raw.githubusercontent.com/octokit/octokit.rb/master/lib/octokit.rb?token=synthetic-raw-content-token\"},{\"type\":\"dir\",\"size\":0,\"name\":\"octokit\",\"path\":\"lib/octokit\",\"sha\":\"a84d88e7554fc1fa21bcbc4efae3c782a70d2b9d\",\"url\":\"https://api.github.com/repos/octokit/octokit.rb/contents/lib/octokit\",\"git_url\":\"https://api.github.com/repos/octokit/octokit.rb/git/trees/a84d88e7554fc1fa21bcbc4efae3c782a70d2b9d\",\"html_url\":\"https://github.com/octokit/octokit.rb/tree/master/lib/octokit\"}]"
+      }
+    ]
+  }
+}

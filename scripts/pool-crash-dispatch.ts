@@ -4,18 +4,24 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { runtimeRecoveryPath } from "../src/pool/recovery-approval.ts";
 import {
+  BoundProviderObservation,
+  ProviderObservationTarget,
+} from "../src/pool/runtime-provider/observation.ts";
+import {
   ControllerCode,
   SlotIdentity,
   SlotRefused,
   SlotTarget,
 } from "../src/pool/runtime-slots/contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
+import { runtimeFailureCode } from "../src/pool/runtime-route-diagnostic.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { runCrashOperator } from "./pool-crash-operator.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "./pool-operations.ts";
 import { nodePoolOperations } from "./pool-operations-node.ts";
 import { BarrierRefusal } from "./pool-fleet/refusal.ts";
-import { sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
+import { sameProvisioningValue } from "./pool-fleet/provisioning-refusal.ts";
+import { providerObservationCause, sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import {
   readReleaseTarget,
   workflowRunLister,
@@ -34,25 +40,43 @@ const CrashPacket = Schema.Struct({
 });
 type CrashPacket = typeof CrashPacket.Type;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const observeActions = ["inspect", "fleet-inspect", "active-health", "witness"] as const;
+const observeActions = [
+  "inspect",
+  "fleet-inspect",
+  "active-health",
+  "witness",
+  "provider-observe",
+] as const;
+const modes = ["observe", "inspect", "apply", "recovery-reset"];
 type ObserveAction = (typeof observeActions)[number];
+/** A witness names a slot; a provider observation names the application pins it compares. */
+type ObserveSubject = SlotTarget | ProviderObservationTarget;
 type Connect = PoolOperationsTarget["connect"];
 
 export interface DispatchDependencies {
   listRuns(): Promise<readonly { id: number; displayTitle: string }[]>;
-  readTarget(): Promise<ReleaseTarget & { root?: RootApplication }>;
+  readTarget(): Promise<
+    ReleaseTarget & { root?: RootApplication; provider?: ProviderObservationTarget }
+  >;
   observe(
     action: ObserveAction,
     controllerCode: ControllerCode,
     target: ReleaseTarget,
     signingKey: string,
-    slot?: SlotTarget,
+    subject?: ObserveSubject,
   ): Promise<unknown>;
   /**
    * The root PoolContainer's unsigned recovery status read: identity and boot, never a restart.
    * Only meaningful without a selection; the controller refuses it once one exists.
    */
   rootHealth(target: ReleaseTarget): Promise<unknown>;
+  /** Clears the controller's forced-restart limit and its needs-a-person mark; nothing else. */
+  resetRecovery(
+    controllerCode: ControllerCode,
+    target: ReleaseTarget,
+    signingKey: string,
+    operationId: string,
+  ): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   crash(request: {
     packet: CrashPacket & ReleaseTarget;
@@ -114,16 +138,79 @@ function redactAccount<T>(value: T, accountId: string): T {
 }
 
 // Raw messages from the bridge can name the account or worker; only fixed codes reach a public artifact.
+// The Node bridge's own fixed failures (pool-operations-node.ts), so a transport fault never reads as
+// a Worker that did not answer: its lifecycle, and a request its child could not complete, which
+// carries only a closed error name.
+const BRIDGE_FAILURE =
+  /^Private operations Node bridge (exited|disconnected|send failed|failed|startup timed out|closed)$/u;
+const BRIDGE_REQUEST_FAILED = "Private operations request failed";
+const BRIDGE_ERROR_NAMES = new Set(["Error", "TypeError", "AbortError", "TimeoutError"]);
+/** The bridge's own failure as closed text, or undefined for anything else. */
+function bridgeFailure(error: unknown) {
+  if (!(error instanceof Error)) return undefined;
+  const lifecycle = BRIDGE_FAILURE.exec(error.message)?.[1];
+  if (lifecycle) return lifecycle;
+  return error.message === BRIDGE_REQUEST_FAILED
+    ? `request failed (${BRIDGE_ERROR_NAMES.has(error.name) ? error.name : "Error"})`
+    : undefined;
+}
+
+/** The HTTP status of a reply the shared RPC refused, as a number and nothing else from it. */
+function httpStatus(error: BarrierRefusal) {
+  if (error.reason !== "runtime-handoff-response-refused") return "";
+  const entry = error.delta?.changed.find((change) => change.path === "handoff.response.http");
+  const status = entry && "new" in entry ? entry.new : undefined;
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+    ? ` HTTP ${status}`
+    : "";
+}
+
+/**
+ * A read lost between this process and the Worker, with no answer the Worker classified: the
+ * bridge failed, nothing answered in time, or something answered other than the Worker's 200 or
+ * its own 409 (the proxy, the edge, or a Worker defect). Each attempt opens its own bridge, so
+ * only these are worth another one.
+ */
+const lostOnTheWay = (cause: unknown) =>
+  !providerObservationCause(cause) &&
+  ((cause instanceof BarrierRefusal &&
+    cause.reason === "runtime-handoff-response-refused" &&
+    // A 409 is the Worker's own refusal form, an answer.
+    httpStatus(cause) !== " HTTP 409") ||
+    (cause instanceof DOMException &&
+      (cause.name === "AbortError" || cause.name === "TimeoutError")) ||
+    bridgeFailure(cause) !== undefined ||
+    cause instanceof CommandExpiredLocally);
+/** Attempts in all for one observe read; commands that write are never sent twice. */
+export const observeAttempts = 3;
+/** How many attempts an observe read took, keyed by the reply or the error it ended with. */
+const attemptsTaken = new WeakMap<object, number>();
+export const attemptsOf = (value: unknown) =>
+  (value !== null && typeof value === "object" && attemptsTaken.get(value)) || 1;
+const retriedLine = new RegExp(
+  `^(?:${observeActions.join("|")}) (?:gave up after )?[2-${observeAttempts}] attempts$`,
+  "u",
+);
+
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
+  const bridge = bridgeFailure(error);
   const code =
     error instanceof ControllerRefused
       ? `: runtime-handoff-refused (${error.reason})`
       : error instanceof BarrierRefusal
-        ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}`
+        ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}${httpStatus(error)}`
         : error instanceof SlotRefused
           ? `: ${error.reason}`
-          : "";
+          : // No reply within the request's own time limit.
+            error instanceof DOMException &&
+              (error.name === "AbortError" || error.name === "TimeoutError")
+            ? `: ${error.name}`
+            : bridge
+              ? `: bridge ${bridge}`
+              : error instanceof CommandExpiredLocally
+                ? ": expired before it was sent"
+                : "";
   return `${phase}${code}`;
 }
 
@@ -176,6 +263,139 @@ function membershipState(inspected: unknown, observedAt: number) {
     denials: memberships(value.denials),
     digest: text(value.digest),
   };
+}
+
+const providerCauses = [
+  "provider_observation_refused",
+  "provider_fetch_failed",
+  "controller_identity",
+  "controller_refused",
+  "reply_unreadable",
+  "no_reply",
+  "bridge_failed",
+  "expired_unsent",
+  "response_refused",
+  "outcome_unknown",
+  "target_unavailable",
+] as const;
+type ProviderCause = (typeof providerCauses)[number];
+const providerLine = (cause?: ProviderCause) =>
+  cause
+    ? (`provider observation: does not read (${cause})` as const)
+    : ("provider observation: reads" as const);
+type ProviderLine = ReturnType<typeof providerLine>;
+const providerLines = new Set<string>([providerLine(), ...providerCauses.map(providerLine)]);
+// The handoff's refusal for a command naming other controller code, or one it cannot decode.
+const identityRefusal = runtimeFailureCode({
+  runtimeStep: "endpoint_route",
+  runtimeReason: "slot_identity",
+});
+
+const uncheckedRestart = [
+  "selection_unavailable",
+  "no_selected_runtime",
+  "selection_unreadable",
+  "selected_runtime_not_root",
+  "target_unavailable",
+] as const;
+type RestartLine =
+  | "restart read: passes"
+  | "restart read: refuses (recorded_pins_differ)"
+  | `restart read: does not read (${ProviderCause})`
+  | `restart read: not checked (${(typeof uncheckedRestart)[number]})`;
+const restartLines = new Set<string>([
+  "restart read: passes",
+  "restart read: refuses (recorded_pins_differ)",
+  ...providerCauses.map((cause) => `restart read: does not read (${cause})`),
+  ...uncheckedRestart.map((cause) => `restart read: not checked (${cause})`),
+]);
+
+/**
+ * The Worker reads the root application with its own POOL_PROVIDER_OBSERVATION_TOKEN binding, as a
+ * heal's restart does at admission and attestation, and compares it to these pins. The reply names
+ * the account, application and digests, so only a closed cause ever leaves this function.
+ */
+async function providerRead(
+  target: ProviderObservationTarget,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<ProviderCause | undefined> {
+  let reply: unknown;
+  try {
+    reply = await send(target);
+  } catch (cause) {
+    // The Worker's failure header outranks the body's reason, which a non-provider 409 also has.
+    return (
+      providerObservationCause(cause) ??
+      (cause instanceof ControllerRefused
+        ? cause.reason === identityRefusal
+          ? "controller_identity"
+          : "controller_refused"
+        : cause instanceof DispatchRefusal
+          ? "reply_unreadable"
+          : // Something answered other than the Worker's 200 or the handoff's own 409: the proxy,
+            // the edge, or a Worker defect. The error's HTTP status tells which.
+            cause instanceof BarrierRefusal
+            ? "response_refused"
+            : cause instanceof DOMException &&
+                (cause.name === "AbortError" || cause.name === "TimeoutError")
+              ? "no_reply"
+              : bridgeFailure(cause) !== undefined
+                ? "bridge_failed"
+                : cause instanceof CommandExpiredLocally
+                  ? "expired_unsent"
+                  : "outcome_unknown")
+    );
+  }
+  try {
+    const { proof } = Schema.decodeUnknownSync(BoundProviderObservation)(reply);
+    // The proof must name exactly the pins sent; its observation digest and time stay unread.
+    sameProvisioningValue(
+      "provider.observation.target",
+      target,
+      Schema.decodeUnknownSync(ProviderObservationTarget)(proof),
+    );
+    return undefined;
+  } catch {
+    return "reply_unreadable";
+  }
+}
+
+/** The token read: the live application's own pins, so a refusal speaks for the binding. */
+async function providerObservation(
+  target: ProviderObservationTarget | undefined,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<ProviderLine> {
+  return providerLine(target ? await providerRead(target, send) : "target_unavailable");
+}
+
+/**
+ * The restart's first read, after the stop, compares the live application with the pins recorded
+ * when the selected runtime was admitted. Admission makes the selection's target carry three of
+ * them exactly (application, version, image digest). No deployed reply carries the recorded
+ * namespace or configuration digest, so those two are the live ones: their drift shows only if it
+ * also moved the version. The Worker refuses a dead token and differing pins alike, so the local
+ * comparison names which one it was.
+ */
+async function restartObservation(
+  live: ProviderObservationTarget | undefined,
+  inspected: unknown,
+  send: (target: ProviderObservationTarget) => Promise<unknown>,
+): Promise<RestartLine> {
+  if (!live) return "restart read: not checked (target_unavailable)";
+  const selected = selectedTarget(inspected);
+  if (!selected) return "restart read: not checked (no_selected_runtime)";
+  if (!selected.ok) return "restart read: not checked (selection_unreadable)";
+  const { applicationId, applicationVersion, imageDigest } = selected.value;
+  // The heal restarts the root; a selection on another application is not what this reads.
+  if (applicationId !== live.applicationId)
+    return "restart read: not checked (selected_runtime_not_root)";
+  const cause = await providerRead({ ...live, applicationVersion, imageDigest }, send);
+  if (cause === undefined) return "restart read: passes";
+  const differs =
+    applicationVersion !== live.applicationVersion || imageDigest !== live.imageDigest;
+  return differs && cause === "provider_observation_refused"
+    ? "restart read: refuses (recorded_pins_differ)"
+    : `restart read: does not read (${cause})`;
 }
 
 const RootHealth = Schema.Struct({
@@ -272,7 +492,7 @@ async function diagnose(input: {
   controllerCode: ControllerCode;
   target: ReleaseTarget;
   deps: DispatchDependencies;
-  send: (action: ObserveAction, slot?: SlotTarget) => Promise<unknown>;
+  send: (action: ObserveAction, subject?: ObserveSubject) => Promise<unknown>;
 }) {
   const fleet = fields(input.fleet);
   const permission = fields(fleet.permission);
@@ -323,6 +543,9 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   let forcedInspect = false;
   let phase = "input validation failed";
   const output: {
+    providerObservation?: ProviderLine;
+    restartObservation?: RestartLine;
+    retried?: string[];
     observe?: unknown;
     diagnostic?: unknown;
     inspection?: unknown;
@@ -330,8 +553,8 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
   } = {};
   let error: string | null = null;
   try {
-    if (!["observe", "inspect", "apply"].includes(input.mode))
-      throw new DispatchRefusal("mode must be observe, inspect or apply");
+    if (!modes.includes(input.mode))
+      throw new DispatchRefusal("mode must be observe, inspect, apply or recovery-reset");
     if (!uuid.test(input.requestId)) throw new DispatchRefusal("request_id must be a UUID");
     assertGo(input.coordinatorGo);
     let parsed: unknown;
@@ -362,14 +585,44 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
     if (input.mode === "observe") {
       const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
       await preflight();
-      const { root, ...target } = await readTarget();
-      const send = (action: ObserveAction, slot?: SlotTarget) => {
+      const { root, provider, ...target } = await readTarget();
+      // The observe sender sends a read lost on the way again; this records how many attempts.
+      const send = async (action: ObserveAction, subject?: ObserveSubject) => {
         phase = `${action} outcome unknown`;
-        return deps
-          .observe(action, packet.controllerCode, target, input.signingKey, slot)
-          .then((reply) => replyResult(reply, action));
+        try {
+          const reply = await deps.observe(
+            action,
+            packet.controllerCode,
+            target,
+            input.signingKey,
+            subject,
+          );
+          const attempts = attemptsOf(reply);
+          if (attempts > 1) (output.retried ??= []).push(`${action} ${attempts} attempts`);
+          return replyResult(reply, action);
+        } catch (cause) {
+          const attempts = attemptsOf(cause);
+          if (attempts > 1) {
+            phase = `${action} outcome unknown after ${attempts} attempts`;
+            // A caller may catch this read's error (the provider lines do), so the record keeps it.
+            (output.retried ??= []).push(`${action} gave up after ${attempts} attempts`);
+          }
+          throw cause;
+        }
       };
-      const inspected = await send("inspect");
+      // First and never fatal: a heal needs this read whatever state the selection is in.
+      output.providerObservation = await providerObservation(provider, (pins) =>
+        send("provider-observe", pins),
+      );
+      // The selection the restart read needs; without it line 2 says so, and the error says why.
+      const inspected = await send("inspect").catch((cause: unknown) => {
+        output.restartObservation = "restart read: not checked (selection_unavailable)";
+        throw cause;
+      });
+      // Never fatal either: whatever the selection reads, the line says why it was not checked.
+      output.restartObservation = await restartObservation(provider, inspected, (pins) =>
+        send("provider-observe", pins),
+      );
       if (inspected === null || typeof inspected !== "object")
         throw new DispatchRefusal("inspect reply has no result");
       const observedAt = deps.now();
@@ -398,6 +651,34 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
           deps,
           send,
         }),
+        input.accountId,
+      );
+    } else if (input.mode === "recovery-reset") {
+      const packet = decodePacket(ObservePacket, parsed, "{controllerCode}");
+      await preflight();
+      const { root: _root, provider: _provider, ...target } = await readTarget();
+      // What is about to be cleared is recorded first, so the result shows the state it replaced.
+      phase = "inspect outcome unknown";
+      const inspected = replyResult(
+        await deps.observe("inspect", packet.controllerCode, target, input.signingKey),
+        "inspect",
+      );
+      const before =
+        inspected && typeof inspected === "object" && "recovery" in inspected
+          ? inspected.recovery
+          : null;
+      phase = "recovery-reset outcome unknown; inspect shows whether it applied";
+      output.observe = redactAccount({ recovery: before }, input.accountId);
+      output.result = redactAccount(
+        replyResult(
+          await deps.resetRecovery(
+            packet.controllerCode,
+            target,
+            input.signingKey,
+            `recovery-reset-${input.requestId}`,
+          ),
+          "recovery-reset",
+        ),
         input.accountId,
       );
     } else {
@@ -484,6 +765,13 @@ export const crashSender =
     }
   };
 
+/** A command that expired here before it was sent: it never reached the Worker. */
+export class CommandExpiredLocally extends Error {
+  constructor() {
+    super("Runtime handoff command expired before it was sent");
+  }
+}
+
 /** The controller answered with its own handoff refusal (409 runtime-handoff-refused). */
 export class ControllerRefused extends Error {
   /** The controller's fixed runtime failure code, safe to publish. */
@@ -494,61 +782,134 @@ export class ControllerRefused extends Error {
   }
 }
 
+// Every observe command is a read. The Worker caps its own provider read at 15 s, so the client
+// waits past that for the Worker's named answer instead of giving up first.
+export const observeLimitMs = 30_000;
+
+/**
+ * Every command here is a read, so one lost on the way (`lostOnTheWay`) is sent again, signed anew
+ * and on its own fresh bridge, up to `observeAttempts` in all. An answer the Worker classified is
+ * never sent again. Commands that write go through their own senders and are sent once.
+ */
 export const observeSender =
   (connect?: Connect): DispatchDependencies["observe"] =>
-  async (action, controllerCode, target, signingKey, slot) => {
-    const at = signedNow();
-    const command = decodeRuntimeHandoffCommand(
-      { controllerCode, action, at, expiresAt: at + 25_000, ...(slot ? { target: slot } : {}) },
-      at,
-    );
-    // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
-    // refused; a defect, auth rejection or bridge failure must not read as a refusal.
-    let refused: string | undefined;
-    const observed: NonNullable<Connect> = async (path) => {
-      const platform = await (connect
-        ? connect(path)
-        : nodePoolOperations(target.accountId, target.worker));
-      const service = platform.env.POOL_OPERATIONS;
-      return {
-        ...platform,
-        env: {
-          POOL_OPERATIONS: {
-            fetch: async (request: Request) => {
-              const response = await service.fetch(request);
-              if (response.status === 409) {
-                const body: unknown = await response
-                  .clone()
-                  .json()
-                  .catch(() => undefined);
-                if (
-                  body &&
-                  typeof body === "object" &&
-                  "error" in body &&
-                  body.error === "runtime-handoff-refused"
-                )
-                  refused =
-                    "reason" in body &&
-                    typeof body.reason === "string" &&
-                    /^[a-z0-9_-]{1,64}$/u.test(body.reason)
-                      ? body.reason
-                      : "unspecified";
-              }
-              return response;
-            },
-          },
-        },
-      };
-    };
-    try {
-      return await sendRuntimeCommand(command, signingKey, { ...target, connect: observed }, () => {
-        decodeRuntimeHandoffCommand(command, signedNow());
-      });
-    } catch (cause) {
-      if (refused) throw new ControllerRefused(action, refused);
-      throw cause;
+  async (action, controllerCode, target, signingKey, subject) => {
+    // The closed list of reads, whatever a caller passes: anything else is sent once.
+    const attempts = (observeActions as readonly string[]).includes(action) ? observeAttempts : 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        // Signed anew each attempt: a command expires 25 s after it is signed.
+        const reply = await signedCommand(
+          connect,
+          action,
+          controllerCode,
+          target,
+          signingKey,
+          subject ? { target: subject } : {},
+          observeLimitMs,
+        );
+        if (attempt > 1 && reply !== null && typeof reply === "object")
+          attemptsTaken.set(reply, attempt);
+        return reply;
+      } catch (cause) {
+        if (attempt < attempts && lostOnTheWay(cause)) continue;
+        if (attempt > 1 && cause !== null && typeof cause === "object")
+          attemptsTaken.set(cause, attempt);
+        throw cause;
+      }
     }
   };
+
+// A reset writes, so it keeps the shared RPC's own limit.
+export const recoveryResetSender =
+  (connect?: Connect): DispatchDependencies["resetRecovery"] =>
+  (controllerCode, target, signingKey, operationId) =>
+    signedCommand(connect, "recovery-reset", controllerCode, target, signingKey, { operationId });
+
+async function signedCommand(
+  connect: Connect | undefined,
+  action: string,
+  controllerCode: ControllerCode,
+  target: ReleaseTarget,
+  signingKey: string,
+  fields: { target?: ObserveSubject; operationId?: string },
+  limitMs?: number,
+) {
+  // The closed command union decides which subject an action may carry; any other pairing refuses.
+  const build = () => {
+    const at = signedNow();
+    return decodeRuntimeHandoffCommand(
+      { controllerCode, action, at, expiresAt: at + 25_000, ...fields },
+      at,
+    );
+  };
+  // Once before any bridge opens, so a command the union refuses never opens one.
+  build();
+  // The shared RPC folds every non-200 into one refusal, so record whether the controller itself
+  // refused; a defect, auth rejection or bridge failure must not read as a refusal.
+  let refused: string | undefined;
+  const observed: NonNullable<Connect> = async (path) => {
+    const platform = await (connect
+      ? connect(path)
+      : nodePoolOperations(target.accountId, target.worker));
+    const service = platform.env.POOL_OPERATIONS;
+    return {
+      ...platform,
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const response = await service.fetch(request);
+            if (response.status === 409) {
+              const body: unknown = await response
+                .clone()
+                .json()
+                .catch(() => undefined);
+              if (
+                body &&
+                typeof body === "object" &&
+                "error" in body &&
+                body.error === "runtime-handoff-refused"
+              )
+                refused =
+                  "reason" in body &&
+                  typeof body.reason === "string" &&
+                  /^[a-z0-9_-]{1,64}$/u.test(body.reason)
+                    ? body.reason
+                    : "unspecified";
+            }
+            return response;
+          },
+        },
+      },
+    };
+  };
+  try {
+    return await sendRuntimeCommand(
+      // Signed once the bridge is open: a bridge may take up to 30 s to start, and a command lives
+      // 25 s from its signature.
+      async () => build(),
+      signingKey,
+      { ...target, connect: observed },
+      (frozen) => {
+        // The shape was decoded when it was built, so only its time can fail here.
+        try {
+          decodeRuntimeHandoffCommand(frozen, signedNow());
+        } catch {
+          throw new CommandExpiredLocally();
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      limitMs,
+    );
+  } catch (cause) {
+    // The provider-observation header is the Worker's own closed cause; keep it.
+    if (providerObservationCause(cause)) throw cause;
+    if (refused) throw new ControllerRefused(action, refused);
+    throw cause;
+  }
+}
 
 /** Unsigned GET of the root container's recovery status; the POST path is the only one that restarts. */
 export const rootHealthReader =
@@ -578,9 +939,18 @@ export async function writeDispatchResult(directory: string, result: object) {
 
 // Free-form inputs never reach the log, so a dispatch cannot inject workflow commands.
 export const logLine = (result: Awaited<ReturnType<typeof runCrashDispatch>>) =>
-  `mode=${["observe", "inspect", "apply"].includes(result.mode) ? result.mode : "invalid"} ` +
+  `mode=${modes.includes(result.mode) ? result.mode : "invalid"} ` +
   `request_id=${uuid.test(result.requestId) ? result.requestId : "invalid"} ` +
-  `ok=${result.ok} forcedInspect=${result.forcedInspect}\n`;
+  `ok=${result.ok} forcedInspect=${result.forcedInspect}\n` +
+  (result.providerObservation && providerLines.has(result.providerObservation)
+    ? `${result.providerObservation}\n`
+    : "") +
+  (result.restartObservation && restartLines.has(result.restartObservation)
+    ? `${result.restartObservation}\n`
+    : "") +
+  (result.retried?.length && result.retried.every((line) => retriedLine.test(line))
+    ? `retried: ${result.retried.join("; ")}\n`
+    : "");
 
 if (import.meta.main) {
   const env = process.env;
@@ -606,6 +976,7 @@ if (import.meta.main) {
         observe: observeSender(),
         crash: crashSender(temporary),
         rootHealth: rootHealthReader(),
+        resetRecovery: recoveryResetSender(),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: Date.now,
       },

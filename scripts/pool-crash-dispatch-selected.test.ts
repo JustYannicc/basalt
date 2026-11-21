@@ -56,6 +56,9 @@ function observeWorld(inspected: unknown, witness: (target: unknown) => unknown)
         imageInput: legacyTarget.imageInput,
       },
     }),
+    resetRecovery: async () => {
+      throw new Error("observe never resets recovery");
+    },
     rootHealth: async () => {
       calls.push("rootHealth");
       throw new Error("root health HTTP 409");
