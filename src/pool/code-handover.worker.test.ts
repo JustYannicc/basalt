@@ -2,6 +2,7 @@ import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { after, test } from "node:test";
+import { appModelPath } from "./app-model-contract.ts";
 import { codeHandoverHeader } from "./code-handover.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
@@ -65,7 +66,7 @@ test("a different deployed code hands the controller over: model calls are refus
     },
   });
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 200 }));
-  const runtime = { calls: 0, starts: 0, destroys: 0 };
+  const runtime = { calls: 0, starts: 0, destroys: 0, hold: false, release: () => {} };
   const container = {
     running: true,
     destroy: async () => {
@@ -86,7 +87,15 @@ test("a different deployed code hands the controller over: model calls are refus
           const path = new URL(request.url).pathname;
           if (port === 8317 && request.method === "POST" && path === "/v1/responses") {
             runtime.calls++;
-            return Response.json({ ok: true });
+            if (!runtime.hold) return Response.json({ ok: true });
+            // A stream the test ends, like a long model answer still running.
+            const body = new ReadableStream<Uint8Array>({
+              start: (controller) => {
+                controller.enqueue(new TextEncoder().encode("data: tick\n\n"));
+                runtime.release = () => controller.close();
+              },
+            });
+            return new Response(body, { headers: { "content-type": "text/event-stream" } });
           }
           if (port === 8327) {
             const endpoint = path.slice("/v8/management".length);
@@ -144,7 +153,10 @@ test("a different deployed code hands the controller over: model calls are refus
     );
   await worker.alarm();
   await drain();
-  assert.equal((await modelCall()).status, 200, "the pool serves before the handover");
+  const served = await modelCall();
+  assert.equal(served.status, 200, "the pool serves before the handover");
+  // Read through, as the entrypoint does: an answer still being read counts as in flight.
+  await served.text();
   await drain();
   assert.equal(runtime.calls, 1);
   // The first warm may restart the fixture's container; only what the handover does is counted.
@@ -156,8 +168,17 @@ test("a different deployed code hands the controller over: model calls are refus
   await drain();
   assert.deepEqual(aborted, []);
 
-  // A deployed entrypoint on other code: nothing is in flight, so the handover is immediate.
+  // A deployed entrypoint on other code while a model stream is still running: the stream holds
+  // the reset until its answer is read through.
+  runtime.hold = true;
+  const streaming = await modelCall();
+  runtime.hold = false;
+  assert.equal(streaming.status, 200);
   worker.deploymentIdentity({ candidate: "f".repeat(40), workerInput: "e".repeat(64) });
+  await new Promise((done) => setTimeout(done, 600));
+  assert.deepEqual(aborted, [], "an open model stream holds the reset");
+  runtime.release();
+  assert.match(await streaming.text(), /tick/);
   worker.deploymentIdentity({ candidate: "f".repeat(40), workerInput: "e".repeat(64) });
   await drain();
   assert.deepEqual(aborted, ["code handover"], "one reset for repeated adoption reads");
@@ -167,7 +188,16 @@ test("a different deployed code hands the controller over: model calls are refus
   assert.equal(refused.status, 503);
   assert.equal(refused.headers.get(codeHandoverHeader), "draining");
   assert.equal(refused.headers.get("Retry-After"), "1");
-  assert.equal(runtime.calls, 1, "the refused call never reached the runtime");
+  assert.equal(runtime.calls, 2, "the refused call never reached the runtime");
+  // An app's model call is refused where it enters, before it records its single-use nonce.
+  const custody = structuredClone(storage.get("app-model-key-custody-v1"));
+  const appCall = await worker.fetch(
+    new Request(`https://pool.example${appModelPath}`, { method: "POST", body: "{}" }),
+  );
+  assert.equal(appCall.status, 503);
+  assert.equal(appCall.headers.get(codeHandoverHeader), "draining");
+  assert.equal(appCall.headers.get("Retry-After"), "1");
+  assert.deepEqual(storage.get("app-model-key-custody-v1"), custody, "no nonce was recorded");
   assert.deepEqual(
     { starts: runtime.starts, destroys: runtime.destroys, running: container.running },
     { ...before, running: true },

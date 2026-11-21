@@ -276,8 +276,11 @@ async function awaitHandover(
       void response.body?.cancel().catch(() => {});
       response = next;
     } catch (error) {
+      if (request.signal.aborted) throw error;
       // The old instance reset itself while this send was on its way; the next one reaches the new.
-      if (!controllerInstanceEnded(error) || request.signal.aborted) throw error;
+      if (controllerInstanceEnded(error)) continue;
+      // Any other failure: the caller still gets the retryable refusal it already holds.
+      break;
     }
   }
   console.info("POOL_CODE_HANDOVER_WAITED", {
