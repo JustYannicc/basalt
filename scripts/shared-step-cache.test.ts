@@ -198,7 +198,17 @@ test(
     writeFileSync(join(repo, ".gitignore"), "ignored/\n");
     writeFileSync(join(repo, "a.txt"), "one");
     git("add", ".");
-    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x");
+    git(
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "x",
+    );
     const extra = { dependencies: "d" };
     const first = worktreeKey(repo, extra);
     assert.equal(worktreeKey(repo, extra), first);
