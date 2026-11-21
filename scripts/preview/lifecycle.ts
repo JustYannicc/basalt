@@ -623,6 +623,8 @@ export async function destroyStage(
   await updatePreviewManifest(path, subject, "destroying", undefined, inventory);
 
   const failures: unknown[] = [];
+  // A rehearsal stage bills for these while it stands, whatever else of it is left.
+  const paidParts = new Set(["applications", "database"]);
   for (const [stack, action] of [
     ["basalt", () => services.destroyStack("basalt", config, config.providers)],
     ...(subject.kind === "rehearsal"
@@ -637,14 +639,15 @@ export async function destroyStage(
       ? ([["outputs", () => services.stageOutputs("delete", config, config.providers)]] as const)
       : []),
   ] as const) {
+    // After a failure only a rehearsal's paid parts still go: its container applications and its
+    // database. Everything else waits for the next attempt, which starts where this one stopped.
+    if (failures.length && subject.kind !== "rehearsal") break;
+    if (failures.length && !paidParts.has(stack)) continue;
     try {
       await action();
     } catch (error) {
       // The cause is what says which resource is left; the CLI prints it redacted.
       failures.push(new Error("Preview " + stack + " cleanup failed", { cause: error }));
-      // Stop at the first failure: a later step (the database under a stack that still binds it)
-      // only widens a half-done teardown, and the next attempt starts from where this one stopped.
-      break;
     }
   }
   if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");

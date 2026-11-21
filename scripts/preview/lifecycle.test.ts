@@ -256,7 +256,7 @@ test("the stage brand replaces only the brand object's host and zone in the real
 });
 
 /** A rehearsal stage's destroy, with the fixture stack's State as the reader returns it. */
-async function rehearsalDestroy(fixture: "none" | "one" | "output" | "unread") {
+async function rehearsalDestroy(fixture: "none" | "one" | "output" | "unread", failing?: string) {
   const root = await mkdtemp(join(tmpdir(), "rehearsal-fixture-"));
   const source = environment();
   const subject = { kind: "rehearsal", number: 17 } as const;
@@ -286,10 +286,16 @@ async function rehearsalDestroy(fixture: "none" | "one" | "output" | "unread") {
     captureProviders: async () => ({ complete: true, containers: [], domains: [] }),
     build: async () => assert.fail("no build"),
     deploy: async () => assert.fail("no deploy"),
-    destroyStack: async (stack) => void calls.push(`destroy:${stack}`),
+    destroyStack: async (stack) => {
+      calls.push(`destroy:${stack}`);
+      if (stack === failing) throw new Error(`${stack} refused`);
+    },
     deleteArtifacts: record("artifacts"),
     verifyProviders: record("verify"),
-    stageApplications: async (mode) => void calls.push(`applications:${mode}`),
+    stageApplications: async (mode) => {
+      calls.push(`applications:${mode}`);
+      if (failing === "applications") throw new Error("applications refused");
+    },
     stageImages: async (mode) => void calls.push(`images:${mode}`),
     stageOutputs: async (mode) => void calls.push(`outputs:${mode}`),
   };
@@ -333,4 +339,19 @@ test("(c) a fixture stack the read did not return refuses: a failed read is neve
     /fixture stack's State was not read|Preview state response has unexpected fields/u,
   );
   assert.deepEqual(calls, []);
+});
+
+test("a rehearsal whose application stack refuses still removes its paid parts, then stops and says so", async () => {
+  const { calls, outcome } = await rehearsalDestroy("none", "basalt");
+  assert.ok(outcome instanceof AggregateError);
+  assert.match(String((outcome.errors[0] as Error).message), /basalt cleanup failed/u);
+  // Only the container applications and the database go after the failure; images, artifacts and
+  // outputs wait for the next attempt.
+  assert.deepEqual(calls, ["destroy:basalt", "applications:delete", "destroy:database"]);
+});
+
+test("a rehearsal whose applications delete refuses still removes its database", async () => {
+  const { calls, outcome } = await rehearsalDestroy("none", "applications");
+  assert.ok(outcome instanceof AggregateError);
+  assert.deepEqual(calls, ["destroy:basalt", "applications:delete", "destroy:database"]);
 });
