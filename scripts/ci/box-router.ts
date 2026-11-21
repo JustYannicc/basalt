@@ -25,9 +25,10 @@ const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
 export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
 /**
  * Other jobs route only once a box bench has run them at hosted speed. `minutes` is the slowest
- * hosted run in full Check 44894443635 (account-acquisition: the planned time after its split);
- * `timeout` is the job's own, which the workflow test keeps equal to ci.yml. A matrix job routes
- * leg by leg, as `<job>:<leg>`.
+ * hosted run in full Check 44894443635 (account-acquisition: the planned time after its split), or
+ * for the fast lane's jobs in batch three's pull request run 44910641265; `timeout` is the job's
+ * own, which the workflow test keeps equal to ci.yml. A matrix job routes leg by leg, as
+ * `<job>:<leg>`.
  */
 export const namedJobs: Record<
   string,
@@ -50,6 +51,10 @@ export const namedJobs: Record<
   "upstream-contracts": { minutes: 11.3, timeout: 25 },
   "human-in-the-loop-cloud": { minutes: 10.5, timeout: 25 },
   "host-managed-accounts-local": { minutes: 9.4, timeout: 20 },
+  // The fast lane, which every pull request push runs.
+  fast: { minutes: 15.6, timeout: 35 },
+  "client-connection": { minutes: 5.3, timeout: 12 },
+  "browser-install": { minutes: 1.8, timeout: 10 },
 };
 /** A routable row: its name in box_jobs, its planned hosted minutes and its job timeout. */
 export type BoxShard = { id: string; minutes: number; timeout: number };

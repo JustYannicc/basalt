@@ -56,7 +56,8 @@ export function gateErrors(
   )
     errors.push("Invalid heavy-job selection");
   // A routed job still passes under its own name below; routing only picks its runner.
-  if (new Set(box).size !== box.length || box.some((id) => !selected.includes(routedJob(id) ?? "")))
+  const routable = [...fastJobs, ...selected];
+  if (new Set(box).size !== box.length || box.some((id) => !routable.includes(routedJob(id) ?? "")))
     errors.push("Invalid box-job selection");
   if (Object.keys(needs).sort().join("\n") !== [...expected].sort().join("\n"))
     errors.push("Aggregate gate dependencies differ from the declared CI jobs");

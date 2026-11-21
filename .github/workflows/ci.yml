@@ -164,8 +164,8 @@ jobs:
           python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
     needs: [select, long-started]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'client-connection') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -2172,7 +2172,7 @@ jobs:
           if-no-files-found: warn
   browser-install:
     needs: [select, long-started]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'browser-install') && needs.select.outputs.box_label || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -2188,8 +2188,8 @@ jobs:
 
   fast:
     needs: select
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'fast') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    timeout-minutes: 35
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"

@@ -412,7 +412,9 @@ test("declared shard rows and benched named jobs route, and free slots and timeo
       job,
     );
   const real = declaredMatrices();
-  const plan = checkPlan(heavyJobs, real);
+  // The fast lane's jobs run in every Check, so select passes them with the selected heavy jobs.
+  const everyJob = [...fastJobs, ...heavyJobs];
+  const plan = checkPlan(everyJob, real);
   assert.deepEqual(
     plan.shards.map((shard) => shard.id).sort(),
     [
@@ -434,7 +436,7 @@ test("declared shard rows and benched named jobs route, and free slots and timeo
   for (const slots of [1, 2, 3, 5])
     for (const busy of [0, 1, 2]) {
       const routed = await routeBox(
-        input({ slots: String(slots), selected: heavyJobs, matrices: real, durations: undefined }),
+        input({ slots: String(slots), selected: everyJob, matrices: real, durations: undefined }),
         observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box,
         () => now,
       );
@@ -638,7 +640,7 @@ test("declared shard jobs and benched named jobs use the router expression; ever
   }
   for (const [id, { minutes, timeout }] of Object.entries(namedJobs)) {
     const job = workflow.jobs[id];
-    assert.ok(heavyJobs.includes(id), id);
+    assert.ok(heavyJobs.includes(id) || fastJobs.includes(id), id);
     assert.ok(workflow.jobs.check.needs.includes(id), id);
     assert.ok([job.needs].flat().includes("select"), id);
     // The table's timeout is the job's own, which every named job sets: a hung job would hold a
@@ -697,6 +699,10 @@ test("a named job routes by its exact id, and the gate accepts it only when the 
     gateErrors(needs, without, ["production-ops-identity:credentials"]).includes(
       "Invalid box-job selection",
     ),
+  );
+  // The fast lane's jobs run in every Check, so the gate takes them on the box with no heavy job.
+  assert.ok(
+    !gateErrors(needs, [], ["fast", "client-connection"]).includes("Invalid box-job selection"),
   );
 });
 
@@ -757,7 +763,9 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
       );
   for (const invalid of [
     ["client-desktop"],
-    ["fast"],
+    // The fast lane's routing and gate jobs stay hosted.
+    ["select"],
+    ["long-started"],
     ["pool-runtime"],
     ["declared-cloud"],
     ["declared-cloud-1", "declared-cloud-1"],

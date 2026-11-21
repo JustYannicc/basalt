@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
 import { githubObserver, routeBox } from "./box-router.ts";
+import { fastJobs } from "./gate.ts";
 import { declaredMatrices } from "./shards.ts";
 
 const root = process.cwd();
@@ -34,7 +35,8 @@ const box = await routeBox(
     headRepository: env.HEAD_REPOSITORY,
     slots: env.BOX_SLOTS,
     label: env.BOX_LABEL,
-    selected: selection.jobs,
+    // The fast lane's jobs run in every Check, so they can route as well as the selected ones.
+    selected: [...fastJobs, ...selection.jobs],
     matrices,
   },
   githubObserver({
