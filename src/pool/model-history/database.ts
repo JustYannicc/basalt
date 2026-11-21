@@ -83,7 +83,7 @@ export async function withHistoryDatabase<T>(
   } catch (error) {
     // Only signed series reads opt into the History-specific public timeout response.
     if (error instanceof HistoryTimeoutFailure && options.timeoutFailure !== "history")
-      throw new Error("Model history database deadline exceeded");
+      throw new Error("Model history database deadline exceeded", { cause: error });
     throw error;
   } finally {
     deadline.dispose();

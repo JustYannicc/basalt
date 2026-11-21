@@ -1,7 +1,6 @@
 import {
   historySeriesDiagnostics,
   historySeriesFailure,
-  type HistorySeriesDiagnostics,
   type HistorySeriesObservation,
 } from "./series-diagnostics.ts";
 
@@ -12,11 +11,33 @@ export type HistoryReadAction =
   | "poolPersonalOverview"
   | "lastSuccessAt";
 
+/** Which part of the summary a statement belongs to; ordinals shift with the data, these don't. */
+export type HistoryReadStep =
+  | "begin"
+  | "targets"
+  | "coverage"
+  | "daily"
+  | "capture"
+  | "hourly"
+  | "incidents"
+  | "commit"
+  | "rollback";
+
+/** The read's own cause, or the one a database deadline error carries. */
+function readFailure(error: unknown) {
+  const failure = historySeriesFailure(error);
+  return failure === "unknown" && error instanceof Error && error.cause !== undefined
+    ? historySeriesFailure(error.cause)
+    : failure;
+}
+
 /**
  * Watches one signed history read. A read with phases reports each statement as a
- * `history_<phases>_phase` line. A read that answers 5xx logs one `POOL_USAGE_READ_FAILED` line
- * naming the statement that failed and reports once, so a failing overview alerts instead of
- * leaving a bare 503. Built from closed fields only: never SQL, values or caller data.
+ * `history_<phases>_phase` line, labelled with the step the read marked. A read that answers 5xx
+ * logs one `POOL_USAGE_READ_FAILED` line and reports once, so a failing overview alerts instead of
+ * leaving a bare 503. The line names a statement only when the read's last statement failed: a
+ * statement that failed inside a savepoint the read recovered from never takes the blame.
+ * Built from closed fields only: never SQL, values or caller data.
  */
 export function watchHistoryRead(
   action: HistoryReadAction,
@@ -24,29 +45,40 @@ export function watchHistoryRead(
   now: () => number = () => performance.now(),
 ) {
   const started = now();
-  let failedStatement: HistorySeriesObservation | undefined;
-  const diagnostics: HistorySeriesDiagnostics | undefined = phases
+  let step: HistoryReadStep | undefined;
+  let last: (HistorySeriesObservation & { step?: HistoryReadStep }) | undefined;
+  const diagnostics = phases
     ? historySeriesDiagnostics((observation) => {
-        if (observation.status === "error" && observation.phase === "sql_statement")
-          failedStatement ??= observation;
-        console.info(`history_${phases}_phase`, observation);
+        const labelled = step === undefined ? observation : { ...observation, step };
+        // A rollback after a failure is not the read's last word.
+        if (observation.phase === "sql_statement" && step !== "rollback") last = labelled;
+        console.info(`history_${phases}_phase`, labelled);
       }, now)
     : undefined;
   return {
     diagnostics,
+    /** Labels the statements that follow, until the next mark. */
+    mark(next: HistoryReadStep) {
+      step = next;
+    },
     answered(error: unknown, response: Response, report?: (action: HistoryReadAction) => void) {
       if (response.status < 500) return;
+      const failed = last?.status === "error" ? last : undefined;
       try {
         console.error(
           "POOL_USAGE_READ_FAILED",
           JSON.stringify({
             action,
             status: response.status,
-            failure: failedStatement?.failure ?? historySeriesFailure(error),
+            failure: failed?.failure ?? readFailure(error),
             elapsedMs: Math.max(0, Math.min(60_000, Math.round(now() - started))),
-            ...(failedStatement?.statement === undefined
+            ...(failed?.statement === undefined
               ? {}
-              : { statement: failedStatement.statement, statementMs: failedStatement.elapsedMs }),
+              : {
+                  statement: failed.statement,
+                  statementMs: failed.elapsedMs,
+                  ...(failed.step === undefined ? {} : { step: failed.step }),
+                }),
           }),
         );
         report?.(action);

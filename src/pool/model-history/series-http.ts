@@ -51,7 +51,7 @@ export async function handleUsageSeries(
   },
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
-  const action: HistoryReadAction =
+  const action =
     path === poolUsageSummaryPath
       ? "poolUsageSummary"
       : path === poolUsageSeriesPath
@@ -180,7 +180,7 @@ export async function handleUsageSeries(
         await historyPhase(diagnostics, "summary_read", () =>
           withHistoryDatabase(
             access.connectionString,
-            (db) => poolUsageSummary(db, input, access.currentPrices),
+            (db) => poolUsageSummary(db, input, access.currentPrices, undefined, watch.mark),
             { diagnostics },
           ),
         ),

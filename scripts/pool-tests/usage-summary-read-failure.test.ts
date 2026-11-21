@@ -62,6 +62,7 @@ test("a usage summary held past its statement timeout names the statement, logs 
       assert.equal(line?.action, "poolUsageSummary");
       assert.equal(line?.status, 503);
       assert.equal(line?.failure, "statement_timeout");
+      assert.equal(line?.step, "targets", "the first statement that reads the held table");
       assert.ok(Number.isSafeInteger(line?.statement), JSON.stringify(line));
       assert.ok(Number(line?.statementMs) >= 4_900, JSON.stringify(line));
       const phases = info.mock.calls
@@ -72,7 +73,8 @@ test("a usage summary held past its statement timeout names the statement, logs 
           (phase) =>
             phase.phase === "sql_statement" &&
             phase.status === "error" &&
-            phase.statement === line?.statement,
+            phase.statement === line?.statement &&
+            phase.step === "targets",
         ),
         "the failed statement has its own phase line",
       );
