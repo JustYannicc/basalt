@@ -1,0 +1,11 @@
+{
+  "identity": "basalt-whole-millisecond-browser-clock",
+  "file": "0679-whole-millisecond-browser-clock.patch",
+  "content_sha256": "81230588e0962a25d922384883cf909aedb993964cfbb525f3dad5a9df694110",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "playwright-clock-whole-milliseconds",
+  "requires": "Playwright's clock keeps fractional timer delays, so Date.now() can be fractional and Effect's BigInt span clock fails requests; remove once Playwright truncates delays and the polling cases pass from a half-millisecond start."
+}

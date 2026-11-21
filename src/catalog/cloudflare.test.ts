@@ -6,7 +6,7 @@ import reviewData from "./oauth-reviews.json" with { type: "json" };
 import { cloudflareOAuthScopes } from "../pool/provider-accounts/cloudflare-scopes.ts";
 import { handleCatalog } from "./worker.ts";
 import { onServedFramework } from "./framework.ts";
-import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-metadata.ts";
 import { oauthFitness, oauthReviews } from "./oauth-policy.ts";
 
 const scopeFile = source.files.find((file) => file.path === "cloudflare-scopes.ts")!;
