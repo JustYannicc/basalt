@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { minimumRead, parseShard, shardEntries } from "./catalog-compat/shard.mjs";
+import { minimumRead, parseShard, shardEntries } from "./catalog-compat/shard.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(

@@ -14,7 +14,7 @@ import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accoun
 import { handleCatalog } from "../src/catalog/worker.ts";
 import { catalog } from "../src/catalog/settings.ts";
 import { catalogBuildFailure } from "../scripts/catalog-compat/build-failure.mjs";
-import { minimumRead, parseShard, shardEntries } from "../scripts/catalog-compat/shard.mjs";
+import { minimumRead, parseShard, shardEntries } from "../scripts/catalog-compat/shard.ts";
 
 /**
  * Build every package the catalog serves, as the catalog serves it, on the framework Basalt ships:
