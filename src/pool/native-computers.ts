@@ -112,8 +112,11 @@ export class NativeComputers {
       return fail(401, "unauthorized", "A current native host assertion is required.");
     return value;
   }
-  /** A model device whose key is not minted yet stays connected; its tools need no key. */
   private async active(registry: Registry, caller: Identity) {
+    return (await this.admitted(registry, caller)).computer;
+  }
+  /** A model device whose key is not minted yet stays connected; its tools need no key. */
+  private async admitted(registry: Registry, caller: Identity) {
     const row = Object.hasOwn(registry, caller.computer) ? registry[caller.computer] : undefined;
     if (
       !row ||
@@ -132,7 +135,7 @@ export class NativeComputers {
       !directory.allowed(row.pool, row.user, Date.parse(row.createdAt))
     )
       return fail(403, "unauthorized", "This pool is no longer available to this device.");
-    return row;
+    return { computer: row, owner: pool.owner };
   }
   async control(request: Request): Promise<Response> {
     try {
@@ -277,6 +280,10 @@ export class NativeComputers {
   }
   /** Home is called outside the registry queue, so a slow container holds up no other device. */
   private async mint(request: KeyRequest) {
+    // Re-read under the queue: a request made before an earlier mint was stored needs nothing.
+    if (!(await this.deps.run(async (registry) => this.keyless(registry, request)))) return;
+    // A lost Home reply, failed save or replaced object leaves keys nobody holds.
+    for (const id of await this.deps.home.find(request.computer)) await this.deps.home.revoke(id);
     const issued = await this.deps.home.mint(
       request.user,
       request.pool,
@@ -285,25 +292,28 @@ export class NativeComputers {
     );
     const key = await sealNativeKey(this.deps.signingKey, issued.key, request.identity);
     const kept = await this.deps.run(async (registry) => {
-      const computer = Object.hasOwn(registry, request.computer)
-        ? registry[request.computer]
-        : undefined;
-      if (
-        computer?.state !== "active" ||
-        computer.removalPending ||
-        !computer.native?.models ||
-        computer.native.key ||
-        keyIdentity(computer) !== request.identity
-      )
-        return false;
+      const computer = this.keyless(registry, request);
+      if (!computer) return false;
       computer.keyId = issued.keyId;
       computer.userId = issued.userId;
-      computer.native.key = key;
+      computer.native!.key = key;
       await this.deps.save(registry);
       return true;
     });
     // Revoked or removed while Home was minting: nobody may keep this key.
     if (!kept) await this.deps.home.revoke(issued.keyId);
+  }
+  private keyless(registry: Registry, request: KeyRequest) {
+    const computer = Object.hasOwn(registry, request.computer)
+      ? registry[request.computer]
+      : undefined;
+    return computer?.state === "active" &&
+      !computer.removalPending &&
+      computer.native?.models &&
+      !computer.native.key &&
+      keyIdentity(computer) === request.identity
+      ? computer
+      : undefined;
   }
   async session(request: Request) {
     if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")
@@ -336,15 +346,10 @@ export class NativeComputers {
   }
   private forward(request: Request, url: URL, value: Record<string, unknown>, caller: Identity) {
     return this.deps.run(async (registry) => {
-      const computer = await this.active(registry, caller);
+      const { computer, owner } = await this.admitted(registry, caller);
       if (!computer.native?.models)
         return fail(403, "unauthorized", "This device was approved for tools only.");
-      if (!computer.native.key) {
-        const pool = (await PoolDirectory.load(this.deps.storage, this.deps.now())).entry(
-          computer.pool,
-        );
-        return pool ? new KeyRequest(computer, pool.owner) : modelsUnavailable();
-      }
+      if (!computer.native.key) return new KeyRequest(computer, owner);
       const key = await openNativeKey(
         this.deps.signingKey,
         computer.native.key,
