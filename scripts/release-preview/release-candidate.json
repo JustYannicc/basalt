@@ -1,5 +1,5 @@
 {
-  "branch": "",
-  "policy": "",
+  "branch": "rehearse/red-1601-00fce24c",
+  "policy": "code",
   "note": "Lane 5 release runs (apply A, apply B, the red run). Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
 }
