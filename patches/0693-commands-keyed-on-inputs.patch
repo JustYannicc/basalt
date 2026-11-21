@@ -1,0 +1,254 @@
+diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
+--- a/apps/hosted/cloud/scripts/database-pool-budget.ts
++++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
+@@ -16,15 +16,34 @@
+ const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
+ const Changes = Schema.Struct({ data: Schema.Array(Change) });
+ 
++const testDatabases = "basalt-preview-";
++/**
++ * Whether a database and branch are the stage's own. A disposable test stage owns one database,
++ * named after it, and the two branches named after it. Every other stage owns only `main`, of a
++ * database that is not a test stage's. The script decides this itself, before any request: it
++ * runs as a child process, where nothing outside it can see or refuse what it sends, and test
++ * stages share the organization and its credentials with production.
++ */
++export function ownPoolBudgetTarget(stage: string, database: string, branch: string): boolean {
++  if (!stage.startsWith("test-")) return branch === "main" && !database.startsWith(testDatabases);
++  const slug = /^test-(pr-[1-9][0-9]*|rehearsal-[1-9][0-9]{0,9})$/.exec(stage)?.[1];
++  return (
++    slug !== undefined &&
++    database === `${testDatabases}${slug}` &&
++    (branch === stage || branch === `${stage}-pool`)
++  );
++}
++
+ export const configureDatabasePoolBudget = Effect.gen(function* () {
+   const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
++  const stage = yield* Config.NonEmptyString("POOL_BUDGET_STAGE");
+   const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
+   const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
+   const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
+   const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
+-  if (branch !== "main" && !/^test-[a-z0-9-]+$/.test(branch))
++  if (!ownPoolBudgetTarget(stage, database, branch))
+     return yield* new PoolBudgetFailed({
+-      message: "The database budget requires main or an isolated test branch",
++      message: "The database budget refuses a database or branch that is not its stage's own",
+     });
+   const client = yield* HttpClient.HttpClient;
+   const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
+@@ -74,11 +93,11 @@
+     Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
+     Effect.flatMap(({ data }) => {
+       const state = data.find((entry) => entry.id === change.id)?.state;
+-      return state === "completed"
+-        ? Effect.void
+-        : Effect.fail(
+-            new PoolBudgetFailed({ message: `PgBouncer change is ${state ?? "missing"}` }),
+-          );
++      if (state === "completed") return Effect.void;
++      // Only a plain state word reaches the failure text; anything else is provider data.
++      const word =
++        state === undefined ? "missing" : /^[a-z_]{1,32}$/.test(state) ? state : "unreadable";
++      return Effect.fail(new PoolBudgetFailed({ message: `PgBouncer change is ${word}` }));
+     }),
+     Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
+   );
+@@ -86,10 +105,27 @@
+     return yield* new PoolBudgetFailed({ message: "PgBouncer budget readback did not match" });
+ });
+ 
++/** Fixed text only: this script's own failure messages, or the class of any other error. */
++const failureText = (error: unknown) =>
++  error instanceof PoolBudgetFailed
++    ? error.message
++    : `The database budget failed: ${
++        typeof error === "object" &&
++        error !== null &&
++        "_tag" in error &&
++        typeof error._tag === "string"
++          ? error._tag
++          : "error"
++      }`;
++
+ if (import.meta.main)
+   NodeRuntime.runMain(
+     configureDatabasePoolBudget.pipe(
+       Effect.timeout("6 minutes"),
+       Effect.provide(FetchHttpClient.layer),
++      // A deploy reports only a command's stderr, and the runtime logs failures to stdout.
++      Effect.tapError((error) =>
++        Effect.sync(() => void process.stderr.write(`${failureText(error)}\n`)),
++      ),
+     ),
+   );
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+--- a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+@@ -1,30 +1,31 @@
+-import { releaseCommandAttempt } from "./release-command-attempt.ts";
+ import * as Command from "alchemy/Command";
+ import { fileURLToPath } from "node:url";
+ import type { Input } from "alchemy/Input";
++import { Stage } from "alchemy/Stage";
+ import { Effect } from "effect";
+ 
+-/** One execution per production deploy attempt; isolated previews retain their existing behavior. */
++/**
++ * Sets the pool size when the script, the policy, the database or the branch changes. Resources
++ * read its outcome, and a plan cannot know the outcome of a command that runs on every plan, so
++ * it carries no attempt identity. A check that must run on every release belongs to the release
++ * entry, before apply.
++ */
+ export const databasePoolBudget = (id: string, database: Input<string>, branch: Input<string>) =>
+   Effect.gen(function* () {
+-    const attempt = yield* releaseCommandAttempt;
++    // The script refuses a database or branch that is not this stage's own.
++    const stage = yield* Stage;
+     return yield* Command.Exec(id, {
+       command: "node scripts/database-pool-budget.ts",
+       cwd: fileURLToPath(new URL("../../", import.meta.url)),
+       env: {
++        POOL_BUDGET_STAGE: stage,
+         POOL_BUDGET_DATABASE: database,
+         POOL_BUDGET_BRANCH: branch,
+-        BASALT_RELEASE_ATTEMPT: attempt,
+       },
+-      memo: attempt
+-        ? {
+-            include: [
+-              "scripts/database-pool-budget.ts",
+-              "src/infrastructure/database-pool-policy.ts",
+-            ],
+-            lockfile: true,
+-          }
+-        : false,
++      memo: {
++        include: ["scripts/database-pool-budget.ts", "src/infrastructure/database-pool-policy.ts"],
++        lockfile: true,
++      },
+       timeout: "7 minutes",
+     });
+   });
+diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
+--- a/apps/hosted/cloud/src/infrastructure/database.ts
++++ b/apps/hosted/cloud/src/infrastructure/database.ts
+@@ -1,4 +1,3 @@
+-import { requiredReleaseCommandAttempt } from "./release-command-attempt.ts";
+ /** Database infrastructure belongs to cloud; Docker and local keep their own drivers. */
+ import * as Output from "alchemy/Output";
+ import { fileURLToPath } from "node:url";
+@@ -26,6 +25,7 @@
+   Tracer,
+ } from "effect";
+ import { databasePoolBudget } from "./database-pool-budget.ts";
++import { migrationInputs } from "./migration-inputs.ts";
+ import { developmentDatabase } from "./development.ts";
+ import { cloudOrigin, roleHostsJobEnvironment, testStage, type TestStage } from "./stage.ts";
+ import { postgresUrl, previewDatabase, previewPoolConnections } from "./preview-database.ts";
+@@ -84,6 +84,7 @@
+       ? yield* Command.Exec.ref("Migrations")
+       : yield* Command.Exec("Migrations", {
+           command: "node src/migrate.ts",
++          cwd: fileURLToPath(new URL("../../", import.meta.url)),
+           env: {
+             DATABASE_URL: preview.migrationUrl,
+             // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
+@@ -92,7 +93,7 @@
+             // Auth setup provisions the OAuth resources at the role hosts too.
+             ...(yield* roleHostsJobEnvironment),
+           },
+-          memo: false,
++          memo: migrationInputs,
+           // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
+           timeout: "7 minutes",
+         });
+@@ -209,7 +210,6 @@
+     command: "node src/migrate.ts",
+     cwd: fileURLToPath(new URL("../../", import.meta.url)),
+     env: {
+-      BASALT_RELEASE_ATTEMPT: yield* requiredReleaseCommandAttempt,
+       DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")),
+       DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
+       BETTER_AUTH_URL: yield* cloudOrigin,
+@@ -217,7 +217,7 @@
+       // Auth setup provisions the OAuth resources at the role hosts too.
+       ...(yield* roleHostsJobEnvironment),
+     },
+-    memo: { include: ["src/**"], lockfile: true },
++    memo: migrationInputs,
+     // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
+     timeout: "7 minutes",
+   });
+diff --git a/apps/hosted/cloud/src/infrastructure/migration-inputs.ts b/apps/hosted/cloud/src/infrastructure/migration-inputs.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/migration-inputs.ts
+@@ -0,0 +1,25 @@
++/**
++ * What `src/migrate.ts` reads, as the key for when the migration runs. Its imports reach the
++ * hosted apps and most workspace packages, so the key is their sources and the lockfile.
++ * Resources wait on the migration's outcome, and a plan cannot know the outcome of a command that
++ * runs on every plan, so it runs when these change and carries no attempt identity.
++ */
++export const migrationInputs = {
++  include: [
++    "src/**",
++    "../server/src/**",
++    "../../marketing/src/**",
++    "../../../packages/*/src/**",
++    // Generated apps declare the framework release this manifest names.
++    "../../../packages/apps/package.json",
++  ],
++  // Preparation rewrites these for every revision or pool app change; the migration imports none.
++  // One of them inside the key would run the migration on every release.
++  exclude: [
++    "src/implementation/production-ops-release.ts",
++    "../server/src/implementation/catalog-app-release.ts",
++    "../server/src/implementation/pool-worker-revision.ts",
++    "../server/src/implementation/pool-app-source.ts",
++  ],
++  lockfile: true,
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/site-inputs.ts b/apps/hosted/cloud/src/infrastructure/site-inputs.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/site-inputs.ts
+@@ -0,0 +1,17 @@
++/**
++ * The site build reads the whole tree, so its key stays every file the tree does not ignore, plus
++ * the lockfile. Three files are rewritten for every release and no page or site script imports
++ * them. A fourth is written by every install and names that install's own dependency store. With
++ * any of them in the key the site, and every Worker that serves it, changed on every release.
++ * Patterns are relative to the tree's root, the build's working directory.
++ */
++export const siteInputs = {
++  include: [
++    "**/*",
++    "!.basalt-dependencies.json",
++    "!apps/hosted/cloud/src/implementation/production-ops-release.ts",
++    "!apps/hosted/server/src/implementation/catalog-app-release.ts",
++    "!apps/hosted/server/src/implementation/pool-worker-revision.ts",
++  ],
++  lockfile: true,
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/src/infrastructure/site.ts
+--- a/apps/hosted/cloud/src/infrastructure/site.ts
++++ b/apps/hosted/cloud/src/infrastructure/site.ts
+@@ -9,6 +9,7 @@
+ import { postHogBindings } from "./posthog.ts";
+ import { sentryBindings } from "./sentry.ts";
+ import { cloudHosts } from "./stage.ts";
++import { siteInputs } from "./site-inputs.ts";
+ 
+ /** Alchemy reuses this resource when the API and development server request it. */
+ export const cloudSite = Effect.gen(function* () {
+@@ -25,6 +26,7 @@
+     cwd: "../../..",
+     command: "bun run hosted:cloud:site:build",
+     outdir: "apps/hosted/cloud/.generated/site",
++    memo: siteInputs,
+     env: {
+       // Generated assets are outside tracked source; the version invalidates Command.Build's input hash.
+       BASALT_POOL_APP_VERSION: poolAppVersion,
