@@ -149,7 +149,8 @@ test("native revocation aborts active model access before failed backend cleanup
   assert.equal(lease.signal.aborted, true, "Persisted refusal must abort the active model request");
   assert.equal(closed, true, "Persisted refusal must close the native response");
   p.f.restart();
-  assert.equal((await p.control("check", { computer: id, pool: pool.pool })).status, 401);
+  // A device its person revoked answers 410, so the host can end its grant.
+  assert.equal((await p.control("check", { computer: id, pool: pool.pool })).status, 410);
   await assert.rejects(p.model(id), /no longer connected/);
   p.f.server.revokeFailure = false;
   assert.equal((await p.control("revoke", { computer: id, pool: pool.pool })).status, 200);
@@ -354,7 +355,7 @@ test("tools-only native approval mints no model key and cannot widen on replay",
   );
   assert.equal(
     (await p.control("check", { computer: approved.computer.id, pool: pool.pool })).status,
-    401,
+    410,
   );
 });
 
@@ -496,7 +497,7 @@ test("a device with no model key revokes while Home is stopped and leaves no rev
     const revoked = await p.control("revoke", identity);
     assert.equal(revoked.status, 200, `${device.grant}: ${await revoked.clone().text()}`);
     assert.equal((await p.f.registry())[computer.id]?.state, "revoked", device.grant);
-    assert.equal((await p.control("check", identity)).status, 401, device.grant);
+    assert.equal((await p.control("check", identity)).status, 410, device.grant);
   }
 });
 

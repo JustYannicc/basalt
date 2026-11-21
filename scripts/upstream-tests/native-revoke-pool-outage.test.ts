@@ -27,7 +27,11 @@ const computerOf = async (d: Device) => {
   return computer;
 };
 const stateOf = async (d: Device, computer: string) => (await d.p.registry())[computer]?.state;
-const retry = (d: Device) => d.f.api.retryNativeCleanups({});
+/** The cleanup half of the pass; checks of live grants are counted apart. */
+const retry = async (d: Device) => {
+  const { cleaned, attempted } = await d.f.api.retryNativeCleanups({});
+  return { cleaned, attempted };
+};
 const pendingCleanups = (d: Device) =>
   d.f.adapter.findMany({
     model: "verification",
