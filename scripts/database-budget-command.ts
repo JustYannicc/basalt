@@ -101,15 +101,27 @@ export async function runDatabaseBudgetCommand(
         // An answer, a decode or identity error, or the deadline itself ends the wait as before.
         if (!(error instanceof ReadinessConnectionError) || !reconnect || signal.aborted)
           throw error;
-        try {
-          await pause(readinessRetryMs, signal, (milliseconds) => schedule(milliseconds, "retry"));
-        } catch {
-          throw error;
-        }
         const failed = readiness;
         readiness = undefined;
         await within(failed!.close(), "teardown").catch(() => {});
-        readiness = await reconnect(signal);
+        // A fresh bridge that fails to open is tried again the same way. A failed open closes
+        // itself, and nothing starts once the deadline has passed.
+        for (;;) {
+          try {
+            await pause(readinessRetryMs, signal, (milliseconds) =>
+              schedule(milliseconds, "retry"),
+            );
+          } catch {
+            throw error;
+          }
+          if (signal.aborted) throw error;
+          try {
+            readiness = await reconnect(signal);
+            break;
+          } catch {
+            if (signal.aborted) throw error;
+          }
+        }
       }
     }
   };

@@ -82,7 +82,8 @@ export async function openDeploymentReadiness(options: {
       signal,
     ).catch((error: unknown) => {
       // The caller's own deadline stays what it is; any other failure to get an answer is the
-      // bridge's. An answer, whatever its status, never reaches here.
+      // bridge's. A response the bridge delivers, whatever its status, never reaches here; the
+      // Bun child bridge turns an answer over 1 MiB into a failure, which is retried like one.
       if (signal.aborted) throw error;
       throw new ReadinessConnectionError();
     });

@@ -446,6 +446,12 @@ test("a readiness bridge that keeps failing is opened again only inside the dead
       deadline: time.deadline,
       open: (options) => {
         opens++;
+        // Without its pause the wait would never let the clock move: end it instead of hanging,
+        // and the count below fails.
+        if (opens > refusedCalls + 2) {
+          time.expire();
+          throw new Error("reopened without pausing");
+        }
         return over(
           () => {
             throw new Error("Private operations Node bridge exited");
@@ -463,5 +469,60 @@ test("a readiness bridge that keeps failing is opened again only inside the dead
     // One bridge, then one more after each pause the deadline lets through.
     assert.ok(opens > 1 && opens <= refusedCalls, String(opens));
     assert.equal(closed, opens, "every bridge it opened is closed");
+  });
+});
+
+test("a fresh readiness bridge that fails to open is tried again inside the deadline", async () => {
+  await workspace(async (path) => {
+    const time = scheduler();
+    let opens = 0;
+    const result = await runDatabaseBudgetCommand(source(path), ["--ready"], {
+      now: time.now,
+      deadline: time.deadline,
+      open: (options) => {
+        opens++;
+        // The first bridge dies on its request, the next one fails to open, the third answers.
+        if (opens === 2)
+          return Promise.reject(new Error("Private operations Node bridge startup timed out"));
+        const first = opens === 1;
+        return over(
+          (request) => {
+            if (first) throw new Error("Private operations Node bridge exited");
+            return handleDeploymentReadiness(request, target, key, async () => ({ ...runtime }));
+          },
+          () => {},
+        )(options);
+      },
+    });
+    assert.equal(result.outcome, "converged");
+    assert.equal(opens, 3);
+    assert.equal(time.state.pauses, 2, "a pause before each fresh bridge");
+  });
+});
+
+test("a deadline that ends while the failed bridge closes opens no fresh one", async () => {
+  await workspace(async (path) => {
+    const time = scheduler();
+    let opens = 0;
+    const run = runDatabaseBudgetCommand(source(path), ["--ready"], {
+      now: time.now,
+      deadline: time.deadline,
+      open: (options) => {
+        opens++;
+        return over(
+          () => {
+            throw new Error("Private operations Node bridge exited");
+          },
+          // The deadline passes while the dead bridge closes.
+          () => time.expire(),
+        )(options);
+      },
+    });
+    await assert.rejects(run, (error) => {
+      assert.ok(error instanceof DatabaseBudgetFailure);
+      assert.equal(error.receipt.outcome, "readiness-error");
+      return true;
+    });
+    assert.equal(opens, 1, "nothing starts after the deadline");
   });
 });
