@@ -206,3 +206,17 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
   assert.equal((await d.refresh(d.tokens.refresh_token)).status, 400);
   assert.equal((await d.p.registry())[computer!]?.state, "revoked");
 });
+
+test("diagnostic: grants revoke through the browser session", async (t) => {
+  const d = await device(t, false);
+  const [computer] = Object.keys(await d.p.registry());
+  const row = await d.f.adapter.findOne<{ id: string; revoked: boolean; resource: string }>({
+    model: "mcpGrant",
+    where: [{ field: "userId", value: d.f.userId }],
+  });
+  const asked = d.asked();
+  const response = await d.f.request("/mcp/grants/revoke", { id: row?.id });
+  const text = await response.text();
+  const state = (await d.p.registry())[computer!]?.state;
+  assert.fail(JSON.stringify({ status: response.status, text, row, state, pool: d.asked() - asked }));
+});
