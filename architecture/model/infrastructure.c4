@@ -193,7 +193,7 @@ model {
     technology "PostHog"
     metadata { hosts "eu.i.posthog.com|us.i.posthog.com" }
   }
-  basalt.telemetry -[sync]-> sentryService "send feedback, errors and scrubbed Effect and router traces over HTTP; direct mode disables runtime platform trace export"
+  basalt.telemetry -[sync]-> sentryService "send feedback, errors and scrubbed Effect, router and pool request traces over HTTP; direct mode disables runtime platform trace export"
   basalt.telemetry -[sync]-> posthogService "send account-scoped product events over HTTP"
   basalt.build -[sync]-> sentryService "use a synthetic DSN and OTLP endpoint for the worker size check; no network request"
   basalt.build -[sync]-> posthogService "use synthetic regional capture settings for the worker size check; no network request"

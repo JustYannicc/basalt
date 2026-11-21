@@ -109,6 +109,10 @@ import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
+import { poolArrival, stampPoolReceive, type PoolArrival } from "./pool-arrival.ts";
+import { startPoolRequestEvent } from "../telemetry/pool-request.ts";
+import { pageTemplate } from "../telemetry/privacy.ts";
+import { endpointMetadata } from "./model-history/record.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { captureError } from "../telemetry/sentry.ts";
@@ -131,7 +135,7 @@ import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
-import { fetchController } from "./controller-reset.ts";
+import { controllerInstanceEnded, fetchController } from "./controller-reset.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -845,6 +849,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    // Before the first await: what follows is this object's own work, not time spent queued for it.
+    const arrival = poolArrival(request);
+    request = arrival.request;
     this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
@@ -1034,13 +1041,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
-    return this.forward(request);
+    return this.forward(request, undefined, arrival);
   }
 
-  private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
+  private forward(
+    request: Request,
+    appModel?: ModelIdentity,
+    arrival?: PoolArrival,
+  ): Promise<Response> {
     const port = poolPort(new URL(request.url).pathname);
     return forwardPoolRequest(request, port, {
       ...(appModel === undefined ? {} : { appModel }),
+      ...(arrival === undefined ? {} : { arrival }),
       env: this.env,
       computers: this.computers,
       memberships: this.memberships,
@@ -1073,14 +1085,112 @@ function singleton(env: PoolEnvironment) {
   return env.PoolContainer.jurisdiction("eu").getByName("control-plane");
 }
 
+/**
+ * Every call to the pool's Durable Object carries the Worker's receive times. A call that fails
+ * before the object answers is the one request the object can never report itself.
+ */
+async function callController(
+  request: Request,
+  env: PoolEnvironment,
+  receivedAt: number,
+  defer: (work: Promise<unknown>) => void,
+): Promise<Response> {
+  // Every call to the object, first and replayed; each carries its own call time, so a replay's
+  // queue wait is not the failed attempt's.
+  const calls: number[] = [];
+  let failure: unknown;
+  let answered = false;
+  const requestId = crypto.randomUUID();
+  const unanswered = (error: unknown, response?: Response) => {
+    try {
+      const pathname = new URL(request.url).pathname;
+      // Cloudflare marks an error the object's own code threw, and one from an object with more
+      // work queued than it can take. Only the first means the handler ran.
+      // What the object last failed with, not an abort that ended the wait for a replay.
+      const cut = failure ?? error;
+      const flag = (name: string) =>
+        typeof cut === "object" && cut !== null && Reflect.get(cut, name) === true;
+      const event = startPoolRequestEvent(env, () => ({
+        // The same ID as the hop's log lines and any answer the Worker gave.
+        requestId,
+        method: request.method,
+        route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
+        port: poolPort(pathname),
+        receivedAt,
+        calledAt: calls.at(-1) ?? receivedAt,
+        firstCalledAt: calls.length > 1 ? calls[0] : undefined,
+        traceparent: request.headers.get("traceparent"),
+        defer,
+      }));
+      event?.set({
+        cause:
+          error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
+        overloaded: flag("overloaded"),
+      });
+      event?.end({
+        outcome: request.signal.aborted
+          ? "client_closed"
+          : controllerInstanceEnded(cut)
+            ? "controller_reset"
+            : flag("remote")
+              ? "controller_failed"
+              : "controller_unavailable",
+        status: response?.status,
+      });
+    } catch {
+      console.error("POOL_REQUEST_EVENT_UNAVAILABLE");
+    }
+  };
+  let response: Response;
+  try {
+    // The controller hop owns retries and its own log lines.
+    response = await fetchController(request, {
+      controller: () => {
+        const stub = singleton(env);
+        return {
+          fetch: async (forwarded: Request) => {
+            const at = Date.now();
+            calls.push(at);
+            try {
+              const answer = await stub.fetch(
+                stampPoolReceive(
+                  forwarded,
+                  receivedAt,
+                  at,
+                  calls.length > 1 ? calls[0] : undefined,
+                ),
+              );
+              answered = true;
+              return answer;
+            } catch (error) {
+              failure = error;
+              throw error;
+            }
+          },
+        };
+      },
+      env,
+      defer,
+      requestId,
+    });
+  } catch (error) {
+    unanswered(error);
+    throw error;
+  }
+  // Retry advice or an unknown outcome the hop built itself after a reset: the object never
+  // answered, so it never reported this request.
+  if (!answered) unanswered(failure, response);
+  return response;
+}
+
 export async function handlePoolWorkerRequest(
   request: Request,
   env: PoolEnvironment,
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
   defer: (work: Promise<unknown>) => void = (work) => void work.catch(() => {}),
 ): Promise<Response> {
-  const controller = (forwarded: Request) =>
-    fetchController(forwarded, { controller: () => singleton(env), env, defer });
+  const receivedAt = Date.now();
+  const controller = (forwarded: Request) => callController(forwarded, env, receivedAt, defer);
   request = stripModelLifetimeRequest(request);
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)
