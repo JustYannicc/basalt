@@ -32,6 +32,8 @@ const heartbeatSource = read(".github/workflows/box-heartbeat.yml");
 const heartbeatWorkflow = parse(heartbeatSource);
 
 const now = Date.parse("2026-11-19T12:00:00Z");
+// routeBox waits between heartbeat reads when the newest is stale; tests never sleep for real.
+const noWait = async () => {};
 const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
 // The box's status object, trimmed to the fields a test varies.
 const statusLine = (at: string, healthy: unknown, fields: Record<string, unknown> = {}) =>
@@ -126,7 +128,7 @@ const input = (overrides: Partial<BoxInput> = {}): BoxInput => ({
   ...overrides,
 });
 const route = (overrides: Partial<BoxInput> = {}, box = observer().box) =>
-  routeBox(input(overrides), box, () => now);
+  routeBox(input(overrides), box, () => now, noWait);
 
 test("box first: a healthy box fills its free slots with the longest shards", async () => {
   // 0 box jobs active: both slots take the two longest shards; hosted runs the other three.
@@ -409,6 +411,7 @@ test("only declared shard rows can route, and free slots and timeouts bound the 
     input({ selected: heavyJobs.filter((job) => !declaredJobs.includes(job)) }),
     box,
     () => now,
+    noWait,
   );
   assert.deepEqual(none.jobs, []);
   assert.match(none.summary, /runs no declared e2e shards/);
@@ -420,6 +423,7 @@ test("only declared shard rows can route, and free slots and timeouts bound the 
         input({ slots: String(slots), selected: heavyJobs, matrices: real, durations: undefined }),
         observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box,
         () => now,
+        noWait,
       );
       const free = Math.max(0, Math.min(slots, 3) - busy);
       assert.equal(routed.jobs.length, Math.min(free, fitting.length), `${slots}/${busy}`);
@@ -485,24 +489,33 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     runner_group_name: group,
   });
   const own = { full_name: "owner/repo" };
-  const heartbeatRun = (id: number, event: string, repository = own) => ({
+  const heartbeatRun = (
+    id: number,
+    event: string,
+    repository = own,
+    fields: Record<string, unknown> = {},
+  ) => ({
     id,
     event,
     path: heartbeatPath,
     head_repository: repository,
+    head_branch: "main",
     conclusion: "success",
     updated_at: minutesAgo(1),
+    ...fields,
   });
-  const heartbeatRuns =
-    "/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed&per_page=20";
+  const heartbeatRuns = "/actions/workflows/box-heartbeat.yml/runs?status=completed&per_page=50";
   const boxJob = (id: number, labels = ["basalt-box"]) => ({
     jobs: [{ id, labels, conclusion: "success", completed_at: minutesAgo(1) }],
   });
   const routes: Record<string, unknown> = {
-    // Newest first: a pull-request run and a fork run of the same file, then a run whose job
-    // didn't run on the box, then the box's real heartbeat.
+    // Newest first: a cancelled Check-start run, a dispatch on another branch, a pull-request run
+    // and a fork run of the same file, then a run whose job didn't run on the box, then the box's
+    // real heartbeat.
     [heartbeatRuns]: {
       workflow_runs: [
+        heartbeatRun(12, "workflow_run", own, { conclusion: "cancelled" }),
+        heartbeatRun(10, "workflow_dispatch", own, { head_branch: "feature" }),
         heartbeatRun(9, "pull_request"),
         heartbeatRun(8, "schedule", { full_name: "fork/repo" }),
         heartbeatRun(7, "workflow_dispatch"),
@@ -564,8 +577,8 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     completedAt: minutesAgo(1),
     log: healthyLog,
   });
-  // Untrusted runs are skipped before their jobs or logs are read.
-  for (const id of [9, 8])
+  // Cancelled and untrusted runs are skipped before their jobs or logs are read.
+  for (const id of [12, 10, 9, 8])
     assert.ok(!requests.some((r) => r.url.startsWith(`/actions/runs/${id}/`)));
   assert.ok(!requests.some((r) => r.url === "/actions/jobs/70/logs"));
   assert.deepEqual(await box.active(), { hosted: 3, box: 2 });
@@ -574,16 +587,16 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/99/")));
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/5/")));
   // The box's budget of 2 is held by the two box jobs.
-  const busy = await routeBox(input({ slots: "3" }), box, () => now);
+  const busy = await routeBox(input({ slots: "3" }), box, () => now, noWait);
   assert.deepEqual(busy.jobs, []);
   assert.match(busy.summary, /no box slot is free \(2 box jobs are active, 0 of 2 slots free/);
   routes["/actions/jobs/60/logs"] = "2026-11-19T11:59:00.0000000Z " + budgetLog({ ci_budget: 6 });
-  const routed = await routeBox(input({ slots: "3" }), box, () => now);
+  const routed = await routeBox(input({ slots: "3" }), box, () => now, noWait);
   assert.deepEqual(routed.jobs, ["declared-cloud-1"]);
   assert.match(routed.summary, /while 3 hosted jobs are active elsewhere/);
 
   delete routes["/actions/runs?status=queued&per_page=100&page=1"];
-  const failed = await routeBox(input(), githubObserver(env, fetcher), () => now);
+  const failed = await routeBox(input(), githubObserver(env, fetcher), () => now, noWait);
   assert.deepEqual(failed.jobs, []);
   assert.match(failed.summary, /GitHub returned 404 for \/actions\/runs/);
   // With only untrusted or off-box runs left, nothing vouches for the box.
@@ -591,6 +604,9 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     [heartbeatRun(9, "pull_request")],
     [heartbeatRun(8, "schedule", { full_name: "fork/repo" })],
     [heartbeatRun(7, "workflow_dispatch")],
+    [heartbeatRun(10, "workflow_dispatch", own, { head_branch: "feature" })],
+    [heartbeatRun(13, "schedule", own, { head_branch: "feature" })],
+    [heartbeatRun(12, "workflow_run", own, { conclusion: "cancelled" })],
     [{ ...heartbeatRun(4, "schedule"), path: ".github/workflows/ci.yml" }],
     [],
   ]) {
@@ -599,9 +615,64 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
       githubObserver(env, fetcher).heartbeat(),
       /no completed heartbeat run from the box/,
     );
-    const none = await routeBox(input(), githubObserver(env, fetcher), () => now);
+    const none = await routeBox(input(), githubObserver(env, fetcher), () => now, noWait);
     assert.deepEqual(none.jobs, []);
   }
+  // A Check's start triggers a heartbeat from the default branch's file: trusted whatever branch
+  // started the Check.
+  routes[heartbeatRuns] = {
+    workflow_runs: [heartbeatRun(11, "workflow_run", own, { head_branch: "feature" })],
+  };
+  routes["/actions/runs/11/jobs?filter=latest&per_page=100&page=1"] = boxJob(110);
+  routes["/actions/jobs/110/logs"] = healthyLog;
+  assert.deepEqual(await githubObserver(env, fetcher).heartbeat(), {
+    conclusion: "success",
+    completedAt: minutesAgo(1),
+    log: healthyLog,
+  });
+  // A failed heartbeat still stops routing; only a cancelled one is passed over.
+  routes[heartbeatRuns] = {
+    workflow_runs: [
+      heartbeatRun(14, "workflow_run", own, { conclusion: "failure" }),
+      heartbeatRun(11, "workflow_run"),
+    ],
+  };
+  assert.equal((await githubObserver(env, fetcher).heartbeat()).conclusion, "failure");
+});
+
+test("a stale heartbeat waits for the one this Check's start triggered, then gives up", async () => {
+  let reads = 0;
+  const waits: number[] = [];
+  const freshAfter = (fresh: number): BoxObserver => ({
+    async heartbeat() {
+      reads++;
+      return {
+        conclusion: "success",
+        completedAt: reads > fresh ? minutesAgo(0) : minutesAgo(30),
+        log: budgetLog({ ci_budget: 6 }),
+      };
+    },
+    async active() {
+      return { hosted: 0, box: 0 };
+    },
+  });
+  const wait = async (ms: number) => {
+    waits.push(ms);
+  };
+  const routed = await routeBox(input(), freshAfter(2), () => now, wait);
+  assert.deepEqual(routed.jobs, ["declared-cloud-1", "declared-cloud-2"]);
+  assert.deepEqual(waits, [15_000, 15_000]);
+  reads = 0;
+  waits.length = 0;
+  const stale = await routeBox(input(), freshAfter(99), () => now, wait);
+  assert.deepEqual(stale.jobs, []);
+  assert.match(stale.summary, /older than 10 minutes/);
+  assert.equal(waits.length, 4);
+  // A fresh heartbeat never waits.
+  reads = 0;
+  waits.length = 0;
+  await routeBox(input(), freshAfter(0), () => now, wait);
+  assert.deepEqual(waits, []);
 });
 
 // A re-run reuses select's outputs, so only the first attempt may use them; the label is the one
@@ -705,9 +776,12 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
 
 test("the heartbeat runs on the box with no checkout, no secrets and no permissions", () => {
   assert.deepEqual(heartbeatWorkflow.on, {
+    workflow_run: { workflows: ["Check"], types: ["requested"] },
     schedule: [{ cron: "*/5 * * * *" }],
     workflow_dispatch: null,
   });
+  // The Check workflow it follows is this repository's own.
+  assert.equal(workflow.name, "Check");
   assert.deepEqual(heartbeatWorkflow.permissions, {});
   assert.deepEqual(heartbeatWorkflow.concurrency, {
     group: "box-heartbeat",
