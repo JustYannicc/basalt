@@ -84,3 +84,26 @@ test("a heal record measures the stage-only overlay back to the first unmarked c
   ]);
   assert.equal(extent.added, 3);
 });
+
+test("a release run takes only a rehearse/ branch and a named policy from its candidate file", async () => {
+  const { releaseCandidate } = await import("./stage.ts");
+  assert.deepEqual(
+    releaseCandidate(JSON.stringify({ branch: "rehearse/release-a-1601", policy: "code" })),
+    { branch: "rehearse/release-a-1601", policy: "code" },
+  );
+  for (const spec of [
+    { branch: "", policy: "code" },
+    { branch: "main", policy: "code" },
+    { branch: "rehearse/x; rm -rf /", policy: "code" },
+    { branch: "rehearse/release-a", policy: "" },
+    { branch: "rehearse/release-a", policy: "../../etc/passwd" },
+  ])
+    assert.throws(() => releaseCandidate(JSON.stringify(spec)), /names no/u, JSON.stringify(spec));
+  // The committed file names nothing until a run is set up, so a stray label refuses.
+  const { readFileSync } = await import("node:fs");
+  assert.throws(
+    () =>
+      releaseCandidate(readFileSync(new URL("./release-candidate.json", import.meta.url), "utf8")),
+    /names no rehearse\/ branch/u,
+  );
+});

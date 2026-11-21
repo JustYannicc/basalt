@@ -37,6 +37,7 @@ import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
 import { adoptWithoutSeed, seedAndAdopt } from "./stage-seed.ts";
 import { diagnoseStagePool, stageWorker, workerScripts } from "./stage-diagnose.ts";
+import { poolWorkerVersionsBetween } from "./stage-versions.ts";
 import { readSecretsStores } from "./stage-secrets.ts";
 import {
   planHighlights,
@@ -54,6 +55,7 @@ export const stageModes = [
   "settle",
   "fault",
   "heal",
+  "release",
   "adopt",
   "diagnose",
   "secrets",
@@ -474,6 +476,103 @@ const healOverlayStatement = [
   "the fault command reads the root as not running, so the candidate's confirmed-stop guard admits the stuck state: a self-heal measures leaving that state, not that the candidate avoids entering it",
   "the stage's copy of the token and every plain secret also sit in the stage's own State rows, as production's do in its own",
 ];
+
+/** The candidate a `release` run applies: a rehearse/ branch and one of its own policies. */
+export function releaseCandidate(text: string) {
+  const spec = JSON.parse(text) as { branch?: unknown; policy?: unknown };
+  const branch = typeof spec.branch === "string" ? spec.branch : "";
+  const policy = typeof spec.policy === "string" ? spec.policy : "";
+  if (!/^rehearse\/[a-z0-9][a-z0-9.-]{0,80}$/u.test(branch))
+    throw new Error("release-candidate.json names no rehearse/ branch");
+  if (!/^[a-z0-9-]{1,40}$/u.test(policy))
+    throw new Error("release-candidate.json names no release policy");
+  return { branch, policy };
+}
+
+/**
+ * One release of a candidate onto the stage, as production releases (lane 5's apply A, apply B and
+ * the red run): its own entry, policy and stack, then a fresh plan. Around the apply: the pool
+ * Worker versions it created, and the controller's selected boot before and after.
+ */
+async function stageRelease(
+  lane: number,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+  hooks: ReturnType<typeof nativeHooks>,
+) {
+  const { branch, policy } = releaseCandidate(
+    await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
+  );
+  const result: Record<string, unknown> = { branch, policy };
+  const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
+  await rm(candidate, { recursive: true, force: true });
+  execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
+  execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
+    cwd: root,
+  });
+  result.candidate = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: candidate,
+    encoding: "utf8",
+  }).trim();
+  if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
+    throw new Error(`The candidate has no ${policy} policy`);
+  execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+  const bootOf = async (label: string) =>
+    faultRead(lane, source, outputs, label, ["--read-only"]).then(
+      (state) => (state.selection as { boot?: unknown; epoch?: unknown } | undefined) ?? null,
+      (error: unknown) => ({ unreadable: error instanceof Error ? error.message : String(error) }),
+    );
+  result.bootBefore = await bootOf("release-before");
+  const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
+  const { stage, stack } = stageNames(subject);
+  const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
+  const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
+  await withStageBuild(candidate, subject, source, async () => {
+    const from = Date.now();
+    try {
+      result.release = await runEntry("deploy", subject, source, env, outputs, {
+        policy,
+        tree: candidate,
+      });
+    } catch (error) {
+      const message = redactor(source)(error instanceof Error ? error.message : String(error));
+      result.releaseFailed = message.slice(0, 4_000);
+      result.changesRemainAfterApply = /ChangesRemainAfterApply|still differ/u.test(message);
+    }
+    const to = Date.now();
+    result.window = { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+    result.poolWorkerVersions = await poolWorkerVersionsBetween({
+      account,
+      headers,
+      stage,
+      stack,
+      from,
+      to,
+    }).then(
+      ({ count, numbers }) => ({ count, numbers }),
+      (error: unknown) => ({ unreadable: error instanceof Error ? error.message : String(error) }),
+    );
+    // The follow-up plan, unscoped: a converged release shows no pool Worker row.
+    const planned = await runEntry("plan", subject, source, env, outputs, {
+      policy: null,
+      include: null,
+      tree: candidate,
+    }).catch((error: unknown) => ({
+      failed: redactor(source)(error instanceof Error ? error.message : String(error)).slice(
+        0,
+        2_000,
+      ),
+    }));
+    const rows =
+      (planned as { record?: { changes?: { fqn: string; action: string }[] } }).record?.changes ??
+      [];
+    result.followUpPlan = "failed" in planned ? planned : { rows: rows.length };
+    result.poolWorkerRowsAfter = rows.filter((row) => row.fqn === "PoolWorker");
+  });
+  result.bootAfter = await bootOf("release-after");
+  return result;
+}
 
 async function healRelease(
   lane: number,
@@ -1441,6 +1540,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         result,
       );
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
+    } else if (mode === "release") {
+      Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "heal") {
       result.reproduces = healReproduces;
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
