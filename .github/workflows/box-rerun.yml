@@ -1,0 +1,43 @@
+name: Box re-run
+
+# After a Check completes, re-runs its jobs on GitHub's runners when box-watch cancelled it because
+# the self-hosted box took none of its box jobs in time (scripts/ci/box-rerun.ts). workflow_run
+# always runs this file from the default branch, so no pull request's code runs here; it acts only
+# on box-watch's own verdict for that run and attempt, never on a run a person cancelled, and never
+# re-runs a job that failed for real.
+on:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    if: github.event.workflow_run.conclusion == 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Fetch box-watch's verdict, if it left one
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: box-watch-verdict
+          path: ${{ runner.temp }}/box-watch-verdict
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Re-run the box jobs that never started, unless a job failed for real
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          BOX_WATCH_VERDICT: ${{ runner.temp }}/box-watch-verdict/verdict.json
+        run: node scripts/ci/box-rerun.ts

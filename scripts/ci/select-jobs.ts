@@ -45,6 +45,7 @@ const box = await routeBox(
     token: env.GITHUB_TOKEN ?? "",
     runId: env.GITHUB_RUN_ID ?? "",
     label: env.BOX_LABEL ?? "",
+    heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
   }),
 );
 const routed = { ...selection, matrices, boxJobs: box.jobs, boxRouting: box.summary };
@@ -65,6 +66,10 @@ if (process.env.GITHUB_OUTPUT)
       // The label routing validated; runs-on reads it here, never the variable at job time.
       "box_label=" +
       box.label +
+      "\n" +
+      // box-watch's bound for jobs the box holds back: a waiting box job never outlasts it.
+      "box_floor=" +
+      String(Math.ceil(box.floor)) +
       "\n" +
       "matrices=" +
       JSON.stringify(matrices) +
