@@ -11,6 +11,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { runCrashDispatch } from "../pool-crash-dispatch.ts";
 
@@ -188,8 +189,8 @@ test("a declared root restart reads the provider twice first, and refuses unless
     '#!/bin/sh\necho ran >> "$BUN_LOG"\nmkdir -p "$POOL_CRASH_OUTPUT_DIRECTORY"\n[ -n "$RESULT" ] && printf %s "$RESULT" | sed "s/@REQUEST@/$POOL_CRASH_REQUEST_ID/g" > "$POOL_CRASH_OUTPUT_DIRECTORY/result.json"\nexit 1\n',
   );
   chmodSync(join(bin, "bun"), 0o755);
-  const restart = join(dir, "restart.json");
-  writeFileSync(restart, JSON.stringify({ acceptance: { rootRestart: { withinSeconds: 420 } } }));
+  // The real policy file, so a renamed field in its schema cannot switch this step off unseen.
+  const restart = fileURLToPath(new URL("policies/code-restart.json", import.meta.url));
   const code = join(dir, "code.json");
   writeFileSync(code, "{}");
   const temporary = join(dir, "runner-temp");
@@ -286,6 +287,33 @@ test("a declared root restart reads the provider twice first, and refuses unless
     /^::error::restart read: does not read \(outcome_unknown\): the heal would stop the root/mu,
   );
   assert.match(refuses("half", lines(token)), /^::error::restart read: not read: /mu);
+  // Line 2 missing or not passing: the dispatcher's own public cause is printed with it.
+  assert.match(
+    refuses(
+      "drift with a cause",
+      lines(
+        token,
+        "restart read: refuses (recorded_pins_differ)",
+        "active-health outcome unknown: runtime-handoff-response-refused (PoolRuntime) HTTP 503",
+      ),
+    ),
+    /^::error::restart read: refuses \(recorded_pins_differ\) \(the dispatcher stopped at: active-health outcome unknown: runtime-handoff-response-refused \(PoolRuntime\) HTTP 503\): /mu,
+  );
+  assert.match(
+    refuses("inspect", lines(token, undefined, "inspect outcome unknown: AbortError")),
+    /^::error::restart read: not read \(the dispatcher stopped at: inspect outcome unknown: AbortError\): the heal would stop/mu,
+  );
+  assert.match(
+    refuses(
+      "unavailable",
+      lines(
+        token,
+        "restart read: not checked (selection_unavailable)",
+        "inspect outcome unknown: bridge exited",
+      ),
+    ),
+    /^::error::restart read: not checked \(selection_unavailable\) \(the dispatcher stopped at: inspect outcome unknown: bridge exited\): the heal/mu,
+  );
   // The dispatcher left nothing, or refused before any read: its own public cause is printed.
   assert.match(
     refuses("none", ""),
@@ -381,4 +409,32 @@ test("the provider read's own go text passes the crash operator's go rule", asyn
     },
   );
   assert.equal(result.error, "packet is not valid JSON");
+});
+
+test("in plan mode a failed provider read still lets the plan run, and the run fails after it", () => {
+  const all = steps as {
+    name?: string;
+    id?: string;
+    if?: string;
+    run?: string;
+    "continue-on-error"?: string;
+  }[];
+  const names = all.map((entry) => entry.name);
+  const provider =
+    all[names.indexOf("Read the provider observation before a declared root restart")]!;
+  assert.equal(provider.id, "provider");
+  // Only a plan continues: an apply stops at the read, before anything is planned or applied.
+  assert.equal(provider["continue-on-error"], "${{ env.MODE == 'plan' }}");
+  const again = all[names.indexOf("Read the provider observation again right before the apply")]!;
+  assert.equal(again["continue-on-error"], undefined);
+  const stop = names.indexOf("Stop on an unread provider observation");
+  assert.equal(names[stop - 1], "Plan and check");
+  assert.equal(
+    all[stop]!.if,
+    "always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'",
+  );
+  const dir = mkdtempSync(join(tmpdir(), "release-provider-stop-"));
+  const result = runStep(script("Stop on an unread provider observation"), {}, dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^::error::.*provider observation.*plan above ran for review only/mu);
 });

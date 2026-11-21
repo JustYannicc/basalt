@@ -10,18 +10,22 @@ import { openEnvelope } from "../src/pool/token.ts";
 import { providerTarget, readReleaseTarget } from "./pool-crash-dispatch-sources.ts";
 import {
   logLine,
+  observeLimitMs,
+  attemptsOf,
   observeSender,
+  recoveryResetSender,
   runCrashDispatch,
   type DispatchDependencies,
   type DispatchInput,
 } from "./pool-crash-dispatch.ts";
+import { sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import { accountId, harness, primary, worker } from "./pool-fleet/test/harness.ts";
 import { resolvedApplication } from "./pool-fleet/test/cloudflare-shapes.ts";
 
 const controllerCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 const reads = "provider observation: reads";
 const closedLine =
-  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|outcome_unknown|target_unavailable)\))$/u;
+  /^provider observation: (reads|does not read \((provider_observation_refused|provider_fetch_failed|controller_identity|controller_refused|reply_unreadable|no_reply|bridge_failed|expired_unsent|response_refused|outcome_unknown|target_unavailable)\))$/u;
 // Distinct from every other identity in the run, so any appearance in the output came from this read.
 const pins = {
   accountId,
@@ -223,14 +227,35 @@ test("(a) every outcome publishes one closed line and nothing else from the read
         ),
       ),
     ],
+    // Any answer but a 200 or the handoff's own 409, here a defect: the Worker answered, not the provider.
     [
-      "outcome_unknown",
+      "response_refused",
       answering(() =>
         Response.json(
           { error: "runtime-defect", detail: "body-sentinel" },
           { status: 500, headers: { [providerObservationFailureHeader]: "provider_fetch_failed" } },
         ),
       ),
+    ],
+    // No answer within the request's own time limit.
+    [
+      "no_reply",
+      async () => {
+        throw new DOMException("Operation aborted", "AbortError");
+      },
+    ],
+    // The Node bridge's own fixed failures: its lifecycle, and a request its child could not complete.
+    [
+      "bridge_failed",
+      async () => {
+        throw new Error("Private operations Node bridge exited");
+      },
+    ],
+    [
+      "bridge_failed",
+      async () => {
+        throw Object.assign(new Error("Private operations request failed"), { name: "TypeError" });
+      },
     ],
     [
       "outcome_unknown",
@@ -253,7 +278,12 @@ test("(a) every outcome publishes one closed line and nothing else from the read
     assert.match(result.providerObservation ?? "", closedLine);
     assert.equal(run.sent.includes("provider-observe"), observe !== undefined, cause);
     // The rest of the result is exactly what the observe published before this read existed.
-    const { providerObservation: _line, restartObservation: _restart, ...rest } = result;
+    const {
+      providerObservation: _line,
+      restartObservation: _restart,
+      retried: _retried,
+      ...rest
+    } = result;
     assert.deepEqual({ ...rest, requestId: baseline.requestId }, unchanged, cause);
     const published = JSON.stringify(result) + logLine(result);
     for (const sentinel of sentinels)
@@ -343,7 +373,7 @@ test("(b) observe signs only read commands, and the provider read carries exactl
 });
 
 const restartLine =
-  /^restart read: (passes|refuses \(recorded_pins_differ\)|does not read \([a-z_]+\)|not checked \((no_selected_runtime|selection_unreadable|selected_runtime_not_root|target_unavailable)\))$/u;
+  /^restart read: (passes|refuses \(recorded_pins_differ\)|does not read \([a-z_]+\)|not checked \((selection_unavailable|no_selected_runtime|selection_unreadable|selected_runtime_not_root|target_unavailable)\))$/u;
 
 /** An observe whose inspect reports this selection; every other read is the fixed world's. */
 function selected(
@@ -484,4 +514,377 @@ test("(d) a packet for other controller code reads as the Worker refusing its id
   } finally {
     await lane.close();
   }
+});
+
+test("(e) an inspect that fails after the token read names line 2 and keeps a closed cause", async () => {
+  for (const [label, failure, error] of [
+    [
+      "no reply in time",
+      new DOMException("Operation aborted", "AbortError"),
+      "inspect outcome unknown: AbortError",
+    ],
+    [
+      "the bridge exited",
+      new Error("Private operations Node bridge exited"),
+      "inspect outcome unknown: bridge exited",
+    ],
+    [
+      "the bridge never started",
+      new Error("Private operations Node bridge startup timed out"),
+      "inspect outcome unknown: bridge startup timed out",
+    ],
+    [
+      "the bridge's child could not complete it",
+      Object.assign(new Error("Private operations request failed"), { name: "TypeError" }),
+      "inspect outcome unknown: bridge request failed (TypeError)",
+    ],
+    // Anything else keeps only the phase: its message is not closed text.
+    ["anything else", new Error("lost reply naming body-sentinel"), "inspect outcome unknown"],
+  ] as const) {
+    const run = world(pins, async () => ({ result: observation() }));
+    const fixed = run.deps.observe;
+    run.deps.observe = async (action, ...rest) => {
+      if (action !== "inspect") return fixed(action, ...rest);
+      run.sent.push(action);
+      throw failure;
+    };
+    const result = await runCrashDispatch(input(), run.deps);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.providerObservation, reads, label);
+    assert.equal(
+      result.restartObservation,
+      "restart read: not checked (selection_unavailable)",
+      label,
+    );
+    assert.equal(result.error, error, label);
+    // This fake stands in for the observe sender, so the dispatcher itself sends once.
+    assert.equal(run.sent.filter((action) => action === "inspect").length, 1, label);
+    assert.ok(
+      logLine(result).endsWith(`\n${reads}\nrestart read: not checked (selection_unavailable)\n`),
+      label,
+    );
+    assert.ok(!(JSON.stringify(result) + logLine(result)).includes("body-sentinel"), label);
+  }
+});
+
+test("(f) a reply the shared RPC refuses carries its HTTP status and nothing else from it", async () => {
+  const run = world(pins, async () => ({ result: observation() }));
+  const fixed = run.deps.observe;
+  const unavailable = answering(
+    () => new Response(JSON.stringify({ detail: "body-sentinel" }), { status: 503 }),
+  );
+  run.deps.observe = async (action, ...rest) =>
+    action === "inspect" ? unavailable(action, ...rest) : fixed(action, ...rest);
+  const result = await runCrashDispatch(input(), run.deps);
+  // Three answers the Worker did not give: the last cause, its status, and how many attempts.
+  assert.equal(
+    result.error,
+    "inspect outcome unknown after 3 attempts: runtime-handoff-response-refused (PoolRuntime) HTTP 503",
+  );
+  assert.equal(result.restartObservation, "restart read: not checked (selection_unavailable)");
+  assert.ok(!JSON.stringify(result).includes("body-sentinel"));
+});
+
+test("(f) an observe read waits 30 s for its answer; any other command keeps 15 s", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // The bridge's close removes a temporary directory: real file I/O over several loop turns.
+  const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  // Bounded by real time (setTimeout is mocked): long enough for the close, never a hang.
+  const drain = async (state: () => string, ms: number) => {
+    const end = performance.now() + ms;
+    while (state() === "pending" && performance.now() < end) await turn();
+  };
+  const until = async (check: () => boolean, ms: number) => {
+    const end = performance.now() + ms;
+    while (!check() && performance.now() < end) await turn();
+  };
+  /** A bridge whose answer never comes: its request fails only when the client gives up. */
+  const hung = () => {
+    let sent!: () => void;
+    const started = new Promise<void>((resolve) => (sent = resolve));
+    // A Request follows its caller's signal only while it is reachable; a real bridge holds it in
+    // its pending call, and so does this one.
+    const held: Request[] = [];
+    let fetches = 0;
+    const connect = async () => ({
+      dispose: async () => {},
+      env: {
+        POOL_OPERATIONS: {
+          fetch: (request: Request) =>
+            new Promise<Response>((_, reject) => {
+              held.push(request);
+              fetches += 1;
+              sent();
+              request.signal.addEventListener(
+                "abort",
+                () => reject(new DOMException("Operation aborted", "AbortError")),
+                { once: true },
+              );
+            }),
+        },
+      },
+    });
+    return { started, connect, fetches: () => fetches };
+  };
+  const settled = (promise: Promise<unknown>) => {
+    let state = "pending";
+    promise.then(
+      () => (state = "answered"),
+      (error: unknown) => (state = error instanceof DOMException ? error.name : String(error)),
+    );
+    return () => state;
+  };
+  const signingKey = randomBytes(32).toString("hex");
+  const target = { accountId, worker: "synthetic-pool" };
+  assert.equal(observeLimitMs, 30_000);
+  const read = hung();
+  const observed = settled(
+    observeSender(read.connect)("inspect", controllerCode, target, signingKey),
+  );
+  await read.started;
+  t.mock.timers.tick(15_001);
+  await drain(observed, 250);
+  assert.equal(observed(), "pending", "a read is still waiting after 15 s");
+  // At 30 s the attempt gives up. A read lost that way is sent again on a fresh bridge, twice.
+  t.mock.timers.tick(15_000);
+  await until(() => read.fetches() === 2, 5_000);
+  assert.equal(read.fetches(), 2, "sent again after its first 30 s");
+  assert.equal(observed(), "pending");
+  t.mock.timers.tick(30_001);
+  await until(() => read.fetches() === 3, 5_000);
+  assert.equal(read.fetches(), 3, "and once more");
+  t.mock.timers.tick(30_001);
+  await drain(observed, 5_000);
+  assert.equal(observed(), "AbortError", "three attempts of 30 s, then it gives up");
+  assert.equal(read.fetches(), 3);
+  // The shared RPC's own limit, which every mutating command uses, stays 15 s.
+  const write = hung();
+  const at = Date.now() - 2_000;
+  const mutating = settled(
+    sendRuntimeCommand(
+      { controllerCode, action: "inspect", at, expiresAt: at + 25_000 },
+      signingKey,
+      { ...target, connect: write.connect },
+      () => {},
+    ),
+  );
+  await write.started;
+  t.mock.timers.tick(14_999);
+  await drain(mutating, 250);
+  assert.equal(mutating(), "pending", "the default limit is not shorter than 15 s");
+  t.mock.timers.tick(2);
+  await drain(mutating, 5_000);
+  assert.equal(mutating(), "AbortError", "the default limit is 15 s");
+  // A recovery reset writes, so it keeps 15 s too.
+  const reset = hung();
+  const resetting = settled(
+    recoveryResetSender(reset.connect)(
+      controllerCode,
+      target,
+      signingKey,
+      `recovery-reset-${crypto.randomUUID()}`,
+    ),
+  );
+  await reset.started;
+  t.mock.timers.tick(14_999);
+  await drain(resetting, 250);
+  assert.equal(resetting(), "pending", "a recovery reset waits its full 15 s");
+  t.mock.timers.tick(2);
+  await drain(resetting, 5_000);
+  assert.equal(resetting(), "AbortError", "a recovery reset keeps 15 s");
+  assert.equal(reset.fetches(), 1, "and is sent once");
+});
+
+test("(g) a read lost on the way is sent again, signed anew on a fresh bridge, three times at most", async (t) => {
+  // A second passes between attempts, as a fresh bridge's setup takes, so a re-sent old command
+  // and one signed anew differ.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const signingKey = randomBytes(32).toString("hex");
+  /** An observe sender whose bridge answers each request from the script, in order, and records it. */
+  const scripted = (answers: (() => Response | Promise<Response>)[]) => {
+    const envelopes: string[] = [];
+    let opened = 0;
+    const sender = observeSender(async () => {
+      opened += 1;
+      return {
+        dispose: async () => {},
+        env: {
+          POOL_OPERATIONS: {
+            fetch: async (request: Request) => {
+              envelopes.push(((await request.json()) as { envelope: string }).envelope);
+              const answer = answers[envelopes.length - 1] ?? answers.at(-1)!;
+              t.mock.timers.tick(1_000);
+              return answer();
+            },
+          },
+        },
+      };
+    });
+    return { sender, envelopes, opened: () => opened };
+  };
+  const lost = () => {
+    throw Object.assign(new Error("Private operations request failed"), { name: "TypeError" });
+  };
+  const ok = () => Response.json({ result: { selection: null } });
+  // Lost twice on the bridge, then answered: it passes and says it took three attempts.
+  const recovering = scripted([lost, lost, ok]);
+  const run = world(pins, async () => ({ result: observation() }));
+  const fixed = run.deps.observe;
+  let inspects = 0;
+  run.deps.observe = async (action, ...rest) => {
+    if (action !== "inspect") return fixed(action, ...rest);
+    inspects += 1;
+    return inspects === 1 ? recovering.sender(action, ...rest) : fixed(action, ...rest);
+  };
+  const recovered = await runCrashDispatch({ ...input(signingKey) }, run.deps);
+  assert.equal(recovered.error, null);
+  assert.deepEqual(recovered.retried, ["inspect 3 attempts"]);
+  assert.ok(logLine(recovered).includes("\nretried: inspect 3 attempts\n"));
+  assert.equal(recovering.envelopes.length, 3);
+  assert.equal(recovering.opened(), 3, "each attempt on its own fresh bridge");
+  assert.equal(new Set(recovering.envelopes).size, 3, "each attempt signed anew");
+  const times = await Promise.all(
+    recovering.envelopes.map(
+      async (envelope) =>
+        ((await openEnvelope(signingKey, deploymentReadinessPrefix, envelope)) as { at: number })
+          .at,
+    ),
+  );
+  assert.ok(times.every((at, index) => index === 0 || at >= times[index - 1]! + 1_000));
+
+  const target = { accountId, worker: "synthetic-pool" };
+  // An answer the Worker classified is sent once: its own 409, and the provider's failure header.
+  for (const [label, answer] of [
+    ["the controller's 409", () => runtimeErrorResponse(new SlotRefused("selection"), "handoff")],
+    [
+      "the provider's header",
+      () =>
+        runtimeErrorResponse(new ProviderObservationRefused("provider_fetch_failed"), "handoff"),
+    ],
+    // Any 409 is a refusal form, an answer, even one without the handoff's body.
+    ["a bare 409", () => new Response(null, { status: 409 })],
+  ] as const) {
+    const once = scripted([answer, ok]);
+    await assert.rejects(once.sender("inspect", controllerCode, target, signingKey));
+    assert.equal(once.envelopes.length, 1, label);
+  }
+  // Lost three times: the last cause, its HTTP status, and how many attempts.
+  const unavailable = scripted([() => new Response(null, { status: 503 })]);
+  const failed = await unavailable.sender("inspect", controllerCode, target, signingKey).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.equal(unavailable.envelopes.length, 3);
+  assert.equal(attemptsOf(failed), 3);
+  // A provider read that gives up is caught for its line, and the record still says so.
+  const givingUp = world(pins, (...args) => scripted([lost]).sender(...args));
+  const gaveUp = await runCrashDispatch(input(signingKey), givingUp.deps);
+  assert.equal(gaveUp.providerObservation, "provider observation: does not read (bridge_failed)");
+  assert.deepEqual(gaveUp.retried, ["provider-observe gave up after 3 attempts"]);
+  assert.ok(logLine(gaveUp).includes("\nretried: provider-observe gave up after 3 attempts\n"));
+
+  // Only the closed list of reads is retried: a command that writes, through any sender, is sent once.
+  const resetting = scripted([lost, ok]);
+  const resetSender = recoveryResetSender(async () => ({
+    dispose: async () => {},
+    env: {
+      POOL_OPERATIONS: {
+        fetch: async (request: Request) => {
+          resetting.envelopes.push(((await request.json()) as { envelope: string }).envelope);
+          return lost();
+        },
+      },
+    },
+  }));
+  await assert.rejects(
+    resetSender(controllerCode, target, signingKey, `recovery-reset-${crypto.randomUUID()}`),
+  );
+  assert.equal(resetting.envelopes.length, 1, "a recovery reset is sent once");
+  // An action off the closed list of reads, even one the command union signs, is sent once.
+  const offList = scripted([lost, ok]);
+  await assert.rejects(offList.sender("observe" as never, controllerCode, target, signingKey));
+  assert.equal(offList.envelopes.length, 1, "only the closed list of reads is sent again");
+  // The shared RPC itself never sends twice, so no mutating caller can be retried through it.
+  let direct = 0;
+  const at = Date.now() - 2_000;
+  await assert.rejects(
+    sendRuntimeCommand(
+      { controllerCode, action: "inspect", at, expiresAt: at + 25_000 },
+      signingKey,
+      {
+        ...target,
+        connect: async () => ({
+          dispose: async () => {},
+          env: {
+            POOL_OPERATIONS: {
+              fetch: async () => {
+                direct += 1;
+                return lost();
+              },
+            },
+          },
+        }),
+      },
+      () => {},
+    ),
+  );
+  assert.equal(direct, 1);
+});
+
+test("(h) a command is signed once its bridge is open, and one that expires before it is sent is sent again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const signingKey = randomBytes(32).toString("hex");
+  const target = { accountId, worker: "synthetic-pool" };
+  const arrived: { at: number; expiresAt: number; now: number }[] = [];
+  /** A bridge that takes `startMs` to open and answers every request it gets. */
+  const slow = (startMs: number) => async () => {
+    t.mock.timers.tick(startMs);
+    return {
+      dispose: async () => {},
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            const { envelope } = (await request.json()) as { envelope: string };
+            const command = (await openEnvelope(
+              signingKey,
+              deploymentReadinessPrefix,
+              envelope,
+            )) as {
+              at: number;
+              expiresAt: number;
+            };
+            arrived.push({ at: command.at, expiresAt: command.expiresAt, now: Date.now() });
+            return Response.json({ result: { selection: null } });
+          },
+        },
+      },
+    };
+  };
+  // A bridge that takes longer to start than a command lives still sends one current on arrival.
+  const reply = await observeSender(slow(26_000))("inspect", controllerCode, target, signingKey);
+  assert.deepEqual(reply, { result: { selection: null } });
+  assert.equal(arrived.length, 1);
+  assert.ok(arrived[0]!.expiresAt > arrived[0]!.now, "current when it arrives");
+  assert.ok(arrived[0]!.at >= arrived[0]!.now - 5_000, "signed after the bridge opened");
+  // A command that expires between its signature and its send never reached the Worker: it is
+  // sent again, never reported as the Worker refusing its identity.
+  const sign = SubtleCrypto.prototype.sign;
+  let stalled = false;
+  t.mock.method(
+    crypto.subtle,
+    "sign",
+    async function (this: SubtleCrypto, ...args: Parameters<SubtleCrypto["sign"]>) {
+      const signature = await sign.apply(this, args);
+      if (!stalled) {
+        stalled = true;
+        t.mock.timers.tick(26_000);
+      }
+      return signature;
+    },
+  );
+  arrived.length = 0;
+  const resent = await observeSender(slow(0))("inspect", controllerCode, target, signingKey);
+  assert.equal(attemptsOf(resent), 2);
+  assert.equal(arrived.length, 1, "the expired one was never sent");
+  assert.ok(arrived[0]!.expiresAt > arrived[0]!.now);
 });
