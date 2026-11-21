@@ -11,6 +11,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { runCrashDispatch } from "../pool-crash-dispatch.ts";
 
@@ -37,13 +38,17 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   const dir = mkdtempSync(join(tmpdir(), "release-accept-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
-  // Stand-ins for the entry and the smoke: each exits with the code the case gives it.
-  writeFileSync(join(bin, "bun"), '#!/bin/sh\nexit "$ACCEPT_RC"\n');
+  // Stand-ins for the entry and the smoke: each exits with the code the case gives it, and the
+  // entry records its arguments, so the test sees which branch of the step ran.
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$@" >> "$ACCEPT_ARGS"\nexit "$ACCEPT_RC"\n');
   writeFileSync(join(bin, "node"), '#!/bin/sh\necho ran >> "$SMOKE_LOG"\nexit "$SMOKE_RC"\n');
   chmodSync(join(bin, "bun"), 0o755);
   chmodSync(join(bin, "node"), 0o755);
   const policy = join(dir, "policy.json");
-  writeFileSync(policy, JSON.stringify({ acceptance: { rootRestart: { withinSeconds: 420 } } }));
+  writeFileSync(
+    policy,
+    JSON.stringify({ acceptance: { rootRestart: { bound: "healingAcceptanceWithinMs" } } }),
+  );
   for (const [accept, smoke, exit] of [
     ["3", "0", 3],
     ["0", "1", 1],
@@ -52,6 +57,7 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   ] as const) {
     const output = join(dir, `output-${accept}-${smoke}`);
     const log = join(dir, `smoke-${accept}-${smoke}`);
+    const args = join(dir, `accept-${accept}-${smoke}`);
     writeFileSync(output, "");
     const result = runStep(
       script("Accept the release through the live pool"),
@@ -62,12 +68,18 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
         ACCEPT_RC: accept,
         SMOKE_RC: smoke,
         SMOKE_LOG: log,
+        ACCEPT_ARGS: args,
       },
       dir,
     );
     assert.equal(result.status, exit, `accept ${accept}, smoke ${smoke}: ${result.stderr}`);
     assert.equal(readFileSync(log, "utf8"), "ran\n", "the smoke ran");
     assert.equal(readFileSync(output, "utf8"), `smoke=${smoke}\n`);
+    // The healing branch ran: a declared root restart, with the apply's outcome passed on.
+    assert.equal(
+      readFileSync(args, "utf8"),
+      "scripts/release/deploy.ts accept --stage production --expect restart --serving .local/release/serving.json --apply any --root-boot .local/release/root-boot.json --out .local/release/acceptance.json\n",
+    );
   }
   // Without a declared root restart a failed acceptance goes straight to its rollback.
   const plain = join(dir, "plain.json");
@@ -78,6 +90,7 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   ] as const) {
     const output = join(dir, `plain-output-${accept}`);
     const log = join(dir, `plain-smoke-${accept}`);
+    const args = join(dir, `plain-accept-${accept}`);
     writeFileSync(output, "");
     const result = runStep(
       script("Accept the release through the live pool"),
@@ -88,11 +101,46 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
         ACCEPT_RC: accept,
         SMOKE_RC: "0",
         SMOKE_LOG: log,
+        ACCEPT_ARGS: args,
       },
       dir,
     );
     assert.equal(result.status, exit, `accept ${accept}: ${result.stderr}`);
     assert.equal(existsSync(log), smoked, `accept ${accept}: the smoke ran`);
+    assert.equal(
+      readFileSync(args, "utf8"),
+      "scripts/release/deploy.ts accept --stage production --expect any --root-boot .local/release/root-boot.json --out .local/release/acceptance.json\n",
+      "no declared restart",
+    );
+  }
+});
+
+test("a declared root restart's boot read lets the pool not answer; others need its boot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-boot-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\necho "$@" >> "$BOOT_ARGS"\n');
+  chmodSync(join(bin, "bun"), 0o755);
+  for (const [policy, extra] of [
+    [
+      { acceptance: { rootRestart: { bound: "healingAcceptanceWithinMs" } } },
+      " --allow-not-serving",
+    ],
+    [{}, ""],
+  ] as const) {
+    const file = join(dir, `policy-${extra.length}.json`);
+    const args = join(dir, `boot-${extra.length}`);
+    writeFileSync(file, JSON.stringify(policy));
+    const result = runStep(
+      script("Record the root's boot before the apply"),
+      { PATH: `${bin}:${process.env.PATH ?? ""}`, POLICY: file, BOOT_ARGS: args },
+      dir,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(args, "utf8"),
+      `scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json${extra}\n`,
+    );
   }
 });
 
@@ -141,8 +189,8 @@ test("a declared root restart reads the provider twice first, and refuses unless
     '#!/bin/sh\necho ran >> "$BUN_LOG"\nmkdir -p "$POOL_CRASH_OUTPUT_DIRECTORY"\n[ -n "$RESULT" ] && printf %s "$RESULT" | sed "s/@REQUEST@/$POOL_CRASH_REQUEST_ID/g" > "$POOL_CRASH_OUTPUT_DIRECTORY/result.json"\nexit 1\n',
   );
   chmodSync(join(bin, "bun"), 0o755);
-  const restart = join(dir, "restart.json");
-  writeFileSync(restart, JSON.stringify({ acceptance: { rootRestart: { withinSeconds: 420 } } }));
+  // The real policy file, so a renamed field in its schema cannot switch this step off unseen.
+  const restart = fileURLToPath(new URL("policies/code-restart.json", import.meta.url));
   const code = join(dir, "code.json");
   writeFileSync(code, "{}");
   const temporary = join(dir, "runner-temp");
@@ -239,6 +287,33 @@ test("a declared root restart reads the provider twice first, and refuses unless
     /^::error::restart read: does not read \(outcome_unknown\): the heal would stop the root/mu,
   );
   assert.match(refuses("half", lines(token)), /^::error::restart read: not read: /mu);
+  // Line 2 missing or not passing: the dispatcher's own public cause is printed with it.
+  assert.match(
+    refuses(
+      "drift with a cause",
+      lines(
+        token,
+        "restart read: refuses (recorded_pins_differ)",
+        "active-health outcome unknown: runtime-handoff-response-refused (PoolRuntime) HTTP 503",
+      ),
+    ),
+    /^::error::restart read: refuses \(recorded_pins_differ\) \(the dispatcher stopped at: active-health outcome unknown: runtime-handoff-response-refused \(PoolRuntime\) HTTP 503\): /mu,
+  );
+  assert.match(
+    refuses("inspect", lines(token, undefined, "inspect outcome unknown: AbortError")),
+    /^::error::restart read: not read \(the dispatcher stopped at: inspect outcome unknown: AbortError\): the heal would stop/mu,
+  );
+  assert.match(
+    refuses(
+      "unavailable",
+      lines(
+        token,
+        "restart read: not checked (selection_unavailable)",
+        "inspect outcome unknown: bridge exited",
+      ),
+    ),
+    /^::error::restart read: not checked \(selection_unavailable\) \(the dispatcher stopped at: inspect outcome unknown: bridge exited\): the heal/mu,
+  );
   // The dispatcher left nothing, or refused before any read: its own public cause is printed.
   assert.match(
     refuses("none", ""),
@@ -327,10 +402,39 @@ test("the provider read's own go text passes the crash operator's go rule", asyn
       readTarget: unreachable,
       observe: unreachable,
       rootHealth: unreachable,
+      resetRecovery: unreachable,
       crash: unreachable,
       sleep: async () => {},
       now: () => 1,
     },
   );
   assert.equal(result.error, "packet is not valid JSON");
+});
+
+test("in plan mode a failed provider read still lets the plan run, and the run fails after it", () => {
+  const all = steps as {
+    name?: string;
+    id?: string;
+    if?: string;
+    run?: string;
+    "continue-on-error"?: string;
+  }[];
+  const names = all.map((entry) => entry.name);
+  const provider =
+    all[names.indexOf("Read the provider observation before a declared root restart")]!;
+  assert.equal(provider.id, "provider");
+  // Only a plan continues: an apply stops at the read, before anything is planned or applied.
+  assert.equal(provider["continue-on-error"], "${{ env.MODE == 'plan' }}");
+  const again = all[names.indexOf("Read the provider observation again right before the apply")]!;
+  assert.equal(again["continue-on-error"], undefined);
+  const stop = names.indexOf("Stop on an unread provider observation");
+  assert.equal(names[stop - 1], "Plan and check");
+  assert.equal(
+    all[stop]!.if,
+    "always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'",
+  );
+  const dir = mkdtempSync(join(tmpdir(), "release-provider-stop-"));
+  const result = runStep(script("Stop on an unread provider observation"), {}, dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^::error::.*provider observation.*plan above ran for review only/mu);
 });
