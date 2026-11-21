@@ -1,7 +1,7 @@
 name: Stage rehearsal
 
 # One mode against a standing rehearsal stage (scripts/release-preview/stage.ts), dispatched by
-# labelling a same-repo pull request `stage-<mode>` (lane 1) or `stage-<mode>-<2|3|4>`. Modes:
+# labelling a same-repo pull request `stage-<mode>` (lane 1) or `stage-<mode>-<2|3|4|5>`. Modes:
 # check, baseline, plan, apply, destroy. The label is removed when the run ends, so adding it again
 # runs the mode again. Every apply and destroy goes through scripts/release/deploy.ts.
 on:
@@ -22,7 +22,7 @@ jobs:
       startsWith(github.event.label.name, 'stage-')
     # One mode at a time per lane; a second label waits instead of cancelling an apply in flight.
     concurrency:
-      group: stage-rehearsal-lane-${{ endsWith(github.event.label.name, '-2') && '2' || endsWith(github.event.label.name, '-3') && '3' || endsWith(github.event.label.name, '-4') && '4' || '1' }}
+      group: stage-rehearsal-lane-${{ endsWith(github.event.label.name, '-2') && '2' || endsWith(github.event.label.name, '-3') && '3' || endsWith(github.event.label.name, '-4') && '4' || endsWith(github.event.label.name, '-5') && '5' || '1' }}
       cancel-in-progress: false
     # The owner's box (BASALT_REHEARSAL_RUNNER=basalt-box); hosted when it is unset.
     runs-on: ${{ vars.BASALT_REHEARSAL_RUNNER || 'ubuntu-latest' }}
@@ -51,7 +51,7 @@ jobs:
       - name: Name the lane's stage and set its deadline
         id: lane
         run: |
-          lane="$(node -e 'const m=/^stage-[a-z]+(?:-([1-4]))?$/.exec(process.env.STAGE_LABEL); if(!m) process.exit(1); console.log(m[1] ?? "1")')"
+          lane="$(node -e 'const m=/^stage-[a-z]+(?:-([1-5]))?$/.exec(process.env.STAGE_LABEL); if(!m) process.exit(1); console.log(m[1] ?? "1")')"
           echo "subject=rehearsal-$lane" >> "$GITHUB_OUTPUT"
           # The box keeps a private owner-only directory per job for 14 days; hosted keeps runner temp.
           if [ -n "${BASALT_BOX_OUTPUT:-}" ]; then out="$BASALT_BOX_OUTPUT/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"; else out="$RUNNER_TEMP/stage-output"; fi
@@ -104,6 +104,10 @@ jobs:
           REHEARSAL_ROOT_IMAGE_4: ${{ vars.REHEARSAL_ROOT_IMAGE_4 }}
           REHEARSAL_OBSERVATION_TOKEN_4: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_4 }}
           REHEARSAL_OBSERVATION_4: absent
+          # Lane 5, the same pin; its token is minted by the operator for it alone.
+          REHEARSAL_ROOT_IMAGE_5: ${{ vars.REHEARSAL_ROOT_IMAGE_5 }}
+          REHEARSAL_OBSERVATION_TOKEN_5: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_5 }}
+          REHEARSAL_OBSERVATION_5: absent
       - name: On failure, print the kept output (redacted)
         if: failure() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts show-output "$STAGE_LABEL"
@@ -119,6 +123,7 @@ jobs:
           REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
           REHEARSAL_ROOT_IMAGE_3: ${{ vars.REHEARSAL_ROOT_IMAGE_3 }}
           REHEARSAL_ROOT_IMAGE_4: ${{ vars.REHEARSAL_ROOT_IMAGE_4 }}
+          REHEARSAL_ROOT_IMAGE_5: ${{ vars.REHEARSAL_ROOT_IMAGE_5 }}
       - name: Seal the run's full output
         if: always() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts seal-output "$STAGE_LABEL" "$RUNNER_TEMP/stage-output.enc"
