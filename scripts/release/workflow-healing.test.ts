@@ -11,6 +11,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { runCrashDispatch } from "../pool-crash-dispatch.ts";
 
@@ -188,8 +189,8 @@ test("a declared root restart reads the provider twice first, and refuses unless
     '#!/bin/sh\necho ran >> "$BUN_LOG"\nmkdir -p "$POOL_CRASH_OUTPUT_DIRECTORY"\n[ -n "$RESULT" ] && printf %s "$RESULT" | sed "s/@REQUEST@/$POOL_CRASH_REQUEST_ID/g" > "$POOL_CRASH_OUTPUT_DIRECTORY/result.json"\nexit 1\n',
   );
   chmodSync(join(bin, "bun"), 0o755);
-  const restart = join(dir, "restart.json");
-  writeFileSync(restart, JSON.stringify({ acceptance: { rootRestart: { withinSeconds: 420 } } }));
+  // The real policy file, so a renamed field in its schema cannot switch this step off unseen.
+  const restart = fileURLToPath(new URL("policies/code-restart.json", import.meta.url));
   const code = join(dir, "code.json");
   writeFileSync(code, "{}");
   const temporary = join(dir, "runner-temp");

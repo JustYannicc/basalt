@@ -285,7 +285,8 @@ jobs:
           POOL_CRASH_COORDINATOR_GO: release run ${{ github.run_id }} attempt ${{ github.run_attempt }} reads the provider observation before a declared root restart
           POOL_CRASH_TEMPORARY_DIRECTORY: ${{ runner.temp }}
         run: &provider-observation-run |
-          if [ -z "$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")" ]; then exit 0; fi
+          # Whether the policy declares a root restart at all, whatever the declaration's fields.
+          if ! jq -e '.acceptance.rootRestart | type == "object"' "$POLICY" >/dev/null; then exit 0; fi
           if [ -z "$POOL_CRASH_PACKET" ]; then
             echo "::error::A release that declares a root restart needs the serving_controller input: the controller code of the pool Worker deployed now."
             exit 1

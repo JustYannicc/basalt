@@ -188,7 +188,7 @@ const attemptsTaken = new WeakMap<object, number>();
 export const attemptsOf = (value: unknown) =>
   (value !== null && typeof value === "object" && attemptsTaken.get(value)) || 1;
 const retriedLine = new RegExp(
-  `^(?:${observeActions.join("|")}) [2-${observeAttempts}] attempts$`,
+  `^(?:${observeActions.join("|")}) (?:gave up after )?[2-${observeAttempts}] attempts$`,
   "u",
 );
 
@@ -602,7 +602,11 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
           return replyResult(reply, action);
         } catch (cause) {
           const attempts = attemptsOf(cause);
-          if (attempts > 1) phase = `${action} outcome unknown after ${attempts} attempts`;
+          if (attempts > 1) {
+            phase = `${action} outcome unknown after ${attempts} attempts`;
+            // A caller may catch this read's error (the provider lines do), so the record keeps it.
+            (output.retried ??= []).push(`${action} gave up after ${attempts} attempts`);
+          }
           throw cause;
         }
       };

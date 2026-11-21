@@ -278,7 +278,12 @@ test("(a) every outcome publishes one closed line and nothing else from the read
     assert.match(result.providerObservation ?? "", closedLine);
     assert.equal(run.sent.includes("provider-observe"), observe !== undefined, cause);
     // The rest of the result is exactly what the observe published before this read existed.
-    const { providerObservation: _line, restartObservation: _restart, ...rest } = result;
+    const {
+      providerObservation: _line,
+      restartObservation: _restart,
+      retried: _retried,
+      ...rest
+    } = result;
     assert.deepEqual({ ...rest, requestId: baseline.requestId }, unchanged, cause);
     const published = JSON.stringify(result) + logLine(result);
     for (const sentinel of sentinels)
@@ -771,6 +776,12 @@ test("(g) a read lost on the way is sent again, signed anew on a fresh bridge, t
   );
   assert.equal(unavailable.envelopes.length, 3);
   assert.equal(attemptsOf(failed), 3);
+  // A provider read that gives up is caught for its line, and the record still says so.
+  const givingUp = world(pins, (...args) => scripted([lost]).sender(...args));
+  const gaveUp = await runCrashDispatch(input(signingKey), givingUp.deps);
+  assert.equal(gaveUp.providerObservation, "provider observation: does not read (bridge_failed)");
+  assert.deepEqual(gaveUp.retried, ["provider-observe gave up after 3 attempts"]);
+  assert.ok(logLine(gaveUp).includes("\nretried: provider-observe gave up after 3 attempts\n"));
 
   // Only the closed list of reads is retried: a command that writes, through any sender, is sent once.
   const resetting = scripted([lost, ok]);
