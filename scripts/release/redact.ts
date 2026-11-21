@@ -1,3 +1,5 @@
+import { credentialName, redactCredentialText } from "../pool-history/failure-output.ts";
+
 /** Runner and workflow names whose values are public and are worth keeping readable in a path. */
 const PUBLIC = new Set([
   "PATH",
@@ -8,6 +10,8 @@ const PUBLIC = new Set([
   "USER",
   "LANG",
   "TMPDIR",
+  "ALCHEMY_STAGE",
+  "BASALT_RELEASE_ATTEMPT",
   "BASALT_RELEASE_CANDIDATE",
   "BASALT_BOX_OUTPUT",
   "POLICY",
@@ -17,32 +21,24 @@ const PUBLIC = new Set([
   "PLAN_DIGEST",
   "PLAN_DIGEST_INPUT",
 ]);
-const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|DSN|CREDENTIAL/iu;
 
 const isPublic = (name: string) =>
-  !SECRET_NAME.test(name) &&
+  !credentialName.test(name) &&
   (PUBLIC.has(name) || name.startsWith("RUNNER_") || name.startsWith("GITHUB_"));
 
 /**
- * Text kept on the box past a release container, with every secret value taken out: any value of
- * the entry's own environment long enough to be a credential unless its name is a known public
- * one, any value under a secret-shaped name, any Postgres connection URL and any bearer token. It
- * redacts too much rather than too little: the entry cannot tell a secret from other env by value.
+ * Text kept on the box past a release container, redacted further than a public failure tail: on
+ * top of the credential shapes and credential-named values, any value of the entry's own environment
+ * long enough to be a credential unless its name is a known public one. The entry cannot tell a
+ * secret from other env by value, so it errs toward redacting too much.
  */
 export function redactSecrets(text: string, env: Readonly<Record<string, string | undefined>>) {
-  const values = Object.entries(env)
-    .filter(
-      (entry): entry is [string, string] =>
-        typeof entry[1] === "string" &&
-        !isPublic(entry[0]) &&
-        entry[1].length >= (SECRET_NAME.test(entry[0]) ? 4 : 12),
-    )
-    .map(([, value]) => value)
-    // The longest first, so a value that contains another is taken out whole.
-    .sort((a, b) => b.length - a.length);
-  let redacted = text;
-  for (const value of values) redacted = redacted.split(value).join("[redacted]");
-  return redacted
-    .replace(/\bpostgres(?:ql)?:\/\/[^\s"'`]+/giu, "postgres://[redacted]")
-    .replace(/\bBearer\s+[^\s"'`]+/gu, "Bearer [redacted]");
+  const values = Object.entries(env).flatMap(([name, value]) =>
+    typeof value === "string" &&
+    !isPublic(name) &&
+    value.trim().length >= (credentialName.test(name) ? 4 : 12)
+      ? [value]
+      : [],
+  );
+  return redactCredentialText(text, values);
 }

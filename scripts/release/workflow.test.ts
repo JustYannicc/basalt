@@ -11,7 +11,11 @@ const { parse } = createRequire(new URL("../architecture/package.json", import.m
 /** The release job's steps as Actions reads them, with every YAML alias resolved. */
 const parsedSteps = (
   parse(workflow) as {
-    jobs: { release: { steps: { name?: string; run?: string; env?: object; with?: object }[] } };
+    jobs: {
+      release: {
+        steps: { name?: string; if?: string; run?: string; env?: object; with?: object }[];
+      };
+    };
   }
 ).jobs.release.steps;
 const step = (name: string) => {
@@ -123,6 +127,23 @@ test("a plan runs the apply's read-only steps too, so an apply is never their fi
     "Accept the release through the live pool",
   ])
     assert.match(condition(name) ?? "", /env\.MODE == 'apply'/u, name);
+  // Every other step that carries production secrets writes, so it never runs in a plan.
+  const reads = new Set([
+    "Preflight against State",
+    "Read the provider observation before a declared root restart",
+    "Plan and check",
+    "Record the serving version of every Worker the plan updates",
+    "Count accounts and history before",
+    "Record the root's boot before the apply",
+  ]);
+  const writes = parsedSteps.filter(
+    (entry) =>
+      !reads.has(entry.name ?? "") &&
+      JSON.stringify({ env: entry.env, run: entry.run, with: entry.with }).includes("secrets."),
+  );
+  assert.ok(writes.length > 0);
+  for (const entry of writes)
+    assert.match(entry.if ?? "", /env\.MODE == 'apply'/u, entry.name ?? "(unnamed step)");
   assert.match(step("Check the apply's tools are present"), /for tool in gh jq bun node; do/u);
   assert.equal(condition("Check the apply's tools are present"), undefined);
   const [tools, prepare] = order("Check the apply's tools are present", "Prepare");

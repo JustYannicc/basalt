@@ -71,6 +71,10 @@ resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
+// Resolved before the entry moves into the cloud app, as the path flags are.
+const boxOutput = process.env.BASALT_BOX_OUTPUT
+  ? resolve(process.env.BASALT_BOX_OUTPUT)
+  : undefined;
 
 if (command !== "compare") {
   if (stage === "production") {
@@ -112,16 +116,20 @@ const keepPrivate = async (name: string, detail: string) => {
     );
   // A box release slot keeps this directory past its container, readable by the box owner only;
   // the plain copy above dies with the container. Writing it never changes the run's outcome.
-  const box = process.env.BASALT_BOX_OUTPUT;
-  if (box)
-    await mkdir(resolve(box, "release"), { recursive: true })
+  if (boxOutput)
+    await mkdir(resolve(boxOutput, "release"), { recursive: true, mode: 0o700 })
       .then(() =>
         appendFile(
-          resolve(box, "release", `${name}.txt`),
+          resolve(boxOutput, "release", `${name}.txt`),
           `${redactSecrets(detail, process.env)}\n`,
+          { mode: 0o600 },
         ),
       )
-      .catch(() => {});
+      .catch((error: unknown) =>
+        console.error(
+          `The ${name} detail could not be kept on the box (${(error as { code?: string }).code ?? "unknown"})`,
+        ),
+      );
   const key = process.env.EXECUTOR_ENCRYPTION_KEY;
   if (stage === "production" && key)
     try {
