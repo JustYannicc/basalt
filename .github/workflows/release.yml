@@ -402,7 +402,7 @@ jobs:
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
         # pool that does not answer; every other release needs the root's boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
       # The restore target if the class change fails. Reading it also arms a restore to it for ten
       # minutes, the window the class change runs in.
@@ -449,9 +449,9 @@ jobs:
         # A declared root restart first waits, bounded by the policy, for the root's new boot; then every
         # request must succeed on that one boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
-          if [ -n "$within" ]; then expect=(--expect restart --within "$within" --serving .local/release/serving.json); fi
+          if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json --apply "${{ steps.apply.outcome }}"); fi
           rc=0
           bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json || rc=$?
           # A failed acceptance goes straight to its rollback. A declared root restart has none, so

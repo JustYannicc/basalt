@@ -94,8 +94,7 @@ test("only the healing release declares a root restart, bounded, and it is other
     assert.equal((await read(name)).acceptance, undefined, name);
   const healing = await read("code-restart");
   const code = await read("code");
-  const within = healing.acceptance?.rootRestart.withinSeconds ?? 0;
-  assert.ok(within >= 60 && within <= 900, `bound ${within}`);
+  assert.equal(healing.acceptance?.rootRestart.bound, "healingAcceptanceWithinMs");
   // No reviewed policy is an image release of the root: every one refuses any row on it.
   for (const name of ["release", "code", "code-restart", "cutover-code", "cutover-classes"])
     assert.equal((await read(name)).check.poolContainer.imageRelease, undefined, name);
