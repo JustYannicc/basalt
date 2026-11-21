@@ -228,6 +228,9 @@ jobs:
           require-hit: ${{ matrix.platform == 'linux' }}
       - run: bun install --cwd clients --frozen-lockfile
       - run: bun install --cwd clients/desktop --frozen-lockfile
+      # The real locked Electron's checksums, which the fast lane can't install.
+      - name: Check the builder config carries the locked Electron's checksums
+        run: node --test scripts/ci/desktop-builder-config.test.ts
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
       # The generated config is package.json's build plus the locked Electron checksums, so packaging

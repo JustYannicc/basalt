@@ -243,35 +243,6 @@ test("the electron-builder config is package.json's build plus only the Electron
   }
 });
 
-const installedElectron = new URL(
-  "../clients/desktop/node_modules/electron/checksums.json",
-  import.meta.url,
-);
-test(
-  "the generated electron-builder config carries the locked electron's checksums",
-  { skip: !existsSync(installedElectron) && "needs clients/desktop dependencies" },
-  () => {
-    const fixture = mkdtempSync(join(tmpdir(), "basalt-builder-config-"));
-    try {
-      const output = join(fixture, "electron-builder.json");
-      const script = new URL("./ci/desktop-release-assets.ts", import.meta.url).pathname;
-      execFileSync(process.execPath, [script, "builder-config", output], { stdio: "pipe" });
-      const config = JSON.parse(readFileSync(output, "utf8"));
-      const checksums = JSON.parse(readFileSync(installedElectron, "utf8"));
-      assert.deepEqual(config, {
-        ...JSON.parse(readFileSync(desktopManifest, "utf8")).build,
-        electronDownload: { unsafelyDisableChecksums: false, checksums },
-      });
-      const lock = readFileSync(new URL("../clients/desktop/bun.lock", import.meta.url), "utf8");
-      const version = /^    "electron": \["electron@([^"\s]+)"/m.exec(lock)![1];
-      for (const platform of ["linux-x64", "win32-x64"])
-        assert.match(checksums[`electron-v${version}-${platform}.zip`], /^[0-9a-f]{64}$/);
-    } finally {
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  },
-);
-
 type Step = { name?: string; shell?: string; run?: string };
 const workflowSteps = (workflow: string, job: string): Step[] => {
   const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
