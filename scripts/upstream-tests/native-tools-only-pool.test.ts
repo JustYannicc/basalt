@@ -68,12 +68,7 @@ async function device(t: TestContext, models: boolean) {
     data: { organizationId: team, userId: f.userId, role: "owner", createdAt: new Date() },
   });
   running.p.advance(Date.now() - running.p.now());
-  const intent = await running.p.intent(f.userId, {
-    ...pool,
-    owner: f.userId,
-    organization: team,
-    users: [f.userId],
-  });
+  const intent = await running.p.intent(f.userId, { ...pool, owner: f.userId, organization: team });
   const approved = await f.request(
     "/device/decide",
     { user_code: f.user_code, accept: true },
