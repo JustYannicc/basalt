@@ -12,6 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { betterAuth } from "better-auth";
+import { isAPIError } from "better-auth/api";
 import { getMigrations } from "better-auth/db/migration";
 import { organization as organizations } from "better-auth/plugins/organization";
 import {
@@ -23,13 +24,14 @@ import {
   type DatabaseConnection,
   type QueryResult,
 } from "kysely";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { GrantId, mcpResource, requestedMcpAddress } from "@executor-js/mcp-auth";
 import type { ConnectionId, ConnectionInput } from "@executor-js/mcp-auth/connections";
 import { authOptions } from "../../../.upstream/apps/hosted/server/src/implementation/auth.ts";
 import {
   type HostedOAuthOrigins,
+  mcpConnectionStore,
   provisionHostedOAuthResources,
 } from "../../../.upstream/apps/hosted/server/src/implementation/mcp-oauth.ts";
 import { beginConnection, pollConnection } from "../../../clients/obsidian/auth.ts";
@@ -126,6 +128,14 @@ export const grantStore = (organization: string) =>
       });
     });
     const owner = { userId: user.id, resource: organization };
+    // The host's own adapter over the grant store's listings, as the dashboard's API reads them.
+    // An endpoint's own error reaches it as the host passes it, so its status mapping holds.
+    const store = mcpConnectionStore((call) =>
+      Effect.tryPromise({
+        try: () => call(auth.api),
+        catch: (cause) => (isAPIError(cause) ? cause : new Cause.UnknownError(cause)),
+      }),
+    );
     const reply = async (response: Response, status = 200) => {
       const body = await response.text();
       assert.equal(response.status, status, body);
@@ -262,6 +272,8 @@ export const grantStore = (organization: string) =>
           });
           return client_id;
         }).pipe(Effect.flatMap(grantOf)),
+      /** The person's connections and agents, as the dashboard lists them. */
+      listings: () => Effect.all({ connections: store.list(owner), agents: store.agents(owner) }),
       /** Disconnect: the person revokes one grant. */
       revokeGrant: (id: GrantId) =>
         Effect.promise(() => auth.api.revokeMcpAgent({ body: { ...owner, id } })),
