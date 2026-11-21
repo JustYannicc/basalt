@@ -4,6 +4,12 @@ name: Box heartbeat
 # It checks out nothing and holds no secrets; a missing status file fails the run, so the router
 # sends nothing to the box.
 on:
+  # Every Check's start refreshes the box's status for that Check's router. workflow_run always runs
+  # this file from the default branch, so no pull request's code runs here. The schedule is the
+  # backstop for quiet spells.
+  workflow_run:
+    workflows: [Check]
+    types: [requested]
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:

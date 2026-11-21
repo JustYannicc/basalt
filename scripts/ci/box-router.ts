@@ -16,6 +16,11 @@ export const boxSlowdown = 2.0;
 export const heartbeatMarker = "box-health:";
 export const heartbeatPath = ".github/workflows/box-heartbeat.yml";
 const heartbeatWindow = 10 * 60_000;
+const staleHeartbeat = "the newest heartbeat is older than 10 minutes";
+// Each Check's start triggers a heartbeat (box-heartbeat.yml's workflow_run), which lands within
+// seconds; after a quiet spell select waits that long for it rather than finding only a stale one.
+const heartbeatRetries = 4;
+const heartbeatRetryMs = 15_000;
 const sampleSkew = 2 * 60_000;
 // The release runners are self-hosted too, so a broad label could hand CI work to them.
 const sharedLabels = ["self-hosted", "basalt-release"];
@@ -191,8 +196,7 @@ export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   if (heartbeat.conclusion !== "success")
     return "the newest heartbeat ended " + String(heartbeat.conclusion ?? "without a conclusion");
   const end = Date.parse(String(heartbeat.completedAt));
-  if (!(now - end <= heartbeatWindow && end - now <= sampleSkew))
-    return "the newest heartbeat is older than 10 minutes";
+  if (!(now - end <= heartbeatWindow && end - now <= sampleSkew)) return staleHeartbeat;
   const status = heartbeatStatus(heartbeat.log);
   if (!status) return "the heartbeat log has no box status";
   if (!(Math.abs(Date.parse(status.at) - end) <= sampleSkew))
@@ -208,7 +212,12 @@ export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   return { budget, why };
 }
 
-export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date.now) {
+export async function routeBox(
+  input: BoxInput,
+  observe: BoxObserver,
+  now = Date.now,
+  wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+) {
   const none = (why: string) => ({
     jobs: [] as string[],
     label: "",
@@ -219,7 +228,11 @@ export async function routeBox(input: BoxInput, observe: BoxObserver, now = Date
   try {
     const plan = checkPlan(input.selected, input.matrices, input.durations);
     if (!plan.shards.length) return none("this Check runs no job the box can take");
-    const box = heartbeatBudget(await observe.heartbeat(), now());
+    let box = heartbeatBudget(await observe.heartbeat(), now());
+    for (let tries = 0; box === staleHeartbeat && tries < heartbeatRetries; tries++) {
+      await wait(heartbeatRetryMs);
+      box = heartbeatBudget(await observe.heartbeat(), now());
+    }
     if (typeof box === "string") return none(box);
     const active = await observe.active();
     // BASALT_CI_BOX_SLOTS caps what the box's own budget grants.
@@ -281,12 +294,15 @@ export function githubObserver(
   const onBox = (job: Record<string, unknown>) =>
     Array.isArray(job.labels) &&
     job.labels.some((label) => String(label).toLowerCase() === boxLabel);
-  // Only the box's own scheduled or dispatched runs of this repository can vouch for it; a fork or
-  // pull-request run of the same file could print anything.
+  // Only this repository's own heartbeat file on main can vouch for the box: its scheduled and
+  // dispatched runs on main, and the runs a Check's start triggers, which always run the default
+  // branch's file. A fork, a pull-request run or a dispatch on another branch could print anything.
   const trustedHeartbeat = (run: Record<string, unknown>) =>
     String(run.path).split("@")[0] === heartbeatPath &&
-    (run.event === "schedule" || run.event === "workflow_dispatch") &&
-    record(run.head_repository).full_name === env.repository;
+    record(run.head_repository).full_name === env.repository &&
+    (run.event === "workflow_run" ||
+      ((run.event === "schedule" || run.event === "workflow_dispatch") &&
+        run.head_branch === "main"));
   const checkRun = (run: Record<string, unknown>) =>
     String(run.path).split("@")[0] === ".github/workflows/ci.yml";
   // A job on the box's label holds a CI slot; release-label jobs hold neither a slot nor hosted.
@@ -302,10 +318,13 @@ export function githubObserver(
   };
   return {
     async heartbeat() {
-      const path = "/actions/workflows/box-heartbeat.yml/runs?branch=main&status=completed";
-      const runs = record(await (await get(path + "&per_page=20")).json()).workflow_runs;
+      // Triggered heartbeats cancel each other in flight, so a page holds many cancelled runs.
+      const path = "/actions/workflows/box-heartbeat.yml/runs?status=completed";
+      const runs = record(await (await get(path + "&per_page=50")).json()).workflow_runs;
       if (!Array.isArray(runs)) throw new Error("GitHub listed no heartbeat runs");
       for (const run of runs.map(record).filter(trustedHeartbeat)) {
+        // A newer heartbeat replaced it; a failed one still stops routing.
+        if (run.conclusion === "cancelled") continue;
         if (run.conclusion !== "success")
           return { conclusion: run.conclusion, completedAt: run.updated_at, log: "" };
         // A heartbeat that didn't run on the box's label says nothing about the box.

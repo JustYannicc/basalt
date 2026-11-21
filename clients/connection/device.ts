@@ -54,8 +54,8 @@ export function deviceConnection(
     changed: (credentials) => {
       saved = credentials;
     },
-    unavailable: (next) => {
-      state = next;
+    signInRequired: () => {
+      state = "sign-in-required";
     },
   });
   const capabilities = (): Capability[] =>
