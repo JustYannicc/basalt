@@ -1,5 +1,5 @@
 import type { ProviderFailure } from "./provider-failure.ts";
-import { publicPropPath } from "../release-barrier/prop-diff.ts";
+import { publicPropPath } from "../pool-fleet/prop-diff.ts";
 import { digest } from "./encoding.ts";
 import type { Binding } from "./plan.ts";
 
