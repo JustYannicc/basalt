@@ -73,6 +73,24 @@ class KeyRequest {
 }
 const modelsUnavailable = () =>
   fail(503, "backend_unavailable", "Models are unavailable right now. Try again shortly.", 2);
+/**
+ * The Home keys revoking this computer removes. A tools-only device never has one, so a stopped
+ * container cannot hold up its revocation. A model device whose key was never recorded may hold
+ * one from a lost mint reply; looking for it is best-effort, and a mint still running revokes its
+ * own key once it sees the device revoked.
+ */
+export async function revocableKeys(computer: StoredComputer, home: ComputerHome) {
+  if (computer.keyId) return [computer.keyId];
+  if (!computer.native) return home.find(computer.id);
+  if (!computer.native.models) return [];
+  return home.find(computer.id).catch((error: unknown) => {
+    console.error(
+      "Native revocation could not look for an unrecorded model key",
+      mintFailure(error),
+    );
+    return [];
+  });
+}
 const mintFailure = (error: unknown) =>
   error instanceof HomeTransportFailure
     ? error.errorClass
@@ -174,14 +192,8 @@ export class NativeComputers {
         delete computer.link;
         await this.deps.save(registry);
         // The saved state stops requests and active streams before Home cleanup can fail.
-        // A device with no model key, tools only or not minted yet, has nothing at Home: a stopped
-        // container must not hold up its revocation. A mint still running revokes its own key.
-        const keys = computer.keyId
-          ? [computer.keyId]
-          : computer.native.key
-            ? await this.deps.home.find(computer.id)
-            : [];
-        for (const id of keys) await this.deps.home.revoke(id);
+        for (const id of await revocableKeys(computer, this.deps.home))
+          await this.deps.home.revoke(id);
         delete computer.native.key;
         computer.state = "revoked";
         computer.revokedAt ??= new Date(this.deps.now()).toISOString();

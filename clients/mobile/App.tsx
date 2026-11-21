@@ -152,12 +152,12 @@ function Home() {
                     <Label small muted>
                       {connection.display.account.email}
                     </Label>
-                    {/* A tools-only connection takes nothing from a pool, as on desktop. */}
-                    {connection.capabilities.includes("models") && (
+                    {/* The server names no pool for a tools-only device: it uses none. */}
+                    {connection.display.pool.name ? (
                       <Label small muted>
-                        Pool: {connection.display.pool.name || connection.display.pool.id}
+                        Pool: {connection.display.pool.name}
                       </Label>
-                    )}
+                    ) : null}
                   </View>
                 )}
                 {connection?.origin && (

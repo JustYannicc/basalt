@@ -173,6 +173,15 @@ async function deleteTools(request: Request, env: SetupEnv, keyId: string): Prom
   throw new SetupError(502, "Could not revoke the tools token. Retry removing this computer.");
 }
 
+/** A native device signs in with its own grant; revoking it as the person ends that sign-in. */
+async function revokeGrant(request: Request, env: SetupEnv, id: string): Promise<void> {
+  const response = await native(request, env, "mcp/grants/revoke", { id });
+  await response.body?.cancel();
+  // The session was just checked, so 401 means the grant is already revoked or was never recorded.
+  if (response.ok || response.status === 401) return;
+  throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
+}
+
 function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -448,6 +457,12 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     }
     const revoke = { ...payload, id: computer![1] };
     const result = await body(await pool(request, env, "revoke", revoke));
+    const grant = result.grant;
+    if (grant !== undefined) {
+      if (!text(grant, 512) || !grant.startsWith("native:"))
+        throw new SetupError(502, "Could not revoke this computer. Try again.");
+      await revokeGrant(request, env, grant);
+    }
     // A models-only computer has no tools token to delete.
     if (result.toolsKeyId !== null) {
       if (!text(result.toolsKeyId, 512))

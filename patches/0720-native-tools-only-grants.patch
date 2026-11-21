@@ -52,3 +52,82 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
        let teams = display ? facts?.teams : undefined;
        if (display && teams === undefined) {
          teams = yield* currentTeams(ctx, access.userId);
+diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
+--- a/e2e/tests/native-grants.spec.ts
++++ b/e2e/tests/native-grants.spec.ts
+@@ -138,7 +138,8 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+           ),
+         );
+         expect(access.display?.account).toEqual(session.user);
+-        expect(access.display?.pool).toEqual({ id: p.pool, name: "Native protocol pool" });
++        // A tools-only device asks the pool nothing, so its display names no pool.
++        expect(access.display?.pool).toEqual({ id: p.pool, name: "" });
+         expect(access.display?.pools).toEqual([]);
+         const foreignBrowser = yield* body(
+           NativeAccess,
+@@ -151,11 +152,11 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+           ),
+         );
+         expect(foreignBrowser.display?.account).toEqual(session.user);
+-        yield* p.upstream.display(false);
+-        const retainedPool = yield* body(NativeAccess, yield* p.access(tokens));
+-        expect(retainedPool.display).toBeUndefined();
+-        expect(retainedPool.policy).toEqual(access.policy);
+-        yield* p.upstream.display(true);
++        // Neither the pool's refusal nor its outage reaches a tools-only device's access check or
++        // its tool calls below; its grant and membership decide them.
++        yield* p.upstream.refuse(true);
++        const unasked = yield* body(NativeAccess, yield* p.access(tokens));
++        expect(unasked.display).toEqual(access.display);
+ 
+         expect(access.policy.pool).toBe(p.pool);
+         expect(access.policy.toolsOrganization).toBe(actors.organization.id);
+@@ -172,6 +173,7 @@ layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
+         );
+         expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
+         expect((yield* body(DeviceInventory, inventory)).accounts).toEqual([]);
++        yield* p.upstream.refuse(false);
+         expect(
+           (yield* p.api.request(
+             p.anonymous,
+@@ -431,6 +433,12 @@ export default defineApp({}, { tools: router({
+           { id: p.pool, name: "Native protocol pool" },
+           { id: "shared-native-pool", name: "Shared native pool" },
+         ]);
++        // A pool Worker that projects no display still authorizes a device with models.
++        yield* p.upstream.display(false);
++        const retainedPool = yield* body(NativeAccess, yield* p.access(tokens));
++        expect(retainedPool.display).toBeUndefined();
++        expect(retainedPool.policy).toEqual(access.policy);
++        yield* p.upstream.display(true);
+ 
+         expect(
+           (yield* p.api.request(
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -37,7 +37,10 @@ export interface NativeGrantHost {
+     userId: string,
+     grant: GrantId,
+   ) => Effect.Effect<NativeGrantPolicy, APIError>;
+-  /** Current membership and the computer's revocation state, checked on issuance and use. */
++  /**
++   * Current membership, checked on issuance and use. A grant with models also asks the pool for
++   * its computer's state; a tools-only grant asks the pool nothing.
++   */
+   readonly check: (
+     context: GenericEndpointContext,
+     access: NativeGrantAccess,
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -1185,7 +1185,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+             ? Promise.reject(new APIError("NOT_FOUND"))
+             : runAuth(
+                 Effect.gen(function* () {
+-                  // Model requests repeat this check; the pool and the budget still run each time.
++                  // Model requests repeat this check; the budget runs each time, and so does the
++                  // pool's check for a grant with models.
+                   const access = yield* native.authenticate(ctx, { display: true, remember: true });
+                   yield* nativeAccessBudget(ctx, {
+                     device: access.policy.computer,

@@ -32,7 +32,7 @@ import {
   observePendingUsage,
   type UsageObservationEvent,
 } from "./usage-observation.ts";
-import { NativeComputers } from "./native-computers.ts";
+import { NativeComputers, revocableKeys } from "./native-computers.ts";
 
 interface Dependencies {
   retirePool?(pool: string, at: number): Promise<void>;
@@ -542,15 +542,17 @@ export class Computers {
   }
   private async revoke(registry: Registry, user: string, id: unknown): Promise<Response> {
     const computer = this.own(registry, user, id);
-    // Its tools answer to its grant at the tools service, never to this registry.
-    if (computer.native && !computer.native.models)
-      return fail(409, "busy", "Sign this device out on the device to revoke it.");
     computer.state = computer.state === "revoked" ? "revoked" : "revoking";
     delete computer.link;
     await this.save(registry);
-    const keys = computer.keyId ? [computer.keyId] : await this.deps.home.find(computer.id);
-    for (const key of keys) await this.deps.home.revoke(key);
-    return json({ toolsKeyId: computer.toolsKeyId ?? null });
+    for (const key of await revocableKeys(computer, this.deps.home))
+      await this.deps.home.revoke(key);
+    // A native device signs in with its own grant, which the setup host revokes next: a tools-only
+    // device's tools answer to that grant, not to this registry.
+    return json({
+      toolsKeyId: computer.toolsKeyId ?? null,
+      ...(computer.native && { grant: computer.native.grant }),
+    });
   }
   private async switchPool(
     registry: Registry,
