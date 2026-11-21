@@ -86,7 +86,6 @@ import {
 import {
   handleModelHistoryOperation,
   historyBackfillPath,
-  historySchemaApplyPath,
   historySchemaCatalogPath,
   historyJournalActivationPath,
 } from "./model-history/operator.ts";
@@ -1151,7 +1150,6 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
       [
         historySchemaCatalogPath,
         historyJournalActivationPath,
-        historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
         historyImportCompletionPath,

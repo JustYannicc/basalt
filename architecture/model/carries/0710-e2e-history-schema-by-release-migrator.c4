@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolDatabase {
+    metadata {
+      constraint "Cloud e2e specs with an isolated pool history database apply its schema by running the release's own history migrator on that database as a separate fixture process, never through a Worker operator route and never by importing application source into e2e code. They still read the private schema catalog through the Worker, and each spec's history database stays separate from Cloud SSO tables."
+    }
+  }
+}
