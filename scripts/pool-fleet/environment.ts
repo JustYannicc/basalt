@@ -1,13 +1,6 @@
 import { join } from "node:path";
-import { signPoolToken } from "../../src/pool/token.ts";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { isAcceptancePool } from "../pool-acceptance/types.ts";
-import {
-  acceptanceCredential,
-  acceptanceDevice,
-  AcceptanceDeviceRefused,
-  acceptanceSigningKey,
-} from "../release/acceptance-device.ts";
+import { acceptanceCredential, AcceptanceDeviceRefused } from "../release/acceptance-device.ts";
 import { checkoutControllerCode } from "./controller.ts";
 import type { DispatchDependencies, DispatchInput, FleetAcceptance } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
@@ -26,31 +19,15 @@ const missing = (why: string, fix: string) => refuse("acceptance-credentials-mis
 
 /**
  * The lane's model calls sign for the release's registered acceptance device, as release acceptance
- * does, and its usage is read in that device's own pool, so the records those calls leave are the
- * ones checked.
+ * does, and the same assertion reads back that device's own usage. It holds no pool token, so the
+ * device may stay in whichever pool holds it.
  */
-async function acceptanceFromEnvironment(
-  env: NodeJS.ProcessEnv,
-): Promise<FleetAcceptance | FleetLaneRefused> {
+function acceptanceFromEnvironment(env: NodeJS.ProcessEnv): FleetAcceptance | FleetLaneRefused {
   try {
-    const { pool } = acceptanceDevice(env);
-    if (!isAcceptancePool(pool))
-      return missing(
-        "POOL_ACCEPTANCE_DEVICE: its pool is not a dedicated acceptance-<run> pool.",
-        "Register the acceptance device in the dedicated acceptance pool and set its JSON again.",
-      );
     return {
       client: new PoolAcceptanceClient(),
       credential: acceptanceCredential(env),
       model: env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
-      access: {
-        token: await signPoolToken(acceptanceSigningKey(env), {
-          pool,
-          owner: "acceptance",
-          organization: "acceptance",
-        }),
-        owner: "acceptance",
-      },
     };
   } catch (error) {
     if (error instanceof AcceptanceDeviceRefused)
@@ -72,7 +49,7 @@ export async function dependenciesFromEnvironment(
       code: checkoutControllerCode,
       directory: join(env.RUNNER_TEMP ?? "", "pool-fleet-operator"),
     }),
-    acceptance: await acceptanceFromEnvironment(env),
+    acceptance: acceptanceFromEnvironment(env),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
     log: (line) => process.stdout.write(`${line}\n`),

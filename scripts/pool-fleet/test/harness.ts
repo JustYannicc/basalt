@@ -11,6 +11,10 @@ import { crashNonceKey } from "../../../src/pool/runtime-crash-contract.ts";
 import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
 import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
+import {
+  nativeUsagePath,
+  type NativeUsageRecord,
+} from "../../../src/pool/native-usage-contract.ts";
 import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
@@ -75,7 +79,25 @@ export interface HarnessOptions {
   startCell?: boolean;
   /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
   providerSecret?: string | null;
+  /** Rows the device usage read returns for one of the lane's sessions, by the order it was first read. */
+  usage?: (index: number) => NativeUsageRecord[];
 }
+
+/** The acceptance device's own Home key, as the device usage read reports it. */
+export const deviceKey = 41;
+/** One success row of the device's key, served by one of the pool's many accounts. */
+export const ownRow = (
+  index: number,
+  extra: Partial<NativeUsageRecord> = {},
+): NativeUsageRecord => ({
+  id: `usage-${index}`,
+  status: "success",
+  at: new Date().toISOString(),
+  key: deviceKey,
+  account: `pool-account-${index % 12}`,
+  inPool: true,
+  ...extra,
+});
 
 export async function harness(options: HarnessOptions = {}) {
   const cloudflareReads: string[] = [];
@@ -296,6 +318,11 @@ export async function harness(options: HarnessOptions = {}) {
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
   const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
+  /** Each device usage read and the assertion it carried. */
+  const usageReads: { path: string; assertion: string | null; sessions: number }[] = [];
+  /** Reads of the owner-token routes the lane used before; it must never make one. */
+  const ownerReads: string[] = [];
+  const sessionOrder = new Map<string, number>();
   const pool = await listen(async (request) => {
     const path = new URL(request.url!, "http://local").pathname;
     if (path === "/v1/models" || path === "/v1/chat/completions")
@@ -309,19 +336,26 @@ export async function harness(options: HarnessOptions = {}) {
       options.boot?.(index, isEnabled) ?? (isEnabled ? "cell-boot" : "primary-boot");
     const headers = { "X-Signalbox-Pool-Boot": "primary-boot" };
     if (path === "/v1/models") return Response.json({ data: [{ id: "model-a" }] }, { headers });
-    if (path === "/pool/v1/pool")
-      return Response.json({ isOwner: true, accounts: [{ id: "test-1" }, { id: "test-2" }] });
-    if (path === "/pool/v1/usage")
-      return Response.json({
-        records: [
-          {
-            id: crypto.randomUUID(),
-            account: "test-1",
-            status: "success",
-            at: new Date().toISOString(),
-          },
-        ],
+    if (path === nativeUsagePath) {
+      const url = new URL(request.url!, "http://local");
+      const ids = url.searchParams.getAll("session");
+      usageReads.push({
+        path: url.pathname + url.search,
+        assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
+        sessions: ids.length,
       });
+      const sessions = ids.map((session) => {
+        if (!sessionOrder.has(session)) sessionOrder.set(session, sessionOrder.size);
+        const index = sessionOrder.get(session)!;
+        return { session, complete: true, records: options.usage?.(index) ?? [ownRow(index)] };
+      });
+      return Response.json({ key: deviceKey, sessions });
+    }
+    // The owner-token routes the lane once read: recorded, and refused so a regression fails loudly.
+    if (path === "/pool/v1/pool" || path === "/pool/v1/usage") {
+      ownerReads.push(path);
+      return new Response(null, { status: 500 });
+    }
     if (path === "/v1/chat/completions") {
       const index = turns++;
       if (options.turnStatus && isEnabled)
@@ -348,7 +382,6 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
-      access: { token: "pool-token", owner: "acceptance" },
     },
     sleep: async () => {},
     now: Date.now,
@@ -357,6 +390,8 @@ export async function harness(options: HarnessOptions = {}) {
   return {
     deps,
     modelCalls,
+    usageReads,
+    ownerReads,
     actions,
     crashes,
     providerRequests,

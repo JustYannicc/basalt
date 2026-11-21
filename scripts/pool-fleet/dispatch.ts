@@ -1,10 +1,10 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect, Result } from "effect";
-import type { PoolAccess } from "../pool-acceptance/types.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
-import { rootServes, runFleetAcceptance } from "./accept.ts";
+import { crashTrafficAccepted, rootServes, runFleetAcceptance } from "./accept.ts";
+import { OwnTraffic } from "./own-traffic.ts";
 import { poolWorkerName, type CloudflareAccess } from "./cloudflare.ts";
 import {
   inspectController,
@@ -35,11 +35,11 @@ export interface DispatchInput {
   ref: string;
   event: string;
 }
+/** The acceptance device: its assertion signs every model call and reads back its own usage. */
 export interface FleetAcceptance {
   client: PoolAcceptanceClient;
   credential: ModelAuth;
   model?: string;
-  access: PoolAccess;
 }
 export interface DispatchDependencies {
   cloudflare: CloudflareAccess;
@@ -152,12 +152,14 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           ...acceptance,
           controller: () => inspectController(access),
           fleet: () => inspectFleet(access),
+          sleep: deps.sleep,
           log: deps.log,
         }),
       );
     if (mode === "accept") return { ...evidence, acceptance: yield* accept() };
     if (mode === "crash-cell") {
-      const catalog = yield* call(() => acceptance.client.modelCatalog(acceptance.credential));
+      const traffic = new OwnTraffic(acceptance.client, acceptance.credential);
+      const catalog = yield* call(() => traffic.catalog());
       const model = acceptance.model ?? (catalog.ids.length === 1 ? catalog.ids[0]! : undefined);
       if (!model)
         return yield* Effect.fail(
@@ -167,24 +169,28 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
             "Set the acceptance model variable.",
           ),
         );
-      return {
-        ...evidence,
-        crash: yield* crashReadyCell({
-          controller: access,
-          go: input.go,
-          operator: "pool-fleet",
-          // Every fifth request is a streamed turn, so inference is proven, not only routing.
-          request: (index) =>
-            index % 5 === 0
-              ? acceptance.client.sendTurn(acceptance.credential, model, {
-                  id: crypto.randomUUID(),
-                  expectedRecords: 1,
-                })
-              : acceptance.client.modelCatalog(acceptance.credential),
+      // The killed cell is gone after the crash, so its boot is known only from this read.
+      const before = yield* call(() => inspectFleet(access));
+      const crash = yield* crashReadyCell({
+        controller: access,
+        go: input.go,
+        operator: "pool-fleet",
+        // Every fifth request is a streamed turn, so inference is proven, not only routing.
+        request: (index) => (index % 5 === 0 ? traffic.turn(model) : traffic.catalog()),
+        sleep: deps.sleep,
+        now: deps.now,
+      });
+      if (crash.status !== "proven") return { ...evidence, crash };
+      const ownTraffic = yield* call(() =>
+        crashTrafficAccepted({
+          traffic,
+          before,
+          controller: () => inspectController(access),
+          fleet: () => inspectFleet(access),
           sleep: deps.sleep,
-          now: deps.now,
         }),
-      };
+      );
+      return { ...evidence, crash: { ...crash, ownTraffic } };
     }
     // configure-and-accept stands alone: any failure after a send disables, then proves the root.
     const attempt = yield* Effect.result(

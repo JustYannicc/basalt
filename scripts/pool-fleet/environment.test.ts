@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { nativeModelHeader, nativeModelPrefix } from "../../src/pool/native-contract.ts";
-import { openEnvelope, verifyPoolToken } from "../../src/pool/token.ts";
+import { openEnvelope } from "../../src/pool/token.ts";
 import { dependenciesFromEnvironment } from "./environment.ts";
 import { FleetLaneRefused } from "./errors.ts";
 
@@ -37,11 +37,6 @@ test("the fleet lane signs each model call for the release's acceptance device, 
     },
     { ...device, method: "POST", path: "/v1/chat/completions", expiresAt: 0 },
   );
-  // Usage is read in the device's own pool, so the records its calls leave are the ones checked.
-  assert.equal(
-    (await verifyPoolToken(signingKey, deps.acceptance.access.token))?.pool,
-    device.pool,
-  );
 
   // A stored key alone gives the lane nothing to sign with.
   const stored = await dependenciesFromEnvironment({
@@ -56,15 +51,26 @@ test("the fleet lane signs each model call for the release's acceptance device, 
   );
 });
 
-test("the lane mints a usage token only for a dedicated acceptance pool, and names no id", async () => {
+test("the lane accepts the device in the pool that holds it and holds no pool token", async () => {
+  // Its usage is read with the device's own assertion, so a person's pool needs no dedicated twin.
   const deps = await dependenciesFromEnvironment(
     environment({ ...device, pool: "pool-of-a-person" }),
   );
-  assert.ok(deps.acceptance instanceof FleetLaneRefused);
-  const text = deps.acceptance.message;
-  assert.match(text, /POOL_ACCEPTANCE_DEVICE: its pool is not a dedicated acceptance-<run> pool/u);
-  for (const id of [...Object.values(device), "pool-of-a-person"])
-    assert.ok(!text.includes(id), `${id} in ${text}`);
+  assert.ok(!(deps.acceptance instanceof FleetLaneRefused), String(deps.acceptance));
+  assert.deepEqual(Object.keys(deps.acceptance).sort(), ["client", "credential", "model"]);
+});
+
+test("no fleet lane code mints a pool owner token", async () => {
+  const directory = new URL("./", import.meta.url);
+  const sources = (await readdir(directory, { recursive: true })).filter(
+    (name) => name.endsWith(".ts") && !name.endsWith(".test.ts") && !name.startsWith("test/"),
+  );
+  assert.ok(sources.includes("accept.ts") && sources.includes("environment.ts"));
+  for (const name of sources) {
+    const source = await readFile(new URL(name, directory), "utf8");
+    // The lane reads its own traffic back with the device assertion; the mint is the one way in.
+    assert.ok(!/\bsignPoolToken\b/u.test(source), name);
+  }
 });
 
 test("the fleet workflow passes the acceptance device as a secret and no stored model key", async () => {

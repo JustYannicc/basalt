@@ -58,6 +58,7 @@ import { failureResponse, unavailable } from "./json.ts";
 import { pendingFields } from "./pending-failure.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
+import { nativeUsagePath } from "./native-usage-contract.ts";
 import { nativeResponse, nativeSession, nativeControlPair } from "./native-response.worker.ts";
 import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
@@ -936,6 +937,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     if (pathname === accessPath) return this.computers.access(request);
     if (pathname === nativeControlPath) return this.computers.nativeControl(request);
+    // Before the /pool/v1 bearer check: a device's model assertion is this read's only credential.
+    if (pathname === nativeUsagePath) return this.computers.nativeUsage(request);
     if (pathname === nativeSessionPath) {
       try {
         return nativeSession(await this.computers.nativeSession(request));

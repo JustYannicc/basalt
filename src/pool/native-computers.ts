@@ -19,6 +19,7 @@ import {
 } from "./json.ts";
 import { openNativeKey, sealNativeKey } from "./native-key.ts";
 import { NativeStreams } from "./native-streams.ts";
+import { nativeUsageSessions } from "./native-usage.ts";
 import { nativePoolDisplay } from "./native-display.ts";
 import { signedTeams } from "./team-labels.ts";
 import { computerName, readIntent, setupTtl } from "./setup-links.ts";
@@ -330,12 +331,41 @@ export class NativeComputers {
       return this.streams.acquire(computer.id, computer.pool, request.signal);
     });
   }
-  async model(request: Request) {
+  /** A model call's checks: a current assertion for exactly this request from an active models device. */
+  private async modelRequest(request: Request) {
     const value = await this.assertion(request.headers.get(nativeModelHeader), nativeModelPrefix);
     const url = new URL(request.url);
     if (value.method !== request.method || value.path !== url.pathname + url.search)
       return fail(401, "unauthorized", "The native assertion belongs to another request.");
-    const caller = identity(value);
+    return { value, url, caller: identity(value) };
+  }
+  private async modelDevice(registry: Registry, caller: Identity) {
+    const admitted = await this.admitted(registry, caller);
+    if (!admitted.computer.native?.models)
+      return fail(403, "unauthorized", "This device was approved for tools only.");
+    return admitted;
+  }
+  /** The device's own rows for the sessions it names, authorized exactly as its model calls are. */
+  async usage(request: Request): Promise<Response> {
+    try {
+      if (request.method !== "GET")
+        return fail(404, "not_found", "This native endpoint does not exist.");
+      const { url, caller } = await this.modelRequest(request);
+      // Parsed before the registry queue, which every model call waits on, as Home is read after it.
+      const sessions = await nativeUsageSessions(url);
+      const { pool, keyId } = await this.deps.run(async (registry) => {
+        const { computer } = await this.modelDevice(registry, caller);
+        // A device approved before its key was minted has made no model calls to read.
+        if (!computer.keyId) return fail(403, "unauthorized", "This device has no model key yet.");
+        return { pool: computer.pool, keyId: computer.keyId };
+      });
+      return json(await this.deps.home.deviceUsage(pool, keyId, sessions));
+    } catch (error) {
+      return failureResponse(error);
+    }
+  }
+  async model(request: Request) {
+    const { value, url, caller } = await this.modelRequest(request);
     const first = await this.forward(request, url, value, caller);
     if (!(first instanceof KeyRequest)) return first;
     await this.provision(first).catch((error: unknown) => {
@@ -346,10 +376,8 @@ export class NativeComputers {
   }
   private forward(request: Request, url: URL, value: Record<string, unknown>, caller: Identity) {
     return this.deps.run(async (registry) => {
-      const { computer, owner } = await this.admitted(registry, caller);
-      if (!computer.native?.models)
-        return fail(403, "unauthorized", "This device was approved for tools only.");
-      if (!computer.native.key) return new KeyRequest(computer, owner);
+      const { computer, owner } = await this.modelDevice(registry, caller);
+      if (!computer.native?.key) return new KeyRequest(computer, owner);
       const key = await openNativeKey(
         this.deps.signingKey,
         computer.native.key,
