@@ -376,7 +376,7 @@ if (command === "db-load") {
   }
 }
 
-// The PoolDatabase command re-runs per attempt, so plan and apply share one attempt id.
+// Plan and apply share one attempt id, which both records and the summary name.
 const attempt = values.attempt ?? (command === "apply" ? "" : randomUUID());
 if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
   throw new Error("--attempt <id printed by the plan run> is required");

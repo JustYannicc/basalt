@@ -72,3 +72,38 @@ export const verifyRuntimeDatabaseBudget = (
       timeout: "2 minutes",
     });
   });
+
+/**
+ * The pool Worker's readiness wait and acceptance. Both are keyed on the Worker's upload with memo
+ * off, so they run on every release, after the upload, whatever the database commands did:
+ * readiness waits until the pool object adopts the new code, acceptance until readiness is done.
+ */
+export const poolWorkerAcceptance = (
+  worker: {
+    readonly hash: Output.Output<unknown, never>;
+    readonly workerName: Output.Output<string, never>;
+  },
+  inputs: {
+    adminUrl: Input<Redacted.Redacted<string>>;
+    runtimeLogin: Output.Output<string, never>;
+    candidate: string;
+    accountId: Input<string>;
+    key: Input<Redacted.Redacted<string>>;
+    workerInput: string;
+    imageHash: Output.Output<string, never>;
+  },
+) =>
+  verifyRuntimeDatabaseBudget("PoolBackendBudget", {
+    adminUrl: inputs.adminUrl,
+    runtimeLogin: inputs.runtimeLogin,
+    databases: ["basalt_pool"],
+    deployment: worker.hash,
+    candidate: inputs.candidate,
+    readiness: {
+      worker: worker.workerName,
+      accountId: inputs.accountId,
+      key: inputs.key,
+      workerInput: inputs.workerInput,
+      imageHash: inputs.imageHash,
+    },
+  });
