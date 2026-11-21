@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openEnvelope } from "../pool/token.ts";
-import { signIntent, setupTtl } from "../pool/setup-links.ts";
+import { readIntent, signIntent, setupTtl } from "../pool/setup-links.ts";
 import { handleSetup, handleSetupPage, type SetupEnv } from "./host.ts";
 
 const origin = "https://setup.example";
@@ -350,6 +350,52 @@ test("Connections setup requires a verified cookie session and a confirmed own p
     assert.ok([403, 409, 502].includes(response.status));
     assert.doesNotMatch(await response.text(), /private-diagnostic/);
     assert.ok(!f.calls.some((c) => c.path.endsWith("/create")));
+  }
+});
+
+test("the approval page gets the person's own intent for tools only while the pool does not answer", async () => {
+  const unavailable = {
+    ok: false,
+    error: "backend_unavailable",
+    message: "The pool didn't answer. Try again in a moment.",
+  };
+  for (const answer of [
+    () => json(unavailable),
+    () => new Response("private-diagnostic", { status: 503 }),
+  ]) {
+    const f = fixture({
+      tools: ({ path }) => (path.endsWith("/data/query") ? answer() : undefined),
+    });
+    // Connect's guides need the pool, so only the approval page asks for the fallback.
+    assert.equal((await f.request("/setup/v1/context")).status, 502);
+    const response = await f.request("/setup/v1/context?fallback=tools");
+    assert.equal(response.status, 200);
+    secured(response);
+    const answered = (await response.json()) as { intent: string; reason: string };
+    assert.equal(answered.reason, "NATIVE_POOL_UNAVAILABLE");
+    // The claims the pool signs for its owner, from the tools service's record of its creator.
+    const intent = await readIntent(secret, answered.intent, "user-1", Date.now());
+    assert.deepEqual(
+      { pool: intent.pool, organization: intent.organization, owner: intent.owner },
+      { pool: "pool-1", organization: "organization-1", owner: "user-1" },
+    );
+    assert.ok(!f.calls.some((c) => c.path.endsWith("/create")));
+  }
+  // A pool that answered is never replaced: its refusal, a bad intent or a 4xx stays a failure.
+  for (const answer of [
+    () =>
+      json({
+        ok: false,
+        error: "unauthorized",
+        message: "This pool isn't linked to its access account.",
+      }),
+    () => json({ ok: true, value: { href: `${origin}/setup#intent=forged` } }),
+    () => json({ error: "Forbidden" }, 403),
+  ]) {
+    const f = fixture({
+      tools: ({ path }) => (path.endsWith("/data/query") ? answer() : undefined),
+    });
+    assert.equal((await f.request("/setup/v1/context?fallback=tools")).status, 502);
   }
 });
 
