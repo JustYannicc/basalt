@@ -534,9 +534,17 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     "/actions/runs/6/jobs?filter=latest&per_page=100&page=1": boxJob(60, ["Basalt-Box"]),
     "/actions/jobs/60/logs": healthyLog,
     "/actions/runs?status=in_progress&per_page=100&page=1": {
-      workflow_runs: [{ id: 1 }, { id: 99 }, heartbeatRun(5, "schedule")],
+      workflow_runs: [
+        { id: 1, path: ".github/workflows/ci.yml" },
+        { id: 99, path: ".github/workflows/ci.yml" },
+        heartbeatRun(5, "schedule"),
+        // Another workflow's run never holds a box job, so its jobs are never listed.
+        { id: 3, path: ".github/workflows/app-conventions.yml" },
+      ],
     },
-    "/actions/runs?status=queued&per_page=100&page=1": { workflow_runs: [{ id: 2 }] },
+    "/actions/runs?status=queued&per_page=100&page=1": {
+      workflow_runs: [{ id: 2, path: ".github/workflows/ci.yml@refs/pull/7/merge" }],
+    },
     "/actions/runs/1/jobs?filter=latest&per_page=100&page=1": {
       jobs: [
         job("in_progress", ["ubuntu-latest"], "GitHub Actions"),
@@ -592,6 +600,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
   // This Check's own run is counted from its selection, never from the API.
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/99/")));
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/5/")));
+  assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/3/")));
   // The box's budget of 2 is held by the two box jobs.
   const busy = await routeBox(input({ slots: "3" }), box, () => now);
   assert.deepEqual(busy.jobs, []);

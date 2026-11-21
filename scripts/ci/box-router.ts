@@ -287,6 +287,8 @@ export function githubObserver(
     String(run.path).split("@")[0] === heartbeatPath &&
     (run.event === "schedule" || run.event === "workflow_dispatch") &&
     record(run.head_repository).full_name === env.repository;
+  const checkRun = (run: Record<string, unknown>) =>
+    String(run.path).split("@")[0] === ".github/workflows/ci.yml";
   // A job on the box's label holds a CI slot; release-label jobs hold neither a slot nor hosted.
   const runner = (job: Record<string, unknown>) => {
     if (!Array.isArray(job.labels)) throw new Error("GitHub listed a job without labels");
@@ -321,11 +323,13 @@ export function githubObserver(
           list(`/actions/runs?status=${status}`, "workflow_runs"),
         ),
       );
-      // The heartbeat's own short job doesn't hold a CI slot.
+      // Box-label jobs come only from Check runs (the heartbeat's own short job holds no CI slot),
+      // so only their jobs are listed: every same-repository push routes now, and listing every
+      // workflow's runs would spend the token's shared hourly request limit.
       const runs = new Set(
         listed
           .flat()
-          .filter((run) => String(run.id) !== env.runId && !trustedHeartbeat(run))
+          .filter((run) => String(run.id) !== env.runId && checkRun(run))
           .map((run) => Number(run.id)),
       );
       const jobs = await Promise.all(
