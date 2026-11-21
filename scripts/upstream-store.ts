@@ -16,7 +16,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
-import { preparedCacheCollection } from "./upstream-cache-gc.ts";
+import { collectPatchedTrees, preparedCacheCollection } from "./upstream-cache-gc.ts";
 import {
   currentProcessOwner,
   installerGroupAlive,
@@ -91,6 +91,7 @@ export function rememberDependencyConsumer(root: string, store: string, pending:
 
 /** Call only while holding collection.lock, including publication and consumer transitions. */
 export function collectDependencyStore(_pin?: string) {
+  collectPatchedTrees();
   const cache = realpathSync(upstreamCache());
   const entries = directories(join(cache, "prepared"))
     .flatMap((pin) => directories(pin))
