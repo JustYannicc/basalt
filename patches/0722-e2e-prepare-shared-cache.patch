@@ -24,7 +24,16 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const cacheRoot =
    process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");
  
-@@ -238,13 +243,80 @@ const store = (step: Step, entry: string) => {
+@@ -226,7 +231,7 @@ const restore = (step: Step, entry: string) => {
+ 
+ /** Writes the entry beside its final path and renames it, so a reader never sees a partial one. */
+ const store = (step: Step, entry: string) => {
+-  const partial = `${entry}.${process.pid}.partial`;
++  const partial = `${entry}.${scratch}.partial`;
+   fs.rmSync(partial, { recursive: true, force: true });
+   for (const output of step.outputs) copy(output, path.join(partial, output));
+   try {
+@@ -238,13 +243,86 @@ const store = (step: Step, entry: string) => {
    const directory = path.dirname(entry);
    const entries = fs
      .readdirSync(directory)
@@ -43,6 +52,8 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +const staleLock = Number(process.env.EXECUTOR_E2E_LOCK_STALE_MS) || 5 * 60_000;
 +const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 +const owner = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2)}`;
++/** Unique across the box's containers, whose process ids repeat: names scratch directories. */
++const scratch = owner.replace(/[^\w.-]/g, "_");
 +/** The lock this process holds, released on every way out. */
 +let held: string | undefined;
 +const release = () => {
@@ -69,7 +80,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +  for (;;) {
 +    if (fs.existsSync(entry)) return true;
 +    // The lock appears with its owner already inside: a renamed directory, never an empty one.
-+    const pending = `${lock}.${process.pid}.pending`;
++    const pending = `${lock}.${scratch}.pending`;
 +    fs.mkdirSync(pending, { recursive: true });
 +    fs.writeFileSync(path.join(pending, "owner"), owner);
 +    try {
@@ -96,7 +107,11 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +    }
 +    if (age > staleLock) {
 +      console.log(`Taking over a lock held for ${Math.round(age / 1000)}s: ${lock}`);
-+      fs.rmSync(lock, { recursive: true, force: true });
++      try {
++        fs.rmSync(lock, { recursive: true, force: true });
++      } catch {
++        // Another waiter's claim landed during the removal; its lock stands.
++      }
 +      continue;
 +    }
 +    sleep(500);
@@ -106,7 +121,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
  const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
  
-@@ -276,7 +348,10 @@ function prepare() {
+@@ -276,7 +354,10 @@ function prepare() {
      if (key !== undefined) keys.set(step.name, key);
      let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
      if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
@@ -118,7 +133,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
      if (restored) {
        restore(step, entry);
        // Recently used entries are the last to be removed.
-@@ -302,6 +377,10 @@ function prepare() {
+@@ -302,6 +383,10 @@ function prepare() {
        fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
      }
      if (!restored && entry !== undefined) store(step, entry);

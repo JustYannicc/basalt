@@ -1,7 +1,7 @@
 {
   "identity": "basalt-e2e-prepare-shared-cache",
   "file": "0722-e2e-prepare-shared-cache.patch",
-  "content_sha256": "e66b3c0cf3a84b5f18a09a8ad389332401a62f58265e48a30a79906fcc6e376e",
+  "content_sha256": "817b2a2b4dd904cc414e5fca5a26d3515243abdf97f1b30c7eb2fd2dbb39601e",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
