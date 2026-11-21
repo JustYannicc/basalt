@@ -252,6 +252,18 @@ const reasons = (logs: ReadonlyArray<Logged>) =>
       : [],
   );
 
+/** Neither the email nor the account id reaches the log. */
+const loggedPrivately = (sql: SqlClient.SqlClient, logs: ReadonlyArray<Logged>, email: string) =>
+  Effect.gen(function* () {
+    const [user] = yield* sql<{
+      readonly id: string;
+    }>`select id from "user" where email = ${email}`;
+    assert.ok(user);
+    const logged = JSON.stringify(logs);
+    assert.equal(logged.includes(email), false);
+    assert.equal(logged.includes(user.id), false);
+  });
+
 test("an unverified email is told to verify it, not to retry", async () => {
   await organizationEndpoint(({ sql, logs, signIn, create }) =>
     Effect.gen(function* () {
@@ -263,6 +275,7 @@ test("an unverified email is told to verify it, not to retry", async () => {
       assert.match(body.message, /verify your email/i);
       assert.doesNotMatch(body.message, /try again/i);
       assert.deepEqual(reasons(logs), ["email_unverified"]);
+      yield* loggedPrivately(sql, logs, "unverified@example.invalid");
       assert.equal((yield* sql`select id from organization`).length, 0);
     }),
   );
@@ -278,9 +291,7 @@ test("an unreachable v1 lookup stays the retryable 503 and the log names the loo
       assert.equal(body.code, "ORGANIZATION_CHECK_UNAVAILABLE");
       assert.equal(body.message, "We could not check your account. Try again.");
       assert.deepEqual(reasons(logs), ["v1_lookup"]);
-      // Neither the email nor the account id reaches the log.
-      const logged = JSON.stringify(logs);
-      assert.doesNotMatch(logged, /verified@example\.invalid/);
+      yield* loggedPrivately(sql, logs, "verified@example.invalid");
       assert.equal((yield* sql`select id from organization`).length, 0);
     }),
   );
