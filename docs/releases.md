@@ -86,7 +86,7 @@ An apply then:
 3. backs up the production database branch on PlanetScale and waits for it (`backup`);
 4. counts accounts and history (`snapshot`);
 5. re-plans and applies only if the digest still matches (`apply --plan-digest --attempt`). A wire guard installed before the stack loads refuses any Worker upload that deletes, renames or transfers a Durable Object class, and tests itself in the same process first;
-6. accepts the release through the live pool (`accept`). A failed apply or acceptance rolls PoolWorker back to the recorded serving version by itself (`rollback --to`);
+6. accepts the release through the live pool (`accept`). A failed apply or acceptance rolls PoolWorker back to the recorded serving version by itself (`rollback --to`). Acceptance signs each model call for one registered models-only device named by the `POOL_ACCEPTANCE_DEVICE` variable, which is release infrastructure and must not be removed: when the pool refuses it, the run stops red without a rollback;
 7. counts again and refuses any drop (`compare`).
 
 Plan, counts and acceptance are kept as run artifacts.

@@ -1,8 +1,8 @@
 /**
  * Failure output for release subprocesses. Actions logs are public, so a failed command shows only a
  * bounded tail with credentials removed: the values of credential-named environment variables, URL
- * userinfo, bearer and basic credentials, password/secret/token key-value pairs, and long runs mixing
- * letters and digits. GitHub's own masking of
+ * userinfo, bearer and basic credentials, password/secret/token key-value pairs, our signed envelopes
+ * whole, and long runs mixing letters and digits. GitHub's own masking of
  * Actions secrets still applies on top.
  */
 const maximumBytes = 64 * 1024;
@@ -49,6 +49,8 @@ export function redactFailureOutput(output: string, environment: NodeJS.ProcessE
     .sort((left, right) => right.length - left.length);
   for (const value of values) text = text.split(value).join("[redacted]");
   text = text
+    // `prefix.payload.signature` (src/pool/token.ts): a signature can be a run without a digit.
+    .replace(/\bsb[a-z-]*\d+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]")
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1[redacted]@")
     .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
     .replace(

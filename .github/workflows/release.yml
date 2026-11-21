@@ -258,7 +258,9 @@ jobs:
           APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
-          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          # Not secret: the registered models-only device acceptance signs a fresh assertion for,
+          # per model call, with POOL_APP_SIGNING_KEY.
+          POOL_ACCEPTANCE_DEVICE: ${{ vars.POOL_ACCEPTANCE_DEVICE }}
         run: bun scripts/release/deploy.ts preflight --stage production
       # A declared root restart stops the stuck root, and the restart after it reads the provider
       # with the pool Worker's own token. Two reads through that Worker, before anything is planned
@@ -464,6 +466,9 @@ jobs:
           if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json --apply "${{ steps.apply.outcome }}"); fi
           rc=0
           bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json || rc=$?
+          # Exit 4: the pool refused the acceptance device, so nothing was tested. The step still
+          # fails; the steps after it stop the run without undoing a release nobody saw fail.
+          if [ "$rc" -eq 4 ]; then echo "acceptance=could-not-test" >> "$GITHUB_OUTPUT"; fi
           # A failed acceptance goes straight to its rollback. A declared root restart has none, so
           # its app smoke runs whatever the pool's acceptance found, and the run says both.
           if [ "$rc" -ne 0 ] && [ -z "$within" ]; then exit "$rc"; fi
@@ -475,11 +480,15 @@ jobs:
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
         env: *release-secrets
-        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))
         run: |
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
           # The release is red either way; this says whether the version rolled back to still serves.
-          if ! bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json; then
+          rc=0
+          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json || rc=$?
+          if [ "$rc" -eq 4 ]; then
+            echo "::error::Acceptance could not test the rolled-back version: the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap."
+          elif [ "$rc" -ne 0 ]; then
             echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
           fi
           echo "::error::Release rolled back (every Worker the plan updated); the cause is in the step above and in the sealed detail."
@@ -503,6 +512,9 @@ jobs:
             serving-needs-person)
               echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)); $apply and $app. Nothing was undone; look at the recovery with the pool serving."
               ;;
+            could-not-test)
+              echo "::error::COULD NOT TEST: no model call was tested on the new root boot; $apply and $app. Nothing was undone; the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap."
+              ;;
             not-serving)
               echo "::error::NOT SERVING: the pool did not serve on a new root boot within its bound; $apply and $app. It is not rolled back: the code before it could not restart the pool. The last read and the stop path are in .local/release/acceptance.json; the serving versions in .local/release/serving.json; a rollback is a separate GO."
               ;;
@@ -522,6 +534,14 @@ jobs:
         run: |
           bun scripts/release/deploy.ts snapshot --stage production --out .local/release/after.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
           bun scripts/release/deploy.ts compare --before .local/release/before.json --after .local/release/after.json
+      # Only a serving failure undoes a release. When the pool refused the acceptance device nothing
+      # was tested, so the release stays live: the counts above still run, then the run stops red
+      # and a person looks. Rolling back would undo a release nobody saw fail.
+      - name: Stop on an acceptance that could not test
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'
+        run: |
+          echo "::error::ACCEPTANCE COULD NOT TEST: nothing was tested and nothing was rolled back; the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap. The accept step names the HTTP status."
+          exit 1
       - name: Finish the deployment record
         if: always() && steps.deployment.outputs.id != ''
         env:

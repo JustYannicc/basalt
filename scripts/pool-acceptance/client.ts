@@ -24,6 +24,11 @@ type ClientOptions = {
   readonly usagePollIntervalMs?: number;
 };
 
+/** Headers that authorize one model request, made for exactly its method and path with query. */
+export type ModelAuth = (method: string, path: string) => Promise<Record<string, string>>;
+/** A Home API key sent as a bearer, or a signer asked once per request. */
+export type ModelCredential = string | ModelAuth;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -91,7 +96,7 @@ export class PoolAcceptanceClient {
   }
 
   async request(
-    path: string,
+    path: string | URL,
     init: RequestInit,
     label: string,
     timeoutMs = requestTimeoutMs,
@@ -106,10 +111,18 @@ export class PoolAcceptanceClient {
     }
   }
 
-  async modelCatalog(apiKey: string, timeoutMs = requestTimeoutMs): Promise<ModelCatalog> {
-    const response = await this.request("/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    }, "/v1/models", timeoutMs);
+  /** The URL a model request is sent to, and its authorization for exactly that URL. */
+  private async authorized(credential: ModelCredential, method: string, path: string) {
+    const url = new URL(path, this.origin);
+    const headers = typeof credential === "string"
+      ? { Authorization: `Bearer ${credential}` }
+      : await credential(method, url.pathname + url.search);
+    return { url, headers };
+  }
+
+  async modelCatalog(credential: ModelCredential, timeoutMs = requestTimeoutMs): Promise<ModelCatalog> {
+    const { url, headers } = await this.authorized(credential, "GET", "/v1/models");
+    const response = await this.request(url, { method: "GET", headers }, "/v1/models", timeoutMs);
     if (response.status !== 200) {
       await discardBody(response);
       throw new HttpStatusFailure(response.status, `/v1/models returned HTTP ${response.status}`);
@@ -144,15 +157,16 @@ export class PoolAcceptanceClient {
   }
 
   async sendTurn(
-    apiKey: string,
+    credential: ModelCredential,
     model: string,
     conversation: Conversation,
   ): Promise<{ boot: string; firstByteMs: number; totalMs: number }> {
+    const { url, headers } = await this.authorized(credential, "POST", "/v1/chat/completions");
     const requestStarted = this.now();
-    const response = await this.request("/v1/chat/completions", {
+    const response = await this.request(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        ...headers,
         Accept: "text/event-stream",
         "Content-Type": "application/json",
         "X-Session-ID": conversation.id,

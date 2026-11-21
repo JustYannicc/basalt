@@ -1,4 +1,5 @@
-import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
+import { deviceRefusal, refusedDevice } from "./acceptance-device.ts";
 import {
   healingAcceptanceWithinMs,
   healingReadinessWithinMs,
@@ -22,7 +23,8 @@ export function healingWait(applyOutcome: string | undefined) {
  * require that the root kept its boot (code-only) or that a fleet cell served (fleet).
  */
 export interface AcceptanceOptions {
-  readonly apiKey: string;
+  /** The acceptance device's per-request signer; release acceptance never sends a bearer key. */
+  readonly credential: ModelAuth;
   readonly model?: string;
   readonly burst?: number;
   readonly expect: "same-boot" | "two-runtimes" | "any";
@@ -32,12 +34,31 @@ export interface AcceptanceOptions {
 }
 
 /** The boot of the runtime serving the pool now: the root while no fleet cell serves. */
-export async function servingBoot(apiKey: string, client = new PoolAcceptanceClient()) {
-  return (await client.modelCatalog(apiKey)).boot;
+export async function servingBoot(credential: ModelAuth, client = new PoolAcceptanceClient()) {
+  return (await client.modelCatalog(credential)).boot;
 }
 
 /** Recorded before the apply of a release that declares a root restart, when the pool did not answer. */
 export const NOT_SERVING = "not-serving";
+
+/**
+ * The boot read before the apply. A refused device is never "not serving": nothing could accept the
+ * release after it either, so the run stops here, before anything changes.
+ */
+export async function bootBeforeApply(
+  credential: ModelAuth,
+  client: PoolAcceptanceClient,
+  allowNotServing: boolean,
+) {
+  try {
+    return await servingBoot(credential, client);
+  } catch (error) {
+    const refused = deviceRefusal(error);
+    if (refused !== undefined) throw refusedDevice(refused);
+    if (allowNotServing) return NOT_SERVING;
+    throw error;
+  }
+}
 
 /** What the controller's signed read-only `inspect` says about the active runtime and its recovery. */
 export function recoveryState(result: unknown) {
@@ -153,24 +174,36 @@ export async function awaitRecoveryReady(options: {
 }
 
 /**
- * A healing release ends in one of three outcomes. Healed: recovery ready on a new boot, and every
+ * A healing release ends in one of four outcomes. Healed: recovery ready on a new boot, and every
  * model call served. Serving, needs a person: a new boot is selected and every model call served,
  * but recovery needs a person or did not report ready within the bound; nothing is undone, and a
- * person looks at it with the pool serving. Not serving: anything else.
+ * person looks at it with the pool serving. Could not test: a new boot is selected, but the pool
+ * refused the acceptance device. Not serving: anything else.
  */
-export type HealingOutcome = "healed" | "serving-needs-person" | "not-serving";
+export type HealingOutcome = "healed" | "serving-needs-person" | "could-not-test" | "not-serving";
 export const healingOutcome = (
   verdict: RecoveryVerdict,
-  calls: { readonly passed: boolean } | undefined,
+  calls: { readonly passed: boolean; readonly couldNotTest?: boolean } | undefined,
 ): HealingOutcome =>
-  !verdict.boot || !calls?.passed
+  !verdict.boot
     ? "not-serving"
-    : verdict.ready
-      ? "healed"
-      : "serving-needs-person";
+    : calls?.couldNotTest
+      ? "could-not-test"
+      : !calls?.passed
+        ? "not-serving"
+        : verdict.ready
+          ? "healed"
+          : "serving-needs-person";
 
 export interface AcceptanceResult {
   readonly passed: boolean;
+  /**
+   * The pool refused the acceptance device and nothing failed to serve, so nothing was tested:
+   * the run stops red without undoing a release nobody saw fail.
+   */
+  readonly couldNotTest: boolean;
+  /** The HTTP statuses of the pool's refusals of the device, once each. */
+  readonly refused: readonly number[];
   readonly requests: number;
   readonly failures: readonly string[];
   readonly boots: readonly string[];
@@ -184,45 +217,80 @@ const percentile = (values: number[], fraction: number) => {
   return Math.round(sorted[Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)]!);
 };
 
+const refusedFor = (statuses: readonly number[]) =>
+  `refused for the acceptance device (HTTP ${statuses.join(", ")})`;
+
 export async function runAcceptance(options: AcceptanceOptions): Promise<AcceptanceResult> {
   const client = options.client ?? new PoolAcceptanceClient();
-  const catalog = await client.modelCatalog(options.apiKey);
+  const requests = (options.burst ?? 25) + 2;
+  let catalog;
+  try {
+    catalog = await client.modelCatalog(options.credential);
+  } catch (error) {
+    // A catalog that does not answer is the pool not serving; a refused device tested nothing.
+    const refused = deviceRefusal(error);
+    if (refused === undefined) throw error;
+    return {
+      passed: false,
+      couldNotTest: true,
+      refused: [refused],
+      requests: 0,
+      failures: [],
+      boots: [],
+      firstByteMs: { p50: 0, p95: 0 },
+      cause: `/v1/models was ${refusedFor([refused])}`,
+    };
+  }
   const model = options.model ?? catalog.ids[0];
   if (!model || !catalog.ids.includes(model))
     throw new Error("The acceptance model is not in /v1/models");
   const failures: string[] = [];
+  const refusals: number[] = [];
   const boots: string[] = [catalog.boot];
   const timings: number[] = [];
   const turn = async () => {
     try {
-      const result = await client.sendTurn(options.apiKey, model, {
+      const result = await client.sendTurn(options.credential, model, {
         id: crypto.randomUUID().toLowerCase(),
         expectedRecords: 1,
       });
       boots.push(result.boot);
       timings.push(result.firstByteMs);
     } catch (error) {
-      failures.push(error instanceof Error ? error.message : String(error));
+      const refused = deviceRefusal(error);
+      if (refused !== undefined) refusals.push(refused);
+      else failures.push(error instanceof Error ? error.message : String(error));
     }
   };
   await turn();
   await Promise.all(Array.from({ length: options.burst ?? 25 }, turn));
   await turn();
   const distinct = [...new Set(boots)];
-  const cause = failures.length
-    ? `${failures.length} of ${(options.burst ?? 25) + 2} requests failed: ${[...new Set(failures)].join("; ")}`
+  const refused = [...new Set(refusals)].sort((a, b) => a - b);
+  // What the served requests show decides first: a failed request, or a root that restarted.
+  const servingCause = failures.length
+    ? `${failures.length} of ${requests} requests failed: ${[...new Set(failures)].join("; ")}`
     : options.rootBoot !== undefined &&
         (!distinct.includes(options.rootBoot) ||
           (options.expect === "same-boot" && distinct.length !== 1))
       ? `The root restarted: boot ${options.rootBoot} before the apply, ${distinct.join(", ")} after`
       : options.expect === "same-boot" && distinct.length !== 1
         ? `The root changed boot during acceptance (${distinct.length} boots)`
-        : options.expect === "two-runtimes" && distinct.length < 2
-          ? "Every request was served by one runtime; no fleet cell served"
-          : undefined;
+        : undefined;
+  const untested = refusals.length
+    ? `${refusals.length} of ${requests} requests were ${refusedFor(refused)}`
+    : undefined;
+  const cause =
+    servingCause ??
+    untested ??
+    (options.expect === "two-runtimes" && distinct.length < 2
+      ? "Every request was served by one runtime; no fleet cell served"
+      : undefined);
   return {
     passed: cause === undefined,
-    requests: (options.burst ?? 25) + 2,
+    couldNotTest: servingCause === undefined && untested !== undefined,
+    refused,
+    requests,
     failures,
     boots: distinct,
     firstByteMs: { p50: percentile(timings, 0.5), p95: percentile(timings, 0.95) },

@@ -163,25 +163,25 @@ if (command === "boot" || command === "accept") {
     const { Schema } = await import("effect");
     const {
       awaitRecoveryReady,
+      bootBeforeApply,
       healingOutcome,
       healingWait,
       NOT_SERVING,
       runAcceptance,
-      servingBoot,
     } = await import("./acceptance.ts");
+    const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } = await import(
+      "./acceptance-device.ts"
+    );
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
       : new PoolAcceptanceClient();
+    // Every model call signs its own short assertion for the registered acceptance device.
+    const credential = acceptanceCredential(process.env);
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
       // Only a release that declares a root restart may start on a pool that does not answer.
-      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client).catch(
-        (error: unknown) => {
-          if (values["allow-not-serving"]) return NOT_SERVING;
-          throw error;
-        },
-      );
+      const boot = await bootBeforeApply(credential, client, values["allow-not-serving"] === true);
       await output(resolve(values.out ?? ""), { boot });
       await summary(
         boot === NOT_SERVING
@@ -288,7 +288,7 @@ if (command === "boot" || command === "accept") {
       rootBoot = verdict.boot;
     }
     const result = await runAcceptance({
-      apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+      credential,
       ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
       // After a declared restart, every request must be served by the one new boot.
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
@@ -309,13 +309,18 @@ if (command === "boot" || command === "accept") {
       await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
       process.exit(1);
     });
-    // A healing release ends healed, serving but needing a person, or not serving.
-    const outcome = verdict ? healingOutcome(verdict, result) : undefined;
+    // A healing release ends healed, serving but needing a person, could not test, or not serving.
+    const outcome = verdict
+      ? healingOutcome(verdict, result)
+      : result.couldNotTest
+        ? "could-not-test"
+        : undefined;
     // Failure messages can name hosts; the public record keeps counts and timings only.
     const view = {
       passed: result.passed,
       requests: result.requests,
       failed: result.failures.length,
+      ...(result.refused.length ? { refused: result.refused } : {}),
       runtimes: result.boots.length,
       firstByteMs: result.firstByteMs,
       ...(outcome ? { outcome } : {}),
@@ -327,16 +332,28 @@ if (command === "boot" || command === "accept") {
     await summary(
       (outcome === "serving-needs-person"
         ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
-        : outcome === "not-serving"
+        : outcome === "could-not-test"
+          ? `ACCEPTANCE COULD NOT TEST: ${refusalFix(result.refused)}. Nothing was undone. ${safeJson(view)}`
+          : outcome === "not-serving"
           ? `NOT SERVING after the healing release: ${safeJson(view)}`
           : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
     );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
-    // Exit 3 is its own result: not green, and not a failure to undo.
-    process.exit(outcome === "serving-needs-person" ? 3 : result.passed ? 0 : 1);
+    // Exits 3 and 4 are their own results: not green, and not a failure to undo.
+    process.exit(
+      outcome === "serving-needs-person"
+        ? 3
+        : outcome === "could-not-test"
+          ? COULD_NOT_TEST_EXIT
+          : result.passed
+            ? 0
+            : 1,
+    );
   } catch (error) {
     await stop(error);
-    process.exit(1);
+    // A refused or misnamed acceptance device tested nothing, so it is never a failure to undo.
+    const { AcceptanceDeviceRefused, COULD_NOT_TEST_EXIT } = await import("./acceptance-device.ts");
+    process.exit(error instanceof AcceptanceDeviceRefused ? COULD_NOT_TEST_EXIT : 1);
   }
 }
 
