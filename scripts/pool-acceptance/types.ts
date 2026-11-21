@@ -11,6 +11,13 @@ export class HttpStatusFailure extends AcceptanceFailure {
   }
 }
 
+/** A model call's 429 carrying the pool's cap code: its user's cap, not a failure to serve. */
+export class UserCapReached extends HttpStatusFailure {
+  constructor(message: string) {
+    super(429, message);
+  }
+}
+
 export type JsonObject = Record<string, unknown>;
 
 export type Conversation = {

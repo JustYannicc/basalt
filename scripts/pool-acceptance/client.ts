@@ -4,6 +4,7 @@ import {
   HttpStatusFailure,
   isObject,
   TransportFailure,
+  UserCapReached,
   type Conversation,
   type ModelCatalog,
   type PoolAccess,
@@ -41,6 +42,38 @@ async function discardBody(response: Response): Promise<void> {
   }
 }
 
+/** The most a refusal's body is read for its code; the pool's cap refusal is far shorter. */
+const refusalBodyBytes = 8192;
+
+/**
+ * Whether a model call's 429 is its user's cap. The pool rewrites only that refusal, to carry
+ * `user_period_limit_exceeded` (src/pool/cap-message.ts), and passes a provider's 429 through
+ * untouched. Reads a bounded body and never returns or logs it.
+ */
+async function isUserCap(response: Response): Promise<boolean> {
+  const reader = response.body?.getReader();
+  if (!reader) return false;
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (let bytes = 0; ;) {
+      const part = await reader.read();
+      if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > refusalBodyBytes) return false;
+      text += decoder.decode(part.value, { stream: true });
+    }
+    const body: unknown = JSON.parse(text + decoder.decode());
+    return (
+      isObject(body) && isObject(body.error) && body.error.code === "user_period_limit_exceeded"
+    );
+  } catch {
+    return false;
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+}
+
 function requireBoot(response: Response): string {
   const boot = response.headers.get("X-Signalbox-Pool-Boot")?.trim();
   if (!boot) throw new AcceptanceFailure("Pool response omitted X-Signalbox-Pool-Boot");
@@ -59,14 +92,23 @@ function modelIds(payload: unknown): string[] {
   if (!isObject(payload) || !Array.isArray(payload.data)) {
     throw new AcceptanceFailure("/v1/models did not return a data array");
   }
-  return [...new Set(payload.data.flatMap((entry) =>
-    isObject(entry) && typeof entry.id === "string" && entry.id.trim() ? [entry.id] : []
-  ))];
+  return [
+    ...new Set(
+      payload.data.flatMap((entry) =>
+        isObject(entry) && typeof entry.id === "string" && entry.id.trim() ? [entry.id] : [],
+      ),
+    ),
+  ];
 }
 
 function usageRecord(value: unknown): UsageRecord {
-  if (!isObject(value) || typeof value.id !== "string" || !value.id.trim()
-    || typeof value.account !== "string" || !value.account.trim()) {
+  if (
+    !isObject(value) ||
+    typeof value.id !== "string" ||
+    !value.id.trim() ||
+    typeof value.account !== "string" ||
+    !value.account.trim()
+  ) {
     throw new AcceptanceFailure("Pool usage records omitted id or account");
   }
   if (value.status !== "success") {
@@ -114,13 +156,17 @@ export class PoolAcceptanceClient {
   /** The URL a model request is sent to, and its authorization for exactly that URL. */
   private async authorized(credential: ModelCredential, method: string, path: string) {
     const url = new URL(path, this.origin);
-    const headers = typeof credential === "string"
-      ? { Authorization: `Bearer ${credential}` }
-      : await credential(method, url.pathname + url.search);
+    const headers =
+      typeof credential === "string"
+        ? { Authorization: `Bearer ${credential}` }
+        : await credential(method, url.pathname + url.search);
     return { url, headers };
   }
 
-  async modelCatalog(credential: ModelCredential, timeoutMs = requestTimeoutMs): Promise<ModelCatalog> {
+  async modelCatalog(
+    credential: ModelCredential,
+    timeoutMs = requestTimeoutMs,
+  ): Promise<ModelCatalog> {
     const { url, headers } = await this.authorized(credential, "GET", "/v1/models");
     const response = await this.request(url, { method: "GET", headers }, "/v1/models", timeoutMs);
     if (response.status !== 200) {
@@ -133,9 +179,13 @@ export class PoolAcceptanceClient {
   }
 
   async testAccountIds(access: PoolAccess): Promise<Set<string>> {
-    const response = await this.request("/pool/v1/pool", {
-      headers: { Authorization: `Bearer ${access.token}`, "x-signalbox-caller": access.owner },
-    }, "/pool/v1/pool");
+    const response = await this.request(
+      "/pool/v1/pool",
+      {
+        headers: { Authorization: `Bearer ${access.token}`, "x-signalbox-caller": access.owner },
+      },
+      "/pool/v1/pool",
+    );
     if (response.status !== 200) {
       await discardBody(response);
       throw new AcceptanceFailure(`/pool/v1/pool returned HTTP ${response.status}`);
@@ -151,7 +201,9 @@ export class PoolAcceptanceClient {
       return account.id;
     });
     if (ids.length !== 2 || new Set(ids).size !== 2) {
-      throw new AcceptanceFailure("The dedicated test pool must contain exactly two distinct accounts");
+      throw new AcceptanceFailure(
+        "The dedicated test pool must contain exactly two distinct accounts",
+      );
     }
     return new Set(ids);
   }
@@ -163,24 +215,31 @@ export class PoolAcceptanceClient {
   ): Promise<{ boot: string; firstByteMs: number; totalMs: number }> {
     const { url, headers } = await this.authorized(credential, "POST", "/v1/chat/completions");
     const requestStarted = this.now();
-    const response = await this.request(url, {
-      method: "POST",
-      headers: {
-        ...headers,
-        Accept: "text/event-stream",
-        "Content-Type": "application/json",
-        "X-Session-ID": conversation.id,
+    const response = await this.request(
+      url,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          "X-Session-ID": conversation.id,
+        },
+        body: JSON.stringify({
+          model,
+          stream: true,
+          max_tokens: 16,
+          messages: [{ role: "user", content: "Reply with exactly OK." }],
+        }),
       },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        max_tokens: 16,
-        messages: [{ role: "user", content: "Reply with exactly OK." }],
-      }),
-    }, "/v1/chat/completions", streamTimeoutMs);
+      "/v1/chat/completions",
+      streamTimeoutMs,
+    );
     if (response.status !== 200) {
+      const message = `/v1/chat/completions returned HTTP ${response.status}`;
+      if (response.status === 429 && (await isUserCap(response))) throw new UserCapReached(message);
       await discardBody(response);
-      throw new HttpStatusFailure(response.status, `/v1/chat/completions returned HTTP ${response.status}`);
+      throw new HttpStatusFailure(response.status, message);
     }
     const boot = requireBoot(response);
     return { boot, ...(await verifySse(response, requestStarted, { now: this.now })) };
@@ -193,9 +252,14 @@ export class PoolAcceptanceClient {
   ): Promise<UsageRecord[]> {
     // The Worker owns the node's canonical session encoding and pool membership filter.
     const query = new URLSearchParams({ session: conversation.id, limit: "20", status: "success" });
-    const response = await this.request(`/pool/v1/usage?${query}`, {
-      headers: { Authorization: `Bearer ${access.token}`, "x-signalbox-caller": access.owner },
-    }, "/pool/v1/usage", timeoutMs);
+    const response = await this.request(
+      `/pool/v1/usage?${query}`,
+      {
+        headers: { Authorization: `Bearer ${access.token}`, "x-signalbox-caller": access.owner },
+      },
+      "/pool/v1/usage",
+      timeoutMs,
+    );
     if (response.status !== 200) {
       await discardBody(response);
       throw new AcceptanceFailure(`/pool/v1/usage returned HTTP ${response.status}`);

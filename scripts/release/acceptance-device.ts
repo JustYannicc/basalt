@@ -1,8 +1,8 @@
 import { Data, Exit, Schema } from "effect";
 import type { ModelAuth } from "../pool-acceptance/client.ts";
-import { HttpStatusFailure } from "../pool-acceptance/types.ts";
+import { HttpStatusFailure, UserCapReached } from "../pool-acceptance/types.ts";
 import { nativeModelHeader, nativeModelPrefix } from "../../src/pool/native-contract.ts";
-import { isSigningKey, signEnvelope } from "../../src/pool/token.ts";
+import { hostAssertionTtlMs, isSigningKey, signEnvelope } from "../../src/pool/token.ts";
 
 /**
  * The registered models-only device release acceptance signs for, as the tools service's edge
@@ -19,11 +19,13 @@ const decodeDevice = Schema.decodeUnknownExit(Schema.fromJsonString(AcceptanceDe
 
 /**
  * One assertion's lifetime, which is also its replay window: the pool binds method and path, not
- * the body, and keeps no nonce. The pool refuses one that expires more than 30 s past its own clock,
- * and the signer is a runner, not the pool: 10 s leaves 20 s for a runner clock ahead of the pool's,
- * and 10 s for the hop plus a clock behind it. The edge signs with the pool's own clock and uses 25.
+ * the body, and keeps no nonce. It must outlive the pool's own replay: a release restarts the
+ * controller, and the pool sends a held model call to the new one with the same headers up to
+ * `controllerReplayWindowMs` (20 s, src/pool/controller-reset.ts) after its first attempt, plus the
+ * hop. So it is the edge's lifetime, 25 s; the pool refuses one that expires more than 30 s past its
+ * own clock, which leaves 5 s for a runner clock ahead of the pool's.
  */
-export const acceptanceAssertionTtlMs = 10_000;
+export const acceptanceAssertionTtlMs = hostAssertionTtlMs;
 
 /** The entry's exit when nothing was tested; release.yml's accept step reads it. */
 export const COULD_NOT_TEST_EXIT = 4;
@@ -43,18 +45,20 @@ const misnamed = (why: string) =>
 
 /**
  * The pool's own refusal of the acceptance device: unknown or removed (401), models off or no
- * longer allowed (403), or a cap or rate limit on its user (429). It says nothing about whether the
- * release serves.
+ * longer allowed (403), or its user's cap on a model turn (429 with the pool's cap code). Any other
+ * 429 is a provider's, passed through, or comes from `/v1/models`, which no cap refuses: the pool not
+ * serving.
  */
 export const deviceRefusal = (error: unknown): number | undefined =>
-  error instanceof HttpStatusFailure && [401, 403, 429].includes(error.status)
+  error instanceof UserCapReached ||
+  (error instanceof HttpStatusFailure && (error.status === 401 || error.status === 403))
     ? error.status
     : undefined;
 
 /** What to check when the pool refused the device with these statuses. */
 export const refusalFix = (statuses: readonly number[]) =>
   statuses.length && statuses.every((status) => status === 429)
-    ? "the release's acceptance device hit its user's cap or a rate limit: check the cap, then run again"
+    ? "the release's acceptance device hit its user's cap: check the cap, then run again"
     : "the release's acceptance device was refused: check that it is still registered and allowed";
 
 export const refusedDevice = (status: number) =>
@@ -69,10 +73,12 @@ export const refusedDevice = (status: number) =>
  * previous key, and the one after it accepts the previous key too (src/pool/token.ts openEnvelope).
  */
 export function acceptanceSigningKey(env: NodeJS.ProcessEnv) {
-  const key = env.POOL_APP_SIGNING_KEY_PREVIOUS || env.POOL_APP_SIGNING_KEY || "";
+  // A blank previous key is an unset one: outside a rotation the secret may hold only whitespace.
+  const previous = env.POOL_APP_SIGNING_KEY_PREVIOUS?.trim();
+  const key = previous || env.POOL_APP_SIGNING_KEY || "";
   if (!isSigningKey(key))
     throw new AcceptanceDeviceRefused({
-      field: env.POOL_APP_SIGNING_KEY_PREVIOUS ? "POOL_APP_SIGNING_KEY_PREVIOUS" : "POOL_APP_SIGNING_KEY",
+      field: previous ? "POOL_APP_SIGNING_KEY_PREVIOUS" : "POOL_APP_SIGNING_KEY",
       why: "unset or not 32 bytes of lowercase hex",
       fix: "give the step the pool's app signing key",
     });

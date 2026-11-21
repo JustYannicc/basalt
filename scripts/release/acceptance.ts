@@ -29,9 +29,9 @@ export interface AcceptanceOptions {
   readonly burst?: number;
   readonly expect: "same-boot" | "two-runtimes" | "any";
   /**
-   * This run's boot read before the apply was served for the acceptance device. A 401 or 403 after
+   * This run's boot read before the apply did not refuse the acceptance device. A 401 or 403 after
    * it is then a serving failure, not an untested release: the release is the likeliest thing that
-   * changed. A 429 is its user's cap either way.
+   * changed. A model turn's 429 with the pool's cap code is its user's cap either way.
    */
   readonly admitted?: boolean;
   /** The root's boot read before the apply: no release may restart the root, whatever it serves. */
@@ -184,8 +184,8 @@ export async function awaitRecoveryReady(options: {
  * model call served. Serving, needs a person: a new boot is selected and every model call served,
  * but recovery needs a person or did not report ready within the bound; nothing is undone, and a
  * person looks at it with the pool serving. Could not test: a new boot is selected, but the pool
- * refused the acceptance device on its user's cap, or when this run's boot read never reached it.
- * Not serving: anything else.
+ * refused the acceptance device on its user's cap. Not serving: anything else, a refusal of the
+ * device included, since this run's boot read before the apply did not refuse it.
  */
 export type HealingOutcome = "healed" | "serving-needs-person" | "could-not-test" | "not-serving";
 export const healingOutcome = (
@@ -233,7 +233,9 @@ const refusedAfterAdmission = (error: unknown) =>
 export async function runAcceptance(options: AcceptanceOptions): Promise<AcceptanceResult> {
   const client = options.client ?? new PoolAcceptanceClient();
   const requests = (options.burst ?? 25) + 2;
-  // The pool refusing the device tested nothing, unless this run's boot read admitted it.
+  // The pool refusing the device tested nothing, unless this run's boot read admitted it. A 429 is
+  // a refusal only with the pool's cap code (deviceRefusal), and the cap is the user's, not the
+  // release's.
   const testedNothing = (status: number) => status === 429 || !options.admitted;
   let catalog;
   try {
@@ -243,7 +245,9 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
     const refused = deviceRefusal(error);
     if (refused === undefined) throw error;
     const untested = testedNothing(refused);
-    const cause = untested ? `/v1/models was ${refusedFor([refused])}` : refusedAfterAdmission(error);
+    const cause = untested
+      ? `/v1/models was ${refusedFor([refused])}`
+      : refusedAfterAdmission(error);
     return {
       passed: false,
       couldNotTest: untested,

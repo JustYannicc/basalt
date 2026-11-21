@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { nativeControlPath, nativeControlPrefix, nativeModelHeader } from "../../src/pool/native-contract.ts";
+import {
+  nativeControlPath,
+  nativeControlPrefix,
+  nativeModelHeader,
+} from "../../src/pool/native-contract.ts";
 import { fixture, owner, pool, previousKey, signingKey } from "../../src/pool/test/computers.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
+import { controllerReplayWindowMs } from "../../src/pool/controller-reset.ts";
 import { acceptanceAssertionTtlMs, acceptanceCredential } from "./acceptance-device.ts";
 
 /**
@@ -105,7 +110,31 @@ test("the pool refuses an expired assertion, and one that outlives its 30 s boun
   );
   const headers = await credential("GET", "/v1/models");
   live.f.advance(acceptanceAssertionTtlMs);
-  await refused(live.f.nativeModel(new Request("https://pool.example/v1/models", { headers })), 401);
+  await refused(
+    live.f.nativeModel(new Request("https://pool.example/v1/models", { headers })),
+    401,
+  );
+});
+
+test("an assertion the pool replays to a new controller still passes the pool's check", async () => {
+  // A release restarts the controller, and the pool replays a held model call to the new one with
+  // the same headers up to its replay window after the first attempt, plus the hop.
+  const live = await registered();
+  const credential = acceptanceCredential(
+    { POOL_ACCEPTANCE_DEVICE: JSON.stringify(live.device), POOL_APP_SIGNING_KEY: signingKey },
+    live.f.now,
+  );
+  const headers = await credential("POST", "/v1/chat/completions");
+  live.f.advance(controllerReplayWindowMs + 1_000);
+  const replayed = await live.f.nativeModel(
+    new Request("https://pool.example/v1/chat/completions", {
+      method: "POST",
+      headers,
+      body: "{}",
+    }),
+  );
+  replayed.release();
+  assert.equal(replayed.pool, pool.pool);
 });
 
 test("the pool refuses an assertion sent with another method, path or query", async () => {

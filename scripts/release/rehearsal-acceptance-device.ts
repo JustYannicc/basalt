@@ -38,15 +38,31 @@ function rehearsalOnly(stage: string) {
     throw new Error("Register a rehearsal acceptance device only on a test-rehearsal-<n> stage");
 }
 
+/**
+ * The stage's own https origin. Its host carries the stage's DNS label (`rehearsal-<n>`, the stage
+ * without `test-`, as deploy.ts labels a stage's hostnames) as one whole label, and is never
+ * production's zone or anything under it, its host included.
+ */
+function stageOrigin(stage: string, value: string) {
+  const origin = URL.parse(value);
+  if (origin?.protocol !== "https:") throw new Error("Give the stage's https origin");
+  // URL lowercases the host; a trailing dot names the same host.
+  const host = origin.hostname.replace(/\.$/u, "");
+  if (host === brand.zone || host.endsWith(`.${brand.zone}`))
+    throw new Error("The origin is production's host or under its zone");
+  if (!host.split(".").includes(stage.replace(/^test-/u, "")))
+    throw new Error("The origin's host does not carry the stage's label (rehearsal-<n>)");
+  origin.hostname = host;
+  return origin;
+}
+
 export async function registerRehearsalAcceptanceDevice(
   input: RehearsalDeviceInput,
   send: typeof fetch = fetch,
   now: () => number = Date.now,
 ): Promise<AcceptanceDevice> {
   rehearsalOnly(input.stage);
-  const origin = URL.parse(input.origin);
-  if (origin?.protocol !== "https:") throw new Error("Give the stage's https origin");
-  if (origin.hostname === brand.host) throw new Error("The origin is production's host");
+  const origin = stageOrigin(input.stage, input.origin);
   if (!isSigningKey(input.signingKey))
     throw new Error("The stage's signing key must be 32 bytes of lowercase hex");
   const { pool, owner, organization, user } = input;

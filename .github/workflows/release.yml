@@ -258,8 +258,9 @@ jobs:
           APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
-          # Not secret: the registered models-only device acceptance signs a fresh assertion for,
-          # per model call, with POOL_APP_SIGNING_KEY.
+          # A masked secret: the ids of the registered models-only device acceptance signs a fresh
+          # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
+          # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
           POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
         run: bun scripts/release/deploy.ts preflight --stage production
       # A declared root restart stops the stuck root, and the restart after it reads the provider
@@ -485,7 +486,8 @@ jobs:
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
           # The release is red either way; this says whether the version rolled back to still serves.
           rc=0
-          bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json || rc=$?
+          # The boot read before the apply did not refuse the device, so a refusal now is that version's.
+          bun scripts/release/deploy.ts accept --stage production --expect any --admitted .local/release/root-boot.json --out .local/release/acceptance-after-rollback.json || rc=$?
           if [ "$rc" -eq 4 ]; then
             echo "::error::Acceptance could not test the rolled-back version: the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap."
           elif [ "$rc" -ne 0 ]; then

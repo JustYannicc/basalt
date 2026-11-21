@@ -57,17 +57,34 @@ const holds = (name: string, context: Context) => {
 const signingKey = "ab".repeat(32);
 const device = { computer: "computer-1", grant: "native:grant-1", user: "user-1", pool: "pool-1" };
 
-/** The live pool's wire for the acceptance client; `answer` refuses or fails one call by number. */
+// The pool's cap on the device's user, as its rewrite sends it (src/pool/cap-message.ts), and a
+// provider's own 429, which the pool passes through untouched.
+const capBody =
+  '{"error":{"message":"You have reached the weekly cap.","type":"rate_limit_error","code":"user_period_limit_exceeded"}}';
+const providerBusy =
+  '{"error":{"message":"all credentials for model model-a are cooling down","type":"rate_limit_error"}}';
+type Answer = Partial<Record<number | "chat" | "catalog", number | "cap">>;
+
+/**
+ * The live pool's wire for the acceptance client; `answer` refuses or fails one call by number, or
+ * every chat.
+ */
 async function pool() {
   let chats = 0;
-  const state: { answer: Partial<Record<number | "catalog", number>> } = { answer: {} };
+  const state: { answer: Answer } = { answer: {} };
   const server = createServer((request, response) => {
     const catalog = request.url === "/v1/models";
     if (!catalog) chats++;
-    const status = state.answer[catalog ? "catalog" : chats];
+    const status = catalog ? state.answer.catalog : (state.answer[chats] ?? state.answer.chat);
     if (status !== undefined) {
-      response.writeHead(status, { "content-type": "application/json" });
-      response.end('{"error":"unauthorized","message":"refused"}');
+      response.writeHead(status === "cap" ? 429 : status, { "content-type": "application/json" });
+      response.end(
+        status === "cap"
+          ? capBody
+          : status === 429
+            ? providerBusy
+            : '{"error":"unauthorized","message":"refused"}',
+      );
       return;
     }
     response.writeHead(200, {
@@ -120,19 +137,22 @@ const outputs = async (file: string) =>
       .map((line) => line.split("=", 2) as [string, string]),
   );
 
-test("a refusal after this run's admitted boot read rolls back; a cap or a refused boot read never does", async () => {
+test("a refusal or a provider's 429 after this run's admitted boot read rolls back; a cap or a refused boot read never does", async () => {
   // The entry keeps a failed run's private detail in the repo's own .local/release.
   const kept = ["failure", "acceptance"].map((file) => join(repo, `.local/release/${file}.txt`));
-  const before = await Promise.all(kept.map((file) => readFile(file, "utf8").catch(() => undefined)));
+  const before = await Promise.all(
+    kept.map((file) => readFile(file, "utf8").catch(() => undefined)),
+  );
   const live = await pool();
   const dir = await mkdtemp(
     join(process.env.RUNNER_TEMP ?? join(homedir(), "Library", "Caches"), "release-accept-"),
   );
   try {
     await mkdir(join(dir, "bin"));
+    // The rollback itself needs the provider; the accept after it is the real entry.
     await writeFile(
       join(dir, "bin", "bun"),
-      `#!/bin/sh\nentry="$1"; shift\nexec "${process.execPath}" "${repo}$entry" "$@"\n`,
+      `#!/bin/sh\nentry="$1"; shift\n[ "$1" = rollback ] && exit 0\nexec "${process.execPath}" "${repo}$entry" "$@"\n`,
     );
     await writeFile(join(dir, "bin", "node"), "#!/bin/sh\nexit 0\n");
     await chmod(join(dir, "bin", "bun"), 0o755);
@@ -149,12 +169,20 @@ test("a refusal after this run's admitted boot read rolls back; a cap or a refus
     await writeFile(join(dir, "boot"), "");
     const boot = await runStep("Record the root's boot before the apply", dir, env("boot"));
     assert.equal(boot.status, 0, boot.output);
-    const after = async (label: string, answer: Partial<Record<number | "catalog", number>>) => {
+    const after = async (label: string, answer: Answer) => {
       live.answer(answer);
       await writeFile(join(dir, `accept-${label}`), "");
       await rm(join(dir, ".local/release/acceptance.json"), { force: true });
-      const accept = await runStep("Accept the release through the live pool", dir, env(`accept-${label}`));
-      return { status: accept.status, output: accept.output, outputs: await outputs(join(dir, `accept-${label}`)) };
+      const accept = await runStep(
+        "Accept the release through the live pool",
+        dir,
+        env(`accept-${label}`),
+      );
+      return {
+        status: accept.status,
+        output: accept.output,
+        outputs: await outputs(join(dir, `accept-${label}`)),
+      };
     };
     const context = (policy: string, accept: Awaited<ReturnType<typeof after>>): Context => ({
       env: { MODE: "apply", POLICY_NAME: policy },
@@ -174,10 +202,22 @@ test("a refusal after this run's admitted boot read rolls back; a cap or a refus
       assert.equal(accept.status, 1, `${label}: ${accept.output}`);
       assert.equal(accept.outputs.acceptance, undefined, label);
       assert.equal(holds("Roll back a failed release", context("code", accept)), true, label);
-      assert.equal(holds("Stop on an acceptance that could not test", context("code", accept)), false, label);
+      assert.equal(
+        holds("Stop on an acceptance that could not test", context("code", accept)),
+        false,
+        label,
+      );
       // The class change has no rollback: it stops red and says so.
-      assert.equal(holds("Roll back a failed release", context("cutover-classes", accept)), false, label);
-      assert.equal(holds("Stop on a failed class change", context("cutover-classes", accept)), true, label);
+      assert.equal(
+        holds("Roll back a failed release", context("cutover-classes", accept)),
+        false,
+        label,
+      );
+      assert.equal(
+        holds("Stop on a failed class change", context("cutover-classes", accept)),
+        true,
+        label,
+      );
       const stop = await runStep("Stop on a failed class change", dir, {
         APPLY_OUTCOME: "success",
         ACCEPTANCE: accept.outputs.acceptance ?? "",
@@ -186,8 +226,23 @@ test("a refusal after this run's admitted boot read rolls back; a cap or a refus
       assert.match(stop.output, /Cause: 1 of (?:1|27) model requests failed$/mu, label);
     }
 
-    // A 429 after the admitted read is its user's cap: nothing was tested, nothing rolls back.
-    const capped = await after("capped", { 9: 429 });
+    // A provider's 429 on every turn is the pool not serving: it rolls back like a 5xx.
+    const busy = await after("busy", { chat: 429 });
+    assert.equal(busy.status, 1, busy.output);
+    assert.equal(busy.outputs.acceptance, undefined);
+    assert.equal(holds("Roll back a failed release", context("code", busy)), true);
+    assert.equal(holds("Stop on an acceptance that could not test", context("code", busy)), false);
+
+    // The rollback's own read of the version it put back: after the admitted boot read, a refusal
+    // there is that version failing too, never the device.
+    live.answer({ catalog: 401 });
+    const rolled = await runStep("Roll back a failed release", dir, env("rolled"));
+    assert.equal(rolled.status, 1, rolled.output);
+    assert.match(rolled.output, /::error::The rolled-back version also fails acceptance/u);
+    assert.doesNotMatch(rolled.output, /could not test the rolled-back version/u);
+
+    // Only the pool's cap code after the admitted read means nothing was tested: nothing rolls back.
+    const capped = await after("capped", { 9: "cap" });
     assert.equal(capped.status, 4, capped.output);
     assert.equal(capped.outputs.acceptance, "could-not-test");
     assert.equal(holds("Roll back a failed release", context("code", capped)), false);
@@ -202,7 +257,11 @@ test("a refusal after this run's admitted boot read rolls back; a cap or a refus
     // A refusal at the boot read itself stops the run before the apply, as built.
     live.answer({ catalog: 401 });
     await writeFile(join(dir, "boot-refused"), "");
-    const refused = await runStep("Record the root's boot before the apply", dir, env("boot-refused"));
+    const refused = await runStep(
+      "Record the root's boot before the apply",
+      dir,
+      env("boot-refused"),
+    );
     assert.equal(refused.status, 4, refused.output);
     const stopped: Context = {
       env: { MODE: "apply", POLICY_NAME: "code" },
@@ -252,7 +311,14 @@ test("a failed class change names its real cause from the fields the acceptance 
   );
   assert.match(
     await run(
-      { passed: false, requests: 0, failed: 0, refused: [429], runtimes: 0, outcome: "could-not-test" },
+      {
+        passed: false,
+        requests: 0,
+        failed: 0,
+        refused: [429],
+        runtimes: 0,
+        outcome: "could-not-test",
+      },
       { ...accepted, ACCEPTANCE: "could-not-test" },
     ),
     /^the pool refused the acceptance device \(HTTP 429\), so nothing was tested$/u,

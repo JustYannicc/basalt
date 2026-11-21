@@ -33,17 +33,21 @@ function newConversation(expectedRecords: number): Conversation {
 
 function selectModel(ids: string[], requested?: string): string {
   if (requested) {
-    if (!ids.includes(requested)) throw new AcceptanceFailure("The requested model is not present in /v1/models");
+    if (!ids.includes(requested))
+      throw new AcceptanceFailure("The requested model is not present in /v1/models");
     return requested;
   }
   if (ids.length !== 1) {
-    throw new AcceptanceFailure(`/v1/models returned ${ids.length} models; set the workflow model input explicitly`);
+    throw new AcceptanceFailure(
+      `/v1/models returned ${ids.length} models; set the workflow model input explicitly`,
+    );
   }
   return ids[0]!;
 }
 
 function assertSameSessionCredential(records: UsageRecord[], label: string): string {
-  if (records.length === 0) throw new AcceptanceFailure(`Home returned no usage records for conversation ${label}`);
+  if (records.length === 0)
+    throw new AcceptanceFailure(`Home returned no usage records for conversation ${label}`);
   const credentialId = records[0]!.account;
   if (records.some((record) => record.account !== credentialId)) {
     throw new AcceptanceFailure("A repeated conversation changed its selected subscription");
@@ -69,14 +73,19 @@ async function runFullAcceptance(
 ): Promise<ModelCatalog> {
   const log = hooks.log ?? console.log;
   const testAccounts = await client.testAccountIds(poolAccess);
-  log("idle_wait status=started seconds=3600 scope=runner_requests deployment_assumption=otherwise_quiet");
+  log(
+    "idle_wait status=started seconds=3600 scope=runner_requests deployment_assumption=otherwise_quiet",
+  );
   const idleSeconds = await (hooks.waitForIdle ?? waitWithoutRequests)();
 
   const warm = newConversation(1);
   const first = await client.sendTurn(apiKey, model, warm);
-  log(`first_request_after_idle status=200 first_byte_ms=${Math.round(first.firstByteMs)} total_ms=${Math.round(first.totalMs)}`);
+  log(
+    `first_request_after_idle status=200 first_byte_ms=${Math.round(first.firstByteMs)} total_ms=${Math.round(first.totalMs)}`,
+  );
   log(`idle_wait status=completed seconds=${Math.floor(idleSeconds)}`);
-  if (first.boot !== initial.boot) throw new AcceptanceFailure("Pool boot changed across the idle interval");
+  if (first.boot !== initial.boot)
+    throw new AcceptanceFailure("Pool boot changed across the idle interval");
   log(`pool_boot status=unchanged idle_seconds=${Math.floor(idleSeconds)}`);
 
   const a = newConversation(2);
@@ -85,15 +94,18 @@ async function runFullAcceptance(
   const d = newConversation(1);
   for (const conversation of [a, b, a, b, c, d]) {
     const result = await client.sendTurn(apiKey, model, conversation);
-    if (result.boot !== initial.boot) throw new AcceptanceFailure("Pool boot changed during acceptance requests");
+    if (result.boot !== initial.boot)
+      throw new AcceptanceFailure("Pool boot changed during acceptance requests");
   }
 
   const conversations = [warm, a, b, c, d];
-  const records = await Promise.all(conversations.map((conversation) =>
-    client.waitForUsageRecords(poolAccess, conversation)
-  ));
+  const records = await Promise.all(
+    conversations.map((conversation) => client.waitForUsageRecords(poolAccess, conversation)),
+  );
   if (records.flat().some((record) => !testAccounts.has(record.account))) {
-    throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool's accounts list");
+    throw new AcceptanceFailure(
+      "Usage contained an account outside the dedicated test pool's accounts list",
+    );
   }
   const [, aRecords, bRecords, cRecords, dRecords] = records;
   const accountA = assertSameSessionCredential(aRecords!, "A");
@@ -110,7 +122,8 @@ async function runFullAcceptance(
   log("affinity status=passed repeated_conversations=2 new_conversations=2 subscriptions=2");
 
   const restartBaseline = await client.modelCatalog(apiKey);
-  if (restartBaseline.boot !== initial.boot) throw new AcceptanceFailure("Pool boot changed before restart observation");
+  if (restartBaseline.boot !== initial.boot)
+    throw new AcceptanceFailure("Pool boot changed before restart observation");
   return restartBaseline;
 }
 
@@ -122,16 +135,19 @@ export async function runPoolAcceptance(
   const hooks = options.hooks ?? {};
   const log = hooks.log ?? console.log;
   if (config.mode === "full" && !config.poolAccess) {
-    throw new AcceptanceFailure("Full acceptance requires signed access to the dedicated test pool");
+    throw new AcceptanceFailure(
+      "Full acceptance requires signed access to the dedicated test pool",
+    );
   }
 
   const initial = await client.modelCatalog(config.apiKey);
   const model = selectModel(initial.ids, config.model);
   log(`models status=200 count=${initial.ids.length}`);
 
-  const baseline = config.mode === "full"
-    ? await runFullAcceptance(client, config.apiKey, config.poolAccess!, model, initial, hooks)
-    : initial;
+  const baseline =
+    config.mode === "full"
+      ? await runFullAcceptance(client, config.apiKey, config.poolAccess!, model, initial, hooks)
+      : initial;
   const restart = await (hooks.restart ?? observeRestart)({
     client,
     apiKey: config.apiKey,
@@ -141,9 +157,13 @@ export async function runPoolAcceptance(
   });
   const firstStream = await client.sendTurn(config.apiKey, model, newConversation(1));
   if (firstStream.boot !== restart.boot) {
-    throw new AcceptanceFailure("Pool boot changed before the first streamed response after restart");
+    throw new AcceptanceFailure(
+      "Pool boot changed before the first streamed response after restart",
+    );
   }
-  log(`first_stream_after_restart status=200 first_byte_ms=${Math.round(firstStream.firstByteMs)} total_ms=${Math.round(firstStream.totalMs)}`);
+  log(
+    `first_stream_after_restart status=200 first_byte_ms=${Math.round(firstStream.firstByteMs)} total_ms=${Math.round(firstStream.totalMs)}`,
+  );
   log(`acceptance status=passed mode=${config.mode}`);
 }
 
@@ -166,11 +186,15 @@ async function configFromEnvironment(): Promise<AcceptanceConfig> {
   if (mode === "full") {
     const pool = process.env.POOL_ACCEPTANCE_POOL?.trim();
     if (!pool || !isAcceptancePool(pool)) {
-      throw new AcceptanceFailure("POOL_ACCEPTANCE_POOL must name a dedicated acceptance-<run> pool");
+      throw new AcceptanceFailure(
+        "POOL_ACCEPTANCE_POOL must name a dedicated acceptance-<run> pool",
+      );
     }
     poolAccess = {
       token: await signPoolToken(requiredSecret("POOL_APP_SIGNING_KEY"), {
-        pool, owner: "acceptance", organization: "acceptance",
+        pool,
+        owner: "acceptance",
+        organization: "acceptance",
       }),
       owner: "acceptance",
     };
@@ -194,7 +218,8 @@ async function main(): Promise<void> {
     }
     await runPoolAcceptance(await configFromEnvironment());
   } catch (error) {
-    const message = error instanceof AcceptanceFailure ? error.message : "Unexpected acceptance runner failure";
+    const message =
+      error instanceof AcceptanceFailure ? error.message : "Unexpected acceptance runner failure";
     console.error(`FAIL ${message}`);
     process.exitCode = 1;
   }

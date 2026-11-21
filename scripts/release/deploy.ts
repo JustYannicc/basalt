@@ -52,6 +52,7 @@ const { positionals, values } = parseArgs({
     light: { type: "boolean" },
     to: { type: "string" },
     "root-boot": { type: "string" },
+    admitted: { type: "string" },
     apply: { type: "string" },
     serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
@@ -63,7 +64,7 @@ const { positionals, values } = parseArgs({
 // resolves it, with its own fallback to the repo root.
 resolvePathFlags(
   values,
-  ["policy", "out", "before", "after", "from", "root-boot", "serving"],
+  ["policy", "out", "before", "after", "from", "root-boot", "admitted", "serving"],
   process.cwd(),
 );
 const command = positionals[0] ?? "";
@@ -169,9 +170,8 @@ if (command === "boot" || command === "accept") {
       NOT_SERVING,
       runAcceptance,
     } = await import("./acceptance.ts");
-    const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } = await import(
-      "./acceptance-device.ts"
-    );
+    const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } =
+      await import("./acceptance-device.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
@@ -190,13 +190,18 @@ if (command === "boot" || command === "accept") {
       );
       process.exit(0);
     }
-    let rootBoot = values["root-boot"]
-      ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
-          JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
-        ).boot
-      : undefined;
-    // The boot read recorded a boot only when the pool served it for the acceptance device.
-    const admitted = rootBoot !== undefined && rootBoot !== NOT_SERVING;
+    const bootRecord = async (path: string | undefined) =>
+      path
+        ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
+            JSON.parse(await readFile(resolve(path), "utf8")),
+          ).boot
+        : undefined;
+    let rootBoot = await bootRecord(values["root-boot"]);
+    // The boot read writes its record only when the pool did not refuse the device (a refusal stops
+    // the run there): it served the device, or for a declared restart did not answer at all. So
+    // after the apply a 401 or 403 is the release's. `--admitted` passes that record without
+    // requiring its boot, for the rollback's read of the version it put back.
+    const admitted = rootBoot !== undefined || (await bootRecord(values.admitted)) !== undefined;
     const expect = values.expect ?? "same-boot";
     if (!["same-boot", "two-runtimes", "any", "restart"].includes(expect))
       throw new Error(`Unknown --expect ${expect}`);
@@ -338,8 +343,8 @@ if (command === "boot" || command === "accept") {
         : outcome === "could-not-test"
           ? `ACCEPTANCE COULD NOT TEST: ${refusalFix(result.refused)}. Nothing was undone. ${safeJson(view)}`
           : outcome === "not-serving"
-          ? `NOT SERVING after the healing release: ${safeJson(view)}`
-          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
+            ? `NOT SERVING after the healing release: ${safeJson(view)}`
+            : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
     );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
     // Exits 3 and 4 are their own results: not green, and not a failure to undo.

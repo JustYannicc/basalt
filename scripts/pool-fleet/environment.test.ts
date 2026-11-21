@@ -28,13 +28,20 @@ test("the fleet lane signs each model call for the release's acceptance device, 
   assert.deepEqual(Object.keys(headers), [nativeModelHeader], "only the assertion, never a bearer");
   assert.deepEqual(
     {
-      ...((await openEnvelope(signingKey, nativeModelPrefix, headers[nativeModelHeader]!)) as object),
+      ...((await openEnvelope(
+        signingKey,
+        nativeModelPrefix,
+        headers[nativeModelHeader]!,
+      )) as object),
       expiresAt: 0,
     },
     { ...device, method: "POST", path: "/v1/chat/completions", expiresAt: 0 },
   );
   // Usage is read in the device's own pool, so the records its calls leave are the ones checked.
-  assert.equal((await verifyPoolToken(signingKey, deps.acceptance.access.token))?.pool, device.pool);
+  assert.equal(
+    (await verifyPoolToken(signingKey, deps.acceptance.access.token))?.pool,
+    device.pool,
+  );
 
   // A stored key alone gives the lane nothing to sign with.
   const stored = await dependenciesFromEnvironment({
@@ -50,7 +57,9 @@ test("the fleet lane signs each model call for the release's acceptance device, 
 });
 
 test("the lane mints a usage token only for a dedicated acceptance pool, and names no id", async () => {
-  const deps = await dependenciesFromEnvironment(environment({ ...device, pool: "pool-of-a-person" }));
+  const deps = await dependenciesFromEnvironment(
+    environment({ ...device, pool: "pool-of-a-person" }),
+  );
   assert.ok(deps.acceptance instanceof FleetLaneRefused);
   const text = deps.acceptance.message;
   assert.match(text, /POOL_ACCEPTANCE_DEVICE: its pool is not a dedicated acceptance-<run> pool/u);

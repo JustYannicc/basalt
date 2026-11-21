@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../../brand.ts";
+import { nativeControlPath } from "../../src/pool/native-contract.ts";
 import { fixture, owner, pool, signingKey } from "../../src/pool/test/computers.ts";
 import { acceptanceCredential } from "./acceptance-device.ts";
 import { registerRehearsalAcceptanceDevice } from "./rehearsal-acceptance-device.ts";
 
 const input = {
   stage: "test-rehearsal-3",
-  origin: "https://rehearsal.example",
+  // The stage's app host, as its stack names it: the stage's DNS label under the stage domain.
+  origin: "https://app.rehearsal-3.stage.example",
   signingKey,
   pool: pool.pool,
   owner,
@@ -42,6 +44,41 @@ test("only a test-rehearsal-<n> stage, never production's host, registers a devi
   );
 });
 
+test("the origin is the stage's own: https, carrying its stage label, never production's zone", async () => {
+  const refusals: [string, RegExp][] = [
+    // Each spelling names production's host.
+    [`https://${brand.host}./`, /production's host/u],
+    [`https://${brand.host.toUpperCase()}`, /production's host/u],
+    [`https://${brand.host.toUpperCase()}.`, /production's host/u],
+    // Anything under production's zone is production, whatever it names.
+    [`https://rehearsal-3.${brand.host}`, /production's host/u],
+    [`https://app.rehearsal-3.${brand.zone}.`, /production's host/u],
+    [`https://${brand.zone}`, /production's host/u],
+    // A host that is not this stage's.
+    ["https://app.rehearsal-4.stage.example", /stage's label/u],
+    ["https://app.stage.example", /stage's label/u],
+    ["https://app.xrehearsal-3.stage.example", /stage's label/u],
+    ["https://app.rehearsal-30.stage.example", /stage's label/u],
+    ["http://app.rehearsal-3.stage.example", /https origin/u],
+    ["app.rehearsal-3.stage.example", /https origin/u],
+  ];
+  for (const [origin, why] of refusals)
+    await assert.rejects(
+      registerRehearsalAcceptanceDevice({ ...input, origin }, untouched),
+      why,
+      origin,
+    );
+  // The stage's own host, in any spelling of it, is sent to as one.
+  for (const origin of [input.origin, "https://APP.Rehearsal-3.stage.example./"]) {
+    let sent: string | undefined;
+    await registerRehearsalAcceptanceDevice({ ...input, origin }, async (url) => {
+      sent = String(url);
+      return new Response(null, { status: 403 });
+    }).catch(() => {});
+    assert.equal(sent, `https://app.rehearsal-3.stage.example${nativeControlPath}`, origin);
+  }
+});
+
 test("the stage pool's own registration makes a models-only device the release then signs for", async () => {
   const f = fixture();
   const device = await registerRehearsalAcceptanceDevice(
@@ -64,8 +101,13 @@ test("the stage pool's own registration makes a models-only device the release t
     f.now,
   );
   const admitted = await f.nativeModel(
-    new Request("https://pool.example/v1/models", { headers: await credential("GET", "/v1/models") }),
+    new Request("https://pool.example/v1/models", {
+      headers: await credential("GET", "/v1/models"),
+    }),
   );
   admitted.release();
-  assert.equal(admitted.request.headers.get("authorization"), `Bearer ${f.server.keys[0]!.api_key}`);
+  assert.equal(
+    admitted.request.headers.get("authorization"),
+    `Bearer ${f.server.keys[0]!.api_key}`,
+  );
 });

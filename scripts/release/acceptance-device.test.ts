@@ -122,6 +122,20 @@ test("a missing or malformed acceptance identity stops with a public line naming
   assert.match(previous, /field=POOL_APP_SIGNING_KEY_PREVIOUS /u, previous);
 });
 
+test("a blank previous key is no key: mid-rotation or not, acceptance signs with the current one", async () => {
+  for (const previous of ["", " ", "\n", " \t\n"]) {
+    const credential = acceptanceCredential(
+      { ...environment(), POOL_APP_SIGNING_KEY_PREVIOUS: previous },
+      () => 5_000,
+    );
+    const headers = await credential("GET", "/v1/models");
+    assert.ok(
+      await openEnvelope(signingKey, nativeModelPrefix, headers[nativeModelHeader]!),
+      JSON.stringify(previous),
+    );
+  }
+});
+
 /** The entry as the release runs it; it exits on its own once the step's command is done. */
 async function entry(args: string[], env: Record<string, string>) {
   const child = spawn(
@@ -145,7 +159,9 @@ test("boot and accept exit 4, never a failure to undo, when the device is misnam
   const kept = ["failure", "acceptance"].map((name) =>
     fileURLToPath(new URL(`../../.local/release/${name}.txt`, import.meta.url)),
   );
-  const before = await Promise.all(kept.map((file) => readFile(file, "utf8").catch(() => undefined)));
+  const before = await Promise.all(
+    kept.map((file) => readFile(file, "utf8").catch(() => undefined)),
+  );
   const cwd = await mkdtemp(
     join(process.env.RUNNER_TEMP ?? join(homedir(), "Library", "Caches"), "acceptance-device-"),
   );
@@ -199,6 +215,62 @@ test("boot and accept exit 4, never a failure to undo, when the device is misnam
     }
     for (const id of Object.values(device))
       for (const output of [boot.output, accept.output]) assert.ok(!output.includes(id), id);
+  } finally {
+    pool.close();
+    await rm(cwd, { recursive: true, force: true });
+    for (const [index, file] of kept.entries()) {
+      if (before[index] === undefined) await rm(file, { force: true });
+      else await writeFile(file, before[index]!);
+    }
+  }
+});
+
+test("given this run's boot record, accept reads a refusal as the release's, served before or not", async () => {
+  // The rollback's re-accept and a declared restart both run after a boot read the pool did not
+  // refuse (a refusal stops the run there), so a 401 there is the version's, never the device's.
+  const kept = ["failure", "acceptance"].map((name) =>
+    fileURLToPath(new URL(`../../.local/release/${name}.txt`, import.meta.url)),
+  );
+  const before = await Promise.all(
+    kept.map((file) => readFile(file, "utf8").catch(() => undefined)),
+  );
+  const cwd = await mkdtemp(
+    join(process.env.RUNNER_TEMP ?? join(homedir(), "Library", "Caches"), "acceptance-admitted-"),
+  );
+  const pool = createServer((_, response) => {
+    response.writeHead(401, { "content-type": "application/json" });
+    response.end('{"error":"unauthorized","message":"This device is no longer connected."}');
+  });
+  await new Promise<void>((done) => pool.listen(0, "127.0.0.1", done));
+  const env = {
+    POOL_ACCEPTANCE_ORIGIN: `http://127.0.0.1:${(pool.address() as AddressInfo).port}`,
+    ...environment(),
+  };
+  try {
+    for (const boot of ["boot-root", "not-serving"]) {
+      await writeFile(join(cwd, "boot.json"), JSON.stringify({ boot }));
+      const accept = await entry(
+        [
+          "accept",
+          "--stage",
+          "test-acceptance-device",
+          "--expect",
+          "any",
+          "--admitted",
+          join(cwd, "boot.json"),
+          "--out",
+          join(cwd, "accept.json"),
+        ],
+        env,
+      );
+      assert.equal(accept.status, 1, `${boot}: ${accept.output}`);
+      assert.match(accept.output, /^Acceptance FAILED: .*"failed":1/mu, boot);
+      assert.doesNotMatch(
+        await readFile(join(cwd, "accept.json"), "utf8"),
+        /could-not-test/u,
+        boot,
+      );
+    }
   } finally {
     pool.close();
     await rm(cwd, { recursive: true, force: true });

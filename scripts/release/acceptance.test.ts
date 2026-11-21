@@ -18,9 +18,33 @@ import {
 import { stopPaths } from "./stop-path.ts";
 import { AcceptanceDeviceRefused } from "./acceptance-device.ts";
 import { failureReport } from "./public-report.ts";
+import { rewriteCapResponse } from "../../src/pool/cap-message.ts";
 
 // The local pool checks no identity; acceptance-device tests prove what the real pool checks.
 const credential = async () => ({ "x-basalt-native-assertion": "fixture" });
+
+// What a model call's client gets for its user's cap: Home's refusal after the pool's own rewrite.
+const capBody = await (
+  await rewriteCapResponse(
+    new Response(
+      JSON.stringify({
+        error: {
+          message:
+            "user_period_limit_exceeded: period limit exceeded (window=7d mode=calendar used=12 limit=10)",
+        },
+      }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ),
+    "/v1/chat/completions",
+  )
+).text();
+// A provider's own 429, which the pool passes through untouched.
+const providerBusy = JSON.stringify({
+  error: {
+    message: "all credentials for model model-a are cooling down",
+    type: "rate_limit_error",
+  },
+});
 
 // A pool endpoint speaking the real wire: /v1/models JSON and a streamed chat completion, each with
 // the serving runtime's boot header, as the live pool answers the repo's acceptance client.
@@ -28,18 +52,30 @@ async function pool(
   options: {
     fail?: number;
     boots?: string[];
-    /** HTTP status per chat number, or for the catalog: the pool refusing or failing that call. */
-    answer?: Partial<Record<number | "catalog", number>>;
+    /**
+     * HTTP status per chat number, for every chat, or for the catalog: the pool refusing or failing
+     * that call. A 429 is a provider's; "cap" is the pool's cap on the device's user.
+     */
+    answer?: Partial<Record<number | "chat" | "catalog", number | "cap">>;
   } = {},
 ) {
   let chats = 0;
   const server = createServer((request, response) => {
     const boot = options.boots?.[chats % options.boots.length] ?? "boot-root";
-    const status = options.answer?.[request.url === "/v1/models" ? "catalog" : chats + 1];
+    const status =
+      request.url === "/v1/models"
+        ? options.answer?.catalog
+        : (options.answer?.[chats + 1] ?? options.answer?.chat);
     if (status !== undefined) {
       if (request.url !== "/v1/models") chats++;
-      response.writeHead(status, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "unauthorized", message: "refused" }));
+      response.writeHead(status === "cap" ? 429 : status, { "content-type": "application/json" });
+      response.end(
+        status === "cap"
+          ? capBody
+          : status === 429
+            ? providerBusy
+            : JSON.stringify({ error: "unauthorized", message: "refused" }),
+      );
       return;
     }
     if (request.url === "/v1/models") {
@@ -325,8 +361,14 @@ test("a healing release waits for the object's adoption too when its apply faile
 });
 
 test("the pool refusing the acceptance device is could-not-test, never a failed release", async () => {
-  // 401 unknown or removed, 403 models off or no longer allowed, 429 a cap or rate limit on its user.
-  for (const answer of [{ catalog: 401 }, { catalog: 403 }, { 1: 403 }, { 9: 429 }, { 27: 401 }]) {
+  // 401 unknown or removed, 403 models off or no longer allowed, or the pool's cap on its user.
+  for (const answer of [
+    { catalog: 401 },
+    { catalog: 403 },
+    { 1: 403 },
+    { 9: "cap" },
+    { 27: 401 },
+  ] as const) {
     const live = await pool({ answer });
     try {
       const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
@@ -340,7 +382,7 @@ test("the pool refusing the acceptance device is could-not-test, never a failed 
 });
 
 test("a serving failure is a failed release even when the pool also refused the device", async () => {
-  for (const answer of [{ 5: 503, 9: 429 }, { 3: 500 }, { 4: 502, 6: 401 }]) {
+  for (const answer of [{ 5: 503, 9: "cap" }, { 3: 500 }, { 4: 502, 6: 401 }] as const) {
     const live = await pool({ answer });
     try {
       const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
@@ -361,7 +403,7 @@ test("a serving failure is a failed release even when the pool also refused the 
 });
 
 test("a refused device stops the boot read before the apply, even where the pool may not answer", async () => {
-  for (const status of [401, 403, 429]) {
+  for (const status of [401, 403]) {
     const live = await pool({ answer: { catalog: status } });
     try {
       for (const allowNotServing of [true, false]) {
@@ -370,14 +412,12 @@ test("a refused device stops the boot read before the apply, even where the pool
           (error: unknown) => error,
         );
         assert.ok(error instanceof AcceptanceDeviceRefused, String(error));
-        // A cap is not a missing device, so it says what to check instead.
-        const check =
-          status === 429
-            ? "hit its user's cap or a rate limit"
-            : "was refused: check that it is still registered and allowed";
         assert.match(
           failureReport(error).publicText,
-          new RegExp(`HTTP ${status}.*the release's acceptance device ${check}`, "u"),
+          new RegExp(
+            `HTTP ${status}.*the release's acceptance device was refused: check that it is still registered and allowed`,
+            "u",
+          ),
         );
       }
     } finally {
@@ -426,22 +466,66 @@ test("after this run's boot read admitted the device, a 401 or 403 is a serving 
   }
 });
 
-test("a 429 after an admitted boot read is its user's cap: still could-not-test", async () => {
-  for (const answer of [{ catalog: 429 }, { 9: 429 }]) {
+test("a 429 is untested only when it carries the pool's cap code, on a model turn", async () => {
+  for (const [answer, admitted] of [
+    [{ 9: "cap" }, true],
+    [{ chat: "cap" }, true],
+    [{ 9: "cap" }, false],
+  ] as const) {
     const live = await pool({ answer });
     try {
       const result = await runAcceptance({
         credential,
         expect: "same-boot",
         rootBoot: "boot-root",
-        admitted: true,
+        admitted,
         client: live.client,
       });
       assert.equal(result.couldNotTest, true, JSON.stringify(answer));
       assert.deepEqual(result.refused, [429], JSON.stringify(answer));
+      assert.match(result.cause ?? "", /refused for the acceptance device \(HTTP 429\)/u);
       assert.equal(result.failures.length, 0, JSON.stringify(answer));
     } finally {
       live.close();
     }
+  }
+});
+
+test("a provider's 429 on every turn is a serving failure, admitted or not: the release rolls back", async () => {
+  // The pool passes a provider's 429 through untouched; only its user's cap is rewritten with a code.
+  for (const admitted of [true, false]) {
+    const live = await pool({ answer: { chat: 429 } });
+    try {
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted,
+        client: live.client,
+      });
+      assert.equal(result.passed, false);
+      assert.equal(result.couldNotTest, false, `admitted=${admitted}`);
+      assert.deepEqual(result.refused, []);
+      assert.equal(result.failures.length, 27);
+      assert.match(result.cause ?? "", /^27 of 27 requests failed: .*HTTP 429/u);
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a 429 on /v1/models never carries a cap: the pool is not serving, before the apply or after", async () => {
+  const live = await pool({ answer: { catalog: 429 } });
+  try {
+    for (const admitted of [true, false])
+      await assert.rejects(
+        runAcceptance({ credential, expect: "same-boot", admitted, client: live.client }),
+        /\/v1\/models returned HTTP 429/u,
+      );
+    // Not a refused device: only a declared root restart may start on a pool answering so.
+    assert.equal(await bootBeforeApply(credential, live.client, true), NOT_SERVING);
+    await assert.rejects(bootBeforeApply(credential, live.client, false), /HTTP 429/u);
+  } finally {
+    live.close();
   }
 });

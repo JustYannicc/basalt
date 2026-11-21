@@ -154,10 +154,7 @@ test("acceptance that could not test says so to the steps after it, and still en
     assert.equal(readFileSync(file, "utf8"), output, label);
   }
   // After a rollback, the read of the version rolled back to says which of the two it was.
-  writeFileSync(
-    join(bin, "bun"),
-    '#!/bin/sh\n[ "$2" = accept ] && exit "$ACCEPT_RC"\nexit 0\n',
-  );
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\n[ "$2" = accept ] && exit "$ACCEPT_RC"\nexit 0\n');
   for (const [accept, said] of [
     ["4", /could not test the rolled-back version: the release's acceptance device was refused/u],
     ["1", /The rolled-back version also fails acceptance/u],
