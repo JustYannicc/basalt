@@ -45,8 +45,11 @@ export async function withHistoryDatabase<T>(
     } catch (error) {
       const reason = historyTimeoutReason(error);
       if (!reason) throw error;
+      // The driver's error stays the cause, so a failed read can still name its Postgres code.
       const timeout =
-        error instanceof HistoryTimeoutFailure ? error : new HistoryTimeoutFailure(reason);
+        error instanceof HistoryTimeoutFailure
+          ? error
+          : Object.assign(new HistoryTimeoutFailure(reason), { cause: error });
       deadline.stop(timeout);
       throw timeout;
     }

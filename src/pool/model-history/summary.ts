@@ -270,7 +270,8 @@ export async function poolUsageSummary(
     return result;
   } catch (error) {
     mark("rollback");
-    await db.query("ROLLBACK");
+    // After a timeout the session is already stopped; the rollback must not replace the cause.
+    await db.query("ROLLBACK").catch(() => {});
     throw error;
   }
 }

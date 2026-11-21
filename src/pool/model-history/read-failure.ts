@@ -21,7 +21,19 @@ export type HistoryReadStep =
   | "hourly"
   | "incidents"
   | "commit"
-  | "rollback";
+  | "rollback"
+  | "connect";
+
+/** The first Postgres code in the error or the causes it carries; never the message. */
+function sqlstate(error: unknown) {
+  let current = error;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth++) {
+    const code = "code" in current ? current.code : undefined;
+    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return undefined;
+}
 
 /** The read's own cause, or the one a database deadline error carries. */
 function readFailure(error: unknown) {
@@ -49,9 +61,12 @@ export function watchHistoryRead(
   let last: (HistorySeriesObservation & { step?: HistoryReadStep }) | undefined;
   const diagnostics = phases
     ? historySeriesDiagnostics((observation) => {
-        const labelled = step === undefined ? observation : { ...observation, step };
+        const at = observation.phase === "database_connect" ? "connect" : step;
+        const labelled = at === undefined ? observation : { ...observation, step: at };
         // A rollback after a failure is not the read's last word.
         if (observation.phase === "sql_statement" && step !== "rollback") last = labelled;
+        if (observation.phase === "database_connect" && observation.status === "error")
+          last = labelled;
         console.info(`history_${phases}_phase`, labelled);
       }, now)
     : undefined;
@@ -64,6 +79,7 @@ export function watchHistoryRead(
     answered(error: unknown, response: Response, report?: (action: HistoryReadAction) => void) {
       if (response.status < 500) return;
       const failed = last?.status === "error" ? last : undefined;
+      const code = sqlstate(error);
       try {
         console.error(
           "POOL_USAGE_READ_FAILED",
@@ -72,13 +88,11 @@ export function watchHistoryRead(
             status: response.status,
             failure: failed?.failure ?? readFailure(error),
             elapsedMs: Math.max(0, Math.min(60_000, Math.round(now() - started))),
+            ...(code === undefined ? {} : { sqlstate: code }),
             ...(failed?.statement === undefined
               ? {}
-              : {
-                  statement: failed.statement,
-                  statementMs: failed.elapsedMs,
-                  ...(failed.step === undefined ? {} : { step: failed.step }),
-                }),
+              : { statement: failed.statement, statementMs: failed.elapsedMs }),
+            ...(failed?.step === undefined ? {} : { step: failed.step }),
           }),
         );
         report?.(action);

@@ -63,6 +63,7 @@ test("a usage summary held past its statement timeout names the statement, logs 
       assert.equal(line?.status, 503);
       assert.equal(line?.failure, "statement_timeout");
       assert.equal(line?.step, "targets", "the first statement that reads the held table");
+      assert.equal(line?.sqlstate, "57014", "Postgres's own statement-timeout code");
       assert.ok(Number.isSafeInteger(line?.statement), JSON.stringify(line));
       assert.ok(Number(line?.statementMs) >= 4_900, JSON.stringify(line));
       const phases = info.mock.calls
