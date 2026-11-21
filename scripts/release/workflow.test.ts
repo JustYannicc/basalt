@@ -103,6 +103,32 @@ test("the class change states what was verified first and never pretends it can 
   assert.match(step("Stop on a failed class change"), /cannot be rolled back/u);
 });
 
+test("a plan runs the apply's read-only steps too, so an apply is never their first run", () => {
+  for (const name of [
+    "Record the serving version of every Worker the plan updates",
+    "Count accounts and history before",
+    "Record the root's boot before the apply",
+  ])
+    assert.equal(condition(name), undefined, name);
+  // A plan proves the read; the full count stays with the policies that change data.
+  assert.match(
+    step("Count accounts and history before"),
+    /\(env\.MODE == 'plan' \|\| [^}]*'--light'/u,
+  );
+  for (const name of [
+    "Record the deployment",
+    "Back up the pool database",
+    "Read the provider observation again right before the apply",
+    "Apply the reviewed plan",
+    "Accept the release through the live pool",
+  ])
+    assert.match(condition(name) ?? "", /env\.MODE == 'apply'/u, name);
+  assert.match(step("Check the apply's tools are present"), /for tool in gh jq bun node; do/u);
+  assert.equal(condition("Check the apply's tools are present"), undefined);
+  const [tools, prepare] = order("Check the apply's tools are present", "Prepare");
+  assert.ok(tools! < prepare!);
+});
+
 test("every production attempt from the backup on leaves a GitHub Deployment with its outcome", async () => {
   const [record, backup] = order("Record the deployment", "Back up the pool database");
   assert.ok(record! < backup!);

@@ -199,6 +199,12 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
+      # The apply-only steps call these; a plan proves they are on the runner it got.
+      - name: Check the apply's tools are present
+        run: |
+          for tool in gh jq bun node; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is not on this runner, and the apply calls it"; exit 1; }
+          done
       - name: Prepare
         run: npm run prepare:upstream
       - name: Build and measure Worker startup
@@ -389,10 +395,11 @@ jobs:
             -f payload="$payload" --jq .id)
           gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress >/dev/null
           echo "id=$id" >> "$GITHUB_OUTPUT"
+      # The serving read, the light counts and the boot read only read, so a plan runs them too: an
+      # apply is never the first run of a step that comes before its upload.
       - name: Record the serving version of every Worker the plan updates
         env: *release-secrets
         id: serving
-        if: env.MODE == 'apply'
         run: |
           bun scripts/release/deploy.ts serving --stage production --from .local/release/plan.json --out .local/release/serving.json
           echo "workers=$(jq -c '[.workers[].fqn]' .local/release/serving.json)" >> "$GITHUB_OUTPUT"
@@ -402,13 +409,12 @@ jobs:
         run: bun scripts/release/deploy.ts backup --stage production --name "basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID"
       - name: Count accounts and history before
         env: *release-secrets
-        if: env.MODE == 'apply'
-        # A code-only release changes no data by itself; skip the multi-million-row count then.
-        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
+        # A code-only release changes no data by itself, and a plan only proves the read: skip the
+        # multi-million-row count then.
+        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.MODE == 'plan' || env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
       # No release may restart the root: its boot is read now and must still serve after the apply.
       - name: Record the root's boot before the apply
         env: *release-secrets
-        if: env.MODE == 'apply'
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
         # pool that does not answer; every other release needs the root's boot.
         run: |
