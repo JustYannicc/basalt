@@ -12,7 +12,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { decodeRuntimeCreate } from "../../scripts/pool-fleet/runtime-create-schema.ts";
 import { runtimeDeclaration } from "../../scripts/pool-fleet/test/runtime-declaration.ts";
-import { bindPoolObservation, poolObservationTokenProps } from "./fleet-observation.ts";
+import { bindPoolObservation } from "./fleet-observation.ts";
 import {
   decodeFleetDeploymentImages,
   fleetBindings,
@@ -86,13 +86,9 @@ test("ordinary non-production deployments without fleet pins declare no fleet ap
   assert.equal(await observationBinding(stack), undefined);
 });
 
-test("production binds the observation secret and declares its retained token even without a fleet", async () => {
+test("production binds the observation secret even without a fleet, and declares no token", async () => {
   const stack = await declarations("", { stage: "production" });
-  assert.deepEqual(Object.keys(stack.resources).sort(), [
-    "PoolObservationSecrets",
-    "PoolProviderObservationToken",
-    "PoolWorker",
-  ]);
+  assert.deepEqual(Object.keys(stack.resources).sort(), ["PoolObservationSecrets", "PoolWorker"]);
   assert.deepEqual(await observationBinding(stack), {
     bindings: [
       {
@@ -103,24 +99,13 @@ test("production binds the observation secret and declares its retained token ev
       },
     ],
   });
-  // Exactly the row provisioning created, so a plain plan adopts it as a noop.
-  const token = stack.resources.PoolProviderObservationToken!;
-  assert.equal(token.Type, "Cloudflare.ApiToken.AccountApiToken");
-  assert.equal(token.FQN, "PoolProviderObservationToken");
-  assert.equal(token.LogicalId, "PoolProviderObservationToken");
-  assert.equal(token.RemovalPolicy, "retain");
-  assert.deepEqual(token.Props, poolObservationTokenProps(accountId, "production"));
-  assert.deepEqual(token.Props, {
-    accountId,
-    name: "basalt-production-pool-provider-observation",
-    policies: [
-      {
-        effect: "allow",
-        permissionGroups: [{ id: "cfd39eebc07c4e3ea849e4b3d2644637" }],
-        resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
-      },
-    ],
-  });
+  // No account token is declared: production's State never held one, and the bootstrap owns it.
+  assert.equal(stack.resources.PoolProviderObservationToken, undefined);
+  assert.ok(
+    !Object.values(stack.resources).some((resource) =>
+      resource.Type.startsWith("Cloudflare.ApiToken."),
+    ),
+  );
   // The value stays in the Secrets Store; the Worker never receives the token itself.
   assert.equal(stack.bindings.PoolProviderObservationToken?.length ?? 0, 0);
 });
@@ -151,10 +136,7 @@ test("fleet declarations keep independent immutable images, exact namespaces, ze
       observability: { logs: { enabled: true } },
     });
   }
-  assert.deepEqual(
-    stack.resources.PoolProviderObservationToken!.Props,
-    poolObservationTokenProps(accountId, "synthetic"),
-  );
+  assert.equal(stack.resources.PoolProviderObservationToken, undefined);
   const store = stack.resources.PoolObservationSecrets!;
   assert.equal(store.Type, "Cloudflare.SecretsStore");
   assert.equal(store.RemovalPolicy, "retain");
