@@ -70,7 +70,19 @@ export function mintProgram(accountId: string, lane: number, publicJwk: object) 
   const request = async (options) => {
     const reply = await cloudflare.request(options);
     if (!reply || reply.success !== true) throw null;
-    return reply.result;
+    return reply;
+  };
+  // Every page, so a lane token on a later page is never missed.
+  const tokens = async () => {
+    const all = [];
+    for (let page = 1; page <= 50; page++) {
+      const reply = await request({method:'GET',path:base + '/tokens',query:{page,per_page:100}});
+      const rows = Array.isArray(reply.result) ? reply.result : [];
+      all.push(...rows);
+      const pages = reply.result_info && reply.result_info.total_pages;
+      if (Number.isInteger(pages) ? page >= pages : rows.length < 100) return all;
+    }
+    throw null;
   };
   const sealKey = await crypto.subtle.importKey('jwk', target.publicJwk,
     {name:'RSA-OAEP',hash:'SHA-256'}, false, ['encrypt']);
@@ -87,36 +99,41 @@ export function mintProgram(accountId: string, lane: number, publicJwk: object) 
   } catch {
     return {outcome:'refused_sealing'};
   }
+  // Once a token exists its id goes back on every outcome, so it can always be deleted by id.
+  let tokenId = null;
   try {
-    const existing = (await request({method:'GET',path:base + '/tokens',query:{per_page:100}}) || [])
-      .filter(row => row && row.name === target.name);
-    if (existing.length) return {outcome:'refused_existing'};
-    const created = await request({method:'POST',path:base + '/tokens',body:{name:target.name,
+    if ((await tokens()).some(row => row && row.name === target.name))
+      return {outcome:'refused_existing'};
+    const created = (await request({method:'POST',path:base + '/tokens',body:{name:target.name,
       policies:[{effect:'allow',permission_groups:[{id:target.permission}],
-        resources:{['com.cloudflare.api.account.' + target.accountId]:'*'}}]}});
-    if (!created || !/^[a-f0-9]{32}$/.test(created.id || '') || typeof created.value !== 'string')
-      return {outcome:'unknown_create'};
-    const actual = await request({method:'GET',path:base + '/tokens/' + created.id});
+        resources:{['com.cloudflare.api.account.' + target.accountId]:'*'}}]}})).result;
+    if (created && /^[a-f0-9]{32}$/.test(created.id || '')) tokenId = created.id;
+    if (!tokenId || typeof created.value !== 'string') return {outcome:'unknown_create', tokenId};
+    const actual = (await request({method:'GET',path:base + '/tokens/' + tokenId})).result;
     const policy = actual && Array.isArray(actual.policies) && actual.policies.length === 1 && actual.policies[0];
-    const owned = actual && actual.id === created.id && actual.name === target.name && policy &&
+    const owned = actual && actual.id === tokenId && actual.name === target.name && policy &&
       policy.effect === 'allow' && policy.permission_groups.length === 1 &&
       policy.permission_groups[0].id === target.permission &&
       Object.keys(policy.resources || {}).length === 1 &&
       policy.resources['com.cloudflare.api.account.' + target.accountId] === '*';
-    if (!owned) return {outcome:'refused_ownership', tokenId: created.id};
+    if (!owned) return {outcome:'refused_ownership', tokenId};
     const sealed = await seal(created.value);
     created.value = null;
-    return {outcome:'minted', tokenId: created.id, sealed};
+    return {outcome:'minted', tokenId, sealed};
   } catch {
     // Provider messages may echo a value. Never return any part of an exception.
-    return {outcome:'unknown'};
+    return {outcome:'unknown', tokenId};
   }
 }`;
 }
 
-/** Deletes the recorded id only, then proves no token has that id or name. */
-export function deleteProgram(accountId: string, lane: number, tokenId: string) {
-  if (!/^[a-f0-9]{32}$/u.test(tokenId)) throw new Error("A token id is 32 hex characters");
+/**
+ * Deletes the lane token, by the recorded id when there is one, else the one token with the lane's
+ * name (exactly one, or it refuses), then proves no token has that id or name on any page.
+ */
+export function deleteProgram(accountId: string, lane: number, tokenId: string | null) {
+  if (tokenId !== null && !/^[a-f0-9]{32}$/u.test(tokenId))
+    throw new Error("A token id is 32 hex characters");
   const target = {
     accountId: requireAccount(accountId),
     name: laneTokenName(requireLane(lane)),
@@ -128,15 +145,31 @@ export function deleteProgram(accountId: string, lane: number, tokenId: string) 
   const request = async (options) => {
     const reply = await cloudflare.request(options);
     if (!reply || reply.success !== true) throw null;
-    return reply.result;
+    return reply;
+  };
+  // Every page, so a lane token on a later page is never missed.
+  const tokens = async () => {
+    const all = [];
+    for (let page = 1; page <= 50; page++) {
+      const reply = await request({method:'GET',path:base + '/tokens',query:{page,per_page:100}});
+      const rows = Array.isArray(reply.result) ? reply.result : [];
+      all.push(...rows);
+      const pages = reply.result_info && reply.result_info.total_pages;
+      if (Number.isInteger(pages) ? page >= pages : rows.length < 100) return all;
+    }
+    throw null;
   };
   try {
-    const before = (await request({method:'GET',path:base + '/tokens',query:{per_page:100}}) || []);
-    const row = before.find(item => item && item.id === target.tokenId);
+    const before = await tokens();
+    const named = before.filter(item => item && item.name === target.name);
+    const row = target.tokenId === null
+      ? (named.length === 1 ? named[0] : undefined)
+      : before.find(item => item && item.id === target.tokenId);
+    if (target.tokenId === null && named.length > 1) return {outcome:'refused_inventory'};
     if (row && row.name !== target.name) return {outcome:'refused_ownership'};
-    if (row) await request({method:'DELETE',path:base + '/tokens/' + target.tokenId});
-    const after = (await request({method:'GET',path:base + '/tokens',query:{per_page:100}}) || []);
-    const left = after.filter(item => item && (item.id === target.tokenId || item.name === target.name));
+    if (row) await request({method:'DELETE',path:base + '/tokens/' + row.id});
+    const gone = row ? row.id : target.tokenId;
+    const left = (await tokens()).filter(item => item && (item.id === gone || item.name === target.name));
     return {outcome: left.length ? 'still_present' : 'gone', present: left.length};
   } catch {
     return {outcome:'unknown'};
@@ -203,7 +236,10 @@ export async function mintLaneToken(input: {
   return { outcome: "minted", recorded: true, secret: laneSecretName(input.lane) };
 }
 
-/** One operator step: delete by the recorded id, prove it gone, delete the job's secret. */
+/**
+ * One operator step: delete by the recorded id (or, with no record, the lane's one token by name),
+ * prove it gone, delete the job's secret.
+ */
 export async function deleteLaneToken(input: {
   accountId: string;
   lane: number;
@@ -211,19 +247,18 @@ export async function deleteLaneToken(input: {
   transport: OperatorTransport;
   deleteSecret?: typeof deleteJobSecret;
 }) {
-  const recorded = JSON.parse(await readFile(input.record, "utf8")) as {
-    lane?: unknown;
-    tokenId?: unknown;
-  };
-  if (recorded.lane !== input.lane || typeof recorded.tokenId !== "string")
+  const text = await readFile(input.record, "utf8").catch(() => undefined);
+  const recorded =
+    text === undefined ? undefined : (JSON.parse(text) as { lane?: unknown; tokenId?: unknown });
+  if (recorded && (recorded.lane !== input.lane || typeof recorded.tokenId !== "string"))
     throw new Error("The record names another lane or no token");
   const reply = (await input.transport.run(
-    deleteProgram(input.accountId, input.lane, recorded.tokenId),
+    deleteProgram(input.accountId, input.lane, (recorded?.tokenId as string | undefined) ?? null),
   )) as { outcome?: unknown } | null;
   if (reply?.outcome !== "gone") return { outcome: String(reply?.outcome ?? "unknown") };
   await (input.deleteSecret ?? deleteJobSecret)(laneSecretName(input.lane));
   await rm(input.record, { force: true });
-  return { outcome: "gone", secretDeleted: laneSecretName(input.lane) };
+  return { outcome: "gone", secretDeleted: laneSecretName(input.lane), byName: !recorded };
 }
 
 type Json = Record<string, unknown>;
@@ -302,8 +337,13 @@ export function toolsServiceTransport(input: {
         }),
       );
       if (field(outcome, "status") === "approval-required") {
-        const pending = field(field(field(outcome, "invocation"), "input"), "input");
-        if (field(pending, "code") !== program)
+        const paused = field(field(outcome, "invocation"), "input");
+        const pending = field(paused, "input");
+        if (
+          field(pending, "code") !== program ||
+          field(pending, "account_id") !== input.accountId ||
+          field(paused, "accountId") !== input.connection
+        )
           throw new Error("The paused program is not the one this process submitted");
         outcome = toolText(
           await rpc("tools/call", {

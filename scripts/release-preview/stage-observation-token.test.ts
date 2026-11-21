@@ -8,6 +8,7 @@ import {
   deleteProgram,
   laneTokenName,
   mintLaneToken,
+  mintKeys,
   mintProgram,
   observationPermission,
   toolsServiceTransport,
@@ -17,17 +18,32 @@ const account = "a".repeat(32);
 const tokenId = "b".repeat(32);
 
 /** A fake operator connection: the program text runs against `cloudflare.request` and these rows. */
-function connection(rows: { id: string; name: string; policies?: unknown[] }[]) {
+function connection(
+  rows: { id: string; name: string; policies?: unknown[] }[],
+  options: { failProofRead?: boolean; pageSize?: number } = {},
+) {
   const sent: string[] = [];
   const cloudflare = {
-    request: async (options: { method: string; path: string; body?: { name: string } }) => {
-      sent.push(`${options.method} ${options.path}`);
-      if (options.method === "GET" && options.path.endsWith("/tokens"))
-        return { success: true, result: rows };
-      if (options.method === "POST") {
+    request: async (request: {
+      method: string;
+      path: string;
+      body?: { name: string };
+      query?: { page?: number; per_page?: number };
+    }) => {
+      sent.push(`${request.method} ${request.path}`);
+      if (request.method === "GET" && request.path.endsWith("/tokens")) {
+        const size = options.pageSize ?? 1000;
+        const page = request.query?.page ?? 1;
+        return {
+          success: true,
+          result: rows.slice((page - 1) * size, page * size),
+          result_info: { page, total_pages: Math.max(1, Math.ceil(rows.length / size)) },
+        };
+      }
+      if (request.method === "POST") {
         const row = {
           id: tokenId,
-          name: options.body!.name,
+          name: request.body!.name,
           policies: [
             {
               effect: "allow",
@@ -39,11 +55,13 @@ function connection(rows: { id: string; name: string; policies?: unknown[] }[]) 
         rows.push(row);
         return { success: true, result: { ...row, value: "minted-value" } };
       }
-      if (options.method === "GET")
-        return { success: true, result: rows.find((row) => options.path.endsWith(row.id)) };
-      if (options.method === "DELETE") {
+      if (request.method === "GET") {
+        if (options.failProofRead) return { success: false };
+        return { success: true, result: rows.find((row) => request.path.endsWith(row.id)) };
+      }
+      if (request.method === "DELETE") {
         rows.splice(
-          rows.findIndex((row) => options.path.endsWith(row.id)),
+          rows.findIndex((row) => request.path.endsWith(row.id)),
           1,
         );
         return { success: true, result: null };
@@ -133,7 +151,11 @@ test("the delete removes only the recorded id, proves it gone by a list read, th
     transport,
     deleteSecret: async (name) => void deleted.push(name),
   });
-  assert.deepEqual(result, { outcome: "gone", secretDeleted: "REHEARSAL_OBSERVATION_TOKEN_2" });
+  assert.deepEqual(result, {
+    outcome: "gone",
+    secretDeleted: "REHEARSAL_OBSERVATION_TOKEN_2",
+    byName: false,
+  });
   assert.deepEqual(deleted, ["REHEARSAL_OBSERVATION_TOKEN_2"]);
   assert.deepEqual(sent.slice(-3), [
     `GET /accounts/${account}/tokens`,
@@ -180,7 +202,7 @@ test("the tools-service transport accepts a pause only for its own program, and 
               text: JSON.stringify({
                 status: "approval-required",
                 requestId: "apr_1",
-                invocation: { input: { input: { code } } },
+                invocation: { input: { accountId: "acc_x", input: { code, account_id: account } } },
               }),
             },
           ],
@@ -252,4 +274,63 @@ test("the tools-service transport accepts a pause only for its own program, and 
     }).run(program),
     /did not complete/u,
   );
+});
+
+test("a token created before a later step fails still comes back with its id, so it can be deleted", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "lane-token-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const record = join(dir, "token.json");
+  const { transport } = connection([], { failProofRead: true });
+  const result = await mintLaneToken({
+    accountId: account,
+    lane: 2,
+    record,
+    transport,
+    setSecret: async () => assert.fail("no secret after a failed mint"),
+  });
+  assert.equal(result.outcome, "unknown");
+  assert.equal(result.recorded, true);
+  assert.deepEqual(JSON.parse(await readFile(record, "utf8")), { lane: 2, tokenId });
+});
+
+test("with no record the delete takes the lane's one token by name, and refuses two", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "lane-token-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const record = join(dir, "missing.json");
+  const one = connection([{ id: tokenId, name: laneTokenName(2) }]);
+  const result = await deleteLaneToken({
+    accountId: account,
+    lane: 2,
+    record,
+    transport: one.transport,
+    deleteSecret: async () => {},
+  });
+  assert.deepEqual(result, {
+    outcome: "gone",
+    secretDeleted: "REHEARSAL_OBSERVATION_TOKEN_2",
+    byName: true,
+  });
+  const two = connection([
+    { id: tokenId, name: laneTokenName(2) },
+    { id: "c".repeat(32), name: laneTokenName(2) },
+  ]);
+  assert.deepEqual(
+    await deleteLaneToken({ accountId: account, lane: 2, record, transport: two.transport }),
+    { outcome: "refused_inventory" },
+  );
+});
+
+test("the mint's existence check reads every page of tokens", async () => {
+  const many = Array.from({ length: 100 }, (_, index) => ({
+    id: index.toString(16).padStart(32, "0"),
+    name: `other-${index}`,
+  }));
+  const { transport, sent } = connection([...many, { id: tokenId, name: laneTokenName(2) }], {
+    pageSize: 100,
+  });
+  const reply = (await transport.run(mintProgram(account, 2, mintKeys().publicJwk))) as {
+    outcome: string;
+  };
+  assert.equal(reply.outcome, "refused_existing");
+  assert.ok(sent.filter((line) => line === `GET /accounts/${account}/tokens`).length >= 2);
 });
