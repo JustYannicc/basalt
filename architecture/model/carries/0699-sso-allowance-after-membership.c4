@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.ssoService {
+    metadata {
+      constraint "An SSO sign-in asks the billing provider for the member allowance only when it would add a member. A person who is already a member, or whose pending invitation owns their role, signs in without that call, so a billing outage never locks out people already in the team. The membership transaction checks both again under the team lock before it counts seats. A sign-in that would add a member still fails closed when the allowance cannot be confirmed."
+    }
+  }
+}
