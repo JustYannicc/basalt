@@ -1,0 +1,186 @@
+diff --git a/apps/hosted/server/src/implementation/vault-device-grants.ts b/apps/hosted/server/src/implementation/vault-device-grants.ts
+--- a/apps/hosted/server/src/implementation/vault-device-grants.ts
++++ b/apps/hosted/server/src/implementation/vault-device-grants.ts
+@@ -7,13 +7,12 @@
+  */
+ import { DriveDevices, DriveRequestFailed } from "apps/contracts";
+ import { ConnectionPolicy } from "@executor-js/mcp-auth/connections";
++import { isDeviceClient } from "@executor-js/mcp-auth/device";
+ import type { DriveBackend, StorageError } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import { strings } from "./bearer-access.ts";
+ 
+-const deviceCode = "urn:ietf:params:oauth:grant-type:device_code";
+-
+ const GrantRow = Schema.Struct({
+   id: Schema.String,
+   userId: Schema.String,
+@@ -33,15 +32,6 @@ const unreadable = () =>
+     message: "Grant storage holds a record of one of this vault's grants that could not be read.",
+   });
+ 
+-/**
+- * A client registered for device authorization only, so device authorization issued its grant.
+- * Better Auth reads a client with no registered grant types as an authorization code client.
+- */
+-const deviceClient = (grants: readonly string[] | null) =>
+-  grants !== null &&
+-  grants.includes(deviceCode) &&
+-  grants.every((grant) => grant === deviceCode || grant === "refresh_token");
+-
+ /** Connect Obsidian's connection: the vault's app alone, run as the app, whatever its tools. */
+ const vaultConnection = (app: string, policy: ConnectionPolicy) => {
+   const [only, ...rest] = policy.apps;
+@@ -85,7 +75,7 @@ export const vaultDeviceGrants = (
+         grant.connectionUser === grant.userId &&
+         grant.connectionResource === grant.resource &&
+         vaultConnection(app, grant.connectionPolicy) &&
+-        deviceClient(clientGrants)
++        isDeviceClient(clientGrants)
+       )
+         devices.add(grant.id);
+     }
+diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web/src/contracts/obsidian-devices.ts
+--- a/apps/hosted/web/src/contracts/obsidian-devices.ts
++++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
+@@ -20,18 +20,26 @@ const pluginClientNames = new Set(["Signalbox Obsidian Sync", "Basalt Sync"]);
+ /** The plugin's sync tools, any version; Connect Obsidian scopes each device to a subset. */
+ const syncTools = new Set<string>(obsidianTools);
+ 
++/** The connection's one app entry when it reaches this app alone, run as the app. */
++const vaultAlone = (app: AppId, connection: Connection) => {
++  const [only, ...rest] = connection.policy.apps;
++  return only !== undefined &&
++    rest.length === 0 &&
++    only.app === app &&
++    only.runsAs.length === 1 &&
++    only.runsAs[0]?.kind === "app"
++    ? only
++    : undefined;
++};
++
+ /**
+  * A connection Connect Obsidian made for this vault: this one app, run as the app, limited to
+  * sync tools. A broader connection that happens to include the app belongs to an agent.
+  */
+ export const isVaultConnection = (app: AppId, connection: Connection) => {
+-  const [only, ...rest] = connection.policy.apps;
++  const only = vaultAlone(app, connection);
+   return (
+     only !== undefined &&
+-    rest.length === 0 &&
+-    only.app === app &&
+-    only.runsAs.length === 1 &&
+-    only.runsAs[0]?.kind === "app" &&
+     only.tools.kind === "selected" &&
+     only.tools.names.length > 0 &&
+     only.tools.names.every((name) => syncTools.has(name))
+@@ -39,9 +47,10 @@ export const isVaultConnection = (app: AppId, connection: Connection) => {
+ };
+ 
+ /**
+- * The member's devices syncing this app's vault, oldest first: grants held through a connection
+- * Connect Obsidian made for it. Other grants, and connections for other apps or wider access,
+- * are not this vault's devices.
++ * The member's devices syncing this app's vault, oldest first, by the drive's own rule for its
++ * devices: grants device authorization issued, held through a connection for this app alone, run
++ * as the app, whatever tools its owner has since chosen. An agent's grant is not a device even
++ * when it holds only the sync tools, or connects through Connect Obsidian's own connection.
+  */
+ export function obsidianDevices(
+   app: AppId,
+@@ -50,12 +59,14 @@ export function obsidianDevices(
+ ): ObsidianDevice[] {
+   const vault = new Set(
+     connections
+-      .filter((connection) => isVaultConnection(app, connection))
++      .filter((connection) => vaultAlone(app, connection) !== undefined)
+       .map((connection) => connection.id),
+   );
+   const devices = agents
+     .flatMap((agent) =>
+-      agent.access.kind === "connection" && vault.has(agent.access.connection)
++      agent.issuedToDevice &&
++      agent.access.kind === "connection" &&
++      vault.has(agent.access.connection)
+         ? [{ agent, connection: agent.access.connection }]
+         : [],
+     )
+diff --git a/packages/mcp-auth/src/contracts/agents.ts b/packages/mcp-auth/src/contracts/agents.ts
+--- a/packages/mcp-auth/src/contracts/agents.ts
++++ b/packages/mcp-auth/src/contracts/agents.ts
+@@ -36,6 +36,12 @@ export const ConnectedAgent = Schema.Struct({
+    */
+   lastActiveAt: Schema.NullOr(Schema.String),
+   access: ConnectedAgentAccess,
++  /**
++   * Device authorization (RFC 8628) issued the grant, to a client registered for nothing else,
++   * as Connect Obsidian's devices are. The tools a grant reaches never tell a device from an
++   * agent: an agent may hold exactly a device's tools.
++   */
++  issuedToDevice: Schema.Boolean,
+   /** How tool approvals reach the user; absent for API grants. */
+   mode: Schema.optionalKey(ApprovalMode),
+ });
+diff --git a/packages/mcp-auth/src/contracts/device.ts b/packages/mcp-auth/src/contracts/device.ts
+--- a/packages/mcp-auth/src/contracts/device.ts
++++ b/packages/mcp-auth/src/contracts/device.ts
+@@ -125,3 +125,16 @@ export const deviceDecisionUnavailable = (details: DeviceFailureDetails) =>
+     message:
+       "We could not confirm this device connection. Check its status on your device before trying again.",
+   });
++
++/** RFC 8628's grant type, as the token endpoint takes it and a client registers for it. */
++const deviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code";
++
++/**
++ * Device authorization issued this client's grants: it registered for the device grant and
++ * refresh alone. Better Auth reads a client that registered no grant types as an authorization
++ * code client, and a client that may use both could have been issued its grant either way.
++ */
++export const isDeviceClient = (grantTypes: readonly string[] | null) =>
++  grantTypes !== null &&
++  grantTypes.includes(deviceCodeGrant) &&
++  grantTypes.every((grant) => grant === deviceCodeGrant || grant === "refresh_token");
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -26,7 +26,7 @@ import { deviceDecisionStep } from "./device-decision-step.ts";
+ import { normalizeNativeRevokeBody } from "./native-revoke-body.ts";
+ import { revokedTokenHook } from "./revocation.ts";
+ import { isNativeGrant, nativeGrants, type NativeGrantHost } from "./native-grants.ts";
+-import { deviceVerificationPath } from "../contracts/device.ts";
++import { deviceVerificationPath, isDeviceClient } from "../contracts/device.ts";
+ export { NativeGrantAccess, NativeGrantPolicy, type NativeGrantHost } from "./native-grants.ts";
+ export { NativeGrantDisplay, NativePoolMetadata } from "../contracts/native-display.ts";
+ import {
+@@ -906,6 +906,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+                 clientId: Schema.String,
+                 name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+                 disabled: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
++                grantTypes: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+               }),
+             ),
+             rows,
+@@ -937,6 +938,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+       const disabled = new Set(
+         clients.flatMap((client) => (client.disabled === true ? [client.clientId] : [])),
+       );
++      // How the grant was issued shows only in its client's registration.
++      const deviceClients = new Set(
++        clients.flatMap((client) =>
++          isDeviceClient(client.grantTypes ?? null) ? [client.clientId] : [],
++        ),
++      );
+       const connectionOf = new Map(connections.map((row) => [row.id, row]));
+       const agents = yield* Effect.forEach(
+         grants,
+@@ -993,6 +1000,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+                 connectedAt: consent.createdAt.toISOString(),
+                 lastActiveAt: latest[0]?.createdAt.toISOString() ?? null,
+                 access,
++                issuedToDevice: deviceClients.has(grant.clientId),
+                 ...(target.kind === "mcp" ? { mode: target.mode } : {}),
+               }),
+             ];
