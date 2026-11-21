@@ -21,8 +21,11 @@ import { dirname, join } from "node:path";
 export type SharedStep = {
   /** The cache directory, or undefined to build without one. */
   readonly cache: string | undefined;
-  /** Everything the outputs depend on; a different key never restores another's entry. */
-  readonly key: string;
+  /**
+   * Everything the outputs depend on; a different key never restores another's entry. Computed
+   * only when a cache is named, so a failure computing it falls back to building too.
+   */
+  readonly key: () => string;
   readonly root: string;
   /** Paths under `root` that the build writes. */
   readonly outputs: readonly string[];
@@ -129,19 +132,46 @@ function claim(entry: string, lock: string) {
 
 export function withSharedStep(step: SharedStep, build: () => void) {
   if (!step.cache) return build();
-  const entry = join(step.cache, step.key);
+  // The cache is an optimisation: if it fails (a full mount, an unreadable entry), the job
+  // builds as it would without one.
+  let restored: boolean;
+  try {
+    restored = restoreOrClaim(step);
+  } catch (error) {
+    console.log(`Shared cache unavailable, building: ${(error as Error).message}`);
+    release();
+    return build();
+  }
+  if (restored) return;
+  build();
+  try {
+    storeEntry(step);
+  } catch (error) {
+    console.log(`Shared cache not written: ${(error as Error).message}`);
+  } finally {
+    release();
+  }
+}
+
+let key = "";
+
+function restoreOrClaim(step: SharedStep) {
+  key = step.key();
+  const entry = join(step.cache!, key);
   const lock = `${entry}.lock`;
   mkdirSync(step.cache, { recursive: true });
-  if (claim(entry, lock)) {
-    for (const output of step.outputs) {
-      rmSync(join(step.root, output), { recursive: true, force: true });
-      mkdirSync(dirname(join(step.root, output)), { recursive: true });
-      cpSync(join(entry, output), join(step.root, output), { recursive: true });
-    }
-    console.log(`Restored ${step.outputs.join(", ")} from ${entry}`);
-    return;
+  if (!claim(entry, lock)) return false;
+  for (const output of step.outputs) {
+    rmSync(join(step.root, output), { recursive: true, force: true });
+    mkdirSync(dirname(join(step.root, output)), { recursive: true });
+    cpSync(join(entry, output), join(step.root, output), { recursive: true });
   }
-  build();
+  console.log(`Restored ${step.outputs.join(", ")} from ${entry}`);
+  return true;
+}
+
+function storeEntry(step: SharedStep) {
+  const entry = join(step.cache!, key);
   // Written beside the entry and renamed, so a reader never sees a partial one.
   const partial = `${entry}.${scratch}.partial`;
   rmSync(partial, { recursive: true, force: true });
@@ -152,7 +182,7 @@ export function withSharedStep(step: SharedStep, build: () => void) {
   try {
     renameSync(partial, entry);
   } catch {
+    // Another job stored the same key first; its entry holds the same outputs.
     rmSync(partial, { recursive: true, force: true });
   }
-  release();
 }

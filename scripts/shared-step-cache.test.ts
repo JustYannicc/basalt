@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { sharedStepCache, withSharedStep } from "./shared-step-cache.ts";
+import { sharedStepCache, withSharedStep, worktreeKey } from "./shared-step-cache.ts";
 
 const module = fileURLToPath(new URL("./shared-step-cache.ts", import.meta.url));
 // A child process that runs one cached step: the build appends to a log, sleeps, writes its output.
@@ -26,7 +26,7 @@ const worker = (directory: string) => {
 import { join } from "node:path";
 import { withSharedStep } from ${JSON.stringify(module)};
 const [root, key, log] = process.argv.slice(2);
-withSharedStep({ cache: process.env.STEP_CACHE, key, root, outputs: ["out/file.json"] }, () => {
+withSharedStep({ cache: process.env.STEP_CACHE, key: () => key, root, outputs: ["out/file.json"] }, () => {
   appendFileSync(log, "built\\n");
   if (process.env.FAIL) process.exit(3);
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.BUILD_MS ?? 0));
@@ -183,4 +183,77 @@ const withSharedStepIn = (
   cache: string | undefined,
   key: string,
   build: () => void,
-) => withSharedStep({ cache, key, root, outputs: ["out/file.json"] }, build);
+) => withSharedStep({ cache, key: () => key, root, outputs: ["out/file.json"] }, build);
+
+test(
+  "the worktree key follows tracked and unignored files, not ignored ones, and leaves the index alone",
+  sandbox((directory) => {
+    const repo = join(directory, "repo");
+    mkdirSync(repo);
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    git("init", "-q");
+    writeFileSync(join(repo, ".gitignore"), "ignored/\n");
+    writeFileSync(join(repo, "a.txt"), "one");
+    git("add", ".");
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x");
+    const extra = { dependencies: "d" };
+    const first = worktreeKey(repo, extra);
+    assert.equal(worktreeKey(repo, extra), first);
+    // Ignored content and the dependency set behave as their own inputs do.
+    mkdirSync(join(repo, "ignored"));
+    writeFileSync(join(repo, "ignored/file"), "x");
+    assert.equal(worktreeKey(repo, extra), first);
+    assert.notEqual(worktreeKey(repo, { dependencies: "e" }), first);
+    // A tracked edit and a new unignored file each change it; the real index stays as it was.
+    writeFileSync(join(repo, "staged.txt"), "staged");
+    git("add", "staged.txt");
+    const index = readFileSync(join(repo, ".git/index"));
+    const staged = worktreeKey(repo, extra);
+    assert.notEqual(staged, first);
+    assert.deepEqual(readFileSync(join(repo, ".git/index")), index);
+    writeFileSync(join(repo, "a.txt"), "two");
+    assert.notEqual(worktreeKey(repo, extra), staged);
+  }),
+);
+
+test(
+  "a cache that fails falls back to building",
+  sandbox((directory) => {
+    const root = join(directory, "root");
+    // A file where the cache directory should be: every cache operation fails.
+    writeFileSync(join(directory, "blocked"), "");
+    let built = 0;
+    withSharedStep(
+      {
+        cache: join(directory, "blocked", "cache"),
+        key: () => "k",
+        root,
+        outputs: ["out/file.json"],
+      },
+      () => {
+        built++;
+        mkdirSync(join(root, "out"), { recursive: true });
+        writeFileSync(join(root, "out/file.json"), "fresh");
+      },
+    );
+    assert.equal(built, 1);
+    let keyed = 0;
+    withSharedStep(
+      {
+        cache: join(directory, "cache"),
+        key: () => {
+          keyed++;
+          throw new Error("git add failed");
+        },
+        root,
+        outputs: ["out/file.json"],
+      },
+      () => built++,
+    );
+    assert.equal(keyed, 1);
+    assert.equal(built, 2);
+  }),
+);

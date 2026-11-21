@@ -97,14 +97,12 @@ const frameworkCache = sharedStepCache("framework");
 withSharedStep(
   {
     cache: frameworkCache,
-    key:
-      frameworkCache === undefined
-        ? ""
-        : worktreeKey(upstream, {
-            dependencies: dependencies.key,
-            node: process.version,
-            bun: spawnSync("bun", ["--version"], { encoding: "utf8" }).stdout.trim(),
-          }),
+    key: () =>
+      worktreeKey(upstream, {
+        dependencies: dependencies.key,
+        node: process.version,
+        bun: spawnSync("bun", ["--version"], { encoding: "utf8" }).stdout.trim(),
+      }),
     root: upstream,
     outputs: ["apps/hosted/cloud/.generated/executor-authoring.json"],
   },
