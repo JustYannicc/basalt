@@ -9,9 +9,9 @@ import { test } from "node:test";
 import { runHistoryOperator } from "./pool-history-operator.ts";
 import { nodePoolOperations } from "./pool-operations-node.ts";
 import { historyJournalActivationManifest } from "../src/pool/model-history/operator.ts";
-import { historyPlan } from "./release-barrier/migration-activation-commands.ts";
-import { migrationActivationIntent } from "./release-barrier/migration-activation.ts";
-import { releaseOperationFingerprint } from "./release-barrier/release-operation.ts";
+import { historyPlan } from "./pool-history/migration-activation-commands.ts";
+import { migrationActivationIntent } from "./pool-history/migration-activation.ts";
+import { releaseOperationFingerprint } from "./pool-history/release-operation.ts";
 
 const account = "a".repeat(32);
 const worker = "fixture-pool";

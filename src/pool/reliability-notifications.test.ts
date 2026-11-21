@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { PoolReliability, PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
 import { reliabilityState } from "./model-history/reliability-slo.ts";
+import { notifyPercentageFailure } from "./reliability-notifications.ts";
 
 const window = (requests: number, failed: number, proof = 0): PoolReliability => ({
   from: "2026-11-14T11:00:00Z",
@@ -140,3 +141,28 @@ for (const example of cases)
       assert.equal(measured.hour.real.successRate, 800 / 9);
     }
   });
+
+test("the percentage page needs its own window breached, unknown outcomes included", () => {
+  // The hour breaches but is too small to page; the day fails 1.1 % of its counted requests, yet
+  // 200 more requests it never counted could still bring it back within the target.
+  const day = {
+    ...window(1_000, 11),
+    unknown: {
+      requests: 200,
+      pending: 0,
+      unavailable: 200,
+      unmatched: 0,
+      uncounted: 200,
+      couldFail: 200,
+    },
+  };
+  const slo: PoolReliabilitySlo = {
+    target: 99,
+    state: "breached",
+    captureAt: "2026-11-14T12:00:00Z",
+    current: window(10, 1),
+    hour: window(50, 5),
+    day,
+  };
+  assert.equal(notifyPercentageFailure(slo), false);
+});
