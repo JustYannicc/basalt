@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
 import { fixture } from "./native-device-fixture.ts";
 import { fixture as poolFixture, pool } from "../../src/pool/test/computers.ts";
@@ -53,7 +54,10 @@ async function runningPool(t: TestContext) {
 /** A device approved through the real decide endpoint, with its first tokens. */
 async function device(t: TestContext, models: boolean) {
   const running = await runningPool(t);
-  const f = await fixture(undefined, undefined, undefined, {
+  // SQL rows, as production reads them: the memory adapter returns fields a schema refuses.
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  const f = await fixture(undefined, undefined, db, {
     organizations: true,
     poolOrigin: running.origin,
   });
@@ -207,16 +211,3 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
   assert.equal((await d.p.registry())[computer!]?.state, "revoked");
 });
 
-test("diagnostic: grants revoke through the browser session", async (t) => {
-  const d = await device(t, false);
-  const [computer] = Object.keys(await d.p.registry());
-  const row = await d.f.adapter.findOne<{ id: string; revoked: boolean; resource: string }>({
-    model: "mcpGrant",
-    where: [{ field: "userId", value: d.f.userId }],
-  });
-  const asked = d.asked();
-  const response = await d.f.request("/mcp/grants/revoke", { id: row?.id });
-  const text = await response.text();
-  const state = (await d.p.registry())[computer!]?.state;
-  assert.fail(JSON.stringify({ status: response.status, text, row, state, pool: d.asked() - asked }));
-});
