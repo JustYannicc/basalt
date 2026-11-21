@@ -490,6 +490,18 @@ export function stageCleanupEnvironment(
 }
 
 /** Preview addresses use the router's HTTPS scheme and a validated, explicitly supplied zone. */
+/**
+ * The Router's zone routes. Production's wildcard sends every other app origin in the zone to
+ * production's Router, which answers any host but its own with an empty 404, and a zone route runs
+ * before a Custom Domain. A disposable stage shares that zone, so its own host needs a more
+ * specific route to its own Router, or production's Router answers it. Cloudflare rejects infix
+ * host wildcards; product-host bypass routes keep production's own origins.
+ */
+export function routerRoutes(host: string, disposable: boolean) {
+  if (disposable) return { routes: [{ pattern: `${host}/*` }] };
+  return appHosting.enabled ? { routes: [{ pattern: `*.${appHosting.zone}/*` }] } : {};
+}
+
 export function previewStageOrigin(slug: string, domain: string, app = true): string {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(slug))
     throw new Error("Invalid preview stage slug");

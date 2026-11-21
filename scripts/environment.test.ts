@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { brand } from "../brand.ts";
+import { appHosting, brand } from "../brand.ts";
 import {
   connectorWarnings,
   optionalConnectorClients,
@@ -17,6 +17,7 @@ import {
   requiredPreviewSecrets,
   requiredSecrets,
   stageCleanupEnvironment,
+  routerRoutes,
   stageEnvironment,
 } from "./environment.ts";
 
@@ -572,4 +573,19 @@ test("carry 0719's switch is set on every disposable stage and refused for produ
     () => deployEnvironment({ EXECUTOR_APP_HOST_ROUTER: "basalt" }),
     /Unsupported production override: EXECUTOR_APP_HOST_ROUTER/,
   );
+});
+
+test("a disposable stage's Router routes its own host; production keeps its wildcard and bypasses", () => {
+  // Production's wildcard would answer the stage's host with its bare 404; a host route beats it.
+  assert.deepEqual(routerRoutes("app.rehearsal-5.preview.example.invalid", true), {
+    routes: [{ pattern: "app.rehearsal-5.preview.example.invalid/*" }],
+  });
+  assert.deepEqual(routerRoutes("app.pr-9.preview.example.invalid", true), {
+    routes: [{ pattern: "app.pr-9.preview.example.invalid/*" }],
+  });
+  assert.deepEqual(routerRoutes(brand.host, false), {
+    routes: [{ pattern: `*.${appHosting.zone}/*` }],
+  });
+  // Production's own hosts keep their script-less bypass routes ahead of its wildcard.
+  assert.ok(appHosting.bypassHosts.includes(brand.host));
 });

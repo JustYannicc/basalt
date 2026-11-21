@@ -17,7 +17,7 @@ import { adopt } from "alchemy/AdoptPolicy";
 import { appHosting, brand, deployment } from "./brand.ts";
 import { verifyRuntimeDatabaseBudget } from "./src/pool/database-budget.ts";
 import { poolWorker } from "./src/pool/deployment.ts";
-import { previewStageOrigin } from "./scripts/environment.ts";
+import { previewStageOrigin, routerRoutes } from "./scripts/environment.ts";
 import {
   cloudDeployment,
   cloudProviders,
@@ -216,10 +216,7 @@ export default Alchemy.Stack(
         runWorkerFirst: true,
       },
       domain: host,
-      // Cloudflare rejects infix host wildcards. More specific product-host bypasses protect their existing origins.
-      ...(preview === undefined && appHosting.enabled
-        ? { routes: [{ pattern: `*.${appHosting.zone}/*` }] }
-        : {}),
+      ...routerRoutes(host, preview !== undefined),
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       observability: workerObservability,
