@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "E2E scenarios install Playwright's controlled browser clock only through installClock in e2e/support/browser-clock.ts; the clock-through-helper lint rule fails any other explicit clock.install call under e2e. The helper keeps Date.now() in whole milliseconds, as a real browser reports, because the controlled clock keeps fractional timer delays such as a jittered reconnect, and Effect converts Date.now() to BigInt for span timing, so a fractional value fails a request before it is sent and a fenced read accepts the stale result. The account outage polling proof starts its clock half a millisecond off a whole value so this condition is exercised on every run. Product polling, fencing and request code are unchanged."
+    }
+  }
+}

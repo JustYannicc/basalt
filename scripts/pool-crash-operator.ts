@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { ControllerCode, SlotIdentity } from "../src/pool/runtime-slots/contract.ts";
 import { currentCrashCommand } from "../src/pool/runtime-crash-contract.ts";
 import { decodeRuntimeHandoffCommand } from "../src/pool/runtime-slots/handoff-command.ts";
-import { sendRuntimeCommand } from "./release-barrier/runtime-command-rpc.ts";
+import { sendRuntimeCommand } from "./pool-fleet/runtime-command-rpc.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import type { PoolOperationsTarget } from "./pool-operations.ts";
 

@@ -1,0 +1,46 @@
+name: Load the pool compatibility images
+description: >-
+  Restore, or build and keep, the two images built from the frozen compatibility commit, keyed by
+  every byte of their prepared context.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/pool-release-assets
+    - name: Prepare the pinned compatibility image context
+      id: context
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/pool-usage-privacy-baseline"
+        git archive b35314687e8972f64d7c1c3c73a1492a50fb7bac containers/pool | tar -x -C "$RUNNER_TEMP/pool-usage-privacy-baseline"
+        node scripts/ci/pool-release-assets.ts context "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
+    - name: Restore the built compatibility images
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/pool-compatibility-images
+        key: ${{ steps.context.outputs.key }}
+    - name: Load or build the compatibility images
+      shell: bash
+      env:
+        CONTEXT: ${{ steps.context.outputs.context }}
+        HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        images="$RUNNER_TEMP/pool-compatibility-images"
+        if [ "$HIT" = true ]; then
+          docker load --input "$images/images.tar"
+        else
+          bash scripts/ci/pool-image-build.sh --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$CONTEXT"
+          bash scripts/ci/pool-image-build.sh --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$CONTEXT"
+          mkdir -p "$images"
+          docker save --output "$images/images.tar" basalt-1409-pool:usage-privacy-baseline basalt-1409-pool:privacy-legacy
+        fi
+        docker image inspect basalt-1409-pool:usage-privacy-baseline basalt-1409-pool:privacy-legacy > /dev/null
+    - name: Keep the built compatibility images for later runs
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/pool-compatibility-images
+        key: ${{ steps.context.outputs.key }}
+    - name: Release the image archive
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/pool-compatibility-images"
