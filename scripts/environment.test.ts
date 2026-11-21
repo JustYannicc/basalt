@@ -461,3 +461,17 @@ test("release readiness key is stable across attempts and refuses malformed secr
       message: "POOL_DEPLOYMENT_KEY must be 32 bytes of lowercase hex",
     });
 });
+test("carry 0719's switch is set on a disposable stage and refused for production", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  assert.equal(previewEnvironment(9, source).deploy.EXECUTOR_APP_HOST_ROUTER, "basalt");
+  assert.throws(
+    () => deployEnvironment({ EXECUTOR_APP_HOST_ROUTER: "basalt" }),
+    /Unsupported production override: EXECUTOR_APP_HOST_ROUTER/,
+  );
+});
