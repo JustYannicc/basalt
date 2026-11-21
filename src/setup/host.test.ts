@@ -827,6 +827,24 @@ test("browser metadata excludes credentials; links over five minutes are refused
   assert.equal(long.calls.at(-1)!.path, "/api/auth/api-key/delete");
 });
 
+test("Connect's list says which devices were approved without models", async () => {
+  const toolsOnly = { ...computer, id: "computer-2", state: "active", tools: true, models: false };
+  const f = fixture({
+    pool: ({ path }) =>
+      path.endsWith("/computers") ? json({ computers: [computer, toolsOnly] }) : undefined,
+  });
+  const response = await f.request("/setup/v1/computers?intent=signed-selection");
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).computers, [computer, toolsOnly]);
+  const malformed = fixture({
+    pool: ({ path }) =>
+      path.endsWith("/computers")
+        ? json({ computers: [{ ...toolsOnly, models: "no" }] })
+        : undefined,
+  });
+  assert.equal((await malformed.request("/setup/v1/computers?intent=signed-selection")).status, 502);
+});
+
 test("claims need no session, negotiate JSON or markdown and consume exactly once", async () => {
   for (const format of ["json", "markdown"]) {
     const f = fixture();
