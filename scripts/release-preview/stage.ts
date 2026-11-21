@@ -63,14 +63,14 @@ export type StageMode = (typeof stageModes)[number];
 
 /** The pull-request label that dispatches a mode: `stage-<mode>` on lane 1, `stage-<mode>-<lane>` on 2 or 3. */
 export function stageLabel(label: string): { mode: StageMode; lane: number } | undefined {
-  const match = /^stage-([a-z]+)(?:-([1-3]))?$/u.exec(label);
+  const match = /^stage-([a-z]+)(?:-([1-4]))?$/u.exec(label);
   const mode = stageModes.find((name) => name === match?.[1]);
   return mode ? { mode, lane: Number(match?.[2] ?? "1") } : undefined;
 }
 
 /** A lane's stage stands across runs; its keys derive from the state key, so every job re-plans it. */
 export const laneSubject = (lane: number): StageSubject => {
-  if (![1, 2, 3].includes(lane)) throw new Error("A standing stage lane is 1, 2 or 3");
+  if (![1, 2, 3, 4].includes(lane)) throw new Error("A standing stage lane is 1 to 4");
   return parseSubjectArgument(`rehearsal-${lane}`);
 };
 

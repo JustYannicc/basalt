@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { declaration, laneSubject, stageLabel } from "./stage.ts";
 
-test("a label names one mode and one of three lanes", () => {
+test("a label names one mode and one of four lanes", () => {
   assert.deepEqual(stageLabel("stage-plan"), { mode: "plan", lane: 1 });
   assert.deepEqual(stageLabel("stage-apply-3"), { mode: "apply", lane: 3 });
-  assert.equal(stageLabel("stage-apply-4"), undefined);
+  assert.deepEqual(stageLabel("stage-baseline-4"), { mode: "baseline", lane: 4 });
+  assert.equal(stageLabel("stage-apply-5"), undefined);
   assert.equal(stageLabel("stage-nuke"), undefined);
   assert.equal(stageLabel("release-rehearsal"), undefined);
-  assert.throws(() => laneSubject(4), /lane is 1, 2 or 3/);
+  assert.throws(() => laneSubject(5), /lane is 1 to 4/);
 });
 
 test("the baseline declares no fleet classes and the cutover builds both colours", () => {
