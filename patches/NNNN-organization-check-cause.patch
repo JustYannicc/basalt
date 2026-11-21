@@ -1,24 +1,118 @@
+diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
+index 799dab3..d011a17 100644
+--- a/apps/hosted/cloud/src/contracts/onboarding.ts
++++ b/apps/hosted/cloud/src/contracts/onboarding.ts
+@@ -137,6 +137,16 @@ export const OnboardingUnavailable = /* @__PURE__ */ (() =>
+     message: "Onboarding could not be completed. Try again.",
+   }))();
+ export type OnboardingUnavailable = typeof OnboardingUnavailable.Type;
++/**
++ * Why the organization check did not allow a create. An unverified email is a refusal that
++ * retrying cannot fix; a v1 lookup or store that did not answer is an outage that it can.
++ */
++export const OrganizationCheckReason = /* @__PURE__ */ (() =>
++  Schema.Literals(["email_unverified", "v1_lookup", "store"]))();
++export class OrganizationCheckFailed extends Schema.TaggedError<OrganizationCheckFailed>()(
++  "OrganizationCheckFailed",
++  { reason: OrganizationCheckReason },
++) {}
+ /** A company suggestion is optional; a failed lookup never prevents confirmation. */
+ export class CompanyLookupFailed extends Schema.TaggedError<CompanyLookupFailed>()(
+   "CompanyLookupFailed",
+@@ -185,9 +195,11 @@ export class Onboarding extends Context.Service<
+     /**
+      * Whether this account may create an organization outside team setup, such as through
+      * Better Auth's organization endpoint. Applies the same decision as `prepare` and
+-     * `create`: false only when the account belongs on Executor v1. Fails closed.
++     * `create`: false only when the account belongs on Executor v1. Fails closed, with the reason.
+      */
+-    readonly allowsOrganization: (userId: string) => Effect.Effect<boolean, OnboardingUnavailable>;
++    readonly allowsOrganization: (
++      userId: string,
++    ) => Effect.Effect<boolean, OrganizationCheckFailed>;
+     /** Ensure a verified member owns a personal team; durable member jobs retry failures. */
+     readonly ensurePersonalOrganization: (
+       userId: string,
+diff --git a/apps/hosted/cloud/src/implementation/onboarding.ts b/apps/hosted/cloud/src/implementation/onboarding.ts
+index 3aa31a8..93c4c65 100644
+--- a/apps/hosted/cloud/src/implementation/onboarding.ts
++++ b/apps/hosted/cloud/src/implementation/onboarding.ts
+@@ -18,6 +18,7 @@ import {
+   CompanyProfile,
+   Onboarding,
+   OnboardingUnavailable,
++  OrganizationCheckFailed,
+   CreateTeam,
+   type OnboardingCreated,
+   TeamDetails,
+@@ -274,14 +275,17 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+    */
+   const allowsOrganization: typeof Onboarding.Service.allowsOrganization = (userId) =>
+     Effect.gen(function* () {
+-      const user = yield* store.user(userId);
+-      if (!user?.emailVerified) return yield* new OnboardingUnavailable();
+-      if (yield* store.setUpTeam(userId)) return true;
+-      return (yield* v1.check(user)) !== "v1";
+-    }).pipe(
+-      Effect.mapError(() => new OnboardingUnavailable()),
+-      Effect.withSpan("onboarding.allowsOrganization"),
+-    );
++      const storeFailed = () => new OrganizationCheckFailed({ reason: "store" });
++      const user = yield* store.user(userId).pipe(Effect.mapError(storeFailed));
++      if (!user) return yield* storeFailed();
++      if (!user.emailVerified)
++        return yield* new OrganizationCheckFailed({ reason: "email_unverified" });
++      if (yield* store.setUpTeam(userId).pipe(Effect.mapError(storeFailed))) return true;
++      const membership = yield* v1
++        .check(user)
++        .pipe(Effect.mapError(() => new OrganizationCheckFailed({ reason: "v1_lookup" })));
++      return membership !== "v1";
++    }).pipe(Effect.withSpan("onboarding.allowsOrganization"));
+   const ensurePersonalOrganization: typeof Onboarding.Service.ensurePersonalOrganization = (
+     userId,
+   ) =>
 diff --git a/apps/hosted/cloud/src/implementation/organization-check.ts b/apps/hosted/cloud/src/implementation/organization-check.ts
 new file mode 100644
-index 0000000..6d98c69
+index 0000000..3faa2ae
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/organization-check.ts
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,38 @@
 +import { APIError } from "better-auth/api";
 +import { Effect } from "effect";
 +import type { Onboarding } from "../contracts/onboarding.ts";
 +
-+/** Better Auth's create check. Fails closed: an unanswered check refuses the create. */
++/**
++ * Better Auth's create check. Fails closed. An unverified email is refused with what to do,
++ * because retrying cannot help; a dependency that did not answer stays the retryable 503. The
++ * reason is logged and set on the request's span, so each one can be counted; the email,
++ * account and token never are.
++ */
 +export const organizationCreationCheck = (
 +  onboarding: Pick<typeof Onboarding.Service, "allowsOrganization">,
 +  userId: string,
 +) =>
 +  onboarding.allowsOrganization(userId).pipe(
-+    Effect.mapError(
-+      () =>
-+        new APIError("SERVICE_UNAVAILABLE", {
-+          message: "We could not check your account. Try again.",
-+        }),
++    Effect.tapError(({ reason }) =>
++      Effect.annotateCurrentSpan("onboarding.check.reason", reason).pipe(
++        Effect.andThen(
++          reason === "email_unverified"
++            ? Effect.logInfo("Organization creation refused")
++            : Effect.logWarning("Organization check unavailable"),
++        ),
++        Effect.annotateLogs("onboarding.check.reason", reason),
++      ),
++    ),
++    Effect.mapError(({ reason }) =>
++      reason === "email_unverified"
++        ? new APIError("FORBIDDEN", {
++            code: "EMAIL_NOT_VERIFIED",
++            message:
++              "Verify your email by signing in with an email code, then create the organization.",
++          })
++        : new APIError("SERVICE_UNAVAILABLE", {
++            code: "ORGANIZATION_CHECK_UNAVAILABLE",
++            message: "We could not check your account. Try again.",
++          }),
 +    ),
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
@@ -55,3 +149,56 @@ index 060abd7..f83918e 100644
        {
          onRefreshRejected: observation.refreshRejected,
          // A person approved a new agent, by consent or by a device's code: the agent can connect.
+diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+index 6cf0c58..c7b899d 100644
+--- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
++++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+@@ -10,7 +10,12 @@ import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
+ import { cloudEmulators } from "./emulators.ts";
+ import type { EmulatedServices } from "../contracts/emulators.ts";
+ import { FetchHttpClient } from "effect/http";
+-import { Onboarding, OnboardingUnavailable, TeamIconNotFound } from "../contracts/onboarding.ts";
++import {
++  Onboarding,
++  OnboardingUnavailable,
++  OrganizationCheckFailed,
++  TeamIconNotFound,
++} from "../contracts/onboarding.ts";
+ import { companyLookupDisabled, companyLookupLive } from "../implementation/company-profile.ts";
+ import { makeOnboarding } from "../implementation/onboarding.ts";
+ import {
+@@ -206,7 +211,12 @@ export const cloudOnboarding = Effect.gen(function* () {
+         service.pipe(
+           Effect.flatMap((onboarding) => onboarding.allowsOrganization(userId)),
+           Effect.provide(RuntimeContext.phantom),
+-          Effect.mapError(() => new OnboardingUnavailable()),
++          // Building the service opens the onboarding database.
++          Effect.mapError((error) =>
++            Schema.is(OrganizationCheckFailed)(error)
++              ? error
++              : new OrganizationCheckFailed({ reason: "store" }),
++          ),
+         ),
+       ensurePersonalOrganization: (userId) =>
+         service.pipe(
+diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
+index 42312ff..283a27b 100644
+--- a/apps/hosted/web/src/contracts/organization.ts
++++ b/apps/hosted/web/src/contracts/organization.ts
+@@ -61,9 +61,13 @@ const request = <A>(
+                     ? "This invitation has already been used, was revoked, or has expired. Ask an administrator for a new invitation."
+                     : result.error.code === "ORGANIZATION_MEMBERSHIP_LIMIT_REACHED"
+                       ? "This organization has reached its plan's member limit. An owner or admin can upgrade the plan to add members."
+-                      : result.error.status === 403
+-                        ? "You do not have permission to do that."
+-                        : "Unable to update the organization. Check the details and try again.",
++                      : result.error.code === "EMAIL_NOT_VERIFIED"
++                        ? "Verify your email by signing in with an email code, then try again."
++                        : result.error.code === "ORGANIZATION_CHECK_UNAVAILABLE"
++                          ? "We could not check your account. Try again."
++                          : result.error.status === 403
++                            ? "You do not have permission to do that."
++                            : "Unable to update the organization. Check the details and try again.",
+             }),
+           ),
+     ),
