@@ -73,6 +73,9 @@ function world(provider: typeof pins | undefined, observe: DispatchDependencies[
     rootHealth: async () => {
       throw new Error("root health unavailable");
     },
+    resetRecovery: async () => {
+      throw new Error("observe never resets recovery");
+    },
     sleep: async () => {},
     observe: async (action, ...rest) => {
       sent.push(action);
