@@ -6,6 +6,7 @@ import { captureError } from "../telemetry/sentry.ts";
 import { pageTemplate } from "../telemetry/privacy.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { awaitProbe } from "./availability.ts";
+import { controllerUnsentHeader, unsentAttempt, unsentAttemptHeader } from "./controller-unsent.ts";
 import { unavailableResponse } from "./json.ts";
 import { isPublicModelPath } from "./lifecycle.ts";
 import { endpointMetadata } from "./model-history/record.ts";
@@ -14,7 +15,7 @@ import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavail
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
-/** A model call's body is held, up to this size, only until the controller answers. */
+/** A model call's body is held, up to this size, only until the controller's final answer. */
 export const controllerHoldBytes = 4 * 1024 * 1024;
 /** A device call's signed assertion lives 25 s (token.ts); a later replay would be refused as stale. */
 export const controllerReplayWindowMs = 20_000;
@@ -27,7 +28,8 @@ export const controllerHoldBudgetBytes = 32 * 1024 * 1024;
 // release, and its bytes must not stay counted for the life of the isolate.
 const reservations = new Map<object, { bytes: number; until: number }>();
 /** Bytes held for replay in this isolate right now. */
-export function controllerHeldBytes(now = Date.now()) {
+export function controllerHeldBytes() {
+  const now = Date.now();
   let total = 0;
   for (const [key, reservation] of reservations) {
     if (reservation.until <= now) reservations.delete(key);
@@ -38,6 +40,14 @@ export function controllerHeldBytes(now = Date.now()) {
 
 // The platform may end the controller instance at any time; this is its "reconnect or retry" error.
 const instanceEnded = /\bDurable Object instance is no longer active\b/i;
+
+/** The controller answered that it proved the call never reached a runtime. */
+class ControllerUnsent {
+  readonly attemptId: string;
+  constructor(attemptId: string) {
+    this.attemptId = attemptId;
+  }
+}
 
 /** The platform marks a stub error it advises retrying; an overloaded object must not be retried. */
 function resetCause(error: unknown): "instance_ended" | "retryable" | undefined {
@@ -98,8 +108,8 @@ type Held = { body: Uint8Array<ArrayBuffer> } | { refused: Refusal };
 
 /**
  * Reads a tee of the body beside the real send and holds it only while a replay is still
- * possible: up to the per-call and per-isolate bounds, and until the controller answers or the
- * replay window closes, whichever is first.
+ * possible: up to the per-call and per-isolate bounds, and until the controller's final answer or
+ * the replay window closes, whichever is first.
  */
 function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: () => void) {
   if (!body)
@@ -184,12 +194,14 @@ function report(
       outcome,
       saved,
       ...(reason ? { reason } : {}),
-      cause: resetCause(error) ?? "transport",
+      cause: error instanceof ControllerUnsent ? "unsent" : (resetCause(error) ?? "transport"),
       method: ["GET", "HEAD", "POST"].includes(request.method) ? request.method : "other",
       endpoint: endpointOf(request),
     }),
   );
-  hop.defer(captureError(hop.env, "pool_controller_interrupted", pathname, undefined, requestId));
+  // A call that never reached a runtime and was then saved needs nobody's attention.
+  if (!(error instanceof ControllerUnsent && saved))
+    hop.defer(captureError(hop.env, "pool_controller_interrupted", pathname, undefined, requestId));
 }
 
 function retryAdvice(request: Request, requestId: string): Response {
@@ -201,6 +213,26 @@ function retryAdvice(request: Request, requestId: string): Response {
   return response;
 }
 
+/** Only the Worker sends the attempt id, so a client cannot choose the id a replay is recorded as. */
+function withoutAttemptId(request: Request): Request {
+  if (!request.headers.has(unsentAttemptHeader)) return request;
+  const headers = new Headers(request.headers);
+  headers.delete(unsentAttemptHeader);
+  return new Request(request, { headers });
+}
+
+/** The controller's mark is private. It strips the mark from a socket answer, which passes as it is. */
+function withoutUnsentMark(response: Response): Response {
+  if (!response.headers.has(controllerUnsentHeader) || response.status === 101) return response;
+  const headers = new Headers(response.headers);
+  headers.delete(controllerUnsentHeader);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 const sleep = (milliseconds: number, signal: AbortSignal) =>
   awaitProbe(() => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)), signal);
 
@@ -209,9 +241,12 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
  * allow-listed model call is sent once more to a new instance; one whose body was too large to
  * hold, or that fails again, gets the native retry advice its client follows. A call that starts a
  * job is never sent twice. A started stream is never replayed: it ends with the native retry
- * terminal. A control write keeps today's unknown-outcome failure.
+ * terminal. A control write keeps today's unknown-outcome failure. When the controller answers
+ * that it proved an allow-listed call never reached a runtime, the held call is sent once more,
+ * carrying that attempt's id; one replay per call, whichever answer triggered it.
  */
-export async function fetchController(request: Request, hop: ControllerHop): Promise<Response> {
+export async function fetchController(incoming: Request, hop: ControllerHop): Promise<Response> {
+  const request = withoutAttemptId(incoming);
   const model = replayableCall(request);
   const requestId = crypto.randomUUID();
   const copy = hold(
@@ -246,7 +281,8 @@ async function forwardHeld(
   const now = hop.now ?? Date.now;
   const begun = now();
   let attempt = 0;
-  const send = async (outgoing: Request) => {
+  // The id the attempt's failure is joined by: the Worker's own, or the refused attempt's.
+  const send = async (outgoing: Request, id = requestId) => {
     const started = now();
     attempt++;
     try {
@@ -256,7 +292,7 @@ async function forwardHeld(
         "POOL_CONTROLLER_CALL_FAILED",
         JSON.stringify({
           at: now(),
-          requestId,
+          requestId: id,
           endpoint: endpointOf(request),
           attempt,
           elapsedMs: now() - started,
@@ -266,9 +302,66 @@ async function forwardHeld(
       throw error;
     }
   };
-  let response: Response;
+  /** At most one replay per call, whichever answer triggered it; a replay is never checked again. */
+  const replay = async (cause: unknown, id: string): Promise<Response> => {
+    const advise = (reason: Reason) => {
+      report(hop, request, id, "retry_advised", cause, reason);
+      return retryAdvice(request, id);
+    };
+    await copy.ready;
+    const held = copy.take();
+    if ("refused" in held) return advise(held.refused);
+    if (now() - begun > controllerReplayWindowMs) return advise("too_late");
+    const headers = new Headers(request.headers);
+    if (cause instanceof ControllerUnsent) headers.set(unsentAttemptHeader, cause.attemptId);
+    try {
+      await (hop.wait ?? sleep)(controllerReplayDelayMs, request.signal);
+      const response = withoutUnsentMark(
+        await send(
+          model
+            ? new Request(request.url, {
+                method: request.method,
+                headers,
+                body: held.body,
+                redirect: request.redirect,
+                signal: request.signal,
+              })
+            : request,
+          id,
+        ),
+      );
+      report(hop, request, id, "replayed", cause, undefined, response.ok);
+      return response;
+    } catch (replayError) {
+      if (request.signal.aborted) {
+        report(hop, request, id, "client_left", cause);
+        throw replayError;
+      }
+      const unsent = cause instanceof ControllerUnsent;
+      report(hop, request, id, "replay_failed", unsent ? cause : replayError);
+      // A reset leaves no answer to fall back on; an unsent call already had the native advice.
+      if (!unsent && !controllerInstanceEnded(replayError)) throw replayError;
+      return retryAdvice(request, id);
+    }
+  };
+  const finish = (response: Response) => {
+    copy.release();
+    const controllerRequestId = response.headers.get("X-Request-Id");
+    return nativeRuntimeStream(response, request, (error) =>
+      report(
+        hop,
+        request,
+        controllerRequestId && /^[0-9a-f-]{36}$/.test(controllerRequestId)
+          ? controllerRequestId
+          : crypto.randomUUID(),
+        "stream_ended",
+        error,
+      ),
+    );
+  };
+  let first: Response;
   try {
-    response = await send(request);
+    first = await send(request);
   } catch (error) {
     if (!controllerInstanceEnded(error) || request.signal.aborted) throw error;
     if (!model && !safeRead(request)) {
@@ -289,51 +382,17 @@ async function forwardHeld(
       report(hop, request, requestId, "retry_advised", error, "not_replayable");
       return retryAdvice(request, requestId);
     }
-    await copy.ready;
-    const held = copy.take();
-    if ("refused" in held) {
-      report(hop, request, requestId, "retry_advised", error, held.refused);
-      return retryAdvice(request, requestId);
-    }
-    if (now() - begun > controllerReplayWindowMs) {
-      report(hop, request, requestId, "retry_advised", error, "too_late");
-      return retryAdvice(request, requestId);
-    }
-    try {
-      await (hop.wait ?? sleep)(controllerReplayDelayMs, request.signal);
-      response = await send(
-        model
-          ? new Request(request.url, {
-              method: request.method,
-              headers: request.headers,
-              body: held.body,
-              redirect: request.redirect,
-              signal: request.signal,
-            })
-          : request,
-      );
-    } catch (replayError) {
-      if (request.signal.aborted) {
-        report(hop, request, requestId, "client_left", error);
-        throw replayError;
-      }
-      report(hop, request, requestId, "replay_failed", replayError);
-      if (!controllerInstanceEnded(replayError)) throw replayError;
-      return retryAdvice(request, requestId);
-    }
-    report(hop, request, requestId, "replayed", error, undefined, response.ok);
+    return finish(await replay(error, requestId));
   }
-  copy.release();
-  const controllerRequestId = response.headers.get("X-Request-Id");
-  return nativeRuntimeStream(response, request, (error) =>
-    report(
-      hop,
-      request,
-      controllerRequestId && /^[0-9a-f-]{36}$/.test(controllerRequestId)
-        ? controllerRequestId
-        : crypto.randomUUID(),
-      "stream_ended",
-      error,
-    ),
-  );
+  const attemptId =
+    first.status === 503 ? unsentAttempt(first.headers.get(controllerUnsentHeader)) : undefined;
+  if (attemptId === undefined) return finish(withoutUnsentMark(first));
+  const cause = new ControllerUnsent(attemptId);
+  if (!model) {
+    // Only an allow-listed call is held, so a socket, a read or a job keeps the controller's answer.
+    report(hop, request, attemptId, "retry_advised", cause, "not_replayable");
+    return finish(withoutUnsentMark(first));
+  }
+  void first.body?.cancel().catch(() => {});
+  return finish(await replay(cause, attemptId));
 }
