@@ -467,7 +467,7 @@ jobs:
           if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json --apply "${{ steps.apply.outcome }}"); fi
           rc=0
           bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json || rc=$?
-          # Exit 4: the pool refused the acceptance device, so nothing was tested. The step still
+          # Exit 4: the acceptance device hit its user's cap, so nothing was tested. The step still
           # fails; the steps after it stop the run without undoing a release nobody saw fail.
           if [ "$rc" -eq 4 ]; then echo "acceptance=could-not-test" >> "$GITHUB_OUTPUT"; fi
           # A failed acceptance goes straight to its rollback. A declared root restart has none, so
@@ -489,7 +489,7 @@ jobs:
           # The boot read before the apply did not refuse the device, so a refusal now is that version's.
           bun scripts/release/deploy.ts accept --stage production --expect any --admitted .local/release/root-boot.json --out .local/release/acceptance-after-rollback.json || rc=$?
           if [ "$rc" -eq 4 ]; then
-            echo "::error::Acceptance could not test the rolled-back version: the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap."
+            echo "::error::Acceptance could not test the rolled-back version: the release's acceptance device hit its user's cap: check the cap, then read the pool; whether the rolled-back version serves is unknown."
           elif [ "$rc" -ne 0 ]; then
             echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
           fi
@@ -515,7 +515,7 @@ jobs:
               echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)); $apply and $app. Nothing was undone; look at the recovery with the pool serving."
               ;;
             could-not-test)
-              echo "::error::COULD NOT TEST: no model call was tested on the new root boot; $apply and $app. Nothing was undone; the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap."
+              echo "::error::COULD NOT TEST: no model call was tested on the root's boot after the apply; $apply and $app. Nothing was undone; the release's acceptance device hit its user's cap: check the cap, then read the pool before any GO."
               ;;
             not-serving)
               echo "::error::NOT SERVING: the pool did not serve on a new root boot within its bound; $apply and $app. It is not rolled back: the code before it could not restart the pool. The last read and the stop path are in .local/release/acceptance.json; the serving versions in .local/release/serving.json; a rollback is a separate GO."
@@ -563,7 +563,7 @@ jobs:
       - name: Stop on an acceptance that could not test
         if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'
         run: |
-          echo "::error::ACCEPTANCE COULD NOT TEST: nothing was tested and nothing was rolled back; the release's acceptance device was refused: check that it is still registered and allowed, and that its user is under its cap. The accept step names the HTTP status."
+          echo "::error::ACCEPTANCE COULD NOT TEST: nothing was tested and nothing was rolled back; the release's acceptance device hit its user's cap: check the cap, then run again."
           exit 1
       - name: Finish the deployment record
         if: always() && steps.deployment.outputs.id != ''

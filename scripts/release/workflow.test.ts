@@ -100,7 +100,7 @@ test("an acceptance that could not test stops the run red without rolling back",
   assert.ok(counts! < stop! && stop! < record!, "after the counts, before the record");
   assert.match(
     step("Stop on an acceptance that could not test"),
-    /::error::.*the release's acceptance device was refused: check that it is still registered and allowed[\s\S]*exit 1/u,
+    /::error::.*the release's acceptance device hit its user's cap: check the cap[\s\S]*exit 1/u,
   );
 });
 
