@@ -1,5 +1,10 @@
 import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
-import { COULD_NOT_TEST_EXIT, deviceRefusal, refusedDevice } from "./acceptance-device.ts";
+import {
+  COULD_NOT_TEST_EXIT,
+  deviceRefusal,
+  deviceRevoked,
+  refusedDevice,
+} from "./acceptance-device.ts";
 import {
   healingAcceptanceWithinMs,
   healingReadinessWithinMs,
@@ -46,7 +51,8 @@ export async function servingBoot(credential: ModelAuth, client = new PoolAccept
 
 /**
  * Recorded before the apply of a release that declares a root restart, when the pool did not serve
- * the read: no answer, an error status, or a 429. It names no boot a restart could be compared with.
+ * the read: no answer, an error status other than a revoked device's 410, or a 429. It names no
+ * boot a restart could be compared with.
  */
 export const NOT_SERVING = "not-serving";
 
@@ -64,7 +70,8 @@ export async function bootBeforeApply(
   } catch (error) {
     const refused = deviceRefusal(error);
     if (refused !== undefined) throw refusedDevice(refused);
-    if (allowNotServing) return NOT_SERVING;
+    // A device its person revoked is no pool failing to serve: a restart must not start on it.
+    if (allowNotServing && !deviceRevoked(error)) return NOT_SERVING;
     throw error;
   }
 }

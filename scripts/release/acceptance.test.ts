@@ -506,6 +506,64 @@ test("a refused device stops the boot read before the apply, even where the pool
   }
 });
 
+test("a revoked device's 410 fails closed: never not serving, never could not test", async () => {
+  // A person revoking the device is no pool failing to serve, so a release declaring a root restart
+  // must not start on it; and no 410 may end a run as untested.
+  const revoked = await pool({ answer: { catalog: 410 } });
+  try {
+    for (const allowNotServing of [true, false]) {
+      const error = await bootBeforeApply(credential, revoked.client, allowNotServing).then(
+        () => assert.fail("a revoked device read a boot"),
+        (error: unknown) => error,
+      );
+      assert.ok(!(error instanceof AcceptanceDeviceRefused), String(error));
+      assert.match(String(error), /HTTP 410/u);
+    }
+  } finally {
+    revoked.close();
+  }
+  for (const admitted of [true, false]) {
+    // A catalog the pool will not serve is the pool not serving (exit 1, the rollback takes it).
+    const live = await pool({ answer: { catalog: 410 } });
+    try {
+      const error = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted,
+        client: live.client,
+      }).then(
+        () => assert.fail("a revoked device's catalog returned a result"),
+        (error: unknown) => error,
+      );
+      assert.ok(!(error instanceof AcceptanceDeviceRefused), String(error));
+      assert.match(String(error), /HTTP 410/u);
+    } finally {
+      live.close();
+    }
+  }
+  for (const answer of [{ 1: 410 }, { 27: 410 }])
+    for (const admitted of [true, false]) {
+      const live = await pool({ answer });
+      try {
+        const result = await runAcceptance({
+          credential,
+          expect: "same-boot",
+          rootBoot: "boot-root",
+          admitted,
+          client: live.client,
+        });
+        const label = JSON.stringify({ answer, admitted });
+        assert.equal(result.passed, false, label);
+        assert.equal(result.couldNotTest, false, label);
+        assert.deepEqual(result.refused, [], label);
+        assert.ok(result.failures.length >= 1, label);
+      } finally {
+        live.close();
+      }
+    }
+});
+
 test("after this run's boot read admitted the device, a 401 or 403 is a serving failure", async () => {
   // The boot read before the apply was served for the device, so the release is the likeliest
   // thing that changed: the policy's rollback takes it, as it would a 5xx.

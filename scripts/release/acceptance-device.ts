@@ -56,6 +56,13 @@ export const deviceRefusal = (error: unknown): number | undefined =>
     ? error.status
     : undefined;
 
+/**
+ * A device its person revoked (410). Never "could not test" and never the pool not serving: a
+ * release must fail on it, not stop as untested or start a restart without a boot to compare.
+ */
+export const deviceRevoked = (error: unknown) =>
+  error instanceof HttpStatusFailure && error.status === 410;
+
 /** What to check when the pool refused the device with these statuses. */
 export const refusalFix = (statuses: readonly number[]) =>
   statuses.length && statuses.every((status) => status === 429)
