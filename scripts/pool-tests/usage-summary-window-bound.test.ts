@@ -35,7 +35,14 @@ test("a window over the row bound refuses after one bounded count, before any ag
       priceReads++;
       return { prices: summaryPrices, issues: [] };
     };
-    const refusal = await poolUsageSummary(counted, input, prices, Date.parse(to), 3).then(
+    const refusal = await poolUsageSummary(
+      counted,
+      input,
+      prices,
+      Date.parse(to),
+      undefined,
+      3,
+    ).then(
       () => assert.fail("A window over its bound must refuse"),
       (error: unknown) => error,
     );
@@ -74,7 +81,7 @@ test("a window over the row bound refuses after one bounded count, before any ag
 
     // At or under the bound the summary answers as before, in the same fifteen statements.
     statements.length = 0;
-    const result = await poolUsageSummary(counted, input, prices, Date.parse(to), 4);
+    const result = await poolUsageSummary(counted, input, prices, Date.parse(to), undefined, 4);
     assert.equal(
       result.daily.flatMap((group) => group.buckets).reduce((n, bucket) => n + bucket.requests, 0),
       4,
