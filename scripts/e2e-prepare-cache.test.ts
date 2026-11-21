@@ -347,3 +347,30 @@ test(
     assert.deepEqual(locksIn(shared), []);
   }),
 );
+
+test(
+  "two containers whose processes share an id never share a scratch directory",
+  sandbox((parent) => {
+    // Box jobs run in separate containers, so their e2e:prepare processes can have one pid.
+    const root = workspace(parent, "a");
+    const shared = join(parent, "shared");
+    const cache = {
+      CI: "true",
+      EXECUTOR_E2E_CACHE: shared,
+      NODE_OPTIONS:
+        "--import=data:text/javascript,Object.defineProperty(process,'pid',{value:4242})",
+    };
+    prepareSync(root, parent, cache);
+    // Another container's process with the same pid holds what a pid-named scratch path would be.
+    const step = join(shared, "apps:build");
+    const [key] = readdirSync(step);
+    rmSync(shared, { recursive: true });
+    mkdirSync(step, { recursive: true });
+    writeFileSync(join(step, `${key}.lock.4242.pending`), "another container");
+    writeFileSync(join(step, `${key}.4242.partial`), "another container");
+    rmSync(join(parent, "built.log"));
+    prepareSync(root, parent, cache);
+    assert.deepEqual(built(parent), Object.keys(steps));
+    assert.equal(readFileSync(join(step, `${key}.lock.4242.pending`), "utf8"), "another container");
+  }),
+);

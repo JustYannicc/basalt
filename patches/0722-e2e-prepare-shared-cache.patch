@@ -33,7 +33,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
    fs.rmSync(partial, { recursive: true, force: true });
    for (const output of step.outputs) copy(output, path.join(partial, output));
    try {
-@@ -238,13 +243,86 @@ const store = (step: Step, entry: string) => {
+@@ -238,13 +243,88 @@ const store = (step: Step, entry: string) => {
    const directory = path.dirname(entry);
    const entries = fs
      .readdirSync(directory)
@@ -109,8 +109,10 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +      console.log(`Taking over a lock held for ${Math.round(age / 1000)}s: ${lock}`);
 +      try {
 +        fs.rmSync(lock, { recursive: true, force: true });
-+      } catch {
++      } catch (error) {
 +        // Another waiter's claim landed during the removal; its lock stands.
++        const code = (error as NodeJS.ErrnoException).code;
++        if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
 +      }
 +      continue;
 +    }
@@ -121,7 +123,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
  const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
  const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
  
-@@ -276,7 +354,10 @@ function prepare() {
+@@ -276,7 +356,10 @@ function prepare() {
      if (key !== undefined) keys.set(step.name, key);
      let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
      if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
@@ -133,7 +135,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
      if (restored) {
        restore(step, entry);
        // Recently used entries are the last to be removed.
-@@ -302,6 +383,10 @@ function prepare() {
+@@ -302,6 +385,10 @@ function prepare() {
        fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
      }
      if (!restored && entry !== undefined) store(step, entry);
