@@ -1,5 +1,8 @@
 import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
-import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
+import {
+  historyChangeOnceVersion,
+  historyRowSchemaVersion,
+} from "../../src/pool/model-history/history-row-schema.ts";
 import {
   historyImportCompletionVersion,
   historyImportCompletionStatements,
@@ -220,6 +223,7 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
         historyImportCompletionVersion,
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
+        historyChangeOnceVersion,
         historySchemaVersion,
       ].sort(),
     );
@@ -431,6 +435,7 @@ test("a retained v4 database applies v6 after v8 and preserves imported rows and
         historyImportCompletionVersion,
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
+        historyChangeOnceVersion,
         historySchemaVersion,
       ].sort(),
     );
