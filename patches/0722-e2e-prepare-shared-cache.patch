@@ -1,0 +1,92 @@
+diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
+--- a/scripts/e2e-prepare.ts
++++ b/scripts/e2e-prepare.ts
+@@ -8,7 +8,9 @@
+  * Node and Bun versions and the environment variables the builds read.
+  *
+  * The cache lives in `$EXECUTOR_E2E_CACHE`, or `~/.cache/executor-e2e-prepare`. CI and
+- * `--no-cache` build every step without reading or writing it.
++ * `--no-cache` build every step without reading or writing it, unless CI names a cache in
++ * `$EXECUTOR_E2E_CACHE`: jobs that share that directory then build each step once. The first
++ * takes a lock per step and key; the others wait for its entry and restore it.
+  */
+ import { execFileSync, spawnSync } from "node:child_process";
+ import { createHash } from "node:crypto";
+@@ -114,7 +116,10 @@ process.env.EXECUTOR_DASHBOARD_SOURCEMAP = "hidden";
+ /** Entries kept per step. Older ones are removed after a store. */
+ const keep = 20;
+ 
+-const useCache = !process.env.CI && !process.argv.includes("--no-cache");
++// CI uses a cache only one it names itself, so a runner never reads another's default cache.
++const useCache =
++  (!process.env.CI || Boolean(process.env.EXECUTOR_E2E_CACHE)) &&
++  !process.argv.includes("--no-cache");
+ const cacheRoot =
+   process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");
+ 
+@@ -245,6 +250,42 @@ const store = (step: Step, entry: string) => {
+     fs.rmSync(path.join(directory, old.name), { recursive: true, force: true });
+ };
+ 
++/** A lock older than this is a dead holder's: the next waiter removes it and builds. */
++const staleLock = Number(process.env.EXECUTOR_E2E_LOCK_STALE_MS) || 20 * 60_000;
++const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
++
++/**
++ * Waits until `entry` exists, or holds its lock. Returns true to restore the entry, false once
++ * this process holds the lock and must build. A directory is the lock: creating one is atomic.
++ */
++const claim = (entry: string, lock: string) => {
++  for (;;) {
++    if (fs.existsSync(entry)) return true;
++    try {
++      fs.mkdirSync(path.dirname(lock), { recursive: true });
++      fs.mkdirSync(lock);
++      // Another holder may have stored the entry between the check and the claim.
++      if (!fs.existsSync(entry)) return false;
++      fs.rmSync(lock, { recursive: true, force: true });
++      return true;
++    } catch (error) {
++      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
++    }
++    let age = 0;
++    try {
++      age = Date.now() - fs.statSync(lock).mtimeMs;
++    } catch {
++      continue;
++    }
++    if (age > staleLock) {
++      console.log(`Taking over a lock held for ${Math.round(age / 1000)}s: ${lock}`);
++      fs.rmSync(lock, { recursive: true, force: true });
++      continue;
++    }
++    sleep(500);
++  }
++};
++
+ const selfHostWeb = steps.find((step) => step.name === "hosted:self-host:web:build")!;
+ const selfHostWebStamp = path.join(selfHostWeb.outputs[0]!, ".e2e-inputs.json");
+ 
+@@ -276,7 +317,10 @@ function prepare() {
+     if (key !== undefined) keys.set(step.name, key);
+     let entry = !useCache || key === undefined ? undefined : path.join(cacheRoot, step.name, key);
+     if (step === selfHostWeb) fs.rmSync(selfHostWebStamp, { force: true });
+-    const restored = entry !== undefined && fs.existsSync(entry);
++    // Waiters hold out for the entry under the key known before the build.
++    const claimed = entry;
++    const lock = claimed === undefined ? undefined : `${claimed}.lock`;
++    const restored = claimed !== undefined && claim(claimed, lock!);
+     if (restored) {
+       restore(step, entry);
+       // Recently used entries are the last to be removed.
+@@ -302,6 +346,10 @@ function prepare() {
+       fs.writeFileSync(selfHostWebStamp, JSON.stringify({ inputs: key }) + "\n");
+     }
+     if (!restored && entry !== undefined) store(step, entry);
++    // Route generation can change the key while building; the outputs still answer the inputs
++    // the waiters keyed on, so they are stored under that key too.
++    if (!restored && claimed !== undefined && claimed !== entry) store(step, claimed);
++    if (!restored && lock !== undefined) fs.rmSync(lock, { recursive: true, force: true });
+     summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
+   }
+   console.log(
