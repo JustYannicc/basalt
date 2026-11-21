@@ -8,10 +8,12 @@
  * - delete: removes that token by the recorded id, proves it gone with a list read, and deletes the
  *   job's secret. It runs in the same step that removes the lane's paid parts.
  *
- * The value never reaches a log, a file, or an agent's context: the program returns it only to this
- * process, which hands it to `gh secret set` on stdin and drops it.
+ * The value never reaches a log, a file, the tools service or an agent's context: the program seals
+ * it to a one-off key only this process holds, and this process opens it straight into
+ * `gh secret set` on stdin.
  */
 import { spawn } from "node:child_process";
+import { constants, generateKeyPairSync, privateDecrypt, type KeyObject } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
 
 export const observationPermission = "cfd39eebc07c4e3ea849e4b3d2644637";
@@ -34,12 +36,33 @@ const requireAccount = (accountId: string) => {
   return accountId;
 };
 
-/** Refuses an existing token of that name, creates it, and proves its one policy before returning. */
-export function mintProgram(accountId: string, lane: number) {
+/**
+ * A one-off key pair for one mint. The program seals the value to the public half inside the
+ * operator's sandbox, so the tools service only ever carries ciphertext; the private half never
+ * leaves this process.
+ */
+export function mintKeys() {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 3072 });
+  return { publicJwk: publicKey.export({ format: "jwk" }), privateKey };
+}
+
+export function openSealed(sealed: string, privateKey: KeyObject) {
+  return privateDecrypt(
+    { key: privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+    Buffer.from(sealed, "base64"),
+  ).toString("utf8");
+}
+
+/**
+ * Proves it can seal before anything is created, refuses an existing token of that name, creates
+ * it, proves its one policy, and returns its id and its value sealed to `publicJwk`.
+ */
+export function mintProgram(accountId: string, lane: number, publicJwk: object) {
   const target = {
     accountId: requireAccount(accountId),
     name: laneTokenName(requireLane(lane)),
     permission: observationPermission,
+    publicJwk,
   };
   return `async () => {
   const target = ${JSON.stringify(target)};
@@ -49,6 +72,21 @@ export function mintProgram(accountId: string, lane: number) {
     if (!reply || reply.success !== true) throw null;
     return reply.result;
   };
+  const sealKey = await crypto.subtle.importKey('jwk', target.publicJwk,
+    {name:'RSA-OAEP',hash:'SHA-256'}, false, ['encrypt']);
+  const seal = async (text) => {
+    const bytes = new Uint8Array(await crypto.subtle.encrypt({name:'RSA-OAEP'}, sealKey,
+      new TextEncoder().encode(text)));
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  };
+  try {
+    // Sealing must work before a token exists, or its value could not leave the sandbox safely.
+    await seal('probe');
+  } catch {
+    return {outcome:'refused_sealing'};
+  }
   try {
     const existing = (await request({method:'GET',path:base + '/tokens',query:{per_page:100}}) || [])
       .filter(row => row && row.name === target.name);
@@ -66,7 +104,9 @@ export function mintProgram(accountId: string, lane: number) {
       Object.keys(policy.resources || {}).length === 1 &&
       policy.resources['com.cloudflare.api.account.' + target.accountId] === '*';
     if (!owned) return {outcome:'refused_ownership', tokenId: created.id};
-    return {outcome:'minted', tokenId: created.id, value: created.value};
+    const sealed = await seal(created.value);
+    created.value = null;
+    return {outcome:'minted', tokenId: created.id, sealed};
   } catch {
     // Provider messages may echo a value. Never return any part of an exception.
     return {outcome:'unknown'};
@@ -140,10 +180,13 @@ export async function mintLaneToken(input: {
   transport: OperatorTransport;
   setSecret?: typeof setJobSecret;
 }) {
-  const reply = (await input.transport.run(mintProgram(input.accountId, input.lane))) as {
+  const keys = mintKeys();
+  const reply = (await input.transport.run(
+    mintProgram(input.accountId, input.lane, keys.publicJwk),
+  )) as {
     outcome?: unknown;
     tokenId?: unknown;
-    value?: unknown;
+    sealed?: unknown;
   } | null;
   const tokenId = typeof reply?.tokenId === "string" ? reply.tokenId : undefined;
   // The id is recorded whatever happened next, so a half-done mint can still be deleted by it.
@@ -151,10 +194,12 @@ export async function mintLaneToken(input: {
     await writeFile(input.record, `${JSON.stringify({ lane: input.lane, tokenId })}\n`, {
       mode: 0o600,
     });
-  if (reply?.outcome !== "minted" || typeof reply.value !== "string" || !reply.value)
+  if (reply?.outcome !== "minted" || typeof reply.sealed !== "string" || !reply.sealed)
     return { outcome: String(reply?.outcome ?? "unknown"), recorded: Boolean(tokenId) };
-  await (input.setSecret ?? setJobSecret)(laneSecretName(input.lane), reply.value);
-  reply.value = null;
+  await (input.setSecret ?? setJobSecret)(
+    laneSecretName(input.lane),
+    openSealed(reply.sealed, keys.privateKey),
+  );
   return { outcome: "minted", recorded: true, secret: laneSecretName(input.lane) };
 }
 
@@ -180,3 +225,146 @@ export async function deleteLaneToken(input: {
   await rm(input.record, { force: true });
   return { outcome: "gone", secretDeleted: laneSecretName(input.lane) };
 }
+
+type Json = Record<string, unknown>;
+const field = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null ? (value as Json)[key] : undefined;
+
+/**
+ * The operator's Cloudflare connection through the tools service's MCP endpoint, as the pool's
+ * credential bootstrap uses it (`tools.cloudflare.mcp.execute`). Its approval pause is accepted
+ * only for the exact program this process submitted; any other pause refuses.
+ */
+export function toolsServiceTransport(input: {
+  url: string;
+  headers: Record<string, string>;
+  connection: string;
+  accountId: string;
+  fetch?: typeof fetch;
+}): OperatorTransport {
+  const send = input.fetch ?? fetch;
+  return {
+    run: async (program: string) => {
+      let session: string | null = null;
+      let id = 0;
+      const rpc = async (method: string, params?: unknown) => {
+        const response = await send(input.url, {
+          method: "POST",
+          headers: {
+            ...input.headers,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            ...(session ? { "Mcp-Session-Id": session } : {}),
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            ...(params === undefined && method.startsWith("notifications/") ? {} : { id: ++id }),
+            method,
+            ...(params === undefined ? {} : { params }),
+          }),
+        });
+        session = response.headers.get("Mcp-Session-Id") ?? session;
+        if (!response.ok) throw new Error(`The tools service answered HTTP ${response.status}`);
+        const text = await response.text();
+        const body = text.includes("data:")
+          ? text
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trim())
+              .join("\n")
+          : text;
+        return body.trim() ? (JSON.parse(body) as Json) : {};
+      };
+      const toolText = (reply: Json) => {
+        const content = field(field(reply, "result"), "content");
+        const text = Array.isArray(content) ? field(content[0], "text") : undefined;
+        if (typeof text !== "string") throw new Error("The tools service returned no tool result");
+        return JSON.parse(text) as Json;
+      };
+      await rpc("initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "stage-observation-token", version: "1" },
+      });
+      await rpc("notifications/initialized").catch(() => ({}));
+      let outcome = toolText(
+        await rpc("tools/call", {
+          name: "call",
+          arguments: {
+            calls: {
+              path: "tools.cloudflare.mcp.execute",
+              input: {
+                accountId: input.connection,
+                input: { account_id: input.accountId, code: program },
+              },
+            },
+          },
+        }),
+      );
+      if (field(outcome, "status") === "approval-required") {
+        const pending = field(field(field(outcome, "invocation"), "input"), "input");
+        if (field(pending, "code") !== program)
+          throw new Error("The paused program is not the one this process submitted");
+        outcome = toolText(
+          await rpc("tools/call", {
+            name: "resume",
+            arguments: {
+              requestId: field(outcome, "requestId"),
+              response: { action: "accept", content: {} },
+            },
+          }),
+        );
+      }
+      const execution = field(outcome, "execution");
+      const call = field(execution, "value");
+      if (field(outcome, "status") !== "completed" || field(execution, "ok") !== true)
+        throw new Error(
+          `The operator program did not complete (${String(field(outcome, "status"))})`,
+        );
+      if (field(call, "ok") !== true) throw new Error("The operator program's call failed");
+      const content = field(field(call, "value"), "content");
+      const text = Array.isArray(content) ? field(content[0], "text") : undefined;
+      return typeof text === "string" ? (JSON.parse(text) as unknown) : null;
+    },
+  };
+}
+
+/** `stage-observation-token.ts mint|delete <lane> <account id> <connection id>`; prints outcomes only. */
+async function main(args: string[]) {
+  const [command, laneText, accountId, connection] = args;
+  const lane = Number(laneText);
+  if ((command !== "mint" && command !== "delete") || !accountId || !connection)
+    throw new Error(
+      "Usage: stage-observation-token.ts mint|delete <lane> <account id> <connection id>",
+    );
+  const { homedir } = await import("node:os");
+  const { join } = await import("node:path");
+  const config = JSON.parse(await readFile(join(homedir(), ".claude.json"), "utf8")) as {
+    mcpServers?: { signalbox?: { url?: string; headers?: Record<string, string> } };
+  };
+  const server = config.mcpServers?.signalbox;
+  if (!server?.url) throw new Error("No tools service endpoint is configured");
+  const transport = toolsServiceTransport({
+    url: server.url,
+    headers: server.headers ?? {},
+    connection,
+    accountId,
+  });
+  const record = join(
+    homedir(),
+    ".codex/artifacts/basalt-v1",
+    `lane-${lane}-observation-token.json`,
+  );
+  const result =
+    command === "mint"
+      ? await mintLaneToken({ accountId, lane, record, transport })
+      : await deleteLaneToken({ accountId, lane, record, transport });
+  console.log(JSON.stringify(result));
+}
+
+if (import.meta.main ?? process.argv[1]?.endsWith("stage-observation-token.ts"))
+  await main(process.argv.slice(2)).catch((error: unknown) => {
+    // Tool replies can echo inputs; print only the message's first line.
+    console.error(String(error instanceof Error ? error.message : error).split("\n")[0]);
+    process.exitCode = 1;
+  });

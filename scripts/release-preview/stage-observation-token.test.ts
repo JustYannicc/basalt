@@ -10,6 +10,7 @@ import {
   mintLaneToken,
   mintProgram,
   observationPermission,
+  toolsServiceTransport,
 } from "./stage-observation-token.ts";
 
 const account = "a".repeat(32);
@@ -50,21 +51,25 @@ function connection(rows: { id: string; name: string; policies?: unknown[] }[]) 
       return { success: false };
     },
   };
+  const seen: unknown[] = [];
   const transport = {
-    run: async (program: string) =>
+    run: async (program: string) => {
       // The operator's runner evaluates the program with `cloudflare` in scope.
-      (new Function("cloudflare", `return (${program})();`) as (c: unknown) => Promise<unknown>)(
-        cloudflare,
-      ),
+      const reply = await (
+        new Function("cloudflare", `return (${program})();`) as (c: unknown) => Promise<unknown>
+      )(cloudflare);
+      seen.push(reply);
+      return reply;
+    },
   };
-  return { transport, sent, rows };
+  return { transport, sent, rows, seen };
 }
 
 test("the mint creates the lane's token with production's one policy, sets the job's secret on stdin, and keeps only the id", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "lane-token-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const record = join(dir, "token.json");
-  const { transport, sent } = connection([]);
+  const { transport, sent, seen } = connection([]);
   const secrets: [string, string][] = [];
   const result = await mintLaneToken({
     accountId: account,
@@ -79,6 +84,8 @@ test("the mint creates the lane's token with production's one policy, sets the j
     secret: "REHEARSAL_OBSERVATION_TOKEN_2",
   });
   assert.deepEqual(secrets, [["REHEARSAL_OBSERVATION_TOKEN_2", "minted-value"]]);
+  // What crossed the operator's connection carried no plaintext value.
+  assert.ok(!seen.some((reply) => JSON.stringify(reply).includes("minted-value")));
   assert.ok(!JSON.stringify(result).includes("minted-value"));
   const kept = await readFile(record, "utf8");
   assert.deepEqual(JSON.parse(kept), { lane: 2, tokenId });
@@ -155,7 +162,94 @@ test("the delete refuses a recorded id that names another token, and a record fo
 
 test("only lanes 1 to 9 and a real account id make a program", () => {
   for (const lane of [0, 10, 2.5])
-    assert.throws(() => mintProgram(account, lane), /lane is 1 to 9/u);
-  assert.throws(() => mintProgram("production", 2), /account id/u);
+    assert.throws(() => mintProgram(account, lane, {}), /lane is 1 to 9/u);
+  assert.throws(() => mintProgram("production", 2, {}), /account id/u);
   assert.throws(() => deleteProgram(account, 2, "not-an-id"), /token id/u);
+});
+
+test("the tools-service transport accepts a pause only for its own program, and returns the program's result", async () => {
+  const replies = (code: string, status: string) => {
+    const queue = [
+      {},
+      {},
+      {
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "approval-required",
+                requestId: "apr_1",
+                invocation: { input: { input: { code } } },
+              }),
+            },
+          ],
+        },
+      },
+      {
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status,
+                execution: {
+                  ok: true,
+                  value: {
+                    ok: true,
+                    value: { content: [{ type: "text", text: '{"outcome":"gone"}' }] },
+                  },
+                },
+              }),
+            },
+          ],
+        },
+      },
+    ];
+    const sent: unknown[] = [];
+    const fake = (async (_url: string, init: { body: string }) => {
+      sent.push(JSON.parse(init.body));
+      return new Response(JSON.stringify(queue.shift() ?? {}), {
+        headers: { "Mcp-Session-Id": "s1" },
+      });
+    }) as unknown as typeof fetch;
+    return { fake, sent };
+  };
+  const program = "async () => ({outcome:'gone'})";
+  const own = replies(program, "completed");
+  const transport = toolsServiceTransport({
+    url: "http://tools.invalid/mcp",
+    headers: {},
+    connection: "acc_x",
+    accountId: account,
+    fetch: own.fake,
+  });
+  assert.deepEqual(await transport.run(program), { outcome: "gone" });
+  assert.deepEqual((own.sent[3] as { params: { name: string; arguments: unknown } }).params, {
+    name: "resume",
+    arguments: { requestId: "apr_1", response: { action: "accept", content: {} } },
+  });
+  const other = replies("async () => 'something else'", "completed");
+  await assert.rejects(
+    toolsServiceTransport({
+      url: "http://tools.invalid/mcp",
+      headers: {},
+      connection: "acc_x",
+      accountId: account,
+      fetch: other.fake,
+    }).run(program),
+    /not the one this process submitted/u,
+  );
+  assert.equal(other.sent.length, 3);
+  const failed = replies(program, "failed");
+  await assert.rejects(
+    toolsServiceTransport({
+      url: "http://tools.invalid/mcp",
+      headers: {},
+      connection: "acc_x",
+      accountId: account,
+      fetch: failed.fake,
+    }).run(program),
+    /did not complete/u,
+  );
 });
