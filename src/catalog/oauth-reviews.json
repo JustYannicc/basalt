@@ -1897,7 +1897,7 @@
     {
       "entry": "github",
       "package": "@executor.sh/github",
-      "sourceSha256": "10e6f82e46daa4b7296d36768db99e08a0677e9c9dff5081d98b4165232cc79d",
+      "sourceSha256": "be267534af42ba525dfc62c8d2f0f429f75444aa784cbe0c15091277c0e344e9",
       "methods": {
         "oauth": {
           "kind": "hosted",

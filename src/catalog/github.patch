@@ -1,7 +1,7 @@
 diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
-@@ -11,6 +11,15 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
+@@ -11,7 +11,18 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
  
  Health check: `GET https://api.github.com/user`.
  
@@ -12,11 +12,14 @@ diff --git a/README.md b/README.md
 +- `temp_clone_token` and `temp_download_token`, the short-lived credentials on repository and runner-download reads, are dropped wherever they appear.
 +- A file's `download_url`, and a raw-content link in a message from GitHub's MCP server, lose their `token` query parameter, which reads a private file without the account. Read the file through the tools instead. File contents, issue bodies and other text stay as GitHub sent them.
 +- A secret-scanning alert's `secret`, the leaked value itself, is dropped.
-+- A credential minted because a person asked for one, such as a runner registration token or an installation token, is returned only by the REST tools `results.ts` lists as minting it. Every other result drops those fields, so a token checked with `api.apps.checkToken` is not repeated back.
++- A credential minted because a person asked for one, such as a runner registration token or an installation token, is returned only by the REST tools `results.ts` lists as minting it. Every other result drops those fields.
 +
  ## Known gaps
  
  - Release asset upload (`uploads.github.com`) is skipped.
++- The five operations under `/applications/{client_id}` are left out: checking, resetting, scoping and deleting a token, and deleting an authorization. GitHub answers them only for an OAuth or GitHub app's own client ID and secret, sent as Basic credentials, which a connected account does not have.
++- Operations that act as an app, not a person, are still listed, such as those under `/app` and the Marketplace listing. GitHub answers them for a GitHub App's JWT, so they fail with a connected account's token.
+ - The MCP server serves its default toolsets; the REST API covers the rest. MCP tools and annotations were not listed with a real account.
 diff --git a/index.ts b/index.ts
 --- a/index.ts
 +++ b/index.ts
@@ -75,6 +78,33 @@ diff --git a/index.ts b/index.ts
                  ),
                { signal },
              ),
+diff --git a/openapi.ts b/openapi.ts
+--- a/openapi.ts
++++ b/openapi.ts
+@@ -1,6 +1,7 @@
+ import type { OpenapiToolNamesOptions } from "apps/openapi";
+ 
+-// GitHub's description declares no security schemes; every operation accepts a bearer token.
++// GitHub's description declares no security schemes. Every operation left here takes a bearer
++// token: a person's, or a GitHub App's JWT for the operations that act as the app itself.
+ export const options = {
+   source: {
+     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+@@ -13,4 +14,14 @@ export const options = {
+     oauth: [{ scheme: "bearer", field: "access_token", part: "value", prefix: "" }],
+   },
+   oauth: [],
++  // GitHub answers every operation on these paths only for an OAuth or GitHub app's own client ID
++  // and secret, sent as Basic credentials, never for a bearer token: checking, resetting, scoping
++  // and deleting a token, and deleting an authorization. Its REST reference marks exactly these
++  // five as taking Basic authentication. A connected account has no such secret and the host's
++  // own must not reach a tool call, so they are left out.
++  patches: [
++    { op: "remove", path: "/paths/~1applications~1{client_id}~1grant" },
++    { op: "remove", path: "/paths/~1applications~1{client_id}~1token" },
++    { op: "remove", path: "/paths/~1applications~1{client_id}~1token~1scoped" },
++  ],
+ } satisfies OpenapiToolNamesOptions;
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
@@ -91,7 +121,7 @@ diff --git a/results.ts b/results.ts
 new file mode 100644
 --- /dev/null
 +++ b/results.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,115 @@
 +// Tool results land in agent transcripts, so they never carry a credential GitHub puts in a
 +// response unless the tool exists to mint it. REST and MCP results go through the same filter.
 +
@@ -111,8 +141,6 @@ new file mode 100644
 +  "actions.generateRunnerJitconfigForRepo": ["encoded_jit_config"],
 +  "apps.createFromManifest": ["client_secret", "pem", "webhook_secret"],
 +  "apps.createInstallationAccessToken": ["token"],
-+  "apps.resetToken": ["token"],
-+  "apps.scopeToken": ["token"],
 +};
 +const minted = new Set(Object.values(mintingTools).flat());
 +const none: ReadonlySet<string> = new Set();
