@@ -7,7 +7,8 @@ export type HistorySeriesPhase =
   | "database_connect"
   | "sql_statement"
   | "price_callback"
-  | "series_read";
+  | "series_read"
+  | "summary_read";
 export type HistorySeriesFailure =
   | HistoryTimeoutReason
   | "unauthorized"
