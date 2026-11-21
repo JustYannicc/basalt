@@ -27,7 +27,7 @@ const runGate = (
       CI_REUSED: "",
       CI_NEEDS: JSON.stringify(needs),
       CI_JOBS: JSON.stringify(selected),
-      CI_BOAT_JOBS: "[]",
+      CI_BOX_JOBS: "[]",
       CI_FULL_SUITE: String(full),
     },
   });

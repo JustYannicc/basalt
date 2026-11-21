@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { heavyJobs } from "./ci/areas.ts";
-import { boatJobs } from "./ci/boat.ts";
 import { readDeclarations } from "./ci/declarations.ts";
 import { gateErrors } from "./ci/gate.ts";
 import { selectPaths } from "./ci/affected.ts";
@@ -235,7 +234,7 @@ test("account acquisition's self-host proof runs in two required jobs with the s
     const definition = workflow.jobs[job];
     assert.equal(definition["timeout-minutes"], timeout, job);
     assert.equal(definition.needs, "select", job);
-    assert.ok(heavyJobs.includes(job) && boatJobs.includes(job), job);
+    assert.ok(heavyJobs.includes(job), job);
     assert.ok(workflow.jobs.check.needs.includes(job), job);
     assert.deepEqual(
       definition.steps

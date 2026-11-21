@@ -44,18 +44,23 @@ jobs:
   select:
     needs: reuse
     if: always() && !cancelled() && needs.reuse.outputs.reused != 'true'
+    # Reads the box heartbeat and the hosted load for scripts/ci/box-router.ts.
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     outputs:
       base_sha: ${{ steps.comparison.outputs.base_sha }}
       full_suite: ${{ steps.jobs.outputs.full_suite }}
       jobs: ${{ steps.jobs.outputs.jobs }}
-      hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
-      boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
+      box_jobs: ${{ steps.jobs.outputs.box_jobs }}
+      box_label: ${{ steps.jobs.outputs.box_label }}
       matrices: ${{ steps.jobs.outputs.matrices }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
@@ -88,8 +93,12 @@ jobs:
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BOAT_JOBS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:boat') && 'proof' || vars.BASALT_CI_BOAT_JOBS }}
-          FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
+          # Box first for main and batch pushes and this repository's pull requests; forks run hosted.
+          BOX_SLOTS: ${{ vars.BASALT_CI_BOX_SLOTS }}
+          BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+          FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
@@ -274,7 +283,7 @@ jobs:
   clerk-sign-in:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'clerk-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -303,7 +312,7 @@ jobs:
   workos-sign-in:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'workos-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -332,7 +341,7 @@ jobs:
   gitlab-sign-in:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -361,7 +370,7 @@ jobs:
   planetscale-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'planetscale-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -417,7 +426,7 @@ jobs:
   vercel-sign-in:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'vercel-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -444,7 +453,7 @@ jobs:
   elevenlabs-sign-in:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'elevenlabs-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -471,7 +480,7 @@ jobs:
   neon-key-reuse:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'neon-key-reuse')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -530,7 +539,7 @@ jobs:
   catalog-compat:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'catalog-compat')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'catalog-compat') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -565,7 +574,7 @@ jobs:
   host-managed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -618,7 +627,7 @@ jobs:
   host-managed-accounts-adopted:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-adopted')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-adopted') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -655,7 +664,7 @@ jobs:
   host-managed-accounts-pool:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-pool')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-pool') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -701,7 +710,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -742,7 +751,7 @@ jobs:
   host-managed-accounts-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -787,7 +796,7 @@ jobs:
   host-managed-accounts-cloud-actions:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud-actions')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -829,7 +838,7 @@ jobs:
   host-managed-accounts-runtime:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-runtime')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1132,7 +1141,7 @@ jobs:
   production-ops:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1335,7 +1344,7 @@ jobs:
   compiler-diagnostics:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'compiler-diagnostics')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'compiler-diagnostics') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1532,7 +1541,7 @@ jobs:
   contributed-accounts:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'contributed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1577,7 +1586,7 @@ jobs:
   contributed-account-recipes:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-account-recipes')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1947,7 +1956,7 @@ jobs:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2002,7 +2011,7 @@ jobs:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2057,7 +2066,7 @@ jobs:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2338,7 +2347,7 @@ jobs:
   pool-runtime:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-runtime')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # The longest job of a full Check, in two shards that each build the candidate image. The
     # compatibility shard also loads the frozen compatibility images and runs the files that read
     # them plus the one-off proofs; the contracts shard runs every other pool test file.
@@ -2662,7 +2671,7 @@ jobs:
           CI_REUSE_EVIDENCE: ${{ needs.reuse.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
-          CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
+          CI_BOX_JOBS: ${{ needs.select.outputs.box_jobs }}
         run: node scripts/ci/gate.ts
       - uses: actions/upload-artifact@v4
         if: success() && needs.reuse.outputs.reused == 'true'
@@ -2722,7 +2731,7 @@ jobs:
   account-acquisition:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-acquisition') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # Measured 12.6-20.5 minutes on hosted runners in six full Checks; the slowest was cut at 20.
     # Its observation half now runs in account-observations.
     timeout-minutes: 30
@@ -2765,7 +2774,7 @@ jobs:
   account-observations:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-observations')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-observations') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # About 1.5x the slower half of the split: at the slowest measured full Check's pace, this job
     # plans 11.3 minutes and account-acquisition 12.9.
     timeout-minutes: 25
