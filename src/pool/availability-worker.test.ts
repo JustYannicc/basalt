@@ -38,6 +38,14 @@ const {
 } = await import(modulePath);
 hooks.deregister();
 
+interface StubStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  transaction<T>(work: (transaction: StubStorage) => Promise<T>): Promise<T>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
+}
+
 test("the scheduled Worker keeps its passive probe and reports unavailable history separately without warming or repair", async (t) => {
   const f = await fixture();
   f.home.addFile("auth-a");
@@ -95,6 +103,12 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
       },
     },
   };
+  // With no runtime selected the probe arms no upkeep alarm, writes nothing, and warms or repairs
+  // nothing.
+  const background: Promise<unknown>[] = [];
+  const armed: number[] = [];
+  let alarm: number | null = null;
+  let deadlines: unknown;
   const object = new PoolContainer(
     {
       id: { toString: () => "a".repeat(64) },
@@ -125,20 +139,37 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
           };
         },
       },
-      waitUntil: () => {},
-      storage: {
-        get: async (key: string) =>
-          key === "native-pool-memberships-v1"
-            ? { [state.pool]: structuredClone(state) }
-            : undefined,
-        put: async () => assert.fail("probe wrote storage"),
-        getAlarm: async () => null,
-        setAlarm: async () => assert.fail("probe changed alarms"),
+      waitUntil: (work: Promise<unknown>) => {
+        background.push(work);
       },
+      storage: (() => {
+        const storage: StubStorage = {
+          get: async (key: string) =>
+            key === "native-pool-memberships-v1"
+              ? { [state.pool]: structuredClone(state) }
+              : key === "pool-alarm-v1:deadlines"
+                ? deadlines
+                : undefined,
+          put: async (key: string, value: unknown) => {
+            assert.equal(key, "pool-alarm-v1:deadlines", "probe wrote storage");
+            deadlines = value;
+          },
+          transaction: async (work) => work(storage),
+          getAlarm: async () => alarm,
+          setAlarm: async (at: number) => {
+            armed.push(at);
+            alarm = at;
+          },
+        };
+        return storage;
+      })(),
     },
     env,
   );
   await worker.scheduled({ cron: "* * * * *" }, env);
+  await Promise.all(background);
+  assert.deepEqual(armed, [], "nothing is selected, so no upkeep alarm is armed");
+  assert.equal(deadlines, undefined);
   assert.equal(probeTarget, state.pool);
   assert.ok(f.home.calls.some((call) => call.path.endsWith("/quota/credentials/auth-a")));
   assert.deepEqual(native.sort(), ["/native-policy/check", "/ready"]);

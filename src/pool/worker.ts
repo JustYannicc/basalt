@@ -28,6 +28,7 @@ import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
 import { runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
+import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { installNativePolicy } from "./native-policy-install.ts";
@@ -54,6 +55,7 @@ import { requirePoolUse } from "./authorization.ts";
 import { isPoolAcquisitionPath } from "./connection-policy.ts";
 import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse, unavailable } from "./json.ts";
+import { pendingFields } from "./pending-failure.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeResponse, nativeSession, nativeControlPair } from "./native-response.worker.ts";
@@ -131,7 +133,7 @@ import { historyTrafficPath } from "./model-history/traffic.ts";
 import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
-import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
+import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { controllerInstanceEnded, fetchController } from "./controller-reset.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
@@ -174,6 +176,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private peers: RuntimeHomePeerTransport;
   private alarms: PoolAlarms;
   private homeUpkeepTask?: Promise<void>;
+  private alarmInFlight = false;
   private control: PoolControl;
   private mirrorHome: HomeClient;
   private homeDatabasePool: HomeDatabasePoolMonitor;
@@ -500,6 +503,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       release: productionOpsRelease,
       databaseOrigin: `${database.hostname}:${database.port || "5432"}${database.pathname}`,
     });
+    // The first event after a code update or eviction runs here, before any alarm could. Last, so
+    // an object that can't construct arms nothing.
+    this.ensureAlarm();
   }
 
   private managementReady(): Promise<void> {
@@ -569,6 +575,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async availabilityProbe(pool: string, includeRuntime = false) {
+    this.ensureAlarm();
     const selected = await this.handoff.selected();
     const identity: ProbeRuntimeIdentity = {
       source: selected ? "selected" : "legacy",
@@ -637,9 +644,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return capturedReliability(this.ctx.storage, pool, (now) => {
       if (this.env.POOL_MODEL_HISTORY_ENABLED !== "true")
         throw new Error("Model request history is disabled");
-      return withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-        readPoolReliabilitySlo(db, pool, now),
-      );
+      return readReliabilityInSession(this.env.POOL_AUTH_DATABASE?.connectionString, pool, now);
     });
   }
 
@@ -654,6 +659,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async alarm() {
     const trace = new PoolUpkeepTrace("alarm");
+    this.alarmInFlight = true;
+    try {
+      await this.upkeepAlarm(trace);
+    } finally {
+      this.alarmInFlight = false;
+    }
+  }
+  private async upkeepAlarm(trace: PoolUpkeepTrace) {
     await trace.run("alarm", async () => {
       trace.event("deadlines", await this.alarms.inspect());
       const due = await this.alarms.take();
@@ -685,8 +698,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     // A native alarm waits for its handler, while waitUntil keeps Home work alive without blocking the next fleet alarm.
     const work = trace
       .run("home", () => this.homeUpkeep(trace))
-      .catch(async () => {
-        console.error("POOL_HOME_UPKEEP_PENDING");
+      .catch(async (error: unknown) => {
+        console.error("POOL_HOME_UPKEEP_PENDING", JSON.stringify(pendingFields(error)));
         await this.alarms.schedule("home", Date.now() + membershipRefreshMs);
       })
       .finally(() => {
@@ -755,8 +768,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             const target = this.env.POOL_AVAILABILITY_TARGET;
             if (validProbeTarget(target))
               await recordReliability(this.ctx.storage, target, (now) =>
-                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-                  readPoolReliabilitySlo(db, target, now),
+                readReliabilityInSession(
+                  this.env.POOL_AUTH_DATABASE?.connectionString,
+                  target,
+                  now,
                 ),
               ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
           }),
@@ -792,6 +807,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async deploymentReady() {
+    this.ensureAlarm();
     return {
       ...this.deploymentIdentity(),
       ...(await this.handoff.deploymentReady(() =>
@@ -805,6 +821,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async runtimeHandoff(request: Request) {
+    this.ensureAlarm();
     return handleRuntimeHandoff(
       request,
       this.handoff,
@@ -819,10 +836,23 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     );
   }
 
+  /** Arms the upkeep alarm if nothing has, without holding the caller. */
+  private ensureAlarm() {
+    // A running alarm handler or Home pass re-arms its own deadline when it ends; the platform
+    // reads the alarm as unset meanwhile, and arming then would only pull both owners to now.
+    if (this.alarmInFlight || this.homeUpkeepTask) return;
+    // The raw key, so a selection that no longer decodes still arms the recovery that reports it.
+    const work = this.alarms.ensure(
+      async () => (await this.ctx.storage.get(slotSelectionKey)) !== undefined,
+    );
+    if (work) this.ctx.waitUntil(work.catch(() => console.error("POOL_ALARM_ENSURE_PENDING")));
+  }
+
   async fetch(request: Request): Promise<Response> {
     // Before the first await: what follows is this object's own work, not time spent queued for it.
     const arrival = poolArrival(request);
     request = arrival.request;
+    this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
       return readCommittedPoolChanges(request, {

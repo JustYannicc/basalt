@@ -1897,7 +1897,7 @@
     {
       "entry": "github",
       "package": "@executor.sh/github",
-      "sourceSha256": "17f4c32ee123c292e0ab4b16207d3a5013e121b6bfd8e5e8127b1cb91348e9fc",
+      "sourceSha256": "10e6f82e46daa4b7296d36768db99e08a0677e9c9dff5081d98b4165232cc79d",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3259,7 +3259,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "d94120acf483046aa26ae0babda755525c4d5ec8369b7f4657443036a724400c",
+      "sourceSha256": "dcafb674e047868aeca46d3047dd8e95e0c34f37febcabe95a52ede6ec4919f2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4203,7 +4203,7 @@
           "metadataSha256": "48af54e2e9736b4e947a3250093ec3c1fef2924aa7a38949047e9fc898fc0033"
         }
       },
-      "sourceSha256": "703bf51e36e7467fada342cffe3501e739725a2a0f737caec9825d68b42d57af"
+      "sourceSha256": "5f5b2cb5e5513ed4a647f7d3517d06dfe07f9c762bfb572909fea5e3b5945357"
     },
     {
       "entry": "servicem8",

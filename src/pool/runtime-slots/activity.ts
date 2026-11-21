@@ -8,6 +8,8 @@ const Activity = Schema.Struct({
   active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   known: Schema.Boolean,
   leases: Schema.optional(Schema.Record(Schema.String, Schema.Literals(["active", "released"]))),
+  /** When a stream was last acquired or released; a forced stop reads how long the count stood. */
+  changedAt: Schema.optional(Schema.Number),
 });
 
 function reconciled(row: typeof Activity.Type) {
@@ -86,6 +88,7 @@ export class RuntimeActivity {
             ...row,
             active: row.active + 1,
             leases: { ...row.leases, [id]: "active" as const },
+            changedAt: Date.now(),
           },
           result: undefined,
         };
@@ -107,7 +110,11 @@ export class RuntimeActivity {
       (row) => ({
         row:
           row.leases?.[id] === "active"
-            ? { ...row, leases: { ...row.leases, [id]: "released" as const } }
+            ? {
+                ...row,
+                leases: { ...row.leases, [id]: "released" as const },
+                changedAt: Date.now(),
+              }
             : row,
         result: undefined,
       }),
