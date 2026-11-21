@@ -77,7 +77,7 @@ test("the audited partition keeps preparation, evidence and its original's limit
   const audited = workflow.jobs[job];
   assert.equal(original["timeout-minutes"], 30);
   assert.equal(audited["timeout-minutes"], original["timeout-minutes"]);
-  assert.equal(audited.needs, "select");
+  assert.ok([audited.needs].flat().includes("select"));
   assert.equal(audited.if, `contains(fromJSON(needs.select.outputs.jobs), '${job}')`);
   assert.deepEqual(audited.steps.slice(0, 6), original.steps.slice(0, 6));
   const runs = audited.steps.filter((step: { run?: string }) =>

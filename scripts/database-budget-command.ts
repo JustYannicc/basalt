@@ -10,6 +10,7 @@ import {
   openDeploymentReadiness,
   pause,
   readinessRetryMs,
+  ReadinessConnectionError,
   readyAfterAdoption,
   withinDeadline,
   type DeploymentReadiness,
@@ -83,15 +84,47 @@ export async function runDatabaseBudgetCommand(
   const mode = args.includes("--ready") ? "ready" : "verify";
   const commandMs = mode === "ready" ? databaseReadinessCommandMs : databaseVerificationCommandMs;
   let refusals: BudgetReceipt["refusals"];
-  const awaitReady = (connection: RuntimeConnection, signal: AbortSignal) =>
-    readyAfterAdoption(connection, target, {
-      signal,
-      pause: (until) =>
-        pause(readinessRetryMs, until, (milliseconds) => schedule(milliseconds, "retry")),
-      refused: (refusal) => {
-        refusals = { count: (refusals?.count ?? 0) + 1, ...refusal };
-      },
-    });
+  let reconnect: ((signal: AbortSignal) => Promise<RuntimeConnection>) | undefined;
+  const awaitReady = async (signal: AbortSignal) => {
+    for (;;) {
+      try {
+        return await readyAfterAdoption(readiness!, target, {
+          signal,
+          pause: (until) =>
+            pause(readinessRetryMs, until, (milliseconds) => schedule(milliseconds, "retry")),
+          refused: (refusal) => {
+            refusals = { count: (refusals?.count ?? 0) + 1, ...refusal };
+          },
+        });
+      } catch (error) {
+        // Only the bridge failing is worth a fresh one, after a pause, inside the same deadline.
+        // An answer, a decode or identity error, or the deadline itself ends the wait as before.
+        if (!(error instanceof ReadinessConnectionError) || !reconnect || signal.aborted)
+          throw error;
+        const failed = readiness;
+        readiness = undefined;
+        await within(failed!.close(), "teardown").catch(() => {});
+        // A fresh bridge that fails to open is tried again the same way. A failed open closes
+        // itself, and nothing starts once the deadline has passed.
+        for (;;) {
+          try {
+            await pause(readinessRetryMs, signal, (milliseconds) =>
+              schedule(milliseconds, "retry"),
+            );
+          } catch {
+            throw error;
+          }
+          if (signal.aborted) throw error;
+          try {
+            readiness = await reconnect(signal);
+            break;
+          } catch {
+            if (signal.aborted) throw error;
+          }
+        }
+      }
+    }
+  };
   let receipt: BudgetReceipt = {
     candidate,
     outcome: "readiness-error",
@@ -143,23 +176,26 @@ export async function runDatabaseBudgetCommand(
     const operation = mode === "ready" ? command : AbortSignal.any([command, timeout(remaining)]);
     const startup = operation;
     if (worker) {
-      const opening = open({
-        worker,
-        accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
-        key: source.POOL_DEPLOYMENT_KEY ?? "",
-        target,
-      });
-      opening.then(
-        (connection) => {
-          if (startup.aborted) void within(connection.close(), "teardown").catch(() => {});
-        },
-        () => {},
-      );
-      readiness = await bounded(opening, startup);
+      reconnect = (signal) => {
+        const opening = open({
+          worker,
+          accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
+          key: source.POOL_DEPLOYMENT_KEY ?? "",
+          target,
+        });
+        opening.then(
+          (connection) => {
+            if (signal.aborted) void within(connection.close(), "teardown").catch(() => {});
+          },
+          () => {},
+        );
+        return bounded(opening, signal);
+      };
+      readiness = await reconnect(startup);
     }
     if (mode === "ready") {
       if (!readiness) throw new Error("Readiness service missing");
-      const ready = await awaitReady(readiness, startup);
+      const ready = await awaitReady(startup);
       receipt = {
         ...receipt,
         outcome: "converged",
@@ -179,7 +215,7 @@ export async function runDatabaseBudgetCommand(
         initialReady,
         readyReceivedAt: previous?.readyReceivedAt,
         overallDeadline,
-        ...(readiness ? { ready: (signal: AbortSignal) => awaitReady(readiness!, signal) } : {}),
+        ...(readiness ? { ready: (signal: AbortSignal) => awaitReady(signal) } : {}),
         signal: operation,
         now,
         retain: async (value) => {
