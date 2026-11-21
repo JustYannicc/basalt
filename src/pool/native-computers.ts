@@ -2,6 +2,7 @@ import { modelDrainProtocol } from "./model-drain-contract.ts";
 import type { ComputerHome } from "./computer-home.ts";
 import {
   publicView,
+  usesNoPool,
   type ComputerStorage,
   type Registry,
   type StoredComputer,
@@ -302,7 +303,8 @@ export class NativeComputers {
    * Records what the tools service reports about a tools-only device it approved or revoked
    * without this pool, for Connect's list and its revoke. Its grant alone authorizes it, so
    * nothing here is checked against the directory. A device is added once; after that only a
-   * reported revocation changes its row, and nothing revives a revoked one. True when a row changed.
+   * reported revocation changes its row, and nothing revives a revoked one. A row an earlier pool
+   * access change swept is first restored, since its grant decides it. True when a row changed.
    */
   learn(registry: Registry, user: string, device: Record<string, unknown>, revoked = false) {
     const grant = text(device.grant),
@@ -313,14 +315,17 @@ export class NativeComputers {
     const at = new Date(this.deps.now()).toISOString();
     const known = Object.values(registry).find((row) => row.native?.grant === grant);
     if (known) {
-      if (
-        !(revoked || device.revoked === true) ||
-        known.user !== user ||
-        known.native?.models !== false ||
-        known.state === "revoked" ||
-        known.state === "removed"
-      )
-        return false;
+      if (known.user !== user || !usesNoPool(known) || known.state === "revoked") return false;
+      // Pool access changes used to sweep tools-only rows while their grants kept working.
+      const swept = known.state === "removed" || known.removalPending === true;
+      if (swept) {
+        known.state = "active";
+        delete known.removedAt;
+        delete known.removalPending;
+        delete known.removalAt;
+        delete known.beforeRemoval;
+      }
+      if (!(revoked || device.revoked === true)) return swept;
       known.state = "revoked";
       known.revokedAt ??= at;
       delete known.link;

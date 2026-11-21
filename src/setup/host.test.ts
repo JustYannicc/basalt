@@ -842,7 +842,10 @@ test("Connect's list says which devices were approved without models", async () 
         ? json({ computers: [{ ...toolsOnly, models: "no" }] })
         : undefined,
   });
-  assert.equal((await malformed.request("/setup/v1/computers?intent=signed-selection")).status, 502);
+  assert.equal(
+    (await malformed.request("/setup/v1/computers?intent=signed-selection")).status,
+    502,
+  );
 });
 
 test("claims need no session, negotiate JSON or markdown and consume exactly once", async () => {

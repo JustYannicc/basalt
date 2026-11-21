@@ -34,6 +34,7 @@ function computerSummary(value: unknown): Record<string, unknown> {
   if (
     !text(input.id, 512) ||
     (input.tools !== undefined && typeof input.tools !== "boolean") ||
+    (input.models !== undefined && typeof input.models !== "boolean") ||
     (input.lapsed !== undefined && input.lapsed !== true)
   )
     throw new SetupError(502, "Setup service returned an invalid computer.");
@@ -42,6 +43,7 @@ function computerSummary(value: unknown): Record<string, unknown> {
   return {
     ...Object.fromEntries(fields.filter((key) => key in input).map((key) => [key, input[key]])),
     ...(input.tools !== undefined && { tools: input.tools }),
+    ...(input.models !== undefined && { models: input.models }),
     ...(input.lapsed && { lapsed: true }),
   };
 }

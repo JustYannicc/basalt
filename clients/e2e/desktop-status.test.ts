@@ -29,7 +29,10 @@ test("a tools-only device's connection page names no pool and offers none", () =
 
 test("a device with models names its pool and offers choosing another", () => {
   const pool = { id: "pool-1", name: "Alex's pool" };
-  for (const view of [device("connected", ["models", "tools"], pool), device("disconnected", [], pool)])
+  for (const view of [
+    device("connected", ["models", "tools"], pool),
+    device("disconnected", [], pool),
+  ])
     assert.deepEqual(
       modelsRow(view, view.state === "connected"),
       { text: "Alex's pool", choosePool: true },
@@ -40,8 +43,11 @@ test("a device with models names its pool and offers choosing another", () => {
     text: "Reconnect to load pool details",
     choosePool: true,
   });
-  assert.deepEqual(modelsRow({ state: "connected", mode: "direct", capabilities: ["models"] }, true), {
-    text: "Your direct key",
-    choosePool: false,
-  });
+  assert.deepEqual(
+    modelsRow({ state: "connected", mode: "direct", capabilities: ["models"] }, true),
+    {
+      text: "Your direct key",
+      choosePool: false,
+    },
+  );
 });

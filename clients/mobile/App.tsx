@@ -165,17 +165,19 @@ function Home() {
                     {connection.origin}
                   </Label>
                 )}
-                {connection?.state === "connected" && origin && (
-                  <Button
-                    label="Choose pool in browser"
-                    secondary
-                    disabled={busy}
-                    onPress={() => {
-                      keepServer(origin);
-                      void controller.signIn(origin);
-                    }}
-                  />
-                )}
+                {connection?.state === "connected" &&
+                  origin &&
+                  connection.display?.pool.name !== "" && (
+                    <Button
+                      label="Choose pool in browser"
+                      secondary
+                      disabled={busy}
+                      onPress={() => {
+                        keepServer(origin);
+                        void controller.signIn(origin);
+                      }}
+                    />
+                  )}
                 {connected && (
                   <>
                     <Button
