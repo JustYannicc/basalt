@@ -292,7 +292,9 @@ function startProbe(lane: number, out: string, source: NodeJS.ProcessEnv) {
  * command) must plan zero changes on the root container application, and the Worker's own bounded
  * restart must replace the old instance before acceptance. The probe samples the whole time.
  */
-export const healCandidateBranch = "rehearse/heal-candidate";
+// The heal candidate on the repair batch (PR #1584 at 4d96fba1) plus the stage-only overlay. A new name per base: a
+// candidate branch is never force-pushed.
+export const healCandidateBranch = "rehearse/heal-candidate-1584";
 
 /**
  * The expect arguments the candidate's own release.yml gives a declared root restart: the policy's
