@@ -4,6 +4,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { control, controlApps } from "../cli/ipc.ts";
 import { ipcPath, operatorToken, runtimeOrigin } from "../cli/profile.ts";
+import { ConnectionLog, connectionLogName } from "./connection-log.ts";
+
+/** Stopping waits this long at most for the log; a slower write carries on after stop returns. */
+const logWaitMs = 2_000;
 
 /** Another process's connection answered but never wrote its local address within the bound. */
 export class ConnectionStartingError extends Error {
@@ -24,6 +28,7 @@ export class ConnectionSupervisor {
   private readonly attachWaitMs: number;
   private readonly pause: (signal: AbortSignal) => Promise<void>;
   private attaching: AbortController | undefined;
+  private readonly log: ConnectionLog;
   constructor(
     home: string,
     entry: string,
@@ -38,6 +43,7 @@ export class ConnectionSupervisor {
     this.entry = entry;
     this.executable = executable;
     this.attachWaitMs = options.attachWaitMs ?? 10_000;
+    this.log = new ConnectionLog(join(home, connectionLogName));
     this.pause =
       options.pause ?? ((signal) => delay(50, undefined, { signal }).catch(() => undefined));
   }
@@ -70,9 +76,13 @@ export class ConnectionSupervisor {
       windowsHide: true,
     });
     this.child = child;
+    // Read for the process's whole life: its tunnel warnings come after it is ready.
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (text: string) => this.log.output(text));
     const finished = new Promise<void>((resolve) => {
-      child.once("close", () => {
+      child.once("close", (code, signal) => {
         if (this.child === child) this.child = undefined;
+        this.log.end(`Connection process exited (code ${code}, signal ${signal}).`);
         resolve();
       });
     });
@@ -93,8 +103,8 @@ export class ConnectionSupervisor {
         if (error) reject(error);
         else resolve();
       };
-      const data = (chunk: Buffer) => {
-        received = (received + chunk.toString()).slice(-2048);
+      const data = (chunk: string) => {
+        received = (received + chunk).slice(-2048);
         if (/Connection ready at http:\/\/127\.0\.0\.1:\d+\./u.test(received)) done();
       };
       child.stderr?.on("data", data);
@@ -144,15 +154,22 @@ export class ConnectionSupervisor {
     this.attaching?.abort();
     const child = this.child,
       finished = this.finished;
-    if (!child || !finished) return;
-    child.kill("SIGTERM");
-    const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
-    try {
-      await finished;
-    } finally {
-      clearTimeout(timer);
+    if (child && finished) {
+      child.kill("SIGTERM");
+      const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      try {
+        await finished;
+      } finally {
+        clearTimeout(timer);
+      }
+      this.finished = undefined;
     }
-    this.finished = undefined;
+    const waited = new AbortController();
+    await Promise.race([
+      this.log.flushed(),
+      delay(logWaitMs, undefined, { signal: waited.signal }).catch(() => undefined),
+    ]);
+    waited.abort();
   }
   async command(command: "disconnect" | "reconnect" | "sign-out" | "revoke") {
     return control(ipcPath(this.home), await operatorToken(this.home), command);

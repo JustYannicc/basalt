@@ -21,21 +21,36 @@ const refused = (status: number) =>
     { status, headers: { "cache-control": "no-store" } },
   );
 
+/**
+ * A tunnel operation carries its session's own bearer check. Reusing that answer for this long
+ * keeps one check per tunneled request; a later operation on a long session asks again. The pool
+ * still checks the device on every model request.
+ */
+const admissionReuseMs = 3_000;
+const recent = (admitted: { readonly checkedAt?: number } | undefined) => {
+  const age = admitted?.checkedAt === undefined ? -1 : Date.now() - admitted.checkedAt;
+  return age >= 0 && age < admissionReuseMs;
+};
+
 /** Authenticate against the tools authority before asserting a device's identity to the pool. */
 export async function nativeModelRequest(
   request: Request,
   env: Environment,
   drain = false,
+  admitted?: { readonly checkedAt?: number },
 ): Promise<Response> {
   try {
     const authorization = request.headers.get("authorization");
     if (!authorization?.match(/^Bearer [^\s]+$/iu)) return refused(401);
-    const check = await readNativeAuthorization(request, env);
-    if (!check.ok) {
-      await check.body?.cancel();
-      return refused(check.status === 401 || check.status === 403 ? check.status : 503);
+    let access: unknown = admitted;
+    if (!recent(admitted)) {
+      const check = await readNativeAuthorization(request, env);
+      if (!check.ok) {
+        await check.body?.cancel();
+        return refused(check.status === 401 || check.status === 403 ? check.status : 503);
+      }
+      access = await check.json();
     }
-    const access: unknown = await check.json();
     if (
       !object(access) ||
       !text(access.id)?.startsWith("native:") ||
@@ -83,6 +98,6 @@ export async function forwardModelRequest(
   try {
     return await env.POOL_SERVICE.fetch(request);
   } catch {
-    return upstreamOutcomeUnknown();
+    return upstreamOutcomeUnknown(undefined, new URL(request.url).pathname);
   }
 }

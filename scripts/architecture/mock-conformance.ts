@@ -158,7 +158,7 @@ function enforcesAggregate(job: Record<string, unknown>) {
         object(step.env) &&
         step.env.CI_NEEDS === "${{ toJSON(needs) }}" &&
         step.env.CI_JOBS === "${{ needs.select.outputs.jobs }}" &&
-        step.env.CI_BOAT_JOBS === "${{ needs.select.outputs.boat_jobs }}",
+        step.env.CI_BOX_JOBS === "${{ needs.select.outputs.box_jobs }}",
     )
   );
 }

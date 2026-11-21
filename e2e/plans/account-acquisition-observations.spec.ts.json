@@ -54,13 +54,13 @@
   },
   "runs": {
     "accountAcquisitionObservations": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ],
     "accountAcquisitionOptional": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ],
     "accountObservationHealthRecovery": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ]
   },
   "inputs": [
