@@ -77,6 +77,9 @@ export class Computers {
   nativeModel(request: Request) {
     return this.native.model(request);
   }
+  nativeUsage(request: Request) {
+    return this.native.usage(request);
+  }
   abortPool(pool: string) {
     this.native.abortPool(pool);
   }

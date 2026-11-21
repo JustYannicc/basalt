@@ -123,7 +123,7 @@ interface UsageQuery {
 function sessionTrim(value: string): string {
   return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 }
-async function usageSession(raw: string): Promise<string> {
+export async function usageSession(raw: string): Promise<string> {
   const encoder = new TextEncoder();
   const session = sessionTrim(raw);
   // Node NormalizeExplicitID checks controls before trimming.

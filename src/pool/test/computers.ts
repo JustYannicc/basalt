@@ -40,7 +40,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     users: [] as Row[],
     keys: [] as Row[],
     groups: [] as Row[],
-    calls: [] as { path: string; method: string; body?: Row }[],
+    calls: [] as { path: string; method: string; body?: Row; search?: string }[],
     revokeFailure: false,
     userFailure: false,
     deleteUserFailure: false,
@@ -54,6 +54,11 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     revokeGate: undefined as Promise<void> | undefined,
     onRevoke: undefined as (() => void) | undefined,
     nextKey: 70,
+    /** Pool membership rows ({ id, channel_group_id, auth_id }) and usage records, shaped as Home serves them. */
+    members: [] as Row[],
+    usage: [] as Row[],
+    /** A Home that drops the key filter, so the Worker's own check is what keeps other keys' rows out. */
+    usageIgnoresKey: false,
   };
   const events: [string, string][] = [];
   const onProductEvent = (event: string, accountId: string) => {
@@ -66,7 +71,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
       const endpoint = url.pathname.slice("/v8/management".length);
       const method = init?.method ?? "GET";
       const body = init?.body ? (JSON.parse(String(init.body)) as Row) : undefined;
-      server.calls.push({ path: endpoint, method, body });
+      server.calls.push({ path: endpoint, method, body, search: url.search });
       if (endpoint === "/users") {
         if (method === "POST") {
           if (server.userFailure) return Response.json({ error: "failed" }, { status: 500 });
@@ -119,6 +124,25 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
             : Response.json({ error: "api_key_not_found" }, { status: 404 });
         }
         return Response.json({ items: server.keys });
+      }
+      if (endpoint === "/channel-group-details") {
+        const group = Number(url.searchParams.get("channel_group_id"));
+        return Response.json({
+          channel_group_details: server.members.filter((row) => row.channel_group_id === group),
+        });
+      }
+      if (endpoint === "/usage/records") {
+        const session = url.searchParams.get("session_id"),
+          key = Number(url.searchParams.get("client_key_id"));
+        const matched = server.usage.filter(
+          (row) =>
+            row.session_id === session &&
+            (server.usageIgnoresKey || (row.client as Row | undefined)?.api_key_id === key),
+        );
+        return Response.json({
+          items: matched.slice(0, Number(url.searchParams.get("limit"))),
+          total: matched.length,
+        });
       }
       if (endpoint === "/observability/request-events") return Response.json({ records: [] });
       throw new Error(`Unexpected Home request: ${method} ${endpoint}`);
@@ -210,6 +234,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     setup: (request: Request) => computers.handle(request),
     nativeControl: (request: Request) => computers.nativeControl(request),
     nativeModel: (request: Request) => computers.nativeModel(request),
+    nativeUsage: (request: Request) => computers.nativeUsage(request),
     nativeSession: (request: Request) => computers.nativeSession(request),
     expire: () => computers.expire(),
     now: () => time,

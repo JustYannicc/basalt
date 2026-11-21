@@ -1,7 +1,8 @@
-import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
+import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import { AcceptanceFailure } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
+import { OwnTraffic } from "./own-traffic.ts";
 
 /*
  * scripts/pool-acceptance.ts asserts one boot for the whole pool ("Pool boot changed during
@@ -12,20 +13,16 @@ import { shortHash, type ControllerView, type FleetView } from "./controller.ts"
 
 export interface AcceptanceInput {
   client: PoolAcceptanceClient;
-  apiKey: string;
+  /** Signs each model call for the release's acceptance device. */
+  credential: ModelAuth;
   model?: string;
-  access: PoolAccess;
   controller: () => Promise<ControllerView>;
   fleet: () => Promise<FleetView>;
+  sleep: (ms: number) => Promise<void>;
   burst?: number;
   rounds?: number;
   log: (line: string) => void;
 }
-
-const conversation = (expectedRecords = 1) => ({
-  id: crypto.randomUUID().toLowerCase(),
-  expectedRecords,
-});
 
 function selectModel(ids: string[], requested?: string) {
   if (requested) {
@@ -57,22 +54,34 @@ export const cellBoots = (fleet: FleetView, primary: string) =>
       .filter((boot) => boot !== primary),
   );
 
+/** The runtimes the controller reports serving: the selected primary and the fleet's cells. */
+export async function servingBoots(input: Pick<AcceptanceInput, "controller" | "fleet">) {
+  const primary = primaryBoot(await input.controller());
+  return { primary, cells: cellBoots(await input.fleet(), primary) };
+}
+
+/**
+ * Usage isolation is proven by the lane's own requests on the device's existing pool: each of its
+ * turns is read back with the same device assertion, never with a pool owner token.
+ */
 export async function runFleetAcceptance(input: AcceptanceInput) {
-  const { client, apiKey, log } = input;
-  const catalog = await client.modelCatalog(apiKey);
+  const { client, credential, log } = input;
+  const traffic = new OwnTraffic(client, credential);
+  const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);
-  const accounts = await client.testAccountIds(input.access);
   log(`models status=200 count=${catalog.ids.length}`);
   const burst = input.burst ?? 6;
+  const known = new Set<string>();
+  const observe = async () => {
+    const serving = await servingBoots(input);
+    for (const boot of [serving.primary, ...serving.cells]) known.add(boot);
+    return serving;
+  };
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
-  const conversations = [];
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
     // Concurrent turns make the primary busier than an idle cell, so balancing sends one there.
-    const batch = Array.from({ length: burst }, () => conversation());
-    conversations.push(...batch);
-    const results = await Promise.all(batch.map((value) => client.sendTurn(apiKey, model, value)));
-    const primary = primaryBoot(await input.controller());
-    const cells = cellBoots(await input.fleet(), primary);
+    const results = await Promise.all(Array.from({ length: burst }, () => traffic.turn(model)));
+    const { primary, cells } = await observe();
     const count = { round, cell: 0, primary: 0, other: 0 };
     for (const result of results)
       if (cells.has(result.boot)) count.cell++;
@@ -89,22 +98,41 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
       `No streamed turn in ${input.rounds ?? 3} bursts of ${burst} carried a fleet cell's X-Signalbox-Pool-Boot; every response came from the primary or an unknown runtime.`,
       "Check fleet-inspect for a ready cell; if one is ready and still unused, the balancer never routed to it.",
     );
-  const records = await Promise.all(
-    conversations.map((value) => client.waitForUsageRecords(input.access, value)),
-  );
-  if (records.flat().some((record) => !accounts.has(record.account)))
-    throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
-  log(`usage_records status=200 matched=${records.flat().length}`);
-  const final = await client.sendTurn(apiKey, model, conversation());
+  const final = await traffic.turn(model);
+  await observe();
   log(`final_request status=200 first_byte_ms=${Math.round(final.firstByteMs)}`);
-  return { model, servedByCell: served, usageRecords: records.flat().length };
+  // Checked against every read, so a cell first reported after it served is still known.
+  traffic.requireKnownBoots(known);
+  const usage = await traffic.verifyUsage(input.sleep);
+  log(
+    `usage_records status=200 sessions=${usage.sessions} matched=${usage.records} accounts=${usage.accounts}`,
+  );
+  return { model, servedByCell: served, usageRecords: usage.records };
+}
+
+/**
+ * crash-cell's own traffic: every response came from the primary or a cell reported before or
+ * after the kill, and every turn's usage stayed in the device's pool.
+ */
+export async function crashTrafficAccepted(
+  input: Pick<AcceptanceInput, "controller" | "fleet" | "sleep"> & {
+    traffic: OwnTraffic;
+    before: FleetView;
+  },
+) {
+  const { primary, cells } = await servingBoots(input);
+  input.traffic.requireKnownBoots(
+    new Set([primary, ...cells, ...cellBoots(input.before, primary)]),
+  );
+  return input.traffic.verifyUsage(input.sleep);
 }
 
 /** After a disable: one plain streamed turn must come back from the selected primary. */
-export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "access">) {
-  const catalog = await input.client.modelCatalog(input.apiKey);
+export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "sleep">) {
+  const traffic = new OwnTraffic(input.client, input.credential);
+  const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);
-  const result = await input.client.sendTurn(input.apiKey, model, conversation());
+  const result = await traffic.turn(model);
   const primary = primaryBoot(await input.controller());
   if (result.boot !== primary)
     throw refuse(
