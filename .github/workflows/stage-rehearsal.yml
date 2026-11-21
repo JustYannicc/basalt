@@ -96,6 +96,10 @@ jobs:
           # lane says so; remove the absent line in the commit that follows the mint.
           REHEARSAL_OBSERVATION_TOKEN_2: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_2 }}
           REHEARSAL_OBSERVATION_2: absent
+          # Lane 3, the same pin as production's root; its token is minted by the operator for it alone.
+          REHEARSAL_ROOT_IMAGE_3: ${{ vars.REHEARSAL_ROOT_IMAGE_3 }}
+          REHEARSAL_OBSERVATION_TOKEN_3: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_3 }}
+          REHEARSAL_OBSERVATION_3: absent
       - name: On failure, print the kept output (redacted)
         if: failure() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts show-output "$STAGE_LABEL"
@@ -109,6 +113,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
           REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
+          REHEARSAL_ROOT_IMAGE_3: ${{ vars.REHEARSAL_ROOT_IMAGE_3 }}
       - name: Seal the run's full output
         if: always() && steps.prepare.outcome == 'success'
         run: node scripts/release-preview/stage.ts seal-output "$STAGE_LABEL" "$RUNNER_TEMP/stage-output.enc"
