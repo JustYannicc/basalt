@@ -1,3 +1,4 @@
+import { migratePolicies, policyChanges, type PolicyMemory } from "./policy-memory.ts";
 import type {
   CapacityAggregate,
   CapacityHistoryPoint,
@@ -209,7 +210,9 @@ interface HistoryIndex {
   bankedReceipts?: Record<string, number>;
   demandFrom?: number;
   demandSinceByGroup?: Record<string, number>;
+  /** Read once to migrate an index written before demandPolicies. */
   demandRevisions?: Record<string, { revision: string; at: number }>;
+  demandPolicies?: PolicyMemory;
   demandShares?: Record<string, Record<string, { week: number; amount: number }[]>>;
   rollingUse?: Record<string, Record<string, RollingUseEvent[]>>;
   rollingChain?: Record<string, Record<string, RollingChainEntry>>;
@@ -714,40 +717,36 @@ export class CapacityHistory {
             latestByKey.delete(key);
         latestByKey.set(readingKey(reading), reading);
       }
-      const revisions = (readings: Iterable<CapacityReading>) => {
-        const groups = new Map<string, Set<string>>();
-        for (const reading of readings) {
-          const key = groupKey(
-            reading.provider,
-            reading.windowSeconds,
-            reading.mode,
-            reading.unit.id,
-          );
-          const values = groups.get(key) ?? new Set<string>();
-          values.add(reading.revision);
-          groups.set(key, values);
-        }
-        return new Map(
-          [...groups].map(([key, values]) => [key, JSON.stringify([...values].sort())]),
-        );
-      };
-      const oldPolicies =
-        index.demandRevisions ??
-        Object.fromEntries(
-          [...revisions(priorLatestByKey.values())].map(([key, revision]) => [
-            key,
-            { revision, at: index.lastAt ?? snapshot.at },
-          ]),
-        );
-      const oldRevisions = new Map(
-        Object.entries(oldPolicies).map(([key, policy]) => [key, policy.revision]),
-      );
-      const currentRevisions = revisions(latestByKey.values());
-      const changedGroups = new Set(
-        [...currentRevisions]
-          .filter(([key, value]) => index.lastAt !== null && oldRevisions.get(key) !== value)
-          .map(([key]) => key),
-      );
+      const members = (readings: Iterable<CapacityReading>) =>
+        [...readings].map((reading) => ({
+          group: groupKey(reading.provider, reading.windowSeconds, reading.mode, reading.unit.id),
+          account: reading.account,
+          revision: reading.revision,
+        }));
+      const current = members(latestByKey.values());
+      // Memory lasts as long as the week-aligned demand shares it guards.
+      const policyFrom = Math.min(demandFrom, weekOf(snapshot.at) - 13 * 7 * dayMs);
+      const policies =
+        index.lastAt === null
+          ? {
+              changed: new Set<string>(),
+              memory: policyChanges({ memory: {}, current, at: snapshot.at, keepFrom: policyFrom })
+                .memory,
+            }
+          : index.demandPolicies
+            ? policyChanges({
+                memory: index.demandPolicies,
+                current,
+                at: snapshot.at,
+                keepFrom: policyFrom,
+              })
+            : migratePolicies({
+                recorded: index.demandRevisions,
+                prior: members(priorLatestByKey.values()),
+                current,
+                at: snapshot.at,
+              });
+      const changedGroups = policies.changed;
       for (const reading of hashedCurrent) {
         const old = priorLatestByKey.get(readingKey(reading));
         if (old !== undefined && old.revision !== reading.revision)
@@ -1428,16 +1427,7 @@ export class CapacityHistory {
         demandSinceByGroup: Object.fromEntries(
           Object.entries(demandSinceByGroup).filter(([, since]) => since >= demandFrom),
         ),
-        demandRevisions: Object.fromEntries(
-          [
-            ...new Map([
-              ...Object.entries(oldPolicies),
-              ...[...currentRevisions].map(
-                ([key, revision]) => [key, { revision, at: snapshot.at }] as const,
-              ),
-            ]),
-          ].filter(([, policy]) => policy.at >= demandFrom),
-        ),
+        demandPolicies: policies.memory,
         demandShares,
         rollingUse,
         rollingChain,

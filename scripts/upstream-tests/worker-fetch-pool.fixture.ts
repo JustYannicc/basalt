@@ -1,4 +1,6 @@
-import { fixture, pool } from "../../src/pool/test/computers.ts";
+import { nativeModelHeader, nativeModelPrefix } from "../../src/pool/native-contract.ts";
+import { fixture, pool, signingKey } from "../../src/pool/test/computers.ts";
+import { signEnvelope } from "../../src/pool/token.ts";
 
 const p = fixture();
 let controlCalls = 0;
@@ -24,6 +26,29 @@ export default {
           hasSealedKey: !!computer.native?.key,
         })),
       });
+    }
+    if (url.pathname === "/fixture/model") {
+      // The model key is minted and sealed on the device's first model use, inside workerd.
+      const computer = Object.values(await p.registry()).find((row) => row.native?.models);
+      if (!computer?.native) return Response.json({ error: "no model device" }, { status: 404 });
+      const assertion = await signEnvelope(signingKey, nativeModelPrefix, {
+        user: computer.user,
+        grant: computer.native.grant,
+        computer: computer.id,
+        pool: computer.pool,
+        method: "POST",
+        path: "/v1/responses",
+        expiresAt: p.now() + 10_000,
+      });
+      const lease = await p.nativeModel(
+        new Request("https://pool.example/v1/responses", {
+          method: "POST",
+          headers: { [nativeModelHeader]: assertion },
+          body: "{}",
+        }),
+      );
+      lease.release();
+      return Response.json({ forwarded: true });
     }
     if (url.pathname === "/redirected") {
       redirectedCalls++;
