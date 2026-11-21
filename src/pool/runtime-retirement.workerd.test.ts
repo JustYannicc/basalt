@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
-import { runtimeProofFixture } from "../../scripts/release-barrier/test/runtime-proof-fixture.ts";
+import { runtimeProofFixture } from "../../scripts/pool-fleet/test/runtime-proof-fixture.ts";
 import { runtimeRetirementWorkerd } from "../../scripts/pool-tests/runtime-retirement-workerd.ts";
 
 test(

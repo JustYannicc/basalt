@@ -104,7 +104,10 @@ export function createDriveDispatcher(
                 limit: error.limit,
                 ...(error.resetAt === null ? {} : { resetAt: error.resetAt }),
               }
-            : {}),
+            : // Fixed engine text, plus a refused push's bounded and redacted remote reason.
+              error instanceof DriveError && error.code === "contended"
+              ? { message: error.message }
+              : {}),
           reason:
             error instanceof DriveError
               ? error.code === "invalid"

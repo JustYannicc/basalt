@@ -1,0 +1,33 @@
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -368,9 +368,17 @@
+             expect(count(reads, "invitations"), "A member never reads invitations").toBe(0);
+ 
+           // Keyboard focus is intent too, and a fresh answer is shown without reading again.
++          // A new document replays the 31 seconds added above, so it would open that far ahead of
++          // the server that rendered it, find its access and organizations older than their
++          // freshness, and read them again on entry. Real time is where the first document started.
++          yield* browser.use("Return the browser clock to real time", (page) =>
++            page.clock.setSystemTime(Date.now()),
++          );
++          // Counted from before the document opens: the driver reports a request some time after
++          // the page sends it, so a count taken once Apps shows can miss what the entry sent.
++          const identityBeforeEntry = identity.length;
+           yield* enterApps("Enter Apps for keyboard focus");
+           yield* showLink("Show the Settings link for keyboard focus");
+-          const identityBeforeFocus = identity.length;
+           yield* withoutBilling(
+             "Keyboard focus",
+             Effect.gen(function* () {
+@@ -395,8 +403,8 @@
+           );
+           yield* stillOnApps("Focus alone stays on Apps");
+           expect(
+-            identity.slice(identityBeforeFocus),
+-            "Focus reuses the verified access, organizations and session",
++            identity.slice(identityBeforeEntry),
++            "A fresh document and focus on it reuse the verified access, organizations and session",
+           ).toEqual([]);
+           expect(
+             reads.filter((read) => read !== "billing").sort(),

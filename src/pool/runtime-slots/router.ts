@@ -3,6 +3,7 @@ import { modelLifetimeFetch } from "../model-lifetime.worker.ts";
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
+import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 import {
   SlotRefused,
   executionKey,
@@ -22,6 +23,7 @@ interface RoutingDependencies {
   clock: SlotClock;
   defer(work: Promise<void>): void;
   wrap(response: Response, lease: NativeStreamLease): Response;
+  databasePool?(): HomeDatabasePoolObservation | null;
 }
 
 /** This is the only execution path. Slot drivers stay private to their controller. */
@@ -146,6 +148,7 @@ export class RuntimeSlotRouter {
             code: "pool_protection_unavailable",
             count,
             ...diagnostic,
+            ...(this.deps.databasePool ? { homeDatabasePool: this.deps.databasePool() } : {}),
           },
         );
       },

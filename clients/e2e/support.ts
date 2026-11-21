@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,9 +8,17 @@ import { request } from "node:http";
 
 export const main = fileURLToPath(new URL("../cli/main.mjs", import.meta.url));
 export const root = dirname(dirname(main));
-export function launch(args: readonly string[], home: string, execArgv: readonly string[] = []) {
-  const child = spawn(process.execPath, [...execArgv, main, "--home", home, ...args], {
+/** Without a home, the CLI picks its default profile, as it does for a person. */
+export function launch(
+  args: readonly string[],
+  home: string | undefined,
+  execArgv: readonly string[] = [],
+  env = process.env,
+) {
+  const profile = home === undefined ? [] : ["--home", home];
+  const child = spawn(process.execPath, [...execArgv, main, ...profile, ...args], {
     cwd: root,
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "",
@@ -30,8 +38,9 @@ export async function command(args: readonly string[], home: string) {
   return result;
 }
 
-export async function fixtureHome(origin: string) {
-  const home = await mkdtemp(join(tmpdir(), "signalbox-client-test-"));
+export async function fixtureHome(origin: string, at?: string) {
+  const home = at ?? (await mkdtemp(join(tmpdir(), "signalbox-client-test-")));
+  await mkdir(home, { recursive: true, mode: 0o700 });
   const input = join(home, "input.json");
   await writeFile(
     input,

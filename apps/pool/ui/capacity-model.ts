@@ -1,4 +1,5 @@
 import { accountPlanName, type AllowanceProvenance } from "apps";
+import { utcMoment } from "./moments.ts";
 import {
   hasCurrentLimitReading,
   supportedLimitWindows,
@@ -404,7 +405,7 @@ export function verdict(
       detail:
         line.lastReadingAt === undefined
           ? `No previous ${label} reading is available.`
-          : `Last ${label} reading: ${new Date(line.lastReadingAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
+          : `Last ${label} reading: ${utcMoment(line.lastReadingAt)}.`,
     };
   }
   if (
@@ -771,15 +772,13 @@ export function allowanceRows(point: CapacityHistoryPoint | null, asOf: number):
         checked:
           allowance?.checkedAt == null
             ? null
-            : `Checked ${dayLong(allowance.checkedAt)} UTC, ${ageText(allowance.checkedAt, asOf)}`,
+            : `Checked ${utcMoment(allowance.checkedAt, { dateStyle: "short" })}, ${ageText(allowance.checkedAt, asOf)}`,
         expires:
           allowance?.expiresAt == null
             ? null
-            : `${allowance.expiresAt <= asOf ? "Expired" : "Expires"} ${dayLong(allowance.expiresAt)} UTC`,
+            : `${allowance.expiresAt <= asOf ? "Expired" : "Expires"} ${utcMoment(allowance.expiresAt, { dateStyle: "short" })}`,
         retrieved:
-          allowance?.fetchedAt == null
-            ? null
-            : `Retrieved ${dayLong(allowance.fetchedAt)} ${pad(new Date(allowance.fetchedAt).getUTCHours())}:${pad(new Date(allowance.fetchedAt).getUTCMinutes())} UTC`,
+          allowance?.fetchedAt == null ? null : `Retrieved ${utcMoment(allowance.fetchedAt)}`,
         sources: (allowance?.sources ?? []).map(sourceLink),
       });
     }
