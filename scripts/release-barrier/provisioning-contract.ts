@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { canonical, digest } from "./manifest.ts";
 import { RuntimeCreateDeclaration, type RuntimeResourceName } from "./runtime-create-schema.ts";
 import { decodeProvisioningInput, provisioningRefusal } from "./provisioning-refusal.ts";
+import { ReleaseStageName } from "./release-stage.ts";
 
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 export const RuntimeProvisioningManifest = Schema.Struct({
@@ -9,7 +10,7 @@ export const RuntimeProvisioningManifest = Schema.Struct({
   disposition: Schema.Literal("provision-only"),
   candidate: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
   stack: Schema.NonEmptyString,
-  stage: Schema.Literal("production"),
+  stage: ReleaseStageName,
   operationId: Schema.NonEmptyString,
   declaration: RuntimeCreateDeclaration,
   namespaceBaselineDigest: hash,

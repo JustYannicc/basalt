@@ -33,6 +33,13 @@ import {
 } from "./runtime-release-readiness.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { rehearsalDrainCap, releaseTarget } from "./release-stage.ts";
+import {
+  assertRehearsalFleetActive,
+  stopAfterAdopt,
+  stopAt,
+  timeRehearsalWait,
+} from "./release-rehearsal-observer.ts";
 import {
   baselineControllerHealth,
   readBaselineControllerKey,
@@ -57,13 +64,14 @@ export const releaseRuntimeImage = <A, StackError>(
 ) =>
   Effect.gen(function* () {
     const code = { candidate: options.candidate, workerInput: poolWorkerRevision };
+    const { stage } = releaseTarget();
     const evaluate = <A, E, R>(
       plan: ImageReleasePlan,
       use: (compiled: CompiledStack) => Effect.Effect<A, E, R>,
     ) =>
-      evalStack(stack, (compiled) => provideCompiled(compiled, use(compiled)), {
-        stage: "production",
-      }).pipe(Effect.provideService(RuntimeImageReleasePlan, plan));
+      evalStack(stack, (compiled) => provideCompiled(compiled, use(compiled)), { stage }).pipe(
+        Effect.provideService(RuntimeImageReleasePlan, plan),
+      );
     const initial = yield* evaluate({ images: {} }, (compiled) =>
       Effect.gen(function* () {
         yield* assertReleaseStateVersion(compiled);
@@ -224,6 +232,7 @@ export const releaseRuntimeImage = <A, StackError>(
         }),
       );
     let client = yield* codePhase("controller");
+    stopAt("after-controller");
     yield* Effect.promise(() =>
       verifyBoundProviderObservation({
         state: record.baseline,
@@ -234,6 +243,7 @@ export const releaseRuntimeImage = <A, StackError>(
       }),
     );
     yield* Effect.promise(() => client.adopt());
+    yield* Effect.promise(() => stopAfterAdopt(client, options.directory));
 
     for (const color of ["blue", "green"] as const) {
       if (record.baseline.applications[color]) continue;
@@ -252,11 +262,13 @@ export const releaseRuntimeImage = <A, StackError>(
               save,
             }),
           ),
-        { stage: "production" },
+        { stage },
       ).pipe(Effect.provideService(RuntimeImageReleasePlan, createPlan));
       const native = yield* evaluate(createPlan, (compiled) => runtimeReleaseState(compiled));
       yield* Effect.promise(() => save({ ...record, baseline: native }));
+      stopAt(`after-bootstrap-${color}`);
       client = yield* codePhase(`bind-${color}`);
+      stopAt(`after-bind-${color}`);
     }
     yield* Effect.promise(() =>
       waitReleaseObservation(
@@ -329,21 +341,23 @@ export const releaseRuntimeImage = <A, StackError>(
           configureReleaseFleet(client, record, `image-configure-${options.candidate}`, save),
         );
         yield* Effect.promise(() =>
-          waitReleaseObservation(
-            async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
-            (value) => {
-              const selection = value.slots.selection;
-              const primaries = [
-                selection?.active,
-                selection?.candidate,
-                selection?.draining,
-              ].filter(
-                (slot) => slot && slot.target.instanceId !== slot.target.controllerId,
-              ).length;
-              const maximum = value.fleet.permission?.configuration.maximum;
-              return maximum !== undefined && value.fleet.resources.length + primaries < maximum;
-            },
-            resource,
+          timeRehearsalWait(options.directory, "image-capacity", () =>
+            waitReleaseObservation(
+              async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
+              (value) => {
+                const selection = value.slots.selection;
+                const primaries = [
+                  selection?.active,
+                  selection?.candidate,
+                  selection?.draining,
+                ].filter(
+                  (slot) => slot && slot.target.instanceId !== slot.target.controllerId,
+                ).length;
+                const maximum = value.fleet.permission?.configuration.maximum;
+                return maximum !== undefined && value.fleet.resources.length + primaries < maximum;
+              },
+              resource,
+            ),
           ),
         );
       }
@@ -358,16 +372,20 @@ export const releaseRuntimeImage = <A, StackError>(
           pool,
         ),
       );
+      yield* Effect.promise(() => assertRehearsalFleetActive(client));
     }
     yield* Effect.promise(() =>
-      waitReleaseObservation(
-        async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
-        (value) =>
-          !value.slots.selection?.draining &&
-          value.fleet.resources.every(
-            (row) => row.target.imageInput === value.slots.selection?.active.target.imageInput,
-          ),
-        "PoolWorker.old-generation-drain",
+      timeRehearsalWait(options.directory, "old-generation-drain", () =>
+        waitReleaseObservation(
+          async () => ({ slots: await client.inspect(), fleet: await client.fleet() }),
+          (value) =>
+            !value.slots.selection?.draining &&
+            value.fleet.resources.every(
+              (row) => row.target.imageInput === value.slots.selection?.active.target.imageInput,
+            ),
+          "PoolWorker.old-generation-drain",
+          rehearsalDrainCap(),
+        ),
       ),
     );
     yield* evaluate(plan(), (compiled) =>

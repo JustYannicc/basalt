@@ -2,9 +2,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runPreview, type PreviewHooks } from "./lifecycle.ts";
 
-const result = () => ({ version: 1, mode: "preview", signIn: true, pool: true, cleanup: true,
-  clients: ["claude", "codex"].map(client => ({ client, exit: 0, timeout: false,
-    modelRequest: true, toolSearch: true, undo: true, revoke: true })) });
+const result = () => ({
+  version: 1,
+  mode: "preview",
+  signIn: true,
+  pool: true,
+  cleanup: true,
+  clients: ["claude", "codex"].map((client) => ({
+    client,
+    exit: 0,
+    timeout: false,
+    modelRequest: true,
+    toolSearch: true,
+    undo: true,
+    revoke: true,
+  })),
+});
 
 function scenario(failures: string[] = []) {
   const calls: string[] = [];
@@ -13,9 +26,15 @@ function scenario(failures: string[] = []) {
     if (failures.includes(name)) throw new Error(`fixed-${name}-failure`);
   };
   const hooks: PreviewHooks = {
-    prepare: () => operation("prepare"), deploy: () => operation("deploy"), seed: () => operation("seed"),
-    smoke: async () => { await operation("smoke"); return result(); },
-    destroy: () => operation("destroy"), verifyAbsent: () => operation("verifyAbsent"),
+    prepare: () => operation("prepare"),
+    deploy: () => operation("deploy"),
+    seed: () => operation("seed"),
+    smoke: async () => {
+      await operation("smoke");
+      return result();
+    },
+    destroy: () => operation("destroy"),
+    verifyAbsent: () => operation("verifyAbsent"),
   };
   return { hooks, calls };
 }
@@ -43,7 +62,7 @@ test("a secretless preparation failure creates no stage and does not call provid
 test("cleanup errors stay red and absence is checked even after destroy fails", async () => {
   for (const failures of [["destroy"], ["verifyAbsent"], ["smoke", "destroy", "verifyAbsent"]]) {
     const { hooks, calls } = scenario(failures);
-    await assert.rejects(runPreview(hooks), error => {
+    await assert.rejects(runPreview(hooks), (error) => {
       assert.ok(error instanceof AggregateError);
       assert.equal(error.errors.length, failures.length);
       return true;
@@ -57,4 +76,40 @@ test("skips and incomplete runner output cannot create a success receipt", async
   hooks.smoke = async () => ({ skipped: true });
   await assert.rejects(runPreview(hooks), /missing or incomplete/);
   assert.deepEqual(calls.slice(-2), ["destroy", "verifyAbsent"]);
+});
+
+test("a run without a native serving check must name what its smoke proves, and still tears down", async () => {
+  const events: string[] = [];
+  const hooks = {
+    prepare: async () => {},
+    deploy: async () => void events.push("deploy"),
+    seed: async () => {},
+    smoke: async () => ({ skipped: "infra-only" }),
+    destroy: async () => void events.push("destroy"),
+    verifyAbsent: async () => void events.push("verify"),
+  };
+  await assert.rejects(runPreview(hooks), /smoke result/);
+  const accept = (result: unknown) => {
+    if (JSON.stringify(result) !== JSON.stringify({ skipped: "infra-only" }))
+      throw new Error("unproven");
+  };
+  assert.deepEqual(await runPreview({ ...hooks, requireSmoke: accept }), {
+    smoke: { skipped: "infra-only" },
+    teardown: true,
+  });
+  await assert.rejects(
+    runPreview({ ...hooks, smoke: async () => ({ skipped: "other" }), requireSmoke: accept }),
+    /unproven/,
+  );
+  assert.deepEqual(events, [
+    "deploy",
+    "destroy",
+    "verify",
+    "deploy",
+    "destroy",
+    "verify",
+    "deploy",
+    "destroy",
+    "verify",
+  ]);
 });

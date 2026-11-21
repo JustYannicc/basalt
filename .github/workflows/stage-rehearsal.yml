@@ -1,0 +1,146 @@
+name: Stage rehearsal
+
+# One mode against a standing rehearsal stage (scripts/release-preview/stage.ts), dispatched by
+# labelling a same-repo pull request `stage-<mode>` (lane 1) or `stage-<mode>-<2|3|4|5>`. Modes:
+# check, baseline, plan, apply, destroy. The label is removed when the run ends, so adding it again
+# runs the mode again. Every apply and destroy goes through scripts/release/deploy.ts.
+on:
+  pull_request:
+    # rehearsal/base: the frozen merge-base #1306 targets while main's release path moves on.
+    branches: [main, rehearsal/base]
+    types: [labeled]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  stage:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.label.name, 'stage-')
+    # One mode at a time per lane; a second label waits instead of cancelling an apply in flight.
+    concurrency:
+      group: stage-rehearsal-lane-${{ endsWith(github.event.label.name, '-2') && '2' || endsWith(github.event.label.name, '-3') && '3' || endsWith(github.event.label.name, '-4') && '4' || endsWith(github.event.label.name, '-5') && '5' || '1' }}
+      cancel-in-progress: false
+    # The owner's box (BASALT_REHEARSAL_RUNNER=basalt-box); hosted when it is unset.
+    runs-on: ${{ vars.BASALT_REHEARSAL_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    env:
+      STAGE_LABEL: ${{ github.event.label.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Free runner disk
+        # Hosted runners only; the box gives each job a fresh container with room for the pool build.
+        if: runner.environment == 'github-hosted'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+      # The repo's checksum-pinned installers, which also work in the box's fresh containers.
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned build
+        id: prepare
+        run: npm run prepare:upstream
+      - name: Name the lane's stage and set its deadline
+        id: lane
+        run: |
+          lane="$(node -e 'const m=/^stage-[a-z]+(?:-([1-5]))?$/.exec(process.env.STAGE_LABEL); if(!m) process.exit(1); console.log(m[1] ?? "1")')"
+          echo "subject=rehearsal-$lane" >> "$GITHUB_OUTPUT"
+          # The box keeps a private owner-only directory per job for 14 days; hosted keeps runner temp.
+          if [ -n "${BASALT_BOX_OUTPUT:-}" ]; then out="$BASALT_BOX_OUTPUT/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"; else out="$RUNNER_TEMP/stage-output"; fi
+          echo "BASALT_STAGE_OUTPUT_DIR=$out" >> "$GITHUB_ENV"
+          # A standing stage outlives one job; the upstream test stage still needs a deadline.
+          echo "TEST_STAGE_EXPIRES_AT=$(( ($(date +%s) + 86400) * 1000 ))" >> "$GITHUB_ENV"
+      - name: Plan the stage and save its encrypted cleanup checkpoint
+        run: |
+          node scripts/preview/lifecycle.ts plan "${{ steps.lane.outputs.subject }}"
+          node scripts/release-preview/checkpoint.ts seal "${{ steps.lane.outputs.subject }}" .local/preview-plan.json.enc
+        env:
+          TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-cleanup-${{ steps.lane.outputs.subject }}-${{ github.run_id }}
+          path: .local/preview-plan.json.enc
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+      - name: Run the mode
+        run: node scripts/release-preview/stage.ts "$STAGE_LABEL"
+        env:
+          PREVIEW_MANIFEST_CHECKPOINTED: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+          TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+          PREVIEW_SMOKE_EMAIL: ${{ secrets.PREVIEW_SMOKE_EMAIL }}
+          PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
+          # Lane 2's root image by digest, without the account; the job adds CLOUDFLARE_ACCOUNT_ID.
+          REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
+          # Lane 2's observation token, minted by the operator for this stage only. Until it exists the
+          # lane says so; remove the absent line in the commit that follows the mint.
+          REHEARSAL_OBSERVATION_TOKEN_2: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_2 }}
+          REHEARSAL_OBSERVATION_2: absent
+          # Lane 3, the same pin as production's root; its token is minted by the operator for it alone.
+          REHEARSAL_ROOT_IMAGE_3: ${{ vars.REHEARSAL_ROOT_IMAGE_3 }}
+          REHEARSAL_OBSERVATION_TOKEN_3: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_3 }}
+          REHEARSAL_OBSERVATION_3: absent
+          # Lane 4, the same pin; its token is minted by the operator for it alone.
+          REHEARSAL_ROOT_IMAGE_4: ${{ vars.REHEARSAL_ROOT_IMAGE_4 }}
+          REHEARSAL_OBSERVATION_TOKEN_4: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_4 }}
+          REHEARSAL_OBSERVATION_4: absent
+          # Lane 5, the same pin; its token is minted by the operator for it alone.
+          REHEARSAL_ROOT_IMAGE_5: ${{ vars.REHEARSAL_ROOT_IMAGE_5 }}
+          REHEARSAL_OBSERVATION_TOKEN_5: ${{ secrets.REHEARSAL_OBSERVATION_TOKEN_5 }}
+          REHEARSAL_OBSERVATION_5: absent
+      - name: On failure, print the kept output (redacted)
+        if: failure() && steps.prepare.outcome == 'success'
+        run: node scripts/release-preview/stage.ts show-output "$STAGE_LABEL"
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+          PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
+          REHEARSAL_ROOT_IMAGE_3: ${{ vars.REHEARSAL_ROOT_IMAGE_3 }}
+          REHEARSAL_ROOT_IMAGE_4: ${{ vars.REHEARSAL_ROOT_IMAGE_4 }}
+          REHEARSAL_ROOT_IMAGE_5: ${{ vars.REHEARSAL_ROOT_IMAGE_5 }}
+      - name: Seal the run's full output
+        if: always() && steps.prepare.outcome == 'success'
+        run: node scripts/release-preview/stage.ts seal-output "$STAGE_LABEL" "$RUNNER_TEMP/stage-output.enc"
+        env:
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-output-${{ steps.lane.outputs.subject }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stage-output.enc
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Clear the label so adding it again runs the mode again
+        if: always()
+        # curl, not gh: the box image carries no GitHub CLI.
+        run: >-
+          curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
+          "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/labels/$STAGE_LABEL" > /dev/null
+        env:
+          GH_TOKEN: ${{ github.token }}

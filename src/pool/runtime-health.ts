@@ -1,5 +1,6 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "./runtime-read-trace.ts";
 import { PoolRuntimeUnhealthy, type PoolStatus } from "./lifecycle.ts";
+import { readinessDistance } from "./runtime-distance.ts";
 
 export const policyHealthLeaseMs = 1_500;
 export const policyHealthRefreshMs = 500;
@@ -31,6 +32,7 @@ export async function readRuntimeHealth(
   const milliseconds = remaining !== null && /^[1-9]\d*$/.test(remaining) ? Number(remaining) : 0;
   const generation = response.headers.get(launchGenerationHeader);
   const tokenHash = response.headers.get(launchTokenHashHeader);
+  const database = readinessDistance(status);
   return {
     boot_id: status.boot_id,
     started_at: status.started_at,
@@ -44,6 +46,7 @@ export async function readRuntimeHealth(
     ...(milliseconds > 0 && milliseconds <= policyHealthLeaseMs
       ? { policyLeaseUntil: requestedAt + milliseconds }
       : {}),
+    ...(database ? { database } : {}),
   };
 }
 
@@ -86,6 +89,10 @@ async function healthResponse(
               signal: bounded,
               headers: { Authorization: `Bearer ${managementKey}` },
             })
+            .catch((error: unknown) => {
+              if (bounded.aborted) throw error;
+              throw new ReadinessReadFailure("transport", error);
+            })
             .then((value) => {
               response = value;
               if (bounded.aborted) {
@@ -111,13 +118,21 @@ async function healthResponse(
             let text = "";
             try {
               while (reader) {
-                const part = await reader.read();
+                const part = await reader.read().catch((error: unknown) => {
+                  if (bounded.aborted) throw error;
+                  throw new ReadinessReadFailure("transport", error);
+                });
                 bounded.throwIfAborted();
                 if (part.done) break;
                 text += decoder.decode(part.value, { stream: true });
               }
               bounded.throwIfAborted();
-              return JSON.parse(text + decoder.decode());
+              try {
+                return JSON.parse(text + decoder.decode());
+              } catch (error) {
+                if (error instanceof SyntaxError) throw new ReadinessReadFailure("body", error);
+                throw error;
+              }
             } finally {
               reader?.releaseLock();
               reader = undefined;
@@ -134,5 +149,14 @@ async function healthResponse(
   } finally {
     clearTimeout(timer);
     bounded.removeEventListener("abort", onAbort);
+  }
+}
+
+/** The readiness port failed in transport or answered an unparsable body; never a code defect. */
+export class ReadinessReadFailure extends Error {
+  readonly kind: "transport" | "body";
+  constructor(kind: ReadinessReadFailure["kind"], cause: unknown) {
+    super(`Runtime readiness read failed: ${kind}`, { cause });
+    this.kind = kind;
   }
 }

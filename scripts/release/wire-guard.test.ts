@@ -929,3 +929,16 @@ test("a destroy deletes exactly the resources its own plan names, and nothing el
     `DELETE /accounts/${ACCOUNT}/workers/scripts/basalt-test-pr-7-poolworker`,
   ]);
 });
+
+test("(e) without a stage scope, as production runs, the stage's mTLS rule is not consulted", async (t) => {
+  const run = await guarded(t, {}, (base) =>
+    Effect.tryPromise(() =>
+      fetch(`${base}/accounts/${ACCOUNT}/mtls_certificates`, {
+        method: "POST",
+        body: JSON.stringify({ ca: false, certificates: "not the trust root" }),
+      }),
+    ),
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.deepEqual(reads(run.received), [`POST /accounts/${ACCOUNT}/mtls_certificates`]);
+});

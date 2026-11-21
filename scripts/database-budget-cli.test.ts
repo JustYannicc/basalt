@@ -89,19 +89,28 @@ function fixture(directory: string) {
     join(directory, "scheduler.mjs"),
     `
     const pending = new Map();
+    let pauses = 0;
     export function deadline(_milliseconds, phase) {
       const controller = new AbortController();
       pending.set(controller, phase);
+      // Two retry pauses elapse at once; the third meets the command deadline instead.
+      if (phase === "retry") {
+        if (++pauses < 3) controller.abort();
+        else expire("command");
+      }
       return {signal: controller.signal, dispose() {
         pending.delete(controller);
       }};
     }
-    export function stalled(phase) {
-      // Expire only once the fixture has entered the operation that will never finish.
-      // Deferring also lets the caller register the teardown deadline after close() starts.
+    function expire(phase) {
       queueMicrotask(() => {
         for (const [controller, kind] of pending) if (kind === phase) controller.abort();
       });
+    }
+    export function stalled(phase) {
+      // Expire only once the fixture has entered the operation that will never finish.
+      // Deferring also lets the caller register the teardown deadline after close() starts.
+      expire(phase);
       return new Promise(() => {});
     }
   `,
@@ -206,7 +215,11 @@ for (const [scenario, mode, outcome] of [
       assert.equal(output.outcome, outcome);
       if (scenario === "close") assert.equal(output.stage, "teardown");
       if (scenario === "close-after-failure") assert.equal(output.stage, "readiness");
-      assert.equal(output.commandDeadlineMs, mode === "ready" ? 180000 : 115000);
+      assert.equal(output.commandDeadlineMs, mode === "ready" ? 510000 : 115000);
+      // A refused runtime is asked again until the command deadline, and the receipt says so.
+      if (["unready", "close-after-failure"].includes(scenario))
+        assert.deepEqual(output.refusals, { count: 3, status: 503 });
+      else assert.equal(output.refusals, undefined);
       assert.deepEqual(output.target, target);
       const retained = JSON.parse(readFileSync(path, "utf8"));
       if (mode === "ready" && outcome === "converged") assert.deepEqual(retained.ready, ready);

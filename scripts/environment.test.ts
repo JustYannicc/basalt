@@ -16,6 +16,8 @@ import {
   requiredPreviewDeploySecrets,
   requiredPreviewSecrets,
   requiredSecrets,
+  stageCleanupEnvironment,
+  stageEnvironment,
 } from "./environment.ts";
 
 test("missing credentials fail with a name and never a value", () => {
@@ -268,6 +270,56 @@ test("preview config rejects unsafe PRs, hostnames, keys and real-person smoke a
   );
 });
 
+test("a rehearsal environment mirrors a PR's but shares no name or key with the same number", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  const rehearsal = stageEnvironment({ kind: "rehearsal", number: 1419 }, source);
+  const pr = previewEnvironment(1419, source);
+  assert.deepEqual(stageEnvironment({ kind: "pr", number: 1419 }, source), pr);
+  assert.equal(rehearsal.rehearsal, 1419);
+  assert.equal(rehearsal.pullRequest, undefined);
+  assert.equal(rehearsal.stage, "test-rehearsal-1419");
+  assert.equal(rehearsal.sourceNamespace, "basalt-preview-rehearsal-1419-apps");
+  assert.equal(rehearsal.databaseName, "basalt-preview-rehearsal-1419");
+  assert.equal(rehearsal.origin, "https://app.rehearsal-1419.preview.example.invalid");
+  assert.equal(rehearsal.deploy.ALCHEMY_STAGE, "test-rehearsal-1419");
+  assert.equal(rehearsal.deploy.CLOUD_SOURCE_NAMESPACE, "basalt-preview-rehearsal-1419-apps");
+  assert.equal(rehearsal.deploy.TEST_STAGE_DATABASE, "basalt-preview-rehearsal-1419");
+  assert.equal(rehearsal.deploy.PLANETSCALE_DATABASE_NAME, "basalt-preview-rehearsal-1419");
+  assert.equal(rehearsal.deploy.BETTER_AUTH_URL, rehearsal.origin);
+  assert.equal(rehearsal.deploy.AUTH_EMAIL_DOMAIN, "auth.rehearsal-1419.preview.example.invalid");
+  assert.deepEqual(Object.keys(rehearsal.deploy).sort(), Object.keys(pr.deploy).sort());
+  for (const name of [
+    "POOL_DEPLOYMENT_KEY",
+    "POOL_APP_SIGNING_KEY",
+    "POOL_MANAGEMENT_KEY",
+    "BETTER_AUTH_SECRET",
+    "EXECUTOR_ENCRYPTION_KEY",
+    "MCP_SESSION_KEY_CURRENT",
+    "MCP_SESSION_KEY_PREVIOUS",
+    "APP_DOMAIN_CONTROL_SECRET",
+    "TELEMETRY_RELAY_KEY",
+    "GOOGLE_CLIENT_SECRET",
+    "GITHUB_CLIENT_SECRET",
+  ]) {
+    assert.match(rehearsal.deploy[name]!, /^[a-f0-9]{64}$/, name);
+    assert.notEqual(rehearsal.deploy[name], pr.deploy[name], name);
+  }
+  const cleanup = stageCleanupEnvironment({ kind: "rehearsal", number: 1419 }, source);
+  assert.equal(cleanup.providers.ALCHEMY_STAGE, "test-rehearsal-1419");
+  assert.equal(cleanup.providers.TEST_STAGE_DATABASE, "basalt-preview-rehearsal-1419");
+  assert.equal(cleanup.providers.CLOUD_SOURCE_NAMESPACE, "basalt-preview-rehearsal-1419-apps");
+  assert.throws(
+    () => stageEnvironment({ kind: "rehearsal", number: 0 }, source),
+    /Rehearsal number must be a positive integer/,
+  );
+});
+
 test("cleanup environment needs provider credentials and state key, never smoke credentials", () => {
   const source = {
     ...Object.fromEntries(requiredPreviewSecrets.map((name) => [name, "fixture"])),
@@ -460,4 +512,64 @@ test("release readiness key is stable across attempts and refuses malformed secr
     assert.throws(() => deployEnvironment({ ...source, POOL_DEPLOYMENT_KEY: key }), {
       message: "POOL_DEPLOYMENT_KEY must be 32 bytes of lowercase hex",
     });
+});
+
+test("a disposable stage's deadline is epoch milliseconds, passed through only when set", async () => {
+  const { stageExpiry } = await import("./environment.ts");
+  assert.equal(stageExpiry("1795030000000"), "1795030000000");
+  assert.equal(stageExpiry(undefined), undefined);
+  assert.equal(stageExpiry(""), undefined);
+  for (const bad of ["1795030000", "17950300000000", "soon", "-1795030000000"])
+    assert.throws(() => stageExpiry(bad), /epoch milliseconds/);
+});
+
+test("a rehearsal lane's observation token or its absent reaches the stack, through every env the stage composes", async () => {
+  const { lifecycleEnvironment } = await import("./release-preview/credentials.ts");
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  const lane = { kind: "rehearsal", number: 2 } as const;
+  const minted = { ...source, REHEARSAL_OBSERVATION_TOKEN_2: "operator-minted" };
+  for (const env of [minted, lifecycleEnvironment(minted, "deploy")]) {
+    const { deploy } = stageEnvironment(lane, env);
+    assert.equal(deploy.POOL_REHEARSAL_OBSERVATION_TOKEN, "operator-minted");
+    assert.equal(deploy.POOL_REHEARSAL_OBSERVATION, undefined);
+  }
+  const absent = {
+    ...source,
+    REHEARSAL_OBSERVATION_2: "absent",
+    REHEARSAL_OBSERVATION_TOKEN_2: "",
+  };
+  assert.equal(stageEnvironment(lane, absent).deploy.POOL_REHEARSAL_OBSERVATION, "absent");
+  assert.equal(stageEnvironment(lane, absent).deploy.POOL_REHEARSAL_OBSERVATION_TOKEN, undefined);
+  // Another lane's token is not this lane's, and a PR never gets one.
+  const other = { ...source, REHEARSAL_OBSERVATION_TOKEN_3: "lane-3" };
+  assert.equal(stageEnvironment(lane, other).deploy.POOL_REHEARSAL_OBSERVATION_TOKEN, undefined);
+  assert.equal(
+    stageEnvironment({ kind: "pr", number: 2 }, minted).deploy.POOL_REHEARSAL_OBSERVATION_TOKEN,
+    undefined,
+  );
+});
+
+test("carry 0719's switch is set on every disposable stage and refused for production", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  for (const subject of [
+    { kind: "rehearsal", number: 4 },
+    { kind: "pr", number: 9 },
+  ] as const)
+    assert.equal(stageEnvironment(subject, source).deploy.EXECUTOR_APP_HOST_ROUTER, "basalt");
+  assert.throws(
+    () => deployEnvironment({ EXECUTOR_APP_HOST_ROUTER: "basalt" }),
+    /Unsupported production override: EXECUTOR_APP_HOST_ROUTER/,
+  );
 });

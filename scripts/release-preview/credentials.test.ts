@@ -6,8 +6,10 @@ import { test } from "node:test";
 import { materializeSmokeSecrets, validateSmokeSecrets } from "./credentials.ts";
 
 const secrets = {
-  PREVIEW_SMOKE_EMAIL: "preview@example.invalid", PREVIEW_SMOKE_PASSWORD: "fixture-password",
-  PREVIEW_CLAUDE_MODEL: "fixture-claude", PREVIEW_CODEX_MODEL: "fixture-codex",
+  PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+  PREVIEW_SMOKE_PASSWORD: "fixture-password",
+  PREVIEW_CLAUDE_MODEL: "fixture-claude",
+  PREVIEW_CODEX_MODEL: "fixture-codex",
   PREVIEW_CLAUDE_AUTH_JSON: '{"type":"claude","access_token":"private-fixture"}',
   PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: '{"type":"codex"}',
   PREVIEW_CODEX_CLI_AUTH_JSON: '{"auth_mode":"chatgpt","tokens":{}}',
@@ -22,21 +24,47 @@ test("preview credentials become private files and leave the child environment",
       assert.equal(env[`PREVIEW_${name}_JSON`], undefined);
       const path = env[`PREVIEW_${name}_FILE`]!;
       assert.equal((await stat(path)).mode & 0o777, 0o600);
-      assert.equal(await readFile(path, "utf8"), secrets[`PREVIEW_${name}_JSON` as keyof typeof secrets]);
+      assert.equal(
+        await readFile(path, "utf8"),
+        secrets[`PREVIEW_${name}_JSON` as keyof typeof secrets],
+      );
     }
     await assert.rejects(materializeSmokeSecrets(secrets, directory), /EEXIST/);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("missing, malformed or real-person smoke identities fail without revealing values", () => {
   assert.throws(() => validateSmokeSecrets({}), /Missing preview smoke input/);
   for (const value of ["private-fixture", "[]", "null", "false"]) {
-    assert.throws(() => validateSmokeSecrets({ ...secrets, PREVIEW_CLAUDE_AUTH_JSON: value }), error => {
-      assert.ok(error instanceof Error);
-      assert.ok(!error.message.includes(value));
-      return true;
-    });
+    assert.throws(
+      () => validateSmokeSecrets({ ...secrets, PREVIEW_CLAUDE_AUTH_JSON: value }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.ok(!error.message.includes(value));
+        return true;
+      },
+    );
   }
-  assert.throws(() => validateSmokeSecrets({ ...secrets, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
-    /reserved example.invalid/);
+  assert.throws(
+    () => validateSmokeSecrets({ ...secrets, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
+    /reserved example.invalid/,
+  );
+});
+
+test("an infra-only rehearsal needs only the smoke identity, still on the reserved domain", async () => {
+  const { validateSmokeIdentity } = await import("./credentials.ts");
+  validateSmokeIdentity({
+    PREVIEW_SMOKE_EMAIL: "smoke@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixture",
+  });
+  assert.throws(
+    () => validateSmokeIdentity({ PREVIEW_SMOKE_EMAIL: "smoke@example.invalid" }),
+    /PREVIEW_SMOKE_PASSWORD/,
+  );
+  assert.throws(
+    () => validateSmokeIdentity({ PREVIEW_SMOKE_EMAIL: "a@b.c", PREVIEW_SMOKE_PASSWORD: "x" }),
+    /reserved/,
+  );
 });

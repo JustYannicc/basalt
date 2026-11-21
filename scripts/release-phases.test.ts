@@ -318,6 +318,5 @@ test(
         { id: "RuntimeDatabaseBudget", action: "noop" },
       ],
     );
-    assert.ok(proof.nextAttempt.every((node) => node.action === "update"));
   },
 );

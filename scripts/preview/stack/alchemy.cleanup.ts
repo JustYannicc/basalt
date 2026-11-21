@@ -14,16 +14,29 @@ import {
   TestStageDomainCleanup,
 } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/test-stage-cleanup-providers.ts";
 import { axiomProviders } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/axiom-provider.ts";
+import { stackNameForStage } from "../../release-barrier/release-stage.ts";
+import { requireCleanupStage } from "../subject.ts";
 
-const cleanupState = Layer.unwrap(Effect.gen(function* () {
-  const stage = yield* Stage;
-  if (!stage.startsWith("test-pr-")) return yield* Effect.die(new Error("Preview cleanup is restricted to PR stages."));
-  yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(Effect.orDie);
-  return Cloudflare.state();
-}));
+const configuredStage = process.env.ALCHEMY_STAGE;
+
+// Alchemy's `state` commands take no --stage and open the stack under this placeholder stage.
+const stateCommandStage = "placeholder";
+
+const cleanupState = Layer.unwrap(
+  Effect.gen(function* () {
+    const opened = yield* Stage;
+    // A state command reads the store for the configured stage; every other command must name it.
+    const stage = opened === stateCommandStage ? (configuredStage ?? "") : opened;
+    yield* Effect.try(() => requireCleanupStage(stage, configuredStage)).pipe(Effect.orDie);
+    yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(
+      Effect.orDie,
+    );
+    return Cloudflare.state();
+  }),
+);
 
 export default Alchemy.Stack(
-  "basalt",
+  stackNameForStage(configuredStage),
   {
     providers: Layer.mergeAll(
       Cloudflare.providers(),

@@ -102,3 +102,76 @@ test("live probe runs only on internal PRs and precedes automatic and manual rel
   const deploy = workflow("deploy");
   assert.ok(deploy.indexOf("baseline-probe-entry.ts") < deploy.indexOf("release.ts deploy "));
 });
+
+test("a stage's inventory is exactly its own Workers, and production never takes a rehearsal's", () => {
+  const stage = (stack: string, name: string) =>
+    baselineRoles.map((role) => ({
+      id: `basalt-${role.toLowerCase()}-${name}`,
+      tags: [`alchemy:stack:${stack}`, `alchemy:stage:${name}`, `alchemy:id:${role}`],
+    }));
+  const rehearsal = stage("basalt-rehearsal", "test-rehearsal-1");
+  const other = stage("basalt-rehearsal", "test-rehearsal-2");
+  const target = { stack: "basalt-rehearsal", stage: "test-rehearsal-1" };
+  const names = (workers: { scriptName: string }[]) => workers.map((worker) => worker.scriptName);
+  assert.deepEqual(
+    names(baselineInventory([...scripts, ...rehearsal, ...other])),
+    scripts.map((script) => script.id),
+  );
+  assert.deepEqual(
+    names(baselineInventory([...scripts, ...rehearsal, ...other], target)),
+    rehearsal.map((script) => script.id),
+  );
+  // A rehearsal stage may lack roles its declaration leaves out, never taking another stage's.
+  const partial = rehearsal.filter((script) => !script.tags.includes("alchemy:id:PublicSite"));
+  assert.deepEqual(
+    names(baselineInventory([...scripts, ...partial, ...other], target)),
+    partial.map((script) => script.id),
+  );
+  for (const inventory of [scripts, other, stage("basalt", "test-rehearsal-1")])
+    assert.deepEqual(baselineInventory(inventory, target), []);
+  // Production refuses every missing role; it never takes a rehearsal's Workers.
+  for (const inventory of [rehearsal, stage("basalt-rehearsal", "production")])
+    assert.throws(
+      () => baselineInventory(inventory),
+      (error: { refusals?: { reason: string }[]; workers?: unknown[] }) =>
+        error.workers?.length === 0 &&
+        error.refusals?.length === baselineRoles.length &&
+        error.refusals.every(({ reason }) => reason.startsWith("missing-worker")),
+    );
+});
+
+test("production still requires all 20 roles: a missing apex site or app pages is refused there", () => {
+  const without = (list: typeof scripts) =>
+    list.filter(
+      (script) =>
+        !["alchemy:id:PublicSite", "alchemy:id:AppPages"].some((tag) => script.tags.includes(tag)),
+    );
+  for (const target of [undefined, { stack: "basalt", stage: "production" }])
+    assert.throws(
+      () => baselineInventory(without(scripts), target),
+      (error: { refusals?: { role: string; reason: string }[] }) =>
+        JSON.stringify(
+          error.refusals?.map(({ role, reason }) => [role, reason.split(";")[0]]).sort(),
+        ) ===
+        JSON.stringify([
+          ["AppPages", "missing-worker"],
+          ["PublicSite", "missing-worker"],
+        ]),
+    );
+  // The partial match follows only the release stage named by the trusted environment.
+  const rehearsal = without(scripts).map((script) => ({
+    id: script.id.replace("production-fixture", "test-rehearsal-1"),
+    tags: script.tags.map((tag) =>
+      tag
+        .replace("alchemy:stack:basalt", "alchemy:stack:basalt-rehearsal")
+        .replace("alchemy:stage:production", "alchemy:stage:test-rehearsal-1"),
+    ),
+  }));
+  assert.equal(
+    baselineInventory(rehearsal, { stack: "basalt-rehearsal", stage: "test-rehearsal-1" }).length,
+    baselineRoles.length - 2,
+  );
+  assert.throws(() =>
+    baselineInventory(rehearsal, { stack: "basalt-rehearsal", stage: "production" }),
+  );
+});

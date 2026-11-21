@@ -6,6 +6,7 @@ import {
 } from "../../src/pool/runtime-slots/configuration.ts";
 import { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts";
 import { canonical, digest } from "./manifest.ts";
+import { ReleaseStageName } from "./release-stage.ts";
 import { provisioningAuthority, type ProvisioningEnable } from "./provisioning-contract.ts";
 import {
   decodeProvisioningInput,
@@ -19,7 +20,7 @@ export const RuntimeHandoffManifest = Schema.Struct({
   disposition: Schema.Literals(["runtime-handoff", "preserve-unattested"]),
   candidate: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
   stack: Schema.NonEmptyString,
-  stage: Schema.Literal("production"),
+  stage: ReleaseStageName,
   operationId: Schema.NonEmptyString,
   controllerCode: ControllerCode,
   controller: Schema.Struct({

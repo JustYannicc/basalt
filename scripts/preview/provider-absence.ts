@@ -2,7 +2,6 @@ import { cloudflareArtifactsApi, euNamespaceExists, stageNamespaces } from "../e
 import { PlanetScaleApi } from "../deploy-safety/planetscale-api.ts";
 import type { PreviewIdentity } from "../environment.ts";
 import {
-  previewStacks,
   type PreviewDomainReference,
   type PreviewInventory,
   type PreviewProviderInventory,
@@ -33,8 +32,8 @@ function record(value: unknown): Record<string, unknown> {
 
 function bucketNames(inventory: PreviewInventory): string[] {
   const found = new Set<string>();
-  for (const stack of previewStacks) {
-    for (const entry of inventory.stacks[stack]) {
+  for (const entries of Object.values(inventory.stacks)) {
+    for (const entry of entries) {
       if (entry.path.endsWith("/output")) continue;
       const value = record(entry.value);
       if (value.resourceType !== "Cloudflare.R2.Bucket") continue;
@@ -60,8 +59,8 @@ function exactResourceInventory(inventory: PreviewInventory): {
   let complete = true;
   let foundContainerResource = false;
   let foundCustomDomain = false;
-  for (const stack of previewStacks) {
-    for (const entry of inventory.stacks[stack]) {
+  for (const entries of Object.values(inventory.stacks)) {
+    for (const entry of entries) {
       if (entry.path.endsWith("/output")) continue;
       const value = record(entry.value);
       const attr = value.attr && typeof value.attr === "object" ? record(value.attr) : {};
@@ -142,7 +141,9 @@ function cloudflareApi(account: string, token: string) {
     if (!response.ok)
       throw new Error(`Cloudflare preview absence readback failed with HTTP ${response.status}`);
     const body = record(await response.json());
-    if (body.success !== true || !Array.isArray(body.errors) || body.errors.length !== 0)
+    // Some endpoints (Worker domains) send `errors: null` on success rather than an empty list.
+    const errors = body.errors ?? [];
+    if (body.success !== true || !Array.isArray(errors) || errors.length !== 0)
       throw new Error("Cloudflare preview absence readback was not authoritative");
     return body;
   };

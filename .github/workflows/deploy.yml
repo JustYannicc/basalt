@@ -107,22 +107,28 @@ jobs:
         run: node scripts/deploy-safety/release.ts already-live --candidate "${NEWER:-$RELEASE_CANDIDATE_SHA}"
         env:
           NEWER: ${{ steps.newer.outputs.newer }}
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - name: Wait for a passed release rehearsal of this commit
+        # Production write phases first run on a disposable stack. Until the rehearsal passed on this exact commit,
+        # this run deploys nothing; the rehearsal's own handoff releases the commit if it finishes after this Check.
+        id: rehearsed
+        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+        run: node scripts/release-merge/rehearsal-gate.ts ready
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - name: Validate credentials
-        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: node --input-type=module -e 'import { deployEnvironment } from "./scripts/environment.ts"; deployEnvironment();'
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
           POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run prepare:upstream
       - name: Read every Worker baseline before release work
-        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: |
           BASALT_RELEASE_ATTEMPT="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')" \
             bun scripts/release-barrier/baseline-probe-entry.ts
@@ -180,25 +186,25 @@ jobs:
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
           POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run check
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run check:releases
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run check:preview-auth
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run check:upstream
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run build
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run check:build
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run architecture:model
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: npm run typecheck
       - name: Compare the candidate with the last successful production deployment
         id: report
-        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
+        if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == '' && steps.rehearsed.outputs.ready == 'true'
         run: |
           mkdir -p .local
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_CANDIDATE_SHA" > .local/production-report.json

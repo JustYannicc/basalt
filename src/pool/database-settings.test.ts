@@ -23,8 +23,9 @@ test("pool rejects direct, unverified, or session-dependent runtime connections"
     assert.throws(() => poolDatabaseUrl(url), /pooled Postgres connection/);
 });
 
-test("each PR preview gets its own pool database branch", () => {
+test("each PR preview and rehearsal gets its own pool database branch", () => {
   assert.equal(previewPoolDatabaseBranch("test-pr-1419"), "test-pr-1419-pool");
-  assert.throws(() => previewPoolDatabaseBranch("production"), /restricted to PR preview stages/);
-  assert.throws(() => previewPoolDatabaseBranch("test-pr-0"), /restricted to PR preview stages/);
+  assert.equal(previewPoolDatabaseBranch("test-rehearsal-1419"), "test-rehearsal-1419-pool");
+  for (const stage of ["production", "test-pr-0", "test-rehearsal-0", "test-e2e-1419"])
+    assert.throws(() => previewPoolDatabaseBranch(stage), /restricted to PR preview and rehearsal/);
 });

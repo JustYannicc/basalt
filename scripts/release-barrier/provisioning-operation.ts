@@ -5,6 +5,7 @@ import { Effect, Schema } from "effect";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import type { Fetcher } from "../deploy-safety/http.ts";
 import { canonical, digest } from "./manifest.ts";
+import { releaseScope } from "./release-stage.ts";
 import { ProvisioningActiveRead, readProvisioningActive } from "./provisioning-active.ts";
 import {
   RuntimeProvisioningManifest,
@@ -116,11 +117,10 @@ function validateIdentity(packet: ProvisioningPacket, writer: ProvisioningWriter
   const manifest = operation.manifest;
   const fingerprint = provisioningOperationDigest(operation);
   sameProvisioningValue("provisioning.operation.candidate", writer.candidate, manifest.candidate);
-  sameProvisioningValue(
-    "provisioning.operation.scope",
-    { stack: "basalt", stage: "production" },
-    { stack: manifest.stack, stage: manifest.stage },
-  );
+  sameProvisioningValue("provisioning.operation.scope", releaseScope(), {
+    stack: manifest.stack,
+    stage: manifest.stage,
+  });
   sameProvisioningValue(
     "provisioning.operation.account",
     writer.accountId,
@@ -168,7 +168,7 @@ export const inspectDeclaredProvisioning = (
     validateIdentity(packet, writer);
     sameProvisioningValue(
       "provisioning.operation.compiledScope",
-      { name: "basalt", stage: "production" },
+      { name: releaseScope().stack, stage: releaseScope().stage },
       { name: stack.name, stage: stack.stage },
     );
     const state = yield* yield* State;
@@ -226,7 +226,7 @@ export const runDeclaredProvisioning = (
     const enable = validateProvisioningOperation(packet, writer, now());
     sameProvisioningValue(
       "provisioning.operation.compiledScope",
-      { name: "basalt", stage: "production" },
+      { name: releaseScope().stack, stage: releaseScope().stage },
       { name: stack.name, stage: stack.stage },
     );
     if (!/^[a-f0-9]{64}$/iu.test(encryptionKey))

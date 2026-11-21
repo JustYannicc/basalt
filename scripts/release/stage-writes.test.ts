@@ -175,3 +175,68 @@ test("a stage outside the disposable shapes, or without a stage domain, owns no 
   assert.equal(named("rehearsal-2"), "refuse");
   assert.equal(named("rehearsal-2", "example.dev"), "allow");
 });
+
+test("a stage may upload only the shared public trust root, byte for byte, and never owns or changes an mTLS certificate", async () => {
+  const { readFileSync } = await import("node:fs");
+  const root = readFileSync(
+    new URL("../../.upstream/apps/hosted/cloud/certificates/isrg-root-x1.pem", import.meta.url),
+    "utf8",
+  );
+  const post = (body: unknown) => verdict("POST", `${CF}/mtls_certificates`, body);
+  // (a) the exact body
+  assert.equal(post({ ca: true, certificates: root, name: "stage-ca" }), "allow");
+  // (b) one byte different
+  const flipped = root.replace("M", "N");
+  assert.notEqual(flipped, root);
+  assert.equal(post({ ca: true, certificates: flipped }), "refuse");
+  assert.equal(post({ ca: true, certificates: `${root}\n` }), "refuse");
+  // (c) a leaf certificate
+  assert.equal(post({ ca: false, certificates: root }), "refuse");
+  assert.equal(post(undefined), "refuse");
+  // (d) the returned id is never the stage's: its rows add no identity, and no write of it passes,
+  // whether the run deploys or tears down.
+  const shared = [
+    {
+      resourceType: "Cloudflare.MtlsCertificate.MtlsCertificate",
+      attr: { id: "cert-1", name: "n" },
+    },
+  ];
+  assert.deepEqual(ownIdentities(shared), []);
+  for (const isOwned of [() => false, () => true])
+    for (const method of ["DELETE", "PUT", "PATCH", "POST"])
+      assert.equal(
+        stageWriteVerdict(scope, isOwned, method, new URL(`${CF}/mtls_certificates/cert-1`), {})
+          .kind,
+        "refuse",
+        method,
+      );
+});
+
+test("a stage owns the zone routes its own Workers' rows record, and no other route", () => {
+  const rows = [
+    {
+      resourceType: "Cloudflare.Worker",
+      attr: {
+        workerName: "basalt-rehearsal-api-x",
+        routes: [
+          { id: "route-own", pattern: "app.rehearsal-4.example.dev/*", zoneId: "zone" },
+          { pattern: "no-id/*" },
+        ],
+      },
+    },
+    // Another type's nested `routes` never counts.
+    {
+      resourceType: "Cloudflare.DNS.Record",
+      attr: { recordId: "rec-1", routes: [{ id: "route-dns" }] },
+    },
+  ];
+  const stageOwned = ownIdentities(rows);
+  assert.ok(stageOwned.includes("route-own"));
+  assert.ok(!stageOwned.includes("route-dns"));
+  const isOwned = (value: string) => stageOwned.includes(value);
+  const remove = (id: string) =>
+    stageWriteVerdict(scope, isOwned, "DELETE", new URL(`${ZONE}/workers/routes/${id}`), undefined)
+      .kind;
+  assert.equal(remove("route-own"), "allow");
+  assert.equal(remove("route-production"), "refuse");
+});

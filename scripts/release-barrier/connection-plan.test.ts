@@ -22,7 +22,7 @@ test("a fresh preview initializes the pool database before creating Hyperdrive",
   assert.deepEqual(proof.failure.commands, ["PoolDatabaseBudget"]);
 });
 
-test("the actual production connection stays unchanged across release Command attempts", () => {
+test("the actual production connection and its commands stay unchanged for a new release attempt", () => {
   const proof = discoverConnectionPlanProof(root);
   assert.equal(proof.action, "noop");
   assert.equal(proof.candidateOriginResolved, true);
@@ -30,8 +30,8 @@ test("the actual production connection stays unchanged across release Command at
   assert.equal(proof.resolvedOriginEqual, true);
   assert.equal(proof.resolvedConfigEqual, true);
   assert.equal(proof.connectionWrites, 0);
-  assert.equal(proof.budgetAction, "update");
-  assert.equal(proof.migrationAction, "update");
+  assert.equal(proof.budgetAction, "noop");
+  assert.equal(proof.migrationAction, "noop");
   assert.equal(proof.databasePhaseContainsMigrations, true);
   assert.equal(proof.databasePhaseContainsBudget, true);
   assert.equal(proof.refusal, null);
@@ -49,7 +49,7 @@ for (const change of ["origin", "limit", "tls"] as const) {
   });
 }
 
-test("the actual pool connection stays unchanged across release Command attempts", () => {
+test("the actual pool connection and its command stay unchanged for a new release attempt", () => {
   const proof = discoverConnectionPlanProof(root, undefined, "PoolModelDatabaseConnection");
   assert.deepEqual(proof.connectionIds, ["DatabaseConnection", "PoolModelDatabaseConnection"]);
   assert.equal(proof.action, "noop");
@@ -58,7 +58,7 @@ test("the actual pool connection stays unchanged across release Command attempts
   assert.equal(proof.resolvedOriginEqual, true);
   assert.equal(proof.resolvedConfigEqual, true);
   assert.equal(proof.connectionWrites, 0);
-  assert.equal(proof.poolAction, "update");
+  assert.equal(proof.poolAction, "noop");
   assert.ok(proof.poolWorkerDependencies.includes("PoolDatabase"));
   assert.ok(proof.poolWorkerDependencies.includes("RuntimeDatabaseBudget"));
   assert.equal(proof.databasePhaseContainsPool, true);

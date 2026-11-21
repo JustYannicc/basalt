@@ -4,6 +4,9 @@ import { baselineProbeTable, type BaselineProbeRow } from "./baseline-probe.ts";
 import type { SettingsProbeRow } from "./settings-probe.ts";
 import { reportRefusal } from "./refusal-report.ts";
 
+/** Where the baseline probe writes its rows, relative to the checkout it runs in. */
+export const baselineProbeOutput = ".local/baseline-probe.json";
+
 export async function reportBaselineProbe(
   rows: readonly (BaselineProbeRow | SettingsProbeRow)[],
   output: string,

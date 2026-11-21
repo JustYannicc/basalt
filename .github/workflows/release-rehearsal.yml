@@ -1,0 +1,217 @@
+name: Release rehearsal
+
+# Runs the candidate's exact release path (deploy.ts phases, barrier, controller, image phases and finalize)
+# against a disposable production-shaped stack seeded like production, then tears it down. Manual release of main
+# and Deploy refuse a main commit without a passed rehearsal of exactly that commit.
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize, reopened]
+  # Main pushes start once the rehearsal's spend is approved. Until then the release gate stays closed for main.
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rehearsal:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       (contains(github.event.pull_request.labels.*.name, 'release-rehearsal') ||
+        contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer') ||
+        contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer-step4') ||
+        contains(github.event.pull_request.labels.*.name, 'release-rehearsal-native')) &&
+       (github.event.action != 'labeled' || github.event.label.name == 'release-rehearsal' ||
+        github.event.label.name == 'release-rehearsal-single-writer' ||
+        github.event.label.name == 'release-rehearsal-single-writer-step4' ||
+        github.event.label.name == 'release-rehearsal-native'))
+    # On the job, so a skipped run for an unrelated event can't cancel a rehearsal in flight. Main keeps one pending
+    # run behind the running one and never cancels it: a busy main would otherwise never finish a rehearsal. A pull
+    # request's newer head does replace its older rehearsal; release-cleanup tears the cancelled stage down.
+    concurrency:
+      group: release-rehearsal-${{ github.event.pull_request.number || github.ref }}-${{ matrix.scenario }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    # Up to two image builds and six release passes. Any cancel, timeout or failure is torn down by the
+    # cleanup job below.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        # A single-change pull request rehearses only the PoolWorker class path it changes: forward, or
+        # its recovery points (re-dispatch, abort, recorded-version recovery) as two parallel stages.
+        # The native label rehearses only the Alchemy cutover: a production-shaped stage, then one plain deploy.
+        scenario: ${{ fromJSON(github.event_name == 'push' && '["straight"]' || contains(github.event.pull_request.labels.*.name, 'release-rehearsal-native') && '["single-writer-native"]' || contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer-step4') && '["single-writer-resume","single-writer-rollback"]' || contains(github.event.pull_request.labels.*.name, 'release-rehearsal-single-writer') && '["single-writer"]' || '["straight","drain-resume"]') }}
+    env:
+      REHEARSAL_SCENARIO: ${{ matrix.scenario }}
+      # Cloudflare-side only: no subscription accounts, traffic, pool stream or serving check. The receipt records it.
+      REHEARSAL_INFRA_ONLY: ${{ contains(github.event.pull_request.labels.*.name, 'release-rehearsal-infra-only') }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # Two checkouts, two prepared builds and two pool image builds; the same cleanup the pool CI build uses.
+      - name: Free runner disk before pool builds
+        run: |
+          echo "Runner disk before cleanup (bytes)"
+          df -B1 /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          docker builder prune --all --force
+          echo "Runner disk after cleanup (bytes)"
+          df -B1 /
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Name this rehearsal's disposable stage
+        id: stage
+        run: node scripts/release-preview/rehearsal-stage.ts "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$REHEARSAL_SCENARIO" >> "$GITHUB_OUTPUT"
+      - name: Commit the baseline and previous candidate, this tree with the previous pool source
+        id: previous
+        run: node scripts/release-preview/rehearsal-previous.ts "$RUNNER_TEMP/previous" "$REHEARSAL_SCENARIO" >> "$GITHUB_OUTPUT"
+      - name: Prepare both pinned builds
+        run: |
+          npm run prepare:upstream
+          (cd "$RUNNER_TEMP/previous" && npm run prepare:upstream)
+      - name: Install the pinned native coding clients
+        run: |
+          npm install --prefix .ci-tools --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-code@2.1.309 @openai/codex@0.164.0
+          echo "$GITHUB_WORKSPACE/.ci-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Set this run's stage deadline
+        # The upstream test stage requires a deadline and stops serving after it; seven hours outlasts the job.
+        run: echo "TEST_STAGE_EXPIRES_AT=$(( ($(date +%s) + 25200) * 1000 ))" >> "$GITHUB_ENV"
+      - name: Plan isolated resources and encrypt the cleanup checkpoint
+        run: |
+          node scripts/preview/lifecycle.ts plan "$REHEARSAL_SUBJECT"
+          node scripts/release-preview/checkpoint.ts seal "$REHEARSAL_SUBJECT" .local/preview-plan.json.enc
+        env:
+          REHEARSAL_SUBJECT: ${{ steps.stage.outputs.subject }}
+          TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+      - name: Save only the encrypted cleanup checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-cleanup-${{ steps.stage.outputs.subject }}-${{ github.run_id }}
+          path: .local/preview-plan.json.enc
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+      - name: Seed, release twice, serve, restart, and verify teardown
+        run: node scripts/release-preview/rehearsal.ts "$REHEARSAL_SUBJECT"
+        env:
+          REHEARSAL_SUBJECT: ${{ steps.stage.outputs.subject }}
+          REHEARSAL_PREVIOUS_ROOT: ${{ runner.temp }}/previous
+          REHEARSAL_PREVIOUS_SHA: ${{ steps.previous.outputs.sha }}
+          REHEARSAL_BASELINE_SHA: ${{ steps.previous.outputs.baseline }}
+          PREVIEW_MANIFEST_CHECKPOINTED: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_REHEARSAL_SENTRY_DSN: ${{ secrets.RELEASE_REHEARSAL_SENTRY_DSN }}
+          TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+          PREVIEW_SMOKE_EMAIL: ${{ secrets.PREVIEW_SMOKE_EMAIL }}
+          PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
+          PREVIEW_CLAUDE_AUTH_JSON: ${{ secrets.PREVIEW_CLAUDE_AUTH_JSON }}
+          PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: ${{ secrets.PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON }}
+          PREVIEW_CODEX_CLI_AUTH_JSON: ${{ secrets.PREVIEW_CODEX_CLI_AUTH_JSON }}
+          PREVIEW_CLAUDE_MODEL: ${{ vars.PREVIEW_CLAUDE_MODEL }}
+          PREVIEW_CODEX_MODEL: ${{ vars.PREVIEW_CODEX_MODEL }}
+      - name: Retain the rehearsal receipt and both releases' barrier receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rehearsal-${{ steps.stage.outputs.subject }}
+          include-hidden-files: true
+          path: |
+            rehearsal-receipt.json
+            .local/release-barrier/*.json
+            .local/release-barrier/*.jsonl
+            ${{ runner.temp }}/previous/.local/release-barrier/*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Runs even after a cancel or timeout, from this run's own code, so a rehearsal never depends on the
+  # default branch already carrying its cleanup. A passed stage is skipped by its own teardown receipt.
+  cleanup:
+    needs: rehearsal
+    if: always() && needs.rehearsal.result != 'success' && needs.rehearsal.result != 'skipped'
+    # The same group release-cleanup uses for this run, so the two never destroy one stage at once.
+    concurrency:
+      group: release-rehearsal-cleanup-${{ github.run_id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TEST_STAGE_DOMAIN: ${{ vars.TEST_STAGE_DOMAIN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the stack definition
+        run: npm run prepare:upstream
+      - name: Restore each encrypted checkpoint, destroy, and verify absence
+        run: node scripts/release-preview/rehearsal-cleanup.ts
+
+  # Lists, deletes and verifies the managed registry's rehearsal images (`basalt-rehearsal-*`), which
+  # a failed teardown can leave. Started by labelling a pull request; it deploys nothing.
+  registry-cleanup:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'release-rehearsal-registry-cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      # Deleting a manifest by digest leaves the managed registry's tags in place; Wrangler's image
+      # delete is the supported removal. Only `basalt-rehearsal-*` images are listed and deleted.
+      - name: List, delete and verify rehearsal registry images
+        run: |
+          node scripts/release-preview/rehearsal-registry-cleanup.ts list
+          npx --yes wrangler@4.155.0 containers images list --filter '^[0-9a-f]{32}/basalt-rehearsal-' --json > "$RUNNER_TEMP/images.json"
+          node scripts/release-preview/rehearsal-registry-cleanup.ts refs "$RUNNER_TEMP/images.json" > "$RUNNER_TEMP/refs.txt"
+          while IFS= read -r ref; do
+            [ -n "$ref" ] && npx --yes wrangler@4.155.0 containers images delete "$ref" > /dev/null && echo "deleted ${ref%%:*}"
+          done < "$RUNNER_TEMP/refs.txt"
+          node scripts/release-preview/rehearsal-registry-cleanup.ts verify

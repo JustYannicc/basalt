@@ -13,6 +13,7 @@ import { baselineRoles } from "./baseline-probe.ts";
 import { assertCandidateInputs, candidateReadFailure } from "./candidate-failure.ts";
 import { readPlacementRetirements } from "./retirement-state.ts";
 import { readOnlyProbeFetch } from "./probe-network.ts";
+import { isRehearsalStage, releaseTarget } from "./release-stage.ts";
 
 export interface ProbeWorker {
   role: string;
@@ -23,9 +24,18 @@ export interface ProbeWorker {
 export const settingsFromDeclarations = (stack: CompiledStack, workers: readonly ProbeWorker[]) =>
   Effect.gen(function* () {
     const declarations = Object.values(stack.resources).filter(isWorker);
+    // Production declares every baseline role. A rehearsal stage declares a subset, and each
+    // declared role must be in its inventory, so the two match exactly either way.
+    const roles: readonly string[] = baselineRoles;
     if (
-      declarations.length !== baselineRoles.length ||
-      baselineRoles.some((role) => !declarations.some((resource) => resource.FQN === role)) ||
+      (isRehearsalStage(stack.stage)
+        ? declarations.some(
+            (resource) =>
+              !roles.includes(resource.FQN) ||
+              !workers.some((worker) => worker.role === resource.FQN),
+          )
+        : declarations.length !== baselineRoles.length ||
+          baselineRoles.some((role) => !declarations.some((resource) => resource.FQN === role))) ||
       new Set(declarations.map((resource) => resource.FQN)).size !== declarations.length ||
       new Set(workers.map((worker) => worker.role)).size !== workers.length ||
       workers.some((worker) => !declarations.some((resource) => resource.FQN === worker.role))
@@ -82,7 +92,7 @@ export const settingsFromDeclarations = (stack: CompiledStack, workers: readonly
     );
   });
 
-/** Project production declarations; the optional retirement read never runs Plan or Apply. */
+/** Project the release stage's declarations; the optional retirement read never runs Plan or Apply. */
 export async function candidateScriptSettings(
   workers: readonly ProbeWorker[],
   environment: NodeJS.ProcessEnv,
@@ -111,7 +121,7 @@ export async function candidateScriptSettings(
               Effect.fail(candidateReadFailure(Cause.squash(cause), "projection")),
             ),
           ),
-        { stage: "production" },
+        { stage: releaseTarget(environment).stage },
       ),
     ),
     withReleaseRuntime,

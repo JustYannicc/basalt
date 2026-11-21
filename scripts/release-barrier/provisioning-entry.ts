@@ -30,9 +30,38 @@ import {
   planReleaseSettlement,
 } from "./release-settlement-operation.ts";
 import { releaseStateStack } from "./release-state-stack.ts";
+import { isRehearsalStage, releaseTarget } from "./release-stage.ts";
+
+/**
+ * A rehearsal settles its own disposable stage from the rehearsal job, for the candidate it is
+ * releasing, under a lease named for that stage.
+ */
+function rehearsalProvisioningWriter(env: NodeJS.ProcessEnv, stage: string) {
+  const ref = env.GITHUB_REF ?? "";
+  const repository = env.GITHUB_REPOSITORY ?? "";
+  if (
+    env.GITHUB_ACTIONS !== "true" ||
+    !/^refs\/(?:heads\/[A-Za-z0-9._/-]{1,200}|pull\/[1-9][0-9]*\/merge)$/u.test(ref) ||
+    env.GITHUB_JOB !== "rehearsal" ||
+    repository !== "JustYannicc/basalt" ||
+    env.GITHUB_WORKFLOW_REF !== `${repository}/.github/workflows/release-rehearsal.yml@${ref}` ||
+    !/^[a-f0-9]{40}$/u.test(env.BASALT_RELEASE_CANDIDATE ?? "") ||
+    !/^[0-9]+$/u.test(env.GITHUB_RUN_ID ?? "") ||
+    !/^[0-9]+$/u.test(env.GITHUB_RUN_ATTEMPT ?? "") ||
+    !/^[a-f0-9]{32}$/u.test(env.CLOUDFLARE_ACCOUNT_ID ?? "")
+  )
+    throw new Error("Provisioning requires the rehearsal job's exclusive writer");
+  return {
+    candidate: env.BASALT_RELEASE_CANDIDATE!,
+    accountId: env.CLOUDFLARE_ACCOUNT_ID!,
+    lease: `release-rehearsal-${stage}:${env.GITHUB_RUN_ID}:${env.GITHUB_RUN_ATTEMPT}`,
+  };
+}
 
 /** Only the main-only workflow holding deploy-production may supply the writer identity. */
 export function provisioningWorkflowWriter(env: NodeJS.ProcessEnv) {
+  if (isRehearsalStage(env.ALCHEMY_STAGE))
+    return rehearsalProvisioningWriter(env, env.ALCHEMY_STAGE!);
   if (
     env.GITHUB_ACTIONS !== "true" ||
     env.GITHUB_REF !== "refs/heads/main" ||
@@ -265,7 +294,7 @@ if (import.meta.main && process.argv[2] === "digest") {
                 Effect.provideContext(compiled.services),
                 Effect.provideService(State, Context.get(compiled.services, State)),
               ),
-            { stage: "production" },
+            { stage: releaseTarget().stage },
           );
         }).pipe(
           withReleaseRuntime,

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Effect } from "effect";
 
 /**
@@ -57,7 +58,32 @@ const ACCOUNT: ReadonlyArray<readonly [RegExp, string, Mode]> = [
   [/^\/tokens\/([^/]+)/u, "API token", "id"],
   // The account has one Secrets Store, shared with production.
   [/^\/secrets_store(?:\/|$)/u, "Secrets Store", "never"],
+  // mTLS certificates are deduplicated across stages; the one upload a stage makes is placed below.
+  [/^\/mtls_certificates(?:\/|$)/u, "mTLS certificate", "never"],
 ];
+
+/**
+ * The database's CA (upstream `infrastructure/database.ts`): Cloudflare deduplicates identical CA
+ * certificates across stages, so a stage's upload of it returns production's certificate. A stage
+ * may send that one upload, of exactly this public root, and nothing else; the id it gets back is
+ * shared, never the stage's (`SHARED_TYPES`).
+ */
+const sharedTrustRoot = (() => {
+  try {
+    return readFileSync(
+      new URL("../../.upstream/apps/hosted/cloud/certificates/isrg-root-x1.pem", import.meta.url),
+      "utf8",
+    );
+  } catch {
+    return undefined;
+  }
+})();
+const isSharedTrustRootUpload = (body: unknown) =>
+  record(body) &&
+  body.ca === true &&
+  typeof body.certificates === "string" &&
+  sharedTrustRoot !== undefined &&
+  body.certificates === sharedTrustRoot;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -154,6 +180,8 @@ export function stageWriteVerdict(
   const account = /^\/accounts\/[^/]+(\/.*)?$/u.exec(api);
   if (!account) return refuse(`path ${api}`, "path");
   const rest = account[1] ?? "";
+  if (rest === "/mtls_certificates" && method === "POST")
+    return isSharedTrustRootUpload(body) ? { kind: "allow" } : refuse("mTLS certificate", "body");
   // Attaching a hostname: it must be named for the stage, and the Worker must be the stage's.
   if (rest === "/workers/domains")
     return record(body) &&
@@ -181,7 +209,7 @@ export function stageWriteVerdict(
 // shares with production (account, zone, the Secrets Store) never make it the stage's.
 const IDENTITY_KEY = /^(?:id|uuid|name|[a-z][A-Za-z]*(?:Id|Name))$/u;
 const SHARED_KEYS = new Set(["accountId", "zoneId", "zoneName", "storeId", "organizationId"]);
-const SHARED_TYPES = /^Cloudflare\.SecretsStore/u;
+const SHARED_TYPES = /^Cloudflare\.(?:SecretsStore|MtlsCertificate)/u;
 
 /** The own names and ids from a stage's State rows, both generations of an interrupted update. */
 export const ownIdentities = (rows: ReadonlyArray<unknown>) => {
@@ -198,6 +226,14 @@ export const ownIdentities = (rows: ReadonlyArray<unknown>) => {
             value.length > 0
           )
             owned.add(value);
+    // A Worker's zone routes are recorded inside its row (`attr.routes[]`, Alchemy's Worker
+    // attributes); removing one sends DELETE /zones/{zone}/workers/routes/{id}.
+    if (/^Cloudflare\.Worker$/u.test(String(row.resourceType ?? "")))
+      for (const generation of [row, row.old])
+        if (record(generation) && record(generation.attr) && Array.isArray(generation.attr.routes))
+          for (const route of generation.attr.routes)
+            if (record(route) && typeof route.id === "string" && route.id.length > 0)
+              owned.add(route.id);
   }
   return [...owned].sort();
 };

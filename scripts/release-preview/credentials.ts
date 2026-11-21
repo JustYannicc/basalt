@@ -9,30 +9,67 @@ const loginFiles = {
 } as const;
 
 /** Lifecycle children provision resources; subscription files belong only to the native runner. */
-export function lifecycleEnvironment(source: NodeJS.ProcessEnv, mode: "deploy" | "cleanup"): NodeJS.ProcessEnv {
+export function lifecycleEnvironment(
+  source: NodeJS.ProcessEnv,
+  mode: "deploy" | "cleanup",
+): NodeJS.ProcessEnv {
   const names = [
-    "PATH", "HOME", "TMPDIR", "LANG", "BUN_INSTALL", "ALCHEMY_HOME", "RUNNER_TEMP", "GITHUB_ACTIONS",
-    "PREVIEW_STATE_KEY", "PREVIEW_MANIFEST_CHECKPOINTED",
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "BUN_INSTALL",
+    "ALCHEMY_HOME",
+    "RUNNER_TEMP",
+    "GITHUB_ACTIONS",
+    "PREVIEW_STATE_KEY",
+    "PREVIEW_MANIFEST_CHECKPOINTED",
+    "TEST_STAGE_EXPIRES_AT",
     ...(mode === "deploy"
       ? [...requiredPreviewDeploySecrets, "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]
       : requiredPreviewCleanupSecrets),
   ];
-  return Object.fromEntries(names.flatMap(name => source[name] === undefined ? [] : [[name, source[name]]]));
+  // A rehearsal lane's observation token or its "absent", as the job names them per lane.
+  if (mode === "deploy")
+    names.push(
+      ...Object.keys(source).filter((name) =>
+        /^(?:REHEARSAL_OBSERVATION(?:_TOKEN)?_[1-9]|POOL_REHEARSAL_OBSERVATION(?:_TOKEN)?)$/u.test(
+          name,
+        ),
+      ),
+    );
+  return Object.fromEntries(
+    names.flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
+  );
 }
 
-export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
-  for (const name of [
-    "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD",
-    "PREVIEW_CLAUDE_MODEL", "PREVIEW_CODEX_MODEL", ...Object.keys(loginFiles),
-  ]) {
+/** The subscription-backed inputs: provider accounts, model traffic and the native serving check. */
+export const subscriptionSmokeInputs = [
+  "PREVIEW_CLAUDE_MODEL",
+  "PREVIEW_CODEX_MODEL",
+  ...Object.keys(loginFiles),
+] as const;
+
+/** The product sign-in a stage's pools are created through; needed even without subscriptions. */
+export function validateSmokeIdentity(source: NodeJS.ProcessEnv): void {
+  for (const name of ["PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]) {
     if (!source[name]?.trim()) throw new Error(`Missing preview smoke input: ${name}`);
   }
   if (!source.PREVIEW_SMOKE_EMAIL!.endsWith("@example.invalid")) {
     throw new Error("The preview smoke identity must use the reserved example.invalid domain");
   }
+}
+
+export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
+  validateSmokeIdentity(source);
+  for (const name of subscriptionSmokeInputs) {
+    if (!source[name]?.trim()) throw new Error(`Missing preview smoke input: ${name}`);
+  }
   for (const name of Object.keys(loginFiles)) {
     let value: unknown;
-    try { value = JSON.parse(source[name]!); } catch {
+    try {
+      value = JSON.parse(source[name]!);
+    } catch {
       throw new Error(`Preview smoke input must contain JSON: ${name}`);
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {

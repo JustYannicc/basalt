@@ -1,0 +1,46 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/role-hosts.ts b/apps/hosted/cloud/src/infrastructure/role-hosts.ts
+--- a/apps/hosted/cloud/src/infrastructure/role-hosts.ts
++++ b/apps/hosted/cloud/src/infrastructure/role-hosts.ts
+@@ -10,7 +10,7 @@
+  * stage creates its own here, so they go when the stage is destroyed.
+  */
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Effect, Option } from "effect";
++import { Config, Effect, Option } from "effect";
+ import { cloudRoleHosts, customDomain, hostRoles, testStage, type RoleHosts } from "./stage.ts";
+ 
+ /** The role hosts of a deployed stage, with the zone that serves them. */
+@@ -27,12 +27,23 @@ const deployedRoleHosts = Effect.gen(function* () {
+   return Option.some({ ...roles.value, zone: zone.value });
+ });
+ 
++/**
++ * The role hosts the API Worker serves itself. A host product that fronts the `app` host with its
++ * own router (`EXECUTOR_APP_HOST_ROUTER`, set only by that product's disposable stages) keeps that
++ * host: its router's custom domain cannot attach to a hostname that already has a record, and a
++ * route on it would take every request before the router sees it. Unset, every role is the API's.
++ */
++const apiRoleHosts = Effect.gen(function* () {
++  const routed = yield* Config.String("EXECUTOR_APP_HOST_ROUTER").pipe(Config.withDefault(""));
++  return routed.trim() === "" ? hostRoles : hostRoles.filter((role) => role !== "app");
++});
++
+ /** The API Worker's `routes` prop: one zone route per role host, or nothing without them. */
+ export const roleHostRoutes = Effect.gen(function* () {
+   const roles = yield* deployedRoleHosts;
+   if (Option.isNone(roles)) return {};
+   const { origins, zone } = roles.value;
+-  const routes = yield* Effect.forEach(hostRoles, (role) =>
++  const routes = yield* Effect.forEach(yield* apiRoleHosts, (role) =>
+     Effect.map(customDomain(new URL(origins[role])), (hostname) => ({
+       pattern: `${hostname}/*`,
+       zoneName: zone,
+@@ -82,7 +93,7 @@ export const testStageRoleHostRecords = Effect.gen(function* () {
+       ttl: "1",
+       comment,
+     });
+-  for (const role of hostRoles)
++  for (const role of yield* apiRoleHosts)
+     yield* record(
+       `RoleHost-${role}`,
+       origins[role],

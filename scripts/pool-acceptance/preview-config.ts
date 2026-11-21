@@ -1,6 +1,12 @@
 import { lstat, readFile } from "node:fs/promises";
 import { brand } from "../../brand.ts";
 import { AcceptanceFailure, isObject } from "./types.ts";
+import {
+  pullRequestSubject,
+  rehearsalSubject,
+  stageNames,
+  type StageSubject,
+} from "../preview/subject.ts";
 
 export interface PreviewBaseConfig {
   origin: string;
@@ -45,23 +51,31 @@ async function privateJson(
 }
 
 function trustedStage(env: NodeJS.ProcessEnv): {
-  pullRequest: number;
+  subject: StageSubject;
   stage: string;
   hostname: string;
 } {
+  // A release rehearsal names its own run-scoped stage; a preview takes its pull request's.
+  const rehearsal = env.PREVIEW_SMOKE_REHEARSAL?.trim();
   const raw =
-    env.PREVIEW_SMOKE_PULL_REQUEST?.trim() || required(env, "GITHUB_EVENT_PULL_REQUEST_NUMBER");
-  const pullRequest = Number(raw);
+    rehearsal ||
+    env.PREVIEW_SMOKE_PULL_REQUEST?.trim() ||
+    required(env, "GITHUB_EVENT_PULL_REQUEST_NUMBER");
+  const number = Number(raw);
   if (
     !/^[1-9][0-9]*$/.test(raw) ||
-    !Number.isSafeInteger(pullRequest) ||
-    (env.GITHUB_EVENT_PULL_REQUEST_NUMBER && env.GITHUB_EVENT_PULL_REQUEST_NUMBER !== raw)
+    !Number.isSafeInteger(number) ||
+    (rehearsal && env.PREVIEW_SMOKE_PULL_REQUEST?.trim()) ||
+    (!rehearsal &&
+      env.GITHUB_EVENT_PULL_REQUEST_NUMBER &&
+      env.GITHUB_EVENT_PULL_REQUEST_NUMBER !== raw)
   ) {
-    throw new AcceptanceFailure("Preview requires one matching pull request identity");
+    throw new AcceptanceFailure("Preview requires one matching pull request or rehearsal identity");
   }
-  const stage = `test-pr-${pullRequest}`;
+  const subject = rehearsal ? rehearsalSubject(number) : pullRequestSubject(number);
+  const { stage, slug } = stageNames(subject);
   if (required(env, "ALCHEMY_STAGE") !== stage)
-    throw new AcceptanceFailure("Preview stage does not match its pull request");
+    throw new AcceptanceFailure("Preview stage does not match its pull request or rehearsal");
   const domain = required(env, "TEST_STAGE_DOMAIN");
   if (
     domain.length > 230 ||
@@ -69,7 +83,7 @@ function trustedStage(env: NodeJS.ProcessEnv): {
   ) {
     throw new AcceptanceFailure("Preview requires the trusted owned test domain");
   }
-  return { pullRequest, stage, hostname: `app.pr-${pullRequest}.${domain}` };
+  return { subject, stage, hostname: `app.${slug}.${domain}` };
 }
 
 async function previewBaseConfig(env: NodeJS.ProcessEnv): Promise<PreviewBaseConfig> {
@@ -108,7 +122,9 @@ async function previewBaseConfig(env: NodeJS.ProcessEnv): Promise<PreviewBaseCon
     if (
       manifest.version !== 1 ||
       manifest.phase !== "seeded" ||
-      manifest.pullRequest !== expected.pullRequest ||
+      (expected.subject.kind === "pr"
+        ? manifest.pullRequest !== expected.subject.number
+        : manifest.rehearsal !== expected.subject.number || manifest.pullRequest !== undefined) ||
       manifest.stage !== expected.stage ||
       manifest.origin !== origin.origin ||
       manifest.organizationId !== organizationId ||

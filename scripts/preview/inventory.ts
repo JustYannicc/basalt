@@ -1,14 +1,36 @@
 import { spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { redactor } from "../release-preview/redact.ts";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
+import {
+  previewDatabaseStack,
+  rehearsalFixtureStack,
+  requireDisposableStage,
+  stageNames,
+  subjectFromStage,
+} from "./subject.ts";
 
-export const previewStacks = ["basalt", "basalt-preview-database"] as const;
-export type PreviewStack = (typeof previewStacks)[number];
+/** The application stack is named per subject; the database parent stack is shared, split by stage. */
+export function previewStacks(stage: string): readonly string[] {
+  const subject = requireDisposableStage(stage);
+  const stacks = [stageNames(subject).stack, previewDatabaseStack];
+  return subject.kind === "rehearsal" ? [...stacks, rehearsalFixtureStack] : stacks;
+}
+export type PreviewStack = string;
 
 export type PreviewStateEntry = { readonly path: string; readonly value: unknown };
-export type PreviewContainerReference = { readonly applicationId: string; readonly applicationName: string };
-export type PreviewDomainReference = { readonly id: string | null; readonly hostname: string; readonly service: string };
+export type PreviewContainerReference = {
+  readonly applicationId: string;
+  readonly applicationName: string;
+};
+export type PreviewDomainReference = {
+  readonly id: string | null;
+  readonly hostname: string;
+  readonly service: string;
+};
 export type PreviewProviderInventory = {
   readonly complete: boolean;
   readonly containers: readonly PreviewContainerReference[];
@@ -25,15 +47,25 @@ export interface PreviewStateReader {
   read(stage: string): Promise<Readonly<Record<PreviewStack, readonly PreviewStateEntry[]>>>;
 }
 
-type CommandResult = { readonly status: number | null; readonly stdout: string; readonly error?: Error | undefined };
-export type StateCommand = (args: readonly string[], cwd: string, env: NodeJS.ProcessEnv) => CommandResult;
+type CommandResult = {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr?: string;
+  readonly error?: Error | undefined;
+};
+export type StateCommand = (
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+) => CommandResult;
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloudDirectory = join(root, ".upstream/apps/hosted/cloud");
 const stateConfig = "../../../../scripts/preview/stack/alchemy.cleanup.ts";
 
 function assertRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Preview state response is malformed");
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Preview state response is malformed");
   return value as Record<string, unknown>;
 }
 
@@ -45,48 +77,70 @@ function assertExactKeys(value: Record<string, unknown>, expected: readonly stri
 export function parsePreviewInventory(value: unknown, stage: string): PreviewInventory {
   const inventory = assertRecord(value);
   assertExactKeys(inventory, ["version", "capturedAt", "stacks", "providers"]);
-  if (inventory.version !== 1 || typeof inventory.capturedAt !== "string" ||
+  if (
+    inventory.version !== 1 ||
+    typeof inventory.capturedAt !== "string" ||
     !Number.isFinite(Date.parse(inventory.capturedAt)) ||
-    new Date(inventory.capturedAt).toISOString() !== inventory.capturedAt) {
+    new Date(inventory.capturedAt).toISOString() !== inventory.capturedAt
+  ) {
     throw new Error("Preview remote inventory is invalid");
   }
   const stacks = assertRecord(inventory.stacks);
-  assertExactKeys(stacks, previewStacks);
+  const names = previewStacks(stage);
+  assertExactKeys(stacks, names);
   const parsed = {} as Record<PreviewStack, readonly PreviewStateEntry[]>;
-  for (const stack of previewStacks) {
+  for (const stack of names) {
     const values = stacks[stack];
     if (!Array.isArray(values)) throw new Error("Preview remote inventory is invalid");
     const seen = new Set<string>();
-    parsed[stack] = values.map((entry) => {
-      const row = assertRecord(entry);
-      assertExactKeys(row, ["path", "value"]);
-      if (typeof row.path !== "string" || !row.path.startsWith(`${stack}/${stage}/`))
-        throw new Error("Preview remote inventory contains an invalid resource path");
-      const fingerprint = `${row.path}\0${JSON.stringify(row.value)}`;
-      if (seen.has(fingerprint)) throw new Error("Preview remote inventory contains a duplicate readback");
-      seen.add(fingerprint);
-      return { path: row.path, value: row.value };
-    }).sort((left, right) => left.path.localeCompare(right.path, "en") ||
-      JSON.stringify(left.value).localeCompare(JSON.stringify(right.value), "en"));
+    parsed[stack] = values
+      .map((entry) => {
+        const row = assertRecord(entry);
+        assertExactKeys(row, ["path", "value"]);
+        if (typeof row.path !== "string" || !row.path.startsWith(`${stack}/${stage}/`))
+          throw new Error("Preview remote inventory contains an invalid resource path");
+        const fingerprint = `${row.path}\0${JSON.stringify(row.value)}`;
+        if (seen.has(fingerprint))
+          throw new Error("Preview remote inventory contains a duplicate readback");
+        seen.add(fingerprint);
+        return { path: row.path, value: row.value };
+      })
+      .sort(
+        (left, right) =>
+          left.path.localeCompare(right.path, "en") ||
+          JSON.stringify(left.value).localeCompare(JSON.stringify(right.value), "en"),
+      );
   }
   const providers = assertRecord(inventory.providers);
   assertExactKeys(providers, ["complete", "containers", "domains"]);
-  if (typeof providers.complete !== "boolean" || !Array.isArray(providers.containers) || !Array.isArray(providers.domains))
+  if (
+    typeof providers.complete !== "boolean" ||
+    !Array.isArray(providers.containers) ||
+    !Array.isArray(providers.domains)
+  )
     throw new Error("Preview provider inventory is invalid");
   const containers = providers.containers.map((item) => {
     const row = assertRecord(item);
     assertExactKeys(row, ["applicationId", "applicationName"]);
-    if (typeof row.applicationId !== "string" || !row.applicationId ||
-      typeof row.applicationName !== "string" || !row.applicationName)
+    if (
+      typeof row.applicationId !== "string" ||
+      !row.applicationId ||
+      typeof row.applicationName !== "string" ||
+      !row.applicationName
+    )
       throw new Error("Preview container readback is invalid");
     return { applicationId: row.applicationId, applicationName: row.applicationName };
   });
   const domains = providers.domains.map((item) => {
     const row = assertRecord(item);
     assertExactKeys(row, ["id", "hostname", "service"]);
-    if ((row.id !== null && (typeof row.id !== "string" || !row.id)) ||
-      typeof row.hostname !== "string" || !row.hostname ||
-      typeof row.service !== "string" || !row.service)
+    if (
+      (row.id !== null && (typeof row.id !== "string" || !row.id)) ||
+      typeof row.hostname !== "string" ||
+      !row.hostname ||
+      typeof row.service !== "string" ||
+      !row.service
+    )
       throw new Error("Preview domain readback is invalid");
     return { id: row.id as string | null, hostname: row.hostname, service: row.service };
   });
@@ -105,21 +159,52 @@ export function parsePreviewInventory(value: unknown, stage: string): PreviewInv
     stacks: parsed,
     providers: {
       complete: providers.complete,
-      containers: unique(containers, (item) => item.applicationId + "\0" + item.applicationName, "container applications"),
-      domains: unique(domains, (item) => (item.id ?? "") + "\0" + item.hostname + "\0" + item.service, "domains"),
+      containers: unique(
+        containers,
+        (item) => item.applicationId + "\0" + item.applicationName,
+        "container applications",
+      ),
+      domains: unique(
+        domains,
+        (item) => (item.id ?? "") + "\0" + item.hostname + "\0" + item.service,
+        "domains",
+      ),
     },
   };
 }
 
-function defaultStateCommand(args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): CommandResult {
-  const result = spawnSync("bun", ["exec", "alchemy", ...args], {
-    cwd,
-    env,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  return { status: result.status, stdout: result.stdout ?? "", error: result.error };
+function defaultStateCommand(
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): CommandResult {
+  // A file, not a pipe: the CLI exits before a large piped document is flushed, cutting it short.
+  const directory = mkdtempSync(join(tmpdir(), "alchemy-state-"));
+  const path = join(directory, "stdout.json");
+  const fd = openSync(path, "w", 0o600);
+  try {
+    const result = spawnSync("bun", ["run", "alchemy", ...args], {
+      cwd,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", fd, "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    closeSync(fd);
+    return {
+      status: result.status,
+      stdout: readFileSync(path, "utf8"),
+      stderr: result.stderr ?? "",
+      error: result.error,
+    };
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // Already closed after the command.
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function runStateCommand(
@@ -128,21 +213,64 @@ function runStateCommand(
   env: NodeJS.ProcessEnv,
 ): string {
   const result = command(args, cloudDirectory, env);
-  if (result.error || result.status !== 0) throw new Error("Authenticated Alchemy remote state read failed");
+  if (result.error || result.status !== 0) {
+    // Alchemy reports some failures on stdout, so a failed read shows the tail of both streams.
+    const detail = [
+      result.error?.message,
+      ...`${result.stdout}\n${result.stderr ?? ""}`.split(/\r?\n/u).filter(Boolean).slice(-20),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    throw new Error(
+      `Authenticated Alchemy remote state read failed (exit ${result.status ?? "none"})${detail ? `:\n${redactor(env)(detail)}` : ""}`,
+    );
+  }
   return result.stdout;
 }
 
-function parsePaths(stdout: string): string[] {
-  const paths = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+// Alchemy writes progress lines ("• Refreshing …", "✓ Refreshing …") to stdout beside its result.
+const stdoutLines = (stdout: string) =>
+  stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[•✓✗✔✖⚠ℹ]\s/u.test(line));
+
+function parsePaths(stdout: string, prefix: string, redact: (text: string) => string): string[] {
+  const paths = stdoutLines(stdout);
   for (const path of paths) {
-    if (!/^[^/\s]+\/[^/\s]+\/.+$/.test(path)) throw new Error("Alchemy returned a malformed remote state path");
+    if (!/^[^/\s]+\/[^/\s]+\/.+$/.test(path) || !path.startsWith(prefix))
+      throw new Error(
+        `Alchemy returned a malformed remote state path: ${JSON.stringify(redact(path).slice(0, 160))}`,
+      );
   }
   return paths;
 }
 
-function parseStageValues(stdout: string, stack: PreviewStack, stage: string, paths: readonly string[]): PreviewStateEntry[] {
+function parseStageValues(
+  stdout: string,
+  stack: PreviewStack,
+  stage: string,
+  paths: readonly string[],
+): PreviewStateEntry[] {
   let decoded: unknown;
-  try { decoded = JSON.parse(stdout); } catch { throw new Error("Alchemy returned malformed remote resource state"); }
+  // Progress and log lines precede the JSON on stdout; only the document itself is parsed.
+  const lines = stdout.split(/\r?\n/).filter((line) => !/^\s*[•✓✗✔✖⚠ℹ]\s/u.test(line));
+  const start = lines.findIndex((line) => /^\s*(?:[{["]|null\b|-?\d)/u.test(line));
+  // Log lines can follow the document too; a pretty-printed document closes at column 0.
+  const body = start < 0 ? lines : lines.slice(start);
+  const close = body.findLastIndex((line) => /^[}\]]\s*$/u.test(line));
+  const json = (close > 0 ? body.slice(0, close + 1) : body).join("\n");
+  try {
+    decoded = JSON.parse(json);
+  } catch {
+    // Name the first lines without values: log and progress text only, never the state document.
+    const shown = (part: string[]) =>
+      part.slice(0, 5).map((line) => line.replace(/[0-9a-f]{16,}/giu, "[hex]").slice(0, 120));
+    const after = close > 0 ? body.slice(close + 1) : [];
+    throw new Error(
+      `Alchemy returned malformed remote resource state (${lines.length} lines; before the document: ${JSON.stringify(shown(start < 0 ? lines : lines.slice(0, start)))}; after it: ${JSON.stringify(shown(after))}; document starts ${JSON.stringify((body[0] ?? "").slice(0, 2))}, ends ${JSON.stringify((body.at(-1) ?? "").slice(-2))})`,
+    );
+  }
   const prefix = `${stack}/${stage}/`;
   if (paths.length === 1) {
     if (decoded === null && !paths[0]!.endsWith("/output"))
@@ -152,7 +280,8 @@ function parseStageValues(stdout: string, stack: PreviewStack, stage: string, pa
   const values = assertRecord(decoded);
   assertExactKeys(values, paths);
   return paths.map((path) => {
-    if (!path.startsWith(prefix)) throw new Error("Alchemy returned state outside the requested preview stage");
+    if (!path.startsWith(prefix))
+      throw new Error("Alchemy returned state outside the requested preview stage");
     const value = values[path];
     if ((value === null && !path.endsWith("/output")) || value === undefined)
       throw new Error("Alchemy listed a preview resource without a readable state record");
@@ -160,34 +289,66 @@ function parseStageValues(stdout: string, stack: PreviewStack, stage: string, pa
   });
 }
 
-/** Reads exact PR stage records from the configured Cloudflare state backend. */
-export function alchemyPreviewStateReader(options: {
-  readonly command?: StateCommand;
-  readonly environment?: NodeJS.ProcessEnv;
-} = {}): PreviewStateReader {
+/** Reads exact disposable stage records from the configured Cloudflare state backend. */
+export function alchemyPreviewStateReader(
+  options: {
+    readonly command?: StateCommand;
+    readonly environment?: NodeJS.ProcessEnv;
+  } = {},
+): PreviewStateReader {
   const command = options.command ?? defaultStateCommand;
   const source = options.environment ?? process.env;
   return {
     async read(stage) {
-      if (!/^test-pr-[1-9][0-9]*$/.test(stage)) throw new Error("Remote state reads are restricted to PR stages");
-      const env = { ...source, ALCHEMY_STAGE: stage, CI: "true" };
-      const listed = runStateCommand(command, [
-        "--log-level", "none", "state", "list", "--recursive", "--config", stateConfig,
-        "--backend", "configured", "--no-input",
-      ], env);
-      const allPaths = parsePaths(listed);
+      if (subjectFromStage(stage) === undefined)
+        throw new Error("Remote state reads are restricted to PR and rehearsal stages");
+      // Callers pass provider credentials only; the CLI still needs this process's PATH and HOME.
+      const env = {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        ...source,
+        ALCHEMY_STAGE: stage,
+        CI: "true",
+      };
+      const flags = ["--config", stateConfig, "--backend", "configured", "--no-input"];
+      const list = (...args: string[]) =>
+        runStateCommand(command, ["--log-level", "none", "state", "list", ...args, ...flags], env);
       const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
-      for (const stack of previewStacks) {
+      // Listing a path the store never held fails, so each level is listed only once it is known
+      // to exist: the store's stack names, a stack's stage directories, then this one stage.
+      const known = stdoutLines(list());
+      for (const stack of previewStacks(stage)) {
         const prefix = `${stack}/${stage}/`;
-        const paths = allPaths.filter((path) => path.startsWith(prefix)).sort((a, b) => a.localeCompare(b, "en"));
+        if (!known.includes(`${stack}/`) || !stdoutLines(list(stack)).includes(prefix)) {
+          stacks[stack] = [];
+          continue;
+        }
+        const paths = parsePaths(
+          list(`${stack}/${stage}`, "--recursive"),
+          prefix,
+          redactor(env),
+        ).sort((a, b) => a.localeCompare(b, "en"));
         if (paths.length === 0) {
           stacks[stack] = [];
           continue;
         }
-        const stdout = runStateCommand(command, [
-          "--log-level", "none", "state", "read", `${stack}/${stage}`, "--recursive", "--config", stateConfig,
-          "--backend", "configured", "--no-input",
-        ], env);
+        const stdout = runStateCommand(
+          command,
+          [
+            "--log-level",
+            "none",
+            "state",
+            "read",
+            `${stack}/${stage}`,
+            "--recursive",
+            "--config",
+            stateConfig,
+            "--backend",
+            "configured",
+            "--no-input",
+          ],
+          env,
+        );
         stacks[stack] = parseStageValues(stdout, stack, stage, paths);
       }
       return stacks;
@@ -202,16 +363,22 @@ export async function capturePreviewInventory(
   capturedAt = new Date().toISOString(),
 ): Promise<PreviewInventory> {
   const stacks = await reader.read(identity.stage);
-  return parsePreviewInventory({
-    version: 1,
-    capturedAt,
-    stacks,
-    providers: { complete: false, containers: [], domains: [] },
-  }, identity.stage);
+  return parsePreviewInventory(
+    {
+      version: 1,
+      capturedAt,
+      stacks,
+      providers: { complete: false, containers: [], domains: [] },
+    },
+    identity.stage,
+  );
 }
 
 export function inventoryResourceCount(inventory: PreviewInventory): number {
-  return previewStacks.reduce((count, stack) => count + inventory.stacks[stack].filter((entry) => !entry.path.endsWith("/output")).length, 0);
+  return Object.values(inventory.stacks).reduce(
+    (count, entries) => count + entries.filter((entry) => !entry.path.endsWith("/output")).length,
+    0,
+  );
 }
 
 /** Keep earlier physical identities when a failed cleanup is retried from newer stage state. */
@@ -224,7 +391,7 @@ export function mergePreviewInventories(
   const prior = parsePreviewInventory(previous, stage);
   const next = parsePreviewInventory(current, stage);
   const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
-  for (const stack of previewStacks) {
+  for (const stack of previewStacks(stage)) {
     const rows = new Map<string, PreviewStateEntry>();
     for (const entry of [...prior.stacks[stack], ...next.stacks[stack]]) {
       const fingerprint = `${entry.path}\0${JSON.stringify(entry.value)}`;
@@ -238,16 +405,19 @@ export function mergePreviewInventories(
   const domains = new Map<string, PreviewDomainReference>();
   for (const item of [...prior.providers.domains, ...next.providers.domains])
     domains.set((item.id ?? "") + "\0" + item.hostname + "\0" + item.service, item);
-  return parsePreviewInventory({
-    version: 1,
-    capturedAt: next.capturedAt,
-    stacks,
-    providers: {
-      complete: prior.providers.complete || next.providers.complete,
-      containers: [...containers.values()],
-      domains: [...domains.values()],
+  return parsePreviewInventory(
+    {
+      version: 1,
+      capturedAt: next.capturedAt,
+      stacks,
+      providers: {
+        complete: prior.providers.complete || next.providers.complete,
+        containers: [...containers.values()],
+        domains: [...domains.values()],
+      },
     },
-  }, stage);
+    stage,
+  );
 }
 
 export function withPreviewProviderInventory(

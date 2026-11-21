@@ -16,12 +16,23 @@ export type BudgetOutcome =
   | "invalid-observation"
   | "incomplete-visibility"
   | "teardown-error";
+/** One refused runtime readiness call, and what the identity-only check last said. */
+export interface ReadinessRefusal {
+  status: number;
+  outcome?: string;
+  stage?: string;
+  /** False while the controller object still runs the previous release's code. */
+  adopted?: boolean;
+  candidateMatches?: boolean;
+}
 export interface BudgetReceipt {
   candidate: string;
   target?: Pick<RuntimeReady, "candidate" | "workerInput" | "imageHash">;
   operationStartedAt?: number;
   overallDeadlineMs?: number;
   commandDeadlineMs?: number;
+  /** How often readiness was refused and asked again, with the last refusal. */
+  refusals?: { count: number } & ReadinessRefusal;
   outcome: BudgetOutcome;
   stage: BudgetStage;
   elapsedMs: number;
@@ -76,6 +87,34 @@ const driverCodes = new Set([
   "EPIPE",
   "ABORT_ERR",
 ]);
+/**
+ * Rehearsal stages only (`ALCHEMY_STAGE=test-rehearsal-N`): the receipt's closed vocabulary hides
+ * which call failed, so the error chain goes to stderr with credential-shaped text removed.
+ * Production never prints it.
+ */
+export function rehearsalDiagnostic(error: unknown, stage: string, env = process.env): void {
+  if (!/^test-rehearsal-[1-9][0-9]*$/u.test(env.ALCHEMY_STAGE ?? "")) return;
+  const chain: string[] = [];
+  for (
+    let at: unknown = error, depth = 0;
+    at instanceof Error && depth < 4;
+    at = at.cause, depth += 1
+  ) {
+    const fields = Object.fromEntries(Object.entries(at));
+    chain.push(
+      `${at.name}${["code", "status", "outcome", "stage"]
+        .filter((key) => fields[key] !== undefined)
+        .map((key) => ` ${key}=${String(fields[key])}`)
+        .join("")}: ${at.message}`
+        .replace(/Bearer\s+\S+/gu, "Bearer [redacted]")
+        .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/gu, "[redacted-jwt]")
+        .replace(/[A-Za-z0-9+/_=-]{32,}/gu, "[redacted]")
+        .slice(0, 300),
+    );
+  }
+  console.error(`database budget ${stage} failure (rehearsal stage): ${chain.join(" <- ")}`);
+}
+
 export function safeDatabaseError(
   error: unknown,
   stage: BudgetStage,

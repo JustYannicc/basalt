@@ -9,6 +9,7 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { readBaseline } from "./cloudflare.ts";
 import { safeProviderFailure } from "./operation-failure.ts";
 import { digest } from "./manifest.ts";
+import { isRehearsalStage, productionRelease, type ReleaseTarget } from "./release-stage.ts";
 
 export const baselineRoles = [
   "Api",
@@ -64,20 +65,26 @@ export class BaselineInventoryError extends Error {
 
 export function baselineInventory(
   scripts: readonly { id?: string | null; tags?: readonly string[] | null }[],
+  target: Pick<ReleaseTarget, "stack" | "stage"> = productionRelease,
 ) {
   // Physical names may be truncated. These are the identities the provider writes into each script.
-  const production = scripts.filter(
+  // Exact tags only: a rehearsal stage sees just its own Workers, and production never sees one.
+  const released = scripts.filter(
     (script) =>
-      script.tags?.includes("alchemy:stack:basalt") &&
-      script.tags.includes("alchemy:stage:production"),
+      script.tags?.includes(`alchemy:stack:${target.stack}`) &&
+      script.tags.includes(`alchemy:stage:${target.stage}`),
   );
-  const identities = production.map((script) => ({
+  const identities = released.map((script) => ({
     script,
     ids: script.tags!.filter((tag) => tag.startsWith("alchemy:id:")),
   }));
   const refusals: { role: string; reason: string }[] = [];
+  // A rehearsal stage declares only some roles (no apex site, no app pages). Which ones is the
+  // candidate's declaration's to say, and its projection refuses any declared role missing here.
+  const partial = isRehearsalStage(target.stage);
   const workers = baselineRoles.flatMap((role) => {
     const matches = identities.filter(({ ids }) => ids.includes(`alchemy:id:${role}`));
+    if (partial && matches.length === 0) return [];
     if (matches.length !== 1) {
       refusals.push({
         role,

@@ -8,6 +8,7 @@ import { safeProviderFailure } from "./operation-failure.ts";
 import { digest } from "./manifest.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { ServingFailure } from "./serving-failure.ts";
+import { rehearsalJobCandidate, releaseTarget } from "./release-stage.ts";
 
 export type PreflightRefusal = {
   reason: string;
@@ -186,6 +187,12 @@ export function preflightRunner() {
 export type PreflightMode = "check" | "release";
 
 export function assertPreflightContext(env: NodeJS.ProcessEnv, event: unknown, root: string) {
+  // A rehearsal reads its own disposable stage from the rehearsal job, for the checked-out candidate.
+  if (releaseTarget(env).rehearsal) {
+    const candidate = rehearsalJobCandidate(env, root);
+    if (!candidate) throw new BarrierRefusal("release-preflight-untrusted-context", "PoolWorker");
+    return { candidate, mode: "check" as const };
+  }
   if (env.GITHUB_EVENT_NAME === "pull_request") {
     const context = assertReadOnlyRehearsalContext(env, event);
     if (assertProbeCandidate(root, context.head).candidate !== context.candidate)
