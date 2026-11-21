@@ -10,7 +10,7 @@ export const shardSeconds = 480;
 /** A file's own bound in run-declared, above the slowest measured file (about 7 minutes). */
 export const fileDeadlineMinutes = 8;
 /** Checkout, toolchain, prepare:upstream, e2e:prepare and the browser measure about 2.65 minutes; doubled for cold caches. */
-const setupMinutes = 5;
+export const setupMinutes = 5;
 /** Used only when no measured pair exists at all. */
 const defaultSeconds = 60;
 

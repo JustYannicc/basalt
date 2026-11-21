@@ -21,7 +21,7 @@
   },
   "runs": {
     "poolSelectOnlyUi": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-acquisition:reusable-acquisition-and-retained-account-compatibility"
     ]
   },
   "inputs": [
