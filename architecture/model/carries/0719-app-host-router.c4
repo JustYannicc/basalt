@@ -1,7 +1,7 @@
 model {
   extend basalt.router {
     metadata {
-      constraint "On a disposable stage the Router alone serves the app host, through its custom domain, as it does in production. The upstream role hosts give the API Worker no zone route and the stage no record for that host when EXECUTOR_APP_HOST_ROUTER is set, which only Basalt's disposable stages do; the API keeps its mcp and api hosts. A route there would take every request before the Router, and a record would keep the Router's custom domain from attaching. Production has no role-host routes or records and refuses the switch."
+      constraint "On a disposable stage the Router alone serves the app host, through its custom domain and a zone route for that one host. Production's Router owns the zone's app-origin wildcard route, a zone route runs before a custom domain, and production's Router answers any host but its own with an empty 404, so without its own route a stage's app host reaches production's Router. The upstream role hosts give the API Worker no zone route and the stage no record for the app host when EXECUTOR_APP_HOST_ROUTER is set, which only Basalt's disposable stages do; the API keeps its mcp and api hosts. Production keeps its wildcard and its product-host bypass routes, and refuses the switch."
     }
   }
 }

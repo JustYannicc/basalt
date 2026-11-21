@@ -116,6 +116,31 @@ test("a hostname a stage attaches must carry the stage's label, on a Worker the 
   );
 });
 
+test("a stage's route can name only its own hosts and its own Worker, never a production host", () => {
+  const route = (pattern: string, script = "basalt-rehearsal-api-test-rehearsal-2-x1") =>
+    verdict("POST", `${ZONE}/workers/routes`, { pattern, script });
+  // The stage's own Router host, as a disposable stage's Router declares it (routerRoutes).
+  assert.equal(route("app.rehearsal-2.example.dev/*"), "allow");
+  for (const hostile of [
+    "app.example.dev/*",
+    "*.example.dev/*",
+    "*/*",
+    "*",
+    "/*",
+    "*rehearsal-2.example.dev/*",
+    "example.dev/*",
+    "app.rehearsal-2.example.dev.evil.dev/*",
+    "app.rehearsal-20.example.dev/*",
+  ])
+    assert.equal(route(hostile), "refuse", hostile);
+  // The stage's host, but a Worker the stage does not own.
+  assert.equal(route("app.rehearsal-2.example.dev/*", "basalt-router-production-x"), "refuse");
+  assert.equal(
+    verdict("POST", `${ZONE}/workers/routes`, { pattern: "app.rehearsal-2.example.dev/*" }),
+    "refuse",
+  );
+});
+
 test("the shared Secrets Store and any write the module cannot place are refused", () => {
   assert.equal(verdict("POST", `${CF}/secrets_store/stores/app-stage-1/secrets`), "refuse");
   assert.equal(verdict("POST", `${CF}/unknown-api`), "refuse");
