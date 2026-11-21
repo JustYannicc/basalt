@@ -77,6 +77,8 @@ test("native registration retains the model key on the server and survives resta
   const p = protocol();
   const registered = await p.register();
   assert.equal(registered.toolsOrganization, pool.organization);
+  assert.equal(p.f.server.keys.length, 0, "Approval mints nothing; the first model use does");
+  (await p.model(registered.computer.id)).release();
   const computer = (await p.f.registry())[registered.computer.id]!;
   const homeKey = String(p.f.server.keys[0]!.api_key);
   assert.equal(JSON.stringify(registered).includes(homeKey), false);
@@ -247,6 +249,7 @@ test("replayed native registration keeps one computer and cannot substitute its 
   const first = await p.control("register", values);
   assert.equal(first.status, 200);
   const original = (await first.json()) as { computer: { id: string }; toolsOrganization: string };
+  (await p.model(original.computer.id)).release();
   const replayed = await p.control("register", values);
   assert.equal(replayed.status, 200);
   assert.deepEqual(await replayed.json(), original);
@@ -314,6 +317,7 @@ test("native tools stay on the user's own intent while models may use a shared p
     ).status,
     403,
   );
+  (await p.model(approved.computer.id, { pool: shared.pool })).release();
   assert.equal(p.f.server.keys.length, 1);
 });
 
@@ -352,4 +356,126 @@ test("tools-only native approval mints no model key and cannot widen on replay",
     (await p.control("check", { computer: approved.computer.id, pool: pool.pool })).status,
     401,
   );
+});
+
+test("native approval with models answers at once while the pool container is stopped", async () => {
+  const p = protocol();
+  const intent = await p.f.intent(owner);
+  p.f.server.stopped = true;
+  const response = await p.control("register", { intent, name: "Stopped container", tools: true });
+  assert.deepEqual(
+    Object.values(await p.f.registry()).map((computer) => computer.state),
+    ["active"],
+    "A stopped container must leave no issuing computer behind",
+  );
+  assert.equal(response.status, 200, await response.clone().text());
+  const approved = (await response.json()) as {
+    pool: string;
+    models: boolean;
+    toolsOrganization: string;
+  };
+  assert.equal(approved.pool, pool.pool);
+  assert.equal(approved.models, true);
+  assert.equal(approved.toolsOrganization, pool.organization);
+  assert.equal(p.f.server.keys.length, 0);
+});
+
+test("a model request arriving during a mint shares it instead of minting again", async () => {
+  const p = protocol();
+  const intent = await p.f.intent(owner);
+  const { computer } = await p.register();
+  let reached!: () => void;
+  const minting = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let open!: () => void;
+  p.f.server.onMint = reached;
+  p.f.server.mintGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const first = p.model(computer.id);
+  await minting;
+  let reading!: () => void;
+  const read = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+  p.f.storage.onGet = (key) => {
+    if (key === "computer-registry-v1") reading();
+  };
+  const second = p.model(computer.id);
+  await read;
+  p.f.storage.onGet = undefined;
+  // Queued behind the second request's registry read: it has joined the mint or started its own.
+  assert.equal((await p.f.action("computers", owner, intent)).status, 200);
+  open();
+  const leases = await Promise.all([first, second]);
+  const mints = p.f.server.calls.filter(
+    (call) => call.path === "/access/api-keys" && call.method === "POST",
+  );
+  assert.equal(mints.length, 1, "Concurrent first model requests must mint once");
+  for (const lease of leases) {
+    assert.equal(
+      lease.request.headers.get("authorization"),
+      `Bearer ${String(p.f.server.keys[0]!.api_key)}`,
+    );
+    lease.release();
+  }
+});
+
+test("a device revoked while its model key is minted keeps no key", async () => {
+  const p = protocol();
+  const { computer } = await p.register();
+  let reached!: () => void;
+  const minting = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let open!: () => void;
+  p.f.server.onMint = reached;
+  p.f.server.mintGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const request = p.model(computer.id);
+  await Promise.race([
+    minting,
+    request.then(
+      () => {},
+      () => {},
+    ),
+  ]);
+  assert.equal((await p.control("revoke", { computer: computer.id, pool: pool.pool })).status, 200);
+  open();
+  await assert.rejects(request, /no longer connected/);
+  assert.equal(p.f.server.keys.length, 0);
+  assert.equal((await p.f.registry())[computer.id]?.native?.key, undefined);
+});
+
+test("a restored audience keeps a model device that was approved before its key existed", async () => {
+  const p = protocol();
+  const audience = (users: string[]) => ({
+    action: "audience" as const,
+    pools: [{ ...pool, users }],
+  });
+  assert.equal((await p.f.access(audience(pool.users))).status, 200);
+  const intent = await p.f.intent(member);
+  const device = { user: member, grant: "native:member-models" };
+  p.f.server.stopped = true;
+  const response = await p.control("register", {
+    ...device,
+    intent,
+    name: "Member models",
+    tools: false,
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const { computer } = (await response.json()) as { computer: { id: string } };
+  const identity = { ...device, computer: computer.id, pool: pool.pool };
+  // The removal cannot reach Home while the container is stopped, so it stays pending.
+  assert.equal((await p.f.access(audience([owner]))).status, 503);
+  assert.equal((await p.f.registry())[computer.id]?.removalPending, true);
+  p.f.advance(1);
+  assert.equal((await p.f.access(audience(pool.users))).status, 200);
+  assert.equal((await p.f.registry())[computer.id]?.state, "active");
+  assert.equal((await p.control("check", identity)).status, 200);
+  p.f.server.stopped = false;
+  (await p.model(computer.id, device)).release();
+  assert.equal(p.f.server.keys.length, 1);
 });

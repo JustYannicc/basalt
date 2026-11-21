@@ -313,6 +313,7 @@ test("result.json carries raw controller results but never the key or a signed e
     selection,
     fleet: { action: "fleet-inspect", identity },
     activeHealth: { action: "active-health", identity },
+    recovery: null,
   });
   assert.deepEqual(inspected.inspection, { action: "runtime-crash-inspect", identity });
   // Commands are signed about two seconds in the past so a runner clock ahead of the controller passes.
@@ -365,6 +366,7 @@ test("observe keeps the selection and fleet when only the health read is refused
     selection: { slot: "primary" },
     fleet: { action: "fleet-inspect" },
     activeHealth: null,
+    recovery: null,
   });
   const missing = await runCrashDispatch(
     input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
@@ -375,7 +377,39 @@ test("observe keeps the selection and fleet when only the health read is refused
     selection: null,
     fleet: { action: "fleet-inspect" },
     activeHealth: { action: "active-health" },
+    recovery: null,
   });
+});
+
+test("observe carries the controller's recovery clock, so a crash gate sees needs-a-person first", async () => {
+  const stuck = {
+    boot: "boot-sentinel",
+    restartedAt: 4,
+    needsPerson: { at: 5, reason: "restart_failed" },
+    restarts: [1, 2, 4],
+  };
+  const { deps, calls } = fakes({
+    observe: async (action) => {
+      calls.push(`observe:${action}`);
+      return {
+        result:
+          action === "inspect" ? { selection: { slot: "primary" }, recovery: stuck } : { action },
+      };
+    },
+  });
+  const observed = await runCrashDispatch(
+    input({ mode: "observe", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(observed.ok, true, String(observed.error));
+  assert.deepEqual(observed.observe, {
+    selection: { slot: "primary" },
+    fleet: { action: "fleet-inspect" },
+    activeHealth: { action: "active-health" },
+    recovery: stuck,
+  });
+  // Read-only: the clock comes from the one inspect read, and nothing resets it.
+  assert.ok(!calls.some((call) => call.startsWith("resetRecovery")), calls.join());
 });
 
 const pool = "pool-sentinel-0001";
