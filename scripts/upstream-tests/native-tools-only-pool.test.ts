@@ -165,12 +165,12 @@ test("a device with models still asks the pool on every check and refresh", asyn
 
 test("revoking a tools-only device on Connect signs it out at the tools service", async (t) => {
   const d = await device(t, false);
-  const { policy } = await (await d.access(d.tokens.access_token)).json();
+  const [computer] = Object.keys(await d.p.registry());
   // A device without a model key holds nothing at Home, so a stopped container changes nothing.
   d.p.server.stopped = true;
   const removed = await handleSetup(
     new Request(
-      `${origin}/setup/v1/computers/${policy.computer}?intent=${encodeURIComponent(d.intent)}`,
+      `${origin}/setup/v1/computers/${computer}?intent=${encodeURIComponent(d.intent)}`,
       { method: "DELETE", headers: { cookie: d.f.cookies, origin } },
     ),
     {
@@ -185,7 +185,12 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
     },
   );
   assert.equal(removed.status, 200, await removed.clone().text());
+  const grant = await d.f.adapter.findOne<{ revoked: boolean }>({
+    model: "mcpGrant",
+    where: [{ field: "userId", value: d.f.userId }],
+  });
+  assert.equal(grant?.revoked, true, "the device's grant is revoked as the person");
   assert.equal((await d.access(d.tokens.access_token)).status, 401);
   assert.equal((await d.refresh(d.tokens.refresh_token)).status, 400);
-  assert.equal((await d.p.registry())[policy.computer]?.state, "revoked");
+  assert.equal((await d.p.registry())[computer!]?.state, "revoked");
 });
