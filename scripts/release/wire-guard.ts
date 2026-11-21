@@ -21,10 +21,12 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   createdIdentities,
+  REGISTRY_HOST,
   stageWriteVerdict,
   type StageScope,
   type StageVerdict,
 } from "./stage-writes.ts";
+import { isRehearsalStage, stageOwnsName } from "./rehearsal-stage.ts";
 import { bindingShapes, differingBindings } from "./fixed-bindings.ts";
 
 export class WireRefused extends Data.TaggedError("WireRefused")<{
@@ -192,6 +194,13 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/accounts\/[^/]+\/workflows\/([^/]+)/, "Workflow"],
   // The Artifacts API (scripts/ensure-artifacts.ts): a namespace holds every repo and its history.
   [/^\/accounts\/[^/]+\/artifacts\/namespaces\/([^/]+)/, "Artifacts namespace"],
+  // Before the database: a destroy plan names a role or branch with the database it lives in, so
+  // admitting one never admits the database, and the same id elsewhere is not the plan's.
+  [
+    /^\/organizations\/[^/]+\/databases\/([^/]+\/branches\/[^/]+\/roles\/[^/]+)$/,
+    "PlanetScale role",
+  ],
+  [/^\/organizations\/[^/]+\/databases\/([^/]+\/branches\/[^/]+)$/, "PlanetScale branch"],
   [/^\/organizations\/[^/]+\/databases\/([^/]+)/, "PlanetScale database"],
   // Deleting a token breaks whatever authenticates with it (the provider observation, for one).
   [/^\/accounts\/[^/]+\/tokens\/([^/]+)/, "API token"],
@@ -230,7 +239,6 @@ const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(
 // may send the second.
 const APPLICATION = /^\/accounts\/[^/]+\/(?:containers|cloudchamber)\/applications(?:\/([^/]+))?/;
 const APPLICATIONS = /\/(?:containers|cloudchamber)\/applications\/?$/u;
-const REGISTRY_HOST = "registry.cloudflare.com";
 
 const API_ROOT = /\/(?:accounts|organizations|user|zones)\//iu;
 /**
@@ -487,6 +495,53 @@ const authHeaders = (request: Request) => {
   return headers;
 };
 
+/** The request's own API base and account, for a read sent around the guard. */
+const accountBase = (url: URL) => {
+  const at = url.pathname.search(/\/accounts\//u);
+  const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
+  return `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+};
+
+/**
+ * A teardown's delete of a container application: a fresh read, sent around the guard with the
+ * request's credentials, must answer this id with a name carrying the rehearsal stage's token.
+ * A missing, unreadable or differently named application is refused.
+ */
+const proveStageApplication = (
+  scope: StageScope,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  id: string,
+) =>
+  Effect.gen(function* () {
+    const response = yield* Effect.promise(() =>
+      // Like the delete check's read: a redirect answers from an address no rule checked.
+      inner(`${accountBase(url)}/containers/applications/${encodeURIComponent(id)}`, {
+        headers: authHeaders(request),
+        redirect: "manual",
+      }).catch(() => undefined),
+    );
+    const body = response?.ok
+      ? ((yield* Effect.promise(() => response.json().catch(() => null))) as {
+          result?: { id?: unknown; name?: unknown };
+        } | null)
+      : null;
+    const name =
+      body?.result?.id === id && typeof body.result.name === "string" ? body.result.name : "";
+    if (!stageOwnsName(name, scope.stage))
+      return yield* refuse(
+        {
+          resource: `container application ${id}`,
+          method: request.method,
+          path: template(apiPath(url.pathname)),
+        },
+        "stage",
+        "name",
+        name || (response ? `HTTP ${response.status}` : "unreadable"),
+      );
+  });
+
 /**
  * A Worker or Workflow name the stage's State does not record: Cloudflare places it. Absent means
  * this run creates it; present, it must carry this stage's Alchemy tags (a Worker) or run on a
@@ -501,9 +556,7 @@ const proveStageName = (
   verdict: Extract<StageVerdict, { kind: "prove" }>,
 ) =>
   Effect.gen(function* () {
-    const at = url.pathname.search(/\/accounts\//u);
-    const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
-    const base = `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+    const base = accountBase(url);
     const name = encodeURIComponent(verdict.name);
     const read =
       verdict.family === "Worker"
@@ -542,6 +595,7 @@ const proveStageName = (
 const stageGate = (
   config: WireGuardConfig,
   ownedHere: Set<string>,
+  provenDeletes: Set<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   url: URL,
@@ -571,6 +625,12 @@ const stageGate = (
         verdict.field,
         url.pathname,
       );
+    if (verdict.kind === "prove" && verdict.family === "container application") {
+      yield* proveStageApplication(scope, inner, request, url, verdict.name);
+      // Admits this delete past the unattached-application check; it owns nothing else.
+      provenDeletes.add(verdict.name);
+      return undefined;
+    }
     if (verdict.kind === "prove") {
       yield* proveStageName(scope, isOwned, inner, request, url, verdict);
       ownedHere.add(verdict.name);
@@ -579,16 +639,26 @@ const stageGate = (
     return verdict.creates ? { body } : undefined;
   });
 
+/**
+ * The one registry write a release may send through fetch: a rehearsal teardown's delete, which the
+ * stage gate has already placed by repository name (stage-writes.ts). Every other method, and every
+ * run that is not a rehearsal teardown, stays off the registry production's images are served from.
+ */
+export const teardownRegistryDelete = (config: Pick<WireGuardConfig, "stage">, method: string) =>
+  method === "DELETE" && config.stage?.teardown === true && isRehearsalStage(config.stage.stage);
+
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
   held: ReadonlySet<string>,
+  provenDeletes: ReadonlySet<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   path: string,
 ) =>
   Effect.gen(function* () {
     const method = request.method.toUpperCase();
+    const host = new URL(request.url).hostname.toLowerCase();
     const name = (pattern: RegExp) => {
       const found = pattern.exec(path)?.[1];
       return found === undefined ? undefined : decodeURIComponent(found);
@@ -599,12 +669,10 @@ const check = (
       path: template(path),
     });
     const write = method !== "GET" && method !== "HEAD";
-    const url = new URL(request.url);
-    if (url.hostname.endsWith("."))
-      return yield* refuse(at("host", "{id}"), "host", "host", url.hostname);
-    if (write && !canonicalPath(url.pathname))
+    if (host.endsWith(".")) return yield* refuse(at("host", "{id}"), "host", "host", host);
+    if (write && !canonicalPath(new URL(request.url).pathname))
       return yield* refuse(at("request", "{id}"), "path", "path", "not canonical");
-    if (write && url.hostname.toLowerCase() === REGISTRY_HOST)
+    if (write && host === REGISTRY_HOST && !teardownRegistryDelete(config, method))
       return yield* refuse(at("registry", "{id}"), "registry", "method", method);
     // Alchemy reads the store's token through an ephemeral edge preview of the store script
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
@@ -658,6 +726,12 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
+    if (
+      application !== undefined &&
+      provenDeletes.has(application) &&
+      /^\/accounts\/[^/]+\/containers\/applications\/[^/]+$/u.test(path)
+    )
+      return;
     for (const [pattern, kind] of [[APPLICATION, "container application"], ...PROTECTED] as const) {
       const id = name(pattern);
       if (
@@ -689,6 +763,8 @@ export const install = (config: WireGuardConfig = {}) =>
     const held = new Set<string>();
     // What this run created on a disposable stage: its own from here on.
     const ownedHere = new Set<string>();
+    // Applications a rehearsal teardown proved are the stage's by name, each for its delete.
+    const provenDeletes = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
@@ -697,8 +773,16 @@ export const install = (config: WireGuardConfig = {}) =>
       journal.push({ method: request.method, host: url.host, path: template(path) });
       const exit = await Effect.runPromiseExit(
         Effect.gen(function* () {
-          const creates = yield* stageGate(config, ownedHere, inner, request, url, path);
-          yield* check(config, created, held, inner, request, path);
+          const creates = yield* stageGate(
+            config,
+            ownedHere,
+            provenDeletes,
+            inner,
+            request,
+            url,
+            path,
+          );
+          yield* check(config, created, held, provenDeletes, inner, request, path);
           return creates;
         }),
       );

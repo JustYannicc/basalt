@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-view-guard-outage",
+  "file": "0713-pool-view-guard-outage.patch",
+  "content_sha256": "87b03e3928dba2ee0fbe129d511167839f1c1c534beb3e7fa4240533f05ae547",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

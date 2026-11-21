@@ -150,7 +150,14 @@ export function coverageInventory(
   }));
 }
 
-export type CoverageRecord = { id: string; source: string; selected: boolean; plan?: Plan };
+export type CoverageRecord = {
+  id: string;
+  source: string;
+  selected: boolean;
+  plan?: Plan;
+  // The declared groups whose runner step selects this test; absent for scripts.
+  groups?: string[];
+};
 export type FingerprintedRecord = CoverageRecord & { fingerprint: string };
 export type ExceptionGroup = { reason: string; entries: Record<string, string> };
 
