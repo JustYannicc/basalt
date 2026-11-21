@@ -166,12 +166,14 @@ test("native dependency diagnostics distinguish status, timeout and invalid resp
       stage: "native_control_response",
       failure: "status",
       dependencyStatus: 503,
+      reason: "NATIVE_POOL_UNAVAILABLE",
     },
     {
       run: async () => new Response("private edge refusal", { status: 502 }),
       stage: "native_control_response",
       failure: "status",
       dependencyStatus: 502,
+      reason: "NATIVE_POOL_UNAVAILABLE",
     },
     {
       run: async () => {
@@ -212,9 +214,9 @@ test("native dependency diagnostics distinguish status, timeout and invalid resp
     );
     assert.equal(response.status, 503);
     const value = await response.json();
+    // A timeout or an unreadable 2xx may have registered the device, so it carries no reason.
     assert.deepEqual(value, {
       ...expected,
-      reason: "NATIVE_POOL_UNAVAILABLE",
       code: "DEVICE_APPROVAL_UNAVAILABLE",
       message:
         "We could not confirm this device connection. Check its status on your device before trying again.",

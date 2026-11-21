@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "A native control failure keeps its status codes: 401 and 403 from the pool stay refusals and every other failure stays service-unavailable. When the pool was unreachable, timed out, answered 5xx or answered unreadably, the failure and the device decide answer carry the reason NATIVE_POOL_UNAVAILABLE; a host signing fault and a pool 4xx refusal do not. A JSON pool refusal adds only its own error class as dependencyCode, an identifier of at most 64 characters, never its message or any other body text. The decision is not recorded, so the same device code stays pending for another decision."
+      constraint "A native control failure keeps its status codes: 401 and 403 from the pool stay refusals and every other failure stays service-unavailable. Only a registration that could not reach the pool or that the pool answered with a 5xx carries the reason NATIVE_POOL_UNAVAILABLE, in the control failure and in the device decide answer. A timeout and an unreadable 2xx may have registered the device and stay uncertain; a host signing fault, a pool 4xx refusal and check or revoke failures carry no reason. A JSON refusal to a registration adds only the pool's own error class as dependencyCode, an identifier of at most 64 characters, never its message or any other body text. The decision is not recorded, so the same device code stays pending for another decision."
     }
   }
 }

@@ -192,7 +192,7 @@ export async function decideDevice(
         }
       : {}),
   }).catch((error: unknown) => {
-    // Tools only is offered once, and only to an approval that asked for models and tools.
+    // Tools only is never offered to an approval that did not ask for both models and tools.
     if (
       error instanceof DeviceApprovalError &&
       error.kind === "models-unavailable" &&

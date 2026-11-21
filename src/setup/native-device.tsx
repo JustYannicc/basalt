@@ -114,7 +114,7 @@ export function NativeDevice() {
     reload();
   }
 
-  async function decide(accept: boolean, withModels = models) {
+  async function decide(accept: boolean, access = { models, tools }) {
     if (mutation.current || !code || view.kind !== "ready") return;
     mutation.current = true;
     setBusy(true);
@@ -126,7 +126,7 @@ export function NativeDevice() {
         code,
         view.request,
         signal,
-        accept ? { name, pool, models: withModels, tools } : undefined,
+        accept ? { name, pool, ...access } : undefined,
       );
       if (signal.aborted) return;
       if (result.kind === "review") {
@@ -316,7 +316,8 @@ export function NativeDevice() {
                         disabled={busy}
                         onClick={() => {
                           setModels(false);
-                          void decide(true, false);
+                          setTools(true);
+                          void decide(true, { models: false, tools: true });
                         }}
                       >
                         Connect with tools only
