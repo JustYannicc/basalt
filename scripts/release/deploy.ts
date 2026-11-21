@@ -9,13 +9,14 @@
  *   bun scripts/release/deploy.ts apply    --stage <s> [--config <f>] [--policy <f>] [--include <fqn>]... --plan-digest <sha256> --attempt <id>
  *   bun scripts/release/deploy.ts deploy   --stage test-… [--config <f>] [--policy <f>] [--include <fqn>]...  (plan, check, apply in one run)
  *   bun scripts/release/deploy.ts destroy  --stage test-… [--config <f>]
+ *   bun scripts/release/deploy.ts teardown --stage test-rehearsal-<n> [--verify-only]
  *   bun scripts/release/deploy.ts backup   --stage production --name <backup name>
  *   bun scripts/release/deploy.ts snapshot --stage <s> --out <file>
  *   bun scripts/release/deploy.ts compare  --before <file> --after <file>
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { StateService } from "alchemy/State/State";
@@ -24,15 +25,12 @@ import type * as Fx from "effect/Effect";
 import type { Snapshot } from "./plan-summary.ts";
 import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
+import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
+import { stackConfig } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
-const configs = [
-  "alchemy.run.ts",
-  "scripts/preview/stack/alchemy.database.ts",
-  "scripts/preview/stack/alchemy.cleanup.ts",
-];
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -53,25 +51,15 @@ const { positionals, values } = parseArgs({
     light: { type: "boolean" },
     to: { type: "string" },
     "root-boot": { type: "string" },
-    within: { type: "string" },
+    apply: { type: "string" },
     serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
+    "verify-only": { type: "boolean" },
   },
 });
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
-// Accept a config relative to the working directory (the cloud dir, as previews call it) or the repo root.
-// The scale test deploys a frozen candidate with this checkout's scale stack, matched by its path suffix.
-const config = values.config
-  ? ([relative(root, resolve(values.config)), relative(root, resolve(root, values.config))].find(
-      (path) => configs.includes(path),
-    ) ??
-    (resolve(values.config).endsWith("/scripts/scale-test/stack.ts")
-      ? resolve(values.config)
-      : values.config))
-  : "alchemy.run.ts";
-const scaleStack = config.endsWith("/scripts/scale-test/stack.ts");
-if (!configs.includes(config) && !scaleStack) throw new Error(`Unknown stack config ${config}`);
+const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
 
 if (command !== "compare") {
   if (stage === "production") {
@@ -80,14 +68,22 @@ if (command !== "compare") {
       !/^[a-f0-9]{40}$/u.test(process.env.BASALT_RELEASE_CANDIDATE ?? "")
     )
       throw new Error("Production releases run only in GitHub Actions on an immutable candidate");
-    if (command === "destroy") throw new Error("Production is never destroyed");
+    if (command === "destroy" || command === "teardown")
+      throw new Error("Production is never destroyed");
     if (command === "deploy") throw new Error("Production applies only a reviewed plan digest");
   } else if (scaleStack ? !/^scale-[0-9]+$/u.test(stage) : !/^test-[a-z0-9-]+$/u.test(stage)) {
     throw new Error(
       "Use --stage production, a disposable test-* stage, or scale-<n> for the scale stack",
     );
+  } else if (stage.includes("rehearsal") && !isRehearsalStage(stage)) {
+    // A teardown finds a rehearsal stage's leftovers by names that carry its stage whole; a stage
+    // like test-rehearsal-2-x or test-x-test-rehearsal-2 would make those names ambiguous.
+    throw new Error("A rehearsal stage is exactly test-rehearsal-<n>, n from 1 to 9");
   }
 }
+// A teardown deletes by the stage token in names, which only a rehearsal stage's names carry.
+if (command === "teardown" && !isRehearsalStage(stage))
+  throw new Error("A teardown runs only on a test-rehearsal-<n> stage");
 
 /**
  * Keeps text that may name hosts, ids or values off public logs and artifacts: in plain under the
@@ -156,8 +152,14 @@ if (command === "boot" || command === "accept") {
   try {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
-    const { awaitRecoveryReady, healingOutcome, NOT_SERVING, runAcceptance, servingBoot } =
-      await import("./acceptance.ts");
+    const {
+      awaitRecoveryReady,
+      healingOutcome,
+      healingWait,
+      NOT_SERVING,
+      runAcceptance,
+      servingBoot,
+    } = await import("./acceptance.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
@@ -192,20 +194,19 @@ if (command === "boot" || command === "accept") {
         "The pool did not answer before the apply, and this release declares no restart",
       );
     let restart: Record<string, unknown> | undefined;
+    // Which bound a healing release waited within, named in its summary line.
+    let bound: { name: string; seconds: number } | undefined;
     let verdict: Awaited<ReturnType<typeof awaitRecoveryReady>> | undefined;
     // How the stuck runtime was stopped, read from the pool Worker's log when it did not heal.
     let stopPathsOf: (() => Promise<unknown>) | undefined;
     const startedAt = Date.now();
     if (expect === "restart") {
-      // Bounded by the policy that declares it: the fix acts, stops the runtime gracefully, and the
-      // controller's recovery starts a new one inside its own startup budget.
-      // The policy's 420 s is a stated bound, not derived: acceptable only because no production
-      // release runs before the release-bounds PR derives it from the pool's named constants.
-      const within = Number(values.within);
-      if (!Number.isInteger(within) || within < 60 || within > 900 || !rootBoot || !values.serving)
-        throw new Error(
-          "--expect restart needs --root-boot, --serving <serving.json> and --within <60..900 seconds>",
-        );
+      // The bound comes from the controller's own named constants: the fix acts, stops the runtime
+      // gracefully, and the controller's recovery starts a new one inside its own startup budget.
+      if (!rootBoot || !values.serving)
+        throw new Error("--expect restart needs --root-boot and --serving <serving.json>");
+      const within = healingWait(values.apply);
+      bound = within;
       // `/v1/models` answers while model calls are still refused; the controller's recovery `ready`
       // is the signal. The new controller answers a signed read-only `inspect` once it has adopted
       // its code; until then it refuses on identity, which reads as not ready yet.
@@ -251,13 +252,16 @@ if (command === "boot" || command === "accept") {
               "inspect",
               controllerCode,
               { accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "", worker },
-              process.env.POOL_APP_SIGNING_KEY ?? "",
+              // The pool Worker opens handoff envelopes with its deployment key (`runtimeHandoff`),
+              // as the crash dispatcher signs them; the app signing key signs pool tokens.
+              process.env.POOL_DEPLOYMENT_KEY ?? "",
             )) as { result?: unknown } | undefined
           )?.result,
         before: rootBoot,
-        withinMs: within * 1000,
+        withinMs: within.seconds * 1_000,
       });
       restart = {
+        bound,
         ready: verdict.ready,
         waitedMs: verdict.waitedMs,
         reads: verdict.reads,
@@ -267,7 +271,9 @@ if (command === "boot" || command === "accept") {
         // No new boot is selected, so no model call could show the release healed the pool.
         const view = { outcome: "not-serving", restart, stopPaths: await stopPathsOf() };
         if (values.out) await output(resolve(values.out), view);
-        await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
+        await summary(
+          `NOT SERVING after the healing release, waited up to ${bound?.seconds} s (${bound?.name}): ${safeJson(view)}`,
+        );
         process.exit(1);
       }
       rootBoot = verdict.boot;
@@ -279,6 +285,20 @@ if (command === "boot" || command === "accept") {
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
       client,
+    }).catch(async (error: unknown) => {
+      if (!verdict) throw error;
+      // The model calls could not run at all (the catalog failed): a healing release that did not
+      // serve. Its record is kept; the cause can name hosts, so it stays in the private detail.
+      await keepPrivate("acceptance", error instanceof Error ? error.message : String(error));
+      const view = {
+        outcome: "not-serving",
+        failed: "the model calls could not run",
+        restart,
+        ...(stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
+      };
+      if (values.out) await output(resolve(values.out), view);
+      await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
+      process.exit(1);
     });
     // A healing release ends healed, serving but needing a person, or not serving.
     const outcome = verdict ? healingOutcome(verdict, result) : undefined;
@@ -294,12 +314,13 @@ if (command === "boot" || command === "accept") {
       ...(outcome === "not-serving" && stopPathsOf ? { stopPaths: await stopPathsOf() } : {}),
     };
     if (values.out) await output(resolve(values.out), view);
+    const waited = bound ? ` Bound: ${bound.seconds} s (${bound.name}).` : "";
     await summary(
-      outcome === "serving-needs-person"
+      (outcome === "serving-needs-person"
         ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
         : outcome === "not-serving"
           ? `NOT SERVING after the healing release: ${safeJson(view)}`
-          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`,
+          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
     );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
     // Exit 3 is its own result: not green, and not a failure to undo.
@@ -396,7 +417,7 @@ const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
-const { rootPinMismatch } = await import("./root-pin.ts");
+const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
@@ -453,6 +474,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
+          // Production keeps the root from the first request on: until both its id and its name
+          // are pushed below, no container application write leaves.
+          rootRequired: stage === "production",
           deletable,
           stage: undefined as StageScope | undefined,
           // Reads of production send nothing but reads; the guard refuses anything else.
@@ -491,6 +515,10 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                   never
                 >,
               ),
+              // Deletes by the stage token in names; no other command sets it, and the check alone
+              // (`--verify-only`) never does, so the wire refuses any delete it sends.
+              ...(command === "teardown" && !values["verify-only"] ? { teardown: true } : {}),
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
             };
           }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))
@@ -514,13 +542,25 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               script,
             });
           }
-          // Every reviewed release leaves the root application as recorded; previews roll it freely.
-          if (policy?.check) {
-            const root = yield* recordedApplication(policy.check.poolContainer.fqn);
+          // Every reviewed release, and every production command, leaves the root application as
+          // recorded; previews roll it freely. A stage under a policy keeps its root by the same
+          // rules once its State row records one, so a rehearsal runs them as production does.
+          const rootFqn =
+            policy?.check?.poolContainer.fqn ??
+            (stage === "production" ? "PoolContainer" : undefined);
+          if (rootFqn) {
+            const root = yield* recordedApplication(rootFqn);
             if (root) {
               wire.rootApplications.push(root.id);
+              wire.rootRequired = true;
               if (root.name) wire.rootApplicationNames.push(root.name);
-            } else if (stage === "production")
+              else
+                yield* Effect.promise(() =>
+                  summary(
+                    "Warning: the root's State row records no application name, so every container application write in this run is refused.",
+                  ),
+                );
+            } else if (stage === "production" && policy?.check)
               return yield* Effect.die(new Error("No root application recorded on production"));
           }
           // A refused request fails the run at once instead of after the SDK's retries.
@@ -619,6 +659,8 @@ const checkPolicy = () => {
 };
 
 try {
+  // The root pin's full reference carries the account, so it exists only in this process.
+  setRootPin(process.env);
   if (command === "plan" || command === "apply" || command === "deploy") {
     const result = await run(
       Effect.gen(function* () {
@@ -645,6 +687,25 @@ try {
         }
         const checked = checkPolicy();
         if (checked) yield* checkPlan(snapshot.native, yield* decodePlanPolicy(checked));
+        // After the plan check, which proves the recorded attachment the read relies on and names
+        // every violation first. A rehearsal stage pinned to production's root image runs the same
+        // read, so it is proven on a real application before production relies on it.
+        if (
+          checked &&
+          command === "plan" &&
+          (stage === "production" || /^test-rehearsal-[1-9][0-9]*$/u.test(stage))
+        ) {
+          // The provider decides at apply, after the pool Worker's upload, whether the root's row
+          // modifies the application; the plan makes the same read and comparison first.
+          const root = yield* Effect.promise(() => import("./root-settle-check.ts"));
+          const settled = yield* root.rootSettles({
+            node: snapshot.native.resources[checked.poolContainer.fqn],
+            accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+            pin: checked.poolContainer.image,
+            read: root.liveApplication(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? "")),
+          });
+          if (settled) yield* Effect.promise(() => summary(settled));
+        }
         const digest = planDigest(snapshot.native);
         if (policy && updatesWorkerWithoutReadiness(snapshot, policy.check.poolWorker))
           return yield* Effect.die(
@@ -652,6 +713,20 @@ try {
               `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
             ),
           );
+        if (command === "plan" && stage === "production" && policy) {
+          // Readiness refuses a runtime digest that differs from the selected runtime's seal only
+          // after the upload; the plan compares first, or says loudly why it could not.
+          const fingerprint = yield* Effect.promise(() => import("./fingerprint-check.ts"));
+          const report = fingerprint.fingerprintReport(
+            yield* fingerprint.checkRuntimeFingerprint(
+              snapshot.native,
+              policy.check.poolWorker,
+              async () => fingerprint.identityUnknownBeforeUpload,
+            ),
+          );
+          yield* Effect.promise(() => summary(report.summary));
+          if (report.annotation) console.log(report.annotation);
+        }
         if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
@@ -697,6 +772,29 @@ try {
       }),
     );
     await summary(`Destroyed ${config} on stage ${stage}.`);
+  } else if (command === "teardown") {
+    const { teardownStage, TEARDOWN_NOT_CHECKED } = await import("./stage-teardown.ts");
+    const result = await run(
+      Effect.tryPromise(() =>
+        teardownStage(
+          values["verify-only"] ? "verify" : "delete",
+          {
+            accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+            token: process.env.CLOUDFLARE_API_TOKEN ?? "",
+            stage,
+          },
+          // Read when the effect runs, inside `run`: the guard's fetch, never the bare one.
+          globalThis.fetch,
+        ),
+      ),
+    );
+    // Names carry the stage and stay in the private record; the public summary keeps counts.
+    await keepPrivate("teardown", safeJson(result, 2));
+    await summary(
+      values["verify-only"]
+        ? `Checked stage ${stage}: none of its container applications or tagged registry images remain. ${TEARDOWN_NOT_CHECKED}`
+        : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.manifests} registry manifests in ${result.repositories.length} repositories deleted; none tagged remain. ${TEARDOWN_NOT_CHECKED}`,
+    );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");
     const backup = await run(
@@ -714,6 +812,7 @@ try {
     // Read-only, once before the cutover: the State store version, every State row, the retired
     // layer's records exported sealed, no unresolved Home migration, and the root pin against State.
     const legacy = await import("./legacy-records.ts");
+    const poolParameters = await import("./pool-parameters.ts");
     const result = await run(
       Effect.gen(function* () {
         const state = yield* Alchemist.State.store({
@@ -749,9 +848,52 @@ try {
           stage,
           fqn: "PoolWorker",
         }) as Fx.Effect<unknown, unknown, never>;
+        // Without both, the guard refuses every container application write of a release, the
+        // class change's creates included; said in words before the pin is compared.
+        const attr = (rootRow as { attr?: Record<string, unknown> } | undefined)?.attr;
+        const present = (value: unknown) =>
+          typeof value === "string" && value ? "present" : "absent";
+        const rootRecord = `id ${present(attr?.applicationId)}, name ${present(attr?.applicationName)}`;
+        yield* Effect.promise(() => summary(`root row: ${rootRecord}`));
         const mismatch = rootPinMismatch(process.env.POOL_ROOT_IMAGE, rootRow, workerRow);
-        if (mismatch) return yield* Effect.die(new Error(mismatch));
-        return { stateStoreVersion: version, rows, exported, rootPin: "matches the State row" };
+        if (mismatch) return yield* Effect.fail(mismatch);
+        // One GET of the branch's parameters, which the apply's first database step compares and,
+        // when the pooler differs, patches. A difference or an unreadable answer is reported only.
+        // Production only: its branch is fixed below, and only production's preflight is read-only.
+        const pool =
+          stage !== "production"
+            ? ("not-production" as const)
+            : yield* poolParameters
+                .readPoolParameters({
+                  organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
+                  tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
+                  token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
+                  database: "basalt",
+                  branch: "main",
+                })
+                .pipe(
+                  Effect.match({
+                    onFailure: () => "unreadable" as const,
+                    onSuccess: (report) => report,
+                  }),
+                );
+        yield* Effect.promise(() =>
+          summary(
+            pool === "not-production"
+              ? "Pool parameters: read on production only"
+              : pool === "unreadable"
+                ? "Pool parameters: unreadable; the apply's first database step is not predicted"
+                : poolParameters.poolParameterLine(pool),
+          ),
+        );
+        return {
+          stateStoreVersion: version,
+          rows,
+          exported,
+          rootRow: rootRecord,
+          rootPin: "matches the State row",
+          poolParameters: pool,
+        };
       }),
     );
     await output(resolve(root, ".local/release/preflight.json"), result);
