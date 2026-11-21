@@ -13,6 +13,7 @@ import {
   crashSender,
   logLine,
   observeSender,
+  recoveryResetSender,
   rootHealthReader,
   runCrashDispatch,
   writeDispatchResult,
@@ -89,6 +90,10 @@ function fakes(overrides: Partial<DispatchDependencies> = {}) {
         ? { inspection: false, result: { status: "signalled" } }
         : { inspection: true, result: { status: "audited" } };
     },
+    resetRecovery: async (_code, _target, _key, operationId) => {
+      calls.push(`resetRecovery:${operationId}`);
+      return { result: { restarts: [] } };
+    },
     now: () => 1,
     ...overrides,
   };
@@ -105,7 +110,7 @@ test("the workflow is main-only, serialized and gives only the operator step any
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
   const inputs = workflow.on.workflow_dispatch.inputs;
   assert.deepEqual(Object.keys(inputs).sort(), ["coordinator_go", "mode", "packet", "request_id"]);
-  assert.deepEqual(inputs.mode.options, ["observe", "inspect", "apply"]);
+  assert.deepEqual(inputs.mode.options, ["observe", "inspect", "apply", "recovery-reset"]);
   assert.equal(
     workflow["run-name"],
     "pool-crash-operator ${{ inputs.mode }} ${{ inputs.request_id }}",
@@ -136,7 +141,7 @@ test("the workflow is main-only, serialized and gives only the operator step any
 
 test("malformed dispatch inputs refuse by field before any read or send", async () => {
   const cases: [Partial<DispatchInput>, string][] = [
-    [{ mode: "crash" }, "mode must be observe, inspect or apply"],
+    [{ mode: "crash" }, "mode must be observe, inspect, apply or recovery-reset"],
     [{ requestId: "not-a-uuid" }, "request_id must be a UUID"],
     [{ coordinatorGo: "  " }, "coordinator_go is empty"],
     [{ coordinatorGo: "GO <nonce>" }, "coordinator_go contains a bracket"],
@@ -322,9 +327,15 @@ test("result.json carries raw controller results but never the key or a signed e
     const text = await readFile(join(output, "result.json"), "utf8");
     for (const secret of [signingKey, "header-sentinel", accountId, ...envelopes])
       assert.ok(!text.includes(secret));
+    // This fixture's release state names no provider target, so observe says so for both reads
+    // and sends neither.
     assert.equal(
       logLine(result),
-      `mode=${result.mode} request_id=${nonce} ok=true forcedInspect=false\n`,
+      `mode=${result.mode} request_id=${nonce} ok=true forcedInspect=false\n` +
+        (result.mode === "observe"
+          ? "provider observation: does not read (target_unavailable)\n" +
+            "restart read: not checked (target_unavailable)\n"
+          : ""),
     );
   }
 });
@@ -658,4 +669,74 @@ test("a controller refusal of inspect publishes its fixed code, unlike an unknow
   );
   assert.equal(result.ok, false);
   assert.equal(result.error, "inspect outcome unknown: runtime-handoff-refused (unhealthy)");
+});
+
+test("recovery-reset records what it clears, then sends only the reset", async () => {
+  const stuck = { needsPerson: { at: 5, reason: "restart_limit" }, restarts: [1, 2, 3] };
+  const { deps, calls } = fakes({
+    observe: async (action) => {
+      calls.push(`observe:${action}`);
+      return { result: { selection: { slot: "primary" }, recovery: stuck } };
+    },
+  });
+  const result = await runCrashDispatch(
+    input({ mode: "recovery-reset", packet: JSON.stringify({ controllerCode }) }),
+    deps,
+  );
+  assert.equal(result.ok, true, String(result.error));
+  assert.deepEqual(calls, [
+    "readTarget",
+    "observe:inspect",
+    `resetRecovery:recovery-reset-${nonce}`,
+  ]);
+  assert.deepEqual(result.observe, { recovery: stuck });
+  assert.deepEqual(result.result, { restarts: [] });
+  assert.equal(
+    logLine(result),
+    `mode=recovery-reset request_id=${nonce} ok=true forcedInspect=false\n`,
+  );
+});
+
+test("recovery-reset refuses a crash packet and anything off main before sending", async () => {
+  const { deps, calls } = fakes();
+  const crash = await runCrashDispatch(input({ mode: "recovery-reset" }), deps);
+  assert.equal(crash.ok, false);
+  assert.match(String(crash.error), /packet must be exactly \{controllerCode\}/u);
+  const branch = await runCrashDispatch(
+    input({
+      mode: "recovery-reset",
+      packet: JSON.stringify({ controllerCode }),
+      ref: "refs/heads/feature",
+    }),
+    deps,
+  );
+  assert.equal(branch.ok, false);
+  assert.deepEqual(calls, []);
+});
+
+test("the reset is a signed recovery-reset command naming its own operation", async () => {
+  const signingKey = randomBytes(32).toString("hex");
+  const sent: unknown[] = [];
+  const reply = await recoveryResetSender(async () => ({
+    dispose: async () => {},
+    env: {
+      POOL_OPERATIONS: {
+        fetch: async (request: Request) => {
+          const { envelope } = (await request.json()) as { envelope: string };
+          sent.push(await openEnvelope(signingKey, deploymentReadinessPrefix, envelope));
+          return Response.json({ result: { restarts: [] } });
+        },
+      },
+    },
+  }))(
+    controllerCode,
+    { accountId, worker: "synthetic-pool" },
+    signingKey,
+    `recovery-reset-${nonce}`,
+  );
+  assert.deepEqual(reply, { result: { restarts: [] } });
+  assert.equal(sent.length, 1);
+  const command = sent[0] as { action: string; operationId: string };
+  assert.equal(command.action, "recovery-reset");
+  assert.equal(command.operationId, `recovery-reset-${nonce}`);
 });

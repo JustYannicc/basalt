@@ -40,6 +40,8 @@ export async function startGateway(options: GatewayOptions) {
   const interrupt = () => {
     for (const controller of active) controller.abort();
   };
+  // Only a fresh sign-in clears these states, so they never ask an agent to retry.
+  const needsSignIn = () => ["sign-in-required", "revoked"].includes(options.source.view().state);
   const handle = async (request: IncomingMessage, response: ServerResponse, authority: string) => {
     response.on("error", () => undefined);
     if (!localRequest(request, authority))
@@ -142,7 +144,7 @@ export async function startGateway(options: GatewayOptions) {
         response.setHeader("x-should-retry", "false");
         return answer(response, 502, { error: "The local request was refused before dispatch." });
       } else if (!dispatched || error instanceof ModelRequestNotSent) {
-        if (["sign-in-required", "revoked"].includes(options.source.view().state))
+        if (needsSignIn())
           return answer(response, 401, { error: "Sign in again before using this device." });
         response.setHeader("Retry-After", "1");
         return answer(
@@ -161,7 +163,10 @@ export async function startGateway(options: GatewayOptions) {
               },
         );
       } else if (capability === "models") {
-        const failure = upstreamOutcomeUnknown();
+        const failure = upstreamOutcomeUnknown(
+          undefined,
+          new URL(request.url ?? "/", "http://127.0.0.1").pathname,
+        );
         failure.headers.forEach((value, name) => response.setHeader(name, value));
         response.writeHead(failure.status);
         response.end(await failure.text());
@@ -234,11 +239,13 @@ export async function startGateway(options: GatewayOptions) {
           );
         }
       } catch {
-        if (!dispatched && !socket.destroyed)
+        if (dispatched || socket.destroyed) socket.destroy();
+        else if (needsSignIn())
+          socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        else
           socket.end(
             "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
           );
-        else socket.destroy();
       } finally {
         active.delete(controller);
         socket.off("close", cancel);

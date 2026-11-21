@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
-  readFileSync,
   realpathSync,
   mkdirSync,
   symlinkSync,
@@ -14,8 +13,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./process.ts";
+import { applyCarries } from "./upstream-carries.ts";
 import { currentProcessOwner, processOwnerAlive } from "./process-owner.ts";
 
 export const upstreamCache = () =>
@@ -68,6 +68,24 @@ export async function prepareUpstreamCheckout(
   if (lstatSync(upstream, { throwIfNoEntry: false })?.isSymbolicLink())
     throw new Error("Prepared upstream must not be a symbolic link");
   const repository = join(upstreamCache(), "repositories", `${digest(pin.repository)}.git`);
+  mkdirSync(dirname(upstream), { recursive: true });
+  // The native resolver returns the on-disk case, so case variants of one checkout share its lock.
+  const identity = existsSync(upstream)
+    ? realpathSync.native(upstream)
+    : join(realpathSync.native(dirname(upstream)), basename(upstream));
+  const checkoutLock = join(upstreamCache(), "checkouts", `${digest(identity)}.lock`);
+  // One preparation owns the checkout from its reset until the patched tree is recorded.
+  return withCacheLock(checkoutLock, () =>
+    prepareLockedCheckout(upstream, repository, pin, patches),
+  );
+}
+
+async function prepareLockedCheckout(
+  upstream: string,
+  repository: string,
+  pin: { repository: string; commit: string },
+  patches: readonly string[],
+) {
   await withCacheLock(`${repository}.lock`, () => {
     if (!existsSync(repository)) {
       mkdirSync(dirname(repository), { recursive: true });
@@ -109,23 +127,20 @@ export async function prepareUpstreamCheckout(
       cwd: upstream,
       encoding: "utf8",
     });
-    if (checkout.status !== 0 || realpathSync(checkout.stdout.trim()) !== realpathSync(upstream))
+    if (
+      checkout.status !== 0 ||
+      realpathSync.native(checkout.stdout.trim()) !== realpathSync.native(upstream)
+    )
       throw new Error("Prepared upstream must be its Git worktree root");
     run("git", ["checkout", "--detach", "--force", pin.commit], upstream);
     // Ignored dependencies and build caches survive; source from dropped carries does not.
     run("git", ["clean", "-ffd", "--"], upstream);
   });
-  for (const patch of patches) {
-    const additions = [
-      ...readFileSync(patch, "utf8").matchAll(/--- \/dev\/null\n\+\+\+ b\/(.+)\n/g),
-    ].map((match) => match[1]!);
-    for (const added of additions) {
-      if (added.startsWith("/") || added.split("/").includes(".."))
-        throw new Error("Invalid patch path");
-    }
-    // Carries may replace a file another carry created earlier in the replay.
-    if (additions.length) run("git", ["clean", "-f", "--", ...additions], upstream);
-    run("git", ["apply", "--check", patch], upstream);
-    run("git", ["apply", patch], upstream);
-  }
+  return applyCarries({
+    upstream,
+    repository,
+    pin,
+    patches,
+    lock: (write) => withCacheLock(`${repository}.lock`, write),
+  });
 }
