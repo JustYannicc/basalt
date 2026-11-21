@@ -2,20 +2,39 @@ import type { DeviceCredentials } from "../contracts/device.ts";
 import { untilAborted } from "./abort.ts";
 import { DeviceOAuthError, tokenRequest } from "./device-oauth.ts";
 
-export class RefreshReplayBudgetError extends Error {}
-export class RefreshRefusedError extends Error {}
+/** The server refused the saved grant. Only a fresh sign-in recovers. */
+class RefreshSignInRequiredError extends Error {}
 
+/**
+ * Token refusals a fresh sign-in fixes: it registers a new client and grants scope and resource
+ * again. With no time limit, any of these would otherwise be retried without end. A malformed
+ * request (`invalid_request`, an unsupported grant type) is a client fault sign-in cannot fix.
+ */
+const signInRefusals = new Set([
+  "invalid_grant",
+  "invalid_client",
+  "unauthorized_client",
+  "invalid_scope",
+  "invalid_target",
+]);
+
+/**
+ * One refresh exchange; an unconfirmed one is sent again whatever its age, and only the server's
+ * refusal asks for sign-in. A refresh that never reached the server is still current there. One
+ * the server rotated is answered with the same pair for an hour, then refused. Reuse later than a
+ * day revokes the token family, which is this device's own grant: each sign-in registers its own
+ * OAuth client. `refreshStartedAt` is kept because saved credentials refuse unknown keys and older
+ * ones carry it; nothing decides on it.
+ */
 export async function refreshDeviceCredentials(
   current: DeviceCredentials,
   signal: AbortSignal,
   commit: (next: DeviceCredentials) => Promise<void>,
 ) {
-  // The server durably replays the same pair for an hour. Keep client replay well inside it.
   const unknown = current.refreshPending === true;
-  const startedAt = unknown ? (current.refreshStartedAt ?? Date.now()) : Date.now();
-  if (unknown && Date.now() - startedAt >= 600_000)
-    throw new RefreshReplayBudgetError("Refresh replay time limit reached.");
-  await commit({ ...current, refreshPending: true, refreshStartedAt: startedAt });
+  // A pending refresh with its start saved is already on disk as it would be written.
+  if (!unknown || current.refreshStartedAt === undefined)
+    await commit({ ...current, refreshPending: true, refreshStartedAt: Date.now() });
   const tokens = await tokenRequest(
     current.origin,
     {
@@ -28,14 +47,14 @@ export async function refreshDeviceCredentials(
   ).catch(async (error: unknown) => {
     if (
       error instanceof DeviceOAuthError &&
-      error.code === "invalid_grant" &&
+      signInRefusals.has(error.code) &&
       error.status !== undefined &&
       error.status >= 400 &&
       error.status < 500 &&
       error.status !== 408 &&
       error.status !== 429
     )
-      throw new RefreshRefusedError("Native sign-in was refused.");
+      throw new RefreshSignInRequiredError("Native sign-in was refused.");
     if (
       !unknown &&
       error instanceof Error &&
@@ -53,7 +72,7 @@ export async function refreshDeviceCredentials(
 export function deviceRefresh(ports: {
   store: { write(value: string): Promise<void> };
   changed(credentials: DeviceCredentials): void;
-  unavailable(state: "sign-in-required" | "disconnected"): void;
+  signInRequired(): void;
 }) {
   let pending: Promise<void> | undefined;
   let generation = 0;
@@ -79,10 +98,8 @@ export function deviceRefresh(ports: {
         signal,
       )
         .catch((error: unknown) => {
-          if (ownGeneration === generation) {
-            if (error instanceof RefreshRefusedError) ports.unavailable("sign-in-required");
-            else if (error instanceof RefreshReplayBudgetError) ports.unavailable("disconnected");
-          }
+          if (ownGeneration === generation && error instanceof RefreshSignInRequiredError)
+            ports.signInRequired();
           throw error;
         })
         .finally(() => {

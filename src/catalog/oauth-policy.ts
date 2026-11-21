@@ -91,6 +91,59 @@ export interface OAuthEvidence {
   metadataFailures?: ReadonlyMap<string, string>;
 }
 
+type DecisionEvidence = Pick<OAuthEvidence, "hostedClients" | "metadata" | "metadataFailures">;
+
+function decisionProblems(label: string, decision: OAuthDecision, evidence: DecisionEvidence) {
+  if (decision.kind === "hosted" && !evidence.hostedClients.has(decision.client))
+    return [`${label}: hosted client ${decision.client} is not defined by this host`];
+  if (decision.kind !== "automatic") return [];
+  const proof = evidence.metadata.get(decision.metadata);
+  if (proof === undefined)
+    return [
+      `${label}: automatic client metadata is unavailable (${decision.metadata}: ${evidence.metadataFailures?.get(decision.metadata) ?? "no document"})`,
+    ];
+  if (proof.sha256 !== decision.metadataSha256)
+    return [
+      `${label}: automatic client metadata changed (metadataSha256: ${decision.metadataSha256} -> ${proof.sha256})`,
+    ];
+  const document = proof.document;
+  const reject = (property: string, expected: string, observed: unknown) =>
+    `${label}: automatic client metadata does not support the reviewed protocol (${property}: expected ${expected}, observed ${JSON.stringify(observed) ?? "missing"})`;
+  if (!record(document)) return [reject("document", "object", document)];
+  const problems = [
+    "issuer",
+    "authorization_endpoint",
+    "token_endpoint",
+    ...(decision.protocol === "dcr" ? ["registration_endpoint"] : []),
+  ].flatMap((property) =>
+    https(document[property]) ? [] : [reject(property, "HTTPS URL", document[property])],
+  );
+  if (decision.protocol === "cimd" && document.client_id_metadata_document_supported !== true)
+    problems.push(
+      reject(
+        "client_id_metadata_document_supported",
+        "true",
+        document.client_id_metadata_document_supported,
+      ),
+    );
+  return problems;
+}
+
+/**
+ * The half of the review a commit fully determines: every decision against this host's clients
+ * and the committed metadata snapshots. It reads nothing outside the repository.
+ */
+export function oauthPinProblems(
+  reviews: readonly Pick<OAuthReview, "entry" | "methods">[],
+  evidence: DecisionEvidence,
+): string[] {
+  return reviews.flatMap((review) =>
+    Object.entries(review.methods).flatMap(([method, decision]) =>
+      decisionProblems(`${review.entry}/${method}`, decision, evidence),
+    ),
+  );
+}
+
 /** Source content binds manual review to the declaration that a person will actually install. */
 export function oauthFitness(
   feed: Feed,
@@ -118,50 +171,7 @@ export function oauthFitness(
       const decision = review.methods[method];
       if (decision === undefined)
         problems.push(`${entry.id}/${method}: OAuth method is unclassified`);
-      else if (decision.kind === "hosted" && !evidence.hostedClients.has(decision.client))
-        problems.push(
-          `${entry.id}/${method}: hosted client ${decision.client} is not defined by this host`,
-        );
-      else if (decision.kind === "automatic") {
-        const proof = evidence.metadata.get(decision.metadata);
-        if (proof === undefined) {
-          problems.push(
-            `${entry.id}/${method}: automatic client metadata is unavailable (${decision.metadata}: ${evidence.metadataFailures?.get(decision.metadata) ?? "no document"})`,
-          );
-          continue;
-        }
-        if (proof.sha256 !== decision.metadataSha256) {
-          problems.push(
-            `${entry.id}/${method}: automatic client metadata changed (metadataSha256: ${decision.metadataSha256} -> ${proof.sha256})`,
-          );
-          continue;
-        }
-        const document = proof.document;
-        const rejectProtocolField = (property: string, expected: string, observed: unknown) => {
-          problems.push(
-            `${entry.id}/${method}: automatic client metadata does not support the reviewed protocol (${property}: expected ${expected}, observed ${JSON.stringify(observed) ?? "missing"})`,
-          );
-        };
-        if (!record(document)) {
-          rejectProtocolField("document", "object", document);
-          continue;
-        }
-        for (const property of [
-          "issuer",
-          "authorization_endpoint",
-          "token_endpoint",
-          ...(decision.protocol === "dcr" ? ["registration_endpoint"] : []),
-        ]) {
-          if (!https(document[property]))
-            rejectProtocolField(property, "HTTPS URL", document[property]);
-        }
-        if (decision.protocol === "cimd" && document.client_id_metadata_document_supported !== true)
-          rejectProtocolField(
-            "client_id_metadata_document_supported",
-            "true",
-            document.client_id_metadata_document_supported,
-          );
-      }
+      else problems.push(...decisionProblems(`${entry.id}/${method}`, decision, evidence));
     }
     for (const method of Object.keys(review.methods))
       if (!methods.includes(method))

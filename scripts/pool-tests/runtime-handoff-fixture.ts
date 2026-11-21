@@ -32,6 +32,11 @@ import { legacyDrainProgram } from "../../src/pool/runtime-slots/legacy-drain.ts
 import { peerBootstrapInspectionProgram } from "../../src/pool/runtime-slots/peer-bootstrap.ts";
 import peerProgram from "../../src/pool/home-peer-program.json" with { type: "json" };
 import type { HomePeerSource } from "../../src/pool/runtime-slots/peer-access.ts";
+import { runtimeStopTiming } from "../../src/pool/runtime-slots/forced-stop.ts";
+
+// Fixtures never sleep through production's stop waits; a test that needs one mocks it.
+runtimeStopTiming.confirmExit = async () => {};
+runtimeStopTiming.stopGrace = async () => {};
 
 const responseModule = "../../src/pool/native-response.worker.ts";
 const {
@@ -121,7 +126,7 @@ export async function handoffRuntime(
     },
     container: {
       signal(signal: number) {
-        assert.equal(signal, 9);
+        assert.ok(signal === 9 || signal === 15, `unexpected signal ${signal}`);
         calls.signals.push(signal);
         running = false;
         for (const stop of stops) stop();
@@ -318,6 +323,10 @@ export async function handoffRuntime(
     signingKey,
     crash: () => {
       running = false;
+    },
+    // The same container process reads as running again: same boot, same launch settings.
+    revive: () => {
+      running = true;
     },
     replaceBoot: () => {
       bootId = crypto.randomUUID();
