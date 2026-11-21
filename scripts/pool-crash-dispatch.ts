@@ -130,8 +130,14 @@ function redactAccount<T>(value: T, accountId: string): T {
 }
 
 // Raw messages from the bridge can name the account or worker; only fixed codes reach a public artifact.
+// The Node bridge's own fixed failures (pool-operations-node.ts), so a transport fault never reads as
+// a Worker that did not answer.
+const BRIDGE_FAILURE =
+  /^Private operations Node bridge (exited|disconnected|send failed|failed|startup timed out|closed)$/u;
+
 function publicError(error: unknown, phase: string) {
   if (error instanceof DispatchRefusal) return error.message;
+  const bridge = error instanceof Error ? BRIDGE_FAILURE.exec(error.message)?.[1] : undefined;
   const code =
     error instanceof ControllerRefused
       ? `: runtime-handoff-refused (${error.reason})`
@@ -139,7 +145,13 @@ function publicError(error: unknown, phase: string) {
         ? `: ${error.reason}${error.worker ? ` (${error.worker})` : ""}`
         : error instanceof SlotRefused
           ? `: ${error.reason}`
-          : "";
+          : // No reply within the request's own time limit.
+            error instanceof DOMException &&
+              (error.name === "AbortError" || error.name === "TimeoutError")
+            ? `: ${error.name}`
+            : bridge
+              ? `: bridge ${bridge}`
+              : "";
   return `${phase}${code}`;
 }
 
@@ -217,6 +229,7 @@ const identityRefusal = runtimeFailureCode({
 });
 
 const uncheckedRestart = [
+  "selection_unavailable",
   "no_selected_runtime",
   "selection_unreadable",
   "selected_runtime_not_root",
@@ -508,7 +521,11 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
       output.providerObservation = await providerObservation(provider, (pins) =>
         send("provider-observe", pins),
       );
-      const inspected = await send("inspect");
+      // The selection the restart read needs; without it line 2 says so, and the error says why.
+      const inspected = await send("inspect").catch((cause: unknown) => {
+        output.restartObservation = "restart read: not checked (selection_unavailable)";
+        throw cause;
+      });
       // Never fatal either: whatever the selection reads, the line says why it was not checked.
       output.restartObservation = await restartObservation(provider, inspected, (pins) =>
         send("provider-observe", pins),

@@ -340,7 +340,7 @@ test("(b) observe signs only read commands, and the provider read carries exactl
 });
 
 const restartLine =
-  /^restart read: (passes|refuses \(recorded_pins_differ\)|does not read \([a-z_]+\)|not checked \((no_selected_runtime|selection_unreadable|selected_runtime_not_root|target_unavailable)\))$/u;
+  /^restart read: (passes|refuses \(recorded_pins_differ\)|does not read \([a-z_]+\)|not checked \((selection_unavailable|no_selected_runtime|selection_unreadable|selected_runtime_not_root|target_unavailable)\))$/u;
 
 /** An observe whose inspect reports this selection; every other read is the fixed world's. */
 function selected(
@@ -480,5 +480,49 @@ test("(d) a packet for other controller code reads as the Worker refusing its id
     assert.deepEqual(lane.providerRequests, []);
   } finally {
     await lane.close();
+  }
+});
+
+test("(e) an inspect that fails after the token read names line 2 and keeps a closed cause", async () => {
+  for (const [label, failure, error] of [
+    [
+      "no reply in time",
+      new DOMException("Operation aborted", "AbortError"),
+      "inspect outcome unknown: AbortError",
+    ],
+    [
+      "the bridge exited",
+      new Error("Private operations Node bridge exited"),
+      "inspect outcome unknown: bridge exited",
+    ],
+    [
+      "the bridge never started",
+      new Error("Private operations Node bridge startup timed out"),
+      "inspect outcome unknown: bridge startup timed out",
+    ],
+    // Anything else keeps only the phase: its message is not closed text.
+    ["anything else", new Error("lost reply naming body-sentinel"), "inspect outcome unknown"],
+  ] as const) {
+    const run = world(pins, async () => ({ result: observation() }));
+    const fixed = run.deps.observe;
+    run.deps.observe = async (action, ...rest) => {
+      if (action !== "inspect") return fixed(action, ...rest);
+      run.sent.push(action);
+      throw failure;
+    };
+    const result = await runCrashDispatch(input(), run.deps);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.providerObservation, reads, label);
+    assert.equal(
+      result.restartObservation,
+      "restart read: not checked (selection_unavailable)",
+      label,
+    );
+    assert.equal(result.error, error, label);
+    assert.ok(
+      logLine(result).endsWith(`\n${reads}\nrestart read: not checked (selection_unavailable)\n`),
+      label,
+    );
+    assert.ok(!(JSON.stringify(result) + logLine(result)).includes("body-sentinel"), label);
   }
 });

@@ -270,6 +270,10 @@ jobs:
       # uploads a preview of its proxy Worker (about eight per run, outside the wire guard). The
       # reply is not tied to its request by a nonce; the path has no cache.
       - name: Read the provider observation before a declared root restart
+        id: provider
+        # A plan still runs its read-only plan after a failed read, and the run fails after it
+        # ("Stop on an unread provider observation"); an apply stops here.
+        continue-on-error: ${{ env.MODE == 'plan' }}
         env: &provider-observation-env
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -307,9 +311,9 @@ jobs:
           if jq -es --arg request "$request" 'length == 1 and .[0].requestId == $request and .[0].providerObservation == "provider observation: reads" and .[0].restartObservation == "restart read: passes"' "$result" >/dev/null 2>&1; then
             exit 0
           fi
+          # The dispatcher's own cause is public: fixed refusal text and closed codes.
+          cause="$(field error)"
           if [ -z "$token" ]; then
-            # The dispatcher's own cause is public: fixed refusal text and closed codes.
-            cause="$(field error)"
             echo "::error::provider observation: not read, ${cause:-the dispatcher left no result}: the heal would stop the root without restarting it."
             exit 1
           fi
@@ -335,7 +339,7 @@ jobs:
               echo "::error::The dispatcher's result is not exactly one document for this run's request with the two lines."
               ;;
             *)
-              echo "::error::${restart:-restart read: not read}: the heal would stop the root without restarting it."
+              echo "::error::${restart:-restart read: not read}${cause:+, $cause}: the heal would stop the root without restarting it."
               ;;
           esac
           exit 1
@@ -355,6 +359,11 @@ jobs:
           printf 'digest=%s\nattempt=%s\n' "$digest" "$attempt" >> "$GITHUB_OUTPUT"
           # The apply step reads these from the job env, so its own env carries only the secrets.
           printf 'PLAN_DIGEST=%s\nATTEMPT=%s\n' "$digest" "$attempt" >> "$GITHUB_ENV"
+      - name: Stop on an unread provider observation
+        if: always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'
+        run: |
+          echo "::error::The provider observation did not read (see its step above); the plan above ran for review only."
+          exit 1
       # Nothing below runs against a pegged database (the history import pauses at the same 60%).
       - name: Refuse while the pool database is busy
         env: *release-secrets

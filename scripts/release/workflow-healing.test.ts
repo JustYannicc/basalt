@@ -239,6 +239,22 @@ test("a declared root restart reads the provider twice first, and refuses unless
     /^::error::restart read: does not read \(outcome_unknown\): the heal would stop the root/mu,
   );
   assert.match(refuses("half", lines(token)), /^::error::restart read: not read: /mu);
+  // Line 2 missing or not passing: the dispatcher's own public cause is printed with it.
+  assert.match(
+    refuses("inspect", lines(token, undefined, "inspect outcome unknown: AbortError")),
+    /^::error::restart read: not read, inspect outcome unknown: AbortError: the heal would stop/mu,
+  );
+  assert.match(
+    refuses(
+      "unavailable",
+      lines(
+        token,
+        "restart read: not checked (selection_unavailable)",
+        "inspect outcome unknown: bridge exited",
+      ),
+    ),
+    /^::error::restart read: not checked \(selection_unavailable\), inspect outcome unknown: bridge exited: the heal/mu,
+  );
   // The dispatcher left nothing, or refused before any read: its own public cause is printed.
   assert.match(
     refuses("none", ""),
@@ -333,4 +349,32 @@ test("the provider read's own go text passes the crash operator's go rule", asyn
     },
   );
   assert.equal(result.error, "packet is not valid JSON");
+});
+
+test("in plan mode a failed provider read still lets the plan run, and the run fails after it", () => {
+  const all = steps as {
+    name?: string;
+    id?: string;
+    if?: string;
+    run?: string;
+    "continue-on-error"?: string;
+  }[];
+  const names = all.map((entry) => entry.name);
+  const provider =
+    all[names.indexOf("Read the provider observation before a declared root restart")]!;
+  assert.equal(provider.id, "provider");
+  // Only a plan continues: an apply stops at the read, before anything is planned or applied.
+  assert.equal(provider["continue-on-error"], "${{ env.MODE == 'plan' }}");
+  const again = all[names.indexOf("Read the provider observation again right before the apply")]!;
+  assert.equal(again["continue-on-error"], undefined);
+  const stop = names.indexOf("Stop on an unread provider observation");
+  assert.equal(names[stop - 1], "Plan and check");
+  assert.equal(
+    all[stop]!.if,
+    "always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'",
+  );
+  const dir = mkdtempSync(join(tmpdir(), "release-provider-stop-"));
+  const result = runStep(script("Stop on an unread provider observation"), {}, dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^::error::.*provider observation.*plan above ran for review only/mu);
 });
