@@ -12,7 +12,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { decodeRuntimeCreate } from "../../scripts/pool-fleet/runtime-create-schema.ts";
 import { runtimeDeclaration } from "../../scripts/pool-fleet/test/runtime-declaration.ts";
-import { bindPoolObservation } from "./fleet-observation.ts";
+import { bindPoolObservation, bindRehearsalObservationToken } from "./fleet-observation.ts";
 import {
   decodeFleetDeploymentImages,
   fleetBindings,
@@ -37,7 +37,15 @@ const images = {
 };
 async function declarations(
   input = "",
-  { stage = "synthetic", env = {} }: { stage?: string; env?: Record<string, string> } = {},
+  {
+    stage = "synthetic",
+    env = {},
+    bind,
+  }: {
+    stage?: string;
+    env?: Record<string, string>;
+    bind?: (worker: Cloudflare.Worker) => Effect.Effect<void, never, never>;
+  } = {},
 ) {
   const stack = Stack(
     "basalt",
@@ -52,7 +60,8 @@ async function declarations(
         env: { ...fleet },
       });
       // As src/pool/deployment.ts binds it.
-      yield* bindPoolObservation(worker, Boolean(fleet));
+      if (bind) yield* bind(worker);
+      else yield* bindPoolObservation(worker, Boolean(fleet));
       return worker;
     }),
   );
@@ -319,4 +328,65 @@ test("POOL_FLEET_CLASSES=absent leaves both fleet classes out of PoolWorker and 
       /fleet-classes-absent-with-fleet/,
     );
   await assert.rejects(poolWorkerClasses("", { POOL_FLEET_CLASSES: "none" }), /POOL_FLEET_CLASSES/);
+});
+
+test("a standing rehearsal stage binds its operator-minted token as a plain secret, never through the Secrets Store", async () => {
+  for (const input of ["", JSON.stringify(images)]) {
+    const stack = await declarations(input, {
+      stage: "test-rehearsal-2",
+      env: { POOL_REHEARSAL_OBSERVATION_TOKEN: "operator-minted" },
+    });
+    // The deploy credential cannot mint tokens: no token resource and no Secrets Store are declared.
+    assert.ok(!("PoolObservationSecrets" in stack.resources));
+    assert.ok(!("PoolProviderObservationToken" in stack.resources));
+    const binding = stack.bindings.PoolWorker?.find(
+      (candidate) => candidate.sid === "pool-provider-observation",
+    );
+    const data = binding?.data as { env?: Record<string, unknown>; bindings?: unknown } | undefined;
+    assert.deepEqual(Object.keys(data?.env ?? {}), ["POOL_PROVIDER_OBSERVATION_TOKEN"]);
+    assert.equal(data?.bindings, undefined);
+  }
+});
+
+test("a rehearsal stage without its token binds nothing only when it says absent, and refuses otherwise", async () => {
+  const absent = await declarations("", {
+    stage: "test-rehearsal-2",
+    env: { POOL_REHEARSAL_OBSERVATION: "absent" },
+  });
+  assert.ok(!("PoolProviderObservationToken" in absent.resources));
+  assert.equal(await observationBinding(absent), undefined);
+  for (const [env, why] of [
+    [{}, /needs its observation token/u],
+    [{ POOL_REHEARSAL_OBSERVATION_TOKEN: "  " }, /needs its observation token/u],
+    [{ POOL_REHEARSAL_OBSERVATION: "bound" }, /may only be absent/u],
+    [
+      { POOL_REHEARSAL_OBSERVATION_TOKEN: "operator-minted", POOL_REHEARSAL_OBSERVATION: "absent" },
+      /also declares it absent/u,
+    ],
+  ] as const)
+    await assert.rejects(declarations("", { stage: "test-rehearsal-2", env }), why);
+});
+
+test("the plain-secret path is exactly test-rehearsal-1 to -9", async () => {
+  for (const stage of [
+    "test-rehearsal-10",
+    "test-rehearsal-0",
+    "test-pr-3",
+    "rehearsal-2",
+    "synthetic",
+  ]) {
+    const stack = await declarations("", { stage });
+    assert.ok(!("PoolProviderObservationToken" in stack.resources), stage);
+    assert.equal(await observationBinding(stack), undefined, stage);
+  }
+});
+
+test("the plain-secret binder refuses any stage that is not test-rehearsal-1 to -9", async () => {
+  for (const stage of ["production", "test-rehearsal-10", "test-pr-3", "synthetic"]) {
+    await assert.rejects(
+      declarations("", { stage, bind: bindRehearsalObservationToken as never }),
+      /Only a test-rehearsal-<1-9> stage/u,
+      stage,
+    );
+  }
 });
