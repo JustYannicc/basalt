@@ -174,10 +174,10 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
   d.p.server.stopped = true;
   const answers: { path: string; status: number; refusal: string }[] = [];
   const removed = await handleSetup(
-    new Request(
-      `${origin}/setup/v1/computers/${computer}?intent=${encodeURIComponent(d.intent)}`,
-      { method: "DELETE", headers: { cookie: d.f.cookies, origin } },
-    ),
+    new Request(`${origin}/setup/v1/computers/${computer}?intent=${encodeURIComponent(d.intent)}`, {
+      method: "DELETE",
+      headers: { cookie: d.f.cookies, origin },
+    }),
     {
       POOL_APP_SIGNING_KEY: "ab".repeat(32),
       TOOLS_SERVICE: {
@@ -210,4 +210,3 @@ test("revoking a tools-only device on Connect signs it out at the tools service"
   assert.equal((await d.refresh(d.tokens.refresh_token)).status, 400);
   assert.equal((await d.p.registry())[computer!]?.state, "revoked");
 });
-
