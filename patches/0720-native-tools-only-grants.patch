@@ -85,7 +85,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
        let teams = display ? facts?.teams : undefined;
        if (display && teams === undefined) {
          teams = yield* currentTeams(ctx, access.userId);
-@@ -203,6 +225,80 @@ export const nativeGrantHost = (
+@@ -203,6 +225,81 @@ export const nativeGrantHost = (
        );
        return result.display;
      });
@@ -149,8 +149,9 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
 +        pool: setup.pool,
 +        toolsOrganization: setup.organization,
 +      });
-+      yield* Effect.promise(() =>
-+        ctx.context.runInBackgroundOrAwait(
++      // Better Auth answers with a value or a promise; awaiting covers both.
++      yield* Effect.promise(async () => {
++        await ctx.context.runInBackgroundOrAwait(
 +          announce({
 +            user: userId,
 +            grant,
@@ -159,14 +160,14 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
 +            pool: policy.pool,
 +            toolsOrganization: setup.organization,
 +          }),
-+        ),
-+      );
++        );
++      });
 +      return policy;
 +    });
    return {
      audience: `${origin}/native`,
      approve: (ctx, userId, grant) =>
-@@ -224,6 +320,7 @@ export const nativeGrantHost = (
+@@ -224,6 +321,7 @@ export const nativeGrantHost = (
                message: "Choose a device name, pool and tools access.",
              }),
            );
@@ -174,7 +175,7 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
          const created = yield* control(
            secret,
            poolOrigin,
-@@ -302,8 +399,20 @@ export const nativeGrantHost = (
+@@ -302,8 +400,20 @@ export const nativeGrantHost = (
          secret,
          poolOrigin,
          "revoke",
