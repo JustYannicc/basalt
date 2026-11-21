@@ -24,8 +24,8 @@ import { minimumRead, parseShard, shardEntries } from "../scripts/catalog-compat
  *
  * Usage: bun e2e/catalog-compat.mjs <output directory> [limit] [concurrency] [shard/shards]
  *
- * With `2/3`, the run builds every third package of the index starting at the second, so three
- * jobs together build each package exactly once.
+ * With `2/3`, the run builds the second of three hash-chosen thirds of the index, so three jobs
+ * together build each package exactly once.
  */
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");

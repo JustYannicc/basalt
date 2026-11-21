@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** `2/3` as shard 2 of 3; no argument is the whole index, `1/1`. */
 export function parseShard(text = "1/1") {
   const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(text);
@@ -6,9 +8,17 @@ export function parseShard(text = "1/1") {
   return { shard, shards };
 }
 
-/** Every `shards`-th entry from the `shard`-th on, so the shards together take each entry once. */
+/**
+ * The entries whose id hashes to this shard. Each leg fetches the live index on its own, so a
+ * package added or removed between two legs' fetches must not shift any other package to another
+ * shard, as splitting by position would.
+ */
 export const shardEntries = (entries, { shard, shards }) =>
-  entries.filter((_entry, position) => position % shards === shard - 1);
+  entries.filter(
+    (entry) =>
+      createHash("sha256").update(entry.id).digest().readUInt32BE(0) % shards === shard - 1,
+  );
 
-/** The packages a full run must read: the official feed lists well over a thousand. */
+/** The packages a full shard must read: the official feed lists well over a thousand, and hashing
+ * splits it unevenly, so each of n shards must read at least a thousand divided by n. */
 export const minimumRead = ({ shards }) => Math.floor(1000 / shards);
