@@ -250,8 +250,10 @@ export class PoolDirectory {
       })
     )
       return false;
-    const keys = await home.find(computer.id);
-    const exists = computer.keyId ? keys.includes(computer.keyId) : keys.length > 0;
+    // A native device with no sealed key needs nothing at Home: tools only, or models not minted yet.
+    const keyless = computer.native !== undefined && !computer.native.key;
+    const keys = keyless ? [] : await home.find(computer.id);
+    const exists = keyless || (computer.keyId ? keys.includes(computer.keyId) : keys.length > 0);
     if (exists) {
       computer.keyId ??= keys[0];
       computer.state =

@@ -201,8 +201,9 @@ test("each device grant's last sync and head are recorded from its own sync call
     artifacts,
     now: () => clock,
   });
-  const mac = JSON.stringify(["user", "client-mac", "org", "grant-mac"]),
-    phone = JSON.stringify(["user", "client-phone", "org", "grant-phone"]);
+  // The host names the MCP grant of each command's request.
+  const mac = { grant: "grant-mac" },
+    phone = { grant: "grant-phone" };
   // The plugin's heartbeat: a one-entry listing at the start of every pull and checkpoint.
   const heartbeat = { operation: "drive", method: "list", input: { limit: 1 } } as const;
   await object.request(heartbeat, mac);
@@ -221,7 +222,7 @@ test("each device grant's last sync and head are recorded from its own sync call
   // The checkpoint's pull after the landing records the head the Mac now has.
   await object.request(heartbeat, mac);
   // An agent's grant reading and writing notes through the same tools is not a device.
-  const agent = JSON.stringify(["user", "client-agent", "org", "grant-agent"]);
+  const agent = { grant: "grant-agent" };
   await object.request({ operation: "drive", method: "list", input: {} }, agent);
   await object.request(
     { operation: "drive", method: "list", input: { path: "", limit: 1 } },
@@ -240,8 +241,11 @@ test("each device grant's last sync and head are recorded from its own sync call
     },
     agent,
   );
-  // A caller without a grant, or a call that saw no revision, records nothing.
-  await object.request(heartbeat, "not-a-caller");
+  // A caller's user id or any other value is no grant, and a call that saw no revision records
+  // nothing.
+  await object.request(heartbeat, "user-person");
+  await object.request(heartbeat, JSON.stringify(["user-person", "client", "org", "grant-old"]));
+  await object.request(heartbeat);
   await object.request(
     { operation: "drive", method: "receipt", input: { operation: "mac-edit" } },
     phone,

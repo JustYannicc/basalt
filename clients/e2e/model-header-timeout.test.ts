@@ -101,11 +101,11 @@ for (const capability of ["models", "tools"] as const) {
     assert.equal(response.status, 502);
     if (capability === "models") {
       assert.equal(body.error.code, "upstream_outcome_unknown");
-      assert.equal(body.error.retryable, false);
-      assert.equal(response.headers.get("x-should-retry"), "false");
-      assert.equal(response.headers.has("retry-after"), false);
+      assert.equal(body.error.retryable, true);
+      assert.equal(response.headers.get("x-should-retry"), null);
+      assert.equal(response.headers.get("retry-after"), "1");
     }
-    assert.equal(calls, 1, "An unknown remote outcome cannot authorize another dispatch.");
+    assert.equal(calls, 1, "The gateway never dispatches an unknown outcome twice itself.");
   });
 }
 

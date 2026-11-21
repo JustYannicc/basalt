@@ -154,8 +154,13 @@
     "target": "local",
     "mode": "managed"
   },
-  "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility": {
+  "account-acquisition:reusable-acquisition-and-retained-account-compatibility": {
     "job": "account-acquisition",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "account-observations:driver-readings-health-and-observation-compatibility": {
+    "job": "account-observations",
     "target": "self-host",
     "mode": "managed"
   },
