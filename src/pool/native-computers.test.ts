@@ -650,7 +650,7 @@ test("a tools-only device stays listed as tools only when its person loses the p
     assert.equal(registry[tools]?.removedAt ?? null, null, change.action);
     assert.equal(registry[models]?.state, "removed", change.action);
     // Connect, opened from another of the person's pools, says what it is and still revokes it.
-    const other = await p.f.intent(owner, { ...pool, pool: "pool-b", name: "Second pool" });
+    const other = await p.f.intent(owner, { ...pool, pool: "pool-b" });
     const listed = await p.f.action("computers", owner, other);
     assert.equal(listed.status, 200, await listed.clone().text());
     const rows = ((await listed.json()) as { computers: { id: string; models?: boolean }[] })
@@ -689,7 +689,11 @@ test("Connect's report repairs tools-only rows an earlier access change swept", 
   });
   await p.f.storage.put("computer-registry-v1", registry);
   const response = await p.f.action("computers", owner, await p.f.intent(owner), {
-    native: [swept, pending, { ...signedOut, revoked: true }],
+    native: [
+      { ...swept, member: true },
+      { ...pending, member: true },
+      { ...signedOut, revoked: true },
+    ],
   });
   assert.equal(response.status, 200, await response.clone().text());
   const listed = (
@@ -707,4 +711,39 @@ test("Connect's report repairs tools-only rows an earlier access change swept", 
   assert.equal(repaired[pending.computer]?.removalPending, undefined);
   assert.equal(repaired[pending.computer]?.beforeRemoval, undefined);
   assert.ok(repaired[signedOut.computer]?.revokedAt);
+});
+
+test("a tools-only row follows its person's membership of its tools organization", async () => {
+  const p = protocol();
+  const device = {
+    grant: "native:tools-only-member",
+    computer: "1".repeat(32),
+    pool: pool.pool,
+    toolsOrganization: pool.organization,
+  };
+  const intent = await p.f.intent(owner);
+  const list = async (values: Record<string, unknown>) => {
+    const response = await p.f.action("computers", owner, intent, {
+      native: [{ ...device, ...values }],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const rows = (
+      (await response.json()) as { computers: { id: string; state: string; removedAt: unknown }[] }
+    ).computers;
+    const row = rows.find(({ id }) => id === device.computer);
+    return [row?.state, row?.removedAt === null ? null : "removed at"];
+  };
+  // Its grant stops working while its person is outside its tools organization, and works again
+  // once they rejoin. Unknown membership leaves the row as it was.
+  assert.deepEqual(await list({}), ["active", null]);
+  assert.deepEqual(await list({ member: false }), ["removed", "removed at"]);
+  assert.deepEqual(await list({}), ["removed", "removed at"]);
+  assert.deepEqual(await list({ member: true }), ["active", null]);
+  // One the pool never heard of is added as it is.
+  const unseen = { ...device, grant: "native:tools-only-left", computer: "2".repeat(32) };
+  const response = await p.f.action("computers", owner, intent, {
+    native: [{ ...unseen, member: false }],
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await p.f.registry())[unseen.computer]?.state, "removed");
 });

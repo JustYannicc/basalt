@@ -1,15 +1,24 @@
 diff --git a/apps/hosted/web/src/implementation/pages/computer-rows.tsx b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
-index 0cb1dbf..9dc0381 100644
+index 0cb1dbf..50ca18a 100644
 --- a/apps/hosted/web/src/implementation/pages/computer-rows.tsx
 +++ b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
-@@ -65,8 +65,15 @@ function ComputerRow({
+@@ -48,6 +48,7 @@ function ComputerRow({
+   const [busy, setBusy] = useState(false);
+   const [problem, setProblem] = useState<string>();
+   const id = encodeURIComponent(computer.id);
++  const toolsOnly = computer.models === false;
+   const run = async (work: (intent: string) => Promise<unknown>, closes = true) => {
+     setBusy(true);
+     setProblem(undefined);
+@@ -65,11 +66,23 @@ function ComputerRow({
        <div className="min-w-0 flex-1">
          <p className="truncate text-[13px] font-medium">{computer.name}</p>
          <p className="mt-0.5 truncate text-xs text-muted-foreground">
 -          {poolLabel(pools.find(({ id: pool }) => pool === computer.poolId))}
 -          {computer.tools === false ? " · Models" : " · Tools and models"}
-+          {/* A tools-only device uses no pool: its grant alone authorizes its tools. */}
-+          {computer.models === false ? (
++          {/* A tools-only device uses no pool: its grant alone authorizes its tools, while its
++              person belongs to its organization. It is set up once approved. */}
++          {toolsOnly ? (
 +            "Tools only"
 +          ) : (
 +            <>
@@ -18,14 +27,23 @@ index 0cb1dbf..9dc0381 100644
 +            </>
 +          )}
            {computer.state === "removed" || computer.removedAt ? (
-             " · No access to this pool"
-           ) : isConnected(computer) ? (
-@@ -94,7 +101,7 @@ function ComputerRow({
+-            " · No access to this pool"
+-          ) : isConnected(computer) ? (
++            toolsOnly ? (
++              " · No access to its organization"
++            ) : (
++              " · No access to this pool"
++            )
++          ) : toolsOnly || isConnected(computer) ? (
+             <>
+               {" · Set up "}
+               <LocalTime value={computer.createdAt} options={shortMoment} />
+@@ -94,7 +107,7 @@ function ComputerRow({
          >
            Rename
          </DropdownMenuItem>
 -        {pools.length > 1 && (
-+        {pools.length > 1 && computer.models !== false && (
++        {pools.length > 1 && !toolsOnly && (
            <DropdownMenuSub>
              <DropdownMenuSubTrigger>Pool</DropdownMenuSubTrigger>
              <DropdownMenuSubContent>
@@ -43,7 +61,7 @@ index 35114ae..74d055d 100644
    readonly lapsed?: true;
  }
 diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
-index d870f59..72c4d02 100644
+index d870f59..6ddf03b 100644
 --- a/e2e/tests/pool-setup-connect.spec.ts
 +++ b/e2e/tests/pool-setup-connect.spec.ts
 @@ -29,12 +29,14 @@ interface FakeComputer {
@@ -90,8 +108,8 @@ index d870f59..72c4d02 100644
          );
 +        // A tools-only device uses no pool, so its row names none and offers no pool to switch to.
 +        const phone = (page: Page) => rows(page).filter({ hasText: "Phone" });
-+        yield* browser.use("A tools-only device says what it is", (page) =>
-+          phone(page).filter({ hasText: "Tools only" }).waitFor(),
++        yield* browser.use("A tools-only device says what it is and that it is set up", (page) =>
++          phone(page).filter({ hasText: "Tools only · Set up" }).waitFor(),
 +        );
 +        expect(
 +          yield* browser.use("Its row names no pool", (page) =>

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ConnectionView } from "../contracts/connection.ts";
+import { namesNoPool } from "../contracts/pool-display.ts";
 import { modelsRow } from "../desktop/status.ts";
 
 const account = { name: "Alex Example", email: "alex@example.com", emailVerified: true };
@@ -50,4 +51,12 @@ test("a device with models names its pool and offers choosing another", () => {
       choosePool: false,
     },
   );
+});
+
+test("only an access answer that names no pool marks a tools-only device", () => {
+  // The phone hides its pool line and pool chooser on the same rule.
+  assert.equal(namesNoPool(device("disconnected", [], { id: "pool-1", name: "" })), true);
+  assert.equal(namesNoPool(device("connected", ["models"], { id: "pool-1", name: "Pool" })), false);
+  assert.equal(namesNoPool({}), false);
+  assert.equal(namesNoPool(undefined), false);
 });

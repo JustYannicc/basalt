@@ -302,9 +302,11 @@ export class NativeComputers {
   /**
    * Records what the tools service reports about a tools-only device it approved or revoked
    * without this pool, for Connect's list and its revoke. Its grant alone authorizes it, so
-   * nothing here is checked against the directory. A device is added once; after that only a
-   * reported revocation changes its row, and nothing revives a revoked one. A row an earlier pool
-   * access change swept is first restored, since its grant decides it. True when a row changed.
+   * nothing here is checked against the directory, and no pool access change touches its row. A
+   * device is added once and nothing revives a revoked one. Its state follows its grant: revoked
+   * once reported revoked, otherwise removed while `member` says its person left its tools
+   * organization and active while they belong to it; unknown membership changes nothing.
+   * True when a row changed.
    */
   learn(registry: Registry, user: string, device: Record<string, unknown>, revoked = false) {
     const grant = text(device.grant),
@@ -313,23 +315,27 @@ export class NativeComputers {
       toolsOrganization = text(device.toolsOrganization);
     if (!grant?.startsWith("native:")) return false;
     const at = new Date(this.deps.now()).toISOString();
+    const member = typeof device.member === "boolean" ? device.member : undefined;
     const known = Object.values(registry).find((row) => row.native?.grant === grant);
     if (known) {
       if (known.user !== user || !usesNoPool(known) || known.state === "revoked") return false;
-      // Pool access changes used to sweep tools-only rows while their grants kept working.
-      const swept = known.state === "removed" || known.removalPending === true;
-      if (swept) {
-        known.state = "active";
-        delete known.removedAt;
+      const settle = (state: "active" | "removed" | "revoked") => {
+        known.state = state;
+        if (state === "removed") known.removedAt ??= at;
+        else delete known.removedAt;
+        if (state === "revoked") known.revokedAt ??= at;
+        // A pending sweep on a tools-only row is stale: no pool access change touches it now.
         delete known.removalPending;
         delete known.removalAt;
         delete known.beforeRemoval;
-      }
-      if (!(revoked || device.revoked === true)) return swept;
-      known.state = "revoked";
-      known.revokedAt ??= at;
-      delete known.link;
-      return true;
+        delete known.link;
+        return true;
+      };
+      if (revoked || device.revoked === true) return settle("revoked");
+      const pending = known.removalPending === true;
+      if (member === true && (known.state === "removed" || pending)) return settle("active");
+      if (member === false && (known.state === "active" || pending)) return settle("removed");
+      return false;
     }
     if (
       device.revoked === true ||
@@ -340,18 +346,20 @@ export class NativeComputers {
       Object.hasOwn(registry, computer)
     )
       return false;
+    const state = revoked ? "revoked" : member === false ? "removed" : "active";
     registry[computer] = {
       id: computer,
       // Connect's list names it before anyone renames it, when the tools service sent no name.
       name: computerName(device.name) ?? "Tools-only device",
       user,
       pool,
-      state: revoked ? "revoked" : "active",
+      state,
       createdAt: at,
       boundAt: at,
       firstModelRequestAt: null,
       firstToolCallAt: null,
       revokedAt: revoked ? at : null,
+      ...(state === "removed" && { removedAt: at }),
       native: { grant, models: false, toolsOrganization },
     };
     return true;

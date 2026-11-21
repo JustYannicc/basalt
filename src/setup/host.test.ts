@@ -848,6 +848,32 @@ test("Connect's list says which devices were approved without models", async () 
   );
 });
 
+test("Connect tells the pool whether each tools-only device's person still belongs to its organization", async () => {
+  const devices = [
+    { grant: "native:here", computer: "a".repeat(32), toolsOrganization: "organization-1" },
+    { grant: "native:left", computer: "b".repeat(32), toolsOrganization: "organization-left" },
+  ];
+  const reported = async (organizations?: Response) => {
+    const f = fixture({
+      tools: ({ path }) =>
+        path === "/api/auth/native/devices"
+          ? json({ devices })
+          : path === "/api/auth/organization/list"
+            ? organizations
+            : undefined,
+    });
+    const response = await f.request("/setup/v1/computers?intent=signed-selection");
+    assert.equal(response.status, 200, await response.clone().text());
+    return f.calls.find((call) => call.path === "/__setup/v1/computers")!.input.native;
+  };
+  assert.deepEqual(await reported(), [
+    { ...devices[0], member: true },
+    { ...devices[1], member: false },
+  ]);
+  // Without the organization list, membership is unknown rather than lost.
+  assert.deepEqual(await reported(json({}, 503)), devices);
+});
+
 test("claims need no session, negotiate JSON or markdown and consume exactly once", async () => {
   for (const format of ["json", "markdown"]) {
     const f = fixture();

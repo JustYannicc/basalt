@@ -1,7 +1,7 @@
 {
   "identity": "basalt-native-tools-only-connect-row",
   "file": "NNNN-native-tools-only-connect-row.patch",
-  "content_sha256": "9ca7b6c35aea8915874a127336f7770ea6ef6f207352b776557f740eac5d81ab",
+  "content_sha256": "16d228ccbb7c64b2da3a49dba6dbb3b7c5a137a9ef90d38b63932c457341b52b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

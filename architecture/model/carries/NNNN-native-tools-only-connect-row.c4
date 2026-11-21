@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Connect's row for a device approved for tools only reads Tools only: it names no pool and offers no pool to switch to, because the device's grant alone authorizes its tools and it holds nothing at any pool. The setup host passes the pool's models flag, false only for such a device, through to the page. Every other row keeps its pool label and its Models or Tools and models label."
+      constraint "Connect's row for a device approved for tools only reads Tools only: it names no pool and offers no pool to switch to, because the device's grant alone authorizes its tools while its person belongs to the grant's tools organization, and it holds nothing at any pool. Such a row reads set up once approved, since nothing records its first tool call, and reads no access to its organization while removed. The setup host passes the pool's models flag, false only for such a device, through to the page. Every other row keeps its pool label, its Models or Tools and models label and its first-request state."
     }
   }
 }
