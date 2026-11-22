@@ -108,10 +108,20 @@ export const sharedInputs = [
   "alchemy.run.ts",
   "package.json",
   "tsconfig*.json",
+  // Workflow files, as the Check workflow's triggers, concurrency, permissions, env and defaults
+  // apply to every job. A change inside one Check job's block arrives as that job's input
+  // instead (workflowInputs in affected.ts); the scripts that select and gate jobs are
+  // selectionInputs below.
   ".github/workflows/**",
-  "scripts/ci/**",
   // Selection parses the workflow and the import graph with this package's pinned tooling.
   "scripts/architecture/{package.json,bun.lock}",
+  // Unlike the Check's job blocks and the scripts that select and gate jobs, every job executes
+  // these: the setup actions' downloads and preparation, with the declared e2e plans it writes.
+  // A change to one changes what every job runs, so it runs every job.
+  "scripts/ci/{setup-node.mjs,setup-bun.ts,verified-download.mjs,deny-release-downloads.cjs}",
+  "scripts/ci/{node,bun}-assets.json",
+  "scripts/ci/{prepare-e2e,dependency-lifecycles,declarations}.ts",
+  "scripts/ci/{e2e-groups,inherited-tests,upstream-files}.json",
   "scripts/prepare-upstream.ts",
   "scripts/upstream-cache.ts",
   "scripts/upstream-carries.ts",
@@ -350,11 +360,30 @@ export const runtimeReads = [
   { reader: "scripts/ci/pool-test-shard.ts", paths: ["scripts/pool-tests/*.test.ts"] },
 ];
 
+/**
+ * The scripts that select, route, gate and report on the Check's jobs, and their data. They run
+ * in `select`, `fast`, `check`, `box-watch`, the re-run workflows or locally, and `fast` runs
+ * their tests (scripts/ci*.test.ts, through the owned unit suite) and actionlint in every Check,
+ * so a change to them runs no heavy job. Heavy jobs touch only two corners of them: preparation
+ * checks declarations against `areas.ts` and `inputs.ts`, which `fast`'s preparation also runs
+ * on the same tree, and declared jobs parse their shard and its per-file deadline with
+ * `shards.ts`. What a change to one breaks beyond `fast` meets the batch Check, which runs every
+ * heavy job.
+ */
+export const selectionInputs = [
+  "scripts/ci/{affected,areas,reach,import-graph,job-inputs,inputs,e2e-workflow}.ts",
+  "scripts/ci/{select-jobs,unit-tests,shards,box-router,box-watch,box-rerun}.ts",
+  "scripts/ci/{cancel-superseded,reuse,gate,aggregate-retries,retry-history,workflow-run}.ts",
+  "scripts/ci/{retries,fast-local}.ts",
+  "scripts/ci/{declared-durations,e2e-exceptions}.json",
+];
+
 export const staticInputs = [
   "architecture/**/*.c4",
   "architecture/**/*.md",
   "docs/**/*.md",
   "README.md",
+  "scripts/ci/README.md",
   "LICENSE",
   "AGENTS.md",
   "CONTRIBUTING.md",

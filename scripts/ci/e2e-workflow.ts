@@ -9,6 +9,7 @@ export type Workflow = {
   jobs: Record<
     string,
     {
+      needs?: string | string[];
       if?: string | boolean;
       "continue-on-error"?: boolean;
       steps?: Step[];

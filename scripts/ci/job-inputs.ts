@@ -9,8 +9,12 @@ type Step = RunStep & { uses?: string };
 
 const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
 
-export const readWorkflow = (root: string, path = ".github/workflows/ci.yml"): Workflow =>
-  parse(readFileSync(join(root, path), "utf8"));
+export const checkWorkflow = ".github/workflows/ci.yml";
+
+export const parseWorkflow = (text: string): Workflow | null => parse(text);
+
+export const readWorkflow = (root: string, path = checkWorkflow): Workflow =>
+  parseWorkflow(readFileSync(join(root, path), "utf8"))!;
 
 // The simple commands of a step's script. Unquoted newlines, `&&`, `||`, `;` and pipes end a
 // command, `#` starts a comment, each `$(…)` substitution is a command of its own (innermost

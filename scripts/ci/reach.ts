@@ -6,19 +6,19 @@ import { dependents, importGraph, isTest, trackedFiles } from "./import-graph.ts
 import { addTo, carriedReferences, fileMatcher, upstreamInputFiles } from "./inputs.ts";
 import { jobEntries, readWorkflow } from "./job-inputs.ts";
 
-// The jobs that decide which jobs run: a file they run reaches every job. These and the fast jobs
-// and the aggregate run in every Check, so a file the affected lane runs in them is proven there.
-// The lane's fast job runs the owned unit tests a change reaches (scripts/ci/unit-tests.ts).
-const deciding = ["reuse", "select"];
-const always = [...fastJobs, ...deciding, "check"];
-const ownedUnitSuite = { jobs: { owned: { steps: [{ run: "npm run check" }] } } };
+// The jobs that decide which jobs run, the fast jobs and the aggregate run in every Check, so a
+// file the affected lane runs in them is proven there. The lane's fast job runs the owned unit
+// tests a change reaches (scripts/ci/unit-tests.ts).
+const always = [...fastJobs, "reuse", "check"];
+export const ownedUnitSuite = { jobs: { owned: { steps: [{ run: "npm run check" }] } } };
 
 /**
  * Which jobs each repository file is an input of. A heavy job's inputs are the files its steps
  * name, the files its areas declare, and the declared inputs of the scenarios it runs, including
- * the repository files their carried helpers name. Files the deciding jobs run reach every job.
- * Files fast jobs run are proven there. The import graph carries the declared runtime reads and
- * the files carried product code names, which every job that prepares the product builds.
+ * the repository files their carried helpers name. A file only the jobs of every Check run, such
+ * as selection, is proven there; a selection it gets wrong still runs in the batch Check, which
+ * runs every heavy job. The import graph carries the declared runtime reads and the files carried
+ * product code names, which every job that prepares the product builds.
  */
 function buildReach(root: string) {
   const files = trackedFiles(root);
@@ -58,13 +58,12 @@ function buildReach(root: string) {
       for (const file of sources(input)) addTo(scenarios, file, spec);
     for (const file of harness(".upstream/e2e/tests/" + spec)) addTo(scenarios, file, spec);
   }
-  const everything = new Set(deciding.flatMap((job) => [...(entries[job] ?? [])]));
   const lane = jobEntries(root, readWorkflow(root), files, { lane: true });
   const fast = new Set([
     ...always.flatMap((job) => [...(lane[job] ?? [])]),
     ...jobEntries(root, ownedUnitSuite, files).owned!,
   ]);
-  return { graph, jobs, scenarios, everything, fast, declarations, entries };
+  return { graph, jobs, scenarios, fast, declarations, entries };
 }
 export type Reach = ReturnType<typeof buildReach>;
 
