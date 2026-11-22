@@ -117,7 +117,7 @@ func TestPassThroughKeepsRequestAndAnswerBytes(t *testing.T) {
 	}
 }
 
-func TestMarkedCallReachesTheNodeUnchangedAndIsOfferedForResume(t *testing.T) {
+func TestMarkedCallIsOfferedForResumeAndTheMarkerStopsAtTheLayer(t *testing.T) {
 	upstream := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	layer := newLayerServer(t, upstream)
 	resp, body := rawCall(t, layer.URL, "POST /v1/messages HTTP/1.1\r\nHost: pool\r\n"+
@@ -125,8 +125,9 @@ func TestMarkedCallReachesTheNodeUnchangedAndIsOfferedForResume(t *testing.T) {
 	if string(body) != "ok" || resp.Header.Get(resumeHeader) != "v1" {
 		t.Fatalf("marked call: %q resume=%q", body, resp.Header.Get(resumeHeader))
 	}
-	if (<-upstream.seen).Header.Get(resumableHeader) != "1" {
-		t.Fatal("the marker must reach the node unchanged")
+	seen := <-upstream.seen
+	if seen.Header.Get(resumableHeader) != "" || seen.Header.Get(requestIDHeader) == "" {
+		t.Fatalf("node saw marker %q and id %q", seen.Header.Get(resumableHeader), seen.Header.Get(requestIDHeader))
 	}
 }
 
@@ -326,4 +327,47 @@ func TestConcurrentPassThroughStaysIsolated(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// acceptAndClose is a node that reads the call and closes without answering, as on a crash mid-call.
+func acceptAndClose(t *testing.T) *url.URL {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = http.ReadRequest(bufio.NewReader(conn))
+			_ = conn.Close()
+		}
+	}()
+	target, _ := url.Parse("http://" + listener.Addr().String())
+	return target
+}
+
+func TestANodeThatFailsAfterAcceptingTheCallIsFailedNeverUnreachable(t *testing.T) {
+	layer := httptest.NewServer(NewLayer(acceptAndClose(t), NewStore(testLimits()), testBoot))
+	defer layer.Close()
+	for name, marked := range map[string]bool{"unmarked": false, "marked": true} {
+		req, _ := http.NewRequest(http.MethodPost, layer.URL+"/v1/messages", strings.NewReader("{}"))
+		if marked {
+			req.Header.Set(resumableHeader, "1")
+			req.Header.Set(requestIDHeader, "6f1c2b8e-1d2a-4c3b-9e8f-0000000000a1")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadGateway || resp.Header.Get(upstreamStateHeader) != "failed" {
+			t.Fatalf("%s: a node that took the call answered %d %q; a resend could run it twice",
+				name, resp.StatusCode, resp.Header.Get(upstreamStateHeader))
+		}
+	}
 }

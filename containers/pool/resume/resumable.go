@@ -36,13 +36,14 @@ func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
 	resp, err := l.transport.RoundTrip(out)
 	if err != nil {
 		l.abandon(c)
-		w.Header().Set(upstreamStateHeader, "unreachable")
-		closedError(w, http.StatusBadGateway, "resume_layer_upstream_unreachable")
+		upstreamFailure(w, err)
 		return
 	}
 	if resp.StatusCode/100 != 2 {
-		// Only a successful answer is worth resuming; anything else passes through as it is.
-		l.abandon(c)
+		// Only a successful answer is worth resuming; anything else passes through as it is. Its
+		// body is still read on the upstream context, so that context ends only with this call.
+		l.store.remove(c)
+		defer cancel()
 		defer resp.Body.Close()
 		stop := context.AfterFunc(r.Context(), cancel)
 		defer stop()

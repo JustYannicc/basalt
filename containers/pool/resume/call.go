@@ -263,7 +263,8 @@ func (c *call) attach(from int64) (int, callState, error) {
 		return 0, 0, errGone
 	case c.state == stateFailed:
 		return 0, 0, errFailed
-	case from < c.base || from > c.end:
+	case from < c.base || from > c.end || from > c.sent:
+		// The entry cannot hold bytes the layer never wrote; skipping them would be a silent gap.
 		return 0, 0, errGone
 	}
 	if c.idle != nil {

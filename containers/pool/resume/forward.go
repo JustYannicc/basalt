@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -57,6 +58,7 @@ func upstreamRequest(ctx context.Context, upstream *url.URL, in *http.Request) (
 	out.ContentLength = in.ContentLength
 	out.Header = in.Header.Clone()
 	stripHop(out.Header)
+	out.Header.Del(resumableHeader)
 	// An absent User-Agent stays absent; the client would otherwise add its own.
 	if _, ok := out.Header["User-Agent"]; !ok {
 		out.Header["User-Agent"] = []string{""}
@@ -107,6 +109,20 @@ func copyBody(w http.ResponseWriter, body io.Reader) error {
 	}
 }
 
+// upstreamFailure answers a call the node never answered. Only a failed dial is "unreachable", the
+// one case where the node cannot have started the call; a resend is then safe. A node that accepted
+// the call and failed before its headers may already have dispatched it, so that is "failed".
+func upstreamFailure(w http.ResponseWriter, err error) {
+	var dial *net.OpError
+	if errors.As(err, &dial) && dial.Op == "dial" {
+		w.Header().Set(upstreamStateHeader, "unreachable")
+		closedError(w, http.StatusBadGateway, "resume_layer_upstream_unreachable")
+		return
+	}
+	w.Header().Set(upstreamStateHeader, "failed")
+	closedError(w, http.StatusBadGateway, "resume_layer_upstream_failed")
+}
+
 func writeTrailers(w http.ResponseWriter, resp *http.Response) {
 	for name, values := range resp.Trailer {
 		w.Header()[http.TrailerPrefix+name] = append([]string(nil), values...)
@@ -123,9 +139,7 @@ func (l *Layer) passThrough(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := l.transport.RoundTrip(out)
 	if err != nil {
-		// No byte reached the caller: the controller treats this like a refused node connection.
-		w.Header().Set(upstreamStateHeader, "unreachable")
-		closedError(w, http.StatusBadGateway, "resume_layer_upstream_unreachable")
+		upstreamFailure(w, err)
 		return
 	}
 	defer resp.Body.Close()

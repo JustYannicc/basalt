@@ -119,8 +119,9 @@ class ResumeLayerTests(unittest.TestCase):
     def test_the_health_probe_never_raises(self) -> None:
         with patch.object(pool_contract, "request_json", side_effect=TimeoutError("probe")):
             self.assertFalse(pool_contract.resume_layer_healthy())
-        with patch.object(pool_contract, "request_json", return_value=(200, {"status": "ok"})):
+        with patch.object(pool_contract, "request_json", return_value=(200, {"status": "ok"})) as probe:
             self.assertTrue(pool_contract.resume_layer_healthy())
+        self.assertEqual(probe.call_args.kwargs["timeout"], 0.25)
 
 
 class ResumeEnvironmentTests(unittest.TestCase):

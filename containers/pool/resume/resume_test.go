@@ -419,3 +419,48 @@ func mustURL(t *testing.T, raw string) *url.URL {
 	}
 	return parsed
 }
+
+func TestAChunkedErrorAnswerArrivesWholeAndEndsCleanly(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":`))
+		w.(http.Flusher).Flush()
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte(`"rate limited"}`))
+	}))
+	defer upstream.Close()
+	x := &resumeFixture{t: t, store: NewStore(testLimits())}
+	x.layer = httptest.NewServer(NewLayer(mustURL(t, upstream.URL), x.store, testBoot))
+	defer x.layer.Close()
+	_, resp := x.open(testID(31))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != `{"error":"rate limited"}` {
+		t.Fatalf("error answer cut: %q %v", body, err)
+	}
+}
+
+func TestAResumeFromBeyondTheWritePositionIsGone(t *testing.T) {
+	x := newResumeFixture(t, testLimits())
+	id := testID(32)
+	conn, resp := x.open(id)
+	x.feeds.get(id).parts <- []byte("written")
+	_, _ = io.ReadFull(resp.Body, make([]byte, 7))
+	_ = conn.Close()
+	x.feeds.get(id).parts <- []byte("-unsent")
+	close(x.feeds.get(id).parts)
+	x.waitEnd(id, 14)
+	c := x.store.lookup(id)
+	c.mu.Lock()
+	sent, end := c.sent, c.end
+	c.mu.Unlock()
+	if sent >= end {
+		t.Fatalf("setup: nothing unsent (sent %d end %d)", sent, end)
+	}
+	if r := x.resume(id, sent+1, testBoot); r.StatusCode != http.StatusGone {
+		t.Fatalf("a resume past the write position answered %d", r.StatusCode)
+	}
+	if r := x.resume(id, sent, testBoot); r.StatusCode != http.StatusOK {
+		t.Fatalf("a resume at the write position answered %d", r.StatusCode)
+	}
+}
