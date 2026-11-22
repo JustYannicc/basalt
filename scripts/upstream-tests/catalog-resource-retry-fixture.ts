@@ -9,9 +9,8 @@ import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.t
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(new URL(path, new URL(`file://${upstream}/`)).href);
 const { StorageHost } = await load("packages/sdk/src/contracts/storage.ts");
-const { VersionBuildFailed } = await load("packages/sdk/src/contracts/version.ts");
+const { BuildBusy, VersionBuildFailed } = await load("packages/sdk/src/contracts/version.ts");
 const { RuntimeBuildFailed } = await load("packages/sdk/src/contracts/runtime.ts");
-const { BuildBusy } = await load("packages/sdk/src/contracts/version.ts");
 const { versionBuildFailed } = await load(
   "packages/sdk/src/implementation/version-build-failure.ts",
 );
