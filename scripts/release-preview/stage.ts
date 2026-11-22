@@ -10,6 +10,7 @@
  * Every apply and destroy goes through the release entry (`scripts/release/deploy.ts`), which never
  * lets Alchemy bootstrap the shared State store; nothing here runs the CLI with `--yes`.
  */
+import { readRehearsalMark, releaseMarkOf } from "./rehearsal-mark-read.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -166,6 +167,7 @@ async function runEntry(
           ...config.seed,
           ...candidateTreeEnvironment(root, tree),
           ...extra,
+          ...rollbackPolicyEnv(command, policy),
           PREVIEW_AUTH_SEED_OUTPUT: seed,
           // The entry keeps its private failure detail here (release-failure.txt).
           BASALT_STAGE_OUTPUT_DIR: outputs,
@@ -819,12 +821,20 @@ async function redRelease(
     if (typeof reviewed.digest !== "string" || typeof reviewed.attempt !== "string")
       throw new Error("The plan recorded no digest or attempt to apply");
     result.reviewedDigest = reviewed.digest.slice(0, 12);
+    // The overlay's Router mark, where the candidate carries it: which values the serving version
+    // runs with, before the apply, after it, and after the rollback.
+    const markBefore = origin ? await readRehearsalMark(origin) : null;
+    result.markBefore = markBefore;
     const from = Date.now();
     result.apply = await step("apply", {
       policy,
       args: ["--plan-digest", reviewed.digest, "--attempt", reviewed.attempt],
     });
     const to = Date.now();
+    if (markBefore && "mark" in markBefore)
+      result.markAfterApply = await readRehearsalMark(origin, {
+        expect: releaseMarkOf(String(result.candidate)),
+      });
     result.window = { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
     result.poolWorkerVersions = await poolWorkerVersionsBetween({
       account: encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? ""),
@@ -852,11 +862,14 @@ async function redRelease(
         ],
       });
     // 5. The entry's own rollback from the serving record.
+    // The candidate's own policy, as the workflow's job env names it, so its force list applies.
     result.rollback = await step("rollback", {
-      policy: null,
+      policy,
       include: null,
       args: ["--from", file("serving.json")],
     });
+    if (markBefore && "mark" in markBefore)
+      result.markAfterRollback = await readRehearsalMark(origin, { expect: markBefore.mark });
     // 6. The boot again, then re-acceptance, as the workflow's rollback step runs it.
     if (device) {
       result.bootAfter = await step("boot", {
@@ -2114,6 +2127,13 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
  * own text can name hosts, ids and values, so every such field keeps only that it was there; the
  * full record stays in the private `stage-<mode>.json`.
  */
+/**
+ * The entry's rollback takes the secrets it may force from the job's POLICY, as release.yml sets it
+ * (a path under the release tree). A rollback without a named policy gets none, so it forces nothing.
+ */
+export const rollbackPolicyEnv = (command: string, policy: string | null | undefined) =>
+  command === "rollback" && policy ? { POLICY: `scripts/release/policies/${policy}.json` } : {};
+
 export function publicRecord(value: unknown, depth = 0): unknown {
   if (depth > 12) return "[deep]";
   if (Array.isArray(value)) return value.map((item) => publicRecord(item, depth + 1));

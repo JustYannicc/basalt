@@ -58,3 +58,16 @@ test("the public record keeps no refused command's own text", async () => {
   assert.match(text, /"exit":1/u);
   assert.match(text, /kept privately/u);
 });
+
+test("only a rollback with a named policy gets POLICY, as release.yml's job env names it", async () => {
+  const { rollbackPolicyEnv } = await import("./stage.ts");
+  assert.deepEqual(rollbackPolicyEnv("rollback", "code-stage"), {
+    POLICY: "scripts/release/policies/code-stage.json",
+  });
+  // Without a policy the entry reads none and forces nothing.
+  assert.deepEqual(rollbackPolicyEnv("rollback", null), {});
+  assert.deepEqual(rollbackPolicyEnv("rollback", undefined), {});
+  // The other commands take theirs as --policy; POLICY is the rollback's alone.
+  for (const command of ["plan", "deploy", "apply", "serving", "boot", "accept"])
+    assert.deepEqual(rollbackPolicyEnv(command, "code-stage"), {});
+});
