@@ -2,7 +2,7 @@ import { counterShapeSql } from "./counter-shape-sql.ts";
 
 export const historyUsageRollupVersion = "model_request_history_v15_usage_rollup";
 
-/** Advisory lock class for one pool's hour; unused by any other lock in this database. */
+/** Advisory lock class for one pool's rollup; unused by any other lock in this database. */
 export const usageRollupLockClass = 1415;
 
 /**
@@ -149,9 +149,11 @@ export function usageRollupProjection(rows: string) {
     GROUP BY ${usageRollupKeys.map((_, index) => index + 1).join(",")}`;
 }
 
-/** The lock key of one pool's hour, independent of the session's time zone. */
-const hourLock = (pool: string, hour: string) =>
-  `${usageRollupLockClass}, hashtext(${pool}||'|'||extract(epoch FROM ${hour})::bigint::text)`;
+/**
+ * One lock per pool. A bulk insert can span thousands of hours, and a lock per hour would exhaust
+ * the shared lock table; a recompute holds the pool's writers only for one day's recompute.
+ */
+const poolLock = (pool: string) => `${usageRollupLockClass}, hashtext(${pool})`;
 
 const columns = [...usageRollupKeys, ...values.map(([name]) => name)].join(",");
 const upsert = (rows: string) => `INSERT INTO basalt_model_usage_hourly AS t (${columns})
@@ -182,12 +184,10 @@ export const historyUsageRollupStatements = [
   `CREATE TABLE basalt_model_usage_ready (
     pool varchar(16) PRIMARY KEY, through timestamptz NOT NULL,
     completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
-  // Shared per-(pool, hour) locks, taken in key order, let a backfill recompute an hour exclusively.
+  // A shared lock per pool, taken in key order, lets a backfill recompute a pool's day exclusively.
   `CREATE FUNCTION basalt_model_usage_rollup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-      PERFORM pg_advisory_xact_lock_shared(${hourLock("k.pool", "k.hour")})
-        FROM (SELECT DISTINCT s.pool,
-            date_trunc('hour',left(s.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS hour
-          FROM inserted s WHERE s.pool IS NOT NULL ORDER BY 1,2) k;
+      PERFORM pg_advisory_xact_lock_shared(${poolLock("k.pool")})
+        FROM (SELECT DISTINCT s.pool FROM inserted s WHERE s.pool IS NOT NULL ORDER BY 1) k;
       ${upsert("inserted")};
       RETURN NULL;
     EXCEPTION WHEN OTHERS THEN
@@ -202,9 +202,7 @@ export const historyUsageRollupStatements = [
         RAISE EXCEPTION 'basalt_usage_rollup: recompute takes whole hours, at most 48'
           USING ERRCODE = '22023';
       END IF;
-      PERFORM pg_advisory_xact_lock(${hourLock("target_pool", "h.at")})
-        FROM generate_series(from_hour, to_hour - interval '1 hour', interval '1 hour') AS h(at)
-        ORDER BY h.at;
+      PERFORM pg_advisory_xact_lock(${poolLock("target_pool")});
       DELETE FROM basalt_model_usage_hourly
         WHERE pool=target_pool AND hour >= from_hour AND hour < to_hour;
       ${upsert(`(SELECT * FROM basalt_model_requests r WHERE r.pool=target_pool

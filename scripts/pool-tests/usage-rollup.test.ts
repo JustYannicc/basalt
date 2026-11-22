@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import pg from "pg";
+import { insertBulkRequests } from "../../src/pool/model-history/bulk-store.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import { seriesFixture } from "./series-fixture.ts";
 
@@ -122,5 +123,20 @@ test("rows a writer inserts while an hour is being recomputed are counted once, 
       await other.query("ROLLBACK").catch(() => {});
       await other.end();
     }
+  });
+});
+
+test("one insert statement spanning thousands of hours keeps the rollup without exhausting locks", async () => {
+  await seriesFixture(async (f) => {
+    // A bulk import chunk can cover months; the trigger takes one lock per pool, not per hour.
+    // Two such chunks in one transaction: 10,000 hours, more than a default shared lock table holds.
+    await f.db.query("BEGIN");
+    await insertBulkRequests(f.db, await Promise.all(rows(5_000, 1).map((value) => f.row(value))));
+    await insertBulkRequests(
+      f.db,
+      await Promise.all(rows(5_000, 1, "2026-08-01T00:00:00Z").map((value) => f.row(value))),
+    );
+    await f.db.query("COMMIT");
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });
 });

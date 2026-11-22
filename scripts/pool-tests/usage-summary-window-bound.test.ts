@@ -71,15 +71,14 @@ test("a window over the row bound refuses after one bounded count, before any ag
     );
     const scanned = historyScans.reduce((n, node) => n + (node["Actual Rows"] ?? 0), 0);
     assert.ok(scanned <= 4, `history scans returned ${scanned} rows`);
-    const gate = nodes.find((node) => node["One-Time Filter"] !== undefined);
+    // The gate on the raw targets scan is the one-time filter that compares the count with the bound.
+    const gate = nodes.find((node) => node["One-Time Filter"]?.includes("<= 3") === true);
     assert.ok(gate, JSON.stringify(plan));
     assert.equal(gate["Actual Rows"], 0);
-    assert.ok((gate.Plans ?? []).length > 0);
-    assert.ok(
-      flatten(gate)
-        .slice(1)
-        .every((node) => node["Actual Loops"] === 0),
-    );
+    // Its InitPlans (the ready flag and the bounded count) run; the scan it gates never does.
+    const gated = (gate.Plans ?? []).filter((node) => node["Parent Relationship"] !== "InitPlan");
+    assert.ok(gated.length > 0);
+    assert.ok(gated.flatMap(flatten).every((node) => node["Actual Loops"] === 0));
 
     // At or under the bound the summary answers as before, in the same fifteen statements.
     statements.length = 0;
@@ -99,6 +98,7 @@ interface PlanNode {
   "Actual Rows"?: number;
   "Actual Loops"?: number;
   "One-Time Filter"?: string;
+  "Parent Relationship"?: string;
   Plans?: PlanNode[];
 }
 function flatten(node: PlanNode): PlanNode[] {

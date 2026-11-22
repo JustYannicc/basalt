@@ -1,6 +1,7 @@
 import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
 import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import assert from "node:assert/strict";
+import { historyChangeOnceVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
 import { appModelLabel } from "../../src/pool/app-model-contract.ts";
@@ -85,6 +86,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyImportCompletionVersion,
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
+        historyChangeOnceVersion,
         historySchemaVersion,
       ].sort(),
     );
