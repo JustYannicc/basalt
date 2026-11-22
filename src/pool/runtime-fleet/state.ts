@@ -48,6 +48,13 @@ interface PrimaryReservation {
   kind: "primary";
   release(): Promise<void>;
 }
+/**
+ * How the root takes a call beside ready cells. Balanced, it ranks with them and keeps its tie
+ * preference within a tier; last, it takes one only when no ready cell can. Either way its calls
+ * are counted reservations, so growth still reads them after the controller restarts.
+ */
+export type PrimaryRoute = "balanced" | "last";
+
 /** Where runtimes sit relative to the database. Without it, routing is unchanged. */
 export interface FleetPlacement {
   // The growth target: near runtimes under it come first, then everything else under it.
@@ -304,17 +311,17 @@ export class RuntimeFleetState {
   }
   acquire(
     capacity: number,
-    includePrimary?: false,
+    primary?: undefined,
     placement?: FleetPlacement,
   ): Promise<RuntimeReservation>;
   acquire(
     capacity: number,
-    includePrimary: true,
+    primary: PrimaryRoute,
     placement?: FleetPlacement,
   ): Promise<RuntimeReservation | PrimaryReservation>;
   async acquire(
     capacity: number,
-    includePrimary = false,
+    primary?: PrimaryRoute,
     placement?: FleetPlacement,
   ): Promise<RuntimeReservation | PrimaryReservation> {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
@@ -332,17 +339,16 @@ export class RuntimeFleetState {
             left.lastUsedAt - right.lastUsedAt,
         );
       const row = available[0];
-      if (includePrimary) {
-        const primary = Schema.decodeUnknownSync(Count)((await transaction.get(primaryKey)) ?? 0);
-        // Within a tier the root keeps its tie preference, so "the root stays primary" still holds.
-        const primaryRank = tier(placement, placement?.primary ?? "unknown", primary);
+      if (primary) {
+        const active = Schema.decodeUnknownSync(Count)((await transaction.get(primaryKey)) ?? 0);
+        const primaryRank = tier(placement, placement?.primary ?? "unknown", active);
         if (
           !row ||
-          primaryRank < rank(row) ||
-          (primaryRank === rank(row) && primary <= row.active)
+          (primary === "balanced" &&
+            (primaryRank < rank(row) || (primaryRank === rank(row) && active <= row.active)))
         ) {
-          if (!Number.isSafeInteger(primary + 1)) throw new FleetRefused("uncertain");
-          await transaction.put(primaryKey, primary + 1);
+          if (!Number.isSafeInteger(active + 1)) throw new FleetRefused("uncertain");
+          await transaction.put(primaryKey, active + 1);
           return { kind: "primary" };
         }
       }
