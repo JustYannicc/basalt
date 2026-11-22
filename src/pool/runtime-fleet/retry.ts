@@ -16,6 +16,11 @@ import {
 import { retainEndpointRequestId } from "./endpoint-trace.ts";
 
 const safeReads = new Set(["/v1/models", "/typesafe/v1/models"]);
+/** The model catalog: the only read the fleet sends again after any failure, never a socket. */
+export const fleetSafeRead = (request: Request) =>
+  request.method === "GET" &&
+  safeReads.has(new URL(request.url).pathname) &&
+  !request.headers.has("upgrade");
 // Readiness or the policy lease is not current yet: the container's readiness said unhealthy or
 // answered too late, a lease ran out, or the container is stopped and recovery will restart it.
 // These wait. Fenced, deselected and policy refusals throw at once; a replaced boot or an endpoint
@@ -112,10 +117,7 @@ export async function forwardRecoverably(
     runtimeRecoveryBudgetMs,
   );
   const signal = AbortSignal.any([request.signal, deadline.signal]);
-  const safe =
-    request.method === "GET" &&
-    safeReads.has(new URL(request.url).pathname) &&
-    !request.headers.has("upgrade");
+  const safe = fleetSafeRead(request);
   let retained = new Request(request, { signal });
   let recovered = false;
   let retainedOwned = true;

@@ -282,6 +282,23 @@ export class RuntimeFleet {
     await this.deps.recoverPrimary?.();
     if (failure === this.primaryFailure) this.primaryFailed = false;
   }
+  /** A root call that took a fallback token gives it back when it failed before its send. */
+  private rootCall(
+    request: Request,
+    legacy: (request: Request, beforeDispatch: () => void) => Promise<Response>,
+    beforeDispatch: () => void,
+    counted: boolean,
+  ) {
+    let sent = false;
+    return legacy(request, () => {
+      sent = true;
+      beforeDispatch();
+    }).catch((error: unknown) => {
+      // It reached nothing, and a retry before dispatch takes a token again.
+      if (counted && !sent) this.rootFallback.refund();
+      throw error;
+    });
+  }
   async forward(
     request: Request,
     pool: string | undefined,
@@ -301,12 +318,13 @@ export class RuntimeFleet {
       // With no sibling capacity the primary is the only route. A recent primary failure or a failed
       // recovery warm-up is only a hint: the request's own fresh admission on the primary decides.
       // Its rate is capped, so a burst can't starve the root's own Home; a refused call still grows.
-      if (rootFallbackCounts(request) && !this.rootFallback.take()) {
+      const counted = rootFallbackCounts(request);
+      if (counted && !this.rootFallback.take()) {
         this.grow();
         return rootFallbackRefused(request);
       }
       // Start legacy admission before reading pressure so the triggering request is counted too.
-      const response = legacy(request, beforeDispatch).then((answer) =>
+      const response = this.rootCall(request, legacy, beforeDispatch, counted).then((answer) =>
         stampResumeTarget(answer, { kind: "primary" }),
       );
       this.grow();
@@ -314,12 +332,9 @@ export class RuntimeFleet {
     }
     const { reservation, dispatched } = acquired;
     // The root as the only route takes the same capped rate as the capacity fallback above.
-    if (
-      reservation.kind === "primary" &&
-      reservation.alone &&
-      rootFallbackCounts(request) &&
-      !this.rootFallback.take()
-    ) {
+    const counted =
+      reservation.kind === "primary" && reservation.alone && rootFallbackCounts(request);
+    if (counted && !this.rootFallback.take()) {
       this.grow();
       dispatched();
       try {
@@ -334,9 +349,10 @@ export class RuntimeFleet {
     this.grow();
     try {
       if (reservation.kind === "primary") {
-        const response = stampResumeTarget(await legacy(request, beforeDispatch), {
-          kind: "primary",
-        });
+        const response = stampResumeTarget(
+          await this.rootCall(request, legacy, beforeDispatch, counted),
+          { kind: "primary" },
+        );
         return this.deps.wrap(response, {
           signal: request.signal,
           onClose: () => {},

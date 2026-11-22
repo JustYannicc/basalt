@@ -1,4 +1,5 @@
 import { nativeRuntimeUnavailable } from "../runtime-unavailable.ts";
+import { fleetSafeRead } from "./retry.ts";
 
 /*
  * What the root may take as the fleet's fallback, when no cell is ready to serve.
@@ -14,6 +15,10 @@ import { nativeRuntimeUnavailable } from "../runtime-unavailable.ts";
  * measured 18, on the low side, because the root also carries all of Home's management traffic and
  * its master duties. Both figures come from the root's old Home: re-derive them when the root gets
  * a new image.
+ *
+ * Catalog reads take no token. They are safe reads the fleet already retries, and these figures
+ * measure model calls. A call that fails before its send gives its token back, since a retry
+ * before dispatch would otherwise pay for the same call again.
  */
 export const rootFallbackPerSecond = 1.2;
 export const rootFallbackBurst = 10;
@@ -33,19 +38,23 @@ export class RootFallback {
     const now = this.now();
     const earned = (Math.max(0, now - this.at) / 1_000) * rootFallbackPerSecond;
     this.tokens = Math.min(rootFallbackBurst, this.tokens + earned);
-    this.at = now;
+    // A clock that steps back never rewinds the bucket, so no span is earned twice.
+    this.at = Math.max(this.at, now);
     if (this.tokens < 1) return false;
     this.tokens -= 1;
     return true;
   }
+  /** A call that took a token and reached nothing. */
+  refund() {
+    this.tokens = Math.min(rootFallbackBurst, this.tokens + 1);
+  }
 }
 
 /**
- * The cap counts model calls, which the figures above measure. A catalog read is a safe read the
- * fleet already retries, and is left out. A model socket is a GET with an upgrade, and counts.
+ * The cap counts every model call, which the figures above measure, a video status poll and a model
+ * socket included. Only the fleet's safe reads, the model catalog it already retries, are left out.
  */
-export const rootFallbackCounts = (request: Request) =>
-  request.method !== "GET" || request.headers.has("upgrade");
+export const rootFallbackCounts = (request: Request) => !fleetSafeRead(request);
 
 /** Nothing was sent: the retryable answer clients already follow, and one count line. */
 export function rootFallbackRefused(request: Request) {

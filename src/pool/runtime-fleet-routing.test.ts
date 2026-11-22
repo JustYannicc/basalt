@@ -630,3 +630,66 @@ test("a refused call still asks the fleet to grow", async (context) => {
   await f.settle();
   assert.ok(f.calls.starts >= 1, "the refused call still started a cell");
 });
+
+test("a root call that fails before its send gives its fallback token back", async (context) => {
+  context.mock.method(console, "error", () => {});
+  for (const primary of [
+    { ...fleetRouting, primaryAvailable: () => true },
+    { primaryAvailable: () => false },
+  ]) {
+    const f = fixture(4, 1, primary);
+    // The root is briefly unhealthy: each call fails before it reaches anything, as retries do.
+    const unsent = async () => {
+      throw new Error("synthetic root readiness refused");
+    };
+    for (let attempt = 0; attempt < rootFallbackBurst + 5; attempt++)
+      await assert.rejects(f.fleet.forward(request(), "pool", unsent, () => {}));
+    // None of them cost the root anything, so a fresh burst still gets the whole bucket.
+    const answers = await burst(f, rootFallbackBurst);
+    assert.ok(answers.every((answer) => answer.status === 200));
+    await f.settle();
+  }
+});
+
+test("a video status poll is a model call and takes a root fallback token", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const polls = await Promise.all(
+    Array.from({ length: rootFallbackBurst + 5 }, async () => {
+      const response = await f.fleet.forward(
+        new Request("https://synthetic.invalid/v1/videos/video_1"),
+        "pool",
+        f.legacy,
+        () => {},
+      );
+      await response.text();
+      return response.status;
+    }),
+  );
+  assert.equal(f.calls.legacy, rootFallbackBurst);
+  assert.equal(polls.filter((status) => status === 503).length, 5);
+  await f.settle();
+});
+
+test("a clock that steps back never earns the same span twice", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await burst(f, rootFallbackBurst);
+  f.advance(200 + 834);
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [200],
+  );
+  // The clock steps back, and a call at that moment must not rewind the bucket's own time.
+  f.advance(200);
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [503],
+  );
+  f.advance(200 + 834);
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [503],
+  );
+  await f.settle();
+});
