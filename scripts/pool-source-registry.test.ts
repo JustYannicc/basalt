@@ -528,7 +528,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(
           patch.retirement.requires,
-          /live-owner, silent-owner, expired-owner and own-node regressions/,
+          /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
       } else if (patch.identity === "cliproxy-home-database-distance") {
         assert.equal(name, "home");
@@ -547,7 +547,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without the election gate's row lock/);
         assert.match(
           patch.retirement.requires,
-          /follower-never-waits, steady-lease and lease-expiry election regressions/,
+          /follower-never-waits, steady-lease, lease-expiry and blocked-renewal election regressions/,
         );
       } else {
         assert.ok(
