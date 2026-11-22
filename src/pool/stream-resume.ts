@@ -38,7 +38,17 @@ export const streamResumeCuts = 5;
 /** A body kept for a refused connect's resend stays inside the entry's own bounds for a held copy. */
 const spareBytes = 4 * 1024 * 1024;
 const spareBudgetBytes = 32 * 1024 * 1024;
-let spareHeld = 0;
+// Each share carries its own deadline, as the entry's held copy does: a send that never settles
+// never reaches its release, and its bytes must not stay counted for the life of the isolate.
+const spares = new Map<object, { bytes: number; until: number }>();
+function spareHeld(now: number) {
+  let total = 0;
+  for (const [key, share] of spares) {
+    if (share.until <= now) spares.delete(key);
+    else total += share.bytes;
+  }
+  return total;
+}
 const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const internalHeaders = [streamResumeHeader, streamResumeTargetHeader, streamResumeStateHeader];
 
@@ -155,16 +165,17 @@ export function layerConnectRefused(error: unknown) {
 function spareOf(request: Request) {
   const size = request.body ? Number(request.headers.get("Content-Length") ?? Number.NaN) : 0;
   if (!Number.isSafeInteger(size) || size < 0 || size > spareBytes) return undefined;
-  if (spareHeld + size > spareBudgetBytes) return undefined;
-  const copy = request.clone();
-  spareHeld += size;
-  let held = true;
+  const now = Date.now();
+  if (spareHeld(now) + size > spareBudgetBytes) return undefined;
+  const key = {};
+  // A refused connect or an unreachable node answers at the connect, well inside the window; past
+  // it the share is no longer counted, so the copy is never sent either.
+  const until = now + streamResumeWindowMs;
+  spares.set(key, { bytes: size, until });
   return {
-    request: copy,
-    release() {
-      if (held) spareHeld -= size;
-      held = false;
-    },
+    request: request.clone(),
+    usable: () => Date.now() < until,
+    release: () => spares.delete(key),
   };
 }
 
@@ -211,7 +222,7 @@ export async function toLayer(
       answer = await send(request, resumeLayerPort);
     } catch (error) {
       if (!running()) throw error;
-      if (spare && layerConnectRefused(error)) return await toNode(spare.request);
+      if (spare?.usable() && layerConnectRefused(error)) return await toNode(spare.request);
       rememberRuntimeFailure("resume_layer", error);
       throw error;
     }
@@ -219,7 +230,7 @@ export async function toLayer(
     if (upstream !== "unreachable" && upstream !== "failed") return answer;
     void answer.body?.cancel().catch(() => {});
     // The layer couldn't reach the node, so the node saw nothing: its port answers as today.
-    if (upstream === "unreachable" && spare) return await toNode(spare.request);
+    if (upstream === "unreachable" && spare?.usable()) return await toNode(spare.request);
     // The node failed, or can't be reached and the call can't be re-sent: the node's own failure,
     // as on its port, and never sent twice, since the node may have started it.
     refuseRuntime(
