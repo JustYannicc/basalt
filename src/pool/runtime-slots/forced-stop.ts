@@ -77,6 +77,8 @@ export class RuntimeForcedStop {
     if (recent.length >= forcedStopsPerHour) return { stopped: false, hard: false, limited: true };
     if (await this.slowAuditDefers(identity, configuration, refusingSince, signal))
       throw new SlotRefused("selection");
+    // The probe can take seconds: a container that exited on its own meanwhile is not a stop.
+    if (!container.running) return { stopped: true, hard: false };
     await ctx.storage.put(stopsKey, [...recent, now]);
     const path = await this.signal(container);
     console.error(
@@ -133,8 +135,8 @@ export class RuntimeForcedStop {
     refusingSince: number,
     signal: AbortSignal,
   ) {
-    const refusingMs = Date.now() - refusingSince;
-    if (refusingMs >= unservingBoundMs + auditDeferralMs) return false;
+    const expired = () => Date.now() - refusingSince >= unservingBoundMs + auditDeferralMs;
+    if (expired()) return false;
     let evidence: { listingMs: number } | undefined;
     try {
       evidence = await this.deps.audit(
@@ -146,12 +148,16 @@ export class RuntimeForcedStop {
       // The probe's own failure is another cause: it never protects.
       return false;
     }
-    if (!evidence) return false;
+    // The bound holds against the time the evidence arrived, not the time the probe began.
+    if (!evidence || expired()) return false;
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "stop_deferred",
       cause: "audit_slow",
       slot: identity.slotId,
-      deferredSeconds: Math.max(0, Math.round((refusingMs - unservingBoundMs) / 1_000)),
+      deferredSeconds: Math.max(
+        0,
+        Math.round((Date.now() - refusingSince - unservingBoundMs) / 1_000),
+      ),
       listingMs: evidence.listingMs,
     });
     return true;

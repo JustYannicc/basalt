@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RuntimeAuditProbe, auditDeadlineMs } from "./runtime-slots/audit-probe.ts";
+import {
+  RuntimeAuditProbe,
+  auditDeadlineMs,
+  homeHealthReadMs,
+} from "./runtime-slots/audit-probe.ts";
 import type { RuntimeConfiguration } from "./runtime-slots/configuration.ts";
 import { poolDatabase } from "./database-settings.ts";
 
@@ -17,7 +21,26 @@ const healthy: Record<string, Reply> = {
   "8318 /ready": { status: 503, body: { boot_id: "old-boot", started_at: "2026-11-22T00:00:00Z" } },
   "8317 /healthz": { status: 200, body: { status: "ok" } },
   "8327 /healthz": { status: 200, body: { status: "ok" } },
-  "8327 /v8/management/nodes": { status: 200, body: { nodes: [{ node_id: "n" }] } },
+  "8327 /v8/management/nodes": {
+    status: 200,
+    body: { nodes: [{ node_id: "n", healthy: true }] },
+  },
+};
+
+/** A reply that gives up when its caller's deadline does, as a container port fetch does. */
+function abortable<T>(work: Promise<T>, signal?: AbortSignal | null) {
+  if (!signal) return work;
+  return Promise.race([
+    work,
+    new Promise<never>((_resolve, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  ]);
+}
+const after = (milliseconds: number, answer: Answer) => async () => {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return answer;
 };
 
 /** Container ports answering from `replies`; the listing takes `listingMs` on the probe's clock. */
@@ -25,12 +48,12 @@ function container(replies: Record<string, Reply>, listingMs = auditDeadlineMs +
   let clock = 0;
   const calls: string[] = [];
   const port = (number: number) => ({
-    fetch: async (input: string) => {
+    fetch: async (input: string, init?: RequestInit) => {
       const call = `${number} ${new URL(input).pathname}`;
       calls.push(call);
       const reply = replies[call] ?? { status: 404 };
       if (reply instanceof Error) throw reply;
-      const answer = typeof reply === "function" ? await reply() : reply;
+      const answer = typeof reply === "function" ? await abortable(reply(), init?.signal) : reply;
       if (call.endsWith("/v8/management/nodes")) clock += listingMs;
       return Response.json(answer.body ?? {}, { status: answer.status });
     },
@@ -63,6 +86,17 @@ test("every read that fails, or proves another cause, is never evidence", async 
     ["Home's health doesn't answer", "8327 /healthz", new Error("Home refused")],
     ["the listing fails", "8327 /v8/management/nodes", { status: 500 }],
     ["the listing has no nodes", "8327 /v8/management/nodes", { status: 200, body: {} }],
+    ["the listing is empty", "8327 /v8/management/nodes", { status: 200, body: { nodes: [] } }],
+    [
+      "the listing names no healthy node",
+      "8327 /v8/management/nodes",
+      { status: 200, body: { nodes: [{ node_id: "n", healthy: false }] } },
+    ],
+    [
+      "Home's health is too slow to be database-free",
+      "8327 /healthz",
+      after(homeHealthReadMs + 200, { status: 200, body: { status: "ok" } }),
+    ],
     ["the listing doesn't answer", "8327 /v8/management/nodes", new Error("listing timed out")],
   ];
   for (const [name, call, reply] of cases) {

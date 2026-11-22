@@ -11,6 +11,11 @@ export const auditDeadlineMs = 2_000;
 export const auditListingReadMs = 10_000;
 /** The supervisor's own wait for each database-free `/healthz`. */
 const healthReadMs = 2_000;
+/**
+ * Home's `/healthz` touches no database, so even on a slow database it answers at once. A Home that
+ * needs longer is itself slow, which a restart can cure, and is never evidence.
+ */
+export const homeHealthReadMs = 500;
 
 /**
  * Tells a selected runtime whose readiness refuses only because the supervisor's database-backed
@@ -18,8 +23,9 @@ const healthReadMs = 2_000;
  * `/ready` answers the same 503 for every cause, so the probe repeats the supervisor's own reads
  * with its own deadlines. It answers with evidence only when all of them hold: `/ready` refuses
  * this boot, the node's and Home's database-free `/healthz` answer, and Home's node listing answers
- * but slower than the audit's deadline. Anything else, including the probe's own failure, is another
- * cause and answers `undefined`.
+ * with a healthy node but slower than the audit's deadline. Anything else, including the probe's own
+ * failure, is another cause and answers `undefined`. The supervisor's node id comes from its launch,
+ * so the probe can't tell its own node from a fleet cell's in the cluster-wide listing.
  */
 export class RuntimeAuditProbe {
   private port: Port;
@@ -56,13 +62,20 @@ export class RuntimeAuditProbe {
       listing.then(settled, settled);
       const [node, homeHealth, nodes] = await Promise.all([
         this.read(8317, "/healthz", managed, healthReadMs, signal),
-        this.read(home, "/healthz", managed, healthReadMs, signal),
+        this.read(home, "/healthz", managed, homeHealthReadMs, signal),
         listing.then((answer) => ({ ...answer, elapsedMs: this.now() - listed })),
       ]);
       const ok = (answer: { status: number; body: unknown }) =>
         answer.status === 200 && field(answer.body, "status") === "ok";
       if (!ok(node) || !ok(homeHealth)) return undefined;
-      if (nodes.status !== 200 || !Array.isArray(field(nodes.body, "nodes"))) return undefined;
+      const entries = field(nodes.body, "nodes");
+      // A listing with no healthy node fails the audit on its content, however fast it is.
+      if (
+        nodes.status !== 200 ||
+        !Array.isArray(entries) ||
+        !entries.some((entry: unknown) => field(entry, "healthy") === true)
+      )
+        return undefined;
       if (nodes.elapsedMs <= auditDeadlineMs) return undefined;
       return { listingMs: Math.round(nodes.elapsedMs) };
     } catch {

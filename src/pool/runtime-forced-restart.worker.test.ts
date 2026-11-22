@@ -415,7 +415,7 @@ function slowAuditOnly(f: Fixture) {
     if (path === "/healthz") return Response.json({ status: "ok" });
     if (path !== "/v8/management/nodes") return undefined;
     await new Promise((resolve) => setTimeout(resolve, auditDeadlineMs + 300));
-    return Response.json({ nodes: [] });
+    return Response.json({ nodes: [{ node_id: "fixture-node", healthy: true }] });
   };
   return boot;
 }
@@ -443,5 +443,31 @@ test(
     assert.notEqual(f.old.identity().bootId, boot);
     await pass(f);
     assert.equal(await serves(f), true);
+  },
+);
+
+test(
+  "a root deferred for a slow audit is stopped at once when another cause appears",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance, phases, forcedStops } = await root(context);
+    slowAuditOnly(f);
+    await pass(f);
+    advance(unservingBoundMs);
+    await pass(f);
+    advance(60_000);
+    await pass(f);
+    assert.equal(phases().filter((phase) => phase === "stop_deferred").length, 2);
+    assert.deepEqual(f.old.calls.signals, []);
+    // The node stops answering its health: no longer only the audit, and the clock never reset.
+    const model = f.old.hooks.model;
+    f.old.hooks.model = async (request) =>
+      new URL(request.url).pathname === "/healthz"
+        ? new Response(null, { status: 503 })
+        : model(request);
+    advance(2_000);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [15]);
+    assert.equal(forcedStops(), 1);
   },
 );

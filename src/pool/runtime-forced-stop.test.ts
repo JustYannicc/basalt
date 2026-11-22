@@ -260,6 +260,25 @@ test("the deferral ends auditDeferralMs past the bound, even while a slow audit 
   assert.equal(asked, 0);
 });
 
+test("evidence that arrives after the deferral ran out defers nothing", async (context) => {
+  let now = 10_000_000;
+  context.mock.method(Date, "now", () => now);
+  const refusingSince = now - unservingBoundMs - auditDeferralMs + 1_000;
+  const { stop, signals } = stopper(
+    context,
+    refusing,
+    async () => ({}),
+    undefined,
+    async () => {
+      now += 2_000; // a slow probe: the bound runs out while it reads
+      return { listingMs: 2_440 };
+    },
+  );
+  const result = await stop.stop(selected, refusingSince, AbortSignal.timeout(5_000));
+  assert.deepEqual(result, { stopped: true, hard: false });
+  assert.deepEqual(signals, [15]);
+});
+
 test("another cause, or the probe's own failure, stops exactly as before", async (context) => {
   const cases: [string, () => Promise<{ listingMs: number } | undefined>][] = [
     ["no evidence: another cause", async () => undefined],
