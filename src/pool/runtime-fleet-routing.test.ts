@@ -715,13 +715,19 @@ test(
     while (entered < rootFallbackBurst) await new Promise((resolve) => setImmediate(resolve));
     // The bucket refills while they wait, yet no more calls may queue behind the warm-up.
     f.advance(200 + 20_000);
-    const later = await Promise.all(
-      Array.from({ length: 5 }, () => f.fleet.forward(request(), "pool", starting, () => {})),
+    const pending = Array.from({ length: 5 }, () =>
+      f.fleet.forward(request(), "pool", starting, () => {}),
     );
+    for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(entered, rootFallbackBurst, "no call joined the queue behind the warm-up");
+    const later = await Promise.all(pending);
     assert.ok(later.every((response) => response.status === 503));
     started.resolve();
     const served = await Promise.all(waiting);
     assert.ok(served.every((response) => response.status === 200));
+    // The wait earned nothing for the moment it ends: the root never sees more than a burst at once.
+    const after = await burst(f, 5);
+    assert.ok(after.every((answer) => answer.status === 503));
     await Promise.all([...served, ...later].map((response) => response.text()));
     await f.settle();
   },

@@ -25,28 +25,40 @@ export const rootFallbackBurst = 10;
 
 const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** A token bucket on new root calls: the rate starves the root's Home, not the count in flight. */
+/**
+ * A token bucket on new root calls: the rate starves the root's Home, not the count in flight.
+ * Admitted calls wait until their send, and while the root starts they queue on its warm-up, so
+ * tokens and waiting calls together never exceed a burst: the root never sees more at once.
+ */
 export class RootFallback {
   private tokens = rootFallbackBurst;
+  private waiting = 0;
   private at: number;
   private now: () => number;
   constructor(now: () => number) {
     this.now = now;
     this.at = now();
   }
-  take() {
+  private refill() {
     const now = this.now();
     const earned = (Math.max(0, now - this.at) / 1_000) * rootFallbackPerSecond;
-    this.tokens = Math.min(rootFallbackBurst, this.tokens + earned);
+    this.tokens = Math.min(rootFallbackBurst - this.waiting, this.tokens + earned);
     // A clock that steps back never rewinds the bucket, so no span is earned twice.
     this.at = Math.max(this.at, now);
+  }
+  /** Takes a token for a call that then waits until its send. */
+  admit() {
+    this.refill();
     if (this.tokens < 1) return false;
     this.tokens -= 1;
+    this.waiting += 1;
     return true;
   }
-  /** A call that took a token and reached nothing. */
-  refund() {
-    this.tokens = Math.min(rootFallbackBurst, this.tokens + 1);
+  /** The admitted call sent, or ended; with `refund`, it reached nothing and its token comes back. */
+  release(refund: boolean) {
+    this.refill();
+    this.waiting -= 1;
+    if (refund) this.tokens = Math.min(rootFallbackBurst - this.waiting, this.tokens + 1);
   }
 }
 
