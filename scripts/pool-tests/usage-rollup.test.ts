@@ -3,7 +3,12 @@ import { test } from "node:test";
 import pg from "pg";
 import { insertBulkRequests } from "../../src/pool/model-history/bulk-store.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
-import { handleUsageRollupOperation } from "../../src/pool/model-history/usage-rollup-backfill.ts";
+import {
+  handleUsageRollupOperation,
+  planUsageRollup,
+  runUsageRollup,
+} from "../../src/pool/model-history/usage-rollup-backfill.ts";
+import { insertRequests } from "../../src/pool/model-history/store.ts";
 import { seriesFixture } from "./series-fixture.ts";
 
 /** The raw answer the rollup must reproduce exactly: one group per pool, UTC hour, source and model. */
@@ -188,6 +193,40 @@ test("the operator endpoint dry-runs without writes, refuses a changed plan, and
       (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_ready")).rows[0]!.n,
       1,
     );
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("the backfill stops at its write-ahead-log budget, yields to a writer holding the pool, and resumes", async () => {
+  await seriesFixture(async (f) => {
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(6, 2));
+    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    const { plan } = await planUsageRollup(f.db);
+    // A one-byte budget: the first hour runs, then the call stops at that hour's boundary.
+    const capped = await runUsageRollup(f.db, plan, 60_000, undefined, 1);
+    assert.equal(capped.status, "progress");
+    assert.equal(capped.stopped, "wal");
+    assert.equal(capped.pools[0]!.recomputedHours, 1);
+    assert.ok(capped.walBytes > 0);
+    // A writer inside the pool: the backfill gives up its lock wait and leaves the hour.
+    const writer = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
+    await writer.connect();
+    try {
+      await writer.query(`SET search_path TO ${f.schema}`);
+      await writer.query("BEGIN");
+      const row = await f.row({ timestamp: timestamp("2026-01-01T03:30:00Z") });
+      await insertRequests(writer, [row]);
+      const yielded = await runUsageRollup(f.db, plan, 60_000);
+      assert.equal(yielded.stopped, "lock");
+      assert.equal(yielded.pools[0]!.recomputedHours, 0);
+      await writer.query("COMMIT");
+    } finally {
+      await writer.query("ROLLBACK").catch(() => {});
+      await writer.end();
+    }
+    const resumed = await runUsageRollup(f.db, plan, 60_000);
+    assert.equal(resumed.status, "complete");
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });
 });

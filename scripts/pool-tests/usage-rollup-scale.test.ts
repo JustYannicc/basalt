@@ -95,7 +95,8 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
     try {
       await writer.query(`SET search_path TO ${f.schema}`);
       let extra = rows;
-      let racing = true;
+      // POOL_TEST_ROLLUP_RACE=0 measures the backfill's own write-ahead log, with no writer.
+      let racing = process.env.POOL_TEST_ROLLUP_RACE !== "0";
       const race = (async () => {
         while (racing) {
           const query = generated(poolId, sources, accounts, extra, 50);
@@ -103,12 +104,31 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
           await writer.query(query.text, query.values);
         }
       })();
+      const backfillStarted = performance.now();
+      let hours = 0,
+        backfillWal = 0;
       for (;;) {
         runs++;
         const result = await runUsageRollup(f.db, planned.plan, 1_500);
         groups += result.pools.reduce((n, item) => n + item.groups, 0);
+        hours += result.pools.reduce((n, item) => n + item.recomputedHours, 0);
+        backfillWal = Math.max(backfillWal, result.walBytes);
+        assert.ok(
+          result.walBytes <= 40 * 1024 * 1024,
+          `one call wrote ${result.walBytes} WAL bytes`,
+        );
         if (result.status === "complete") break;
       }
+      console.info(
+        "ROLLUP_BACKFILL",
+        JSON.stringify({
+          hours,
+          runs,
+          ms: Math.round(performance.now() - backfillStarted),
+          largestCallWal: backfillWal,
+          race: process.env.POOL_TEST_ROLLUP_RACE !== "0",
+        }),
+      );
       racing = false;
       await race;
     } finally {

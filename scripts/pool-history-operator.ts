@@ -23,7 +23,12 @@ import {
 import {
   historyUsageRollupBackfillVersion,
   historyUsageRollupPath,
+  usageRollupWalPerCall,
 } from "../src/pool/model-history/usage-rollup-backfill.ts";
+
+/** The whole backfill's write-ahead-log cap, and the pause that lets checkpoints recycle it. */
+export const usageRollupWalTotal = 1024 * 1024 * 1024;
+const usageRollupPauseMs = () => Number(process.env.USAGE_ROLLUP_PAUSE_MS ?? 2_000);
 
 import {
   historyJournalActivationMigration,
@@ -361,26 +366,48 @@ export async function runHistoryOperator(
     let report = await historyOperatorStep("operator.response.json", async () =>
       historyObject(await response.json()),
     );
-    // Each rollup request recomputes days within its budget; the same approval resumes the rest.
-    for (
-      let run = 1;
-      options.operation === "usage-rollup" && approval && report.status === "progress";
-      run++
-    ) {
-      if (run > 10_000 || !("digest" in approval) || report.digest !== approval.digest)
-        throw new Error("Invalid usage rollup progress");
-      console.error(JSON.stringify({ run, status: report.status, pools: report.pools }));
-      const next = await historyOperatorStep("operator.request", () =>
-        operations.fetch(
-          new Request(`http://pool-operations${path}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...approval, go: true }),
-          }),
-        ),
-      );
-      if (!next.ok) throw new HistoryOperatorFailure("operator.response.status", next.status);
-      report = historyObject(await next.json());
+    // Each rollup request recomputes hours within its time and write-ahead-log budget; the same
+    // approval resumes the rest. The run stops at a total WAL cap, or after 100 calls in a row that
+    // writers held off; either stop is at an hour boundary, so a later run resumes it.
+    if (options.operation === "usage-rollup" && approval) {
+      let wal = 0,
+        lost = 0;
+      for (let run = 1; report.status === "progress"; run++) {
+        if (run > 10_000 || !("digest" in approval) || report.digest !== approval.digest)
+          throw new Error("Invalid usage rollup progress");
+        const pools = Array.isArray(report.pools) ? report.pools : [];
+        wal += Number(report.walBytes ?? 0);
+        const recomputed = pools.reduce(
+          (n: number, item: unknown) => n + Number(historyObject(item).recomputedHours ?? 0),
+          0,
+        );
+        lost = report.stopped === "lock" && recomputed === 0 ? lost + 1 : 0;
+        console.error(JSON.stringify({ run, stopped: report.stopped, walBytes: wal, pools }));
+        if (wal >= usageRollupWalTotal)
+          throw new Error(
+            `Usage rollup stopped at its ${usageRollupWalTotal} byte WAL cap; resume with a fresh dry run`,
+          );
+        if (lost >= 100)
+          throw new Error(
+            "Usage rollup stopped: writers held the pool for 100 calls in a row; resume later",
+          );
+        await new Promise((resolve) => setTimeout(resolve, usageRollupPauseMs()));
+        const next = await historyOperatorStep("operator.request", () =>
+          operations.fetch(
+            new Request(`http://pool-operations${path}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ...approval,
+                go: true,
+                walBudgetBytes: Math.min(usageRollupWalPerCall, usageRollupWalTotal - wal),
+              }),
+            }),
+          ),
+        );
+        if (!next.ok) throw new HistoryOperatorFailure("operator.response.status", next.status);
+        report = historyObject(await next.json());
+      }
     }
     if (approval) {
       if (

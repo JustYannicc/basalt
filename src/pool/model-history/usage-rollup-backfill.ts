@@ -5,6 +5,8 @@ import { historyUsageRollupVersion } from "./usage-rollup-schema.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
 export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v1";
+/** The most write-ahead log one backfill call may add before it stops at an hour boundary. */
+export const usageRollupWalPerCall = 32 * 1024 * 1024;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -89,8 +91,22 @@ export async function runUsageRollup(
   plan: UsageRollupPlan,
   budgetMs = 12_000,
   now: () => number = () => performance.now(),
+  walBudgetBytes = usageRollupWalPerCall,
 ) {
   const started = now();
+  // The write-ahead log this call adds, measured on the server before every hour it starts.
+  const walStart = String(
+    (await db.query("SELECT pg_current_wal_lsn()::text AS lsn")).rows[0]?.lsn ?? "",
+  );
+  const walWritten = async () =>
+    Number(
+      (
+        await db.query("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::text AS bytes", [
+          walStart,
+        ])
+      ).rows[0]?.bytes ?? 0,
+    );
+  let stop: "budget" | "wal" | "lock" | undefined;
   const pools: { pool: string; recomputedHours: number; groups: number; remainingHours: number }[] =
     [];
   let complete = true;
@@ -107,7 +123,14 @@ export async function runUsageRollup(
     let recomputedHours = 0,
       groups = 0;
     for (const at of pending) {
-      if (now() - started >= budgetMs) break;
+      if (now() - started >= budgetMs) {
+        stop = "budget";
+        break;
+      }
+      if ((await walWritten()) >= walBudgetBytes) {
+        stop = "wal";
+        break;
+      }
       await db.query("BEGIN");
       try {
         // The lock timeout is below the writers' 500 ms, so a busy pool's writers win.
@@ -129,8 +152,10 @@ export async function runUsageRollup(
           error !== null &&
           "code" in error &&
           error.code === "55P03"
-        )
+        ) {
+          stop = "lock";
           break;
+        }
         throw error;
       }
     }
@@ -145,13 +170,20 @@ export async function runUsageRollup(
     pools.push({ pool: item.pool, recomputedHours, groups, remainingHours });
     if (!complete) break;
   }
-  return { status: complete ? ("complete" as const) : ("progress" as const), pools };
+  return {
+    status: complete ? ("complete" as const) : ("progress" as const),
+    ...(complete ? {} : { stopped: stop ?? "budget" }),
+    walBytes: await walWritten(),
+    pools,
+  };
 }
 
 export async function handleUsageRollupOperation(request: Request, db: HistoryDatabase) {
   const headers = { "Cache-Control": "no-store" };
   if (request.method === "GET") {
     const planned = await planUsageRollup(db);
+    // The apply measures its write-ahead log; a role that cannot read it fails here, before writes.
+    await db.query("SELECT pg_current_wal_lsn()");
     return Response.json(
       { status: "dry-run", version: historyUsageRollupBackfillVersion, ...planned, writes: false },
       { headers },
@@ -169,7 +201,15 @@ export async function handleUsageRollupOperation(request: Request, db: HistoryDa
   }
   if (approval.digest !== (await digest(JSON.stringify(plan))))
     return new Response(null, { status: 409 });
-  const result = await runUsageRollup(db, plan, 12_000);
+  const walBudget = approval.walBudgetBytes ?? usageRollupWalPerCall;
+  if (
+    typeof walBudget !== "number" ||
+    !Number.isSafeInteger(walBudget) ||
+    walBudget < 1 ||
+    walBudget > usageRollupWalPerCall
+  )
+    return new Response(null, { status: 400 });
+  const result = await runUsageRollup(db, plan, 12_000, undefined, walBudget);
   return Response.json(
     { ...result, version: historyUsageRollupBackfillVersion, digest: approval.digest },
     { headers },
