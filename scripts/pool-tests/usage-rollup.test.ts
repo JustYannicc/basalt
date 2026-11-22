@@ -183,13 +183,13 @@ test("the operator endpoint dry-runs without writes, refuses a changed plan, and
       })),
     };
     assert.equal((await post({ go: true, plan: tampered, digest: dry.digest })).status, 409);
-    for (const hourLimitMs of [249, 451, 5_000, "300"])
+    for (const hourLimitMs of [149, 301, 5_000, "200"])
       assert.equal(
         (await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs })).status,
         400,
       );
     const applied = (await (
-      await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs: 450 })
+      await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs: 300 })
     ).json()) as {
       status: string;
       pools: { groupsInWindow?: number; groupBound?: number }[];

@@ -10,11 +10,12 @@ export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
  * How long one hour's recompute may hold the pool once it has the lock. A writer that arrives then
- * waits at most this, inside its own 500 ms; an approval may raise it to 450 ms, never past it.
- * An hour slower three times in a row stops the run, naming it.
+ * waits this plus the commit, which no timeout bounds; at least 200 ms of the writers' 500 ms stay
+ * for it. An approval may raise it to 300 ms, never past it. An hour slower three times in a row
+ * stops the run, naming it.
  */
-export const usageRollupHourLimitMs = 250;
-export const usageRollupHourLimitMaxMs = 450;
+export const usageRollupHourLimitMs = 150;
+export const usageRollupHourLimitMaxMs = 300;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();

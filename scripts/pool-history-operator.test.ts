@@ -287,7 +287,7 @@ test("an hour slower than its limit three times stops the backfill and says how 
   try {
     await assert.rejects(
       apply,
-      /2026-01-01T05:00:00.000Z took longer than its 250 ms limit three times; rerun with --hour-limit-ms up to 450/,
+      /2026-01-01T05:00:00.000Z took longer than its 150 ms limit three times; rerun with --hour-limit-ms up to 300/,
     );
   } finally {
     await cleanup();
@@ -667,16 +667,16 @@ test("a v4 schema hash cannot approve a v7 migration", async () => {
   }
 });
 
-test("the hour limit is accepted only for the usage rollup and only between 250 and 450 ms, and reaches every call", async (t) => {
+test("the hour limit is accepted only for the usage rollup and only between 150 and 300 ms, and reaches every call", async (t) => {
   t.mock.method(console, "error", () => {});
   process.env.USAGE_ROLLUP_PAUSE_MS = "0";
   const base = ["--worker", "fixture-pool", "--plan", "/nonexistent", "--operation"];
-  for (const bad of ["249", "451", "abc"])
+  for (const bad of ["149", "301", "abc"])
     assert.throws(() => historyOperatorOptions([...base, "usage-rollup", "--hour-limit-ms", bad]));
   assert.throws(() => historyOperatorOptions([...base, "backfill", "--hour-limit-ms", "300"]));
   assert.equal(
-    historyOperatorOptions([...base, "usage-rollup", "--hour-limit-ms", "450"]).hourLimitMs,
-    450,
+    historyOperatorOptions([...base, "usage-rollup", "--hour-limit-ms", "300"]).hourLimitMs,
+    300,
   );
   const directory = await mkdtemp(join(tmpdir(), "history-rollup-limit-"));
   try {
@@ -714,13 +714,13 @@ test("the hour limit is accepted only for the usage rollup and only between 250 
     });
     await runHistoryOperator(historyOperatorOptions(args), account, connect);
     await runHistoryOperator(
-      historyOperatorOptions([...args, "--apply", "--go", "--hour-limit-ms", "400"]),
+      historyOperatorOptions([...args, "--apply", "--go", "--hour-limit-ms", "250"]),
       account,
       connect,
     );
     assert.deepEqual(
       bodies.map((body) => body.hourLimitMs),
-      [400, 400],
+      [250, 250],
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
