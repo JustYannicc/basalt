@@ -16,6 +16,7 @@ declare global {
   }
 }
 import { AgentSetup } from "./AgentSetup.tsx";
+import { modelsRow } from "./status.ts";
 
 function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot>();
@@ -111,6 +112,7 @@ function App() {
   const hasSetup = configured.claude || configured.codex;
   const modelAccess = view?.capabilities.includes("models");
   const toolAccess = view?.capabilities.includes("tools");
+  const models = modelsRow(view, connected);
   const title = starting
     ? "Starting your connection"
     : signing
@@ -218,20 +220,13 @@ function App() {
             <div className="row">
               <span>Models from</span>
               <div className="value">
-                <span>
-                  {connected && !modelAccess
-                    ? "Not included in this connection"
-                    : view?.display?.pool.name ||
-                      (view?.mode === "direct"
-                        ? "Your direct key"
-                        : "Reconnect to load pool details")}
-                </span>
-                {view?.mode === "device" && (
+                <span>{models.text}</span>
+                {models.choosePool && (
                   <button
                     className="plain"
                     disabled={disabled}
                     onClick={() => {
-                      void perform({ action: "sign-in", origin: view.origin ?? server });
+                      void perform({ action: "sign-in", origin: view?.origin ?? server });
                     }}
                   >
                     Choose pool in browser

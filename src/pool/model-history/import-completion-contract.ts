@@ -69,6 +69,7 @@ const differenceFields = [
   "afterSourceId",
   "upperSourceId",
   "planDigest",
+  "reconciledRanges",
 ] as const;
 export interface CompletionDifference {
   field: (typeof differenceFields)[number];

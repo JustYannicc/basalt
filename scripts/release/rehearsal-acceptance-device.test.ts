@@ -100,6 +100,35 @@ test("the origin is the stage's own: https, carrying its stage label, never prod
   }
 });
 
+test("two or more trailing dots, in any spelling, name no host and nothing is sent", async () => {
+  // URL decodes percent escapes and maps the ideographic and full-width stops to dots first.
+  for (const tail of ["..", "...", ".%2E", "%2E%2E", ".。", "．｡"])
+    for (const host of [
+      `rehearsal-3.${brand.zone}`,
+      `app.rehearsal-3.${brand.zone}`,
+      "app.rehearsal-3.stage.example",
+    ])
+      await assert.rejects(
+        registerRehearsalAcceptanceDevice(
+          { ...input, origin: `https://${host}${tail}` },
+          untouched,
+        ),
+        /empty label/u,
+        JSON.stringify(`${host}${tail}`),
+      );
+  // No resolver names a host with an empty label, so none is sent to.
+  for (const origin of [
+    "https://app..rehearsal-3.stage.example",
+    "https://app.rehearsal-3..stage.example",
+    "https://.app.rehearsal-3.stage.example",
+  ])
+    await assert.rejects(
+      registerRehearsalAcceptanceDevice({ ...input, origin }, untouched),
+      /empty label/u,
+      origin,
+    );
+});
+
 test("the stage pool's own registration makes a models-only device the release then signs for", async () => {
   const f = fixture();
   const device = await registerRehearsalAcceptanceDevice(
