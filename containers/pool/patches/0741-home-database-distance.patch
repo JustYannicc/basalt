@@ -25,10 +25,10 @@ index 0000000..d91d22f
 +}
 diff --git a/internal/cluster/management/database_distance.go b/internal/cluster/management/database_distance.go
 new file mode 100644
-index 0000000..cab5395
+index 0000000..2a912ba
 --- /dev/null
 +++ b/internal/cluster/management/database_distance.go
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,68 @@
 +package management
 +
 +import (
@@ -50,7 +50,7 @@ index 0000000..cab5395
 +
 +var errDatabaseDistanceUnavailable = errors.New("too few database round trips answered")
 +
-+// GetDatabaseDistance reports the median round trip to the database on the pool the node listing
++// GetDatabaseDistance reports the shortest round trip to the database on the pool the node listing
 +// uses (Home's coordination pool when configured). The pool supervisor puts it on readiness, and
 +// the controller routes to runtimes near the database. One unmeasured statement first warms the
 +// connection, so connection setup never counts as distance.
@@ -82,10 +82,13 @@ index 0000000..cab5395
 +		return
 +	}
 +	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
++	// Queueing in the pool or the pooler only adds time, so the fastest round trip is the distance;
++	// a near runtime booting while the database is busy must not read as far and be redrawn.
 +	c.JSON(http.StatusOK, gin.H{
-+		"rtt_ms":  wholeMilliseconds(samples[len(samples)/2]),
-+		"max_ms":  wholeMilliseconds(samples[len(samples)-1]),
-+		"samples": len(samples),
++		"rtt_ms":    wholeMilliseconds(samples[0]),
++		"median_ms": wholeMilliseconds(samples[len(samples)/2]),
++		"max_ms":    wholeMilliseconds(samples[len(samples)-1]),
++		"samples":   len(samples),
 +	})
 +}
 +
@@ -96,10 +99,10 @@ index 0000000..cab5395
 +}
 diff --git a/internal/cluster/management/database_distance_test.go b/internal/cluster/management/database_distance_test.go
 new file mode 100644
-index 0000000..ddd2203
+index 0000000..cd6c030
 --- /dev/null
 +++ b/internal/cluster/management/database_distance_test.go
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,70 @@
 +package management
 +
 +import (
@@ -137,7 +140,7 @@ index 0000000..ddd2203
 +	return server, closeDB
 +}
 +
-+func TestDatabaseDistanceReportsTheMedianRoundTripInWholeMilliseconds(t *testing.T) {
++func TestDatabaseDistanceReportsTheShortestRoundTripInWholeMilliseconds(t *testing.T) {
 +	server, _ := newDistanceServer(t)
 +	resp, err := http.Get(server.URL + "/v8/management/database/distance")
 +	if err != nil {
@@ -145,14 +148,15 @@ index 0000000..ddd2203
 +	}
 +	defer resp.Body.Close()
 +	var body struct {
-+		RTTMs   int `json:"rtt_ms"`
-+		MaxMs   int `json:"max_ms"`
-+		Samples int `json:"samples"`
++		RTTMs    int `json:"rtt_ms"`
++		MedianMs int `json:"median_ms"`
++		MaxMs    int `json:"max_ms"`
++		Samples  int `json:"samples"`
 +	}
 +	if errDecode := json.NewDecoder(resp.Body).Decode(&body); errDecode != nil {
 +		t.Fatal(errDecode)
 +	}
-+	if resp.StatusCode != http.StatusOK || body.Samples != databaseDistanceSamples || body.RTTMs < 1 || body.MaxMs < body.RTTMs {
++	if resp.StatusCode != http.StatusOK || body.Samples != databaseDistanceSamples || body.RTTMs < 1 || body.MedianMs < body.RTTMs || body.MaxMs < body.MedianMs {
 +		t.Fatalf("distance answered %d %+v", resp.StatusCode, body)
 +	}
 +}

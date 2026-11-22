@@ -535,7 +535,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.equal(patch.file, "0741-home-database-distance.patch");
         assert.match(
           patch.retirement.requires,
-          /median database round trip over its coordination pool/,
+          /shortest database round trip over its coordination pool/,
         );
         assert.match(
           patch.retirement.requires,
@@ -547,7 +547,11 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without the election gate's row lock/);
         assert.match(
           patch.retirement.requires,
-          /follower-never-waits, steady-lease, lease-expiry and blocked-renewal election regressions/,
+          /keeps the master flag no longer than the lease it read/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions/,
         );
       } else {
         assert.ok(
