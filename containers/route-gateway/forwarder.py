@@ -107,8 +107,16 @@ async def splice(client, upstream):
             with contextlib.suppress(AttributeError, RuntimeError):
                 side.transport.abort()
 
-    async def pump(reader, writer):
+    def fail():
+        # close() still flushes what was already received, and holds the other side open
+        # until it has; a peer that never reads it is aborted after the deadline.
         nonlocal deadline
+        client_writer.close()
+        upstream_writer.close()
+        if deadline is None:
+            deadline = asyncio.get_running_loop().call_later(ABORT_AFTER_S, abort)
+
+    async def pump(reader, writer):
         try:
             while data := await reader.read(65536):
                 writer.write(data)
@@ -116,14 +124,18 @@ async def splice(client, upstream):
             if writer.can_write_eof():
                 writer.write_eof()
         except (ConnectionError, OSError):
-            # close() still flushes what was already received, and holds the other side
-            # open until it has; a peer that never reads it is aborted after the deadline.
-            client_writer.close()
-            upstream_writer.close()
-            if deadline is None:
-                deadline = asyncio.get_running_loop().call_later(ABORT_AFTER_S, abort)
+            fail()
 
-    await asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
+    pumps = asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
+    # A pump blocked in drain() never sees its own side reset; the transport does.
+    lost = [asyncio.ensure_future(side.wait_closed()) for side in (client_writer, upstream_writer)]
+    done, _ = await asyncio.wait([pumps, *lost], return_when=asyncio.FIRST_COMPLETED)
+    if pumps not in done:
+        fail()
+    await pumps
+    for watcher in lost:
+        watcher.cancel()
+    await asyncio.gather(*lost, return_exceptions=True)
     upstream_writer.close()
     if deadline is not None:
         await asyncio.gather(client_writer.wait_closed(), upstream_writer.wait_closed(), return_exceptions=True)

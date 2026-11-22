@@ -365,7 +365,33 @@ class StuckWriter:
         await self.closed.wait()
 
 
+class BlockedWriter(StuckWriter):
+    """drain() waits on a peer that never reads, until the connection is aborted."""
+
+    async def drain(self):
+        await self.closed.wait()
+
+
+class LostWriter(StuckWriter):
+    """The transport noticed a reset that no pump is reading for."""
+
+    async def wait_closed(self):
+        await asyncio.sleep(0.01)
+        raise ConnectionResetError()
+
+
 class SpliceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_reset_seen_only_by_the_transport_frees_the_slot(self):
+        client_reader, upstream_reader = asyncio.StreamReader(), asyncio.StreamReader()
+        client_reader.feed_data(b"upload")
+        client_writer, upstream_writer = LostWriter(client_reader), BlockedWriter(upstream_reader)
+        original, forwarder.ABORT_AFTER_S = forwarder.ABORT_AFTER_S, 0.1
+        try:
+            await asyncio.wait_for(forwarder.splice((client_reader, client_writer), (upstream_reader, upstream_writer)), 2)
+        finally:
+            forwarder.ABORT_AFTER_S = original
+        self.assertTrue(upstream_writer.closed.is_set())
+
     async def test_a_reset_frees_the_slot_even_when_the_client_never_reads(self):
         client_reader, upstream_reader = asyncio.StreamReader(), asyncio.StreamReader()
         upstream_reader.set_exception(ConnectionResetError())
