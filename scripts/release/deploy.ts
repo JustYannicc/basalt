@@ -164,6 +164,7 @@ if (command === "boot" || command === "accept") {
     // Plain HTTP through the public pool; needs no Alchemy and touches nothing it could change.
     const { Schema } = await import("effect");
     const {
+      acceptanceModelBeforeApply,
       awaitRecoveryReady,
       bootBeforeApply,
       healingOutcome,
@@ -182,12 +183,30 @@ if (command === "boot" || command === "accept") {
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
       // Only a release that declares a root restart may start on a pool that does not answer.
-      const boot = await bootBeforeApply(credential, client, values["allow-not-serving"] === true);
-      await output(resolve(values.out ?? ""), { boot });
+      const healing = values["allow-not-serving"] === true;
+      const boot = await bootBeforeApply(credential, client, healing);
+      // Every other release needs acceptance's model served once first. A healing release comes to
+      // mend a pool that may refuse model calls, so it never waits on one before its apply.
+      let model: string | undefined;
+      if (!healing)
+        try {
+          model = await acceptanceModelBeforeApply(
+            credential,
+            client,
+            process.env.POOL_ACCEPTANCE_MODEL || undefined,
+          );
+        } catch (error) {
+          // Our own words and the pool's status, never a host: the line is public.
+          console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
+          process.exit(1);
+        }
+      await output(resolve(values.out ?? ""), { boot, ...(model ? { model } : {}) });
       await summary(
         boot === NOT_SERVING
           ? "The pool does not answer before the apply; this release declares a root restart."
-          : "The root's boot is recorded before the apply.",
+          : model
+            ? `The root's boot is recorded before the apply. Acceptance will test with ${model}, which served one turn.`
+            : "The root's boot is recorded before the apply.",
       );
       process.exit(0);
     }

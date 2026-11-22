@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import {
+  acceptanceModelBeforeApply,
   awaitRecoveryReady,
   bootBeforeApply,
   healingOutcome,
@@ -57,10 +58,28 @@ async function pool(
      * that call. A 429 is a provider's; "cap" is the pool's cap on the device's user.
      */
     answer?: Partial<Record<number | "chat" | "catalog", number | "cap">>;
+    /** The catalog's ids, in its own order. */
+    models?: readonly string[];
+    /** Models the provider refuses on every turn, as it did a retired model on 22 Nov. */
+    refuse?: readonly string[];
   } = {},
 ) {
   let chats = 0;
+  const asked: string[] = [];
   const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => answer(request, response, body));
+  });
+  const answer = (request: IncomingMessage, response: ServerResponse, body: string) => {
+    const model = request.url === "/v1/models" ? undefined : String(JSON.parse(body || "{}").model);
+    if (model !== undefined) asked.push(model);
+    if (model !== undefined && options.refuse?.includes(model)) {
+      chats++;
+      response.writeHead(429, { "content-type": "application/json" });
+      response.end(providerBusy);
+      return;
+    }
     const boot = options.boots?.[chats % options.boots.length] ?? "boot-root";
     const status =
       request.url === "/v1/models"
@@ -83,7 +102,10 @@ async function pool(
         "content-type": "application/json",
         "x-signalbox-pool-boot": "boot-root",
       });
-      response.end(JSON.stringify({ object: "list", data: [{ id: "model-a", object: "model" }] }));
+      const ids = options.models ?? ["claude-opus-5-5"];
+      response.end(
+        JSON.stringify({ object: "list", data: ids.map((id) => ({ id, object: "model" })) }),
+      );
       return;
     }
     chats++;
@@ -94,12 +116,13 @@ async function pool(
     }
     response.writeHead(200, { "content-type": "text/event-stream", "x-signalbox-pool-boot": boot });
     response.end('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n');
-  });
+  };
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as { port: number };
   return {
     client: new PoolAcceptanceClient({ origin: `http://127.0.0.1:${port}` }),
     chats: () => chats,
+    asked: () => asked,
     close: () => server.close(),
   };
 }
@@ -527,5 +550,83 @@ test("a 429 on /v1/models never carries a cap: the pool is not serving, before t
     await assert.rejects(bootBeforeApply(credential, live.client, false), /HTTP 429/u);
   } finally {
     live.close();
+  }
+});
+
+// The production catalog's order on 22 Nov: a retired model first, Opus 5.5 at index 14.
+const catalog22Nov = [
+  "claude-3-5-haiku-20241022",
+  ...Array.from({ length: 13 }, (_, index) => `model-${index + 1}`),
+  "claude-opus-5-5",
+  "gpt-6.1-sol",
+];
+
+test("acceptance takes the first reviewed model the catalog lists, never the catalog's first id", async () => {
+  const live = await pool({ models: catalog22Nov, refuse: ["claude-3-5-haiku-20241022"] });
+  try {
+    const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
+    assert.equal(result.passed, true, String(result.cause));
+    assert.deepEqual([...new Set(live.asked())], ["claude-opus-5-5"]);
+  } finally {
+    live.close();
+  }
+});
+
+test("without Opus 5.5 acceptance takes GPT-6.1 Sol, and with neither it sends no turn", async () => {
+  const sol = await pool({ models: ["claude-3-5-haiku-20241022", "gpt-6.1-sol"] });
+  const none = await pool({ models: ["claude-3-5-haiku-20241022"] });
+  try {
+    await runAcceptance({ credential, expect: "same-boot", client: sol.client });
+    assert.deepEqual([...new Set(sol.asked())], ["gpt-6.1-sol"]);
+    await assert.rejects(
+      runAcceptance({ credential, expect: "same-boot", client: none.client }),
+      /None of the acceptance models \(claude-opus-5-5, gpt-6\.1-sol\) is in \/v1\/models/u,
+    );
+    assert.equal(none.chats(), 0);
+  } finally {
+    sol.close();
+    none.close();
+  }
+});
+
+test("a configured acceptance model is used only when the catalog lists it", async () => {
+  const live = await pool({ models: catalog22Nov });
+  try {
+    await runAcceptance({
+      credential,
+      expect: "same-boot",
+      client: live.client,
+      model: "gpt-6.1-sol",
+    });
+    assert.deepEqual([...new Set(live.asked())], ["gpt-6.1-sol"]);
+    await assert.rejects(
+      runAcceptance({ credential, expect: "same-boot", client: live.client, model: "claude-x" }),
+      /The acceptance model claude-x is not in \/v1\/models/u,
+    );
+  } finally {
+    live.close();
+  }
+});
+
+test("one real turn before the apply stops a model the pool cannot serve, and names it", async () => {
+  const live = await pool({ models: catalog22Nov, refuse: ["claude-3-5-haiku-20241022"] });
+  const none = await pool({ models: ["claude-3-5-haiku-20241022"] });
+  try {
+    assert.equal(await acceptanceModelBeforeApply(credential, live.client), "claude-opus-5-5");
+    assert.equal(live.chats(), 1);
+    // What the release did on 22 Nov, with the catalog's first id forced in.
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, live.client, "claude-3-5-haiku-20241022"),
+      /^Error: The acceptance model claude-3-5-haiku-20241022 did not serve one turn before the apply \(HTTP 429\); nothing was applied$/u,
+    );
+    assert.equal(live.chats(), 2);
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, none.client),
+      /None of the acceptance models/u,
+    );
+    assert.equal(none.chats(), 0);
+  } finally {
+    live.close();
+    none.close();
   }
 });
