@@ -261,10 +261,10 @@
         {
           "identity": "cliproxy-home-coordination-pool",
           "file": "0691-home-coordination-pool.patch",
-          "sha256": "d5bb6e9c7613ba5fdb962d52d4ccd5a431a9d44b87837eb5bbfcc2b684a0d975",
+          "sha256": "b8ecfbdecf0d5f32c090146b9cef540539f36fd33050d46efd423ea29a6cfbcd",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup, node liveness and the cluster TLS fingerprint check while the main pool is saturated, and passes the saturated-main-pool heartbeat and node-lookup regressions."
+            "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup, node liveness, the cluster TLS fingerprint check and the management node listing (GET /v8/management/nodes) while the main pool is saturated, and passes the saturated-main-pool heartbeat, node-lookup and node-listing regressions."
           }
         }
       ]
