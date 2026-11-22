@@ -26,6 +26,13 @@ export class FleetFailures {
       diagnostic.runtimeStep === "resume_layer"
     )
       return;
+    return this.quarantine(identity);
+  }
+  /** A runtime that refused a membership policy takes no new call under its old one. */
+  refused(identity: SlotIdentity) {
+    return this.quarantine(identity);
+  }
+  private async quarantine(identity: SlotIdentity) {
     const key = executionKey(identity);
     this.blocked.add(key);
     const retained = this.pending.get(key);
