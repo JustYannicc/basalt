@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import pg from "pg";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import { seriesFixture } from "./series-fixture.ts";
 
@@ -33,5 +34,93 @@ test("every insert into the request history keeps the hourly rollup identical to
     const [first] = await f.insert({ timestamp: timestamp("2026-01-01T05:00:00Z") });
     await f.insert({ ...first, timestamp: timestamp("2026-01-01T05:00:00Z") });
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+const rows = (hours: number, perHour: number, start = "2026-01-01T00:00:00Z") =>
+  Array.from({ length: hours * perHour }, (_, i) => ({
+    timestamp: timestamp(
+      new Date(
+        Date.parse(start) + Math.floor(i / perHour) * 3_600_000 + (i % perHour) * 1_000,
+      ).toISOString(),
+    ),
+    provider: "fixture-lab",
+    model: `fixture-model-${i % 3}`,
+    inputTokens: String(1_000 + i),
+    outputTokens: String(10 + (i % 7)),
+    cacheReadTokens: "0",
+    cacheWriteTokens: "0",
+    totalTokens: String(1_010 + i + (i % 7)),
+    tokenQuality: "complete" as const,
+    failed: i % 11 === 0,
+  }));
+const recompute = (f: { db: { query: Function } }, poolId: string, from: string, to: string) =>
+  f.db.query("SELECT basalt_model_usage_recompute($1,$2::timestamptz,$3::timestamptz)", [
+    poolId,
+    from,
+    to,
+  ]);
+
+test("a backfill recomputes rows that predate the trigger, and resumes where it stopped", async () => {
+  await seriesFixture(async (f) => {
+    const poolId = String((await f.row()).pool);
+    // Rows written before the trigger existed, as production's retained history is.
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(48, 3));
+    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    assert.equal(
+      (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hourly")).rows[0]!.n,
+      0,
+    );
+    // A recompute can be repeated; the first day twice, then the job stops.
+    await recompute(f, poolId, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z");
+    await recompute(f, poolId, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z");
+    assert.notDeepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+    // Written while the job is stopped, into a day it has not reached and one it has.
+    await f.insert(...rows(1, 2, "2026-01-02T05:00:00Z"), ...rows(1, 2, "2026-01-01T05:00:00Z"));
+    await recompute(f, poolId, "2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z");
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+    const hours = await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hours");
+    assert.equal(hours.rows[0]!.n, 48);
+  });
+});
+
+test("rows a writer inserts while an hour is being recomputed are counted once, in either order", async () => {
+  await seriesFixture(async (f) => {
+    const poolId = String((await f.row()).pool);
+    await f.insert(...rows(2, 4));
+    const other = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
+    await other.connect();
+    try {
+      await other.query(`SET search_path TO ${f.schema}`);
+      // A writer inside the hour first: the recompute waits for it and then reads its rows.
+      await f.db.query("BEGIN");
+      await f.insert(...rows(1, 3, "2026-01-01T00:30:00Z"));
+      let recomputed = false;
+      const waiting = recompute(
+        { db: other },
+        poolId,
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T02:00:00Z",
+      ).then(() => (recomputed = true));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(recomputed, false, "the recompute waits for the writer inside its hours");
+      await f.db.query("COMMIT");
+      await waiting;
+      assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+      // The recompute first: the writer waits for it and then adds its rows on top.
+      await other.query("BEGIN");
+      await recompute({ db: other }, poolId, "2026-01-01T00:00:00Z", "2026-01-01T02:00:00Z");
+      let written = false;
+      const writing = f.insert(...rows(1, 3, "2026-01-01T01:40:00Z")).then(() => (written = true));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(written, false, "the writer waits for the recompute of its hour");
+      await other.query("COMMIT");
+      await writing;
+      assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+    } finally {
+      await other.query("ROLLBACK").catch(() => {});
+      await other.end();
+    }
   });
 });

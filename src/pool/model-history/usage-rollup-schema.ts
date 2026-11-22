@@ -149,6 +149,10 @@ export function usageRollupProjection(rows: string) {
     GROUP BY ${usageRollupKeys.map((_, index) => index + 1).join(",")}`;
 }
 
+/** The lock key of one pool's hour, independent of the session's time zone. */
+const hourLock = (pool: string, hour: string) =>
+  `${usageRollupLockClass}, hashtext(${pool}||'|'||extract(epoch FROM ${hour})::bigint::text)`;
+
 const columns = [...usageRollupKeys, ...values.map(([name]) => name)].join(",");
 const upsert = (rows: string) => `INSERT INTO basalt_model_usage_hourly AS t (${columns})
   ${usageRollupProjection(rows)}
@@ -180,7 +184,7 @@ export const historyUsageRollupStatements = [
     completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   // Shared per-(pool, hour) locks, taken in key order, let a backfill recompute an hour exclusively.
   `CREATE FUNCTION basalt_model_usage_rollup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-      PERFORM pg_advisory_xact_lock_shared(${usageRollupLockClass}, hashtext(k.pool||'|'||k.hour::text))
+      PERFORM pg_advisory_xact_lock_shared(${hourLock("k.pool", "k.hour")})
         FROM (SELECT DISTINCT s.pool,
             date_trunc('hour',left(s.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS hour
           FROM inserted s WHERE s.pool IS NOT NULL ORDER BY 1,2) k;
@@ -188,6 +192,31 @@ export const historyUsageRollupStatements = [
       RETURN NULL;
     EXCEPTION WHEN OTHERS THEN
       RAISE EXCEPTION 'basalt_usage_rollup: %', SQLERRM USING ERRCODE = SQLSTATE;
+    END $$`,
+  // Replaces one pool's hours [from_hour, to_hour) with the aggregate of their base rows. It waits for
+  // writers already inside those hours, holds new ones until it commits, and is safe to repeat.
+  `CREATE FUNCTION basalt_model_usage_recompute(target_pool varchar, from_hour timestamptz,
+      to_hour timestamptz) RETURNS bigint LANGUAGE plpgsql AS $$ DECLARE written bigint; BEGIN
+      IF from_hour <> date_trunc('hour',from_hour) OR to_hour <> date_trunc('hour',to_hour)
+        OR to_hour <= from_hour OR to_hour - from_hour > interval '48 hours' THEN
+        RAISE EXCEPTION 'basalt_usage_rollup: recompute takes whole hours, at most 48'
+          USING ERRCODE = '22023';
+      END IF;
+      PERFORM pg_advisory_xact_lock(${hourLock("target_pool", "h.at")})
+        FROM generate_series(from_hour, to_hour - interval '1 hour', interval '1 hour') AS h(at)
+        ORDER BY h.at;
+      DELETE FROM basalt_model_usage_hourly
+        WHERE pool=target_pool AND hour >= from_hour AND hour < to_hour;
+      ${upsert(`(SELECT * FROM basalt_model_requests r WHERE r.pool=target_pool
+        AND r.timestamp >= from_hour - interval '1 second' AND r.timestamp < to_hour + interval '1 second'
+        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' >= from_hour
+        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' < to_hour)`)};
+      GET DIAGNOSTICS written = ROW_COUNT;
+      INSERT INTO basalt_model_usage_hours AS d (pool,hour)
+        SELECT target_pool,h.at FROM generate_series(from_hour, to_hour - interval '1 hour',
+          interval '1 hour') AS h(at)
+        ON CONFLICT (pool,hour) DO UPDATE SET recomputed_at=CURRENT_TIMESTAMP;
+      RETURN written;
     END $$`,
   `CREATE TRIGGER basalt_model_usage_rollup AFTER INSERT ON basalt_model_requests
     REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT
