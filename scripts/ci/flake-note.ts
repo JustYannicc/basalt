@@ -31,7 +31,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const api = github(env);
     const { workflow_runs: runs = [] } = await api.json<{
       workflow_runs?: { id?: number; display_title?: string; html_url?: string }[];
-    }>("/actions/workflows/flake-rerun.yml/runs?event=workflow_run&per_page=50");
+    }>("/actions/workflows/flake-rerun.yml/runs?event=workflow_run&per_page=100");
     const jobs = new Map<number, { name?: string; conclusion?: string | null }[]>();
     for (const candidate of runs.filter((r) => r.display_title === flakeRunTitle(run) && r.id))
       jobs.set(

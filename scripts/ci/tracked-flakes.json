@@ -27,9 +27,14 @@
     "scope": "job",
     "job": "pool-runtime",
     "match": [
-      "--- FAIL: TestResponsesWebsocketSameSessionLaterCreate429DoesNotReplayAfterDownstreamCommit"
+      "--- FAIL: TestResponsesWebsocketSameSessionLaterCreate429DoesNotReplayAfterDownstreamCommit "
     ],
+    "only": {
+      "marker": "--- FAIL: ",
+      "allow": "--- FAIL: TestResponsesWebsocketSameSessionLaterCreate429DoesNotReplayAfterDownstreamCommit "
+    },
     "issue": 1656,
+    "listed": "2026-11-22",
     "expires": "2026-12-22"
   },
   {
@@ -37,9 +42,14 @@
     "scope": "job",
     "job": "catalog-compat",
     "match": [
-      "CONNECTORS_PROOF_FAILURE phase=zoho-mcp-browser-assertions kind=assertion at=zoho-people-mcp.mjs:38"
+      "CONNECTORS_PROOF_FAILURE phase=zoho-mcp-browser-assertions kind=assertion at=zoho-people-mcp.mjs:38 "
     ],
+    "only": {
+      "marker": "CONNECTORS_PROOF_FAILURE ",
+      "allow": "CONNECTORS_PROOF_FAILURE phase=zoho-mcp-browser-assertions kind=assertion at=zoho-people-mcp.mjs:38 "
+    },
     "issue": 1625,
+    "listed": "2026-11-22",
     "expires": "2026-12-22"
   },
   {
@@ -47,10 +57,15 @@
     "scope": "job",
     "job": "production-ops-identity",
     "match": [
-      "e2e/tests/production-ops-database.spec.ts",
-      "AssertionError: expected 502 to be 200"
+      "AssertionError: expected 502 to be 200",
+      "e2e/support/production-ops-account.ts:35:"
     ],
+    "only": {
+      "marker": " FAIL ",
+      "allow": " FAIL   cloud  e2e/tests/production-ops-database.spec.ts > Production database identity > Cloud production operations enforce the reviewed SQL login"
+    },
     "issue": 1657,
+    "listed": "2026-11-22",
     "expires": "2026-12-22"
   }
 ]

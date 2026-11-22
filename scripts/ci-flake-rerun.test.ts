@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { flakeDecision, parseJobFlakes, type JobFlake } from "./ci/flake-rerun.ts";
 import { flakeNote, flakeRunTitle } from "./ci/flake-note.ts";
 import { parsePolicy } from "./ci/flake-policy.ts";
-import type { Run, RunJob } from "./ci/workflow-run.ts";
+import { attemptJobs, supersededPullRequest, type Run, type RunJob } from "./ci/workflow-run.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const read = (path: string) => parse(readFileSync(new URL("../" + path, import.meta.url), "utf8"));
@@ -16,8 +16,10 @@ const listed = JSON.parse(
 const flake: JobFlake = {
   id: "go-race",
   job: "pool-runtime",
-  match: ["--- FAIL: TestRace", "FAIL\tgithub.com/example/pkg"],
+  match: ["--- FAIL: TestRace ", "FAIL\tgithub.com/example/pkg"],
+  only: { marker: "--- FAIL: ", allow: "--- FAIL: TestRace " },
   issue: 1656,
+  listed: "2026-11-22",
   expires: "2026-12-22",
 };
 const run: Run = { id: 7, attempt: 1, conclusion: "failure" };
@@ -47,6 +49,9 @@ test("a job is re-run only when its log carries a listed flake's whole signature
   // Half the signature, or none of it, is a failure for a person.
   for (const log of ["--- FAIL: TestRace (0.00s)", "panic: other", ""])
     assert.equal(decide(jobs, new Map([[1, log]])).action, "report", log);
+  // The listed failure beside another of its kind is no flake: a new failing test stays red.
+  for (const extra of ["--- FAIL: TestFoo (0.01s)", "--- FAIL: TestRaceDetector (0.00s)"])
+    assert.equal(decide(jobs, new Map([[1, flaky + extra + "\n"]])).action, "report", extra);
   // A declared job's shards match its id.
   const shard = { ...flake, job: "declared-cloud" };
   const shardJobs = [{ id: 1, name: "declared-cloud-7", conclusion: "failure" }, jobs[2]!];
@@ -61,9 +66,10 @@ test("a job is re-run only when its log carries a listed flake's whole signature
     assert.equal(decide([{ ...jobs[0]!, name }, jobs[2]!]).action, "report", name);
 });
 
-test("a listed flake stops matching after its expiry date", () => {
+test("a listed flake matches from the day it was listed until its expiry date", () => {
   assert.equal(decide(jobs, undefined, run, [flake], "2026-12-22").action, "rerun");
   assert.equal(decide(jobs, undefined, run, [flake], "2026-12-23").action, "report");
+  assert.equal(decide(jobs, undefined, run, [flake], "2026-11-21").action, "report");
 });
 
 test("any failure no listed flake explains leaves the whole run red for a person", () => {
@@ -95,7 +101,7 @@ test("once, from the first attempt, never over a newer Check, and only for a fai
   assert.equal(decide([jobs[1]!, jobs[2]!]).action, "none");
 });
 
-test("several flaky jobs re-run together only when no other job was cancelled", () => {
+test("several flaky jobs re-run together; a cancelled or timed-out job leaves the run for a person", () => {
   const two = [...jobs, { id: 5, name: "pool-runtime (current)", conclusion: "failure" }];
   const logs = new Map([
     [1, flaky],
@@ -107,11 +113,27 @@ test("several flaky jobs re-run together only when no other job was cancelled", 
     both.jobs.map((job) => job.id),
     [1, 5],
   );
-  // Re-running failed jobs re-runs cancelled ones too, which no flake explains.
-  const cut = [...two, { id: 6, name: "account-usage", conclusion: "cancelled" }];
-  assert.equal(decide(cut, logs).action, "report");
-  // One flaky job re-runs alone, whatever else was cancelled.
-  assert.equal(decide([...jobs, cut.at(-1)!]).action, "rerun");
+  // No flake explains a cancelled or timed-out job, and re-running failed jobs would re-run it; a
+  // lone flaky job re-run beside it would fail the aggregate again.
+  for (const conclusion of ["cancelled", "timed_out", "action_required"]) {
+    const other = { id: 6, name: "account-usage", conclusion };
+    assert.equal(decide([...two, other], logs).action, "report", conclusion);
+    assert.equal(decide([...jobs, other]).action, "report", conclusion);
+  }
+  // A job name with control characters could write past its line into the outputs.
+  assert.equal(
+    decide([{ ...jobs[0]!, name: "pool-runtime (x)\nnote=y" }, jobs[2]!]).action,
+    "none",
+  );
+  // Many legs: the note names the flakes, not every job.
+  const legs = Array.from({ length: 9 }, (_, n) => ({
+    id: 10 + n,
+    name: `pool-runtime (leg-${n}-with-a-long-name)`,
+    conclusion: "failure",
+  }));
+  const many = decide([...legs, jobs[2]!], new Map(legs.map((leg) => [leg.id, flaky])));
+  assert.ok(many.action === "rerun");
+  assert.equal(many.note, "Re-ran 9 jobs for listed flakes go-race (#1656, until 22-12-2026)");
 });
 
 test("every listed job flake names its issue, a signature and an expiry; test-scoped entries stay in-job", () => {
@@ -125,10 +147,7 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
     ],
   );
   const ci = read(".github/workflows/ci.yml");
-  for (const entry of flakes) {
-    assert.ok(ci.jobs[entry.job], entry.id);
-    assert.ok(entry.expires > "2026-11-22" && entry.expires <= "2027-02-22", entry.id);
-  }
+  for (const entry of flakes) assert.ok(ci.jobs[entry.job], entry.id);
   // The in-job retry policy reads only its own entries from the same file.
   assert.ok(parsePolicy(listed).every((entry) => !flakes.some((job) => job.id === entry.id)));
   const base = {
@@ -136,7 +155,9 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
     scope: "job",
     job: "fast",
     match: ["a signature line"],
+    only: { marker: "FAIL ", allow: "FAIL the listed one" },
     issue: 1,
+    listed: "2026-11-22",
     expires: "2026-12-01",
   };
   assert.equal(parseJobFlakes([base]).length, 1);
@@ -147,7 +168,14 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
     { expires: undefined },
     { match: [] },
     { match: ["short"] },
+    { match: ["a signature\nline"] },
     { job: "Fast" },
+    { only: undefined },
+    { only: { marker: "FAIL ", allow: "short" } },
+    { listed: undefined },
+    // No flake lives there forever: at most 90 days from listing, and never before it.
+    { expires: "2027-02-21" },
+    { expires: "2026-11-21" },
   ])
     assert.throws(() => parseJobFlakes([{ ...base, ...broken }]), JSON.stringify(broken));
   assert.throws(() => parseJobFlakes([base, base]), /twice/);
@@ -199,13 +227,40 @@ test("flake-rerun.yml decides read-only from the default branch, and only its re
   assert.equal(decideJob.steps.at(-1).run, "node scripts/ci/flake-rerun.ts");
   assert.equal(rerun.name, "${{ needs.decide.outputs.note }}");
   assert.equal(rerun.if, "needs.decide.outputs.action == 'rerun'");
-  assert.deepEqual(rerun.permissions, { actions: "write" });
+  assert.deepEqual(rerun.permissions, { actions: "write", "pull-requests": "read" });
+  // The run's state is read again right before the POST: decide may be minutes old, and a re-run of
+  // this workflow keeps the old event.
+  const post = rerun.steps.at(-1).run as string;
+  assert.ok(post.indexOf('"1 completed"') < post.indexOf("-X POST"));
+  assert.ok(post.indexOf("HEAD_SHA") < post.indexOf("-X POST"));
   // The writing job checks out nothing, so no repository code runs with its token.
   assert.ok(rerun.steps.every((step: { uses?: string }) => !step.uses));
   const check = read(".github/workflows/ci.yml").jobs.check;
   const note = check.steps.find(
     (step: { run?: string }) => step.run === "node scripts/ci/flake-note.ts",
   );
-  assert.equal(note.if, "always() && github.run_attempt > 1");
+  assert.equal(
+    note.if,
+    "always() && github.run_attempt == 2 && github.triggering_actor == 'github-actions[bot]'",
+  );
   assert.equal(note["continue-on-error"], true);
+});
+
+test("the shared reads count only this repository's newer Checks and never decide on part of a run", async () => {
+  const stub = (body: unknown) =>
+    ({ call: async () => new Response(), json: async () => body }) as never;
+  const env = { RUN_EVENT: "pull_request", HEAD_BRANCH: "fix/x", GITHUB_REPOSITORY: "owner/repo" };
+  const runs = (repository: string, id = 8) => ({
+    workflow_runs: [{ id, head_repository: { full_name: repository } }],
+  });
+  assert.equal(await supersededPullRequest(stub(runs("owner/repo")), run, env), true);
+  // A fork's pull request on the same branch name, or an older run, supersedes nothing.
+  assert.equal(await supersededPullRequest(stub(runs("fork/repo")), run, env), false);
+  assert.equal(await supersededPullRequest(stub(runs("owner/repo", 6)), run, env), false);
+  assert.equal(
+    await supersededPullRequest(stub(runs("owner/repo")), run, { ...env, RUN_EVENT: "push" }),
+    false,
+  );
+  const listed = { total_count: 2, jobs: [{ id: 1, name: "fast", conclusion: "failure" }] };
+  await assert.rejects(attemptJobs(stub(listed), run), /read 1 of the run's 2 jobs/);
 });

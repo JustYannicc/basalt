@@ -54,15 +54,38 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: write
+      pull-requests: read
     steps:
       - name: Re-run only the jobs the listed flakes failed
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PULL_REQUEST: ${{ github.event.workflow_run.pull_requests[0].number }}
           JOBS: ${{ needs.decide.outputs.jobs }}
         run: |
+          # decide ran a queue and a runner start ago, and a re-run of this workflow keeps the old
+          # event, so the run's own state is read again right before the POST.
+          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '"\(.run_attempt) \(.status)"')
+          if [ "$state" != "1 completed" ]; then
+            echo "Not re-running: Check run $RUN_ID is now at attempt and status $state."
+            exit 0
+          fi
+          if [ "$RUN_EVENT" = pull_request ]; then
+            # A pull request's Checks share a group that cancels in progress.
+            newer=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f event=pull_request -f branch="$HEAD_BRANCH" -f per_page=20 \
+              --jq "[.workflow_runs[] | select(.id > $RUN_ID and .head_repository.full_name == \"$GITHUB_REPOSITORY\")] | length")
+            head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${PULL_REQUEST:-0}" --jq .head.sha 2>/dev/null || true)
+            if [ "$newer" != 0 ] || [ "$head" != "$HEAD_SHA" ]; then
+              echo "Not re-running: pull request #${PULL_REQUEST:-?} moved past this Check."
+              exit 0
+            fi
+          fi
           # One job re-runs alone with its dependents. Several re-run as the run's failed jobs, which
-          # flake-rerun.ts allows only when no other job failed or was cancelled.
+          # flake-rerun.ts allows only when no other job failed, was cancelled or timed out.
           count=$(jq 'length' <<<"$JOBS")
           if [ "$count" = 1 ]; then
             gh api -X POST "repos/$GITHUB_REPOSITORY/actions/jobs/$(jq '.[0]' <<<"$JOBS")/rerun"
