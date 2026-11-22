@@ -55,6 +55,8 @@ const Row = Schema.Struct({
   identity: Schema.optional(SlotIdentity),
   phase: Schema.String,
   active: Schema.Number,
+  reason: Schema.optional(Schema.String),
+  inPhaseMs: Schema.optional(Schema.Number),
 });
 export const Permission = Schema.Struct({
   operationId: Schema.String,

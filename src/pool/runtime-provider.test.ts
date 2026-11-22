@@ -19,6 +19,7 @@ async function fixture(
     targetState?: string;
     siblingState?: string;
     siblingImage?: string;
+    listing?: (target: string, image: string, application: string) => unknown[];
   } = {},
 ) {
   const f = await runtimeProofFixture();
@@ -48,18 +49,20 @@ async function fixture(
           application_id: f.raw.id,
           status: { state },
         });
-        const result = [
-          value(
-            options.absent ? "other-instance" : f.manifest.target.instanceId,
-            undefined,
-            options.targetState,
-          ),
-          value(
-            options.duplicate ? f.manifest.target.instanceId : "sibling",
-            options.wrongSibling ? "wrong-image" : options.siblingImage,
-            options.siblingState,
-          ),
-        ];
+        const result = options.listing
+          ? options.listing(f.manifest.target.instanceId, f.raw.configuration.image, f.raw.id)
+          : [
+              value(
+                options.absent ? "other-instance" : f.manifest.target.instanceId,
+                undefined,
+                options.targetState,
+              ),
+              value(
+                options.duplicate ? f.manifest.target.instanceId : "sibling",
+                options.wrongSibling ? "wrong-image" : options.siblingImage,
+                options.siblingState,
+              ),
+            ];
         return Response.json({
           success: true,
           errors: [],
@@ -165,6 +168,115 @@ test("retirement releases no resource guard until the exact provider instance is
       false,
     );
   }
+});
+
+// The two instance shapes production returned on 22 Nov 2026, ids, times and places replaced:
+// a destroyed instance still listed under state=active, and a running one.
+const destroyed = (id: string, image: string, application: string) => ({
+  id,
+  application_id: application,
+  status: { state: "inactive", updated_at: "2026-11-22T14:47:13Z" },
+  image,
+});
+const running = (id: string, image: string, application: string) => ({
+  id,
+  application_id: application,
+  started_at: "2026-11-22T12:22:43.448999936Z",
+  status: { state: "running", updated_at: "2026-11-22T12:22:43.448999936Z", exit_code: 0 },
+  location: { name: "synthetic01", region: "WEUR" },
+  image,
+  name: "synthetic-instance",
+});
+
+test("the production listing, one destroyed instance beside none running, is absent once the driver reported it stopped", async () => {
+  const f = await fixture({ listing: (target, image, app) => [destroyed(target, image, app)] });
+  const stopped = { driverStopped: true } as const;
+  assert.equal(
+    await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+    true,
+  );
+  assert.equal(await f.reader.absent(f.expected, f.manifest.target.instanceId), false);
+  assert.equal(await f.reader.empty(f.expected), false);
+});
+
+test("observe proves a running target beside a destroyed neighbour listed as production listed it", async () => {
+  const f = await fixture({
+    listing: (target, image, app) => [
+      running(target, image, app),
+      destroyed("neighbour", image, app),
+    ],
+  });
+  const proof = await f.reader.observe(f.expected, f.manifest.target.instanceId);
+  assert.equal("instanceId" in proof ? proof.instanceId : undefined, f.manifest.target.instanceId);
+  // A destroyed target is never observed, whatever runs beside it.
+  const gone = await fixture({
+    listing: (target, image, app) => [
+      destroyed(target, image, app),
+      running("neighbour", image, app),
+    ],
+  });
+  await assert.rejects(
+    gone.reader.observe(gone.expected, gone.manifest.target.instanceId),
+    /^Error: Pool provider observation refused$/,
+  );
+});
+
+test("a target the provider lists as stopped or failed is present, each with its own reason", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const stopped = { driverStopped: true } as const;
+  for (const state of ["stopped", "failed"]) {
+    const f = await fixture({ targetState: state, siblingState: "inactive" });
+    assert.equal(
+      await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+      false,
+    );
+  }
+  assert.deepEqual(
+    lines.mock.calls.map((call) => call.arguments),
+    [
+      ["POOL_PROVIDER_ABSENCE", { reason: "stopped" }],
+      ["POOL_PROVIDER_ABSENCE", { reason: "failed" }],
+    ],
+  );
+});
+
+test("of the documented states only inactive counts as stopped; stopped, failed and unknown may still run", async () => {
+  const stopped = { driverStopped: true } as const;
+  for (const [state, absent] of [
+    ["stopped", false],
+    ["inactive", true],
+    ["failed", false],
+    ["unknown", false],
+    ["stopping", false],
+    ["unhealthy", false],
+    ["provisioning", false],
+    ["running", false],
+  ] as const) {
+    const f = await fixture({ absent: false, targetState: state, siblingState: "inactive" });
+    assert.equal(
+      await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+      absent,
+      state,
+    );
+  }
+});
+
+test("an undocumented state is never absent or proof, and refuses with its own reason", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const f = await fixture({ targetState: "hibernating" });
+  const stopped = { driverStopped: true } as const;
+  assert.equal(
+    await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+    false,
+  );
+  await assert.rejects(
+    f.reader.observe(f.expected, f.manifest.target.instanceId),
+    /^Error: Pool provider observation refused$/,
+  );
+  assert.deepEqual(
+    lines.mock.calls.map((call) => call.arguments),
+    [["POOL_PROVIDER_ABSENCE", { reason: "unknown_state" }]],
+  );
 });
 
 // The provider keeps listing a destroyed instance under state=active and reports it "inactive"
