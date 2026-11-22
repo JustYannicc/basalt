@@ -21,7 +21,12 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
-import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
+import {
+  RootFallback,
+  rootFallbackBurst,
+  rootFallbackCounts,
+  rootFallbackRefused,
+} from "./root-fallback.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
 /** A far cell is started again at most this many times before it serves from its last draw. */
@@ -127,6 +132,9 @@ export class RuntimeFleet {
   private dispatches = new FleetDispatches();
   private failures: FleetFailures;
   private rootFallback: RootFallback;
+  // Counted root calls that hold a token but haven't sent yet. While the root starts they queue on
+  // its warm-up and would all send at once, so no more than a burst may wait.
+  private rootWaiting = 0;
   constructor(deps: Dependencies) {
     if (
       !Number.isSafeInteger(deps.targetActive) ||
@@ -290,14 +298,32 @@ export class RuntimeFleet {
     counted: boolean,
   ) {
     let sent = false;
+    let waiting = counted;
+    if (waiting) this.rootWaiting++;
+    const settle = () => {
+      if (waiting) this.rootWaiting--;
+      waiting = false;
+    };
     return legacy(request, () => {
       sent = true;
+      settle();
       beforeDispatch();
-    }).catch((error: unknown) => {
-      // It reached nothing, and a retry before dispatch takes a token again.
-      if (counted && !sent) this.rootFallback.refund();
-      throw error;
-    });
+    }).then(
+      (response) => {
+        settle();
+        return response;
+      },
+      (error: unknown) => {
+        settle();
+        // It reached nothing, and a retry before dispatch takes a token again.
+        if (counted && !sent) this.rootFallback.refund();
+        throw error;
+      },
+    );
+  }
+  /** A counted root call may go only with a token, and only while no more than a burst waits. */
+  private rootAdmits() {
+    return this.rootWaiting < rootFallbackBurst && this.rootFallback.take();
   }
   async forward(
     request: Request,
@@ -319,7 +345,7 @@ export class RuntimeFleet {
       // recovery warm-up is only a hint: the request's own fresh admission on the primary decides.
       // Its rate is capped, so a burst can't starve the root's own Home; a refused call still grows.
       const counted = rootFallbackCounts(request);
-      if (counted && !this.rootFallback.take()) {
+      if (counted && !this.rootAdmits()) {
         this.grow();
         return rootFallbackRefused(request);
       }
@@ -334,7 +360,7 @@ export class RuntimeFleet {
     // The root as the only route takes the same capped rate as the capacity fallback above.
     const counted =
       reservation.kind === "primary" && reservation.alone && rootFallbackCounts(request);
-    if (counted && !this.rootFallback.take()) {
+    if (counted && !this.rootAdmits()) {
       this.grow();
       dispatched();
       try {

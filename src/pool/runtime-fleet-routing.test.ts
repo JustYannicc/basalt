@@ -693,3 +693,53 @@ test("a clock that steps back never earns the same span twice", async (context) 
   );
   await f.settle();
 });
+
+test(
+  "while the root starts, at most a burst of counted calls wait for it, so they never all send at once",
+  { timeout: 5_000 },
+  async (context) => {
+    context.mock.method(console, "error", () => {});
+    const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+    const started = deferred<void>();
+    let entered = 0;
+    // The root's warm-up: calls wait here before their send.
+    const starting = async (_request: Request, beforeDispatch: () => void) => {
+      entered++;
+      await started.promise;
+      beforeDispatch();
+      return new Response("legacy");
+    };
+    const waiting = Array.from({ length: rootFallbackBurst }, () =>
+      f.fleet.forward(request(), "pool", starting, () => {}),
+    );
+    while (entered < rootFallbackBurst) await new Promise((resolve) => setImmediate(resolve));
+    // The bucket refills while they wait, yet no more calls may queue behind the warm-up.
+    f.advance(200 + 20_000);
+    const later = await Promise.all(
+      Array.from({ length: 5 }, () => f.fleet.forward(request(), "pool", starting, () => {})),
+    );
+    assert.ok(later.every((response) => response.status === 503));
+    started.resolve();
+    const served = await Promise.all(waiting);
+    assert.ok(served.every((response) => response.status === 200));
+    await Promise.all([...served, ...later].map((response) => response.text()));
+    await f.settle();
+  },
+);
+
+test("a root call that fails after its send keeps its token spent", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const failsAfterSend = async (_request: Request, beforeDispatch: () => void) => {
+    beforeDispatch();
+    throw new Error("synthetic failure after the send");
+  };
+  for (let call = 0; call < rootFallbackBurst; call++)
+    await assert.rejects(f.fleet.forward(request(), "pool", failsAfterSend, () => {}));
+  // It may have run: no refund, so the next call finds the bucket empty.
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [503],
+  );
+  await f.settle();
+});
