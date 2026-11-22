@@ -22,6 +22,7 @@ import {
 import { loadMiniflare } from "../startup-profiler/profile.ts";
 import { readBundle } from "../worker-startup.ts";
 import { historyTrafficPath } from "../../src/pool/model-history/traffic.ts";
+import { historyUsageRollupPath } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 
 const expectedTables = [
   "basalt_model_history_migrations",
@@ -125,6 +126,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         historyBackfillPath,
         historyTrafficPath,
         historyImportCompletionPath,
+        historyUsageRollupPath,
       ]) {
         const response = await publicPool.fetch(`http://pool${path}`, {
           method: "POST",
