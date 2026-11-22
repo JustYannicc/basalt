@@ -1,0 +1,31 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -8559,3 +8559,27 @@
+          },
+      };
+  }).pipe(Effect.withSpan("drift.plan", {
++diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
++--- a/src/Cloudflare/Workers/WorkerProvider.ts
+++++ b/src/Cloudflare/Workers/WorkerProvider.ts
++@@ -1158,7 +1158,7 @@
++  * the bundle/vite/asset-content hashes, so a change to e.g. a compatibility
++  * flag or observability config planned as a noop and silently never deployed.
++  */
++-const resolveWorkerMetadataHash = ({
+++export const resolveWorkerMetadataHash = ({
++   props,
++   bindings,
++   accountId,
++diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
++--- a/lib/Cloudflare/Workers/WorkerProvider.js
+++++ b/lib/Cloudflare/Workers/WorkerProvider.js
++@@ -798,7 +798,7 @@
++  * the bundle/vite/asset-content hashes, so a change to e.g. a compatibility
++  * flag or observability config planned as a noop and silently never deployed.
++  */
++-const resolveWorkerMetadataHash = ({ props, bindings, accountId, stack, selfUrl, }) => resolveMetadataHashValue({
+++export const resolveWorkerMetadataHash = ({ props, bindings, accountId, stack, selfUrl, }) => resolveMetadataHashValue({
++     accountId,
++     selfUrl,
++     stack: { name: stack.name, stage: stack.stage },

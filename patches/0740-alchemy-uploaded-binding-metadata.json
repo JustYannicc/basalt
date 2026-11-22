@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-uploaded-binding-metadata",
+  "file": "0740-alchemy-uploaded-binding-metadata.patch",
+  "content_sha256": "c280e22826ddc349116408168096cf01f7dedabeef10815c6722f2a4d3acd519",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release hashes a Worker's bindings for its metadata hash as the upload carries them, without the dev-only hyperdrives channel; remove after the source/lib metadata hash proof passes without it."
+}
