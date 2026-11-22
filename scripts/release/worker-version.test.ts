@@ -220,6 +220,11 @@ test("only a message that names its secrets in Cloudflare's form yields names", 
     secretChanged("").message,
     secretChanged("EXECUTOR TELEMETRY").message,
     secretChanged("EXECUTOR_TELEMETRY, ").message,
+    // Anything besides the changed secrets is another block, which `force` would override too.
+    `${secretChanged("DB_PASSWORD").message.replace(" The following secrets have changed: DB_PASSWORD", "")} The following secrets have been removed: DB_PASSWORD. The following secrets have changed: EXECUTOR_TELEMETRY`,
+    `${secretChanged("DB_PASSWORD").message} The following secrets have changed: EXECUTOR_TELEMETRY`,
+    "Binding DB_PASSWORD type changed; The following secrets have changed: EXECUTOR_TELEMETRY",
+    `${secretChanged("EXECUTOR_TELEMETRY").message} It is also bound elsewhere.`,
   ])
     assert.equal(changedSecrets(message), undefined, message);
 });

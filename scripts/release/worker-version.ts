@@ -70,12 +70,17 @@ export const servingVersion = (target: Target) =>
 /** Cloudflare's refusal to deploy a version while a secret differs from the value it ran with. */
 const SECRET_CHANGED = 10220;
 
-/** The secrets a changed-secret refusal names, or undefined when its message names none. */
-export const changedSecrets = (message: string): readonly string[] | undefined => {
-  const listed = /The following secrets have changed: ([^.]+)\.?$/u.exec(message.trim())?.[1];
-  const names = listed?.split(",").map((name) => name.trim());
-  return names?.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) ? names : undefined;
-};
+/**
+ * Cloudflare's whole changed-secret message, word for word. `force` overrides every block, not only
+ * this one, so a message with anything else in it (a removed secret, a changed binding) names no
+ * secrets here and is never forced.
+ */
+const SECRET_CHANGED_MESSAGE =
+  /^A secret has changed since this version was active\. If you are sure this is ok, add a \?force=true query parameter to allow the rollback\. The following secrets have changed: ([A-Za-z_][A-Za-z0-9_]*(?:, [A-Za-z_][A-Za-z0-9_]*)*)\.?$/u;
+
+/** The secrets a changed-secret refusal names, or undefined unless it is exactly that message. */
+export const changedSecrets = (message: string): readonly string[] | undefined =>
+  SECRET_CHANGED_MESSAGE.exec(message.trim())?.[1]?.split(", ");
 
 const errorsOf = (body: unknown) => {
   const errors = (body as { errors?: unknown } | undefined)?.errors;
@@ -91,9 +96,10 @@ const errorsOf = (body: unknown) => {
  * Deploys an earlier version at 100%, as `wrangler rollback` does. Cloudflare refuses it across a
  * class change, and while a secret differs from the value the version ran with. That refusal is
  * sent again with `force` only when every secret it names is in `forceSecrets`, the release
- * policy's list of secrets that differ on every release by design. Cloudflare keeps a secret's
- * value per version (changing one creates a new version), so the earlier version comes back with
- * the value it ran with.
+ * policy's list of secrets that differ on every release by design, and the refusal is exactly that
+ * one message: Cloudflare's `force` overrides every block, not only the changed secret. Cloudflare
+ * keeps a secret's value per version (changing one creates a new version), so the earlier version
+ * comes back with the value it ran with.
  */
 export const rollbackTo = (
   target: Target,
