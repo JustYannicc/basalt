@@ -4,7 +4,15 @@ import { quietFleet } from "../../scripts/pool-tests/runtime-fleet-quiet-fixture
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { fleetRouting } from "./runtime-fleet/production.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
-import { startingBoundMs } from "./runtime-fleet/phase-bounds.ts";
+import {
+  countStillMs,
+  drainingBoundMs,
+  fleetWakeUp,
+  quarantineReportMs,
+  retiringBoundMs,
+  startingBoundMs,
+  upkeepCadenceMs,
+} from "./runtime-fleet/phase-bounds.ts";
 import { modelUseAssertionTtlMs } from "./membership-contract.ts";
 
 const deadline = async (): Promise<never> => {
@@ -188,4 +196,92 @@ test("a row stored before phase times existed starts its bound at the next write
   now += 1_000;
   await state.stampPhases();
   assert.equal((await state.inspect())[0]?.phaseAt, 5_001_000);
+});
+
+test("in quiet time the next fleet wake-up never comes later than the earliest bound of any row", () => {
+  const idleMilliseconds = 60_000;
+  const at = 10_000_000;
+  type Shape = Parameters<typeof fleetWakeUp>[0][number];
+  const shapes: Shape[] = [
+    { phase: "reserved", active: 0, lastUsedAt: at, phaseAt: at },
+    { phase: "warming", active: 0, lastUsedAt: at, phaseAt: at + 7_000 },
+    { phase: "uncertain", active: 0, lastUsedAt: at, phaseAt: at + 180_000 },
+    { phase: "ready", active: 0, lastUsedAt: at + 3_000, phaseAt: at },
+    { phase: "ready", active: 2, lastUsedAt: at, phaseAt: at },
+    { phase: "draining", active: 1, drainAcknowledged: true, lastUsedAt: at + 30_000, phaseAt: at },
+    { phase: "draining", active: 1, drainAcknowledged: true, lastUsedAt: at, phaseAt: at + 90_000 },
+    { phase: "draining", active: 0, drainAcknowledged: true, lastUsedAt: at, phaseAt: at },
+    { phase: "retiring", active: 0, drainAcknowledged: true, lastUsedAt: at, phaseAt: at + 1_000 },
+    { phase: "quarantined", active: 0, lastUsedAt: at, phaseAt: at },
+  ];
+  // The next instant each row needs a pass: its phase bound, idle bound, count bound or hourly report.
+  const due = (row: Shape, now: number) => {
+    const phaseAt = row.phaseAt!;
+    const bounds: number[] = [];
+    if (["reserved", "warming", "uncertain"].includes(row.phase))
+      bounds.push(phaseAt + startingBoundMs);
+    if (row.phase === "draining") bounds.push(phaseAt + drainingBoundMs);
+    if (row.phase === "retiring") bounds.push(phaseAt + retiringBoundMs);
+    if (row.phase === "quarantined")
+      bounds.push(phaseAt + Math.ceil((now - phaseAt) / quarantineReportMs) * quarantineReportMs);
+    if (row.phase === "ready" && row.active === 0) bounds.push(row.lastUsedAt + idleMilliseconds);
+    if ((row.phase === "ready" || row.phase === "draining") && row.active > 0)
+      bounds.push(row.lastUsedAt + countStillMs);
+    return Math.min(...bounds.map((bound) => Math.max(bound, now)));
+  };
+  for (const fleet of [...shapes.map((shape) => [shape]), shapes])
+    for (let now = at; now <= at + 3 * 60 * 60_000; now += 997) {
+      const wake = fleetWakeUp(fleet, { enabled: true, idleMilliseconds }, now);
+      const earliest = Math.min(...fleet.map((row) => due(row, now)));
+      assert.ok(wake !== undefined, `${fleet.map((row) => row.phase)} never wakes the fleet`);
+      assert.ok(wake > now, "a wake-up is never in the past");
+      assert.ok(
+        wake <= Math.max(earliest, now + upkeepCadenceMs),
+        `${fleet.map((row) => row.phase)} at +${now - at} ms wakes at +${wake - at}, after its bound at +${earliest - at}`,
+      );
+    }
+});
+
+test("a controller replaced in the middle of a retirement retires on the observed absence without a second destroy", async (context) => {
+  quiet(context);
+  let absent = false;
+  const f = quietFleet({ idleMilliseconds: 1_000 });
+  await f.add({ retired: async () => absent });
+  assert.deepEqual(
+    (await f.pass()).map((row) => row.phase),
+    ["draining"],
+  );
+  assert.deepEqual(
+    (await f.pass()).map((row) => row.phase),
+    ["retiring"],
+  );
+  assert.equal(f.calls.retires, 1);
+  f.restart();
+  absent = true;
+  assert.deepEqual(await f.pass(), []);
+  assert.equal(f.calls.retires, 1, "the replaced controller never sends a second destroy");
+});
+
+test("a failed runtime whose absence never arrives holds its place, says so hourly, and never frees it", async (context) => {
+  const warn = quiet(context);
+  const f = quietFleet();
+  const cell = await f.add();
+  await f.state.quarantine(cell);
+  const rows = await f.quiet(150 * 60_000);
+  const held = rows.find((row) => row.target.slotId === cell.slotId);
+  assert.deepEqual([held?.phase, held?.reason], ["quarantined", "runtime_failed"]);
+  assert.ok(
+    !rows.some(
+      (row) =>
+        row.target.slotId !== cell.slotId && row.target.homePeerOrdinal === cell.homePeerOrdinal,
+    ),
+    "no other runtime took the held place",
+  );
+  const lines = warn.mock.calls
+    .filter(({ arguments: [line, fields] }) => {
+      const value = fields as { slot?: string } | undefined;
+      return line === "POOL_FLEET_QUARANTINE" && value?.slot === cell.slotId;
+    })
+    .map(({ arguments: [, fields] }) => (fields as { event: string }).event);
+  assert.deepEqual(lines, ["entered", "held", "held"]);
 });

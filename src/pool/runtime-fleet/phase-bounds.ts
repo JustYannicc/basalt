@@ -47,6 +47,44 @@ export function pastBound(row: PhaseRow, now: number) {
   return false;
 }
 
+/** The fleet alarm's cadence while any row still has work to do. */
+export const upkeepCadenceMs = 2_000;
+
+interface WakeRow extends PhaseRow {
+  active: number;
+  lastUsedAt: number;
+  drainAcknowledged?: boolean | undefined;
+}
+
+/**
+ * When the fleet alarm must run next. In quiet time it is the only actor, so no row may pass a bound
+ * by more than one cadence without a pass.
+ */
+export function fleetWakeUp(
+  rows: readonly WakeRow[],
+  policy: { enabled: boolean; idleMilliseconds: number },
+  now: number,
+) {
+  const cadence = now + upkeepCadenceMs;
+  const deadlines = rows.map((row) => {
+    if (row.phase === "ready")
+      return policy.enabled && row.active
+        ? cadence
+        : Math.min(
+            cadence,
+            Math.max(now + 100, row.lastUsedAt + (policy.enabled ? policy.idleMilliseconds : 0)),
+          );
+    // A held stream's release wakes the fleet itself; a lost one is read again once it stood still.
+    if (row.phase === "draining" && row.active && row.drainAcknowledged)
+      return Math.max(
+        cadence,
+        Math.min(row.lastUsedAt + countStillMs, (row.phaseAt ?? now) + drainingBoundMs),
+      );
+    return cadence;
+  });
+  return deadlines.length ? Math.min(...deadlines) : undefined;
+}
+
 /** One closed line when a row enters quarantine and once an hour while it holds its place. */
 export function logQuarantine(
   event: "entered" | "held",
