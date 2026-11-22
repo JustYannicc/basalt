@@ -49,19 +49,23 @@ export function unsentRefusal(request: Request, error?: unknown) {
 
 /**
  * The controller's answer to a call that ran nowhere, under the id its terminal start was written
- * with, and its one log line. Every field is closed: the endpoint's step and reason when the runtime
- * refused, and the forward's guard and cause, which say where it stopped when the runtime didn't.
+ * with, and its one log line. Every field is closed: the endpoint's trace id, step and reason when
+ * the runtime refused, and the forward's guard and cause, which say where it stopped when it didn't.
  */
 export function unsentAnswer(
   request: Request,
   requestId: string,
-  diagnostic: Pick<GatewayFailureDiagnostic, "runtimeStep" | "runtimeReason" | "guard" | "cause">,
+  diagnostic: Pick<
+    GatewayFailureDiagnostic,
+    "runtimeStep" | "runtimeReason" | "runtimeEndpointRequestId" | "guard" | "cause"
+  >,
   resent = false,
 ) {
   console.error(
     "POOL_CONTROLLER_UNSENT",
     JSON.stringify({
       requestId,
+      endpointRequestId: diagnostic.runtimeEndpointRequestId ?? null,
       step: diagnostic.runtimeStep ?? null,
       reason: diagnostic.runtimeReason ?? null,
       guard: diagnostic.guard,

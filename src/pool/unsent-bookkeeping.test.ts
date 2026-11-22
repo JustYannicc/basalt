@@ -184,10 +184,13 @@ test("a call never sent and then sent again is recorded once, by the answer its 
 
 test("a call refused by its runtime's endpoint before the send records no outcome either", async (context) => {
   const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
+  const trace = "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
   const refused = await h.send(await h.call(), async (_request, ...rest) => {
     (rest[3] as () => void)();
     const error = new Error("endpoint readiness refused");
     rememberRuntimeFailure("endpoint_health", error);
+    correlateEndpointRequest(error, trace);
     throw error;
   });
   assert.equal(refused.status, 503);
@@ -195,6 +198,17 @@ test("a call refused by its runtime's endpoint before the send records no outcom
   await refused.text();
   await h.settle();
   assert.deepEqual(h.finishes, []);
+  // Its one line names the endpoint's trace beside the attempt, so the two can be matched.
+  const lines = logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT");
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(String(lines[0]!.arguments[1])), {
+    requestId: refused.headers.get("X-Request-Id"),
+    endpointRequestId: trace,
+    step: "endpoint_health",
+    reason: "transport",
+    guard: "upstream_dispatch",
+    cause: "Error",
+  });
 });
 
 test("a re-send refused again before its own send stays the one request, with no second record", async (context) => {
@@ -216,6 +230,7 @@ test("a re-send refused again before its own send stays the one request, with no
   // Refused outside the runtime, the line still says where: the forward's guard and cause.
   assert.deepEqual(JSON.parse(String(lines[0]!.arguments[1])), {
     requestId: attempt,
+    endpointRequestId: null,
     step: null,
     reason: null,
     guard: "runtime_port",
