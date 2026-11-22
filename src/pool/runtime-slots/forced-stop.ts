@@ -5,6 +5,7 @@ import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
 import type { RuntimeConfiguration } from "./configuration.ts";
 import type { PoolStatus } from "../lifecycle.ts";
+import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
 import {
   auditDeferralMs,
   exitConfirmationMs,
@@ -65,7 +66,8 @@ export class RuntimeForcedStop {
     if (!(await this.ownsRunningBoot(record, configuration, identity, signal)))
       throw new SlotRefused("identity");
     if (!container.running) return { stopped: true, hard: false };
-    if (await this.serving(identity, signal)) throw new SlotRefused("selection");
+    const refusal = await this.serving(identity, signal);
+    if (refusal === true) throw new SlotRefused("selection");
     const held = await this.heldBy(identity, refusingSince);
     if (held && Date.now() - held.stillSince < leakedStreamsMs)
       return { stopped: false, hard: false, waiting: held };
@@ -75,7 +77,12 @@ export class RuntimeForcedStop {
       (at) => at > now - hourMs,
     );
     if (recent.length >= forcedStopsPerHour) return { stopped: false, hard: false, limited: true };
-    if (await this.slowAuditDefers(identity, configuration, refusingSince, signal))
+    // Only a prompt readiness refusal can be the audit's. A timeout, a transport failure or an
+    // identity refusal stops as before: it never starts the probe, so it never waits behind one.
+    if (
+      refusal === "unhealthy" &&
+      (await this.slowAuditDefers(identity, configuration, refusingSince, signal))
+    )
       throw new SlotRefused("selection");
     // The probe can take seconds: a container that exited on its own meanwhile is not a stop.
     if (!container.running) return { stopped: true, hard: false };
@@ -183,15 +190,16 @@ export class RuntimeForcedStop {
       return "stop_failed";
     }
   }
+  /** `true` when this boot answers its health read, otherwise the closed reason it refused with. */
   private async serving(identity: SlotIdentity, signal: AbortSignal) {
     try {
       await this.deps.health(
         identity,
         AbortSignal.any([signal, AbortSignal.timeout(servingReadMs)]),
       );
-      return true;
-    } catch {
-      return false;
+      return true as const;
+    } catch (error) {
+      return runtimeFailureDiagnostic(error, "slot_health").runtimeReason;
     }
   }
 }

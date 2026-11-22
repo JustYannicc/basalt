@@ -6,6 +6,7 @@ import {
   homeHealthReadMs,
 } from "./runtime-slots/audit-probe.ts";
 import type { RuntimeConfiguration } from "./runtime-slots/configuration.ts";
+import { readinessReadMs } from "./runtime-slots/forced-restart-timing.ts";
 import { poolDatabase } from "./database-settings.ts";
 
 const configuration: RuntimeConfiguration = {
@@ -44,7 +45,11 @@ const after = (milliseconds: number, answer: Answer) => async () => {
 };
 
 /** Container ports answering from `replies`; the listing takes `listingMs` on the probe's clock. */
-function container(replies: Record<string, Reply>, listingMs = auditDeadlineMs + 440) {
+function container(
+  replies: Record<string, Reply>,
+  listingMs = auditDeadlineMs + 440,
+  honoursAbort = true,
+) {
   let clock = 0;
   const calls: string[] = [];
   const port = (number: number) => ({
@@ -53,7 +58,10 @@ function container(replies: Record<string, Reply>, listingMs = auditDeadlineMs +
       calls.push(call);
       const reply = replies[call] ?? { status: 404 };
       if (reply instanceof Error) throw reply;
-      const answer = typeof reply === "function" ? await abortable(reply(), init?.signal) : reply;
+      const answer =
+        typeof reply !== "function"
+          ? reply
+          : await (honoursAbort ? abortable(reply(), init?.signal) : reply());
       if (call.endsWith("/v8/management/nodes")) clock += listingMs;
       return Response.json(answer.body ?? {}, { status: answer.status });
     },
@@ -146,4 +154,28 @@ test("a peer Home is read on its own port", async () => {
   });
   assert.ok(await probe.slowAudit({ ...configuration, homePeerOrdinal: 1 }, "old-boot", signal()));
   assert.ok(calls.includes("8329 /v8/management/nodes") && !calls.includes("8327 /healthz"));
+});
+
+const never = () => new Promise<Answer>(() => {});
+
+test("a readiness read that never answers, even past its abort, gives up within its deadline", async () => {
+  const { probe, calls } = container({ ...healthy, "8318 /ready": never }, undefined, false);
+  const started = performance.now();
+  assert.equal(await probe.slowAudit(configuration, "old-boot", signal()), undefined);
+  assert.ok(performance.now() - started < readinessReadMs + 1_000);
+  assert.equal(listings(calls).length, 0);
+});
+
+test("a listing that ignores its abort is given up on time and still counts as in flight", async () => {
+  const { probe, calls } = container(
+    { ...healthy, "8327 /v8/management/nodes": never },
+    undefined,
+    false,
+  );
+  assert.equal(
+    await probe.slowAudit(configuration, "old-boot", AbortSignal.timeout(300)),
+    undefined,
+  );
+  assert.equal(await probe.slowAudit(configuration, "old-boot", signal()), undefined);
+  assert.equal(listings(calls).length, 1);
 });

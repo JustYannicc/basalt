@@ -53,13 +53,16 @@ export class RuntimeAuditProbe {
       if (ready.status !== 503 || field(ready.body, "boot_id") !== bootId) return undefined;
       if (this.listing) return undefined;
       const listed = this.now();
-      const listing = this.read(home, "/v8/management/nodes", managed, auditListingReadMs, signal);
-      // In flight until the listing itself settles, even when another read already failed.
+      const listingDeadline = AbortSignal.any([signal, AbortSignal.timeout(auditListingReadMs)]);
+      const request = this.request(home, "/v8/management/nodes", managed, listingDeadline);
+      // In flight until the request itself settles, even when another read already failed or the
+      // probe gave up waiting on it: never a second listing beside one that is still running.
       this.listing = true;
       const settled = () => {
         this.listing = false;
       };
-      listing.then(settled, settled);
+      request.then(settled, settled);
+      const listing = within(request, listingDeadline);
       const [node, homeHealth, nodes] = await Promise.all([
         this.read(8317, "/healthz", managed, healthReadMs, signal),
         this.read(home, "/healthz", managed, homeHealthReadMs, signal),
@@ -82,18 +85,25 @@ export class RuntimeAuditProbe {
       return undefined;
     }
   }
-  private async read(
+  /** One read that answers within its deadline, even from a port that ignores the abort. */
+  private read(
     port: number,
     path: string,
     headers: Record<string, string>,
     deadlineMs: number,
     signal: AbortSignal,
   ) {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]);
+    return within(this.request(port, path, headers, deadline), deadline);
+  }
+  private async request(
+    port: number,
+    path: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ) {
     const destination = this.port(port);
-    const response = await destination.fetch(`http://pool${path}`, {
-      headers,
-      signal: AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]),
-    });
+    const response = await destination.fetch(`http://pool${path}`, { headers, signal });
     const text = await response.text();
     let body: unknown;
     try {
@@ -103,6 +113,16 @@ export class RuntimeAuditProbe {
     }
     return { status: response.status, body };
   }
+}
+
+/** Settles when `work` does or when `signal` aborts, whichever is first. */
+function within<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    if (signal.aborted) abort();
+  });
 }
 
 function field(body: unknown, name: string): unknown {

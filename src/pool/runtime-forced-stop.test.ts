@@ -14,7 +14,7 @@ import {
   supervisorStopGraceMs,
   unservingBoundMs,
 } from "./runtime-slots/forced-restart-timing.ts";
-import { poolLifecycle } from "./lifecycle.ts";
+import { PoolRuntimeUnhealthy, poolLifecycle } from "./lifecycle.ts";
 import { policyHealthLeaseMs } from "./runtime-health.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { RuntimeActivity } from "./runtime-slots/activity.ts";
@@ -73,6 +73,7 @@ function stopper(
   readiness: () => Promise<unknown>,
   streams?: { active: number; changedAt?: number },
   audit: () => Promise<{ listingMs: number } | undefined> = async () => undefined,
+  refusal: unknown = new SlotRefused("identity"),
 ) {
   context.mock.method(runtimeStopTiming, "stopGrace", async () => {});
   context.mock.method(console, "error", () => {});
@@ -100,7 +101,7 @@ function stopper(
     store: { read: async () => ({ record, configuration: {} }) },
     activity: { inspect: async () => streams },
     health: async () => {
-      throw new SlotRefused("identity");
+      throw refusal;
     },
     readiness,
     audit,
@@ -221,6 +222,7 @@ test("a refusal explained only by a slow readiness audit defers the stop, uncoun
     async () => ({}),
     undefined,
     slowAudit,
+    new PoolRuntimeUnhealthy(),
   );
   await assert.rejects(
     stop.stop(selected, pastBound(30_000), AbortSignal.timeout(5_000)),
@@ -253,6 +255,7 @@ test("the deferral ends auditDeferralMs past the bound, even while a slow audit 
       asked++;
       return { listingMs: 2_440 };
     },
+    new PoolRuntimeUnhealthy(),
   );
   const result = await stop.stop(selected, pastBound(auditDeferralMs), AbortSignal.timeout(5_000));
   assert.deepEqual(result, { stopped: true, hard: false });
@@ -273,6 +276,7 @@ test("evidence that arrives after the deferral ran out defers nothing", async (c
       now += 2_000; // a slow probe: the bound runs out while it reads
       return { listingMs: 2_440 };
     },
+    new PoolRuntimeUnhealthy(),
   );
   const result = await stop.stop(selected, refusingSince, AbortSignal.timeout(5_000));
   assert.deepEqual(result, { stopped: true, hard: false });
@@ -291,10 +295,44 @@ test("another cause, or the probe's own failure, stops exactly as before", async
     ],
   ];
   for (const [name, audit] of cases) {
-    const { stop, signals } = stopper(context, refusing, async () => ({}), undefined, audit);
+    const { stop, signals } = stopper(
+      context,
+      refusing,
+      async () => ({}),
+      undefined,
+      audit,
+      new PoolRuntimeUnhealthy(),
+    );
     const result = await stop.stop(selected, pastBound(1_000), AbortSignal.timeout(5_000));
     assert.deepEqual(result, { stopped: true, hard: false }, name);
     assert.deepEqual(signals, [15], name);
+  }
+});
+
+test("a stop refused for a timeout, a transport failure or identity never starts the probe", async (context) => {
+  const cases: [string, unknown][] = [
+    ["no answer in time", new DOMException("Runtime health deadline exceeded", "TimeoutError")],
+    ["a transport failure", new TypeError("connection refused")],
+    ["an identity refusal", new SlotRefused("identity")],
+  ];
+  for (const [name, refusal] of cases) {
+    let asked = 0;
+    const audit = async () => {
+      asked++;
+      return { listingMs: 2_440 };
+    };
+    const { stop, signals } = stopper(
+      context,
+      refusing,
+      async () => ({}),
+      undefined,
+      audit,
+      refusal,
+    );
+    const result = await stop.stop(selected, pastBound(1_000), AbortSignal.timeout(5_000));
+    assert.deepEqual(result, { stopped: true, hard: false }, name);
+    assert.deepEqual(signals, [15], name);
+    assert.equal(asked, 0, name);
   }
 });
 
