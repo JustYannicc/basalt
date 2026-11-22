@@ -165,6 +165,7 @@ export async function runUsageRollup(
       let slowAttempts = 0,
         refused = 0;
       for (;;) {
+        let holdStarted: number | undefined;
         await db.query("BEGIN");
         try {
           // The hour's recompute and its marker commit together, so a commit that skips the WAL
@@ -176,7 +177,7 @@ export async function runUsageRollup(
           );
           // A try-lock never queues, so no writer ever waits behind a backfill that is itself
           // waiting. Taking it in the recompute's own statement leaves one round trip in the hold.
-          const holdStarted = now();
+          holdStarted = now();
           const written = await db.query(
             `SELECT CASE WHEN pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1))
               THEN basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour')
@@ -207,6 +208,17 @@ export async function runUsageRollup(
           await db.query("ROLLBACK").catch(() => {});
           const code =
             typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+          // A cancelled recompute holds the pool until Postgres acts on the cancel and the rollback
+          // returns, which can be well past the hour limit; that hold counts like any other.
+          if (holdStarted !== undefined) {
+            const held = now() - holdStarted;
+            maxHoldMs = Math.max(maxHoldMs, held);
+            if (code === "57014" && held > usageRollupHoldLimitMs) {
+              stop = "slow_hold";
+              slowHour = at;
+              break hours;
+            }
+          }
           if (code === "57014" && ++slowAttempts < 3) continue;
           if (code === "57014") {
             stop = "slow_hour";
