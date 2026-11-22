@@ -1,10 +1,10 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -8257,3 +8257,90 @@
-          return value;
-      const resources = instanceResources[value.instanceType];
-      if (resources === undefined)
+@@ -7954,6 +7954,93 @@
+  }) => (importPath: string) => string;
+  /**
+   * The default source provider: bundle `props.main` with rolldown.
 +diff --git a/src/Cloudflare/Workers/Sources/Rolldown.ts b/src/Cloudflare/Workers/Sources/Rolldown.ts
 +index 1213fa5..3e4a129 100644
 +--- a/src/Cloudflare/Workers/Sources/Rolldown.ts
@@ -92,3 +92,6 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +             minify: true,
 +             keepNames: true,
 +             // Rolldown's default chunking can split top-level initializer modules
+ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
+ index 75ee7f1..543fb4b 100644
+ --- a/src/Cloudflare/Workers/WorkerProvider.ts
