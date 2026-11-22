@@ -35,20 +35,24 @@ export async function fleetCellFixture(
   let failApplication = false,
     failRuntime = false;
   let credential: string | null = "synthetic-provider-token";
+  let ran = false;
   const provider = new RuntimeProviderReader({ get: async () => credential }, async (input) => {
     const instances = new URL(input).pathname.endsWith("instances-v2");
     if (instances ? failRuntime : failApplication) return new Response(null, { status: 403 });
+    const running = runtime.ctx.container.running;
+    ran ||= running;
     return Response.json({
       success: true,
       errors: [],
+      // As on production: once destroyed, the instance stays listed under state=active as inactive.
       result: instances
-        ? runtime.ctx.container.running
+        ? ran
           ? [
               {
                 id: target.instanceId,
                 application_id: target.applicationId,
                 image: providerFixture.raw.configuration.image,
-                status: { state: "running" },
+                status: { state: running ? "running" : "inactive" },
               },
             ]
           : []
