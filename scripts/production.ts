@@ -42,6 +42,7 @@ type PlanNode = {
   bindings?: Binding[];
   state?: State;
 };
+type RootRow = { fqn: string; action: string; changedProps: readonly string[] };
 type Plan = {
   resources: Record<string, PlanNode | undefined>;
   deletions?: Record<string, PlanNode | undefined>;
@@ -138,19 +139,36 @@ export const removals = (snapshot: Pick<Snapshot, "resources"> & { native: Plan 
 
 /** A deployment a rollback made, ours or the old entry's: State still records the upload before it. */
 const rollbackMessage = /^(?:production smoke failed|release rollback )/u;
+type Deployment = {
+  annotations?: Record<string, unknown>;
+  versions?: { version_id?: string; percentage?: number }[];
+};
 
 /**
- * The Workers this plan does not upload whose serving deployment a rollback made. State records
- * the release that was rolled back, so the plan sees no change and the Worker would stay on the
- * older code without a line saying so.
+ * Where a Worker the plan leaves alone re-points forward when a rollback made its serving
+ * deployment: the version the newest deployment that is no rollback served. A noop row means the
+ * wanted upload is the one State recorded, and that is the version the last release deployed.
+ * Undefined when no rollback serves; null when that version cannot be told (a split, or none listed).
  */
-export const leftRolledBack = (plan: Plan, newestMessage: Readonly<Record<string, unknown>>) => {
-  const uploads = new Set(workersToRepoint(plan));
-  return workers(plan)
-    .map(([fqn]) => fqn)
-    .filter((fqn) => !uploads.has(fqn) && rollbackMessage.test(String(newestMessage[fqn] ?? "")))
-    .sort();
-};
+export function forwardVersion(deployments: readonly Deployment[]) {
+  const rolledBack = (deployment?: Deployment) =>
+    rollbackMessage.test(String(deployment?.annotations?.["workers/message"] ?? ""));
+  if (!rolledBack(deployments[0])) return undefined;
+  const [only, ...rest] = deployments.find((deployment) => !rolledBack(deployment))?.versions ?? [];
+  return only?.version_id && only.percentage === 100 && !rest.length ? only.version_id : null;
+}
+
+/**
+ * The root's row may only be the attachment-only update a pool Worker update brings (carry 0696):
+ * no prop changes, and the provider reads the root's application and sends nothing. Anything else
+ * would roll the root, which no release does.
+ */
+export const rootChange = (row?: { action: string; changedProps: readonly string[] }) =>
+  !row
+    ? "untouched"
+    : ["update", "noop"].includes(row.action) && !row.changedProps.length
+      ? "attachment"
+      : "refused";
 
 /** The stack's database commands this plan runs: the hosted migrations and the pool database. */
 export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) =>
@@ -223,6 +241,7 @@ async function main() {
   const { rollbackTo, servingVersion } = await import("./release/worker-version.ts");
   const { takeBackup } = await import("./release/database-safety.ts");
   const { errorKind, progressTracker } = await import("./release/public-report.ts");
+  const { changedRows } = await import("./release/plan-summary.ts");
   // Alchemy's own progress events: the resource that reported a failure, by name and type.
   const tracker = progressTracker();
   const progress = (event: unknown) => Effect.sync(() => tracker.track(event));
@@ -244,8 +263,8 @@ async function main() {
     script,
   });
   const print = (line: string) => Effect.promise(() => say(line));
-  // The message of the newest deployment of a script, which a rollback writes.
-  const newestMessage = (target: ReturnType<typeof at>) =>
+  // A script's deployments, newest first; a rollback writes its message on its own.
+  const deploymentsOf = (target: ReturnType<typeof at>) =>
     Effect.gen(function* () {
       const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
       const response = yield* client.execute(
@@ -253,10 +272,8 @@ async function main() {
           `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(target.accountId)}/workers/scripts/${encodeURIComponent(target.script)}/deployments`,
         ).pipe(HttpClientRequest.bearerToken(Redacted.value(target.token))),
       );
-      const body = (yield* response.json) as {
-        result?: { deployments?: { annotations?: Record<string, unknown> }[] };
-      };
-      return body.result?.deployments?.[0]?.annotations?.["workers/message"];
+      const body = (yield* response.json) as { result?: { deployments?: Deployment[] } };
+      return body.result?.deployments ?? [];
     });
   const refuse = (line: string) =>
     Effect.andThen(print(`::error::${line}`), Effect.fail(new Refused(line)));
@@ -307,22 +324,34 @@ async function main() {
       const removed = removals(snapshot);
       if (removed.length)
         return yield* refuse(`The plan deletes or replaces ${removed.join("; ")}; nothing applied`);
-      const root = snapshot.resources.find(({ fqn }) => fqn === "PoolContainer");
-      if (root && root.action !== "noop")
+      const root = (changedRows(snapshot as never) as RootRow[]).find(
+        (r) => r.fqn === "PoolContainer",
+      );
+      if (rootChange(root) === "refused")
         return yield* refuse(
-          `The plan changes the root container (${root.action}); no release rolls the root`,
+          `The plan changes the root container (${root!.action}${root!.changedProps.length ? `: ${root!.changedProps.join(", ")}` : ""}); no release rolls the root`,
         );
-      // One deployments read per Worker the plan leaves alone.
-      const newest: Record<string, unknown> = {};
+      if (rootChange(root) === "attachment")
+        yield* print(
+          "PoolContainer: its attachment only, no prop changes; the provider reads the root and sends nothing",
+        );
+      // One deployments read per Worker the plan leaves alone: one a rollback left behind goes
+      // forward to the upload State records, or the run stops when that version cannot be told.
+      const forward: { fqn: string; script: string; version: string }[] = [];
+      const unclear: string[] = [];
       const uploads = new Set(workersToRepoint(snapshot.native));
-      for (const [fqn, node] of workers(snapshot.native))
-        if (!uploads.has(fqn) && node.state?.attr?.workerName)
-          newest[fqn] = yield* newestMessage(at(String(node.state.attr.workerName)));
-      const stale = leftRolledBack(snapshot.native, newest);
-      if (stale.length)
+      for (const [fqn, node] of workers(snapshot.native)) {
+        const script = String(node.state?.attr?.workerName ?? "");
+        if (uploads.has(fqn) || !script) continue;
+        const version = forwardVersion(yield* deploymentsOf(at(script)));
+        if (version === null) unclear.push(fqn);
+        else if (version) forward.push({ fqn, script, version });
+      }
+      if (unclear.length)
         return yield* refuse(
-          `A rollback put back the version serving ${stale.join(", ")}, which State does not record, and this plan does not upload them; release a commit whose plan uploads them first`,
+          `A rollback serves ${unclear.join(", ")} and the version the last release deployed cannot be told; nothing applied`,
         );
+      yield* print(`Re-points forward: ${forward.map(({ fqn }) => fqn).join(", ") || "none"}`);
       // The stack read the setting this run set, or this run stops before it applies anything.
       const fleet = created.filter((name) => fleetClasses.some((cls) => name.endsWith(`: ${cls}`)));
       if (
@@ -333,7 +362,7 @@ async function main() {
         );
       const serving: { fqn: string; script: string; version: string }[] = [];
       if (mode === "plan") return { serving, applied: false, creating: created.length > 0 };
-      for (const fqn of workersToRepoint(snapshot.native)) {
+      for (const fqn of [...uploads, ...forward.map((worker) => worker.fqn)]) {
         const script = String(snapshot.native.resources[fqn]!.state?.attr?.workerName ?? "");
         serving.push({ fqn, script, version: yield* servingVersion(at(script)) });
       }
@@ -359,6 +388,20 @@ async function main() {
             `The backup before ${steps.join(", ")} failed (${errorKind(Cause.squash(backup.cause))}); nothing applied`,
           );
         yield* print(`Backed up the pool database before ${steps.join(", ")}: ${name}`);
+      }
+      for (const worker of forward) {
+        const moved = yield* Effect.exit(
+          rollbackTo(
+            at(worker.script),
+            worker.version,
+            "production re-point forward",
+            forceSecrets,
+          ),
+        );
+        if (moved._tag === "Failure")
+          return yield* refuse(
+            `Re-pointing ${worker.fqn} forward failed (${errorKind(Cause.squash(moved.cause))}); nothing applied`,
+          );
       }
       // A restore of the controller's storage would be looked up by this time.
       if (created.length) yield* print(`Creating classes at ${new Date().toISOString()}`);

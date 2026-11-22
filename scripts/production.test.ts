@@ -5,7 +5,8 @@ import {
   classesDeclared,
   classChanges,
   databaseSteps,
-  leftRolledBack,
+  forwardVersion,
+  rootChange,
   removals,
   fleetEnvironment,
   smoke,
@@ -116,29 +117,49 @@ test("a plan that deletes or replaces a data resource is refused, and code is no
   );
 });
 
-test("a Worker the plan leaves alone while a rollback's version serves it is named", () => {
-  const worker = (action: string) => ({
-    resource: { Type: "Cloudflare.Worker" },
-    action,
-    bindings: [],
+test("a Worker a rollback left behind goes forward to the last release's version", () => {
+  const deployment = (message: string, versions: { version_id: string; percentage: number }[]) => ({
+    annotations: { "workers/message": message },
+    versions,
   });
-  const plan = {
-    resources: {
-      Api: worker("update"),
-      Dashboard: worker("noop"),
-      Router: worker("noop"),
-      Sso: worker("noop"),
-    },
-  };
-  assert.deepEqual(
-    leftRolledBack(plan, {
-      Api: "production smoke failed",
-      Dashboard: "release rollback 44992011040",
-      Router: "Automatic deployment",
-      Sso: "production smoke failed",
-    }),
-    ["Dashboard", "Sso"],
+  const at = (id: string) => [{ version_id: id, percentage: 100 }];
+  // No rollback serves: nothing to do.
+  assert.equal(forwardVersion([deployment("Automatic deployment", at("v2"))]), undefined);
+  assert.equal(forwardVersion([]), undefined);
+  // Ours and the old entry's rollbacks, one or stacked: the release before them.
+  assert.equal(
+    forwardVersion([deployment("production smoke failed", at("v1")), deployment("", at("v2"))]),
+    "v2",
   );
+  assert.equal(
+    forwardVersion([
+      deployment("release rollback 44992011040", at("v1")),
+      deployment("production smoke failed", at("v1")),
+      deployment("Automatic deployment", at("v3")),
+    ]),
+    "v3",
+  );
+  // A forward re-point is no rollback: the next run leaves it alone.
+  assert.equal(forwardVersion([deployment("production re-point forward", at("v2"))]), undefined);
+  // That version cannot be told: a split, or no release listed behind the rollback.
+  const split = [
+    { version_id: "v2", percentage: 50 },
+    { version_id: "v1", percentage: 50 },
+  ];
+  assert.equal(
+    forwardVersion([deployment("production smoke failed", at("v1")), deployment("", split)]),
+    null,
+  );
+  assert.equal(forwardVersion([deployment("production smoke failed", at("v1"))]), null);
+});
+
+test("the root may only update its attachment; any prop change or replace is refused", () => {
+  assert.equal(rootChange(undefined), "untouched");
+  // Production's shape whenever the pool Worker updates (carry 0696).
+  assert.equal(rootChange({ action: "update", changedProps: [] }), "attachment");
+  assert.equal(rootChange({ action: "update", changedProps: ["image"] }), "refused");
+  assert.equal(rootChange({ action: "replace", changedProps: [] }), "refused");
+  assert.equal(rootChange({ action: "delete", changedProps: [] }), "refused");
 });
 
 test("a backup is taken only for a plan that runs a database command", () => {
