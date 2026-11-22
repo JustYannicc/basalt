@@ -70,7 +70,18 @@ export const servingVersion = (target: Target) =>
 /** Deploys an earlier version at 100%, as `wrangler rollback` does; Cloudflare refuses it across a class change. */
 export const rollbackTo = (target: Target, versionId: string, message: string) =>
   Effect.gen(function* () {
-    const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+    const client = yield* HttpClient.HttpClient;
+    // Cloudflare's own answer is kept: its HTTP status and each error's code and message go into
+    // the refusal's detail, which the release keeps private (sealed), never in its public text.
+    const answer: { status?: number; errors?: { code: unknown; message: string }[] } = {};
+    const refused = (cause: unknown) =>
+      new WorkerVersionRefusal({
+        script: target.script,
+        why: "Cloudflare did not accept the rollback deployment",
+        fix: "Roll back by hand with wrangler rollback",
+        detail: { versionId, ...answer },
+        cause,
+      });
     const created = yield* client
       .execute(
         HttpClientRequest.post(url(target)).pipe(
@@ -83,18 +94,24 @@ export const rollbackTo = (target: Target, versionId: string, message: string) =
         ),
       )
       .pipe(
-        Effect.flatMap((response) => response.json),
-        Effect.flatMap(Schema.decodeUnknownEffect(Created)),
-        Effect.mapError(
-          (cause) =>
-            new WorkerVersionRefusal({
-              script: target.script,
-              why: "Cloudflare did not accept the rollback deployment",
-              fix: "Roll back by hand with wrangler rollback",
-              detail: { versionId },
-              cause,
+        Effect.flatMap((response) =>
+          response.json.pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+            Effect.flatMap((body) => {
+              answer.status = response.status;
+              const errors = (body as { errors?: unknown } | undefined)?.errors;
+              if (Array.isArray(errors))
+                answer.errors = errors.slice(0, 5).map((error) => ({
+                  code: (error as { code?: unknown })?.code ?? null,
+                  message: String((error as { message?: unknown })?.message ?? "").slice(0, 300),
+                }));
+              return response.status >= 200 && response.status < 300
+                ? Schema.decodeUnknownEffect(Created)(body)
+                : Effect.fail(new Error(`HTTP ${response.status}`));
             }),
+          ),
         ),
+        Effect.mapError(refused),
       );
     const now = yield* servingVersion(target);
     if (now !== versionId)
