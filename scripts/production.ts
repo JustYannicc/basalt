@@ -246,6 +246,7 @@ async function main() {
   const { takeBackup } = await import("./release/database-safety.ts");
   const { errorKind, progressTracker } = await import("./release/public-report.ts");
   const { changedRows } = await import("./release/plan-summary.ts");
+  const { containerImages } = await import("./release/container-image.ts");
   // Alchemy's own progress events: the resource that reported a failure, by name and type.
   const tracker = progressTracker();
   const progress = (event: unknown) => Effect.sync(() => tracker.track(event));
@@ -316,8 +317,15 @@ async function main() {
       yield* print(
         `Plan of ${candidate}, fleet classes ${declared ? "declared" : "absent"}: ${JSON.stringify(snapshot.summary)}`,
       );
+      // A Container's `update` is either a new image or only a new attachment; the row says which.
+      const images = yield* containerImages(snapshot.native);
       for (const row of snapshot.resources)
-        if (row.action !== "noop") yield* print(`- ${row.fqn} ${row.resourceType} ${row.action}`);
+        if (row.action !== "noop") {
+          const image = images.get(row.fqn);
+          yield* print(
+            `- ${row.fqn} ${row.resourceType} ${row.action}${image ? ` (${image})` : ""}`,
+          );
+        }
       yield* print(
         `Creates Durable Object classes (cannot be rolled back): ${created.join(", ") || "none"}`,
       );
