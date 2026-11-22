@@ -637,7 +637,10 @@ export async function runCrashDispatch(input: DispatchInput, deps: DispatchDepen
       });
       // An absent selection is the state to diagnose, so it is recorded instead of ending the read.
       const selection = "selection" in inspected ? inspected.selection : null;
-      output.observe = redactAccount({ selection, fleet, activeHealth }, input.accountId);
+      // The forced-restart clock (needs a person, the hourly restarts) is only readable here, so a
+      // crash gate can refuse a controller that would not recover on its own. Null: not reported.
+      const recovery = "recovery" in inspected ? inspected.recovery : null;
+      output.observe = redactAccount({ selection, fleet, activeHealth, recovery }, input.accountId);
       phase = "diagnostic read failed";
       output.diagnostic = redactAccount(
         await diagnose({
