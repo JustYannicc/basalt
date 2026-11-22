@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "A 429's quota cooldown ends at the provider's own reset or retry time, for every provider, and never later on the blind exponential backoff, which decides only when the provider gives no time. A one-second floor stops sub-second retry storms, and an open window is only ever extended, never shortened, because two limits can hold at once. Home reads the provider's time from the node's usage record as fail.retry_after_ms."
+      constraint "A 429's quota cooldown ends at the provider's own reset or retry time, for every provider when it is 10 s or more, and never later on the blind exponential backoff, which decides only when the provider gives no time. A provider time under 10 s only lengthens the escalating backoff, so a provider that keeps saying retry in a moment is never called every second, and an open window is only ever extended, never shortened, because two limits can hold at once. Home reads the provider's time from the node's usage record as fail.retry_after_ms."
     }
   }
 }
