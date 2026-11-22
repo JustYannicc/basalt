@@ -1,0 +1,64 @@
+package cluster
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+// The local master role runs out with the lease its election wrote, with nothing else going on:
+// no renewal, no database read, only time passing.
+func TestBasaltQuietMasterDropsTheRoleWhenItsWrittenLeaseRunsOut(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var changes []bool
+		coordinator := &Coordinator{heartbeatTimeout: 3 * time.Second, onMasterChanged: func(master bool) { changes = append(changes, master) }}
+		readAt := time.Now()
+		// The election's work after its database read took a second.
+		time.Sleep(time.Second)
+		coordinator.claimMaster(true, readAt)
+		time.Sleep(2*time.Second - time.Nanosecond)
+		synctest.Wait()
+		if !coordinator.IsMaster() {
+			t.Fatalf("the role ended before the written lease")
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if coordinator.IsMaster() {
+			t.Fatalf("the role outlived the lease its election wrote")
+		}
+		if len(changes) != 2 || !changes[0] || changes[1] {
+			t.Fatalf("master changes %v, want [true false]", changes)
+		}
+	})
+}
+
+func TestBasaltQuietMasterRenewalRestartsTheLocalLease(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		coordinator := &Coordinator{heartbeatTimeout: 3 * time.Second}
+		coordinator.claimMaster(true, time.Now())
+		time.Sleep(2 * time.Second)
+		coordinator.claimMaster(true, time.Now())
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if !coordinator.IsMaster() {
+			t.Fatalf("the first lease's timer ended a renewed role")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if coordinator.IsMaster() {
+			t.Fatalf("the renewed role outlived its own lease")
+		}
+	})
+}
+
+func TestBasaltQuietElectionSlowerThanTheLeaseNeverTakesTheRole(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		coordinator := &Coordinator{heartbeatTimeout: 3 * time.Second}
+		readAt := time.Now()
+		time.Sleep(3 * time.Second)
+		coordinator.claimMaster(true, readAt)
+		if coordinator.IsMaster() {
+			t.Fatalf("a claim whose work took the whole lease took the role")
+		}
+	})
+}
