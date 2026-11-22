@@ -1,6 +1,6 @@
 import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
 import { AcceptanceFailure, HttpStatusFailure } from "../pool-acceptance/types.ts";
-import { deviceRefusal, refusedDevice } from "./acceptance-device.ts";
+import { deviceRefusal, refusalFix, refusedDevice } from "./acceptance-device.ts";
 import {
   healingAcceptanceWithinMs,
   healingReadinessWithinMs,
@@ -72,12 +72,15 @@ export function acceptanceModel(ids: readonly string[], configured?: string) {
 }
 
 /** Why one turn failed, in words that name no host: our own messages and the pool's status. */
-const turnFailure = (error: unknown) =>
-  error instanceof HttpStatusFailure
+const turnFailure = (error: unknown) => {
+  const refused = deviceRefusal(error);
+  if (refused !== undefined) return `HTTP ${refused}: ${refusalFix([refused])}`;
+  return error instanceof HttpStatusFailure
     ? `HTTP ${error.status}`
     : error instanceof AcceptanceFailure
       ? error.message
       : "no answer";
+};
 
 /**
  * Before the apply: the model acceptance will test with, and one real turn with it. A model the pool

@@ -630,3 +630,21 @@ test("one real turn before the apply stops a model the pool cannot serve, and na
     none.close();
   }
 });
+
+test("before the apply a refused device and its user's cap are named as such, not as a bare status", async () => {
+  const capped = await pool({ answer: { chat: "cap" } });
+  const refused = await pool({ answer: { chat: 403 } });
+  try {
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, capped.client),
+      /\(HTTP 429: the release's acceptance device hit its user's cap: check the cap, then run again\); nothing was applied/u,
+    );
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, refused.client),
+      /\(HTTP 403: the release's acceptance device was refused: check that it is still registered and allowed\); nothing was applied/u,
+    );
+  } finally {
+    capped.close();
+    refused.close();
+  }
+});

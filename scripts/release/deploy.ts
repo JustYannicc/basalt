@@ -196,8 +196,15 @@ if (command === "boot" || command === "accept") {
             process.env.POOL_ACCEPTANCE_MODEL || undefined,
           );
         } catch (error) {
-          // Our own words and the pool's status, never a host: the line is public.
-          console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
+          // Our own words and the pool's status, never a host: the line is public. The cause can
+          // name hosts, so it stays in the private detail.
+          const line = error instanceof Error ? error.message : String(error);
+          console.error(`::error::${line}`);
+          await summary(line);
+          await keepPrivate(
+            "boot",
+            String(error instanceof Error && error.cause !== undefined ? error.cause : error),
+          );
           process.exit(1);
         }
       await output(resolve(values.out ?? ""), { boot, ...(model ? { model } : {}) });
