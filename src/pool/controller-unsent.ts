@@ -9,6 +9,19 @@ import { nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
  */
 export const controllerUnsentHeader = "X-Signalbox-Controller-Unsent";
 
+/**
+ * Set only by the entry on its re-send of a call the controller answered unsent: that attempt's
+ * request id, so the controller records the re-send under it and the two count as one request.
+ */
+export const unsentAttemptHeader = "X-Signalbox-Unsent-Attempt";
+
+const attemptId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The refused attempt's id a header names, or nothing when it names none in its closed form. */
+export function unsentAttempt(value: string | null) {
+  return value !== null && attemptId.test(value) ? value : undefined;
+}
+
 // The endpoint's steps before its container send. Its catch-all step stays out: a failure after the
 // container already answered could carry it too.
 const beforeContainer = new Set([

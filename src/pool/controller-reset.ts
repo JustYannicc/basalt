@@ -12,7 +12,12 @@ import { endpointMetadata } from "./model-history/record.ts";
 import { shape } from "./runtime-fleet/endpoint-trace.ts";
 import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
 import { handingOver } from "./code-handover.ts";
-import { sentNowhere, withoutUnsentMark } from "./controller-unsent.ts";
+import {
+  sentNowhere,
+  unsentAttempt,
+  unsentAttemptHeader,
+  withoutUnsentMark,
+} from "./controller-unsent.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -214,6 +219,12 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
  * terminal. A control write keeps today's unknown-outcome failure.
  */
 export async function fetchController(request: Request, hop: ControllerHop): Promise<Response> {
+  // Only the entry's own re-send names a refused attempt; a client never chooses that id.
+  if (request.headers.has(unsentAttemptHeader)) {
+    const headers = new Headers(request.headers);
+    headers.delete(unsentAttemptHeader);
+    request = new Request(request, { headers });
+  }
   const model = replayableCall(request);
   const requestId = crypto.randomUUID();
   const copy = hold(
@@ -262,14 +273,21 @@ async function awaitHandover(
   let sends = 0;
   while (resendable(response)) {
     if (now() - begun + controllerReplayDelayMs > controllerReplayWindowMs) break;
-    let resend: Request = request;
+    // A re-send of a call never sent names that attempt, so the controller records one request.
+    const attempt = sentNowhere(response)
+      ? unsentAttempt(response.headers.get("X-Request-Id"))
+      : undefined;
+    const headers = new Headers(request.headers);
+    if (attempt) headers.set(unsentAttemptHeader, attempt);
+    // A safe read has no body, so it is rebuilt with the name; a model call's copy is below.
+    let resend: Request = attempt && !model ? new Request(request, { headers }) : request;
     if (model) {
       await copy.ready;
       const held = copy.take();
       if ("refused" in held) break;
       resend = new Request(request.url, {
         method: request.method,
-        headers: request.headers,
+        headers,
         body: held.body,
         redirect: request.redirect,
         signal: request.signal,

@@ -6,7 +6,13 @@ import {
   stripRuntimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
 import { isModelLifetimePath, stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
-import { reachedNoContainer, unsentRefusal } from "./controller-unsent.ts";
+import {
+  reachedNoContainer,
+  sentNowhere,
+  unsentAttempt,
+  unsentAttemptHeader,
+  unsentRefusal,
+} from "./controller-unsent.ts";
 import { inheritModelLifetime, modelLifetimeFetch } from "./model-lifetime.worker.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
@@ -78,7 +84,8 @@ export async function forwardPoolRequest(
   const pathname = new URL(request.url).pathname;
   if (isModelLifetimePath(pathname)) return new Response(null, { status: 404 });
   request = stripModelLifetimeRequest(request);
-  const requestId = crypto.randomUUID();
+  // A re-send of a call never sent keeps that attempt's id, so both count as one request.
+  const requestId = unsentAttempt(request.headers.get(unsentAttemptHeader)) ?? crypto.randomUUID();
   const endpoint = endpointMetadata(pathname);
   const modelCall =
     (request.method === "POST" &&
@@ -191,6 +198,7 @@ export async function forwardPoolRequest(
     };
     const outboundHeaders = new Headers(request.headers);
     outboundHeaders.delete("X-Basalt-Request-Id");
+    outboundHeaders.delete(unsentAttemptHeader);
     if (modelCall || (socketCall && observing)) {
       outboundHeaders.set("X-Request-Id", requestId);
       outboundHeaders.set("X-Basalt-Request-Id", requestId);
@@ -259,6 +267,9 @@ export async function forwardPoolRequest(
       const forwarded = native === undefined ? relayed : nativeResponse(relayed, native);
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
     }
+    // A call its runtime refused before the send ran nowhere: no outcome now, since the entry's
+    // re-send finishes this request under the same id.
+    if (terminal && sentNowhere(response)) terminal = undefined;
     if (terminal && upstream.headers.get("X-Basalt-Request-Id") !== requestId) {
       terminal("unavailable", response.status, 0);
       terminal = undefined;
@@ -320,7 +331,6 @@ export async function forwardPoolRequest(
       !request.signal.aborted &&
       reachedNoContainer(error)
     ) {
-      terminal?.("unavailable", 503, 0);
       console.error(
         "POOL_CONTROLLER_UNSENT",
         JSON.stringify({ requestId, step: diagnostic.runtimeStep ?? null }),
