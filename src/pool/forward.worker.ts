@@ -6,6 +6,13 @@ import {
   stripRuntimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
 import { isModelLifetimePath, stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
+import {
+  reachedNoContainer,
+  sentNowhere,
+  unsentAttempt,
+  unsentAttemptHeader,
+  unsentRefusal,
+} from "./controller-unsent.ts";
 import { inheritModelLifetime, modelLifetimeFetch } from "./model-lifetime.worker.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
@@ -86,7 +93,9 @@ export async function forwardPoolRequest(
   const pathname = new URL(request.url).pathname;
   if (isModelLifetimePath(pathname)) return new Response(null, { status: 404 });
   request = stripModelLifetimeRequest(request);
-  const requestId = crypto.randomUUID();
+  // A re-send of a call never sent keeps that attempt's id, so both count as one request.
+  const resent = unsentAttempt(request.headers.get(unsentAttemptHeader));
+  const requestId = resent ?? crypto.randomUUID();
   const endpoint = endpointMetadata(pathname);
   const modelCall =
     (request.method === "POST" &&
@@ -207,6 +216,7 @@ export async function forwardPoolRequest(
     };
     const outboundHeaders = new Headers(request.headers);
     outboundHeaders.delete("X-Basalt-Request-Id");
+    outboundHeaders.delete(unsentAttemptHeader);
     if (modelCall || (socketCall && observing)) {
       outboundHeaders.set("X-Request-Id", requestId);
       outboundHeaders.set("X-Basalt-Request-Id", requestId);
@@ -279,6 +289,9 @@ export async function forwardPoolRequest(
       const forwarded = native === undefined ? relayed : nativeResponse(relayed, native);
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
     }
+    // A call its runtime refused before the send ran nowhere: no outcome now, since the entry's
+    // re-send finishes this request under the same id.
+    if (terminal && sentNowhere(response)) terminal = undefined;
     if (terminal && upstream.headers.get("X-Basalt-Request-Id") !== requestId) {
       terminal("unavailable", response.status, 0);
       terminal = undefined;
@@ -288,8 +301,13 @@ export async function forwardPoolRequest(
     headers.delete("X-Basalt-Terminal-Protocol");
     headers.delete(dispatchTimingHeader);
     stripRuntimeFailureHeaders(headers);
+    // An unsent answer names this call's own id, the one its terminal start was written under,
+    // so the entry's re-send can finish that same row.
     if (modelCall || runtimeRefusal)
-      headers.set("X-Request-Id", runtimeRefusal ? runtimeRequestId : requestId);
+      headers.set(
+        "X-Request-Id",
+        runtimeRefusal && !sentNowhere(response) ? runtimeRequestId : requestId,
+      );
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
@@ -332,6 +350,26 @@ export async function forwardPoolRequest(
                     : "unknown",
       homeDatabasePool: databasePool(),
     };
+    // The runtime's endpoint refused before its container send: nothing ran, so the entry may send
+    // the call it holds once more instead of reporting an unknown outcome.
+    if (
+      dispatched &&
+      isPublicModelPath(pathname) &&
+      !request.signal.aborted &&
+      reachedNoContainer(error)
+    ) {
+      console.error(
+        "POOL_CONTROLLER_UNSENT",
+        JSON.stringify({
+          requestId,
+          step: diagnostic.runtimeStep ?? null,
+          reason: diagnostic.runtimeReason ?? null,
+        }),
+      );
+      const refused = unsentRefusal(request);
+      refused.headers.set("X-Request-Id", requestId);
+      return refused;
+    }
     if (dispatched && isPublicModelPath(pathname)) {
       terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
       return gatewayOutcomeUnknown(
@@ -344,6 +382,23 @@ export async function forwardPoolRequest(
     }
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
     if (error instanceof ControlFailure) return failureResponse(error);
+    // A re-send of a call never sent that is refused again before its own send ran nowhere either.
+    // It stays the one request its first attempt started: no refusal record beside that start, even
+    // when its client has left, and the entry keeps sending inside its window.
+    if (resent && isPublicModelPath(pathname)) {
+      console.error(
+        "POOL_CONTROLLER_UNSENT",
+        JSON.stringify({
+          requestId,
+          step: diagnostic.runtimeStep ?? null,
+          reason: diagnostic.runtimeReason ?? null,
+          resent: true,
+        }),
+      );
+      const refused = unsentRefusal(request);
+      refused.headers.set("X-Request-Id", requestId);
+      return refused;
+    }
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))
       return gatewayUnavailable(
         deps.env,

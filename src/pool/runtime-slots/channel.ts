@@ -1,4 +1,5 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
+import { containerAnswer } from "../controller-unsent.ts";
 import { resumeLayerPort } from "../stream-resume.ts";
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { PoolRuntimeUnhealthy, poolLifecycle } from "../lifecycle.ts";
@@ -29,8 +30,12 @@ export class RuntimeChannel {
     }
   }
   async keepAlive() {
-    if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
-    await this.ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs);
+    // Before any send: a stopped container's refusal proves the call reached no container.
+    if (!this.ctx.container?.running)
+      refuseRuntime("endpoint_health", new SlotRefused("unhealthy"));
+    await this.ctx.container
+      .setInactivityTimeout(poolLifecycle.idleTimeoutMs)
+      .catch((error: unknown) => refuseRuntime("endpoint_health", error));
   }
   async health(configuration: RuntimeConfiguration, signal: AbortSignal, trace?: RuntimeReadTrace) {
     if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
@@ -121,7 +126,7 @@ export class RuntimeChannel {
       return await runtimeReadStep(
         trace,
         "port_headers",
-        () => destination.fetch(new Request(request, { headers })),
+        async () => containerAnswer(await destination.fetch(new Request(request, { headers }))),
         // Only the readiness and management ports are traced reads; model calls never are.
         target === 8318 || target === 8327 || target === 8329 ? target : undefined,
       );
