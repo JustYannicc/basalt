@@ -33,6 +33,7 @@ import { exaSource } from "./exa.ts";
 import { firecrawlSource } from "./firecrawl.ts";
 import { githubSource } from "./github.ts";
 import { plaidSource, withPlaidAccess } from "./plaid.ts";
+import { withTailscaleGuidance } from "./tailscale.ts";
 import cloudflareSource from "./cloudflare.json" with { type: "json" };
 import { obsidian } from "./obsidian/index.ts";
 
@@ -167,7 +168,10 @@ export async function handleCatalog(
         ),
       };
       body = JSON.stringify(
-        withOAuthDeferrals(withServiceIdentities(mergeFeed(feed, additions)), reviewedOAuth),
+        withOAuthDeferrals(
+          withServiceIdentities(mergeFeed(withTailscaleGuidance(feed), additions)),
+          reviewedOAuth,
+        ),
       );
     } else {
       body = onServedFramework(await response.text());

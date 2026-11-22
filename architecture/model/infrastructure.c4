@@ -126,6 +126,13 @@ model {
   basalt.catalog -[sync]-> accountManagement "publish connection guidance and management tool definitions"
   basalt.build -[sync]-> accountManagement "verify management contracts with isolated local fixtures"
 
+  tailnetAdmin = adapter "Tailnet admin console" {
+    #external
+    technology "Tailscale admin console"
+    metadata { hosts "console.tailscale.com" }
+  }
+  basalt.catalog -[sync]-> tailnetAdmin "link connection guidance to where a person creates an OAuth client"
+
   zohoSignIn = adapter "Zoho account authorization" {
     #external
     technology "Regional Zoho OAuth"
