@@ -345,8 +345,8 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
 
 /**
  * The root's verdict from one controller read after the calls. Against a boot from before the apply
- * it alone shows any change, since boots never repeat. Every served boot must be the root's or a
- * listed cell's; a draining cell that just served is still listed.
+ * it alone shows any change, since boots never repeat. While the root serves alone every served boot
+ * must be its own; with a fleet, a cell that served may already be reaped, so its boot proves nothing.
  */
 async function judgeByController(
   rootBoot: string | undefined,
@@ -359,13 +359,14 @@ async function judgeByController(
   } catch (error) {
     return { root: unreadable(error), cellServed: false };
   }
-  const unknown = served.filter((boot) => boot !== now.root && !now.cells.has(boot));
+  const alone = !now.fleetEnabled && now.cells.size === 0;
+  const unknown = alone ? served.filter((boot) => boot !== now.root) : [];
   return {
     root:
       rootBoot !== undefined && now.root !== rootBoot
         ? `The root restarted: boot ${rootBoot} before the apply, ${now.root} after (controller inspect)`
         : unknown.length
-          ? `${unknown.length} runtime(s) served that the controller lists neither as the root nor as a fleet cell`
+          ? `${unknown.length} runtime(s) served beside the root while the controller lists no fleet cell`
           : undefined,
     cellServed: served.some((boot) => now.cells.has(boot)),
   };

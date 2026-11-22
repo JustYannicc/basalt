@@ -34,21 +34,24 @@ export const unreadable = (error: unknown) =>
  * Without the serving controller's code, the boot read before the apply is the served one. It is
  * the root's when the controller names that boot now: boots never repeat. A different boot means
  * the root restarted only while the root serves alone; with an enabled fleet or any cell it may have
- * been a cell's, and the run stops rather than guess.
+ * been a cell's, and the run stops rather than guess. A pool that didn't answer recorded no boot at
+ * all, and a wait against none takes the stuck root for a new one, so that stops too.
  */
-export const servedBootStandsIn = (now: ControllerRead, served: string) =>
-  served === now.root || (!now.fleetEnabled && now.cells.size === 0)
-    ? undefined
-    : "the boot read before the apply was a served one and may be a fleet cell's; pass --serving-controller so it is read from the controller";
+export const servedBootStandsIn = (now: ControllerRead, served: string | undefined) =>
+  served === undefined
+    ? "the pool did not answer before the apply, so nothing recorded the root's boot; pass --serving-controller so it is read from the controller"
+    : served === now.root || (!now.fleetEnabled && now.cells.size === 0)
+      ? undefined
+      : "the boot read before the apply was a served one and may be a fleet cell's; pass --serving-controller so it is read from the controller";
 
 /**
- * Reads that answer from any of the given codes, again until `withinMs`. After an upload the
- * controller object keeps the previous code for a while (`controllerAdoptionMs`) and refuses a
- * command signed for the other one; either answer names the same root. Each try opens a bridge
- * connection, so the code that last answered is tried first and tries are 15 s apart.
+ * Reads again until `withinMs`. After an upload the controller object keeps the previous code for a
+ * while (`controllerAdoptionMs`) and refuses a command signed for this checkout's code until it
+ * adopts it; an answer then also proves the new code runs. Each try opens a bridge connection, so
+ * tries are 30 s apart.
  */
 export function retryingReads(
-  sources: readonly RootReads[],
+  source: RootReads,
   withinMs: number,
   clock: { now?: () => number; sleep?: (milliseconds: number) => Promise<void> } = {},
 ): RootReads {
@@ -56,25 +59,16 @@ export function retryingReads(
   const sleep =
     clock.sleep ??
     ((milliseconds: number) => new Promise((done) => setTimeout(done, milliseconds)));
-  let answered = 0;
-  const order = () => [answered, ...sources.keys()].filter((v, i, all) => all.indexOf(v) === i);
   return {
     read: async () => {
       const started = now();
       for (;;) {
-        // The first source is the checkout's own code, so its refusal is the one reported.
-        const refusals = new Map<number, unknown>();
-        for (const index of order()) {
-          try {
-            const value = await sources[index]!.read();
-            answered = index;
-            return value;
-          } catch (error) {
-            refusals.set(index, error);
-          }
+        try {
+          return await source.read();
+        } catch (error) {
+          if (now() - started >= withinMs) throw error;
         }
-        if (now() - started >= withinMs) throw refusals.get(0);
-        await sleep(15_000);
+        await sleep(30_000);
       }
     },
   };

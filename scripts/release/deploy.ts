@@ -181,7 +181,7 @@ if (command === "boot" || command === "accept") {
       await import("./root-boot.ts");
     const { controllerAdoptionMs } =
       await import("../../src/pool/runtime-slots/forced-restart-timing.ts");
-    // The live controller's code before the apply; after it, the platform may keep that code a while.
+    // The live controller's code, for the boot read before the apply; accept signs with this checkout's.
     const servingCode = values["serving-controller"]
       ? servingControllerCode(values["serving-controller"])
       : undefined;
@@ -201,7 +201,7 @@ if (command === "boot" || command === "accept") {
         credential,
         client,
         values["allow-not-serving"] === true,
-        servingCode ? retryingReads([await readsFor(servingCode)], 30_000) : undefined,
+        servingCode ? retryingReads(await readsFor(servingCode), 30_000) : undefined,
       );
       const source = servingCode ? "controller" : "served";
       await output(resolve(values.out ?? ""), { boot, source });
@@ -238,34 +238,6 @@ if (command === "boot" || command === "accept") {
       throw new Error(
         "The pool did not answer before the apply, and this release declares no restart",
       );
-    // The root is judged only against a boot read before the apply; a rollback's read has none, and
-    // the code it put back is not this checkout's. Either code may answer while the object adopts.
-    let controller: Awaited<ReturnType<typeof readsFor>> | undefined;
-    if (rootRecord) {
-      const { checkoutControllerCode } = await import("../pool-fleet/controller.ts");
-      controller = retryingReads(
-        [
-          await readsFor(checkoutControllerCode),
-          ...(servingCode ? [await readsFor(servingCode)] : []),
-        ],
-        controllerAdoptionMs,
-      );
-      // A served boot from before the apply is checked before anything waits against it.
-      if (rootRecord.source !== "controller") {
-        const { unreadable } = await import("./root-boot.ts");
-        const stops = await controller.read().then(
-          (now) => servedBootStandsIn(now, rootRecord.boot),
-          (error: unknown) => unreadable(error),
-        );
-        if (stops) {
-          // No `passed` or `outcome`: nothing judged the pool, and the stop steps must not say it did.
-          const view = { stop: "root-boot-unknown" };
-          if (values.out) await output(resolve(values.out), view);
-          await summary(`ACCEPTANCE CANNOT TELL THE ROOT'S BOOT: ${stops}.`);
-          process.exit(1);
-        }
-      }
-    }
     let restart: Record<string, unknown> | undefined;
     // Which bound a healing release waited within, named in its summary line.
     let bound: { name: string; seconds: number } | undefined;
@@ -350,6 +322,30 @@ if (command === "boot" || command === "accept") {
         process.exit(1);
       }
       rootBoot = verdict.boot;
+    }
+    // The root is judged only against a boot read before the apply; a rollback's read has none, and
+    // the code it put back is not this checkout's. Only this checkout's code: an answer from the old
+    // one says nothing about what the new code does once the object adopts it.
+    let controller: Awaited<ReturnType<typeof readsFor>> | undefined;
+    if (rootRecord) {
+      const { checkoutControllerCode } = await import("../pool-fleet/controller.ts");
+      controller = retryingReads(await readsFor(checkoutControllerCode), controllerAdoptionMs);
+      // After a healing release's wait, so a failed apply still reports what that wait found.
+      if (rootRecord.source !== "controller") {
+        const { unreadable } = await import("./root-boot.ts");
+        const served = rootRecord.boot === NOT_SERVING ? undefined : rootRecord.boot;
+        const stops = await controller.read().then(
+          (now) => servedBootStandsIn(now, served),
+          (error: unknown) => unreadable(error),
+        );
+        if (stops) {
+          // No `passed` or `outcome`: nothing judged the pool, and the stop steps must not say it did.
+          const view = { stop: "root-boot-unknown", ...(restart ? { restart } : {}) };
+          if (values.out) await output(resolve(values.out), view);
+          await summary(`ACCEPTANCE CANNOT TELL THE ROOT'S BOOT: ${stops}.`);
+          process.exit(1);
+        }
+      }
     }
     const result = await runAcceptance({
       credential,
