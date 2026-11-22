@@ -41,6 +41,11 @@ const distance = (value: unknown) => {
   const decoded = Schema.decodeUnknownOption(RuntimeDistance)(value);
   return decoded._tag === "Some" ? { database: decoded.value } : {};
 };
+const ActivityCount = Schema.Struct({
+  active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  known: Schema.Boolean,
+  stillMs: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
+});
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
@@ -57,7 +62,10 @@ export class BoundSlotDriver implements SlotDriver {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(value),
     });
-    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId);
+    // Control calls to a running boot carry its identity; a slot-only call has no boot yet.
+    const bootId =
+      "bootId" in target && typeof target.bootId === "string" ? target.bootId : undefined;
+    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId, bootId);
     let response: Response;
     try {
       response = await homeResponse(async () => {
@@ -200,12 +208,17 @@ export class BoundSlotDriver implements SlotDriver {
   }
   async drain(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "drain", { identity }, signal);
-    return Schema.decodeUnknownSync(
-      Schema.Struct({
-        active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-        known: Schema.Boolean,
-      }),
-    )(await response.json());
+    return Schema.decodeUnknownSync(ActivityCount)(await response.json());
+  }
+  async abandonStart(target: SlotTarget, signal: AbortSignal) {
+    const response = await this.call(target, "abandon-start", { target }, signal);
+    return Schema.decodeUnknownSync(Schema.Struct({ stopped: Schema.Boolean }))(
+      await response.json(),
+    );
+  }
+  async activity(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "activity", { identity }, signal);
+    return Schema.decodeUnknownSync(ActivityCount)(await response.json());
   }
   async retirement(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "retirement", { identity }, signal);
@@ -355,11 +368,15 @@ export async function runtimeRequest(
         )(value),
       );
       return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
-    } else if (action === "/drain") {
+    } else if (action === "/drain" || action === "/activity") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
       );
-      return Response.json(await endpoint.drain(identity, request.signal));
+      return Response.json(
+        await (action === "/activity"
+          ? endpoint.streamCount(identity)
+          : endpoint.drain(identity, request.signal)),
+      );
     } else if (action === "/retirement" || action === "/failed") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
@@ -367,6 +384,11 @@ export async function runtimeRequest(
       return Response.json(
         await endpoint[action === "/failed" ? "failed" : "retirement"](identity, request.signal),
       );
+    } else if (action === "/abandon-start") {
+      const { target } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value),
+      );
+      return Response.json(await endpoint.abandonStart(target));
     } else if (action === "/retire") {
       const { target, identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget, identity: SlotIdentity }))(

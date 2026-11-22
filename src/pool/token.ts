@@ -174,6 +174,50 @@ export async function verifyPoolToken(
   }
 }
 
+/** A Connect page's signed setup session: the person approving, and their own pool's claims. */
+export interface SetupIntent extends PoolClaims {
+  user: string;
+  expiresAt: number;
+}
+export const setupIntentPrefix = "sbci1";
+export const setupTtl = 5 * 60_000;
+
+/**
+ * The person's own unexpired setup intent, or undefined. The tools service reads it too: it
+ * approves a tools-only device without the pool.
+ */
+export async function openSetupIntent(
+  secret: string,
+  opaque: unknown,
+  user: string,
+  now: number,
+  previousSecret?: string,
+): Promise<SetupIntent | undefined> {
+  const value =
+    typeof opaque === "string"
+      ? await openEnvelope(secret, setupIntentPrefix, opaque, previousSecret)
+      : undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const intent = value as Record<string, unknown>;
+  return intent.user === user &&
+    ["pool", "owner", "organization"].every(
+      (key) => typeof intent[key] === "string" && intent[key].length > 0,
+    ) &&
+    typeof intent.expiresAt === "number" &&
+    Number.isSafeInteger(intent.expiresAt) &&
+    intent.expiresAt > now &&
+    intent.expiresAt <= now + setupTtl
+    ? (value as SetupIntent)
+    : undefined;
+}
+
+/** A person's own label for a computer: 1 to 60 characters after trimming, without control characters. */
+export function computerName(value: unknown): string | undefined {
+  const name = typeof value === "string" ? value.trim() : "";
+  const control = [...name].some((char) => char < " " || char === "\u007f");
+  return name && name.length <= 60 && !control ? name : undefined;
+}
+
 /**
  * The non-secret version the tools service records as `tokenKeyVersion`: the first 16 hex digits
  * of SHA-256 over the key text. Comparing it never needs the key itself.

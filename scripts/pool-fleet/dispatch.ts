@@ -69,6 +69,8 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   rows: fleet.resources.map((row) => ({
     phase: row.phase,
     active: row.active,
+    reason: row.reason ?? null,
+    inPhaseMs: row.inPhaseMs ?? null,
     applicationId: row.target.applicationId,
     boot: row.identity ? shortHash(row.identity.bootId) : null,
   })),

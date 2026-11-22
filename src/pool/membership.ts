@@ -84,6 +84,10 @@ export class NativeMemberships {
   private save(state: Record<string, State>) {
     return poolDependency("storage", this.deps.storage.put(storageKey, state));
   }
+  /** Whether a pool is live, so Home has renewals to make. */
+  live() {
+    return this.run(async (state) => Object.values(state).some((pool) => !pool.retired));
+  }
   private schedule() {
     return this.run(async (state) => {
       if (Object.values(state).some((pool) => !pool.retired))

@@ -112,6 +112,19 @@ interface Attempt {
 }
 const elapsed = (started: number) =>
   Math.max(0, Math.min(86_400_000, Math.round(performance.now() - started)));
+const boot = (value: unknown) =>
+  typeof value === "string" && /^[\w.:-]{1,128}$/u.test(value) ? value : undefined;
+/** A forward names its runtime in the identity header; a control call passes it instead. */
+function headerBoot(request: Request) {
+  const header = request.headers.get("X-Signalbox-Runtime-Identity");
+  if (header === null || header.length > 4096) return undefined;
+  try {
+    const value: unknown = JSON.parse(header);
+    return object(value) ? boot(field(value, "bootId")) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function failEndpointResponse(response: Response, error: unknown) {
   responses.get(response)?.finish(error);
@@ -124,23 +137,27 @@ export class EndpointTrace {
   private request: Request;
   private slotId: string;
   private cellId: string;
+  // The boot a call was sent to, so a failure joins the exact process, not only its slot.
+  private bootId: string | undefined;
   private requestId = crypto.randomUUID();
   private logged = false;
   eligible = false;
   reconnected = false;
   reconnectAcquired = false;
-  constructor(request: Request, slotId: string, cellId: string) {
+  constructor(request: Request, slotId: string, cellId: string, bootId?: string) {
     this.request = request;
     this.slotId = slotId;
     this.cellId = cellId;
+    this.bootId = boot(bootId) ?? headerBoot(request);
   }
-  static forRequest(request: Request, slotId: string, cellId: string) {
+  static forRequest(request: Request, slotId: string, cellId: string, bootId?: string) {
     const retained = requests.get(request);
     if (retained) {
       retained.cellId = cellId;
+      retained.bootId ??= boot(bootId);
       return retained;
     }
-    const trace = new EndpointTrace(request, slotId, cellId);
+    const trace = new EndpointTrace(request, slotId, cellId, bootId);
     requests.set(request, trace);
     return trace;
   }
@@ -227,6 +244,7 @@ export class EndpointTrace {
         requestId: this.requestId,
         slotId: this.slotId,
         cellId: this.cellId,
+        bootId: this.bootId ?? null,
         method:
           ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"].find(
             (method) => method === this.request.method,

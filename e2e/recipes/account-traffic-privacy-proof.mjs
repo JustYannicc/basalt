@@ -4,6 +4,14 @@ import { Effect, Redacted } from "effect";
 import { roleHost } from "../../.upstream/e2e/support/role-hosts.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { accountRow } from "../../.upstream/e2e/support/account-rows.ts";
+import { provisioningJobs, provisioningSettled } from "./provisioning-diagnostics.mjs";
+
+// Red switches for this proof only, read nowhere else. HOLD keeps the organization row lock that
+// member setup takes from before the invitation is accepted until the measurement starts, so the
+// new member's setup commits land right where A's heads are measured. SETTLE=0 measures without
+// waiting for the organization's provisioning, as this proof did before.
+const holdSetup = process.env.BASALT_E2E_PRIVACY_HOLD_SETUP === "1";
+const settleFirst = process.env.BASALT_E2E_PRIVACY_SETTLE !== "0";
 
 const source = `import { defineApp, defineProvider, secrets, object, string, router, query, accountRouter } from "apps";
 const service = defineProvider({ name: "Private traffic fixture", auth: {
@@ -16,11 +24,24 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
 }));`;
 
 /** Both actors are ordinary members; only B's real tool call may refresh B's private traffic. */
-export const accountTrafficPrivacyProof = ({ h, browser, check, diagnostics, directory }) =>
+export const accountTrafficPrivacyProof = ({
+  h,
+  database,
+  browser,
+  check,
+  diagnostics,
+  directory,
+}) =>
   Effect.gen(function* () {
     const run = (work) => Effect.promise(work).pipe(Effect.timeout("30 seconds"));
-    const progress = { phase: "membership", viewers: [] };
+    const progress = { phase: "membership", viewers: [], holdSetup, settleFirst };
     diagnostics.privateTraffic = progress;
+    const organization = h.actors.organization.id;
+    if (holdSetup)
+      yield* database.hold({
+        sql: "select id from organization where id = $1 for no key update",
+        params: [organization],
+      });
     const identity = yield* h.requestAs("admin", "GET", "/api/auth/get-session");
     const invitation = yield* h.request("POST", "/api/auth/organization/invite-member", {
       organizationId: h.actors.organization.id,
@@ -124,6 +145,33 @@ export const accountTrafficPrivacyProof = ({ h, browser, check, diagnostics, dir
       assert.equal(response.status(), 200);
       return (await response.json()).revisions;
     };
+    // A new member's setup commits the organization's account and app heads after the invitation
+    // is accepted, at times only on a retry. A's heads are measured once none of the organization's
+    // provisioning waits or runs, so only B's tool call falls between the two readings.
+    const settleProvisioning = Effect.gen(function* () {
+      for (let round = 0; round < 120; round++) {
+        const jobs = yield* provisioningJobs(database, organization);
+        progress.provisioning = jobs;
+        if (provisioningSettled(jobs)) return jobs;
+        // A retry waits out its backoff; the dispatcher runs it now instead.
+        yield* database.run({
+          sql: `update hosted_provisioning set available_at = now()
+            where organization_id = $1 and status = 'queued' and available_at > now()`,
+          params: [organization],
+        });
+        yield* h.request("POST", "/api/onboarding/prepare", {});
+        yield* Effect.sleep("250 millis");
+      }
+      return yield* Effect.fail(
+        new Error(
+          `The organization's provisioning did not settle: ${JSON.stringify(progress.provisioning)}`,
+        ),
+      );
+    });
+    progress.phase = "settle";
+    if (holdSetup) yield* database.release;
+    if (settleFirst) yield* settleProvisioning;
+    progress.phase = "private-measure";
     const before = { a: yield* run(() => heads(a)), b: yield* run(() => heads(b)) };
     assert.equal(
       before.a.some(({ resource }) => resource === b.state.account),

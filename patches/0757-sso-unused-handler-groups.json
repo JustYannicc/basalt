@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-sso-unused-handler-groups",
+  "file": "0757-sso-unused-handler-groups.patch",
+  "content_sha256": "9591fae2c117a508e19f8e0fd4f82a9f3cc5958c06aefa7bfb0c7ad0a2a0cb7f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

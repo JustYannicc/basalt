@@ -41,7 +41,7 @@ import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
-import { RuntimeActivity } from "./activity.ts";
+import { RuntimeActivity, stillFor } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
@@ -215,7 +215,10 @@ export class RuntimeEndpoint {
         return;
       }
       const retained = await this.store.retained(proof.target.slotId);
-      if (retained && !retained.retired) {
+      // A retired or abandoned slot never starts again: its place may already be counted free.
+      if (retained?.retired || (await this.store.abandoned(proof.target.slotId)))
+        throw new SlotRefused("identity");
+      if (retained) {
         const { record } = await this.store.read(proof.target);
         if (
           !sameControllerCode(record.authorization.controllerCode, proof.controllerCode) ||
@@ -516,6 +519,26 @@ export class RuntimeEndpoint {
       release();
       throw error;
     }
+  }
+  /**
+   * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
+   * is durable before it answers, and from then on this slot is never admitted or started again, so
+   * a container it finds stopped can't come back.
+   */
+  abandonStart(target: SlotTarget) {
+    return this.serialize(async () => {
+      this.bound(target);
+      await this.store.abandon(target);
+      return { stopped: !this.ctx.container!.running };
+    });
+  }
+  /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
+  async streamCount(identity: SlotIdentity) {
+    this.bound(identity);
+    const row = await this.activity.inspect(identity);
+    return row
+      ? { active: row.active, known: row.known, ...stillFor(row) }
+      : { active: 0, known: false };
   }
   drain(identity: SlotIdentity, signal: AbortSignal) {
     const trace = new PoolUpkeepTrace("endpoint");

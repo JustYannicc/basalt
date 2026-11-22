@@ -24,6 +24,7 @@ import { verifyNativeDisplay } from "./native-display.mjs";
 import { verifyNativeApps } from "./native-apps.mjs";
 import { verifyNativeSearch } from "./native-search.mjs";
 import { verifyNativeLocalHeaders } from "./native-local-headers.mjs";
+import { proofSigningKey, setupIntentFor } from "./native-intent.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -86,7 +87,7 @@ const program = Effect.gen(function* () {
     BETTER_AUTH_URL: worker.origin,
     BETTER_AUTH_SECRET: secret,
     EXECUTOR_NPM_REGISTRY: registry.url,
-    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_APP_SIGNING_KEY: proofSigningKey,
     BASALT_POOL_ORIGIN: pool.origin,
   });
   yield* Effect.promise(async () => {
@@ -123,7 +124,7 @@ const program = Effect.gen(function* () {
         method: "POST",
         headers: {
           ...owner,
-          "x-basalt-native-intent": "approved-native-intent",
+          "x-basalt-native-intent": await setupIntentFor(actors.owner, "pool-native-client"),
           "x-basalt-native-name": "Native CLI proof",
           "x-basalt-native-pool": "pool-native-client",
           "x-basalt-native-models": "true",
