@@ -275,6 +275,15 @@
             "mode": "manual",
             "requires": "Carry 0732 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home's lifecycle cleanup lets a peer cancel a stale node membership only after the Home that holds it has stopped heartbeating or the membership is past a bounded backstop, keeps a Home fencing its own stale nodes, and passes the live-owner, silent-owner, expired-owner, backstop and own-node regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-heartbeat-fresh-lease",
+          "file": "0735-home-heartbeat-fresh-lease.patch",
+          "sha256": "921477ab7ee1521cfe4af1ee648f165331df76d2a0e00dae726ccf6f3c834110",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0735 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home records a heartbeat without the election gate's row lock while the gate names the oldest live node, that node holds the master flag and its lease is fresh, renews the master's lease with one conditional update that never waits on a held gate, keeps the master flag no longer than the lease it read, and passes the follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions."
+          }
         }
       ]
     },

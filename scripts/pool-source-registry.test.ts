@@ -530,6 +530,18 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-heartbeat-fresh-lease") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0735-home-heartbeat-fresh-lease.patch");
+        assert.match(patch.retirement.requires, /without the election gate's row lock/);
+        assert.match(
+          patch.retirement.requires,
+          /keeps the master flag no longer than the lease it read/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
