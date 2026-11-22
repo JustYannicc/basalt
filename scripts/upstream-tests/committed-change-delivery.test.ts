@@ -20,18 +20,6 @@ before(
 );
 after(() => Effect.runPromise(Scope.close(scope, Exit.void)), { timeout: 5_000 });
 
-// Embedded database startup is fixture setup; the unchanged five-second test bounds delivery.
-const scope = Scope.makeUnsafe();
-const initialize = () => Effect.runPromise(Layer.buildWithScope(pgliteLayer(), scope));
-let services: Awaited<ReturnType<typeof initialize>>;
-before(
-  async () => {
-    services = await initialize();
-  },
-  { timeout: 10_000 },
-);
-after(() => Effect.runPromise(Scope.close(scope, Exit.void)), { timeout: 5_000 });
-
 // Each delivery must arrive before the test makes another write that could hide a missed wake-up.
 test(
   "self-host delivers each lone commit without waiting for another notification",
