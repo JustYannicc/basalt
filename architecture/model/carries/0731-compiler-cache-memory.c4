@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "The production compiler cache digests its key one file at a time and never encodes a result its 8 MB envelope cannot hold, so reuse adds no whole-dependency-set copy to a compiler isolate that two builds share."
+      constraint "The production compiler cache digests its key one file at a time and never encodes a result whose string and byte floor already exceeds its 8 MB envelope, so reuse adds no whole-dependency-set copy to a compiler isolate that two builds share."
     }
   }
 }

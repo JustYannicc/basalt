@@ -13,7 +13,12 @@ const release = "a".repeat(40);
 // Shaped like an Obsidian vault's prepared filesystem on production (923 files, about 32 MB: 22 MB
 // of them the release-pinned `apps` framework, 7.7 MB react-dom), here in files of 17 to 75 KB.
 const text = (size: number, seed: number) => String.fromCharCode(97 + (seed % 26)).repeat(size);
-const vault = () => [
+type DependencyFile = {
+  readonly path: string;
+  readonly content: string | null;
+  readonly bytes?: Uint8Array<ArrayBuffer>;
+};
+const vault = (): DependencyFile[] => [
   ...Array.from({ length: 300 }, (_, i) => ({
     path: `node_modules/apps/types/${i}.d.ts`,
     content: text(Math.floor((22 * MB) / 300), i),
@@ -24,7 +29,6 @@ const vault = () => [
   })),
   { path: "node_modules/pkg/module.wasm", content: null, bytes: new Uint8Array(64 * 1024).fill(7) },
 ];
-const largestFile = Math.ceil((22 * MB) / 300);
 const files = [
   { path: "package.json", content: JSON.stringify({ dependencies: { apps: "1.0.0" } }) },
   { path: "index.ts", content: "export default {};" },
@@ -86,13 +90,20 @@ const watchMaterialized = async <A>(work: () => Promise<A>) => {
 };
 
 const run = (input: {
-  dependencyFiles: ReturnType<typeof vault>;
+  dependencyFiles: ReadonlyArray<DependencyFile>;
   result: ReturnType<typeof compiled>;
   counter?: { compiles: number };
-}) =>
+  source?: typeof files;
+}): Promise<ReturnType<typeof compiled>> =>
   Effect.runPromise(
     cachedCompilerResult(
-      { files, publicPaths: [], release, enabled: true, dependencyFiles: input.dependencyFiles },
+      {
+        files: input.source ?? files,
+        publicPaths: [],
+        release,
+        enabled: true,
+        dependencyFiles: input.dependencyFiles,
+      },
       Effect.sync(() => {
         if (input.counter) input.counter.compiles++;
         return input.result;
@@ -105,13 +116,14 @@ test("the cache key never holds a vault's whole dependency set at once", async (
   const watched = await watchMaterialized(() =>
     run({ dependencyFiles: vault(), result: compiled(0) }),
   );
-  // Before 0731 the key was one JSON string of every file: about 32 MB here, plus its bytes.
+  // Before 0731 the key was one JSON string of every file: about 32 MB here, plus its bytes. Per
+  // file digests keep the largest string to the list of digests, well under 1 MB.
   assert.ok(
-    watched.largestString <= 2 * largestFile,
-    `largest string ${(watched.largestString / MB).toFixed(1)} MB; one file is at most ${(largestFile / MB).toFixed(1)} MB`,
+    watched.largestString < MB,
+    `largest string ${(watched.largestString / MB).toFixed(1)} MB`,
   );
   assert.ok(
-    watched.largestBytes <= 2 * largestFile,
+    watched.largestBytes < MB,
     `largest encoded bytes ${(watched.largestBytes / MB).toFixed(1)} MB`,
   );
 });
@@ -132,7 +144,7 @@ test("a result too large for the cache is returned without being encoded", async
   );
 });
 
-test("a storable result is still reused, and any dependency byte change misses", async () => {
+test("a storable result is still reused, and any source or dependency change misses", async () => {
   const { puts } = productionCache();
   const counter = { compiles: 0 };
   const all = vault();
@@ -154,5 +166,11 @@ test("a storable result is still reused, and any dependency byte change misses",
     result,
     counter,
   });
-  assert.equal(counter.compiles, 3, "changed dependency bytes or text compile again");
+  await run({
+    dependencyFiles,
+    result,
+    counter,
+    source: [...files.slice(1), { ...files[0]!, content: `${files[0]!.content} ` }],
+  });
+  assert.equal(counter.compiles, 4, "changed dependency bytes, dependency text or source compile again");
 });
