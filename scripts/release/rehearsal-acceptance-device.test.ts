@@ -50,10 +50,19 @@ test("the origin is the stage's own: https, carrying its stage label, never prod
     [`https://${brand.host}./`, /production's host/u],
     [`https://${brand.host.toUpperCase()}`, /production's host/u],
     [`https://${brand.host.toUpperCase()}.`, /production's host/u],
-    // Anything under production's zone is production, whatever it names.
+    // Under production's zone only the stage's own app host is admitted; the rest is production.
     [`https://rehearsal-3.${brand.host}`, /production's host/u],
-    [`https://app.rehearsal-3.${brand.zone}.`, /production's host/u],
     [`https://${brand.zone}`, /production's host/u],
+    [`https://www.${brand.zone}`, /production's host/u],
+    [`https://rehearsal-3.${brand.zone}`, /production's host/u],
+    [`https://x.app.rehearsal-3.${brand.zone}`, /production's host/u],
+    [`https://api.rehearsal-3.${brand.zone}`, /production's host/u],
+    [`https://app.rehearsal-4.${brand.zone}`, /production's host/u],
+    [`https://app.rehearsal-30.${brand.zone}`, /production's host/u],
+    [`https://a-00000000-0000-4000-8000-000000000000.${brand.zone}`, /production's host/u],
+    // Two trailing dots, or any empty label, name no host at all.
+    [`https://app.rehearsal-3.${brand.zone}..`, /empty label/u],
+    [`https://${brand.host}..`, /empty label/u],
     // A host that is not this stage's.
     ["https://app.rehearsal-4.stage.example", /stage's label/u],
     ["https://app.stage.example", /stage's label/u],
@@ -76,6 +85,18 @@ test("the origin is the stage's own: https, carrying its stage label, never prod
       return new Response(null, { status: 403 });
     }).catch(() => {});
     assert.equal(sent, `https://app.rehearsal-3.stage.example${nativeControlPath}`, origin);
+  }
+  // A rehearsal stage in production's zone: its own app host, in any spelling, is admitted.
+  for (const origin of [
+    `https://app.rehearsal-3.${brand.zone}`,
+    `https://APP.Rehearsal-3.${brand.zone.toUpperCase()}./`,
+  ]) {
+    let sent: string | undefined;
+    await registerRehearsalAcceptanceDevice({ ...input, origin }, async (url) => {
+      sent = String(url);
+      return new Response(null, { status: 403 });
+    }).catch(() => {});
+    assert.equal(sent, `https://app.rehearsal-3.${brand.zone}${nativeControlPath}`, origin);
   }
 });
 

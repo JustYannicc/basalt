@@ -21,13 +21,12 @@ import {
   historySchemaMigrations,
   historyAppSchemaVersion,
   historySchemaVersion,
-  migrateModelHistory,
   planModelHistorySchema,
   type HistoryDatabase,
 } from "./schema.ts";
 
+// Schema steps are applied only by the release's database step; this boundary plans them.
 export const historySchemaCatalogPath = "/model-history/schema/catalog";
-export const historySchemaApplyPath = "/model-history/schema";
 export const historyBackfillPath = "/model-history/backfill";
 export const historyJournalActivationPath = "/model-history/journal-activation";
 export const historyJournalReaderVersion = "checkpoint-count-v1";
@@ -215,7 +214,7 @@ export async function handleModelHistoryOperation(
   const path = new URL(request.url).pathname;
   const read = path === historySchemaCatalogPath && request.method === "GET";
   const activation = path === historyJournalActivationPath;
-  const apply = (path === historySchemaApplyPath || activation) && request.method === "POST";
+  const apply = activation && request.method === "POST";
   const backfill = path === historyBackfillPath;
   const traffic = path === historyTrafficPath;
   const completion = path === historyImportCompletionPath;
@@ -249,7 +248,7 @@ export async function handleModelHistoryOperation(
       (approval.go !== true ||
         typeof approval.schemaHash !== "string" ||
         typeof approval.catalogHash !== "string" ||
-        (activation && approval.readersReady !== historyJournalReaderVersion))
+        approval.readersReady !== historyJournalReaderVersion)
     )
       return new Response(null, { status: 400 });
     return await withHistoryDatabase(connectionString, async (db) => {
@@ -265,15 +264,14 @@ export async function handleModelHistoryOperation(
         plan.catalogDiff.conflicts.length
       )
         return new Response(null, { status: 409 });
-      if (activation) await activateModelHistoryJournal(db);
-      else await migrateModelHistory(db);
+      await activateModelHistoryJournal(db);
       return Response.json(
         {
           status: "complete",
           version: plan.version,
           schemaHash: plan.schemaHash,
           applied: !plan.applied,
-          ...(activation ? { readersReady: historyJournalReaderVersion } : {}),
+          readersReady: historyJournalReaderVersion,
           automaticBackfill: false,
         },
         { headers: { "Cache-Control": "no-store" } },
@@ -281,7 +279,7 @@ export async function handleModelHistoryOperation(
     });
   } catch (error) {
     if (apply && !(error instanceof HistoryInputError) && !(error instanceof SyntaxError))
-      console.error("Model history schema apply failed", historyApplyFailure(error));
+      console.error("Model history journal activation failed", historyApplyFailure(error));
     return new Response(null, {
       status: error instanceof HistoryInputError || error instanceof SyntaxError ? 400 : 503,
     });

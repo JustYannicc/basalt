@@ -17,7 +17,6 @@ import {
   historyJournalReaderVersion,
   historyBackfillPath,
   historyBackfillVersion,
-  historySchemaApplyPath,
   historySchemaCatalogPath,
 } from "../src/pool/model-history/operator.ts";
 import {
@@ -89,10 +88,12 @@ export function historyOperatorOptions(args: string[]) {
     (operation === "journal-activation" &&
       values.apply === true &&
       values["readers-ready"] !== historyJournalReaderVersion) ||
+    // Schema steps are applied only by a release's database step; this operator plans them.
+    (operation === "schema" && values.apply === true) ||
     Boolean(values.apply) !== Boolean(values.go)
   )
     throw new Error(
-      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation|usage-rollup] [--apply --go] [--readers-ready checkpoint-count-v1]",
+      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation|usage-rollup] [--apply --go for backfill, journal-activation or usage-rollup] [--readers-ready checkpoint-count-v1]",
     );
   return {
     worker: values.worker,
@@ -259,6 +260,8 @@ export async function runHistoryOperator(
     throw new Error(
       "Verify deployed reader inventory, then acknowledge --readers-ready checkpoint-count-v1",
     );
+  if (options.operation === "schema" && options.apply)
+    throw new Error("History schema steps are applied only by a release");
   if (!/^[a-f0-9]{32}$/.test(accountId)) throw new Error("CLOUDFLARE_ACCOUNT_ID is required");
   let approval: ReturnType<typeof approvalFor> | undefined;
   let approvedSchemaState: string | undefined;
@@ -345,9 +348,7 @@ export async function runHistoryOperator(
           ? historyBackfillPath
           : options.operation === "usage-rollup"
             ? historyUsageRollupPath
-            : approval
-              ? historySchemaApplyPath
-              : historySchemaCatalogPath;
+            : historySchemaCatalogPath;
     const operations = platform.env.POOL_OPERATIONS;
     const response = await historyOperatorStep("operator.request", () =>
       operations.fetch(

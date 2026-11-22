@@ -1,0 +1,251 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9606,17 +9606,37 @@ export const scenarios = plan({
+       local: na("Pool provisioning belongs to the hosted product."),
+     },
+   },
+-  catalogInstances: {
++  catalogInstancesTracker: {
++    fixtures: "actors",
++    file: "catalog-instances.spec.ts",
++    title: "catalog instances open each named tracker from one entry on desktop and phone",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a runner-owned catalog for the UI journey."),
++      local: na("This scenario exercises hosted service claims and organization inventory."),
++    },
++  },
++  catalogInstancesPool: {
+     fixtures: "actors",
+     legacyStorage: true,
+     file: "catalog-instances.spec.ts",
+-    title: "catalog instances keep every service family reachable and create another explicitly",
++    title: "catalog instances keep a retained pool reachable and create another pool explicitly",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Uses a runner-owned catalog and retained instance fixtures for the UI journey."),
+       local: na("This scenario exercises hosted service claims and organization inventory."),
+     },
+   },
++  catalogInstancesMail: {
++    fixtures: "actors",
++    file: "catalog-instances.spec.ts",
++    title: "catalog instances reuse mail on Add and create another without copying its links",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a runner-owned catalog for the UI journey."),
++      local: na("This scenario exercises hosted service claims and organization inventory."),
++    },
++  },
+   selfEmailApprovalScopes: {
+     file: "self-email-approvals.spec.ts",
+     title:
+diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
+--- a/e2e/tests/catalog-instances.spec.ts
++++ b/e2e/tests/catalog-instances.spec.ts
+@@ -19,60 +19,34 @@ import { officialApps } from "../support/public-catalogs.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
++/** One case per service family keeps each within the test budget with only the setup it uses. */
++const catalogCase = Effect.gen(function* () {
++  const api = yield* Api;
++  const browser = yield* Browser;
++  const actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const catalog = `/org/${actors.organization.slug}/apps/add`;
++  const install = (entry: string, name: string, newInstance = false) =>
++    api
++      .request(actors.owner, "POST", `${prefix}/apps/install`, {
++        entry,
++        name,
++        newInstance,
++        requestId: crypto.randomUUID(),
++      })
++      .pipe(Effect.flatMap((response) => body(Instance, response)));
++  const visit = browser.use("Open the service catalog", (page) => page.goto(catalog));
++  return { api, browser, actors, prefix, catalog, install, visit };
++});
++
+ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+-  it.effect(scenarios.catalogInstances.title, (context) =>
++  it.effect(scenarios.catalogInstancesTracker.title, (context) =>
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+-        const api = yield* Api;
+-        const browser = yield* Browser;
+-        const actors = yield* Actors;
+-        const ui = yield* catalogInstancesUI;
+-        const backend = yield* poolCreationBackend;
+-        yield* poolCreationProduct(backend.origin);
+-        const prefix = `/api/organizations/${actors.organization.id}`;
+-        const viewer = yield* body(
+-          Schema.Struct({ userId: Schema.String }),
+-          yield* api.request(actors.owner, "GET", "/api/viewer"),
+-        );
+-        yield* serverControl("stop");
+-        yield* legacyStorage([
+-          {
+-            sql: 'update "user" set "emailVerified" = true where id = $1',
+-            params: [viewer.userId],
+-          },
+-        ]);
+-        yield* serverControl("start");
+-        const install = (entry: string, name: string, newInstance = false) =>
+-          api
+-            .request(actors.owner, "POST", `${prefix}/apps/install`, {
+-              entry,
+-              name,
+-              newInstance,
+-              requestId: crypto.randomUUID(),
+-            })
+-            .pipe(Effect.flatMap((response) => body(Instance, response)));
+-        const pool = yield* install("basalt-pool", "Retained pool", true);
+-        // A legacy pool has no service claim or origin. Its owner-keyed metadata is authoritative.
+-        yield* serverControl("stop");
+-        yield* legacyStorage([
+-          {
+-            sql: `update organization set metadata = jsonb_set(metadata::jsonb - 'basaltServiceInstalls',
+-            '{basaltPools}', jsonb_build_object($2::text, (metadata::jsonb -> 'basaltPools' -> $3) - 'owner'))::text
+-            where id = $1`,
+-            params: [actors.organization.id, viewer.userId, pool.id],
+-          },
+-          { sql: "update executor_apps set copied_from = null where id = $1", params: [pool.id] },
+-        ]);
+-        yield* serverControl("start");
++        const { browser, actors, install, visit } = yield* catalogCase;
+         const work = yield* install(officialApps.tracker.id, "Tracker work");
+         const personal = yield* install(officialApps.tracker.id, "Tracker personal", true);
+-        const catalog = `/org/${actors.organization.slug}/apps/add`;
+-        const visit = browser.use("Open the service catalog", (page) => page.goto(catalog));
+-        const links = (id: string) =>
+-          api
+-            .request(actors.owner, "GET", `${prefix}/apps/${id}/accounts/user`)
+-            .pipe(Effect.flatMap((response) => body(AccountLinks, response)));
+         yield* browser.login(actors.owner);
+         yield* visit;
+         // Old UI captures finish before the new-feature assertion used for the negative control.
+@@ -86,16 +60,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+             row(page, officialApps.tracker.name).count(),
+           ),
+         ).toBe(1);
+-        expect(
+-          yield* browser.use("Every installed service offers Add another", (page) =>
+-            row(page, "Pool").getByRole("button", { name: "More actions for Pool" }).count(),
+-          ),
+-        ).toBe(1);
+-        expect(
+-          yield* browser.use("Retained pool opens its exact ID", (page) =>
+-            row(page, "Pool").getByRole("link", { name: "Open", exact: true }).getAttribute("href"),
+-          ),
+-        ).toBe(`/org/${actors.organization.slug}/apps/${pool.id}?view=accounts`);
+         yield* browser.use("Choose among tracker instances", (page) =>
+           row(page, officialApps.tracker.name)
+             .getByRole("button", { name: /choose one of 2/ })
+@@ -141,9 +105,61 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+         yield* browser.use("Cancel phone chooser", (page) =>
+           page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click(),
+         );
+-        yield* browser.use("Return to desktop", (page) =>
+-          page.setViewportSize({ width: 1280, height: 900 }),
++      }),
++    ),
++  );
++  it.effect(scenarios.catalogInstancesPool.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { api, browser, actors, prefix, install, visit } = yield* catalogCase;
++        const ui = yield* catalogInstancesUI;
++        const backend = yield* poolCreationBackend;
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
+         );
++        // The pool product's start also serves this write; stopping a stopped product is a no-op.
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: 'update "user" set "emailVerified" = true where id = $1',
++            params: [viewer.userId],
++          },
++        ]);
++        yield* poolCreationProduct(backend.origin);
++        const pool = yield* install("basalt-pool", "Retained pool", true);
++        // A legacy pool has no service claim or origin. Its owner-keyed metadata is authoritative.
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(metadata::jsonb - 'basaltServiceInstalls',
++            '{basaltPools}', jsonb_build_object($2::text, (metadata::jsonb -> 'basaltPools' -> $3) - 'owner'))::text
++            where id = $1`,
++            params: [actors.organization.id, viewer.userId, pool.id],
++          },
++          { sql: "update executor_apps set copied_from = null where id = $1", params: [pool.id] },
++        ]);
++        yield* serverControl("start");
++        // Only the pool-service guard keeps the retained pool from answering another service's install.
++        const work = yield* install(officialApps.tracker.id, "Tracker work");
++        expect(work.id).not.toBe(pool.id);
++        yield* browser.login(actors.owner);
++        yield* visit;
++        // Count reads do not wait; the installed row's link means the inventory has rendered.
++        yield* browser.use("Show the retained pool", (page) =>
++          row(page, "Pool").getByRole("link", { name: "Open", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Every installed service offers Add another", (page) =>
++            row(page, "Pool").getByRole("button", { name: "More actions for Pool" }).count(),
++          ),
++        ).toBe(1);
++        expect(
++          yield* browser.use("Retained pool opens its exact ID", (page) =>
++            row(page, "Pool").getByRole("link", { name: "Open", exact: true }).getAttribute("href"),
++          ),
++        ).toBe(`/org/${actors.organization.slug}/apps/${pool.id}?view=accounts`);
+         yield* ui.another("Pool");
+         yield* ui.name("Denied pool");
+         yield* browser.use("Refuse creation before any write", (page) =>
+@@ -218,6 +234,28 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+             page.getByRole("menuitem", { name: new RegExp(app.name) }).waitFor(),
+           );
+         yield* browser.use("Close pools chooser", (page) => page.keyboard.press("Escape"));
++        const inventory = yield* body(
++          Schema.Struct({ apps: Schema.Array(Instance) }),
++          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
++        );
++        expect(inventory.apps.filter((app) => app.name === research.name)).toHaveLength(1);
++      }),
++    ),
++  );
++  it.effect(scenarios.catalogInstancesMail.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { api, browser, actors, prefix, catalog, install, visit } = yield* catalogCase;
++        const ui = yield* catalogInstancesUI;
++        // Renaming another service's app supplies the committed revision the stale read needs.
++        const work = yield* install(officialApps.tracker.id, "Tracker work");
++        const links = (id: string) =>
++          api
++            .request(actors.owner, "GET", `${prefix}/apps/${id}/accounts/user`)
++            .pipe(Effect.flatMap((response) => body(AccountLinks, response)));
++        yield* browser.login(actors.owner);
++        yield* visit;
+         const addedMail = yield* ui.submit(`Add ${officialApps.mail.name}`);
+         expect(addedMail.status).toBe(200);
+         const mail = yield* Schema.decodeUnknownEffect(InstallResult)(addedMail.body);
+@@ -279,11 +317,6 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
+         });
+         yield* ui.setup(mail.id);
+         expect(yield* links(mail.id)).toEqual(originalLinks);
+-        const inventory = yield* body(
+-          Schema.Struct({ apps: Schema.Array(Instance) }),
+-          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
+-        );
+-        expect(inventory.apps.filter((app) => app.name === research.name)).toHaveLength(1);
+       }),
+     ),
+   );

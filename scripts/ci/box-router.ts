@@ -26,10 +26,38 @@ const sampleSkew = 2 * 60_000;
 const sharedLabels = ["self-hosted", "basalt-release"];
 const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
 
-/** Only declared e2e shard rows route. Every job type runs slower on the box, and a shard needs
- * only 1.0–1.4 cores, so shards alone keep its CI slots busy. */
+/** Declared e2e shard rows route, planned from their files' measured durations. */
 export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
-/** A declared shard row: its name in box_jobs, its planned hosted minutes and its job timeout. */
+/**
+ * Other jobs route only once a box bench has run them, with every step green, within the floor of
+ * the Checks they run in; a job joins this table with its bench. `minutes` is the slowest hosted
+ * run in full Check 44894443635, or for the fast lane's jobs in batch three's pull request run
+ * 44910641265; `timeout` is the job's own, which the workflow test keeps equal to ci.yml. A matrix
+ * job routes leg by leg, as `<job>:<leg>`.
+ */
+export const namedJobs: Record<
+  string,
+  { minutes: number | Record<string, number>; timeout: number }
+> = {
+  "production-ops-identity": {
+    minutes: {
+      credentials: 8.3,
+      release: 6.3,
+      "without-server": 6.2,
+      host: 6.0,
+      database: 5.9,
+      role: 5.9,
+      physical: 5.1,
+      diagnostics: 4.0,
+    },
+    timeout: 25,
+  },
+  // The fast lane's, which every pull request push runs. `fast` itself stays hosted: it is the
+  // fast lane's longest job, so the box would have to beat GitHub's runners at it.
+  "client-connection": { minutes: 5.3, timeout: 12 },
+  "browser-install": { minutes: 1.8, timeout: 10 },
+};
+/** A routable row: its name in box_jobs, its planned hosted minutes and its job timeout. */
 export type BoxShard = { id: string; minutes: number; timeout: number };
 export type Matrices = Record<
   string,
@@ -53,6 +81,11 @@ export type BoxInput = {
   matrices: Matrices;
   /** Measured seconds per declared file; defaults to scripts/ci/declared-durations.json. */
   durations?: Record<string, number>;
+  /**
+   * The box's own heartbeat runner's label. Without one a full or holding box's heartbeat waits
+   * behind its jobs, so box-watch could not tell holding from down: no second wave is planned.
+   */
+  heartbeatLabel?: string;
 };
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -60,30 +93,44 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-/** The selection's declared shard rows with their planned minutes and timeouts. */
+/** The selection's routable rows with their planned minutes and timeouts. */
 export function checkPlan(
   selected: readonly string[],
   matrices: Matrices,
   durations = readDeclaredDurations(),
 ) {
   const estimate = estimator(durations);
-  const shards: BoxShard[] = selected.flatMap((job) =>
-    declaredJobs.includes(job)
-      ? (matrices[job]?.include ?? []).map((row) => ({
-          id: row.shard,
-          minutes:
-            setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
-          timeout: row.timeout,
-        }))
-      : [],
-  );
+  const shards: BoxShard[] = selected.flatMap((job): BoxShard[] => {
+    if (declaredJobs.includes(job))
+      return (matrices[job]?.include ?? []).map((row) => ({
+        id: row.shard,
+        minutes:
+          setupMinutes + shardRuns(row.runs).reduce((sum, run) => sum + estimate(run), 0) / 60,
+        timeout: row.timeout,
+      }));
+    const named = namedJobs[job];
+    if (!named) return [];
+    const { minutes, timeout } = named;
+    return typeof minutes === "number"
+      ? [{ id: job, minutes, timeout }]
+      : Object.entries(minutes).map(([leg, legMinutes]) => ({
+          id: `${job}:${leg}`,
+          minutes: legMinutes,
+          timeout,
+        }));
+  });
   return { shards };
 }
 
-/** The declared job a box_jobs id belongs to, or undefined when it names no declared shard. */
+/** The job a box_jobs id belongs to, or undefined when it names no routable row. */
 export function routedJob(id: string) {
   const job = shardJob(id);
-  return job && declaredJobs.includes(job) ? job : undefined;
+  if (job && declaredJobs.includes(job)) return job;
+  const [name = "", leg, ...rest] = id.split(":");
+  const minutes = namedJobs[name]?.minutes;
+  if (minutes === undefined || rest.length) return undefined;
+  const legs = typeof minutes === "number" ? undefined : Object.keys(minutes);
+  return (legs ? leg !== undefined && legs.includes(leg) : leg === undefined) ? name : undefined;
 }
 
 /** A shard goes to the box only if it would still finish inside its own timeout at the slow end. */
@@ -91,11 +138,50 @@ export const fitsTimeout = (shard: BoxShard) => shard.minutes * boxSlowdown <= s
 
 /** Up to `limit` shards that fit their timeout on the box, longest first. */
 export function fillBox(shards: readonly BoxShard[], limit: number) {
-  return shards
+  return planBox(shards, limit, 0).map((job) => job.id);
+}
+
+/**
+ * The pace a second wave is planned at: the box's own worst case, not its best. Box jobs ran at
+ * 1.02–1.16× their hosted time under the load guard, and at 2.2–2.8× in a full Check that gates
+ * overran; a wave planned at a faster pace than the one ahead of it really runs at is cancelled
+ * while the box is healthy.
+ */
+export const waveSlowdown = boxSlowdown;
+/** A full suite's floor: its longest hosted jobs run 17.5–19.3 minutes, plus select. */
+export const fullCheckFloor = 20;
+/** At most this many jobs per free slot, counted over all slots: some start at once, the rest wait. */
+export const boxWaves = 2;
+
+/**
+ * Box jobs for `free` slots, longest first. Each free slot takes a job at once; a second wave waits
+ * on the box for whichever slot frees first, but only when it still ends by `floor` minutes at the
+ * keep rule's pace. The box starts a waiting job only when its own budget has room for it.
+ */
+export function planBox(shards: readonly BoxShard[], free: number, floor: number) {
+  const slots: number[] = Array.from({ length: Math.max(0, free) }, () => 0);
+  const planned: { id: string; minutes: number; wave: 1 | 2 }[] = [];
+  const fitting = shards
     .filter(fitsTimeout)
-    .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1))
-    .slice(0, Math.max(0, limit))
-    .map((shard) => shard.id);
+    .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1));
+  for (const shard of fitting) {
+    if (!slots.length || planned.length >= slots.length * boxWaves) break;
+    const slot = slots.indexOf(Math.min(...slots));
+    const start = slots[slot]!;
+    const end = start + shard.minutes * waveSlowdown;
+    // A waiting job is taken only on a known plan: no planned minutes or no floor runs it hosted.
+    if (start > 0 && !(shard.minutes > 0 && end <= floor)) continue;
+    slots[slot] = end;
+    planned.push({ id: shard.id, minutes: shard.minutes, wave: start > 0 ? 2 : 1 });
+  }
+  return planned;
+}
+
+/** The Check's floor for its plan: a full suite's, or the longest routable row's. */
+export function checkFloor(shards: readonly BoxShard[]) {
+  const longest = Math.max(0, ...shards.map((shard) => shard.minutes));
+  const declared = shards.some((shard) => declaredJobs.includes(shardJob(shard.id) ?? ""));
+  return Math.max(longest, declared ? fullCheckFloor : 0);
 }
 
 export function boxSettings(
@@ -162,8 +248,20 @@ export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   const budget = status.budget;
   if (typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 0)
     return "the box reported no whole-number CI budget";
-  if (budget === 0) return "the box's CI budget is 0" + why;
+  if (budget === 0) return zeroBudget + why;
   return { budget, why };
+}
+
+/** The heartbeat runner's own label, or "" when it is unset or one other runners share. */
+export const heartbeatRunnerLabel = (label = "") =>
+  /^[\w.-]+$/.test(label) && !refusedLabels.includes(label.toLowerCase()) ? label : "";
+
+const zeroBudget = "the box's CI budget is 0";
+
+/** Whether the newest heartbeat shows a healthy box: one that grants no budget now is holding. */
+export function boxIsUp(heartbeat: Heartbeat, now: number) {
+  const budget = heartbeatBudget(heartbeat, now);
+  return typeof budget !== "string" || budget.startsWith(zeroBudget);
 }
 
 export async function routeBox(
@@ -174,14 +272,16 @@ export async function routeBox(
 ) {
   const none = (why: string) => ({
     jobs: [] as string[],
+    plan: {} as Record<string, { minutes: number; wave: 1 | 2 }>,
     label: "",
+    floor: 0,
     summary: `Box routing: every job runs hosted, because ${why}.`,
   });
   const settings = boxSettings(input);
   if (typeof settings === "string") return none(settings);
   try {
     const plan = checkPlan(input.selected, input.matrices, input.durations);
-    if (!plan.shards.length) return none("this Check runs no declared e2e shards");
+    if (!plan.shards.length) return none("this Check runs no job the box can take");
     let box = heartbeatBudget(await observe.heartbeat(), now());
     for (let tries = 0; box === staleHeartbeat && tries < heartbeatRetries; tries++) {
       await wait(heartbeatRetryMs);
@@ -196,16 +296,32 @@ export async function routeBox(
     const budget = `a CI budget of ${box.budget}${box.why}`;
     if (!free)
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
-    const jobs = fillBox(plan.shards, free);
-    if (!jobs.length)
-      return none(`no declared shard fits its timeout at ${boxSlowdown}× its planned minutes`);
+    const floor = checkFloor(plan.shards);
+    // A job may wait on the box only while its heartbeat runs on its own runner: one that queued
+    // behind CI jobs would go stale, and box-watch would take a holding box for a down one.
+    // A heartbeat on the CI runners' own label would still queue behind them.
+    const ownRunner =
+      heartbeatRunnerLabel(input.heartbeatLabel) !== "" &&
+      input.heartbeatLabel?.toLowerCase() !== settings.label.toLowerCase();
+    const planned = planBox(plan.shards, free, ownRunner ? floor : 0);
+    if (!planned.length)
+      return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
+    const jobs = planned.map((job) => job.id);
+    const waiting = planned.filter((job) => job.wave === 2).length;
     const hosted = plan.shards.length - jobs.length;
+    const wave = waiting
+      ? `, ${waiting} of them waiting on the box for a slot that frees by the ${floor.toFixed(0)}-minute floor`
+      : "";
     return {
       jobs,
+      plan: Object.fromEntries(
+        planned.map((job) => [job.id, { minutes: job.minutes, wave: job.wave }]),
+      ),
       label: settings.label,
+      floor,
       summary:
-        `Box routing: box first. ${jobs.length} declared shards go to the self-hosted runners ` +
-        `(${slots}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
+        `Box routing: box first. ${jobs.length} ${jobs.length === 1 ? "job goes" : "jobs go"} to the self-hosted runners ` +
+        `(${slots}${wave}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
         `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };
   } catch (error) {
@@ -217,7 +333,15 @@ type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /** Reads the heartbeat, the repository's hosted load and the box's busy slots through the REST API. */
 export function githubObserver(
-  env: { api: string; repository: string; token: string; runId: string; label: string },
+  env: {
+    api: string;
+    repository: string;
+    token: string;
+    runId: string;
+    label: string;
+    /** The box's own heartbeat runner's label, when it has one. */
+    heartbeatLabel?: string;
+  },
   fetcher: Fetch = fetch,
 ): BoxObserver {
   const get = async (path: string) => {
@@ -233,18 +357,28 @@ export function githubObserver(
       throw new Error(`GitHub returned ${response.status} for ${path.split("?")[0]}`);
     return response;
   };
+  // GitHub answers 502 to a hundred jobs a page of a Check that was re-run, every time; fifty works.
+  const perPage = 50;
   const list = async (path: string, key: string) => {
     const items: Record<string, unknown>[] = [];
-    for (let page = 1; page <= 10; page++) {
-      const batch = record(await (await get(`${path}&per_page=100&page=${page}`)).json())[key];
+    for (let page = 1; page <= 20; page++) {
+      const batch = record(await (await get(`${path}&per_page=${perPage}&page=${page}`)).json())[
+        key
+      ];
       if (!Array.isArray(batch)) throw new Error("GitHub listed no " + key);
       items.push(...batch.map(record));
-      if (batch.length < 100) return items;
+      if (batch.length < perPage) return items;
     }
     throw new Error("more than 1000 active " + key);
   };
   const boxLabel = env.label.toLowerCase();
   const selfHosted = new Set([boxLabel, ...sharedLabels]);
+  // A heartbeat label that other runners share could let them vouch for the box, so it is refused.
+  const heartbeatLabel = (env.heartbeatLabel ?? "").toLowerCase();
+  const onHeartbeatRunner = (job: Record<string, unknown>) =>
+    heartbeatRunnerLabel(heartbeatLabel) !== "" &&
+    Array.isArray(job.labels) &&
+    job.labels.some((label) => String(label).toLowerCase() === heartbeatLabel);
   const onBox = (job: Record<string, unknown>) =>
     Array.isArray(job.labels) &&
     job.labels.some((label) => String(label).toLowerCase() === boxLabel);
@@ -257,6 +391,8 @@ export function githubObserver(
     (run.event === "workflow_run" ||
       ((run.event === "schedule" || run.event === "workflow_dispatch") &&
         run.head_branch === "main"));
+  const checkRun = (run: Record<string, unknown>) =>
+    String(run.path).split("@")[0] === ".github/workflows/ci.yml";
   // A job on the box's label holds a CI slot; release-label jobs hold neither a slot nor hosted.
   const runner = (job: Record<string, unknown>) => {
     if (!Array.isArray(job.labels)) throw new Error("GitHub listed a job without labels");
@@ -281,7 +417,7 @@ export function githubObserver(
           return { conclusion: run.conclusion, completedAt: run.updated_at, log: "" };
         // A heartbeat that didn't run on the box's label says nothing about the box.
         const jobs = await list(`/actions/runs/${Number(run.id)}/jobs?filter=latest`, "jobs");
-        const job = jobs.find(onBox);
+        const job = jobs.find((candidate) => onBox(candidate) || onHeartbeatRunner(candidate));
         if (!job) continue;
         const log = await (await get(`/actions/jobs/${Number(job.id)}/logs`)).text();
         return { conclusion: job.conclusion, completedAt: job.completed_at, log };
@@ -294,11 +430,13 @@ export function githubObserver(
           list(`/actions/runs?status=${status}`, "workflow_runs"),
         ),
       );
-      // The heartbeat's own short job doesn't hold a CI slot.
+      // Box-label jobs come only from Check runs (the heartbeat's own short job holds no CI slot),
+      // so only their jobs are listed: every same-repository push routes now, and listing every
+      // workflow's runs would spend the token's shared hourly request limit.
       const runs = new Set(
         listed
           .flat()
-          .filter((run) => String(run.id) !== env.runId && !trustedHeartbeat(run))
+          .filter((run) => String(run.id) !== env.runId && checkRun(run))
           .map((run) => Number(run.id)),
       );
       const jobs = await Promise.all(

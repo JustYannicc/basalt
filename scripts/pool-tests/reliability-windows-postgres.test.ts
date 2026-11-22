@@ -153,8 +153,9 @@ test(
       // the day; here it touched about 110, and with the probe fenced off but every Home attempt
       // looked up by key, 13.
       assert.ok(blocks < 10 * perDay, `windows statement buffers: ${blocks}`);
+      // Half the 5 s limit: 231–324 ms on an idle machine, 1,029 ms and 1,224 ms on loaded runners.
       assert.ok(
-        windows["Execution Time"] < 1_000,
+        windows["Execution Time"] < 2_500,
         `windows statement: ${Math.round(windows["Execution Time"])} ms`,
       );
     } finally {

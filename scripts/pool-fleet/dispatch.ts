@@ -39,7 +39,8 @@ export interface FleetAcceptance {
   client: PoolAcceptanceClient;
   credential: ModelAuth;
   model?: string;
-  access: PoolAccess;
+  /** Present only for a dedicated acceptance pool; absent, the lane never sends an owner token. */
+  access?: PoolAccess;
 }
 export interface DispatchDependencies {
   cloudflare: CloudflareAccess;
@@ -141,7 +142,17 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           fleet: fleetSummary(fleet),
         };
       });
-    if (mode === "inspect") return { ...evidence, ...(yield* read()) };
+    if (mode === "inspect") {
+      // Which acceptance the model-call modes would run, by kind alone: never an id.
+      const acceptance =
+        deps.acceptance instanceof FleetLaneRefused
+          ? `refused (${deps.acceptance.reason})`
+          : deps.acceptance.access
+            ? "full"
+            : "device-only (no dedicated acceptance pool)";
+      deps.log(`acceptance=${acceptance}`);
+      return { ...evidence, acceptance, ...(yield* read()) };
+    }
     if (mode === "disable") return { ...evidence, disable: yield* disableFleet(access, input.go) };
     if (mode === "bookmark")
       return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };

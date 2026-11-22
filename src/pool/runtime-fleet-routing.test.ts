@@ -10,6 +10,7 @@ import { fleetRouting } from "./runtime-fleet/production.ts";
 import { decodeResumeTarget } from "./stream-resume.ts";
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { forwardRecoverably } from "./runtime-fleet/retry.ts";
+import { rootFallbackBurst } from "./runtime-fleet/root-fallback.ts";
 
 const responseModule = "./native-response.worker.ts";
 const { nativeResponse } = (await import(responseModule)) as {
@@ -498,6 +499,46 @@ test("a runtime whose front layer fails keeps serving: no quarantine and no reco
   assert.equal(recoveries, 0);
 });
 
+test("with production routing and no ready cell, the root's answers resume on the root and its front layer never fails it", async () => {
+  let recoveries = 0;
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    recoverPrimary: async () => {
+      recoveries++;
+    },
+  });
+  const resumable = await f.fleet.forward(
+    request(),
+    "pool",
+    async () => new Response("legacy", { headers: { "X-Basalt-Resume": "v1" } }),
+    () => {},
+  );
+  assert.equal(resumable.headers.get("X-Basalt-Resume-Target"), "primary");
+  assert.equal(await resumable.text(), "legacy");
+  await f.settle();
+  // The root's front layer fails: the call fails, but the root is neither failed nor recovered.
+  const lost = new Error("Network connection lost.");
+  rememberRuntimeFailure("resume_layer", lost);
+  await assert.rejects(
+    f.fleet.forward(
+      request(),
+      "pool",
+      async () => {
+        throw lost;
+      },
+      () => {},
+    ),
+    lost,
+  );
+  await f.settle();
+  assert.equal(recoveries, 0);
+  const next = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await f.state.primaryActive(), 1, "the root still takes counted calls");
+  assert.equal(await next.text(), "legacy");
+  await f.settle();
+});
+
 test("a marked answer cut mid-body never counts against its runtime, and logs one line", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const f = fixture(3, 1);
@@ -530,4 +571,222 @@ test("a marked answer cut mid-body never counts against its runtime, and logs on
   await assert.rejects(plainCut);
   await f.settle();
   assert.ok((await f.state.inspect()).some((row) => row.phase === "quarantined"));
+});
+
+const burst = async (f: ReturnType<typeof fixture>, size: number) =>
+  Promise.all(
+    Array.from({ length: size }, async () => {
+      const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+      return {
+        status: response.status,
+        retryAfter: response.headers.get("Retry-After"),
+        unsent: response.headers.get("X-Signalbox-Controller-Unsent"),
+        body: await response.text(),
+      };
+    }),
+  );
+
+test("with no ready cell, a burst sends the root at most its fallback bucket; the rest are refused unsent", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const answers = await burst(f, 25);
+  assert.equal(f.calls.legacy, rootFallbackBurst, "the root takes only the bucket");
+  const refused = answers.filter((answer) => answer.status === 503);
+  assert.equal(refused.length, 25 - rootFallbackBurst);
+  // The retryable answer clients already follow, marked unsent so the entry re-sends a held call.
+  assert.ok(refused.every((answer) => answer.retryAfter === "1" && answer.unsent === "1"));
+  assert.equal(f.calls.dispatches, 0);
+  const lines = log.mock.calls.filter((call) => call.arguments[0] === "POOL_ROOT_FALLBACK_REFUSED");
+  assert.equal(lines.length, 25 - rootFallbackBurst);
+  await f.settle();
+  assert.equal(await f.state.primaryActive(), 0, "a refused call holds no root reservation");
+});
+
+test("a model catalog read never takes a root fallback token", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const reads = await Promise.all(
+    Array.from({ length: rootFallbackBurst + 5 }, async () => {
+      const response = await f.fleet.forward(
+        new Request("https://synthetic.invalid/v1/models"),
+        "pool",
+        f.legacy,
+        () => {},
+      );
+      await response.text();
+      return response.status;
+    }),
+  );
+  assert.ok(reads.every((status) => status === 200));
+  assert.equal(f.calls.legacy, rootFallbackBurst + 5);
+  await f.settle();
+});
+
+test("a call the fleet refuses for capacity takes a root fallback token too", async (context) => {
+  context.mock.method(console, "error", () => {});
+  // No primary route: with no cell, acquire refuses for capacity and the call goes to the root.
+  const f = fixture(4, 1, { primaryAvailable: () => false });
+  const answers = await burst(f, 15);
+  assert.equal(f.calls.legacy, rootFallbackBurst);
+  assert.equal(answers.filter((answer) => answer.status === 503).length, 15 - rootFallbackBurst);
+  await f.settle();
+});
+
+test("the root fallback refills at its rate, and a ready cell ends its effect", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await burst(f, rootFallbackBurst + 1);
+  assert.equal(f.calls.legacy, rootFallbackBurst);
+  // A second at 1.2 a second earns one call back, and only one.
+  f.advance(200 + 1_000);
+  const next = await burst(f, 2);
+  assert.deepEqual(next.map((answer) => answer.status).sort(), [200, 503]);
+  assert.equal(f.calls.legacy, rootFallbackBurst + 1);
+  await f.settle();
+  // With a ready cell the root is no longer the fallback: every call is served, none refused.
+  await f.add();
+  const responses = await Promise.all(
+    Array.from({ length: 3 }, () => f.fleet.forward(request(), "pool", f.legacy, () => {})),
+  );
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200, 200],
+  );
+  assert.equal(f.calls.dispatches, 3);
+  await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
+  await f.settle();
+});
+
+test("a refused call still asks the fleet to grow", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await burst(f, rootFallbackBurst);
+  await f.settle();
+  assert.equal(f.calls.starts, 0, "no pressure yet, so no growth");
+  // Past the growth throttle, with demand, the only call is one the root's bucket refuses.
+  f.pressure(3);
+  f.advance(500);
+  const [refused] = await burst(f, 1);
+  assert.equal(refused!.status, 503);
+  await f.settle();
+  assert.ok(f.calls.starts >= 1, "the refused call still started a cell");
+});
+
+test("a root call that fails before its send gives its fallback token back", async (context) => {
+  context.mock.method(console, "error", () => {});
+  for (const primary of [
+    { ...fleetRouting, primaryAvailable: () => true },
+    { primaryAvailable: () => false },
+  ]) {
+    const f = fixture(4, 1, primary);
+    // The root is briefly unhealthy: each call fails before it reaches anything, as retries do.
+    const unsent = async () => {
+      throw new Error("synthetic root readiness refused");
+    };
+    for (let attempt = 0; attempt < rootFallbackBurst + 5; attempt++)
+      await assert.rejects(f.fleet.forward(request(), "pool", unsent, () => {}));
+    // None of them cost the root anything, so a fresh burst still gets the whole bucket.
+    const answers = await burst(f, rootFallbackBurst);
+    assert.ok(answers.every((answer) => answer.status === 200));
+    await f.settle();
+  }
+});
+
+test("a video status poll is a model call and takes a root fallback token", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const polls = await Promise.all(
+    Array.from({ length: rootFallbackBurst + 5 }, async () => {
+      const response = await f.fleet.forward(
+        new Request("https://synthetic.invalid/v1/videos/video_1"),
+        "pool",
+        f.legacy,
+        () => {},
+      );
+      await response.text();
+      return response.status;
+    }),
+  );
+  assert.equal(f.calls.legacy, rootFallbackBurst);
+  assert.equal(polls.filter((status) => status === 503).length, 5);
+  await f.settle();
+});
+
+test("a clock that steps back never earns the same span twice", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await burst(f, rootFallbackBurst);
+  f.advance(200 + 834);
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [200],
+  );
+  // The clock steps back, and a call at that moment must not rewind the bucket's own time.
+  f.advance(200);
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [503],
+  );
+  f.advance(200 + 834);
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [503],
+  );
+  await f.settle();
+});
+
+test(
+  "while the root starts, at most a burst of counted calls wait for it, so they never all send at once",
+  { timeout: 5_000 },
+  async (context) => {
+    context.mock.method(console, "error", () => {});
+    const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+    const started = deferred<void>();
+    let entered = 0;
+    // The root's warm-up: calls wait here before their send.
+    const starting = async (_request: Request, beforeDispatch: () => void) => {
+      entered++;
+      await started.promise;
+      beforeDispatch();
+      return new Response("legacy");
+    };
+    const waiting = Array.from({ length: rootFallbackBurst }, () =>
+      f.fleet.forward(request(), "pool", starting, () => {}),
+    );
+    while (entered < rootFallbackBurst) await new Promise((resolve) => setImmediate(resolve));
+    // The bucket refills while they wait, yet no more calls may queue behind the warm-up.
+    f.advance(200 + 20_000);
+    const pending = Array.from({ length: 5 }, () =>
+      f.fleet.forward(request(), "pool", starting, () => {}),
+    );
+    for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(entered, rootFallbackBurst, "no call joined the queue behind the warm-up");
+    const later = await Promise.all(pending);
+    assert.ok(later.every((response) => response.status === 503));
+    started.resolve();
+    const served = await Promise.all(waiting);
+    assert.ok(served.every((response) => response.status === 200));
+    // The wait earned nothing for the moment it ends: the root never sees more than a burst at once.
+    const after = await burst(f, 5);
+    assert.ok(after.every((answer) => answer.status === 503));
+    await Promise.all([...served, ...later].map((response) => response.text()));
+    await f.settle();
+  },
+);
+
+test("a root call that fails after its send keeps its token spent", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const failsAfterSend = async (_request: Request, beforeDispatch: () => void) => {
+    beforeDispatch();
+    throw new Error("synthetic failure after the send");
+  };
+  for (let call = 0; call < rootFallbackBurst; call++)
+    await assert.rejects(f.fleet.forward(request(), "pool", failsAfterSend, () => {}));
+  // It may have run: no refund, so the next call finds the bucket empty.
+  assert.deepEqual(
+    (await burst(f, 1)).map((answer) => answer.status),
+    [503],
+  );
+  await f.settle();
 });

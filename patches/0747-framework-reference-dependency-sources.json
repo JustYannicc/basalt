@@ -1,0 +1,11 @@
+{
+  "identity": "framework-reference-dependency-sources",
+  "file": "0747-framework-reference-dependency-sources.patch",
+  "content_sha256": "de7ac31bf874aa20158c95dc7445885781018a1b088be29d9db57af6a5b5b0c8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "upstream-framework-reference-sources",
+  "requires": "The framework reference names a declaration under node_modules from its first node_modules segment on; remove when upstream's reference generator does."
+}
