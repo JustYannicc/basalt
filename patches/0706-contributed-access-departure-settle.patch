@@ -1,0 +1,115 @@
+diff --git a/e2e/support/contributed-app.ts b/e2e/support/contributed-app.ts
+--- a/e2e/support/contributed-app.ts
++++ b/e2e/support/contributed-app.ts
+@@ -37,12 +37,26 @@ class PendingContributions extends Schema.TaggedError<PendingContributions>()(
+   "PendingContributions",
+   {},
+ ) {}
++class ContributionsNotSettled extends Schema.TaggedError<ContributionsNotSettled>()(
++  "ContributionsNotSettled",
++  {
++    appPath: Schema.String,
++    expected: Schema.Array(Schema.String),
++    /** Null when no read answered within the bound, which an empty list would hide. */
++    seen: Schema.NullOr(Schema.Array(Schema.String)),
++  },
++) {
++  get message() {
++    const seen = this.seen === null ? "no read answered" : `last saw [${this.seen.join(", ")}]`;
++    return `${this.appPath} links did not settle to [${this.expected.join(", ")}]: ${seen}`;
++  }
++}
+ 
+ export const contributedApp = Effect.gen(function* () {
+   const fixture = yield* appLinksFixture([{ path: "index.ts", content: contributedSource }]);
+   const { api, actors, path, ids } = fixture;
+-  const readLinks = (actor: Session = actors.owner) =>
+-    api.request(actor, "GET", `${path}/accounts/app`).pipe(
++  const readLinks = (actor: Session = actors.owner, appPath = path) =>
++    api.request(actor, "GET", `${appPath}/accounts/app`).pipe(
+       Effect.tap(ok),
+       Effect.flatMap((response) => body(Schema.Array(Contribution), response)),
+     );
+@@ -66,15 +80,17 @@ export const contributedApp = Effect.gen(function* () {
+         }),
+       );
+     });
+-  const waitForLinks = (expected: readonly string[]) =>
++  const waitForLinks = (expected: readonly string[], appPath = path) => {
++    const wanted = [...expected].sort();
++    let seen: readonly string[] | null = null;
+     // Cloud wakes queued cleanup on API writes or cron. This read-only query's POST
+     // drives the real retry without waiting for the minute boundary.
+-    fixture.call(actors.owner, "accounts").pipe(
++    return fixture.call(actors.owner, "accounts").pipe(
+       Effect.tap(ok),
+-      Effect.andThen(readLinks()),
++      Effect.andThen(readLinks(actors.owner, appPath)),
+       Effect.flatMap((links) => {
+-        const ids = links.map((link) => link.account.id).sort();
+-        return JSON.stringify(ids) === JSON.stringify([...expected].sort())
++        seen = links.map((link) => link.account.id).sort();
++        return JSON.stringify(seen) === JSON.stringify(wanted)
+           ? Effect.succeed(links)
+           : Effect.fail(new PendingContributions());
+       }),
+@@ -82,8 +98,12 @@ export const contributedApp = Effect.gen(function* () {
+         while: Schema.is(PendingContributions),
+         schedule: Schedule.spaced("100 millis"),
+       }),
+-      Effect.timeout("15 seconds"),
++      Effect.timeoutOrElse({
++        duration: "15 seconds",
++        orElse: () => Effect.fail(new ContributionsNotSettled({ appPath, expected: wanted, seen })),
++      }),
+     );
++  };
+   const member = yield* body(
+     Schema.Struct({
+       user: Schema.Struct({ id: Schema.String, name: Schema.String, email: Schema.String }),
+diff --git a/e2e/tests/contributed-app-access.spec.ts b/e2e/tests/contributed-app-access.spec.ts
+--- a/e2e/tests/contributed-app-access.spec.ts
++++ b/e2e/tests/contributed-app-access.spec.ts
+@@ -4,7 +4,7 @@ import { body } from "../support/api.ts";
+ import { requirementPath } from "../support/app-accounts.ts";
+ import { ok } from "../support/app-links.ts";
+ import { withHostedHttpCase } from "../support/case.ts";
+-import { Contribution, contributedApp, contributedSource } from "../support/contributed-app.ts";
++import { contributedApp, contributedSource } from "../support/contributed-app.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -24,11 +24,6 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+             "PUT",
+             `${requirementPath(other, "app", "shared")}/${account}`,
+           );
+-        const otherLinks = () =>
+-          api.request(actors.owner, "GET", `${other}/accounts/app`).pipe(
+-            Effect.tap(ok),
+-            Effect.flatMap((response) => body(Schema.Array(Contribution), response)),
+-          );
+         const savedRows = () =>
+           api.request(actors.member, "GET", `${prefix}/resources/accounts`).pipe(
+             Effect.tap(ok),
+@@ -54,7 +49,9 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+         yield* ok(yield* otherLink(personal));
+         yield* ok(yield* f.unlink(actors.member, "shared", personal));
+         yield* ok(yield* api.request(actors.member, "GET", `${prefix}/accounts/${personal}`));
+-        expect((yield* otherLinks()).map((link) => link.account.id)).toEqual([personal]);
++        expect((yield* f.readLinks(actors.owner, other)).map((link) => link.account.id)).toEqual([
++          personal,
++        ]);
+         const otherCall = () =>
+           api.request(actors.owner, "POST", `${other}/tools/call`, {
+             tool: "accounts",
+@@ -99,7 +96,10 @@ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access",
+         yield* ok(yield* f.link(actors.member, "shared", shared));
+         yield* ok(yield* otherLink(shared));
+         yield* accountGroup.set([ids.owner]);
++        // One departure detaches each app's link in its own transaction, in app ID order. The
++        // saved list keeps an account any readable app still links, so both apps must settle.
+         yield* f.waitForLinks([ordinary, personal]);
++        yield* f.waitForLinks([personal], other);
+         expect((yield* savedRows()).some((row) => row.id === shared)).toBe(false);
+         expect((yield* otherCall()).body).toMatchObject({ shared: [personal] });
+         expect(
