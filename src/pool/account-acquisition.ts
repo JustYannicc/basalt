@@ -4,7 +4,7 @@ import { signInFailure, submitAccountCallback } from "./account-acquisition-call
 import { callbackOrigin } from "./account-acquisition-urls.ts";
 import { availableProviderCapabilities } from "./provider-accounts/capabilities.ts";
 import type { HomeClient } from "./control.ts";
-import { object, rows, text, unavailable } from "./json.ts";
+import { BackendFailure, fail, object, rows, text, unavailable } from "./json.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { homeReference, homeReferences } from "./home-references.ts";
 import { routeProxyUrl, signInRoute } from "./route-assignments.ts";
@@ -33,6 +33,7 @@ interface Attempt {
   result?: { state: "connected"; ref: string } | { state: "failed"; message: string };
   /** A routed sign-in: Home's exchange and the saved credential go through this route. */
   route?: { routeId: string; owner: string };
+  session?: string;
 }
 /** The route side of a sign-in; absent where routing isn't wired. */
 export interface SignInRoutes {
@@ -151,7 +152,7 @@ export class HomeAccountAcquisitions {
           marker: await acquisitionStep("attribution", () => this.attribution.begin()),
           before,
           ...(text(value.reconnect) ? { reconnect: String(value.reconnect) } : {}),
-          ...(route ? { route } : {}),
+          ...(route ? { route, session } : {}),
         };
         attempts[session] = attempt;
         // An uncertain start is retained and refused; repeating it could create another credential.
@@ -161,19 +162,24 @@ export class HomeAccountAcquisitions {
         if (route) await acquisitionStep("state", () => this.routes!.beginSignIn(session, route));
         const proxy = route ? `&proxy_url=${encodeURIComponent(routeProxyUrl(route.routeId))}` : "";
         const path = `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`;
-        const start = route
-          ? await this.routedStart(path, request.signal)
-          : {
-              kind: "started" as const,
-              started: await acquisitionStep("oauth_start", () =>
-                this.home.data(path, { signal: request.signal }),
-              ),
-            };
+        const start = await acquisitionStep("oauth_start", async () => {
+          const start = route
+            ? await this.routedStart(path, request.signal)
+            : {
+                kind: "started" as const,
+                started: await this.home.data(path, { signal: request.signal }),
+              };
+          if (start.kind === "started" && (!text(start.started.state) || !text(start.started.url)))
+            return unavailable();
+          return start;
+        });
         if (start.kind === "refused") {
-          // Home created no session: settle the attempt and release its route now.
-          await acquisitionStep("state", () => this.routes!.settleSignIn(session, []));
+          // Home created no session: release the route and settle the attempt now. A failed
+          // settle is retried by the alarm; the refusal itself still stands.
           attempt.result = { state: "failed", message: start.refused };
-          await this.finish(attempt, attempts, request.signal);
+          try {
+            await this.finish(attempt, attempts, request.signal);
+          } catch {}
           if (start.status === 500) console.error("POOL_ROUTE_SIGN_IN_INVALID_PROXY");
           return Response.json(
             { error: start.status === 500 ? "internal" : start.refused },
@@ -181,7 +187,6 @@ export class HomeAccountAcquisitions {
           );
         }
         const started = start.started;
-        if (!text(started.state) || !text(started.url)) return unavailable();
         attempt.state = String(started.state);
         const expiresIn = started.expires_in;
         if (typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0)
@@ -314,9 +319,7 @@ export class HomeAccountAcquisitions {
    * pool bug). Any other failure is the ordinary uncertain start.
    */
   private async routedStart(path: string, signal: AbortSignal) {
-    const response = await acquisitionStep("oauth_start", () =>
-      this.home.response(path, { signal }),
-    );
+    const response = await this.home.response(path, { signal });
     let body: unknown;
     try {
       body = await response.json();
@@ -331,7 +334,9 @@ export class HomeAccountAcquisitions {
       return { kind: "refused", refused: "route_unsupported", status: 409 } as const;
     if (response.status === 400 && error === "invalid_proxy_url")
       return { kind: "refused", refused: "route_unavailable", status: 500 } as const;
-    return unavailable();
+    // Anything else is classified exactly as an ordinary start's answer would be.
+    if (response.status === 404) fail(404, "not_found", "The backend resource no longer exists.");
+    throw new BackendFailure(response.status);
   }
 
   private async advance(
@@ -417,10 +422,11 @@ export class HomeAccountAcquisitions {
     // Retain the exact outcome before releasing the legacy attribution exclusion.
     await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
     if (attempt.settled) return;
-    if (attempt.route && attempt.started)
+    // Every routed attempt releases its route when it settles: refused, failed, expired or saved.
+    if (attempt.route && attempt.session)
       await acquisitionStep("state", () =>
         this.routes!.settleSignIn(
-          attempt.started!.session,
+          attempt.session!,
           attempt.result?.state === "connected" ? homeReferences(attempt.result.ref) : [],
         ),
       );

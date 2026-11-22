@@ -258,3 +258,32 @@ test("a proxy URL Home rejects is a pool bug: 500 with a reason code, no session
   assert.deepEqual(await failed.json(), { error: "internal" });
   assert.equal(f.calls.filter((call) => call.path.includes("/oauth/")).length, 1);
 });
+
+test("a teammate's sign-in in the same Home never takes another owner's route", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const owners = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  assert.equal(typeof owners.session, "string");
+  const mates = await body(
+    await f.send("start", { hasRules: false }, "organization:teammate", "connect:mate"),
+  );
+  assert.equal(typeof mates.session, "string");
+  const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
+  assert.equal(starts.length, 2);
+  assert.ok(starts[0]!.path.includes("proxy_url="));
+  assert.ok(!starts[1]!.path.includes("proxy_url"));
+  // Only the owner's sign-in registered a route.
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`]);
+});
+
+test("a routed start with an uncertain answer still releases its route when the attempt expires", async (t) => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  f.startAnswers(() => new Response(null, { status: 503 }));
+  assert.equal((await f.send("start", { hasRules: true, route: signInRoute })).status, 503);
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`]);
+  const later = Date.now() + 2 * 24 * 60 * 60_000;
+  t.mock.method(Date, "now", () => later);
+  await f.tick();
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});

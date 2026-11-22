@@ -88,6 +88,8 @@ export function signInRoute(value: {
     valid({ routeId: route.routeId, owner: route.owner })
   )
     return { routeId: route.routeId, owner: route.owner };
+  // A route that is present but unusable is never treated as direct.
+  if (route !== undefined && route !== null) return "refuse";
   return value.hasRules === true && route !== null ? "refuse" : null;
 }
 
@@ -156,6 +158,7 @@ async function readCredentials(home: HomeClient, signal: AbortSignal) {
   return credentials;
 }
 
+const emptyAnswer: RouteAnswer = { served: true, revision: 0, resolutions: new Map() };
 // A resolve answers in well under a second; it never holds a membership step for long.
 const resolveMs = 5_000;
 const writeMs = 30_000;
@@ -226,15 +229,6 @@ export class RouteAssignments {
       answer = { served: false, revision: 0, resolutions: new Map() };
     }
     const state = await this.state();
-    // An answer missing a requested reference, or naming a route we can't use, is a failure.
-    if (
-      answer.served &&
-      references.some(
-        (reference) =>
-          !answer.resolutions.has(reference) || malformed(answer.resolutions.get(reference)),
-      )
-    )
-      answer = { served: false, revision: 0, resolutions: new Map() };
     if (!answer.served) {
       if (state.served) return unavailable();
       return {
@@ -245,7 +239,16 @@ export class RouteAssignments {
         ),
       };
     }
+    // Any 200 means rules are served, from then on durably; only then is its content judged.
     if (!state.served) await this.storage.put(stateKey, { ...state, served: true } satisfies State);
+    // An answer missing a requested reference, or naming a route we can't use, is a failure.
+    if (
+      references.some(
+        (reference) =>
+          !answer.resolutions.has(reference) || malformed(answer.resolutions.get(reference)),
+      )
+    )
+      return unavailable();
     return answer;
   }
 
@@ -289,13 +292,14 @@ export class RouteAssignments {
     for (const [reference, decision] of routes) {
       if (decision === "keep") continue;
       const credential = credentials.get(reference);
+      // The owner is known before Home names the route, even for a credential Home hasn't shown yet.
+      if (decision !== "hold" && decision !== null) await this.record(reference, decision);
       if (!credential) {
         if (decision === null) await this.record(reference, null);
         continue;
       }
       // A hold never replaces a route another pool already gave the credential.
       if (decision === "hold" && credential.proxy.includes(routePeerAddress)) continue;
-      if (decision !== "hold" && decision !== null) await this.record(reference, decision);
       const proxy =
         decision === "hold"
           ? routeProxyUrl(unassignedRoute)
@@ -329,22 +333,30 @@ export class RouteAssignments {
     const added = members.filter((account) => !known.has(account));
     let unresolved: string[] = [];
     if (added.length) {
-      let answer: RouteAnswer | undefined;
-      try {
-        answer = await this.ask(scope, added, within(resolveMs, signal));
-      } catch {
-        unresolved = added;
-      }
+      // A member whose host said its owner has no rules is direct without asking.
+      const ruleless = new Set<string>();
+      for (const reference of added)
+        if ((await this.storage.get(hintPrefix + reference)) === false) ruleless.add(reference);
+      const asked = added.filter((reference) => !ruleless.has(reference));
+      let answer: RouteAnswer | undefined = asked.length ? undefined : emptyAnswer;
+      if (asked.length)
+        try {
+          answer = await this.ask(scope, asked, within(resolveMs, signal));
+        } catch {
+          unresolved = asked;
+        }
       const atStake = new Map<string, Decision>();
       for (const reference of added) {
         const stored = await this.storage.get(entryPrefix + reference);
         const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
         const rules = await this.hasRules(reference);
-        const decision: Decision = answer
-          ? combine([answer.resolutions.get(reference), entry])
-          : rules
-            ? "hold"
-            : "keep";
+        const decision: Decision = ruleless.has(reference)
+          ? null
+          : answer
+            ? combine([answer.resolutions.get(reference), entry])
+            : rules
+              ? "hold"
+              : "keep";
         if (decision !== "keep" && (decision !== null || entry || rules))
           atStake.set(reference, decision);
       }
@@ -439,7 +451,9 @@ export class RouteAssignments {
     const raw = await this.storage.get(signInPrefix + session);
     if (raw === undefined) return;
     const route = Schema.decodeUnknownSync(Entry)(raw);
-    for (const reference of references) await this.record(reference, route);
+    // Home saves the route on what it creates; this re-asserts it, so no later call goes direct.
+    if (references.length)
+      await this.apply(new Map(references.map((reference) => [reference, route])), within(writeMs));
     this.owners = undefined;
     await this.storage.delete(signInPrefix + session);
   }

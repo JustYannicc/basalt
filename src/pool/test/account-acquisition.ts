@@ -118,7 +118,15 @@ export function fixture(
     },
   };
   const make = () =>
-    new HomeAccountAcquisitions(storage, home, key, attribution, undefined, Date.now, routes);
+    new HomeAccountAcquisitions(
+      storage,
+      home,
+      key,
+      attribution,
+      undefined,
+      () => Date.now(),
+      routes,
+    );
   let controller = make();
   return {
     calls,
@@ -135,6 +143,9 @@ export function fixture(
     },
     restart() {
       controller = make();
+    },
+    tick() {
+      return controller.tick();
     },
     startAnswers(reply: () => Response) {
       startReply = reply;

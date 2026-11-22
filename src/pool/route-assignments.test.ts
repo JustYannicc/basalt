@@ -463,14 +463,17 @@ test("the pool view finds the caller's own route by account order, never a teamm
   );
 });
 
-test("a 200 that leaves a reference out, before any good answer, still means direct", async () => {
+test("a 200 that leaves a reference out means rules are served and fails: only an owner with rules is held", async () => {
   const { client, keyProxy } = fakeHome();
   const partial: RouteResolver = {
     resolve: async () => ({ served: true, revision: 3, resolutions: new Map() }),
   };
   const routes = new RouteAssignments(storage(), partial, client, () => now);
-  await routes.prepare(scope, [mine], signal());
-  assert.equal((await mirror(client, routes, mine, apiKey, { hasRules: true })).status, 200);
+  await routes.prepare(scope, [teammate], signal());
+  assert.equal((await mirror(client, routes, mine, apiKey, { hasRules: true })).status, 503);
+  // Nobody without rules is touched: no hint, or a host that says there are none.
+  assert.equal((await mirror(client, routes, oauth, claude)).status, 200);
+  assert.equal((await mirror(client, routes, mine, apiKey, { hasRules: false })).status, 200);
   assert.equal(keyProxy(mine), "");
 });
 
@@ -487,6 +490,19 @@ test("the owner check knows a routed sign-in's route during its exchange and kee
   await routes.beginSignIn("session-2", { routeId: other, owner: mate });
   await routes.settleSignIn("session-2", []);
   assert.equal(await routes.routeOwner(other), null);
+});
+
+test("a member whose host said its owner has no rules never waits on the tools service", async () => {
+  const { client, keyProxy } = fakeHome();
+  const rules = scripted({});
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  await routes.prepare(scope, [], signal());
+  await mirror(client, routes, mine, apiKey, { hasRules: false });
+  rules.fail(true);
+  const calls = rules.calls.length;
+  await routes.prepare(scope, [mine], signal());
+  assert.equal(rules.calls.length, calls);
+  assert.equal(keyProxy(mine), "");
 });
 
 test("a proxy the host configured itself is never cleared or replaced by a direct rule", () => {

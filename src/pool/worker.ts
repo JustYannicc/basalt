@@ -543,7 +543,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       // and lease renewals never wait on routing.
       reconcile: async (pool, accounts) => {
         const organization = organizations.get(pool);
-        if (organization !== undefined) await this.routes.prepare({ pool, organization }, accounts);
+        if (organization === undefined) throw new Error("Pool organization unknown");
+        await this.routes.prepare({ pool, organization }, accounts);
         await membership.reconcile(pool, accounts);
       },
       install: async (policy) => {
