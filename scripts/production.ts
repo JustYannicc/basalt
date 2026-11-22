@@ -176,6 +176,10 @@ export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) 
     .filter(({ fqn, action }) => ["Migrations", "PoolDatabase"].includes(fqn) && action !== "noop")
     .map(({ fqn }) => fqn);
 
+/** An error's kind as one public line: its class and kind, and the HTTP status when it has one. */
+export const errorLine = (kind: { errorClass: string; kind: string; status?: number }) =>
+  `${kind.errorClass} (${kind.kind}${kind.status === undefined ? "" : `, HTTP ${kind.status}`})`;
+
 /** One streamed turn through the public pool. Says why it failed by error class and status only. */
 export async function smoke(send: () => Promise<unknown>) {
   try {
@@ -385,7 +389,7 @@ async function main() {
         );
         if (backup._tag === "Failure")
           return yield* refuse(
-            `The backup before ${steps.join(", ")} failed (${errorKind(Cause.squash(backup.cause))}); nothing applied`,
+            `The backup before ${steps.join(", ")} failed (${errorLine(errorKind(Cause.squash(backup.cause)))}); nothing applied`,
           );
         yield* print(`Backed up the pool database before ${steps.join(", ")}: ${name}`);
       }
@@ -400,7 +404,7 @@ async function main() {
         );
         if (moved._tag === "Failure")
           return yield* refuse(
-            `Re-pointing ${worker.fqn} forward failed (${errorKind(Cause.squash(moved.cause))}); nothing applied`,
+            `Re-pointing ${worker.fqn} forward failed (${errorLine(errorKind(Cause.squash(moved.cause)))}); nothing applied`,
           );
       }
       // A restore of the controller's storage would be looked up by this time.
@@ -409,7 +413,7 @@ async function main() {
       if (exit._tag === "Failure") {
         const failed = tracker.context().resources.map(({ fqn, type }) => `${fqn} (${type})`);
         yield* print(
-          `::error::The apply failed at ${failed.join(", ") || "no resource it reported"}: ${errorKind(Cause.squash(exit.cause))}`,
+          `::error::The apply failed at ${failed.join(", ") || "no resource it reported"}: ${errorLine(errorKind(Cause.squash(exit.cause)))}`,
         );
       }
       return { serving, applied: exit._tag === "Success", creating: created.length > 0 };
@@ -452,6 +456,8 @@ async function main() {
 if (process.argv[1] === fileURLToPath(import.meta.url))
   await main().catch(async (error: unknown) => {
     const { errorKind } = await import("./release/public-report.ts");
-    await say(`::error::Stopped: ${error instanceof Refused ? error.message : errorKind(error)}`);
+    await say(
+      `::error::Stopped: ${error instanceof Refused ? error.message : errorLine(errorKind(error))}`,
+    );
     process.exit(1);
   });
