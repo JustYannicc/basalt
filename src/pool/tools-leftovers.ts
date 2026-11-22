@@ -18,11 +18,13 @@ interface Dependencies {
  * by its person and keeps its key.
  */
 export function toolsLeftBehind(row: StoredComputer) {
+  if (row.native || row.toolsKeyDeletedAt !== undefined || !revokedByPerson(row)) return false;
   // Only rows the host can read: one it can't would hold back every other row's answer.
-  if (row.native || !text(row.toolsKeyId) || !text(row.user) || row.toolsKeyDeletedAt !== undefined)
-    return false;
+  if (!text(row.toolsKeyId) || !text(row.user)) return false;
+  // A `removed` row that doesn't say why may be an access removal: it keeps its key until its
+  // person revokes it again.
   if (row.state === "removed") return row.removedFor === "revoke";
-  return (row.state === "revoking" || row.state === "revoked") && revokedByPerson(row);
+  return row.state === "revoking" || row.state === "revoked";
 }
 
 /**
@@ -51,7 +53,12 @@ export function toolsLeftoverControl(value: Record<string, unknown>, deps: Depen
       json({
         computers: Object.values(registry)
           .filter(toolsLeftBehind)
-          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          // Revokes Connect finished before keys were recorded gone wait behind stuck ones.
+          .sort(
+            (a, b) =>
+              Number(a.state === "revoked") - Number(b.state === "revoked") ||
+              (a.id < b.id ? -1 : 1),
+          )
           .slice(0, toolsLeftoverBatch)
           .map((row) => ({ computer: row.id, user: row.user, toolsKeyId: row.toolsKeyId })),
       }),

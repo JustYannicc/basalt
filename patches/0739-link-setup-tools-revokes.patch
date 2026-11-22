@@ -123,7 +123,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
 diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
 --- a/packages/mcp-auth/src/implementation/oauth.ts
 +++ b/packages/mcp-auth/src/implementation/oauth.ts
-@@ -1246,13 +1246,16 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1246,13 +1246,23 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                checked: 0,
                revoked: 0,
                unavailable: false,
@@ -131,13 +131,23 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
              })
            : runAuth(
                Effect.gen(function* () {
-                 const cleanups = yield* native.retryCleanups(ctx);
-                 // A device its person revoked at the pool loses its grant here, as any revoke ends it.
-                 const reconciled = yield* native.reconcile(ctx, (id) => revoke(ctx, id));
+-                const cleanups = yield* native.retryCleanups(ctx);
+-                // A device its person revoked at the pool loses its grant here, as any revoke ends it.
+-                const reconciled = yield* native.reconcile(ctx, (id) => revoke(ctx, id));
 -                return { ...cleanups, ...reconciled };
-+                // A computer set up with a link loses the tools key its person's revoke left.
++                const grants = yield* Effect.exit(
++                  Effect.gen(function* () {
++                    const cleanups = yield* native.retryCleanups(ctx);
++                    // A device its person revoked at the pool loses its grant here, as any revoke
++                    // ends it.
++                    const reconciled = yield* native.reconcile(ctx, (id) => revoke(ctx, id));
++                    return { ...cleanups, ...reconciled };
++                  }),
++                );
++                // A computer set up with a link loses the tools key its person's revoke left, even
++                // while the grant steps above fail; their failure is still the pass's.
 +                const tools = yield* native.finishToolsRevokes(ctx);
-+                return { ...cleanups, ...reconciled, tools };
++                return { ...(yield* grants), tools };
                }),
              ),
        ),
