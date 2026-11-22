@@ -26,8 +26,8 @@ const alarmTarget = (color: "blue" | "green") => ({
   homePeerOrdinal: 1,
 });
 
-/** A started runtime behind the production Durable Object class, with its refresh alarm armed. */
-async function startedRuntime(color: "blue" | "green") {
+/** An admitted slot behind the production Durable Object class. */
+async function admittedRuntime(color: "blue" | "green") {
   const target = alarmTarget(color);
   const f = await handoffRuntime(target, {
     POOL_RUNTIME_APPLICATION_ID: color,
@@ -60,17 +60,10 @@ async function startedRuntime(color: "blue" | "green") {
     return response.status === 204 ? undefined : ((await response.json()) as unknown);
   };
   await post("/admit", { envelope: grant.envelope });
-  const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
-    await post("/start", { target }),
-  );
-  const store = new RuntimeWitnessStore(f.storage, f.env.POOL_DEPLOYMENT_KEY!);
-  assert.ok((await f.storage.getAlarm())! > Date.now());
-  assert.deepEqual(await store.alarmTarget(), target);
   return {
     f,
     target,
-    identity,
-    store,
+    store: new RuntimeWitnessStore(f.storage, f.env.POOL_DEPLOYMENT_KEY!),
     post,
     call,
     cleanup: async () => {
@@ -78,6 +71,17 @@ async function startedRuntime(color: "blue" | "green") {
       await controller.close();
     },
   };
+}
+
+/** A started runtime behind the production Durable Object class, with its refresh alarm armed. */
+async function startedRuntime(color: "blue" | "green") {
+  const admitted = await admittedRuntime(color);
+  const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
+    await admitted.post("/start", { target: admitted.target }),
+  );
+  assert.ok((await admitted.f.storage.getAlarm())! > Date.now());
+  assert.deepEqual(await admitted.store.alarmTarget(), admitted.target);
+  return { ...admitted, identity };
 }
 
 for (const color of ["blue", "green"] as const) {
@@ -216,6 +220,38 @@ for (const color of ["blue", "green"] as const) {
           `${ending} left the alarm target`,
         );
       });
+  });
+}
+
+for (const color of ["blue", "green"] as const) {
+  test(`a ${color} start that an abort stops while it runs leaves no alarm or alarm target behind`, async (context) => {
+    const admitted = await admittedRuntime(color);
+    context.after(admitted.cleanup);
+    const { f, target, store, post, call } = admitted;
+    let polled!: () => void;
+    const polling = new Promise<void>((resolve) => (polled = resolve));
+    // The container is up but never ready, so the start is still polling when the abort lands.
+    f.hooks.health = async () => {
+      polled();
+      return new Response(null, { status: 503 });
+    };
+    const starting = call("/start", { target });
+    await polling;
+    const record = (await store.retained(target.slotId))!;
+    const intent = {
+      operationId: "alarm-abort",
+      target,
+      startupOperationId: record.authorization.operationId,
+      witness: record.witness ?? null,
+    };
+    const aborted = Schema.decodeUnknownSync(Schema.Struct({ status: Schema.String }))(
+      await post("/startup-abort", { intent }),
+    );
+    assert.equal(aborted.status, "aborted");
+    assert.equal((await starting).ok, false);
+    assert.equal(f.calls.start, 1);
+    assert.equal(await f.storage.getAlarm(), null, "the stopped start re-armed the refresh alarm");
+    assert.equal(await store.alarmTarget(), undefined, "the stopped start left its alarm target");
   });
 }
 
