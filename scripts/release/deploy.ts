@@ -761,7 +761,16 @@ try {
           yield* Effect.promise(() => summary(report.summary));
           if (report.annotation) console.log(report.annotation);
         }
-        if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
+        if (command === "plan") {
+          // Names and types only, never a value: which bindings each updated Worker changes, and
+          // whether its rollback could force every changed secret. Read after the digest, from the
+          // plan alone; nothing the apply compares depends on it.
+          const changes = yield* Effect.promise(() => import("./binding-changes.ts"));
+          yield* Effect.promise(() =>
+            summary(changes.bindingChangesReport(snapshot.native, changes.forceListOf(policy))),
+          );
+          return { snapshot, digest, planned: changedRows(snapshot) };
+        }
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
             new Error(
