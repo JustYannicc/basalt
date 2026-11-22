@@ -1,36 +1,43 @@
 diff --git a/internal/cluster/usage_credits.go b/internal/cluster/usage_credits.go
-index 9f59521..1c9a79a 100644
+index 9f59521..a03c6af 100644
 --- a/internal/cluster/usage_credits.go
 +++ b/internal/cluster/usage_credits.go
-@@ -70,12 +70,17 @@ func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time
+@@ -70,12 +70,22 @@ func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time
  	plan := item.Freshness == "fresh" && item.ObservedAt != nil && !item.ObservedAt.After(now)
  	known := false
  	exhausted := false
-+	// An aged window still shows a plan that was empty when last read and has not reset since.
-+	agedEmpty := false
++	// An aged window still shows what the plan held when last read: empty and not reset since, or
++	// some quota left.
++	agedEmpty, agedQuota := false, false
  	for _, window := range item.Windows {
  		if !usageCreditWindowApplies(window, model) {
  			continue
  		}
  		if window.ExpiresAt != nil && !now.Before(*window.ExpiresAt) || window.ObservedAt.After(now) {
  			plan = false
-+			if !window.ObservedAt.After(now) && window.RemainingRatio != nil && *window.RemainingRatio <= 0 && (window.ResetAt == nil || now.Before(*window.ResetAt)) {
-+				agedEmpty = true
++			if !window.ObservedAt.After(now) && window.RemainingRatio != nil {
++				if *window.RemainingRatio > 0 {
++					agedQuota = true
++				} else if window.ResetAt == nil || now.Before(*window.ResetAt) {
++					agedEmpty = true
++				}
 +			}
  			continue
  		}
  		if window.IsUnlimited {
-@@ -102,7 +107,17 @@ func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time
+@@ -102,7 +112,19 @@ func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time
  		return 1
  	}
  	if credits != nil && (credits.CreditBlocked || credits.State == "none" || credits.State == "disabled") {
 -		return 3
-+		if exhausted || agedEmpty {
++		// Only an explicit "no credits" reading may keep an account eligible: a blocked flag on a
++		// reading of another state contradicts itself, and only ever refuses.
++		if exhausted || agedEmpty || credits.State != "none" && credits.State != "disabled" {
 +			return 3
 +		}
-+		// Credits that can't be spent leave only the plan, so an aged plan reading never refuses
-+		// the account by itself: an empty plan comes back as the vendor's own 429 and cools it.
-+		if freshCredits {
++		// Credits that can't be spent leave only the plan, so an account whose last plan reading
++		// showed quota stays on it: an empty plan comes back as the vendor's own 429 and cools it.
++		if freshCredits && (known || agedQuota) {
 +			return 0
 +		}
 +		// The credits reading ages with the plan's, so it no longer proves credits are off:
@@ -41,10 +48,10 @@ index 9f59521..1c9a79a 100644
  }
 diff --git a/internal/cluster/usage_credits_stale_test.go b/internal/cluster/usage_credits_stale_test.go
 new file mode 100644
-index 0000000..013481b
+index 0000000..678f2e5
 --- /dev/null
 +++ b/internal/cluster/usage_credits_stale_test.go
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,58 @@
 +package cluster
 +
 +import (
@@ -89,12 +96,22 @@ index 0000000..013481b
 +	past := now.Add(-time.Minute)
 +	reopened := reading("stale", aged, &empty, fresh)
 +	reopened.Windows[0].ResetAt = &past
-+	if got := usageCreditFundingTier(reopened, "claude-opus-5-5", now); got != 0 {
-+		t.Errorf("a plan whose empty window has since reset kept the account out: tier %d", got)
++	if got := usageCreditFundingTier(reopened, "claude-opus-5-5", now); got != 2 {
++		t.Errorf("a plan whose empty window has since reset must be unknown, neither refused nor proven: tier %d", got)
++	}
++	unproven := reading("fresh", fresh, nil, fresh)
++	if got := usageCreditFundingTier(unproven, "claude-opus-5-5", now); got != 2 {
++		t.Errorf("credits off without any plan reading proved the plan: tier %d", got)
++	}
++	// A blocked flag on a reading of another state contradicts itself: it only ever refuses.
++	contradictory := reading("stale", aged, &remaining, fresh)
++	contradictory.UsageCredits.State = "unknown"
++	if got := usageCreditFundingTier(contradictory, "gpt-5.5", now); got != 3 {
++		t.Errorf("a contradictory credits reading admitted the account: tier %d", got)
 +	}
 +}
 diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
-index 1953186..0ea03da 100644
+index 1953186..53bfb9f 100644
 --- a/internal/home/usage_credits.go
 +++ b/internal/home/usage_credits.go
 @@ -17,6 +17,16 @@ type usageCreditCollector interface {
@@ -132,7 +149,7 @@ index 1953186..0ea03da 100644
  	}
  	now := time.Now()
  	selected := make(map[string]struct{})
-@@ -52,11 +65,25 @@ func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) e
+@@ -52,11 +65,38 @@ func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) e
  		}
  	}
  	r.usageCreditRefreshMu.Unlock()
@@ -144,6 +161,9 @@ index 1953186..0ea03da 100644
 +	if !canWait {
  		_, errTrigger := collector.TriggerCollection(ctx, selected, nil)
 -		return errTrigger
++		if errTrigger != nil {
++			r.forgetUsageCreditRefresh(selected)
++		}
 +		return false, errTrigger
 +	}
 +	waitCtx, cancel := context.WithTimeout(ctx, usageCreditRefreshWait)
@@ -151,17 +171,27 @@ index 1953186..0ea03da 100644
 +	errWait := waiting.CollectNow(waitCtx, selected)
 +	if errWait == nil {
 +		return true, nil
- 	}
--	return nil
++	}
 +	if waitCtx.Err() != nil {
 +		// The collection keeps running for the next call; this one decides on what it has.
 +		return false, nil
 +	}
++	r.forgetUsageCreditRefresh(selected)
 +	return false, errWait
++}
++
++// forgetUsageCreditRefresh lets the next refusal retry a collection that never started.
++func (r *Runtime) forgetUsageCreditRefresh(ids map[string]struct{}) {
++	r.usageCreditRefreshMu.Lock()
++	defer r.usageCreditRefreshMu.Unlock()
++	for id := range ids {
++		delete(r.usageCreditRefreshAt, id)
+ 	}
+-	return nil
  }
  
  func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, pinned string, opts *coreauth.Options) bool {
-@@ -75,11 +102,19 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
+@@ -75,11 +115,19 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
  		if errTiers != nil {
  			return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding policy could not be read.", HTTPStatus: 503, Retryable: true}
  		}
@@ -186,7 +216,7 @@ index 1953186..0ea03da 100644
  			}
  		}
  		attempts := selection.Attempts
-@@ -87,11 +122,6 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
+@@ -87,11 +135,6 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
  		selection.Attempts = attempts
  		selection.PlanFunded = best == 0
  		selection.Reason = "existing_selector"
@@ -198,7 +228,7 @@ index 1953186..0ea03da 100644
  		eligible := make([]*coreauth.Auth, 0, len(candidates))
  		for _, auth := range candidates {
  			if tier, exists := tiers[auth.ID]; exists && tier == best && tier < 3 {
-@@ -111,3 +141,13 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
+@@ -111,3 +154,13 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
  	}
  	return true
  }
@@ -214,14 +244,15 @@ index 1953186..0ea03da 100644
 +}
 diff --git a/internal/home/usage_credits_stale_test.go b/internal/home/usage_credits_stale_test.go
 new file mode 100644
-index 0000000..b94e41c
+index 0000000..05d14c3
 --- /dev/null
 +++ b/internal/home/usage_credits_stale_test.go
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,173 @@
 +package home
 +
 +import (
 +	"context"
++	"errors"
 +	"sync"
 +	"testing"
 +	"time"
@@ -260,6 +291,7 @@ index 0000000..b94e41c
 +	store    *agingTierStore
 +	fresh    map[string]int
 +	block    chan struct{}
++	fail     error
 +	mu       sync.Mutex
 +	waited   int
 +	triggers int
@@ -276,6 +308,9 @@ index 0000000..b94e41c
 +	c.mu.Lock()
 +	c.waited++
 +	c.mu.Unlock()
++	if c.fail != nil {
++		return c.fail
++	}
 +	if c.block != nil {
 +		select {
 +		case <-c.block:
@@ -361,6 +396,29 @@ index 0000000..b94e41c
 +	}
 +	if blocked.waited != 1 {
 +		t.Fatalf("waited for %d collections, want one", blocked.waited)
++	}
++}
++
++// A collection that could not start never blocks the next refusal from trying again.
++func TestUsageCreditFailedRefreshIsRetriedByTheNextRefusal(t *testing.T) {
++	store := &agingTierStore{tiers: map[string]int{"only": 3}}
++	collector := &probingCollector{store: store, fresh: map[string]int{"only": 0}, fail: errors.New("credentials unavailable")}
++	runtime := &Runtime{clusterAdapter: store}
++	runtime.SetUsageCreditCollector(collector)
++	var opts coreauth.Options
++	if !runtime.installUsageCreditFilter(t.Context(), "pool-key", "claude-opus-5-5", "", &opts) {
++		t.Fatal("filter unavailable")
++	}
++	if _, errFilter := opts.CandidateFilter([]*coreauth.Auth{{ID: "only"}}, map[string]string{"only": "claude-opus-5-5"}); errFilter == nil {
++		t.Fatal("a collection that could not start was reported as a funding decision")
++	}
++	collector.fail = nil
++	selected, errFilter := opts.CandidateFilter([]*coreauth.Auth{{ID: "only"}}, map[string]string{"only": "claude-opus-5-5"})
++	if errFilter != nil || len(selected) != 1 {
++		t.Fatalf("the next refusal did not retry the collection: %v", errFilter)
++	}
++	if collector.waited != 2 {
++		t.Fatalf("collections tried %d, want 2", collector.waited)
 +	}
 +}
 diff --git a/internal/quota/collector.go b/internal/quota/collector.go

@@ -306,7 +306,7 @@
         {
           "identity": "cliproxy-home-funding-aged-reading",
           "file": "0762-home-funding-aged-reading.patch",
-          "sha256": "1df007fed26759528d1edd903ebaeac961a8694b5bfacfd6d105307df95edf42",
+          "sha256": "27e4729a59ddbbee1c604a5c0f8de1b971945cb6475701a71acd4d068d85e1d7",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0762 keeps an account whose plan reading has aged out from being refused outright by the pool's funding filter. Retire when the pinned Home keeps an account on its plan while a fresh reading says its credits can't be spent and its last plan reading showed quota, treats an aged credits reading as unknown rather than refused, keeps out a plan last seen empty before its reset, and under a never policy refreshes the candidates' readings within a bound and decides on the fresh reading before it refuses, and passes the aged-reading, bounded-refresh and wait-for-in-flight-probe regressions."
