@@ -509,6 +509,16 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
         );
+      } else if (patch.identity === "cliproxy-home-coordination-pool") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0691-home-coordination-pool.patch");
+        assert.match(patch.retirement.requires, /pgsql\.coordination-max-open-conns/);
+        assert.match(patch.retirement.requires, /while the main pool is saturated/);
+        assert.match(
+          patch.retirement.requires,
+          /saturated-main-pool heartbeat, node-lookup and node-listing regressions/,
+        );
+        assert.match(patch.retirement.requires, /management node listing/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
