@@ -312,10 +312,7 @@
     {
       "baselineInputHash": "b669a1335e786091",
       "candidateInputHash": "5120df81c4faab06",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -329,10 +326,7 @@
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
       "candidateInputHash": "5ed1f28a518461f1",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -346,10 +340,7 @@
     {
       "baselineInputHash": "b669a1335e786091",
       "candidateInputHash": "5ed1f28a518461f1",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -363,10 +354,7 @@
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
       "candidateInputHash": "deff6a349867da39",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -380,10 +368,7 @@
     {
       "baselineInputHash": "b669a1335e786091",
       "candidateInputHash": "deff6a349867da39",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -397,10 +382,7 @@
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
       "candidateInputHash": "eac5951c2f8487f6",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -414,10 +396,7 @@
     {
       "baselineInputHash": "b669a1335e786091",
       "candidateInputHash": "eac5951c2f8487f6",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
