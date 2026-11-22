@@ -148,11 +148,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const path = env.BOX_WATCH_VERDICT ?? "";
   const verdict = path && existsSync(path) ? readFileSync(path, "utf8") : undefined;
   const jobs: RerunJob[] = [];
-  for (let page = 1; page <= 10; page++) {
+  // Fifty a page, as the router reads them: GitHub answers 502 to a hundred for a re-run Check.
+  for (let page = 1; page <= 20; page++) {
     const response = await retried(
       () =>
         fetch(
-          `${api}/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=100&page=${page}`,
+          `${api}/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=50&page=${page}`,
           { headers, signal: AbortSignal.timeout(20_000) },
         ),
       "the run's jobs",
@@ -167,7 +168,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         runnerName: (job.runner_name as string | null) ?? null,
         startedAt: (job.started_at as string | null) ?? null,
       });
-    if (batch.length < 100) break;
+    if (batch.length < 50) break;
   }
   // A pull request's Checks share one concurrency group that cancels in progress, so a re-run of a
   // superseded run would cancel the newest. Push runs each have their own group.

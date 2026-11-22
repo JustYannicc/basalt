@@ -757,7 +757,7 @@ test("a heartbeat on the box's own heartbeat runner vouches for it; a shared lab
         },
       ],
     },
-    "/actions/runs/4/jobs?filter=latest&per_page=100&page=1": {
+    "/actions/runs/4/jobs?filter=latest&per_page=50&page=1": {
       jobs: [{ id: 40, labels, conclusion: "success", completed_at: minutesAgo(1) }],
     },
     "/actions/jobs/40/logs": healthyLog,

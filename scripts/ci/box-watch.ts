@@ -138,13 +138,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   };
   const jobsOf = async () => {
     const jobs: Record<string, unknown>[] = [];
-    for (let page = 1; page <= 10; page++) {
+    // Fifty a page, as the router reads them: GitHub answers 502 to a hundred for a re-run Check.
+    for (let page = 1; page <= 20; page++) {
       const body = await get(
-        `/actions/runs/${run}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+        `/actions/runs/${run}/attempts/${attempt}/jobs?per_page=50&page=${page}`,
       );
       const batch = Array.isArray(body.jobs) ? (body.jobs as Record<string, unknown>[]) : [];
       jobs.push(...batch);
-      if (batch.length < 100) break;
+      if (batch.length < 50) break;
     }
     return jobs;
   };
