@@ -11,6 +11,30 @@ import {
   type PreviewProof,
 } from "./common.ts";
 
+// signalbox: a stage's custom domain and its certificate can attach after the Workers it waits on,
+// so the first sign-in can meet a host that does not serve yet. Wait for the stage's own Router to
+// answer, bounded, before signing in; the cause of a timeout names what the host last did.
+export const waitForStageHost = async (
+  origin: string,
+  { boundMs = 300_000, everyMs = 5_000, send = fetch, now = Date.now } = {},
+) => {
+  const until = now() + boundMs;
+  let last = "no answer yet";
+  for (;;) {
+    try {
+      const response = await send(`${origin}/api/auth/get-session`, { headers: { origin } });
+      await response.body?.cancel();
+      if (response.ok) return;
+      last = `HTTP ${response.status}`;
+    } catch (error) {
+      last = error instanceof Error ? error.message.split("\n")[0]!.slice(0, 120) : "fetch failed";
+    }
+    if (now() >= until)
+      throw new Error(`The stage host did not serve within ${boundMs / 1000} s (last: ${last})`);
+    await new Promise((done) => setTimeout(done, everyMs));
+  }
+};
+
 const signIn = async (proof: Pick<PreviewProof, "origin" | "email" | "password">) => {
   const response = await fetch(`${proof.origin}/api/auth/sign-in/email`, {
     method: "POST",
@@ -81,6 +105,7 @@ export const seedPreviewAuth = async (env: NodeJS.ProcessEnv = process.env) => {
         password,
       });
 
+    await waitForStageHost(proof.origin);
     const cookie = await signIn(proof);
     const organizations = (await request(
       proof.origin,
@@ -157,8 +182,11 @@ export const seedPreviewAuth = async (env: NodeJS.ProcessEnv = process.env) => {
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   seedPreviewAuth().then(
     () => console.log("Seeded a verified preview identity, organization, and installed pool app."),
-    () => {
-      console.error("Preview auth seed failed.");
+    // signalbox: say why. This reaches only the release's sealed detail, never its public text, and
+    // names a step or an HTTP status, never the smoke user's email or password.
+    (error: unknown) => {
+      const cause = error instanceof Error ? error.message.split("\n")[0]!.slice(0, 200) : "";
+      console.error(`Preview auth seed failed${cause ? `: ${cause}` : "."}`);
       process.exitCode = 1;
     },
   );
