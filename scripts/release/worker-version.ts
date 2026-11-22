@@ -134,7 +134,10 @@ export const rollbackTo = (
                 const errors = errorsOf(body);
                 answers.push({
                   status: response.status,
-                  errors: errors.map((error) => ({ ...error, message: error.message.slice(0, 300) })),
+                  errors: errors.map((error) => ({
+                    ...error,
+                    message: error.message.slice(0, 300),
+                  })),
                 });
                 return { ok: response.status >= 200 && response.status < 300, body, errors };
               }),

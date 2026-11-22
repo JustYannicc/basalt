@@ -959,7 +959,9 @@ try {
         );
         forceSecrets = new Set(named.rollback?.forceSecrets ?? []);
       } catch {
-        console.error("::warning::The release policy could not be read; the rollback forces nothing.");
+        console.error(
+          "::warning::The release policy could not be read; the rollback forces nothing.",
+        );
       }
     const result = await run(
       Effect.gen(function* () {

@@ -155,7 +155,9 @@ test("a rollback refused only for a per-release secret is sent again with force,
     yieldsToForce: true,
   });
   try {
-    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)));
+    const exit = await run(
+      withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)),
+    );
     assert.deepEqual(exit, Exit.succeed({ id: "dep-new", forcedSecrets: ["EXECUTOR_TELEMETRY"] }));
     assert.deepEqual(server.seen, [
       `POST ${deployments}`,
@@ -170,9 +172,14 @@ test("a rollback refused only for a per-release secret is sent again with force,
 test("a changed secret outside the reviewed list keeps the refusal, and nothing is forced", async () => {
   // Lane 6's case: the stage's deadline, a secret that is not a release's own.
   for (const names of ["TEST_STAGE_EXPIRES_AT", "EXECUTOR_TELEMETRY, TEST_STAGE_EXPIRES_AT"]) {
-    const server = await api([deployment("v241")], { ...secretChanged(names), yieldsToForce: true });
+    const server = await api([deployment("v241")], {
+      ...secretChanged(names),
+      yieldsToForce: true,
+    });
     try {
-      const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)));
+      const exit = await run(
+        withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)),
+      );
       assert.ok(Exit.isFailure(exit), names);
       assert.deepEqual(server.seen, [`POST ${deployments}`], names);
       const report = failureReport(Cause.squash(exit.cause));
@@ -190,7 +197,9 @@ test("a forced rollback Cloudflare still refuses keeps both answers, privately",
     yieldsToForce: false,
   });
   try {
-    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)));
+    const exit = await run(
+      withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)),
+    );
     assert.ok(Exit.isFailure(exit));
     assert.equal(server.seen.length, 2);
     const report = failureReport(Cause.squash(exit.cause));
