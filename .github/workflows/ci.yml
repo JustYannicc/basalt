@@ -754,7 +754,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'host-managed-accounts-local') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1507,7 +1507,7 @@ jobs:
   human-in-the-loop-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-cloud')
-    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'human-in-the-loop-cloud') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -2232,8 +2232,8 @@ jobs:
 
   fast:
     needs: select
-    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'fast') && needs.select.outputs.box_label || 'ubuntu-latest' }}
-    timeout-minutes: 35
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -2601,7 +2601,7 @@ jobs:
   upstream-contracts:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
-    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'upstream-contracts') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # About 2x its slowest measured hosted run (11.3 minutes), so a hung run never holds a runner
     # for GitHub's default six hours.
     timeout-minutes: 25
@@ -2779,7 +2779,7 @@ jobs:
   account-acquisition:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
-    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'account-acquisition') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # Measured 12.6-20.5 minutes on hosted runners in six full Checks; the slowest was cut at 20.
     # Its observation half now runs in account-observations.
     timeout-minutes: 30
