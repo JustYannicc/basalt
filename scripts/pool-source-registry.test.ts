@@ -509,6 +509,15 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
         );
+      } else if (patch.identity === "cliproxy-home-oauth-session-proxy") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0758-home-oauth-session-proxy.patch");
+        assert.match(patch.retirement.requires, /optional proxy_url on \/oauth\/auth-url/);
+        assert.match(patch.retirement.requires, /never through Home's own proxy or direct/);
+        assert.match(
+          patch.retirement.requires,
+          /through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-safe-stop") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0695-home-safe-stop.patch");

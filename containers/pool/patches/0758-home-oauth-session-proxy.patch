@@ -1,0 +1,1087 @@
+diff --git a/internal/auth/kimi/flow.go b/internal/auth/kimi/flow.go
+index b06df1f..9ed9138 100644
+--- a/internal/auth/kimi/flow.go
++++ b/internal/auth/kimi/flow.go
+@@ -43,6 +43,11 @@ func NewKimiAuth(cfg *config.Config, domains ...string) *KimiAuth {
+ 	return &KimiAuth{deviceClient: NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg, "", "", domains...)}
+ }
+ 
++// NewKimiAuthWithProxyURL creates a kimi auth whose calls use proxyURL when it is non-empty.
++func NewKimiAuthWithProxyURL(cfg *config.Config, proxyURL string, domains ...string) *KimiAuth {
++	return &KimiAuth{deviceClient: NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg, "", proxyURL, domains...)}
++}
++
+ // NewDeviceFlowClient creates a new device flow client.
+ func NewDeviceFlowClient(cfg *config.Config) *DeviceFlowClient {
+ 	return NewDeviceFlowClientWithDeviceID(cfg, "")
+diff --git a/internal/auth/xai/device.go b/internal/auth/xai/device.go
+index e6230ed..eb89eee 100644
+--- a/internal/auth/xai/device.go
++++ b/internal/auth/xai/device.go
+@@ -29,6 +29,16 @@ type DeviceCodeResponse struct {
+ 	ExpiresAt               time.Time `json:"-"`
+ }
+ 
++// unreachedError keeps a failed call's cause for errors.As without changing its message.
++type unreachedError struct {
++	message string
++	cause   error
++}
++
++func (e *unreachedError) Error() string { return e.message }
++
++func (e *unreachedError) Unwrap() error { return e.cause }
++
+ // StartDeviceFlow follows the device grant used by current CPA xAI authentication.
+ func (a *XAIAuth) StartDeviceFlow(ctx context.Context) (*DeviceCodeResponse, error) {
+ 	if ctx == nil {
+@@ -50,7 +60,7 @@ func (a *XAIAuth) StartDeviceFlow(ctx context.Context) (*DeviceCodeResponse, err
+ 	req.Header.Set("Accept", "application/json")
+ 	response, err := a.httpClient.Do(req)
+ 	if err != nil {
+-		return nil, errors.New("xai device authorization could not be reached")
++		return nil, &unreachedError{message: "xai device authorization could not be reached", cause: err}
+ 	}
+ 	defer response.Body.Close()
+ 	if response.StatusCode != http.StatusOK {
+@@ -109,7 +119,7 @@ func (a *XAIAuth) WaitForAuthorization(ctx context.Context, code *DeviceCodeResp
+ 		}
+ 		var rejected *oautherror.ResponseError
+ 		if !errors.As(err, &rejected) {
+-			return nil, errors.New("xai device token exchange could not finish")
++			return nil, &unreachedError{message: "xai device token exchange could not finish", cause: err}
+ 		}
+ 		switch rejected.OAuthError() {
+ 		case "authorization_pending":
+diff --git a/internal/cluster/management/oauth_login.go b/internal/cluster/management/oauth_login.go
+index 51b5964..2596870 100644
+--- a/internal/cluster/management/oauth_login.go
++++ b/internal/cluster/management/oauth_login.go
+@@ -75,6 +75,10 @@ type oauthCallbackRequest struct {
+ 
+ // RequestAnthropicToken handles request anthropic token.
+ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "anthropic")
++	if !okProxy {
++		return
++	}
+ 	// Resolve credential context before calling upstream OAuth services.
+ 	pkce, errPKCE := generatePKCECodes()
+ 	if errPKCE != nil {
+@@ -89,10 +93,10 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 		return
+ 	}
+ 	authURL := buildAnthropicAuthURL(state, pkce)
+-	if errRegister := h.registerOAuthSession(c, "anthropic", state, map[string]any{
++	if errRegister := h.registerOAuthSession(c, "anthropic", state, withOAuthSessionProxyData(map[string]any{
+ 		"code_verifier":  pkce.CodeVerifier,
+ 		"code_challenge": pkce.CodeChallenge,
+-	}); errRegister != nil {
++	}, proxyURL)); errRegister != nil {
+ 		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+ 		return
+ 	}
+@@ -101,6 +105,10 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 
+ // RequestCodexToken handles request codex token.
+ func (h *Handler) RequestCodexToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "codex")
++	if !okProxy {
++		return
++	}
+ 	// Resolve credential context before calling upstream OAuth services.
+ 	pkce, errPKCE := generatePKCECodes()
+ 	if errPKCE != nil {
+@@ -115,10 +123,10 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
+ 		return
+ 	}
+ 	authURL := buildCodexAuthURL(state, pkce)
+-	if errRegister := h.registerOAuthSession(c, "codex", state, map[string]any{
++	if errRegister := h.registerOAuthSession(c, "codex", state, withOAuthSessionProxyData(map[string]any{
+ 		"code_verifier":  pkce.CodeVerifier,
+ 		"code_challenge": pkce.CodeChallenge,
+-	}); errRegister != nil {
++	}, proxyURL)); errRegister != nil {
+ 		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+ 		return
+ 	}
+@@ -127,6 +135,10 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
+ 
+ // RequestAntigravityToken handles request antigravity token.
+ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "antigravity")
++	if !okProxy {
++		return
++	}
+ 	state, errState := generateOAuthState("agv")
+ 	if errState != nil {
+ 		log.Errorf("cluster oauth: failed to generate antigravity state: %v", errState)
+@@ -135,9 +147,9 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+ 	}
+ 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravityCallbackPort)
+ 	authURL := buildAntigravityAuthURL(state, redirectURI)
+-	if errRegister := h.registerOAuthSession(c, "antigravity", state, map[string]any{
++	if errRegister := h.registerOAuthSession(c, "antigravity", state, withOAuthSessionProxyData(map[string]any{
+ 		"redirect_uri": redirectURI,
+-	}); errRegister != nil {
++	}, proxyURL)); errRegister != nil {
+ 		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+ 		return
+ 	}
+@@ -146,6 +158,10 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+ 
+ // RequestKimiToken handles request kimi token.
+ func (h *Handler) RequestKimiToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "kimi")
++	if !okProxy {
++		return
++	}
+ 	// Resolve credential context before calling upstream OAuth services.
+ 	cfg := h.oauthConfig()
+ 	ctx, cancel := context.WithTimeout(requestContextOrBackground(c), 30*time.Second)
+@@ -162,10 +178,14 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
+ 	if strings.EqualFold(strings.TrimSpace(c.Query("provider")), "kimi-ai") {
+ 		provider, domain = "kimi-ai", kimiauth.KimiAIDomain
+ 	}
+-	kimiAuth := kimiauth.NewKimiAuth(cfg, domain)
++	kimiAuth := kimiauth.NewKimiAuthWithProxyURL(cfg, proxyURL, domain)
+ 	deviceFlow, errDevice := kimiAuth.StartDeviceFlow(ctx)
+ 	if errDevice != nil {
+ 		log.Errorf("cluster oauth: failed to start kimi device flow: %v", errDevice)
++		if proxyURL != "" && oauthRouteFailed(errDevice) {
++			c.JSON(http.StatusBadGateway, gin.H{"error": oauthProxyUnavailable})
++			return
++		}
+ 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+ 		return
+ 	}
+@@ -174,21 +194,25 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
+ 		authURL = strings.TrimSpace(deviceFlow.VerificationURI)
+ 	}
+ 
+-	if errRegister := h.registerOAuthSession(c, provider, state, map[string]any{
++	if errRegister := h.registerOAuthSession(c, provider, state, withOAuthSessionProxyData(map[string]any{
+ 		"device_code": deviceFlow.DeviceCode,
+ 		"user_code":   deviceFlow.UserCode,
+-	}); errRegister != nil {
++	}, proxyURL)); errRegister != nil {
+ 		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+ 		return
+ 	}
+ 
+-	go h.waitForKimiAuthorization(state, kimiAuth, deviceFlow)
++	go h.waitForKimiAuthorization(state, kimiAuth, deviceFlow, proxyURL)
+ 
+ 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
+ }
+ 
+ // RequestDevinToken handles request Devin token.
+ func (h *Handler) RequestDevinToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "devin")
++	if !okProxy {
++		return
++	}
+ 	pkceCodes, errPKCE := devinauth.GeneratePKCECodes()
+ 	if errPKCE != nil {
+ 		log.Errorf("cluster oauth: failed to generate devin PKCE codes: %v", errPKCE)
+@@ -205,11 +229,11 @@ func (h *Handler) RequestDevinToken(c *gin.Context) {
+ 	authSvc := devinauth.NewDevinAuthService(h.oauthConfig())
+ 	redirectURI := devinauth.DefaultRedirectURI()
+ 	authURL := authSvc.BuildAuthorizationURL(redirectURI, pkceCodes.CodeChallenge, state)
+-	if errRegister := h.registerOAuthSession(c, "devin", state, map[string]any{
++	if errRegister := h.registerOAuthSession(c, "devin", state, withOAuthSessionProxyData(map[string]any{
+ 		"code_verifier":  pkceCodes.CodeVerifier,
+ 		"code_challenge": pkceCodes.CodeChallenge,
+ 		"redirect_uri":   redirectURI,
+-	}); errRegister != nil {
++	}, proxyURL)); errRegister != nil {
+ 		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+ 		return
+ 	}
+@@ -218,6 +242,10 @@ func (h *Handler) RequestDevinToken(c *gin.Context) {
+ 
+ // RequestMetaToken handles request Meta token.
+ func (h *Handler) RequestMetaToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "meta")
++	if !okProxy {
++		return
++	}
+ 	cfg := h.oauthConfig()
+ 	ctx, cancel := context.WithTimeout(requestContextOrBackground(c), 30*time.Second)
+ 	defer cancel()
+@@ -229,10 +257,14 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
+ 		return
+ 	}
+ 
+-	metaAuth := metaauth.NewMetaAuth(cfg)
++	metaAuth := metaauth.NewMetaAuthWithProxyURL(cfg, proxyURL)
+ 	deviceFlow, errDevice := metaAuth.StartDeviceFlow(ctx)
+ 	if errDevice != nil {
+ 		log.Errorf("cluster oauth: failed to start meta device flow: %v", errDevice)
++		if proxyURL != "" && oauthRouteFailed(errDevice) {
++			c.JSON(http.StatusBadGateway, gin.H{"error": oauthProxyUnavailable})
++			return
++		}
+ 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+ 		return
+ 	}
+@@ -243,15 +275,15 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
+ 		return
+ 	}
+ 
+-	if errRegister := h.registerOAuthSession(c, "meta", state, map[string]any{
++	if errRegister := h.registerOAuthSession(c, "meta", state, withOAuthSessionProxyData(map[string]any{
+ 		"device_code": deviceFlow.DeviceCode,
+ 		"user_code":   userCode,
+-	}); errRegister != nil {
++	}, proxyURL)); errRegister != nil {
+ 		respondError(c, http.StatusInternalServerError, "oauth_session_failed", errRegister)
+ 		return
+ 	}
+ 
+-	go h.waitForMetaAuthorization(state, metaAuth, deviceFlow)
++	go h.waitForMetaAuthorization(state, metaAuth, deviceFlow, proxyURL)
+ 
+ 	payload := gin.H{"status": "ok", "url": authURL, "state": state}
+ 	if userCode != "" {
+@@ -467,6 +499,11 @@ func (h *Handler) processOAuthCallback(provider, state, code string) {
+ 		log.Errorf("cluster oauth: decode session data failed: %v", errData)
+ 		return
+ 	}
++	ctx, okProxy := oauthSessionProxyFromData(ctx, data)
++	if !okProxy {
++		_ = h.repo.SetOAuthSessionError(ctx, state, oauthProxyUnavailable)
++		return
++	}
+ 
+ 	var errProcess error
+ 	switch provider {
+@@ -484,21 +521,21 @@ func (h *Handler) processOAuthCallback(provider, state, code string) {
+ 		errProcess = fmt.Errorf("unsupported provider: %s", provider)
+ 	}
+ 	if errProcess != nil {
+-		_ = h.repo.SetOAuthSessionError(ctx, state, authStatusMessage(provider, errProcess))
++		_ = h.repo.SetOAuthSessionError(ctx, state, oauthSessionFailure(ctx, errProcess, authStatusMessage(provider, errProcess)))
+ 		log.Errorf("cluster oauth: %s callback failed: %v", provider, errProcess)
+ 		return
+ 	}
+ }
+ 
+ // waitForKimiAuthorization returns a wait for kimi authorization.
+-func (h *Handler) waitForKimiAuthorization(state string, kimiAuth *kimiauth.KimiAuth, deviceFlow *kimiauth.DeviceCodeResponse) {
++func (h *Handler) waitForKimiAuthorization(state string, kimiAuth *kimiauth.KimiAuth, deviceFlow *kimiauth.DeviceCodeResponse, proxyURL string) {
+ 	// Validate request inputs before mutating persisted state.
+-	ctx, cancel := h.oauthSessionContext(context.Background(), state, 16*time.Minute)
++	ctx, cancel := h.oauthSessionContext(withOAuthSessionProxy(context.Background(), proxyURL), state, 16*time.Minute)
+ 	defer cancel()
+ 
+ 	authBundle, errWait := kimiAuth.WaitForAuthorization(ctx, deviceFlow)
+ 	if errWait != nil {
+-		_ = h.repo.SetOAuthSessionError(context.Background(), state, "Authentication failed")
++		_ = h.repo.SetOAuthSessionError(context.Background(), state, oauthSessionFailure(ctx, errWait, "Authentication failed"))
+ 		log.Errorf("cluster oauth: kimi authorization failed: %v", errWait)
+ 		return
+ 	}
+@@ -540,13 +577,13 @@ func (h *Handler) waitForKimiAuthorization(state string, kimiAuth *kimiauth.Kimi
+ }
+ 
+ // waitForMetaAuthorization waits for Meta device-flow authorization to complete.
+-func (h *Handler) waitForMetaAuthorization(state string, metaAuth *metaauth.MetaAuth, deviceFlow *metaauth.DeviceCodeResponse) {
+-	ctx, cancel := h.oauthSessionContext(context.Background(), state, 16*time.Minute)
++func (h *Handler) waitForMetaAuthorization(state string, metaAuth *metaauth.MetaAuth, deviceFlow *metaauth.DeviceCodeResponse, proxyURL string) {
++	ctx, cancel := h.oauthSessionContext(withOAuthSessionProxy(context.Background(), proxyURL), state, 16*time.Minute)
+ 	defer cancel()
+ 
+ 	authBundle, errWait := metaAuth.WaitForAuthorization(ctx, deviceFlow)
+ 	if errWait != nil {
+-		_ = h.repo.SetOAuthSessionError(context.Background(), state, "Authentication failed")
++		_ = h.repo.SetOAuthSessionError(context.Background(), state, oauthSessionFailure(ctx, errWait, "Authentication failed"))
+ 		log.Errorf("cluster oauth: meta authorization failed: %v", errWait)
+ 		return
+ 	}
+@@ -616,7 +653,7 @@ func (h *Handler) exchangeAnthropicCallback(ctx context.Context, state, code str
+ 	req.Header.Set("Content-Type", "application/json")
+ 	req.Header.Set("Accept", "application/json")
+ 
+-	client := claude.NewAnthropicHttpClient(&h.oauthConfig().SDKConfig)
++	client := h.anthropicHTTPClientFor(ctx)
+ 	resp, errDo := client.Do(req)
+ 	if errDo != nil {
+ 		return errDo
+@@ -682,7 +719,7 @@ func (h *Handler) exchangeCodexCallback(ctx context.Context, code string, data m
+ 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+ 	req.Header.Set("Accept", "application/json")
+ 
+-	resp, errDo := h.oauthHTTPClient().Do(req)
++	resp, errDo := h.oauthHTTPClientFor(ctx).Do(req)
+ 	if errDo != nil {
+ 		return errDo
+ 	}
+@@ -759,7 +796,7 @@ func (h *Handler) exchangeAntigravityCallback(ctx context.Context, code string,
+ 	}
+ 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+ 
+-	resp, errDo := h.oauthHTTPClient().Do(req)
++	resp, errDo := h.oauthHTTPClientFor(ctx).Do(req)
+ 	if errDo != nil {
+ 		return errDo
+ 	}
+@@ -831,7 +868,7 @@ func (h *Handler) exchangeXAICallback(ctx context.Context, code string, data map
+ 	}
+ 	tokenEndpoint := stringFromAny(data["token_endpoint"])
+ 
+-	authSvc := xaiauth.NewXAIAuth(h.oauthConfig())
++	authSvc := xaiauth.NewXAIAuthWithProxyURL(h.oauthConfig(), oauthSessionProxy(ctx))
+ 	bundle, errExchange := authSvc.ExchangeCodeForTokens(ctx, strings.TrimSpace(code), redirectURI, pkce, tokenEndpoint)
+ 	if errExchange != nil {
+ 		return errExchange
+@@ -874,7 +911,7 @@ func (h *Handler) exchangeDevinCallback(ctx context.Context, code string, data m
+ 	if codeVerifier == "" {
+ 		return fmt.Errorf("missing PKCE verifier")
+ 	}
+-	authSvc := devinauth.NewDevinAuthService(h.oauthConfig())
++	authSvc := devinauth.NewDevinAuthServiceWithProxyURL(h.oauthConfig(), oauthSessionProxy(ctx))
+ 	token, errExchange := authSvc.ExchangeCodeForToken(ctx, strings.TrimSpace(code), codeVerifier)
+ 	if errExchange != nil {
+ 		return errExchange
+@@ -892,6 +929,9 @@ func (h *Handler) exchangeDevinCallback(ctx context.Context, code string, data m
+ 
+ // storeOAuthMetadataWithContext stores an o auth metadata with context.
+ func (h *Handler) storeOAuthMetadataWithContext(ctx context.Context, metadata map[string]any, originalFilename string) error {
++	if proxyURL := oauthSessionProxy(ctx); proxyURL != "" {
++		metadata[oauthSessionProxyField] = proxyURL
++	}
+ 	raw, errMarshal := json.MarshalIndent(metadata, "", "  ")
+ 	if errMarshal != nil {
+ 		return errMarshal
+@@ -969,7 +1009,7 @@ func (h *Handler) fetchAntigravityEmail(ctx context.Context, accessToken string)
+ 		return "", errRequest
+ 	}
+ 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+-	resp, errDo := h.oauthHTTPClient().Do(req)
++	resp, errDo := h.oauthHTTPClientFor(ctx).Do(req)
+ 	if errDo != nil {
+ 		return "", errDo
+ 	}
+@@ -1018,7 +1058,7 @@ func (h *Handler) fetchAntigravityProjectID(ctx context.Context, accessToken str
+ 	req.Header.Set("Content-Type", "application/json")
+ 	req.Header.Set("User-Agent", userAgent)
+ 
+-	resp, errDo := h.oauthHTTPClient().Do(req)
++	resp, errDo := h.oauthHTTPClientFor(ctx).Do(req)
+ 	if errDo != nil {
+ 		return "", fmt.Errorf("execute request: %w", errDo)
+ 	}
+@@ -1099,7 +1139,7 @@ func (h *Handler) onboardAntigravityUser(ctx context.Context, accessToken string
+ 		req.Header.Set("User-Agent", userAgent)
+ 		req.Header.Set("X-Goog-Api-Client", antigravityGoogAPIClientUA)
+ 
+-		resp, errDo := h.oauthHTTPClient().Do(req)
++		resp, errDo := h.oauthHTTPClientFor(ctx).Do(req)
+ 		if errDo != nil {
+ 			cancel()
+ 			return "", fmt.Errorf("execute request: %w", errDo)
+diff --git a/internal/cluster/management/oauth_session_proxy.go b/internal/cluster/management/oauth_session_proxy.go
+new file mode 100644
+index 0000000..3650b98
+--- /dev/null
++++ b/internal/cluster/management/oauth_session_proxy.go
+@@ -0,0 +1,151 @@
++package management
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"net/url"
++	"strings"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/auth/claude"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/proxyutil"
++)
++
++// A sign-in may name its own proxy. Every call that sign-in makes then goes through it or fails,
++// never through Home's own proxy or direct, and the credential it creates keeps it.
++const (
++	oauthSessionProxyField = "proxy_url"
++	oauthProxyUnavailable  = "proxy_unavailable"
++)
++
++var errOAuthSessionProxy = errors.New("oauth session proxy cannot be used")
++
++type oauthSessionProxyKey struct{}
++
++// oauthSessionProxyRequested reports whether the request names a proxy, even a blank one.
++func oauthSessionProxyRequested(c *gin.Context) bool {
++	return c != nil && c.Request != nil && c.Request.URL != nil && c.Request.URL.Query().Has(oauthSessionProxyField)
++}
++
++// parseOAuthSessionProxy reads a sign-in's optional proxy. It answers the request itself and
++// returns false for one Home could not route that sign-in through.
++func parseOAuthSessionProxy(c *gin.Context, provider string) (string, bool) {
++	if !oauthSessionProxyRequested(c) {
++		return "", true
++	}
++	raw := strings.TrimSpace(c.Query(oauthSessionProxyField))
++	if validateOAuthSessionProxy(raw) != nil {
++		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_proxy_url"})
++		return "", false
++	}
++	if provider == "anthropic" && validateAnthropicSessionProxy(raw) != nil {
++		// Home's Anthropic TLS client dials only through SOCKS and connects direct otherwise, at
++		// this exchange and at every later refresh of the credential.
++		c.JSON(http.StatusBadRequest, gin.H{"error": "proxy_unsupported"})
++		return "", false
++	}
++	return raw, true
++}
++
++// validateOAuthSessionProxy accepts only a proxy URL Home's transport builder routes through. The
++// provider clients build from the same function, so their direct fallback on a bad proxy can't
++// apply to a URL that passed here.
++func validateOAuthSessionProxy(raw string) error {
++	transport, mode, errBuild := proxyutil.BuildHTTPTransport(raw)
++	if errBuild != nil || mode != proxyutil.ModeProxy || transport == nil {
++		return errOAuthSessionProxy
++	}
++	return nil
++}
++
++func validateAnthropicSessionProxy(raw string) error {
++	dialer, mode, errDial := proxyutil.BuildDialer(raw)
++	if errDial != nil || mode != proxyutil.ModeProxy || dialer == nil {
++		return errOAuthSessionProxy
++	}
++	return nil
++}
++
++// withOAuthSessionProxyData stores the sign-in's proxy with its session.
++func withOAuthSessionProxyData(data map[string]any, proxyURL string) map[string]any {
++	if proxyURL != "" {
++		data[oauthSessionProxyField] = proxyURL
++	}
++	return data
++}
++
++func withOAuthSessionProxy(ctx context.Context, proxyURL string) context.Context {
++	if proxyURL == "" {
++		return ctx
++	}
++	return context.WithValue(ctx, oauthSessionProxyKey{}, proxyURL)
++}
++
++func oauthSessionProxy(ctx context.Context) string {
++	proxyURL, _ := ctx.Value(oauthSessionProxyKey{}).(string)
++	return proxyURL
++}
++
++// oauthHTTPClientFor is oauthHTTPClient for a sign-in without its own proxy. With one, the
++// transport is built here, never through util.SetProxy, which keeps the default transport when
++// a proxy can't be built.
++func (h *Handler) oauthHTTPClientFor(ctx context.Context) *http.Client {
++	proxyURL := oauthSessionProxy(ctx)
++	if proxyURL == "" {
++		return h.oauthHTTPClient()
++	}
++	transport, mode, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
++	if errBuild != nil || mode != proxyutil.ModeProxy || transport == nil {
++		return &http.Client{Timeout: 60 * time.Second, Transport: refusedTransport{}}
++	}
++	return &http.Client{Timeout: 60 * time.Second, Transport: transport}
++}
++
++func (h *Handler) anthropicHTTPClientFor(ctx context.Context) *http.Client {
++	proxyURL := oauthSessionProxy(ctx)
++	if proxyURL == "" {
++		return claude.NewAnthropicHttpClient(&h.oauthConfig().SDKConfig)
++	}
++	if validateAnthropicSessionProxy(proxyURL) != nil {
++		return &http.Client{Transport: refusedTransport{}}
++	}
++	sdkCfg := h.oauthConfig().SDKConfig
++	sdkCfg.ProxyURL = proxyURL
++	return claude.NewAnthropicHttpClient(&sdkCfg)
++}
++
++type refusedTransport struct{}
++
++func (refusedTransport) RoundTrip(*http.Request) (*http.Response, error) {
++	return nil, errOAuthSessionProxy
++}
++
++// oauthSessionFailure reports a sign-in through its own proxy that got no answer as the fixed
++// proxy_unavailable, and anything else as fallback.
++func oauthSessionFailure(ctx context.Context, err error, fallback string) string {
++	if oauthSessionProxy(ctx) != "" && oauthRouteFailed(err) {
++		return oauthProxyUnavailable
++	}
++	return fallback
++}
++
++// oauthRouteFailed reports a call that got no answer: http.Client wraps every such error in a
++// url.Error. A cancelled sign-in is not a route failure.
++func oauthRouteFailed(err error) bool {
++	var transport *url.Error
++	return errors.As(err, &transport) && !errors.Is(err, context.Canceled)
++}
++
++// oauthSessionProxyFromData restores a stored sign-in's proxy, or fails it closed.
++func oauthSessionProxyFromData(ctx context.Context, data map[string]any) (context.Context, bool) {
++	proxyURL := stringFromAny(data[oauthSessionProxyField])
++	if proxyURL == "" {
++		return ctx, true
++	}
++	if validateOAuthSessionProxy(proxyURL) != nil {
++		return ctx, false
++	}
++	return withOAuthSessionProxy(ctx, proxyURL), true
++}
+diff --git a/internal/cluster/management/oauth_session_proxy_test.go b/internal/cluster/management/oauth_session_proxy_test.go
+new file mode 100644
+index 0000000..ee0eb70
+--- /dev/null
++++ b/internal/cluster/management/oauth_session_proxy_test.go
+@@ -0,0 +1,449 @@
++package management
++
++import (
++	"context"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/tls"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/binary"
++	"encoding/json"
++	"errors"
++	"io"
++	"math/big"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"os"
++	"os/exec"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
++	"gorm.io/gorm"
++)
++
++// TestOAuthSessionProxy runs in its own process: the stand-in providers' TLS roots can be set only
++// once per process.
++func TestOAuthSessionProxy(t *testing.T) {
++	if os.Getenv("HOME_OAUTH_SESSION_PROXY_FIXTURE") != "1" {
++		cmd := exec.Command(os.Args[0], "-test.run=^TestOAuthSessionProxy$", "-test.v")
++		cmd.Env = append(os.Environ(), "HOME_OAUTH_SESSION_PROXY_FIXTURE=1")
++		output, errRun := cmd.CombinedOutput()
++		t.Log(string(output))
++		if errRun != nil {
++			t.Fatal(errRun)
++		}
++		return
++	}
++	provider := startSessionProxyProvider(t)
++
++	t.Run("a Claude exchange goes only through the sign-in's proxy and the credential keeps it", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		proxyURL := "socks5://route-a:x@" + f.session.addr()
++		state := f.start(t, "claude", proxyURL, http.StatusOK)["state"].(string)
++		f.handler.processOAuthCallback("anthropic", state, "fixture-code")
++		f.wantStatus(t, state, map[string]any{"status": "ok"})
++		f.wantRoutes(t, "api.anthropic.com", "")
++		f.wantCredential(t, "claude", proxyURL)
++	})
++
++	t.Run("a Codex exchange goes only through the sign-in's proxy and the credential keeps it", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		proxyURL := "socks5h://" + f.session.addr()
++		state := f.start(t, "codex", proxyURL, http.StatusOK)["state"].(string)
++		f.handler.processOAuthCallback("codex", state, "fixture-code")
++		f.wantStatus(t, state, map[string]any{"status": "ok"})
++		f.wantRoutes(t, "auth.openai.com", "")
++		f.wantCredential(t, "codex", proxyURL)
++	})
++
++	t.Run("an unreachable proxy fails the sign-in closed and sends nothing anywhere else", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		state := f.start(t, "claude", "socks5://"+closedAddress(t), http.StatusOK)["state"].(string)
++		f.handler.processOAuthCallback("anthropic", state, "fixture-code")
++		f.wantStatus(t, state, map[string]any{"status": "error", "error": "proxy_unavailable"})
++		f.wantRoutes(t, "", "")
++		f.wantNoCredential(t)
++	})
++
++	t.Run("without the field the exchange keeps Home's own proxy and saves no proxy", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		state := f.start(t, "claude", "", http.StatusOK)["state"].(string)
++		f.handler.processOAuthCallback("anthropic", state, "fixture-code")
++		f.wantStatus(t, state, map[string]any{"status": "ok"})
++		f.wantRoutes(t, "", "api.anthropic.com")
++		f.wantCredential(t, "claude", "")
++	})
++
++	t.Run("a proxy Home cannot route through starts no session", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		for _, raw := range []string{"", " ", "ftp://127.0.0.1:1", "direct", "none", "socks5://", "127.0.0.1:1"} {
++			for _, name := range []string{"claude", "codex", "kimi"} {
++				if body := f.start(t, name, raw, http.StatusBadRequest); body["error"] != "invalid_proxy_url" {
++					t.Fatalf("%s with proxy %q answered %v", name, raw, body)
++				}
++			}
++		}
++		f.wantNoSession(t)
++		f.wantRoutes(t, "", "")
++	})
++
++	t.Run("Claude refuses an http proxy its TLS client would bypass, and starts no session", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		for _, raw := range []string{"http://" + f.session.addr(), "https://" + f.session.addr()} {
++			if body := f.start(t, "claude", raw, http.StatusBadRequest); body["error"] != "proxy_unsupported" {
++				t.Fatalf("claude with proxy %q answered %v", raw, body)
++			}
++		}
++		f.wantNoSession(t)
++	})
++
++	t.Run("a device sign-in starts and polls through the sign-in's proxy", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		proxyURL := "socks5://" + f.session.addr()
++		state := f.start(t, "kimi", proxyURL, http.StatusOK)["state"].(string)
++		select {
++		case <-provider.kimiToken:
++		case <-time.After(20 * time.Second):
++			t.Fatal("the device sign-in never polled for its token")
++		}
++		f.waitFinished(t, state)
++		f.wantStatus(t, state, map[string]any{"status": "ok"})
++		f.wantRoutes(t, "auth.kimi.com", "")
++		f.wantCredential(t, "kimi", proxyURL)
++	})
++
++	t.Run("a device sign-in whose proxy is down answers proxy_unavailable and starts no session", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		if body := f.start(t, "kimi", "socks5://"+closedAddress(t), http.StatusBadGateway); body["error"] != "proxy_unavailable" {
++			t.Fatalf("start answered %v", body)
++		}
++		f.wantNoSession(t)
++		f.wantRoutes(t, "", "")
++	})
++
++	t.Run("a plugin provider refuses a proxy it cannot honour, and starts no session", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider)
++		f.handler.pluginOAuthStatus = sessionProxyPlugin{provider: "acme"}
++		if body := f.start(t, "acme", "socks5://"+f.session.addr(), http.StatusBadRequest); body["error"] != "proxy_unsupported" {
++			t.Fatalf("plugin start answered %v", body)
++		}
++		f.wantNoSession(t)
++		f.wantRoutes(t, "", "")
++	})
++}
++
++type sessionProxyFixture struct {
++	handler *Handler
++	repo    *cluster.Repository
++	db      *gorm.DB
++	router  *gin.Engine
++	session *recordingSOCKS
++	direct  *recordingSOCKS
++}
++
++func newSessionProxyFixture(t *testing.T, provider *sessionProxyProvider) *sessionProxyFixture {
++	t.Helper()
++	session := startRecordingSOCKS(t, provider.addr)
++	// Home's own proxy stands for every path that is not the sign-in's: anything it sees went around it.
++	direct := startRecordingSOCKS(t, provider.addr)
++	global := "socks5://" + direct.addr()
++	runtime, errRuntime := home.NewRuntime(&config.Config{AuthDir: t.TempDir(), SDKConfig: config.SDKConfig{ProxyURL: global}})
++	if errRuntime != nil {
++		t.Fatal(errRuntime)
++	}
++	db, cleanup := openManagementLogTestDB(t)
++	t.Cleanup(cleanup)
++	repo := cluster.NewRepository(db)
++	h := NewHandler(repo, runtime, "127.0.0.1", 0)
++	router := gin.New()
++	router.GET("/v8/management/oauth/auth-url", h.StartOAuthV8)
++	router.GET("/oauth/status", h.GetAuthStatusV8)
++	return &sessionProxyFixture{handler: h, repo: repo, db: db, router: router, session: session, direct: direct}
++}
++
++func (f *sessionProxyFixture) start(t *testing.T, provider, proxyURL string, status int) map[string]any {
++	t.Helper()
++	path := "/v8/management/oauth/auth-url?provider=" + url.QueryEscape(provider)
++	if proxyURL != "" || status == http.StatusBadRequest {
++		path += "&proxy_url=" + url.QueryEscape(proxyURL)
++	}
++	response := httptest.NewRecorder()
++	f.router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
++	if response.Code != status {
++		t.Fatalf("start %s: HTTP %d, want %d: %s", path, response.Code, status, response.Body.String())
++	}
++	var body map[string]any
++	if errDecode := json.Unmarshal(response.Body.Bytes(), &body); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	return body
++}
++
++func (f *sessionProxyFixture) wantStatus(t *testing.T, state string, want map[string]any) {
++	t.Helper()
++	got := oauthStatusV8Request(t, f.router, "/oauth/status?state="+url.QueryEscape(state))
++	for key, value := range want {
++		if got[key] != value {
++			t.Fatalf("status = %v, want %v", got, want)
++		}
++	}
++	if want["status"] == "error" && len(got) != 2 {
++		t.Fatalf("status = %v, want only %v", got, want)
++	}
++}
++
++func (f *sessionProxyFixture) waitFinished(t *testing.T, state string) {
++	t.Helper()
++	deadline := time.Now().Add(10 * time.Second)
++	for time.Now().Before(deadline) {
++		if session, errSession := f.repo.GetOAuthSession(t.Context(), state); errSession == nil && session != nil && session.Status != "" {
++			return
++		}
++		time.Sleep(20 * time.Millisecond)
++	}
++	t.Fatal("the device sign-in never finished")
++}
++
++// wantRoutes checks that each proxy saw only connections to host, at least one, or none for "".
++// The provider stand-in is reachable only through the two proxies, so a call it answered went
++// through one of them.
++func (f *sessionProxyFixture) wantRoutes(t *testing.T, session, direct string) {
++	t.Helper()
++	if got := f.session.destinations(); !onlyHost(got, session) {
++		t.Fatalf("the sign-in's proxy saw %v, want only %q", got, session)
++	}
++	if got := f.direct.destinations(); !onlyHost(got, direct) {
++		t.Fatalf("Home's own proxy saw %v, want only %q", got, direct)
++	}
++}
++
++func (f *sessionProxyFixture) wantCredential(t *testing.T, kind, proxyURL string) {
++	t.Helper()
++	auths, errAuths := f.repo.ListAuths(t.Context())
++	if errAuths != nil || len(auths) != 1 {
++		t.Fatalf("want one credential, got %d (%v)", len(auths), errAuths)
++	}
++	credential, _, errCredential := f.repo.GetAuth(t.Context(), auths[0].ID)
++	if errCredential != nil || credential == nil || credential.Metadata["type"] != kind {
++		t.Fatalf("saved credential is missing or not %s", kind)
++	}
++	got, saved := credential.Metadata["proxy_url"]
++	if proxyURL == "" && saved {
++		t.Fatalf("a sign-in without a proxy saved proxy_url %v", got)
++	}
++	if proxyURL != "" && got != proxyURL {
++		t.Fatalf("credential proxy_url = %v, want the sign-in's proxy", got)
++	}
++}
++
++func (f *sessionProxyFixture) wantNoCredential(t *testing.T) {
++	t.Helper()
++	if auths, errAuths := f.repo.ListAuths(t.Context()); errAuths != nil || len(auths) != 0 {
++		t.Fatalf("want no credential, got %d (%v)", len(auths), errAuths)
++	}
++}
++
++func (f *sessionProxyFixture) wantNoSession(t *testing.T) {
++	t.Helper()
++	var count int64
++	if errCount := f.db.WithContext(t.Context()).Table("oauth_sessions").Count(&count).Error; errCount != nil || count != 0 {
++		t.Fatalf("want no sign-in session, got %d (%v)", count, errCount)
++	}
++}
++
++// sessionProxyProvider answers as each provider's real host, over TLS the test process trusts.
++type sessionProxyProvider struct {
++	addr      string
++	kimiToken chan struct{}
++}
++
++func startSessionProxyProvider(t *testing.T) *sessionProxyProvider {
++	t.Helper()
++	key, errKey := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if errKey != nil {
++		t.Fatal(errKey)
++	}
++	template := &x509.Certificate{
++		SerialNumber: big.NewInt(758), Subject: pkix.Name{CommonName: "OAuth session proxy fixture"},
++		DNSNames: []string{"api.anthropic.com", "auth.openai.com", "auth.kimi.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
++		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
++		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
++	}
++	der, errCert := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
++	if errCert != nil {
++		t.Fatal(errCert)
++	}
++	cert, errParse := x509.ParseCertificate(der)
++	if errParse != nil {
++		t.Fatal(errParse)
++	}
++	roots := x509.NewCertPool()
++	roots.AddCert(cert)
++	t.Setenv("GODEBUG", "x509usefallbackroots=1")
++	x509.SetFallbackRoots(roots)
++	provider := &sessionProxyProvider{kimiToken: make(chan struct{}, 4)}
++	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		switch r.Host + r.URL.Path {
++		case "api.anthropic.com/v1/oauth/token":
++			_, _ = io.WriteString(w, `{"access_token":"claude-access","refresh_token":"claude-refresh","expires_in":3600,"account":{"email_address":"session-proxy@example.invalid"}}`)
++		case "auth.openai.com/oauth/token":
++			_, _ = io.WriteString(w, `{"access_token":"codex-access","refresh_token":"codex-refresh","id_token":"","expires_in":3600}`)
++		case "auth.kimi.com/api/oauth/device_authorization":
++			_, _ = io.WriteString(w, `{"device_code":"kimi-device","user_code":"KIMI-CODE","verification_uri_complete":"https://auth.kimi.com/device?code=KIMI-CODE","expires_in":600,"interval":1}`)
++		case "auth.kimi.com/api/oauth/token":
++			provider.kimiToken <- struct{}{}
++			_, _ = io.WriteString(w, `{"access_token":"kimi-access","refresh_token":"kimi-refresh","token_type":"Bearer","expires_in":3600}`)
++		default:
++			w.WriteHeader(http.StatusNotFound)
++		}
++	}))
++	server.EnableHTTP2 = true
++	server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
++	server.StartTLS()
++	t.Cleanup(server.Close)
++	provider.addr = server.Listener.Addr().String()
++	return provider
++}
++
++// recordingSOCKS is a SOCKS5 proxy that records each destination and connects it to the provider.
++type recordingSOCKS struct {
++	listener net.Listener
++	mu       sync.Mutex
++	seen     []string
++}
++
++func startRecordingSOCKS(t *testing.T, provider string) *recordingSOCKS {
++	t.Helper()
++	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
++	if errListen != nil {
++		t.Fatal(errListen)
++	}
++	proxy := &recordingSOCKS{listener: listener}
++	t.Cleanup(func() { _ = listener.Close() })
++	go func() {
++		for {
++			conn, errAccept := listener.Accept()
++			if errAccept != nil {
++				return
++			}
++			go proxy.serve(conn, provider)
++		}
++	}()
++	return proxy
++}
++
++func (p *recordingSOCKS) addr() string { return p.listener.Addr().String() }
++
++func (p *recordingSOCKS) destinations() []string {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return append([]string(nil), p.seen...)
++}
++
++func (p *recordingSOCKS) serve(conn net.Conn, provider string) {
++	defer conn.Close()
++	greeting := make([]byte, 2)
++	if _, errRead := io.ReadFull(conn, greeting); errRead != nil {
++		return
++	}
++	if _, errRead := io.ReadFull(conn, make([]byte, int(greeting[1]))); errRead != nil {
++		return
++	}
++	_, _ = conn.Write([]byte{5, 0})
++	header := make([]byte, 4)
++	if _, errRead := io.ReadFull(conn, header); errRead != nil {
++		return
++	}
++	var host string
++	switch header[3] {
++	case 1:
++		address := make([]byte, 4)
++		if _, errRead := io.ReadFull(conn, address); errRead != nil {
++			return
++		}
++		host = net.IP(address).String()
++	case 3:
++		size := make([]byte, 1)
++		if _, errRead := io.ReadFull(conn, size); errRead != nil {
++			return
++		}
++		name := make([]byte, int(size[0]))
++		if _, errRead := io.ReadFull(conn, name); errRead != nil {
++			return
++		}
++		host = string(name)
++	default:
++		return
++	}
++	port := make([]byte, 2)
++	if _, errRead := io.ReadFull(conn, port); errRead != nil || binary.BigEndian.Uint16(port) != 443 {
++		return
++	}
++	p.mu.Lock()
++	p.seen = append(p.seen, host)
++	p.mu.Unlock()
++	upstream, errDial := net.Dial("tcp", provider)
++	if errDial != nil {
++		return
++	}
++	defer upstream.Close()
++	_, _ = conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0})
++	done := make(chan struct{})
++	go func() { _, _ = io.Copy(upstream, conn); _ = upstream.Close(); close(done) }()
++	_, _ = io.Copy(conn, upstream)
++	_ = conn.Close()
++	<-done
++}
++
++// closedAddress is a local port nothing listens on.
++func closedAddress(t *testing.T) string {
++	t.Helper()
++	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
++	if errListen != nil {
++		t.Fatal(errListen)
++	}
++	address := listener.Addr().String()
++	if errClose := listener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
++		t.Fatal(errClose)
++	}
++	return address
++}
++
++func onlyHost(got []string, host string) bool {
++	if host == "" {
++		return len(got) == 0
++	}
++	for _, seen := range got {
++		if seen != host {
++			return false
++		}
++	}
++	return len(got) > 0
++}
++
++// sessionProxyPlugin stands for a Home-loaded plugin that owns a provider's sign-in.
++type sessionProxyPlugin struct{ provider string }
++
++func (p sessionProxyPlugin) HasPluginAuthProvider(provider string) bool {
++	return provider == p.provider
++}
++
++func (sessionProxyPlugin) PollPluginLogin(context.Context, string, string, map[string]any) (pluginapi.AuthLoginPollResponse, bool, error) {
++	return pluginapi.AuthLoginPollResponse{}, false, nil
++}
++
++func (sessionProxyPlugin) PluginLoginAuths(pluginapi.AuthLoginPollResponse) ([]*coreauth.Auth, error) {
++	return nil, nil
++}
+diff --git a/internal/cluster/management/oauth_xai_device.go b/internal/cluster/management/oauth_xai_device.go
+index 95cb91f..85585d5 100644
+--- a/internal/cluster/management/oauth_xai_device.go
++++ b/internal/cluster/management/oauth_xai_device.go
+@@ -13,11 +13,19 @@ import (
+ 
+ // RequestXAIToken uses device authorization because xAI no longer redirects the old CLI flow.
+ func (h *Handler) RequestXAIToken(c *gin.Context) {
++	proxyURL, okProxy := parseOAuthSessionProxy(c, "xai")
++	if !okProxy {
++		return
++	}
+ 	ctx, cancel := context.WithTimeout(requestContextOrBackground(c), 30*time.Second)
+ 	defer cancel()
+-	auth := xaiauth.NewXAIAuth(h.oauthConfig())
++	auth := xaiauth.NewXAIAuthWithProxyURL(h.oauthConfig(), proxyURL)
+ 	code, err := auth.StartDeviceFlow(ctx)
+ 	if err != nil {
++		if proxyURL != "" && oauthRouteFailed(err) {
++			c.JSON(http.StatusBadGateway, gin.H{"error": oauthProxyUnavailable})
++			return
++		}
+ 		c.JSON(http.StatusBadGateway, gin.H{"error": "xai_device_authorization_unavailable"})
+ 		return
+ 	}
+@@ -26,10 +34,10 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
+ 		c.JSON(http.StatusInternalServerError, gin.H{"error": "oauth_state_failed"})
+ 		return
+ 	}
+-	record, err := cluster.NewOAuthSessionRecord("xai", state, map[string]any{
++	record, err := cluster.NewOAuthSessionRecord("xai", state, withOAuthSessionProxyData(map[string]any{
+ 		"device_code": code.DeviceCode, "user_code": code.UserCode,
+ 		"token_endpoint": code.TokenEndpoint, "flow": "device",
+-	}, time.Now().UTC())
++	}, proxyURL), time.Now().UTC())
+ 	if err == nil {
+ 		if code.ExpiresAt.Before(record.ExpiresAt) {
+ 			record.ExpiresAt = code.ExpiresAt
+@@ -47,12 +55,12 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
+ 	if verification == "" {
+ 		verification = code.VerificationURI
+ 	}
+-	go h.waitForXAIAuthorization(state, auth, code)
++	go h.waitForXAIAuthorization(state, auth, code, proxyURL)
+ 	c.JSON(http.StatusOK, gin.H{"status": "ok", "state": state, "flow": "device", "url": verification, "user_code": code.UserCode, "expires_in": code.ExpiresIn})
+ }
+ 
+-func (h *Handler) waitForXAIAuthorization(state string, auth *xaiauth.XAIAuth, code *xaiauth.DeviceCodeResponse) {
+-	ctx, cancel := h.oauthSessionContext(context.Background(), state, time.Until(code.ExpiresAt))
++func (h *Handler) waitForXAIAuthorization(state string, auth *xaiauth.XAIAuth, code *xaiauth.DeviceCodeResponse, proxyURL string) {
++	ctx, cancel := h.oauthSessionContext(withOAuthSessionProxy(context.Background(), proxyURL), state, time.Until(code.ExpiresAt))
+ 	defer cancel()
+ 	bundle, err := auth.WaitForAuthorization(ctx, code)
+ 	if err == nil {
+@@ -67,6 +75,7 @@ func (h *Handler) waitForXAIAuthorization(state string, auth *xaiauth.XAIAuth, c
+ 	} else if errors.Is(err, xaiauth.ErrDeviceAccessDenied) {
+ 		message = "xAI sign-in was declined. Start again to try another code."
+ 	}
++	message = oauthSessionFailure(ctx, err, message)
+ 	saved, finish := context.WithTimeout(context.Background(), 30*time.Second)
+ 	defer finish()
+ 	_ = h.repo.SetOAuthSessionError(saved, state, message)
+diff --git a/internal/cluster/management/plugin_oauth.go b/internal/cluster/management/plugin_oauth.go
+index 151f065..faf90dc 100644
+--- a/internal/cluster/management/plugin_oauth.go
++++ b/internal/cluster/management/plugin_oauth.go
+@@ -152,7 +152,7 @@ func (h *Handler) ListPlugins(c *gin.Context) {
+ }
+ 
+ func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
+-	if h == nil || h.runtime == nil || c == nil || c.Request == nil || c.Request.URL == nil {
++	if h == nil || c == nil || c.Request == nil || c.Request.URL == nil {
+ 		return false
+ 	}
+ 	provider, okProvider := pluginAuthProviderFromManagementPath(c.Request.URL.Path)
+@@ -163,7 +163,15 @@ func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
+ 		okProvider = errProvider == nil
+ 		callbackPath = "/v8/management/oauth/callback"
+ 	}
+-	if !okProvider || !h.runtime.HasPluginAuthProvider(provider) {
++	if !okProvider || h.pluginOAuthStatus == nil || !h.pluginOAuthStatus.HasPluginAuthProvider(provider) {
++		return false
++	}
++	// A plugin makes its own provider calls, which Home can't route through a sign-in's proxy.
++	if oauthSessionProxyRequested(c) {
++		c.JSON(http.StatusBadRequest, gin.H{"error": "proxy_unsupported"})
++		return true
++	}
++	if h.runtime == nil {
+ 		return false
+ 	}
+ 
