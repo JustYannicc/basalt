@@ -18,8 +18,9 @@ const rebuilt = (request) => {
 };
 export class Controller extends DurableObject {
   async fetch(request) {
-    const backup = request.clone();
-    const answer = await this.env.RUNTIME.get(this.env.RUNTIME.idFromName("runtime")).fetch(rebuilt(request));
+    const routed = rebuilt(request);
+    const backup = routed.clone();
+    const answer = await this.env.RUNTIME.get(this.env.RUNTIME.idFromName("runtime")).fetch(routed);
     await backup.body?.cancel();
     return answer;
   }
@@ -27,12 +28,16 @@ export class Controller extends DurableObject {
 export class Runtime extends DurableObject {
   async fetch(request) {
     const ports = [];
-    const answer = await toLayer(rebuilt(request), async (routed, port) => {
-      ports.push(port);
-      if (port === 8316) throw new Error("The container is not listening in the TCP address 10.0.0.1:8316");
-      return Response.json({ length: routed.headers.get("content-length"), bytes: (await routed.arrayBuffer()).byteLength });
-    });
-    return Response.json({ ports, ...(await answer.json()) });
+    try {
+      const answer = await toLayer(rebuilt(request), async (routed, port) => {
+        ports.push(port);
+        if (port === 8316) throw new Error("The container is not listening in the TCP address 10.0.0.1:8316");
+        return Response.json({ length: routed.headers.get("content-length"), bytes: (await routed.arrayBuffer()).byteLength });
+      });
+      return Response.json({ ports, ...(await answer.json()) });
+    } catch {
+      return Response.json({ ports, failed: true }, { status: 502 });
+    }
   }
 }
 export default {
@@ -102,7 +107,7 @@ test(
       }),
       duplex: "half",
     });
-    assert.equal(streamed.status, 500);
-    await streamed.body?.cancel();
+    assert.equal(streamed.status, 502);
+    assert.deepEqual(await streamed.json(), { ports: [8316], failed: true });
   },
 );
