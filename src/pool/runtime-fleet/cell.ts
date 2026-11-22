@@ -29,10 +29,13 @@ export class FleetHandoffCell implements FleetCell {
   private retirementAttempts = 0;
   private starting?: { target: SlotTarget; work: Promise<SlotIdentity> };
   private absentSince?: number;
+  // Set before abandon() first yields and checked before start() does, so the two never overlap.
+  private abandoned = false;
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
   async start(target: SlotTarget) {
+    if (this.abandoned) throw new SlotRefused("selection");
     if (this.starting) {
       if (!sameTarget(this.starting.target, target)) throw new SlotRefused("identity");
       return this.starting.work;
@@ -108,6 +111,7 @@ export class FleetHandoffCell implements FleetCell {
     return this.deps.driver.activity(identity, AbortSignal.timeout(2_000));
   }
   async abandon(target: SlotTarget) {
+    this.abandoned = true;
     // A start still returning here owns the instance.
     if (this.starting) return this.present();
     const initial = await this.deps.handoff.slots.firstStart.inspect();

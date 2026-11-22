@@ -280,7 +280,6 @@ test("a never-served start is abandoned only once its instance stayed absent thr
   const f = await fixture();
   context.after(f.cleanup);
   context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  assert.equal(await f.cell.abandon(f.target), true, "with no first-start intent nothing was sent");
   await f.cell.start(f.target);
   assert.equal(await f.cell.abandon(f.target), false, "a listed instance is running");
   // The container exits on its own, and the provider keeps listing it as inactive.
@@ -300,4 +299,14 @@ test("a never-served start is abandoned only once its instance stayed absent thr
   assert.equal(await f.cell.abandon(f.target), false);
   context.mock.timers.tick(1_000);
   assert.equal(await f.cell.abandon(f.target), true);
+});
+
+test("abandon and start never overlap: a start asked for while abandon decides is refused and sends nothing", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const abandoning = f.cell.abandon(f.target);
+  await assert.rejects(f.cell.start(f.target), /selection/);
+  assert.equal(await abandoning, true, "nothing was ever sent");
+  await assert.rejects(f.cell.start(f.target), /selection/, "an abandoned cell never starts again");
+  assert.equal(f.calls.start, 0);
 });
