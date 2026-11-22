@@ -11,8 +11,8 @@ export const fastJobs = [
   "client-connection",
   "browser-install",
 ];
-// box-watch runs only in a Check that routed jobs to the box; it passes or is skipped, and a run
-// it cancels never reaches this gate.
+// box-watch runs only in a Check that routed jobs to the box; it passes or is skipped. A run it
+// cancels still reaches this gate, which runs on always(), and fails here; box-rerun.yml re-runs it.
 export const conditionalJobs = ["workerd-assets", "box-watch"];
 
 // The long tier: jobs that start as soon as `select` finishes. Every other job the selector starts

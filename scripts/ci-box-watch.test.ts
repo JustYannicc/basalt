@@ -13,7 +13,7 @@ import {
   type Planned,
   type WatchedJob,
 } from "./ci/box-watch.ts";
-import { parseVerdict, rerunDecision, type RerunJob, type Run } from "./ci/box-rerun.ts";
+import { parseVerdict, rerunDecision, retried, type RerunJob, type Run } from "./ci/box-rerun.ts";
 import { declaredJobs, namedJobs } from "./ci/box-router.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -100,28 +100,52 @@ test("a box down for the bound after box-watch's probe gets its queued jobs canc
 
 test("a healthy box may hold each job until its own latest start that still ends by the floor", () => {
   assert.equal(holdingMinutes, 5);
-  // Either wave: the latest start that still ends by the floor at 1.25x its minutes, plus the
-  // margin. A 4-minute job: 20 - 5 + 5 = 20; a 15-minute one: 20 - 18.75 + 5 = 6.25.
+  // Either wave: the latest start that still ends by the floor at the box's 2x pace, plus the
+  // margin. A 4-minute job: 20 - 8 + 5 = 17; a 15-minute one: max(0, 20 - 30) + 5 = 5.
   const second: Planned = { minutes: 4, wave: 2 };
-  assert.equal(latestStart(second, 20), 20);
-  assert.equal(latestStart(first, 20), 6.25);
+  assert.equal(latestStart(second, 20), 17);
+  assert.equal(latestStart(first, 20), 5);
   // A job longer than the floor at that pace may still wait the margin: the fast lane's floor is
   // its own longest job.
   assert.equal(latestStart({ minutes: 15.6, wave: 1 }, 15.6), 5);
-  const jobs = [job({ id: 1, status: "in_progress" }), job({ id: 2 })];
   const planned = { "job-1": first, "job-2": second };
-  // Up and holding: no down cancel, however long the job has queued, until its own deadline.
-  assert.deepEqual(watch(jobs, 19.5, 0, planned), { action: "wait" });
-  const late = watch(jobs, 20, 0, planned);
+  // Nothing of this Check runs on the box: every stuck job goes with the cancel at the first deadline.
+  const both = [job({ id: 1 }), job({ id: 2 })];
+  assert.deepEqual(watch(both, 4.9, 0, planned), { action: "wait" });
+  const late = watch(both, 5, 0, planned);
   assert.ok(late.action === "cancel");
   assert.equal(late.verdict.reason, "held-past-deadline");
-  assert.deepEqual(late.verdict.stuck, [2]);
-  // Every stuck job goes with the cancel, not only the late one.
-  const both = [job({ id: 1 }), job({ id: 2 })];
-  assert.deepEqual(watch(both, 6, 0, planned), { action: "wait" });
-  const firstLate = watch(both, 6.25, 0, planned);
-  assert.ok(firstLate.action === "cancel");
-  assert.deepEqual(firstLate.verdict.stuck, [1, 2]);
+  assert.deepEqual(late.verdict.stuck, [1, 2]);
+});
+
+test("a second-wave job behind this Check's own running box jobs is never cut off for holding", () => {
+  // The box is working on this Check: the second wave waits behind it by design, however slow.
+  const jobs = [job({ id: 1, status: "in_progress" }), job({ id: 2 })];
+  const planned = { "job-1": first, "job-2": { minutes: 4, wave: 2 } as Planned };
+  assert.deepEqual(watch(jobs, 60, 0, planned), { action: "wait" });
+  // A box that is down still is: the down rule doesn't wait on the running jobs.
+  assert.equal(watch(jobs, 60, 5, planned).action, "cancel");
+  // A first-wave job should have started at once: another Check or the box's budget holding it
+  // past its deadline is a stall, whatever else of this Check runs.
+  const held = [job({ id: 1, status: "in_progress" }), job({ id: 3 })];
+  const firstWave = { "job-1": first, "job-3": first };
+  assert.deepEqual(watch(held, 4.9, 0, firstWave), { action: "wait" });
+  const stalled = watch(held, 5, 0, firstWave);
+  assert.ok(stalled.action === "cancel");
+  assert.deepEqual(stalled.verdict.stuck, [3]);
+});
+
+test("each job's deadline counts from when GitHub queued it, not from select", () => {
+  // The jobs a box job needs took ten minutes to get a hosted runner: its clock starts then.
+  const queued = start + 10 * minute;
+  const jobs = [job({ id: 1, status: "completed" }), job({ id: 2, createdAt: queued })];
+  const planned = { "job-1": first, "job-2": { minutes: 4, wave: 2 } as Planned };
+  assert.deepEqual(watch(jobs, 26.9, 0, planned), { action: "wait" });
+  assert.equal(watch(jobs, 27, 0, planned).action, "cancel");
+  // The verdict's time is the listing's, to the second.
+  const cancel = watch(jobs, 27.0105, 0, planned);
+  assert.ok(cancel.action === "cancel");
+  assert.equal(cancel.verdict.at, new Date(start + 27 * minute).toISOString());
 });
 
 const run: Run = { id: 7, attempt: 1, conclusion: "cancelled" };
@@ -208,6 +232,34 @@ test("a re-run never cancels a pull request's newer Check", () => {
     action: "none",
     why: "a newer Check runs for this pull request, and a re-run would cancel it",
   });
+});
+
+test("a box job lost with the box is no real failure; with the box up, it is", () => {
+  const lost = [...jobs, boxJob(16, "declared-cloud-3")].map((j) =>
+    j.id === 16
+      ? { ...j, conclusion: "failure", runnerName: "box-3", startedAt: "2026-11-21T16:01:00Z" }
+      : j,
+  );
+  assert.deepEqual(decide(verdict, lost), { action: "rerun", stuck: [11, 12] });
+  const held = JSON.stringify({ ...JSON.parse(verdict), reason: "held-past-deadline" });
+  assert.equal(decide(held, lost).action, "report");
+});
+
+test("box-rerun retries GitHub's passing failures and stops on a refusal", async () => {
+  const answers = (...statuses: number[]) => {
+    let call = 0;
+    return () => Promise.resolve(new Response(null, { status: statuses[call++] }));
+  };
+  const noWait = async () => {};
+  assert.equal((await retried(answers(502, 503, 200), "x", 3, noWait)).status, 200);
+  await assert.rejects(retried(answers(404), "x", 3, noWait), /returned 404 for x/);
+  await assert.rejects(retried(answers(502, 502, 502), "x", 3, noWait), /kept failing x: 502/);
+  let thrown = 0;
+  const dropped = () =>
+    ++thrown < 3
+      ? Promise.reject(new Error("socket hang up"))
+      : Promise.resolve(new Response(null, { status: 204 }));
+  assert.equal((await retried(dropped, "x", 3, noWait)).status, 204);
 });
 
 test("with no real failure the stuck and cut-off jobs re-run; a real failure leaves the run for a person", () => {

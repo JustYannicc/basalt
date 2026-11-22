@@ -23,6 +23,8 @@ export type WatchedJob = {
   name: string;
   status: string;
   onBox: boolean;
+  /** When GitHub queued the job, once its needs were met; missing, select's end stands in. */
+  createdAt?: number;
 };
 export type Verdict = {
   run: number;
@@ -76,10 +78,17 @@ export function watchDecision(
     .map((name) => listed.get(name))
     .filter((job): job is WatchedJob => !!job && job.onBox && notStarted.has(job.status));
   if (!missing.length && !stuck.length) return { action: "done" };
-  const elapsed = (input.now - input.selectedAt) / minute;
-  const late = stuck.filter(
-    (job) => !(elapsed < latestStart(input.planned[job.name]!, input.floorMinutes)),
-  );
+  // Each job's deadline counts from when it was queued: a busy GitHub queue for the jobs it needs
+  // delays it, the floor and the Check alike. A second-wave job held behind this Check's own running
+  // box jobs waits by design; a first-wave one should have started at once, so its deadline holds.
+  const working = input.jobs.some((job) => job.onBox && job.status === "in_progress");
+  const late = stuck.filter((job) => {
+    const planned = input.planned[job.name]!;
+    if (working && planned.wave === 2) return false;
+    const queued = job.createdAt ?? input.selectedAt;
+    const waited = (input.now - queued) / minute;
+    return !(waited < latestStart(planned, input.floorMinutes));
+  });
   const down = stuck.length > 0 && input.downFor >= downMinutes;
   if (!down && !late.length) return { action: "wait" };
   return {
@@ -92,7 +101,9 @@ export function watchDecision(
       cutOff: input.jobs
         .filter((job) => job.status === "in_progress" && job.name !== input.self)
         .map((job) => job.id),
-      at: new Date(input.now).toISOString(),
+      // The listing's own time, to the second: GitHub stamps a start to the second, so a job the
+      // box took after this listing never reads as started before it.
+      at: new Date(Math.floor(input.now / 1000) * 1000).toISOString(),
     },
   };
 }
@@ -127,13 +138,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   };
   const jobsOf = async () => {
     const jobs: Record<string, unknown>[] = [];
-    for (let page = 1; page <= 10; page++) {
+    // Fifty a page, as the router reads them: GitHub answers 502 to a hundred for a re-run Check.
+    for (let page = 1; page <= 20; page++) {
       const body = await get(
-        `/actions/runs/${run}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+        `/actions/runs/${run}/attempts/${attempt}/jobs?per_page=50&page=${page}`,
       );
       const batch = Array.isArray(body.jobs) ? (body.jobs as Record<string, unknown>[]) : [];
       jobs.push(...batch);
-      if (batch.length < 100) break;
+      if (batch.length < 50) break;
     }
     return jobs;
   };
@@ -152,6 +164,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
     let decision: ReturnType<typeof watchDecision>;
     try {
+      // The decision's time is this listing's, taken before it is read.
+      const listedAt = Date.now();
       const jobs = await jobsOf();
       const selectedAt = Date.parse(
         String(jobs.find((job) => job.name === "select")?.completed_at ?? ""),
@@ -163,6 +177,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         onBox:
           Array.isArray(job.labels) &&
           job.labels.some((value) => String(value).toLowerCase() === label),
+        createdAt: Date.parse(String(job.created_at ?? "")) || undefined,
       }));
       const stuck = watched.some(
         (job) => job.name in planned && job.onBox && notStarted.has(job.status),
@@ -199,7 +214,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         jobs: watched,
         planned,
         downFor: notUpSince === undefined ? 0 : (Date.now() - notUpSince) / minute,
-        now: Date.now(),
+        now: listedAt,
         selectedAt: Number.isFinite(selectedAt) ? selectedAt : started,
         floorMinutes,
         run,

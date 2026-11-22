@@ -19,6 +19,7 @@ import {
 // to classify, and its stuck box jobs run on GitHub's runners when that person re-runs it.
 
 export type { Run };
+export { retried } from "./workflow-run.ts";
 export type RerunJob = RunJob;
 export type RerunDecision =
   | { action: "none"; why: string }
@@ -50,6 +51,7 @@ export function parseVerdict(text: string | undefined) {
     return {
       run: value.run as number,
       attempt: value.attempt as number,
+      reason: value.reason,
       stuck,
       cutOff,
       at: Date.parse(value.at),
@@ -96,8 +98,12 @@ export function rerunDecision(
       why: "a newer Check runs for this pull request, and a re-run would cancel it",
     };
   // The aggregate runs after any cancel and fails on the cancelled jobs; it is no real failure.
+  // Nor is a box job's, when the box went down under it: its runner was lost, not its test.
+  const lostBox = (job: RerunJob) =>
+    verdict.reason === "box-down" &&
+    (job.labels ?? []).some((value) => value.toLowerCase() === label);
   const failed = jobs
-    .filter((job) => job.conclusion === "failure" && !isCheckJob(job.name))
+    .filter((job) => job.conclusion === "failure" && !isCheckJob(job.name) && !lostBox(job))
     .map((job) => job.name);
   if (failed.length)
     return {

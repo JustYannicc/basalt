@@ -12,23 +12,43 @@ export type RunJob = {
   startedAt?: string | null;
 };
 
+/** A GitHub call, tried three times: a 5xx or a dropped connection is common and passes. */
+export async function retried(
+  call: () => Promise<Response>,
+  what: string,
+  tries = 3,
+  pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+  accept = (response: Response) => response.ok,
+) {
+  for (let attempt = 1; ; attempt++) {
+    const response = await call().catch((error: Error) => error);
+    if (response instanceof Response && (accept(response) || response.status < 500)) {
+      if (!accept(response)) throw new Error(`GitHub returned ${response.status} for ${what}`);
+      return response;
+    }
+    if (attempt === tries)
+      throw new Error(
+        `GitHub kept failing ${what}: ${response instanceof Response ? response.status : response.message}`,
+      );
+    await pause(2_000 * attempt);
+  }
+}
+
 export function github(env = process.env) {
   const api = `${env.GITHUB_API_URL ?? "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}`;
   const headers = {
     accept: "application/vnd.github+json",
     authorization: `Bearer ${env.GITHUB_TOKEN ?? ""}`,
   };
-  const call = async (path: string, init: RequestInit = {}) => {
-    const response = await fetch(api + path, {
-      headers,
-      signal: AbortSignal.timeout(20_000),
-      ...init,
-    });
-    // Only a caller that asked not to follow redirects takes one back.
-    if (!response.ok && !(init.redirect === "manual" && response.status === 302))
-      throw new Error(`GitHub returned ${response.status} for ${path.split("?")[0]}`);
-    return response;
-  };
+  // Only a caller that asked not to follow redirects takes one back.
+  const call = (path: string, init: RequestInit = {}) =>
+    retried(
+      () => fetch(api + path, { headers, signal: AbortSignal.timeout(20_000), ...init }),
+      path.split("?")[0]!,
+      3,
+      undefined,
+      (response) => response.ok || (init.redirect === "manual" && response.status === 302),
+    );
   const json = async <T>(path: string) => (await (await call(path)).json()) as T;
   return { call, json };
 }
@@ -44,9 +64,10 @@ export const triggeringRun = (env = process.env): Run => ({
 export async function attemptJobs(api: GitHub, run: Run) {
   const jobs: RunJob[] = [];
   let total = 0;
-  for (let page = 1; page <= 10; page++) {
+  // Fifty a page, as the router reads them: GitHub answers 502 to a hundred for a re-run Check.
+  for (let page = 1; page <= 20; page++) {
     const body = await api.json<{ total_count?: number; jobs?: Record<string, unknown>[] }>(
-      `/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=100&page=${page}`,
+      `/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=50&page=${page}`,
     );
     total = Number(body.total_count ?? 0);
     const batch = body.jobs ?? [];
@@ -59,7 +80,7 @@ export async function attemptJobs(api: GitHub, run: Run) {
         runnerName: (job.runner_name as string | null) ?? null,
         startedAt: (job.started_at as string | null) ?? null,
       });
-    if (batch.length < 100) break;
+    if (batch.length < 50) break;
   }
   // A decision over part of the run would miss its other failures.
   if (jobs.length < total) throw new Error(`read ${jobs.length} of the run's ${total} jobs`);
