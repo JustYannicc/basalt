@@ -17,6 +17,8 @@ import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
 import { spotifySource } from "./spotify.ts";
+import { gmailSource } from "./gmail.ts";
+import { googleSource } from "./google.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -28,8 +30,10 @@ import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
 import { canvaSource } from "./canva.ts";
 import { exaSource } from "./exa.ts";
+import { firecrawlSource } from "./firecrawl.ts";
 import { githubSource } from "./github.ts";
 import { plaidSource, withPlaidAccess } from "./plaid.ts";
+import { withTailscaleGuidance } from "./tailscale.ts";
 import cloudflareSource from "./cloudflare.json" with { type: "json" };
 import { obsidian } from "./obsidian/index.ts";
 
@@ -58,6 +62,9 @@ export const carriedSources: Readonly<Record<string, { package: string }>> = {
   clerk: clerkSource,
   spotify: spotifySource,
   exa: exaSource,
+  firecrawl: firecrawlSource,
+  gmail: gmailSource,
+  google: googleSource,
   github: githubSource,
 };
 const reviewedOAuth = oauthReviews(oauthReviewData);
@@ -161,7 +168,10 @@ export async function handleCatalog(
         ),
       };
       body = JSON.stringify(
-        withOAuthDeferrals(withServiceIdentities(mergeFeed(feed, additions)), reviewedOAuth),
+        withOAuthDeferrals(
+          withServiceIdentities(mergeFeed(withTailscaleGuidance(feed), additions)),
+          reviewedOAuth,
+        ),
       );
     } else {
       body = onServedFramework(await response.text());

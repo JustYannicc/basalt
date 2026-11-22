@@ -1,0 +1,36 @@
+name: Box heartbeat
+
+# Publishes the self-hosted runners' health line for Check's box router (scripts/ci/box-router.ts).
+# It checks out nothing and holds no secrets; a missing status file fails the run, so the router
+# sends nothing to the box.
+on:
+  # Every Check's start refreshes the box's status for that Check's router. workflow_run always runs
+  # this file from the default branch, so no pull request's code runs here. The schedule is the
+  # backstop for quiet spells.
+  workflow_run:
+    workflows: [Check]
+    types: [requested]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: box-heartbeat
+  cancel-in-progress: true
+
+jobs:
+  heartbeat:
+    # The box's own always-on heartbeat runner when one is set, so a full or holding box still
+    # reports; otherwise a CI runner of the box.
+    runs-on: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL || vars.BASALT_CI_BOX_LABEL || 'basalt-box' }}
+    timeout-minutes: 2
+    steps:
+      - name: Report the box status
+        run: |
+          # The whole status object on one line, so the router reads every field it needs.
+          status="$(head -c 4096 /opt/basalt-health/status.json | tr -d '\r\n')"
+          [ -n "$status" ]
+          printf 'box-health:%s\n' "$status"
+          printf 'box-health:%s\n' "$status" >> "$GITHUB_STEP_SUMMARY"

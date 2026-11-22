@@ -1,0 +1,14 @@
+diff --git a/e2e/tests/local-workflow-diagram.spec.ts b/e2e/tests/local-workflow-diagram.spec.ts
+--- a/e2e/tests/local-workflow-diagram.spec.ts
++++ b/e2e/tests/local-workflow-diagram.spec.ts
+@@ -43,7 +43,9 @@
+         const pairing = yield* session.send("POST", "/auth/pair", undefined, headers);
+         expect(pairing.status).toBe(200);
+         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
+-        yield* browser.use("Pair the local browser", (page) => page.goto(url));
++        yield* browser.use("Pair the local browser", (page) =>
++          page.goto(url).then(() => page.getByRole("heading", { name: /^Apps/ }).waitFor()),
++        );
+         yield* browser.use("Open the app's workflows", (page) =>
+           page.goto(new URL(`/apps/${app.id}?view=workflows`, page.url()).toString()),
+         );

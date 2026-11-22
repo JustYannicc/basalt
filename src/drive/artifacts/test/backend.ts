@@ -8,9 +8,13 @@ import { once } from "node:events";
 
 export const token = `art_v1_${"a".repeat(40)}?expires=4102444800`;
 export function git(cwd: string, ...args: string[]) {
+  return boundedGit(30_000, cwd, ...args);
+}
+/** Git with its own bound, for a command whose work grows with the repository. */
+export function boundedGit(timeout: number, cwd: string, ...args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], {
     stdio: ["pipe", "pipe", "pipe"],
-    timeout: 30_000,
+    timeout,
   });
 }
 export const pkt = (bytes: Uint8Array | string) => {

@@ -46,10 +46,6 @@
       {
         "fqn": "PoolBackendBudgetRuntimeReady",
         "action": "update"
-      },
-      {
-        "fqn": "PoolObservationSecrets",
-        "action": "adopted"
       }
     ]
   },

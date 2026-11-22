@@ -11,6 +11,7 @@ import {
   obsidianPluginVersionPath,
   obsidianPluginVersionSource,
 } from "./obsidian-plugin-version.ts";
+import { oauthClientIdRulePath, oauthClientIdRuleSource } from "./oauth-client-id-source.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
 import { prepareE2e } from "./ci/prepare-e2e.ts";
@@ -142,6 +143,9 @@ function verifyFixture(declaredPlans: boolean) {
     write("clients/obsidian/manifest.json", JSON.stringify({ version: "0.2.0" }));
     const pluginVersion = `.upstream/${obsidianPluginVersionPath}`;
     write(pluginVersion, obsidianPluginVersionSource(root));
+    write("scripts/oauth-client-id.ts", "export const clientIdLooksLikeSecret = () => true;\n");
+    const clientIdRule = `.upstream/${oauthClientIdRulePath}`;
+    write(clientIdRule, oauthClientIdRuleSource(root));
 
     assert.deepEqual(verifyConnectorsSource(root), {
       commit: pin,
@@ -182,6 +186,9 @@ function verifyFixture(declaredPlans: boolean) {
     write(pluginVersion, obsidianPluginVersionSource(root).replace("0.2.0", "9.9.9"));
     assert.throws(() => verifyConnectorsSource(root), /Generated Obsidian plugin version differs/);
     write(pluginVersion, obsidianPluginVersionSource(root));
+    write(clientIdRule, oauthClientIdRuleSource(root).replace("true", "false"));
+    assert.throws(() => verifyConnectorsSource(root), /Generated OAuth client ID rule differs/);
+    write(clientIdRule, oauthClientIdRuleSource(root));
     const extraSource = ".upstream/apps/hosted/cloud/src/implementation/unexpected.ts";
     write(extraSource, "export const unexpected = true;\n");
     assert.throws(

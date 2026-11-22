@@ -10,6 +10,7 @@ type Location = { file: string; line: number };
 export type PythonScan = {
   imports: (Location & { name: string; level: number; target: string | null; stdlib: boolean })[];
   urls: (Location & { value: string; sink: boolean })[];
+  addresses?: (Location & { variable: string })[];
   errors: (Location & { message: string })[];
 };
 type PythonResult = { scan: PythonScan; error?: never } | { error: string; scan?: never };

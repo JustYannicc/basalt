@@ -1,4 +1,4 @@
-import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
@@ -12,7 +12,8 @@ import { shortHash, type ControllerView, type FleetView } from "./controller.ts"
 
 export interface AcceptanceInput {
   client: PoolAcceptanceClient;
-  apiKey: string;
+  /** Signs each model call for the release's acceptance device. */
+  credential: ModelAuth;
   model?: string;
   access: PoolAccess;
   controller: () => Promise<ControllerView>;
@@ -58,8 +59,8 @@ export const cellBoots = (fleet: FleetView, primary: string) =>
   );
 
 export async function runFleetAcceptance(input: AcceptanceInput) {
-  const { client, apiKey, log } = input;
-  const catalog = await client.modelCatalog(apiKey);
+  const { client, credential, log } = input;
+  const catalog = await client.modelCatalog(credential);
   const model = selectModel(catalog.ids, input.model);
   const accounts = await client.testAccountIds(input.access);
   log(`models status=200 count=${catalog.ids.length}`);
@@ -67,10 +68,12 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
   const conversations = [];
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
-    // Concurrent turns make the primary busier than an idle cell, so balancing sends one there.
+    // Ready cells take every turn; the root serves only while no cell is ready.
     const batch = Array.from({ length: burst }, () => conversation());
     conversations.push(...batch);
-    const results = await Promise.all(batch.map((value) => client.sendTurn(apiKey, model, value)));
+    const results = await Promise.all(
+      batch.map((value) => client.sendTurn(credential, model, value)),
+    );
     const primary = primaryBoot(await input.controller());
     const cells = cellBoots(await input.fleet(), primary);
     const count = { round, cell: 0, primary: 0, other: 0 };
@@ -95,16 +98,16 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   if (records.flat().some((record) => !accounts.has(record.account)))
     throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
   log(`usage_records status=200 matched=${records.flat().length}`);
-  const final = await client.sendTurn(apiKey, model, conversation());
+  const final = await client.sendTurn(credential, model, conversation());
   log(`final_request status=200 first_byte_ms=${Math.round(final.firstByteMs)}`);
   return { model, servedByCell: served, usageRecords: records.flat().length };
 }
 
 /** After a disable: one plain streamed turn must come back from the selected primary. */
 export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "access">) {
-  const catalog = await input.client.modelCatalog(input.apiKey);
+  const catalog = await input.client.modelCatalog(input.credential);
   const model = selectModel(catalog.ids, input.model);
-  const result = await input.client.sendTurn(input.apiKey, model, conversation());
+  const result = await input.client.sendTurn(input.credential, model, conversation());
   const primary = primaryBoot(await input.controller());
   if (result.boot !== primary)
     throw refuse(

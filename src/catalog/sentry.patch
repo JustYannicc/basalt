@@ -58,6 +58,15 @@
                      cache,
                      signal,
                    }),
+@@ -109,7 +112,7 @@
+             {
+               title: "Sentry API",
+               description:
+-                "Issues, events, projects, releases, alerts, organizations and the rest of the Sentry REST API, for accounts connected with an auth token.",
++                "Issues, events, projects, releases, alerts, cron monitors, organizations and the rest of the Sentry REST API. It needs an account connected with a personal token. A Sentry sign-in works only on Sentry's MCP server, so it lists no tools here. Add a personal token on the app's Accounts page with the scopes org:read, project:write, team:write, event:write and alerts:write, which cover updating a cron monitor; other operations may need more scopes.",
+               instructions:
+                 "Most endpoints take organization_id_or_slug and project_id_or_slug path parameters. List organizations first, then projects. Mutations ask for approval.",
+             },
 @@ -118,7 +121,7 @@
          {
            title: "Sentry",

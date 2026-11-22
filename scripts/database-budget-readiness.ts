@@ -25,6 +25,17 @@ export class ReadinessResponseError extends Error {
   }
 }
 
+/**
+ * The bridge failed before the Worker answered: its request never completed, for a reason other
+ * than the caller's own deadline. A fresh bridge may get through.
+ */
+export class ReadinessConnectionError extends Error {
+  override readonly name = "ConnectionError";
+  constructor() {
+    super("Deployment readiness bridge failed");
+  }
+}
+
 const closedWord = (value: unknown) =>
   typeof value === "string" && /^[a-z-]{1,40}$/u.test(value) ? value : undefined;
 
@@ -69,7 +80,13 @@ export async function openDeploymentReadiness(options: {
         }),
       ),
       signal,
-    );
+    ).catch((error: unknown) => {
+      // The caller's own deadline stays what it is; any other failure to get an answer is the
+      // bridge's. A response the bridge delivers, whatever its status, never reaches here; the
+      // Bun child bridge turns an answer over 1 MiB into a failure, which is retried like one.
+      if (signal.aborted) throw error;
+      throw new ReadinessConnectionError();
+    });
   };
   return {
     close,
