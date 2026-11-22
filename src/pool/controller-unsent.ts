@@ -61,10 +61,6 @@ export function withoutUnsentMark(response: Response) {
   });
 }
 
-/**
- * A container's own answer can't speak for the pool. Its refusal steps, handover mark and unsent
- * mark are removed where it enters the pool, so only the endpoint itself can prove a call unsent.
- */
 const poolOnly = [
   controllerUnsentHeader,
   codeHandoverHeader,
@@ -74,6 +70,10 @@ const poolOnly = [
   "X-Signalbox-Runtime-Defect",
 ];
 
+/**
+ * A container's own answer can't speak for the pool. Its refusal steps, handover mark and unsent
+ * mark are removed where it enters the pool, so only the endpoint itself can prove a call unsent.
+ */
 export function containerAnswer(response: Response) {
   if (response.status === 101 || !poolOnly.some((name) => response.headers.has(name)))
     return response;

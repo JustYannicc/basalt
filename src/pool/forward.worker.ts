@@ -333,7 +333,11 @@ export async function forwardPoolRequest(
     ) {
       console.error(
         "POOL_CONTROLLER_UNSENT",
-        JSON.stringify({ requestId, step: diagnostic.runtimeStep ?? null }),
+        JSON.stringify({
+          requestId,
+          step: diagnostic.runtimeStep ?? null,
+          reason: diagnostic.runtimeReason ?? null,
+        }),
       );
       const refused = unsentRefusal(request);
       refused.headers.set("X-Request-Id", requestId);
