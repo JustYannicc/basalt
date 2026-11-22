@@ -192,7 +192,10 @@ class SelectedSupervisorTests(unittest.TestCase):
             if tick == 2:
                 launched[0].reader_alive = False
 
-        self.assert_ended(self.run_selected(kill_reader), "reader_dead")
+        drained: list[str] = []
+        with patch.object(RealChild, "discard_output", lambda child: drained.append(child.name)):
+            self.assert_ended(self.run_selected(kill_reader), "reader_dead")
+        self.assertEqual(drained, ["home"], "the stopping Home's undrained pipe must keep draining")
 
     def test_a_dead_node_reader_ends_the_container(self) -> None:
         def kill_reader(tick, launched, _ready, _clock):
@@ -440,16 +443,33 @@ class DiagnosticsTests(unittest.TestCase):
         node.exit_code = 9
         before = supervisor.OUTPUT.lines_after(0)[-1][0] if supervisor.OUTPUT.lines_after(0) else 0
         with redirect_stdout(io.StringIO()):
-            supervisor.emit('POOL_DB_DISTANCE {"state":"measured"}')
+            supervisor.emit('POOL_HOME_MAINTENANCE_FAILURE {"cache_read":0,"derived_columns":1,"token_accounting":0}')
         view = supervisor.diagnostics(ready, [home, node], {"reason": "child_exit"}, before)
         self.assertEqual(view["children"], [
             {"name": "home", "state": "running"},
             {"name": "node", "state": "exited", "exit_code": 9},
         ])
         self.assertEqual(view["stop_reason"], "child_exit")
-        self.assertEqual([entry["line"] for entry in view["signals"]], ['POOL_DB_DISTANCE {"state":"measured"}'])
+        self.assertEqual([entry["line"] for entry in view["signals"]], ['POOL_HOME_MAINTENANCE_FAILURE {"cache_read":0,"derived_columns":1,"token_accounting":0}'])
         self.assertEqual(view["crash_tail"], [])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiscardOutputTests(unittest.TestCase):
+    def test_a_child_whose_reader_stopped_is_drained_so_it_can_finish(self) -> None:
+        script = "import sys\nfor _ in range(20000):\n    sys.stdout.write('x' * 100 + '\\n')\n"
+        with tempfile.TemporaryDirectory() as root, patch.object(RealChild, "_read_output", lambda _: None):
+            child = RealChild("home", [sys.executable, "-c", script], {}, pathlib.Path(root))
+            try:
+                # Two megabytes into a 64 KiB pipe nobody reads: the child blocks on its next write.
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    child.process.wait(timeout=1)
+                child.discard_output()
+                self.assertEqual(child.process.wait(timeout=20), 0)
+            finally:
+                if child.process.poll() is None:
+                    child.process.kill()
+                child.process.stdout.close()

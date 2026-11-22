@@ -147,6 +147,25 @@ class Child:
             emit(safe)
         return False
 
+    def discard_output(self) -> None:
+        """Drain a child whose reader died or stuck, so its writes never block while it stops."""
+        stream = getattr(self.process, "stdout", None)
+        if stream is None:
+            return
+        try:
+            fd = stream.fileno()
+        except (OSError, ValueError):
+            return
+
+        def drain() -> None:
+            try:
+                while os.read(fd, 1 << 16):
+                    pass
+            except OSError:
+                pass
+
+        threading.Thread(target=drain, daemon=True).start()
+
     def reader_failure(self, now: float) -> str | None:
         """Why this child's output is no longer drained, if it is not."""
         if self.process.poll() is not None:
@@ -599,6 +618,13 @@ def main(stop: threading.Event | None = None) -> int:
     except RecoveryCancelled:
         return 0
     except ContainerEnding as ending:
+        if ending.reason in ("reader_dead", "reader_blocked"):
+            # Nothing reads that child's pipe any more. Drain it raw, or its log writes, and with them
+            # a refresh's write-back, block through the stop grace and the rotated token is lost.
+            now = time.monotonic()
+            for child in children:
+                if child.reader_failure(now) is not None:
+                    child.discard_output()
         stop_state["reason"] = ending.reason
         report_stop(ending.reason)
         report_failure(category)

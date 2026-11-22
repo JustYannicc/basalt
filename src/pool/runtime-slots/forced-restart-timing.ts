@@ -17,8 +17,10 @@ export const forcedStopsPerHour = 3;
 export const leakedStreamsMs = 300_000;
 /**
  * After SIGTERM the supervisor gives its children `CHILD_STOP_GRACE_SECONDS` (60 s, which covers
- * Home's HTTP shutdown and its 45 s refresh drain), then kills them and waits 1 s
- * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step.
+ * Home's HTTP shutdown and its 45 s refresh drain), then kills them and waits 1 s for each
+ * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step. With the
+ * few seconds the supervisor spends before and after that grace, a stop still ends inside
+ * `forcedStopGraceMs`.
  */
 export const supervisorStopGraceMs = 61_000;
 /**
