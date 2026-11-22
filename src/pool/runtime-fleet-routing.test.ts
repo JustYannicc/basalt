@@ -428,6 +428,8 @@ test("with production routing, a recovered root's calls are counted reservations
   await counted.text();
   await f.settle();
   assert.equal(await f.state.primaryActive(), 0);
+});
+
 test("an answer the runtime can resume names that runtime as its resume target, and nothing else does", async () => {
   const f = fixture(3, 1);
   const identity = await f.add();
