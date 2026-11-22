@@ -21,8 +21,17 @@ export const accountTrafficProof = ({
     const scope = `organization:${h.actors.organization.id}`;
     const run = (work) => Effect.promise(work).pipe(Effect.timeout("30 seconds"));
     const published = () => h.request("PATCH", `${h.prefix}/accounts/${saved.account.id}`, {});
+    const recorded = () =>
+      database
+        .run({
+          sql: "select coalesce(sum(requests), 0)::text as requests from executor_account_tool_calls where account=$1",
+          params: [saved.account.id],
+        })
+        .pipe(Effect.map((rows) => Number(rows[0]?.requests ?? "0")));
+    const recordedBefore = yield* recorded();
+    const widths = [1280, 390];
     diagnostics.accountTraffic = [];
-    for (const width of [1280, 390]) {
+    for (const width of widths) {
       const context = yield* Effect.acquireRelease(
         Effect.promise(() =>
           browser.newContext({ viewport: { width, height: 900 }, ignoreHTTPSErrors: true }),
@@ -238,4 +247,10 @@ export const accountTrafficProof = ({
       progress.phase = "complete";
       yield* run(() => page.goto("about:blank"));
     }
+    // The pool page reads each selected account's view to present it; only app work is traffic.
+    check(
+      "Account traffic: rendering pool pages records no requests beyond each committed counter",
+      (yield* recorded()) - recordedBefore,
+      widths.length,
+    );
   });

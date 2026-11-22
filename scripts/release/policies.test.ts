@@ -101,23 +101,31 @@ test("only the healing release declares a root restart, bounded, and it is other
   // Only the healing release admits the root's row the old layer left: its recorded hash alone.
   for (const name of ["release", "code", "cutover-code", "cutover-classes"])
     assert.equal((await read(name)).check.poolContainer.recordedHashOnly, undefined, name);
-  // The attachment the plan cannot know while the pool Worker updates: the heal and the class change.
-  for (const name of ["release", "code", "cutover-code"])
+  // The attachment the plan cannot know while the pool Worker updates: the heal, the code release
+  // and the class change, which all ship the pool Worker with the pool database command's outcome.
+  for (const name of ["release", "cutover-code"])
     assert.equal((await read(name)).check.poolContainer.workerAttachment, undefined, name);
+  assert.equal((await read("code")).check.poolContainer.workerAttachment, true);
   assert.equal((await read("cutover-classes")).check.poolContainer.workerAttachment, true);
   // No general loosening: apart from its named commands, the two connections that wait on them
-  // and the bulk-import store's code, it is the code policy.
+  // and the root's old recorded hash, it is the code policy.
   const { commands, allow, poolContainer, removedBindings, ...rest } = healing.check;
   const { commands: _none, allow: codeAllow, poolContainer: codeRoot, ...codeRest } = code.check;
-  const { recordedHashOnly, workerAttachment, ...root } = poolContainer;
+  const { recordedHashOnly, ...root } = poolContainer;
   assert.equal(recordedHashOnly, true);
-  assert.equal(workerAttachment, true);
+  assert.equal(poolContainer.workerAttachment, true);
   assert.deepEqual(root, codeRoot);
   const { fixedBindings, ...wire } = healing.wire;
-  assert.deepEqual(codeAllow, []);
+  const { fixedBindings: codeFixed, ...codeWire } = code.wire;
+  assert.deepEqual(codeFixed, fixedBindings);
+  // Both ship the bulk-import store's code under the same rule.
+  assert.deepEqual(
+    codeAllow,
+    allow.filter((entry) => entry.fqn === "ArtifactsCredentials"),
+  );
   assert.deepEqual(
     { check: rest, include: healing.include, wire, env: healing.env },
-    { check: codeRest, include: code.include, wire: code.wire, env: code.env },
+    { check: codeRest, include: code.include, wire: codeWire, env: code.env },
   );
   assert.ok(commands?.includes("Migrations") && commands.includes("PoolDatabase"));
   assert.deepEqual(
@@ -151,6 +159,26 @@ test("only the healing release declares a root restart, bounded, and it is other
   // Its code moves only with its uploads held to the serving bindings, and the reason is written.
   assert.deepEqual(fixedBindings, ["ArtifactsCredentials"]);
   assert.match(allow[0]?.codeOnly?.why ?? "", /version skew/u);
+});
+
+test("the code release admits the bulk-import store's code and the root's attachment as the heal does, and nothing else", async () => {
+  const code = await read("code");
+  const heal = await read("code-restart");
+  // Every release from main carries the store's Worker (its telemetry setting holds the build
+  // version), so the code release admits it under the heal's own rule, with its serving bindings.
+  assert.deepEqual(
+    code.check.allow,
+    heal.check.allow.filter((entry) => entry.fqn === "ArtifactsCredentials"),
+  );
+  assert.deepEqual(code.wire.fixedBindings, ["ArtifactsCredentials"]);
+  // The whole stack, no restart and no recorded-hash row: acceptance holds the same boot, and a
+  // failure is undone by the Worker rollback.
+  assert.equal(code.include, undefined);
+  assert.equal(code.acceptance, undefined);
+  assert.equal(code.check.poolContainer.recordedHashOnly, undefined);
+  assert.equal(code.check.removedBindings, undefined);
+  assert.equal(code.env.POOL_FLEET_CLASSES, "absent");
+  assert.deepEqual(code.wire.sqliteClasses, {});
 });
 
 test("the class change adopts the shared Secrets Store and expects the pool database command settled", async () => {

@@ -180,7 +180,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 monitor = PolicyHealthMonitor(ready, MANAGEMENT_KEY)
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 503, "readiness must fail closed before the first policy lease")
-                self.assertEqual(set(payload), {"boot_id", "started_at"})
+                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
                 self.assertIsNone(lease)
 
                 lease_acquired, startup_states = run_monitor_until_policy_lease(
@@ -194,7 +194,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 print(f"native-policy production startup probe states={startup_states}")
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 200)
-                self.assertEqual(set(payload), {"boot_id", "started_at"})
+                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
                 self.assertIsNotNone(lease)
                 self.assertGreater(int(lease or "0"), 0)
 
@@ -265,7 +265,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 503)
                 self.assertIsNone(lease)
-                self.assertEqual(set(payload), {"boot_id", "started_at"})
+                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
                 self.assertEqual(monitor.check_once(), "unavailable")
 
                 helper_request("/native-policy-test/disable")
@@ -277,7 +277,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 503, "a recovered policy lease cannot restore the service audit")
                 self.assertIsNone(lease)
-                self.assertEqual(set(payload), {"boot_id", "started_at"})
+                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
                 ready.set_ready(True, audit_revision=startup_audit_revision)
                 self.assertEqual(ready_request(ready_host, ready_port)[0], 503)
 

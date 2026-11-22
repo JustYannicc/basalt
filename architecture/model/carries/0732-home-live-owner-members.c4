@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home's lifecycle cleanup lets a peer cancel a stale node membership only when the Home that holds it is no longer active or has not heartbeated within the node heartbeat timeout. A Home that still heartbeats owns its nodes and cancels its own stale memberships; a peer still cancels a live Home's membership that has been stale for a minute, so a Home whose own cleanup is stuck cannot keep a dead node active, so several Homes sharing one database never fence each other's nodes because one Home's database work is briefly slow. The ownership check runs in the cleanup's existing row-locked transaction and reads the lifecycle row without locking it."
+    }
+  }
+}
