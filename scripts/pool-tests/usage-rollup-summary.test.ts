@@ -70,6 +70,14 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
         { timestamp: timestamp(at(7)), provider: "fixture-lab", model: null },
       );
     }
+  // Rows on both sides of the off-hour boundaries: the previous range's start and the read's end.
+  for (const at of [
+    "2025-12-27T08:10:00Z",
+    "2025-12-27T08:40:00Z",
+    "2026-01-09T13:20:00Z",
+    "2026-01-09T13:50:00Z",
+  ])
+    await fixture.native(++id, at, { model: "fixture-model-0" });
   await fixture.cursor(id);
   await fixture.analyze();
   return fixture;
@@ -114,8 +122,9 @@ test("a summary read from the rollup is identical to the same summary read from 
       provider: await summary(counted, fixture.authority, "provider"),
       model: await summary(counted, fixture.authority, "model"),
     };
+    // The coverage statement names the rollup only on the rollup path.
     assert.ok(
-      statements.some((text) => text.includes("basalt_model_usage_hourly")),
+      statements[3]!.includes("basalt_model_usage_hourly"),
       "the second read uses the rollup",
     );
     // Only the reads' own transaction times may differ; every usage figure must not.
@@ -128,5 +137,59 @@ test("a summary read from the rollup is identical to the same summary read from 
     assert.deepEqual(data(rolled.provider), data(raw.provider));
     assert.deepEqual(data(rolled.model), data(raw.model));
     assert.ok(raw.provider.daily.length > 0 && raw.model.models?.status === "available");
+  });
+});
+
+test("before history migration v15 is applied the summary still answers from raw rows", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await history(f);
+    // A database the release has not migrated to v15 yet: no rollup tables, no trigger.
+    await f.db.query(
+      "DROP TABLE basalt_model_usage_ready, basalt_model_usage_hours, basalt_model_usage_hourly CASCADE",
+    );
+    await f.db.query("DROP TRIGGER basalt_model_usage_rollup ON basalt_model_requests");
+    const result = await summary(f.db, fixture.authority, "provider");
+    assert.ok(result.daily.length > 0);
+  });
+});
+
+test("an unseparated price tier on a ready pool keeps the rollup read and marks that pair unpriced", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await history(f);
+    const poolId = (await digest(pool)).slice(0, 16);
+    await f.db.query("SELECT basalt_model_usage_recompute($1,$2::timestamptz,$3::timestamptz)", [
+      poolId,
+      "2025-12-27T00:00:00Z",
+      "2025-12-28T00:00:00Z",
+    ]);
+    for (let day = 0; day < 10; day++)
+      await f.db.query("SELECT basalt_model_usage_recompute($1,$2::timestamptz,$3::timestamptz)", [
+        poolId,
+        new Date(Date.UTC(2025, 11, 31 + day)).toISOString(),
+        new Date(Date.UTC(2025, 11, 32 + day)).toISOString(),
+      ]);
+    await f.db.query("INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2)", [
+      poolId,
+      "2026-01-10T00:00:00Z",
+    ]);
+    const statements: string[] = [];
+    const to = "2026-01-09T13:37:12.000000123Z";
+    const result = await poolUsageSummary(
+      {
+        query: (text, values) => {
+          statements.push(text);
+          return f.db.query(text, values);
+        },
+      },
+      { pool, from: "2026-01-02T23:00:00Z", to, by: "provider", authority: fixture.authority },
+      async () => ({
+        prices: [...prices, { ...summaryPrices[0]!, minInput: "150000", input: "99" }],
+        issues: [],
+      }),
+      Date.parse(to),
+    );
+    assert.ok(statements[3]!.includes("basalt_model_usage_hourly"), "the read stays on the rollup");
+    assert.ok(statements.length <= 15);
+    assert.ok(result.daily.length > 0);
   });
 });

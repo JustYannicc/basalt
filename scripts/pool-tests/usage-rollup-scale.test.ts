@@ -127,6 +127,10 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
     ).rows[0]!;
     // The racing writer's own inserts are in this WAL too; the backfill's share is below it.
     console.info("ROLLUP_BYTES", JSON.stringify(measured));
+    // Bounded by the data's shape, not its size: groups, their bytes and the backfill's WAL.
+    assert.ok(groups <= rows / 5, `${groups} groups for ${rows} rows`);
+    assert.ok(Number(measured.rollup) <= groups * 1_500, `${measured.rollup} rollup bytes`);
+    assert.ok(Number(measured.wal) <= Number(measured.history), `${measured.wal} WAL bytes`);
 
     const input = {
       pool,
@@ -181,9 +185,17 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
         }
       await f.db.query("ROLLBACK");
     }
-    assert.ok(statements.some(({ text }) => text.includes("basalt_model_usage_hourly")));
+    // The coverage statement names the rollup only on the rollup path.
+    assert.ok(
+      statements[3]!.text.includes("basalt_model_usage_hourly"),
+      "the read used the rollup",
+    );
     assert.ok(statements.length <= 15, `${statements.length} statements`);
     const rollupMs = statements.reduce((n, { ms }) => n + ms, 0);
+    assert.ok(
+      statements.every(({ ms }) => ms < 4_000),
+      "every rollup statement answers well inside its 5 s limit",
+    );
     const rollupRows = (
       await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hourly WHERE pool=$1", [
         poolId,
@@ -196,9 +208,7 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
     const patient: HistoryDatabase = {
       query: (text, values) =>
         f.db.query(
-          text === summarySessionSettings
-            ? "SELECT set_config('statement_timeout','600s',true),set_config('jit','off',true)"
-            : text,
+          text === summarySessionSettings ? summarySessionSettings.replace("'5s'", "'600s'") : text,
           values,
         ),
     };

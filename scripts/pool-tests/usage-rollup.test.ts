@@ -3,6 +3,7 @@ import { test } from "node:test";
 import pg from "pg";
 import { insertBulkRequests } from "../../src/pool/model-history/bulk-store.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
+import { handleUsageRollupOperation } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { seriesFixture } from "./series-fixture.ts";
 
 /** The raw answer the rollup must reproduce exactly: one group per pool, UTC hour, source and model. */
@@ -137,6 +138,56 @@ test("one insert statement spanning thousands of hours keeps the rollup without 
       await Promise.all(rows(5_000, 1, "2026-08-01T00:00:00Z").map((value) => f.row(value))),
     );
     await f.db.query("COMMIT");
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("the operator endpoint dry-runs without writes, refuses a changed plan, and applies to ready", async () => {
+  await seriesFixture(async (f) => {
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(30, 2));
+    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    const url = "http://pool-operations/model-history/usage-rollup";
+    const dry = (await (await handleUsageRollupOperation(new Request(url), f.db)).json()) as {
+      status: string;
+      writes: boolean;
+      digest: string;
+      plan: { pools: { pool: string; from: string; to: string; days: number }[] };
+    };
+    assert.equal(dry.status, "dry-run");
+    assert.equal(dry.writes, false);
+    assert.equal(
+      (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hours")).rows[0]!.n,
+      0,
+    );
+    const post = (body: unknown) =>
+      handleUsageRollupOperation(
+        new Request(url, { method: "POST", body: JSON.stringify(body) }),
+        f.db,
+      );
+    const changed = {
+      ...dry.plan,
+      pools: dry.plan.pools.map((p) => ({ ...p, from: p.to, days: 0 })),
+    };
+    assert.equal((await post({ go: true, plan: changed, digest: dry.digest })).status, 400);
+    const tampered = {
+      pools: dry.plan.pools.map((p) => ({
+        ...p,
+        from: new Date(Date.parse(p.from) + 86_400_000).toISOString(),
+        days: p.days - 1,
+      })),
+    };
+    assert.equal((await post({ go: true, plan: tampered, digest: dry.digest })).status, 409);
+    const applied = (await (
+      await post({ go: true, plan: dry.plan, digest: dry.digest })
+    ).json()) as {
+      status: string;
+    };
+    assert.equal(applied.status, "complete");
+    assert.equal(
+      (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_ready")).rows[0]!.n,
+      1,
+    );
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });
 });

@@ -1,3 +1,4 @@
+import type { OverviewApiPrice, OverviewPriceIssue } from "../../../apps/pool/overview-contract.ts";
 import { importAccountPrefix } from "./import-account-reference.ts";
 import { utcSql } from "./series-query.ts";
 import {
@@ -82,13 +83,6 @@ export function rollupSelection(selection: Selection, boundaries: readonly strin
       SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)
     ), ${rollupSelectionText(window)}`,
   };
-}
-
-/** A price tier the rollup's bands cannot separate makes the raw path the only exact one. */
-export function rollupPricesSupported(rows: string): boolean {
-  const records = JSON.parse(rows) as { min_input?: unknown }[];
-  const bands = new Set<string>(usageRollupBands.map(String));
-  return records.every((row) => typeof row.min_input === "string" && bands.has(row.min_input));
 }
 
 const count = (filter?: string) =>
@@ -293,18 +287,39 @@ export function rollupHourlyText(selection: Selection, maxHeatmapCells: number) 
  * The summary's first statement. A pool whose rollup is ready reads its targets from the rollup;
  * any other pool keeps the raw read behind its bounded window count. One row says which ran.
  */
+/** The most rollup groups one summary window may read; past it the summary refuses instead. */
+export const maxSummaryRollupGroups = 400_000;
+
+/**
+ * The summary's first statement. A pool whose rollup is ready reads its targets from the rollup,
+ * behind a bounded count of its window's groups; any other pool keeps the raw read behind its
+ * bounded window count. Without the rollup's tables (before v15 is applied) only the raw read is
+ * named. One row says which ran.
+ */
 export function summaryModeTargets(
   selection: Selection,
   windowRows: number,
   boundaries: readonly string[],
+  rollupTables = true,
+  rollupGroups = maxSummaryRollupGroups,
 ) {
-  if (!Number.isSafeInteger(windowRows) || windowRows < 1) throw new Error("Invalid window bound");
+  for (const bound of [windowRows, rollupGroups])
+    if (!Number.isSafeInteger(bound) || bound < 1) throw new Error("Invalid window bound");
   const window = rollupWindow(String(selection.values[1]), String(selection.values[2]), boundaries);
-  return {
-    text: `${selection.text}, ${rollupSelectionText(window, "rolled")},
+  const rolled = rollupTables
+    ? `${rollupSelectionText(window, "rolled")},
     ready AS MATERIALIZED (
       SELECT EXISTS (SELECT 1 FROM basalt_model_usage_ready WHERE pool=$1) AS rolled
-    ), window_rows AS MATERIALIZED (
+    ), rolled_rows AS MATERIALIZED (
+      SELECT count(*) AS n FROM (SELECT 1 FROM basalt_model_usage_hourly g
+        WHERE (SELECT rolled FROM ready) AND g.pool=$1
+          AND g.hour >= '${window.from}'::timestamptz AND g.hour < '${window.to}'::timestamptz
+        LIMIT ${rollupGroups + 1}) bounded
+    ),`
+    : `ready AS MATERIALIZED (SELECT false AS rolled), rolled_rows AS MATERIALIZED (SELECT 0::bigint AS n),`;
+  return {
+    text: `${selection.text}, ${rolled}
+    window_rows AS MATERIALIZED (
       SELECT count(*) AS n FROM (SELECT 1 FROM basalt_model_requests w
         WHERE NOT (SELECT rolled FROM ready) AND w.pool=$1
           AND w.timestamp >= $2::text::timestamptz - interval '1 microsecond'
@@ -314,14 +329,53 @@ export function summaryModeTargets(
       SELECT DISTINCT provider,model FROM (
         SELECT provider,model,counts_only FROM selected
         WHERE NOT (SELECT rolled FROM ready) AND (SELECT n FROM window_rows) <= ${windowRows}
-        UNION ALL
-        SELECT provider,model,counts_only FROM rolled WHERE (SELECT rolled FROM ready)
+        ${
+          rollupTables
+            ? `UNION ALL
+        SELECT provider,model,counts_only FROM rolled
+        WHERE (SELECT rolled FROM ready) AND (SELECT n FROM rolled_rows) <= ${rollupGroups}`
+            : ""
+        }
       ) t WHERE NOT counts_only AND provider IS NOT NULL AND model IS NOT NULL
       ORDER BY provider,model LIMIT 101
     ) SELECT 'target' AS kind,provider,model,NULL::bigint AS window_rows FROM targets
       UNION ALL SELECT 'over',NULL,NULL,n FROM window_rows WHERE n > ${windowRows}
+      UNION ALL SELECT 'over',NULL,NULL,n FROM rolled_rows WHERE n > ${rollupGroups}
       UNION ALL SELECT 'rollup',NULL,NULL,NULL WHERE (SELECT rolled FROM ready)
       ORDER BY kind,provider,model`,
     values: selection.values,
+  };
+}
+
+/**
+ * Drops every price of a pair with a tier the rollup's bands cannot separate, so the rollup read
+ * stays exact and bounded: that pair's requests count as missing a price, with the reason.
+ */
+export function rollupSupportedPrices(table: {
+  prices: readonly OverviewApiPrice[];
+  issues: readonly OverviewPriceIssue[];
+}) {
+  const bands = new Set<string>(usageRollupBands.map(String));
+  const unsupported = new Set(
+    table.prices
+      .filter((price) => !bands.has(String(price.minInput)))
+      .map((price) => `${price.provider}\u0000${price.model}`),
+  );
+  if (!unsupported.size) return table;
+  return {
+    prices: table.prices.filter(
+      (price) => !unsupported.has(`${price.provider}\u0000${price.model}`),
+    ),
+    issues: [
+      ...table.issues,
+      ...[...unsupported].map((key) => {
+        const [provider, model] = key.split("\u0000") as [string, string];
+        return {
+          provider,
+          model,
+          reason: `A ${model} price tier is not one the usage rollup separates; its estimate is unavailable.`,
+        };
+      }),
+    ],
   };
 }

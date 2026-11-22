@@ -38,7 +38,6 @@ export const usageRollupKeys = [
   "currency",
   "has_snapshot",
   "has_version",
-  "separate_cache",
   "price_class",
   "context_band",
 ] as const;
@@ -133,7 +132,6 @@ export function usageRollupProjection(rows: string) {
     currency: "s.currency",
     has_snapshot: "s.price_snapshot IS NOT NULL",
     has_version: "s.price_version IS NOT NULL",
-    separate_cache: "coalesce(shape.separate_cache,false)",
     price_class: `CASE WHEN s.input_tokens IS NULL OR s.output_tokens IS NULL
         OR s.cache_read_tokens IS NULL OR s.cache_write_tokens IS NULL
         OR s.token_quality NOT IN ('complete','legacy') THEN 'missing_tokens'
@@ -171,7 +169,7 @@ export const historyUsageRollupStatements = [
     service_tier varchar(256), api_type varchar(64), token_quality varchar(16) NOT NULL,
     failed boolean NOT NULL, limited boolean NOT NULL, cost_basis varchar(32) NOT NULL,
     currency varchar(16), has_snapshot boolean NOT NULL, has_version boolean NOT NULL,
-    separate_cache boolean NOT NULL, price_class varchar(16) NOT NULL, context_band bigint NOT NULL,
+    price_class varchar(16) NOT NULL, context_band bigint NOT NULL,
     ${values.map(([name, type]) => `${name} ${type}`).join(",\n    ")},
     CONSTRAINT basalt_model_usage_hourly_key UNIQUE NULLS NOT DISTINCT (${usageRollupKeys.join(",")})
   )`,
@@ -197,7 +195,7 @@ export const historyUsageRollupStatements = [
   // writers already inside those hours, holds new ones until it commits, and is safe to repeat.
   `CREATE FUNCTION basalt_model_usage_recompute(target_pool varchar, from_hour timestamptz,
       to_hour timestamptz) RETURNS bigint LANGUAGE plpgsql AS $$ DECLARE written bigint; BEGIN
-      IF from_hour <> date_trunc('hour',from_hour) OR to_hour <> date_trunc('hour',to_hour)
+      IF from_hour <> date_trunc('hour',from_hour,'UTC') OR to_hour <> date_trunc('hour',to_hour,'UTC')
         OR to_hour <= from_hour OR to_hour - from_hour > interval '48 hours' THEN
         RAISE EXCEPTION 'basalt_usage_rollup: recompute takes whole hours, at most 48'
           USING ERRCODE = '22023';

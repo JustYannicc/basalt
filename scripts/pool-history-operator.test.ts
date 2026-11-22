@@ -137,6 +137,55 @@ test("backfill has its own dry run and requires both apply and go", async () => 
   }
 });
 
+test("the usage rollup backfill resumes with the same approval until the endpoint reports complete", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const directory = await mkdtemp(join(tmpdir(), "history-rollup-fixture-"));
+  try {
+    const path = join(directory, "rollup.json");
+    const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
+    const plan = {
+      status: "dry-run",
+      version: "usage_rollup_backfill_v1",
+      digest: "e".repeat(64),
+      plan: { pools: [] },
+      writes: false,
+    };
+    const calls: Request[] = [];
+    let posts = 0;
+    const connect = async (_path: string) => ({
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            calls.push(request.clone());
+            if (request.method === "GET") return Response.json(plan);
+            posts++;
+            return Response.json({
+              status: posts < 3 ? "progress" : "complete",
+              digest: plan.digest,
+              pools: [],
+            });
+          },
+        },
+      },
+      dispose: async () => {},
+    });
+    await runHistoryOperator(historyOperatorOptions(args), account, connect);
+    assert.equal(new URL(calls[0]!.url).pathname, "/model-history/usage-rollup");
+    const report = await runHistoryOperator(
+      historyOperatorOptions([...args, "--apply", "--go"]),
+      account,
+      connect,
+    );
+    assert.equal(report.status, "complete");
+    assert.equal(posts, 3, "two progress responses, then complete");
+    for (const call of calls.slice(1))
+      assert.deepEqual(await call.json(), { digest: plan.digest, plan: plan.plan, go: true });
+    assert.equal(JSON.parse(await readFile(`${path}.result.json`, "utf8")).status, "complete");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("recorded v2 catalog previews the additive SQL and applies only its saved hashes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "history-v2-fixture-"));
   try {

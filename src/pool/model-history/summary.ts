@@ -27,14 +27,15 @@ import { summaryKnownDays } from "./summary-known-days.ts";
 import {
   rollupCoverageQuery,
   rollupDailyQuery,
-  rollupPricesSupported,
+  rollupSupportedPrices,
   rollupSelection,
   summaryModeTargets,
 } from "./summary-rollup-query.ts";
 import type { HistoryReadStep } from "./read-failure.ts";
 
-export const summarySessionSettings =
-  "SELECT set_config('statement_timeout','5s',true),set_config('jit','off',true)";
+/** One statement: the read's timeout, no JIT, and whether the rollup's tables exist yet. */
+export const summarySessionSettings = `SELECT set_config('statement_timeout','5s',true),
+  set_config('jit','off',true),to_regclass('basalt_model_usage_ready') IS NOT NULL AS rollup_tables`;
 
 type Prices = (
   targets: readonly { provider: string; model: string }[],
@@ -63,16 +64,21 @@ export async function poolUsageSummary(
   await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     // JIT compiling these wide plans costs seconds and buys nothing on bounded reads.
-    await db.query(summarySessionSettings);
+    const settings = (await db.query(summarySessionSettings)).rows[0];
     let selection = await summarySelection(pool, readFrom, input.to, authority);
     // A pool whose rollup is ready reads it; every range boundary cuts its groups.
     const boundaries = [readFrom, input.from, input.to, previous.from, previous.to, heatmapFrom];
-    const targetQuery = summaryModeTargets(selection, windowRows, boundaries);
+    const targetQuery = summaryModeTargets(
+      selection,
+      windowRows,
+      boundaries,
+      settings?.rollup_tables === true,
+    );
     mark("targets");
     const first = (await db.query(targetQuery.text, targetQuery.values)).rows;
     if (first.some((row) => row.window_rows !== null)) throw new HistoryTooLarge();
     const targets = first.filter((row) => row.kind === "target");
-    let rolled = first.some((row) => row.kind === "rollup");
+    const rolled = first.some((row) => row.kind === "rollup");
     const priceUnavailableReason =
       targets.length > 100
         ? "More than 100 provider/model pairs need prices; money estimates are unavailable."
@@ -86,9 +92,9 @@ export async function poolUsageSummary(
       } catch {
         prices = { prices: [], issues: [] };
       }
+    // A pair with a price tier the rollup's bands cannot separate counts as missing a price.
+    if (rolled) prices = rollupSupportedPrices(prices);
     selection = await summarySelection(pool, readFrom, input.to, authority, prices);
-    // A price tier the rollup's bands cannot separate is priced exactly only from raw rows.
-    if (rolled && !rollupPricesSupported(String(selection.values[6]))) rolled = false;
     const source = rolled ? rollupSelection(selection, boundaries) : selection;
     mark("coverage");
     const observed = await summaryCoverage(

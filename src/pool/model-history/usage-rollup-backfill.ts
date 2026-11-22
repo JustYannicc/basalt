@@ -1,5 +1,5 @@
 import { digest } from "../backend-users.ts";
-import { historyObject, invalidHistory } from "./record.ts";
+import { HistoryInputError, historyObject, invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { historyUsageRollupVersion } from "./usage-rollup-schema.ts";
 
@@ -38,7 +38,8 @@ export async function planUsageRollup(db: HistoryDatabase) {
     pools: pools
       .filter((row) => row.ready !== true)
       .map((row) => {
-        const from = midnight(new Date(row.first_at as string | Date).getTime());
+        // The indexed time is rounded to microseconds; start a day early so no first row is missed.
+        const from = midnight(new Date(row.first_at as string | Date).getTime() - day);
         const to = midnight(new Date(row.last_at as string | Date).getTime() + day);
         return {
           pool: String(row.pool),
@@ -79,58 +80,69 @@ export function approvedUsageRollupPlan(raw: unknown): UsageRollupPlan {
 }
 
 /**
- * Recomputes the plan's days, one UTC day per transaction, until the time budget runs out. A day
- * already recomputed in full is skipped, so a stopped or failed run resumes where it left off; a
- * pool is marked ready only after its last day. Returns counts only.
+ * Recomputes the plan's hours, one hour per transaction, until the time budget runs out. An hour
+ * already recomputed is skipped, so a stopped or failed run resumes where it left off; a pool is
+ * marked ready only after its last hour. Returns counts only.
  */
 export async function runUsageRollup(
   db: HistoryDatabase,
   plan: UsageRollupPlan,
-  budgetMs = 20_000,
+  budgetMs = 12_000,
   now: () => number = () => performance.now(),
 ) {
   const started = now();
-  const pools: { pool: string; recomputedDays: number; groups: number; remainingDays: number }[] =
+  const pools: { pool: string; recomputedHours: number; groups: number; remainingHours: number }[] =
     [];
   let complete = true;
   for (const item of plan.pools) {
-    const done = await db.query(
-      `SELECT d.at FROM generate_series($2::timestamptz,$3::timestamptz-interval '1 day',interval '1 day') AS d(at)
-      WHERE (SELECT count(*) FROM basalt_model_usage_hours h
-        WHERE h.pool=$1 AND h.hour >= d.at AND h.hour < d.at + interval '1 day') < 24
-      ORDER BY d.at`,
-      [item.pool, item.from, item.to],
-    );
-    const pending = done.rows.map((row) => new Date(String(row.at)).toISOString());
-    let recomputedDays = 0,
+    const pending = (
+      await db.query(
+        `SELECT h.at FROM generate_series($2::timestamptz,$3::timestamptz-interval '1 hour',
+          interval '1 hour') AS h(at)
+        WHERE NOT EXISTS (SELECT 1 FROM basalt_model_usage_hours d WHERE d.pool=$1 AND d.hour=h.at)
+        ORDER BY h.at`,
+        [item.pool, item.from, item.to],
+      )
+    ).rows.map((row) => new Date(row.at as string | Date).toISOString());
+    let recomputedHours = 0,
       groups = 0;
     for (const at of pending) {
       if (now() - started >= budgetMs) break;
       await db.query("BEGIN");
       try {
-        await db.query("SET LOCAL statement_timeout = '6s'");
-        await db.query("SET LOCAL lock_timeout = '2s'");
+        // The lock timeout is below the writers' 500 ms, so a busy pool's writers win.
+        await db.query(
+          "SELECT set_config('statement_timeout','5s',true),set_config('lock_timeout','200ms',true),set_config('TimeZone','UTC',true)",
+        );
         const written = await db.query(
-          "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 day') AS groups",
+          "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour') AS groups",
           [item.pool, at],
         );
         await db.query("COMMIT");
         groups += Number(written.rows[0]?.groups ?? 0);
-        recomputedDays++;
+        recomputedHours++;
       } catch (error) {
         await db.query("ROLLBACK").catch(() => {});
+        // A writer held the pool's lock; leave this hour for the next call.
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "55P03"
+        )
+          break;
         throw error;
       }
     }
-    const remainingDays = pending.length - recomputedDays;
-    if (remainingDays === 0)
+    const remainingHours = pending.length - recomputedHours;
+    if (remainingHours === 0)
       await db.query(
         `INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2::timestamptz)
         ON CONFLICT (pool) DO NOTHING`,
         [item.pool, item.to],
       );
     else complete = false;
-    pools.push({ pool: item.pool, recomputedDays, groups, remainingDays });
+    pools.push({ pool: item.pool, recomputedHours, groups, remainingHours });
     if (!complete) break;
   }
   return { status: complete ? ("complete" as const) : ("progress" as const), pools };
@@ -148,7 +160,13 @@ export async function handleUsageRollupOperation(request: Request, db: HistoryDa
   if (request.method !== "POST") return new Response(null, { status: 405 });
   const approval = historyObject(await request.json());
   if (approval.go !== true) return new Response(null, { status: 400 });
-  const plan = approvedUsageRollupPlan(approval.plan);
+  let plan: UsageRollupPlan;
+  try {
+    plan = approvedUsageRollupPlan(approval.plan);
+  } catch (error) {
+    if (error instanceof HistoryInputError) return new Response(null, { status: 400 });
+    throw error;
+  }
   if (approval.digest !== (await digest(JSON.stringify(plan))))
     return new Response(null, { status: 409 });
   const result = await runUsageRollup(db, plan, 12_000);
