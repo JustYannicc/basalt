@@ -13,7 +13,7 @@ import {
   type Planned,
   type WatchedJob,
 } from "./ci/box-watch.ts";
-import { parseVerdict, rerunDecision, type RerunJob } from "./ci/box-rerun.ts";
+import { parseVerdict, rerunDecision, type RerunJob, type Run } from "./ci/box-rerun.ts";
 import { namedJobs } from "./ci/box-router.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -116,7 +116,7 @@ test("a healthy box may hold each job until its own latest start that still ends
   assert.equal(watch([job({ id: 1 })], 25, 0, { "job-1": first }).action, "cancel");
 });
 
-const run = { id: 7, attempt: 1, conclusion: "cancelled" };
+const run: Run = { id: 7, attempt: 1, conclusion: "cancelled" };
 const verdict = JSON.stringify({
   run: 7,
   attempt: 1,
