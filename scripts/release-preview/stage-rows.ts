@@ -76,14 +76,25 @@ function filtered(value: unknown, depth = 0): unknown {
   );
 }
 
-/** Only the key names of a value, at every depth, so its shape shows and none of its values. */
+/** A key that is itself a value: a 32-hex or UUID id, or a host. Such keys show only as a kind. */
+const idKey = (key: string) =>
+  /^[0-9a-f]{32}$/iu.test(key) ||
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(key) ||
+  hostLike.test(key) ||
+  idLike.test(key);
+
+/**
+ * Only the key names of a value, at every depth, so its shape shows and none of its values. A key
+ * that is an id or a host (a map keyed by a resource id) shows as `[id]`, numbered if repeated.
+ */
 function keysOnly(value: unknown, depth = 0): unknown {
   if (depth > 8) return "[deep]";
   if (Array.isArray(value)) return value.map((item) => keysOnly(item, depth + 1));
   if (!value || typeof value !== "object") return typeof value;
+  let ids = 0;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-      key,
+      idKey(key) ? `[id ${++ids}]` : key,
       keysOnly(item, depth + 1),
     ]),
   );

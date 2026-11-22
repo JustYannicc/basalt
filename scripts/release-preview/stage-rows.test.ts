@@ -69,7 +69,10 @@ test("recorded Worker rows keep only build, assets and hashes, never a host, id,
           assets: { directory: "public", manifest: `zone-${zone}` },
           signingKey: "secret-value-2",
         },
-        bindings: [{ sid: "DB", data: "binding-value-2" }],
+        bindings: [
+          { sid: "DB", data: "binding-value-2" },
+          { sid: "HD", data: { hyperdrives: { [zone]: { origin: "binding-value-3" } } } },
+        ],
         attr: {
           hash: { bundle: "c".repeat(64), metadata: "d".repeat(64), assets: null },
           url: "https://sso.rehearsal-6.example.dev",
@@ -94,6 +97,7 @@ test("recorded Worker rows keep only build, assets and hashes, never a host, id,
     "secret-value-2",
     "binding-value-1",
     "binding-value-2",
+    "binding-value-3",
     'src/sso.ts","accountId',
   ])
     assert.equal(text.includes(leak), false, leak);
@@ -111,7 +115,11 @@ test("recorded Worker rows keep only build, assets and hashes, never a host, id,
     domain: "string",
     signingKey: "string",
   });
-  assert.deepEqual(sso.stateBindings, [{ sid: "string", data: "string" }]);
+  // A map keyed by a resource id keeps its shape; the id itself shows only as `[id n]`.
+  assert.deepEqual(sso.stateBindings, [
+    { sid: "string", data: "string" },
+    { sid: "string", data: { hyperdrives: { "[id 1]": { origin: "string" } } } },
+  ]);
   assert.deepEqual(sso.attrKeys, [
     "accountId",
     "crons",
