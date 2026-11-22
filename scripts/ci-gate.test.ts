@@ -27,7 +27,7 @@ const runGate = (
       CI_REUSED: "",
       CI_NEEDS: JSON.stringify(needs),
       CI_JOBS: JSON.stringify(selected),
-      CI_BOAT_JOBS: "[]",
+      CI_BOX_JOBS: "[]",
       CI_FULL_SUITE: String(full),
     },
   });
@@ -38,7 +38,11 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
   );
   assert.equal(step.env.CI_NEEDS, "${{ toJSON(needs) }}");
   assert.equal(workflow.jobs.check.if, "always()");
-  assert.deepEqual(workflow.jobs["upstream-image"].needs, ["select", "workerd-assets"]);
+  assert.deepEqual(workflow.jobs["upstream-image"].needs, [
+    "select",
+    "workerd-assets",
+    "long-started",
+  ]);
   assert.equal(
     workflow.jobs["workerd-assets"].if,
     "contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')",

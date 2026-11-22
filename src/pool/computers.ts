@@ -48,6 +48,8 @@ interface Dependencies {
   now?: () => number;
   onProductEvent?: ProductEventCallback;
   usage?: Pick<PoolUsage, "summary" | "setCap">;
+  /** Counts only: the abandoned native approvals upkeep removed. */
+  reportRemoved?: (removed: { abandonedApprovals: number }) => void;
 }
 const storageKey = "computer-registry-v1";
 /** One of the pools this person can use, or a refusal. */
@@ -133,7 +135,13 @@ export class Computers {
           changed = true;
         }
       }
-      if (changed) await this.save(registry);
+      const abandonedApprovals = this.native.removeAbandoned(registry);
+      if (changed || abandonedApprovals) await this.save(registry);
+      if (abandonedApprovals) {
+        const removed = { abandonedApprovals };
+        if (this.deps.reportRemoved) this.deps.reportRemoved(removed);
+        else console.info("POOL_ABANDONED_APPROVALS_REMOVED", removed);
+      }
       const directory = await PoolDirectory.load(this.deps.storage, this.now());
       await directory.prune(this.now());
       await directory.provisionPending(this.deps.home);

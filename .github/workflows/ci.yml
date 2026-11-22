@@ -44,18 +44,23 @@ jobs:
   select:
     needs: reuse
     if: always() && !cancelled() && needs.reuse.outputs.reused != 'true'
+    # Reads the box heartbeat and the hosted load for scripts/ci/box-router.ts.
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     outputs:
       base_sha: ${{ steps.comparison.outputs.base_sha }}
       full_suite: ${{ steps.jobs.outputs.full_suite }}
       jobs: ${{ steps.jobs.outputs.jobs }}
-      hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
-      boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
+      box_jobs: ${{ steps.jobs.outputs.box_jobs }}
+      box_label: ${{ steps.jobs.outputs.box_label }}
       matrices: ${{ steps.jobs.outputs.matrices }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
@@ -88,8 +93,12 @@ jobs:
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BOAT_JOBS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci:boat') && 'proof' || vars.BASALT_CI_BOAT_JOBS }}
-          FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
+          # Box first for main and batch pushes and this repository's pull requests; forks run hosted.
+          BOX_SLOTS: ${{ vars.BASALT_CI_BOX_SLOTS }}
+          BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+          FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
@@ -102,6 +111,15 @@ jobs:
           path: .generated/ci/selection.json
           include-hidden-files: true
           if-no-files-found: error
+  # Start order only. Every job outside the long tier (longJobs in scripts/ci/gate.ts) also needs
+  # this job, so the long jobs are queued for runners first.
+  long-started:
+    needs: select
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: "true"
   cpa-pipeline:
     needs: [select, reuse]
     if: >-
@@ -145,7 +163,7 @@ jobs:
           fi
           python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
-    needs: select
+    needs: [select, long-started]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -162,7 +180,7 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-mobile')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -180,7 +198,7 @@ jobs:
       - run: bun run --cwd clients/mobile export:ios
       - run: bun run --cwd clients/mobile export:android
   client-desktop:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-desktop')
     env:
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
@@ -224,7 +242,7 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'client-native-product')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -263,9 +281,9 @@ jobs:
           path: .upstream/.local/testing/**/server.log
           if-no-files-found: warn
   clerk-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'clerk-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -292,9 +310,9 @@ jobs:
           if-no-files-found: error
 
   workos-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'workos-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -321,9 +339,9 @@ jobs:
           if-no-files-found: error
 
   gitlab-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -352,7 +370,7 @@ jobs:
   planetscale-sign-in:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'planetscale-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -406,9 +424,9 @@ jobs:
           if-no-files-found: error
 
   vercel-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'vercel-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -433,9 +451,9 @@ jobs:
           if-no-files-found: error
 
   elevenlabs-sign-in:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'elevenlabs-sign-in')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -460,9 +478,9 @@ jobs:
           if-no-files-found: error
 
   neon-key-reuse:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'neon-key-reuse')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -487,7 +505,7 @@ jobs:
           if-no-files-found: error
 
   slack-health:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'slack-health')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -521,7 +539,7 @@ jobs:
   catalog-compat:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'catalog-compat')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'catalog-compat') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -556,7 +574,7 @@ jobs:
   host-managed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -607,9 +625,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts-adopted:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-adopted')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-adopted') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -646,7 +664,7 @@ jobs:
   host-managed-accounts-pool:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-pool')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'host-managed-accounts-pool') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -692,7 +710,7 @@ jobs:
   host-managed-accounts-local:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-local')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -733,7 +751,7 @@ jobs:
   host-managed-accounts-cloud:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -776,9 +794,9 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   host-managed-accounts-cloud-actions:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-cloud-actions')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -818,9 +836,9 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   host-managed-accounts-runtime:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'host-managed-accounts-runtime')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -872,7 +890,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-recovery:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -929,7 +947,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-diagnostics:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'google-account-diagnostics')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -990,7 +1008,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'oauth-account-regressions')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1040,7 +1058,7 @@ jobs:
             .generated/oauth-renewal-recovery/ci/*-390.png
           if-no-files-found: warn
   pool-account-recovery:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1085,7 +1103,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   sso-service-binding:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'sso-service-binding')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1123,7 +1141,7 @@ jobs:
   production-ops:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'production-ops') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1133,6 +1151,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated production operation test assets
         working-directory: .upstream
@@ -1170,6 +1189,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/postgres.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
@@ -1221,7 +1241,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-atlassian-adoption:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-atlassian-adoption')
     runs-on: ubuntu-latest
     timeout-minutes: 14
@@ -1263,7 +1283,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -1288,6 +1308,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1318,15 +1339,16 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-state-digests.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-provisioning-completed.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'compiler-diagnostics')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'compiler-diagnostics') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1408,7 +1430,7 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   human-in-the-loop-navigation:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'human-in-the-loop-navigation')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1481,7 +1503,7 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   access-editor-reads:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'access-editor-reads')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1521,9 +1543,9 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-accounts')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'contributed-accounts') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1533,6 +1555,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -1563,12 +1586,13 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-account-recipes:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'contributed-account-recipes')
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1603,7 +1627,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'personal-data-reporting')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1647,7 +1671,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -1670,6 +1694,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -1710,6 +1735,7 @@ jobs:
             .generated/pool-removal-intent/**/report.json
             .generated/pool-removal-intent/**/partial-checks.json
             .generated/pool-removal-intent/**/failure.txt
+            .generated/pool-removal-intent/**/runtime-cloud.log
             .generated/pool-removal-intent/**/runtime-diagnostics.json
             .generated/pool-recipe-checks/**/report.json
             .generated/pool-recipe-checks/**/partial-checks.json
@@ -1738,6 +1764,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/autumn-emulator.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   dashboard-batch:
@@ -1804,7 +1831,7 @@ jobs:
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
   aws-connectors:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1858,7 +1885,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   gitlab-connectors:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'gitlab-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1894,7 +1921,7 @@ jobs:
           if-no-files-found: error
 
   mcp-apps:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'mcp-apps')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1935,10 +1962,10 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   declared-self-host:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-self-host')
     name: ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -1990,10 +2017,10 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   declared-local:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-local')
     name: ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2045,10 +2072,10 @@ jobs:
           path: ${{ runner.temp }}/basalt-e2e-evidence/retries.json
           if-no-files-found: ignore
   declared-cloud:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'declared-cloud')
     name: ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), matrix.shard) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     # Planned per shard: its files' measured time plus setup, with room for one file's deadline
     # plus one retry.
     timeout-minutes: ${{ matrix.timeout }}
@@ -2114,7 +2141,7 @@ jobs:
           warm: "true"
 
   upstream-image:
-    needs: [select, workerd-assets]
+    needs: [select, workerd-assets, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -2153,7 +2180,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   browser-install:
-    needs: select
+    needs: [select, long-started]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -2329,7 +2356,7 @@ jobs:
   pool-runtime:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-runtime')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # The longest job of a full Check, in two shards that each build the candidate image. The
     # compatibility shard also loads the frozen compatibility images and runs the files that read
     # them plus the one-off proofs; the contracts shard runs every other pool test file.
@@ -2488,7 +2515,7 @@ jobs:
           df -B1 /
 
   production-build:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-build')
     runs-on: ubuntu-latest
     steps:
@@ -2519,7 +2546,7 @@ jobs:
       - run: npm run typecheck
 
   docs-build:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'docs-build')
     runs-on: ubuntu-latest
     steps:
@@ -2537,7 +2564,7 @@ jobs:
         run: node scripts/docs-fonts/check.ts
 
   upstream-contracts:
-    needs: select
+    needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
     runs-on: ubuntu-latest
     services:
@@ -2574,6 +2601,7 @@ jobs:
       [
         reuse,
         select,
+        long-started,
         fast,
         browser-install,
         cpa-pipeline,
@@ -2622,6 +2650,7 @@ jobs:
         declared-local,
         declared-cloud,
         account-acquisition,
+        account-observations,
         account-usage,
         clerk-sign-in,
         workos-sign-in,
@@ -2651,7 +2680,7 @@ jobs:
           CI_REUSE_EVIDENCE: ${{ needs.reuse.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
-          CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
+          CI_BOX_JOBS: ${{ needs.select.outputs.box_jobs }}
         run: node scripts/ci/gate.ts
       - uses: actions/upload-artifact@v4
         if: success() && needs.reuse.outputs.reused == 'true'
@@ -2711,8 +2740,9 @@ jobs:
   account-acquisition:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'account-acquisition')
-    runs-on: ${{ contains(fromJSON(needs.select.outputs.boat_jobs), 'account-acquisition') && vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # Measured 12.6-20.5 minutes on hosted runners in six full Checks; the slowest was cut at 20.
+    # Its observation half now runs in account-observations.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -2728,11 +2758,11 @@ jobs:
         run: bun run e2e:prepare
       - name: Install Chromium for the account tests
         uses: ./.github/actions/setup-browser
-      - name: Verify reusable acquisition, health and retained account compatibility
+      - name: Verify reusable acquisition and retained account compatibility
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:reusable-acquisition-health-and-retained-account-compatibility)"
+          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:reusable-acquisition-and-retained-account-compatibility)"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
@@ -2746,6 +2776,46 @@ jobs:
         if: always()
         with:
           name: account-acquisition-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  account-observations:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'account-observations')
+    runs-on: ubuntu-latest
+    # About 1.5x the slower half of the split: at the slowest measured full Check's pace, this job
+    # plans 11.3 minutes and account-acquisition 12.9.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated account test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install Chromium for the account tests
+        uses: ./.github/actions/setup-browser
+      - name: Verify driver readings, health and observation compatibility
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "$(node ../scripts/ci/e2e-pattern.ts account-observations:driver-readings-health-and-observation-compatibility)"
+          --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: account-observations-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn

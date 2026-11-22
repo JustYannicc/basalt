@@ -7,6 +7,7 @@ import { reportingReliabilityStatements } from "./reliability-read-failure.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { readPoolReliabilityWindows, terminalCollectionReady } from "./reliability.ts";
 import { HistoryInputError } from "./record.ts";
+import { historyBatchSize, historyForwardPages } from "./store.ts";
 import { objectiveVerdict, readUnknownOutcomes } from "./reliability-unknown.ts";
 
 export function reliabilityState(
@@ -56,14 +57,19 @@ export async function readPoolReliabilitySlo(
     const captured = captureAt === null ? NaN : Date.parse(captureAt);
     const sourceExists =
       (await db.query("SELECT to_regclass('usage') IS NOT NULL AS ready")).rows[0]?.ready === true;
-    // A recent collector commit can still leave more than its bounded batch uncaptured.
+    // Rows written since the last five-minute capture are not yet due. Only a backlog beyond what
+    // one capture run takes means collection is behind; any new request would otherwise hide the
+    // objective, and its breach paging, until the next capture.
     const lagging =
       row &&
       sourceExists &&
       (
-        await db.query("SELECT EXISTS (SELECT 1 FROM usage WHERE id > $1::bigint) AS lagging", [
-          row.forward_id,
-        ])
+        await db.query(
+          `SELECT count(*) > $2::int AS lagging FROM (
+            SELECT 1 FROM usage WHERE id > $1::bigint ORDER BY id LIMIT $2::int + 1
+          ) pending`,
+          [row.forward_id, historyForwardPages * historyBatchSize],
+        )
       ).rows[0]?.lagging === true;
     // Ready classification means the traffic table exists, so proof traffic can be told apart.
     const unknown = terminalReady

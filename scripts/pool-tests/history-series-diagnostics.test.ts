@@ -196,11 +196,13 @@ test("slow SQL fails at five seconds, closes its socket, blocks late queries and
 
 test("SQL timeouts expose History 504 only with explicit policy and preserve default caller privacy", async () => {
   for (const timeoutFailure of [undefined, "history"] as const) {
-    for (const error of [
-      { code: "57014", detail: privateSentinel },
-      { code: "55P03", detail: privateSentinel },
-      new Error("Query read timeout"),
-    ]) {
+    // Postgres answered a cancelled statement, so its session closes normally; only a timeout on
+    // this side leaves the socket unknown and destroys it.
+    for (const [error, destroys] of [
+      [Object.assign(new Error(privateSentinel), { code: "57014" }), 0],
+      [Object.assign(new Error(privateSentinel), { code: "55P03" }), 0],
+      [new Error("Query read timeout"), 1],
+    ] as const) {
       const f = clientFixture(async () => {
         throw error;
       });
@@ -228,7 +230,8 @@ test("SQL timeouts expose History 504 only with explicit policy and preserve def
       );
       assert.doesNotMatch(JSON.stringify(body), /private-|57014|55P03|Query read timeout/);
       await f.ended.promise;
-      assert.equal(f.state.destroys, 1);
+      assert.equal(f.state.destroys, destroys);
+      assert.equal(f.state.ends, 1);
     }
   }
 });
