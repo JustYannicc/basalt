@@ -664,6 +664,28 @@ test("a person's revoke during a pending removal is recorded for when removal fi
   assert.equal((await device.check()).status, 410);
 });
 
+test("a tools-only row its person revoked while its removal was pending stays revoked", async () => {
+  const p = protocol();
+  const reported = await reportedDevice(p, "revoked-pending", "8");
+  // As main leaves it: removal began from active and stopped when Home failed, then the person
+  // revoked it on Connect, and the native grant was never revoked at the tools host.
+  await leaveRow(p, reported.device.computer, {
+    state: "revoked",
+    revokedAt: new Date(p.f.now()).toISOString(),
+    removalPending: true,
+    removalAt: p.f.now(),
+    beforeRemoval: { state: "active" },
+  });
+  assert.equal((await reported.check()).status, 410);
+  await reported.list(true);
+  assert.equal((await p.f.registry())[reported.device.computer]?.state, "revoked", "not revived");
+  await p.f.expire();
+  const finished = (await p.f.registry())[reported.device.computer];
+  assert.equal(finished?.state, "revoked");
+  assert.equal(finished?.removalPending, undefined, "upkeep finished it");
+  assert.equal((await reported.check()).status, 410);
+});
+
 test("upkeep finishes legacy tools-only rows that show their person's revoke as revoked", async () => {
   const p = protocol();
   const legacy = await reportedDevice(p, "upkeep-legacy", "6");
