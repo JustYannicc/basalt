@@ -16,6 +16,7 @@ import {
   resumableAnswer,
   stampResumeTarget,
   streamResumeAttempts,
+  streamResumeWindowMs,
   type StreamResumeInput,
 } from "./stream-resume.ts";
 
@@ -305,7 +306,7 @@ test("a layer that died since the readiness read costs resumability only", async
   const marked = () =>
     new Request("http://pool/v1/responses", {
       method: "POST",
-      headers: { "X-Basalt-Resumable": "1" },
+      headers: { "X-Basalt-Resumable": "1", "Content-Length": "13" },
       body: '{"model":"m"}',
     });
   const refused = Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
@@ -426,7 +427,7 @@ test("on a runtime's endpoint, a stopped container is the runtime's failure and 
   const marked = () =>
     new Request("http://runtime/v1/messages", {
       method: "POST",
-      headers: { "X-Basalt-Resumable": "1" },
+      headers: { "X-Basalt-Resumable": "1", "Content-Length": "13" },
       body: '{"model":"m"}',
     });
 
@@ -450,4 +451,177 @@ test("on a runtime's endpoint, a stopped container is the runtime's failure and 
   assert.ok(failure instanceof SlotRefused);
   assert.equal(failure.reason, "unhealthy");
   assert.equal(runtimeFailureDiagnostic(failure, "fleet_forward").runtimeStep, "port_dispatch");
+});
+
+test("a stopped container on the layer's port is the runtime's failure, and an unknown or large body is never re-sent", async () => {
+  const marked = (headers: Record<string, string> = {}) =>
+    new Request("http://pool/v1/responses", {
+      method: "POST",
+      headers: { "X-Basalt-Resumable": "1", ...headers },
+      body: '{"model":"m"}',
+    });
+  const notListening = () =>
+    new Error("The container is not listening in the TCP address 10.0.0.1:8316");
+  const ports: number[] = [];
+  const failing = (error: Error) => async (_request: Request, port: number) => {
+    ports.push(port);
+    throw error;
+  };
+  const outcome = (pending: Promise<Response>) =>
+    pending.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+  // Stopped: never re-sent, and left unclassified, so the hop reads it as on the node's port.
+  const stopped = notListening();
+  assert.equal(
+    await outcome(toLayer(marked({ "Content-Length": "13" }), failing(stopped), () => false)),
+    stopped,
+  );
+  assert.deepEqual(ports, [resumeLayerPort]);
+  assert.equal(runtimeFailureDiagnostic(stopped, "primary_forward").runtimeStep, "primary_forward");
+
+  // A body of unknown size, or above the kept-copy bound, is never re-sent: the layer's failure.
+  const unkept: Record<string, string>[] = [{}, { "Content-Length": String(4 * 1024 * 1024 + 1) }];
+  for (const headers of unkept) {
+    ports.length = 0;
+    const error = notListening();
+    assert.equal(await outcome(toLayer(marked(headers), failing(error))), error);
+    assert.deepEqual(ports, [resumeLayerPort]);
+    assert.equal(runtimeFailureDiagnostic(error, "fleet_forward").runtimeStep, "resume_layer");
+  }
+
+  // An unreachable node with no copy to re-send is the node's own failure, sent once.
+  ports.length = 0;
+  const unreachable = await outcome(
+    toLayer(marked(), async (_request, port) => {
+      ports.push(port);
+      return new Response("{}", {
+        status: 502,
+        headers: { "X-Basalt-Resume-Upstream": "unreachable" },
+      });
+    }),
+  );
+  assert.ok(unreachable instanceof Error);
+  assert.deepEqual(ports, [resumeLayerPort]);
+  assert.equal(runtimeFailureDiagnostic(unreachable, "fleet_forward").runtimeStep, "port_dispatch");
+});
+
+test("a resume read that gets no answer from the layer within the window is gone", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let aborted = false;
+  const pending = toLayer(
+    new Request(`http://pool/__basalt/resume/v1/${requestId}`),
+    (request) =>
+      new Promise<Response>((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(request.signal.reason);
+        });
+      }),
+  );
+  context.mock.timers.tick(streamResumeWindowMs);
+  assert.equal((await pending).status, 410);
+  assert.ok(aborted);
+});
+
+test("a resume that never answers ends with today's error once the window has passed", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let asked = 0;
+  const spliced = resumableAnswer(new Response(cutBody([first]), { headers: resumableHeaders() }), {
+    resume: () => {
+      asked++;
+      return new Promise<Response>(() => {});
+    },
+    ended: () => true,
+    wait: async () => {},
+    now: () => 0,
+    delayMs: 1_000,
+    signal: new AbortController().signal,
+  });
+  const reader = spliced.body!.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), first);
+  const cut = reader.read();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(asked, 1);
+  context.mock.timers.tick(streamResumeWindowMs);
+  await assert.rejects(cut, /no longer active/);
+  assert.equal(asked, 1);
+});
+
+test("a marked answer that can't be resumed reaches the client with nothing internal in it", () => {
+  const deps = {
+    resume: async () => assert.fail("never resumed"),
+    ended: () => true,
+    wait: async () => {},
+    now: () => 0,
+    delayMs: 1_000,
+    signal: new AbortController().signal,
+  };
+  for (const answer of [
+    new Response('{"type":"error"}', { status: 400, headers: resumableHeaders() }),
+    new Response("data", { headers: resumableHeaders({ "X-Basalt-Resume-Target": "elsewhere" }) }),
+  ]) {
+    const delivered = resumableAnswer(answer, deps);
+    assert.notEqual(delivered, answer);
+    assert.equal(delivered.status, answer.status);
+    for (const name of ["X-Basalt-Resume", "X-Basalt-Resume-Target", "X-Basalt-Resume-State"])
+      assert.equal(delivered.headers.get(name), null, name);
+    assert.equal(delivered.headers.get("X-Request-Id"), requestId);
+  }
+  // Only a successful answer is stamped with the runtime that served it.
+  const failed = new Response(null, { status: 500, headers: { "X-Basalt-Resume": "v1" } });
+  assert.equal(stampResumeTarget(failed, { kind: "primary" }), failed);
+});
+
+test("a client that leaves while a resume is asked for does not keep the resumed part open", async () => {
+  let release = () => {};
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let resumedCancelled = false;
+  const spliced = resumableAnswer(new Response(cutBody([first]), { headers: resumableHeaders() }), {
+    resume: async (input) =>
+      new Response(
+        new ReadableStream({
+          cancel() {
+            resumedCancelled = true;
+          },
+        }),
+        { headers: { "X-Basalt-Resume": "v1", "X-Basalt-Resume-From": String(input.from) } },
+      ),
+    ended: () => true,
+    wait: () => waiting,
+    now: () => 0,
+    delayMs: 1_000,
+    signal: new AbortController().signal,
+  });
+  const reader = spliced.body!.getReader();
+  await reader.read();
+  const cut = reader.read().catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  await reader.cancel("client left").catch(() => {});
+  release();
+  await cut;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(resumedCancelled);
+});
+
+test("an answer whose resumed part fails before any byte is not resumed again", async (context) => {
+  let resumes = 0;
+  const h = hop(
+    context,
+    () => new Response(cutBody([first]), { headers: resumableHeaders() }),
+    async (input) => {
+      resumes++;
+      return new Response(cutBody([]), {
+        headers: { "X-Basalt-Resume": "v1", "X-Basalt-Resume-From": String(input.from) },
+      });
+    },
+  );
+  const text = await read(await fetchController(call(), h.hop));
+  assert.ok(text.startsWith(first));
+  assert.match(text, /The model runtime restarted/);
+  assert.equal(resumes, 1);
 });

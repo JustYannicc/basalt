@@ -72,6 +72,8 @@ interface Dependencies {
   protection: RuntimeProtection;
   databasePool?: Pick<HomeDatabasePoolMonitor, "observation">;
   fetch(request: Request, port: 8317 | 8327 | typeof resumeLayerPort): Promise<Response>;
+  /** Whether the container still runs; a stopped one's failure is never the front layer's. */
+  running?(): boolean;
   defer(work: Promise<unknown>): void;
 }
 
@@ -195,7 +197,9 @@ export async function forwardPoolRequest(
       const sent = routed === "gone" ? forwarded : routed.request;
       const target = routed === "gone" ? port : routed.port;
       const send = (request: Request) =>
-        target === resumeLayerPort ? toLayer(request, deps.fetch) : deps.fetch(request, target);
+        target === resumeLayerPort
+          ? toLayer(request, deps.fetch, deps.running)
+          : deps.fetch(request, target);
       if (port === 8317 && (native !== undefined || modelLease !== undefined))
         return modelLifetimeFetch(sent, send, dispatch);
       dispatch();

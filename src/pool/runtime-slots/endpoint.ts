@@ -499,8 +499,10 @@ export class RuntimeEndpoint {
       }
       const response =
         routed.port === resumeLayerPort
-          ? await toLayer(routed.request, (request, target) =>
-              this.channel.fetch(configuration, request, target),
+          ? await toLayer(
+              routed.request,
+              (request, target) => this.channel.fetch(configuration, request, target),
+              () => this.ctx.container?.running === true,
             )
           : await this.channel.fetch(configuration, routed.request, routed.port);
       if (isModelLifetimePath(new URL(request.url).pathname))

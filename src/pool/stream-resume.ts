@@ -27,12 +27,18 @@ export const streamResumePath = "/__basalt/resume/v1/";
  * owns the container turns it into the layer's mark only while the container advertises the layer.
  */
 export const streamResumeEligibleHeader = "X-Basalt-Resume-Eligible";
-/** The front layer's own port; marked calls and resume reads only (the layer's own, proposed by B). */
+/** The front layer's own port; marked calls and resume reads only. */
 export const resumeLayerPort = 8316;
 /** Attempts per cut; each waits the replay delay first, as the reset replay does. */
 export const streamResumeAttempts = 3;
 /** A cut's attempts end this long after it; a new instance answers within seconds. */
 export const streamResumeWindowMs = 20_000;
+/** Cuts one answer is resumed from, each only after the delivered offset moved. */
+export const streamResumeCuts = 5;
+/** A body kept for a refused connect's resend stays inside the entry's own bounds for a held copy. */
+const spareBytes = 4 * 1024 * 1024;
+const spareBudgetBytes = 32 * 1024 * 1024;
+let spareHeld = 0;
 const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const internalHeaders = [streamResumeHeader, streamResumeTargetHeader, streamResumeStateHeader];
 
@@ -145,48 +151,84 @@ export function layerConnectRefused(error: unknown) {
   return false;
 }
 
+/** A copy of a call's body for a resend, when its size is known and inside the bounds. */
+function spareOf(request: Request) {
+  const size = request.body ? Number(request.headers.get("Content-Length") ?? Number.NaN) : 0;
+  if (!Number.isSafeInteger(size) || size < 0 || size > spareBytes) return undefined;
+  if (spareHeld + size > spareBudgetBytes) return undefined;
+  spareHeld += size;
+  let held = true;
+  return {
+    request: request.clone(),
+    release() {
+      if (held) spareHeld -= size;
+      held = false;
+    },
+  };
+}
+
+/** A resume read: gone when the layer can't take it or sends no headers within the window. */
+async function resumeRead(
+  request: Request,
+  send: (request: Request, port: typeof resumeLayerPort) => Promise<Response>,
+) {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), streamResumeWindowMs);
+  try {
+    return await send(new Request(request, { signal: deadline.signal }), resumeLayerPort);
+  } catch {
+    return resumeGone();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Sends a routed request to the front layer's port. A layer that died since the readiness read
  * costs resumability only: a refused connect sends the call on to the node unmarked, as it would
  * have gone without the advert, and any other failure is recorded as the layer's, so neither the
- * fleet's quarantine nor a runtime recovery acts on it. A resume read the layer can't take is gone.
+ * fleet's quarantine nor a runtime recovery acts on it. A stopped container is the runtime's
+ * failure, as on the node's port. A body too large to keep, or of unknown size, is never re-sent.
  */
 export async function toLayer(
   request: Request,
   send: (request: Request, port: 8317 | typeof resumeLayerPort) => Promise<Response>,
+  running: () => boolean = () => true,
 ): Promise<Response> {
-  if (new URL(request.url).pathname.startsWith(streamResumePath))
-    return send(request, resumeLayerPort).catch(() => resumeGone());
-  const spare = request.clone();
-  const toNode = () => {
-    const headers = new Headers(spare.headers);
+  if (new URL(request.url).pathname.startsWith(streamResumePath)) return resumeRead(request, send);
+  const spare = spareOf(request);
+  const toNode = (copy: Request) => {
+    const headers = new Headers(copy.headers);
     headers.delete(streamResumableHeader);
-    return send(new Request(spare, { headers }), 8317);
+    return send(new Request(copy, { headers }), 8317);
   };
-  let answer: Response;
   try {
-    answer = await send(request, resumeLayerPort);
-  } catch (error) {
-    if (layerConnectRefused(error)) return toNode();
-    void spare.body?.cancel().catch(() => {});
-    rememberRuntimeFailure("resume_layer", error);
-    throw error;
-  }
-  const upstream = answer.status === 502 ? answer.headers.get(streamResumeUpstreamHeader) : null;
-  // The layer couldn't reach the node, so the node saw nothing: the node's port answers as today.
-  if (upstream === "unreachable") {
+    let answer: Response;
+    try {
+      answer = await send(request, resumeLayerPort);
+    } catch (error) {
+      if (!running()) throw error;
+      if (spare && layerConnectRefused(error)) return await toNode(spare.request);
+      rememberRuntimeFailure("resume_layer", error);
+      throw error;
+    }
+    const upstream = answer.status === 502 ? answer.headers.get(streamResumeUpstreamHeader) : null;
+    if (upstream !== "unreachable" && upstream !== "failed") return answer;
     void answer.body?.cancel().catch(() => {});
-    return toNode();
+    // The layer couldn't reach the node, so the node saw nothing: its port answers as today.
+    if (upstream === "unreachable" && spare) return await toNode(spare.request);
+    // The node failed, or can't be reached and the call can't be re-sent: the node's own failure,
+    // as on its port, and never sent twice, since the node may have started it.
+    refuseRuntime(
+      "port_dispatch",
+      new Error(
+        upstream === "failed" ? "Pool node failed before answering" : "Pool node unreachable",
+      ),
+    );
+  } finally {
+    spare?.release();
+    void spare?.request.body?.cancel().catch(() => {});
   }
-  // The node took the call and failed before answering: its own failure, as on its port, and
-  // never sent again, since it may have started the call.
-  if (upstream === "failed") {
-    void answer.body?.cancel().catch(() => {});
-    void spare.body?.cancel().catch(() => {});
-    refuseRuntime("port_dispatch", new Error("Pool node failed before answering"));
-  }
-  void spare.body?.cancel().catch(() => {});
-  return answer;
 }
 
 /** The explicit "gone": the entry ends the stream with today's retry terminal. */
@@ -196,7 +238,8 @@ export function resumeGone(state: "gone" | "failed" = "gone") {
 
 /** Marks an answer with the runtime that served it, only when that runtime can resume it. */
 export function stampResumeTarget(response: Response, target: StreamResumeTarget) {
-  if (response.headers.get(streamResumeHeader) !== streamResumeVersion) return response;
+  if (!response.ok || response.headers.get(streamResumeHeader) !== streamResumeVersion)
+    return response;
   const headers = new Headers(response.headers);
   headers.set(streamResumeTargetHeader, encodeResumeTarget(target));
   const stamped = new Response(response.body, {
@@ -227,9 +270,13 @@ interface SpliceDeps {
  * An answer the front layer did not mark is returned untouched.
  */
 export function resumableAnswer(response: Response, deps: SpliceDeps): Response {
+  if (!internalHeaders.some((name) => response.headers.has(name))) return response;
   const requestId = response.headers.get("X-Request-Id") ?? "";
   const target = response.headers.get(streamResumeTargetHeader) ?? "";
   const boot = response.headers.get(streamBootHeader) ?? "";
+  const headers = new Headers(response.headers);
+  for (const name of internalHeaders) headers.delete(name);
+  const init = { status: response.status, statusText: response.statusText, headers };
   if (
     !response.ok ||
     !response.body ||
@@ -238,22 +285,30 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
     !decodeResumeTarget(target) ||
     !boot
   )
-    return response;
+    // Not resumable after all: the same answer, with nothing internal left in it.
+    return new Response(response.body, init);
   let reader = response.body.getReader();
   let delivered = 0;
+  let cuts = 0;
+  let resumedAt = -1;
+  let cancelled = false;
   const reattach = async () => {
     const cutAt = deps.now();
     for (let attempt = 1; attempt <= streamResumeAttempts; attempt++) {
       if (deps.now() - cutAt + deps.delayMs > streamResumeWindowMs) break;
       await deps.wait(deps.delayMs, deps.signal);
-      let answer: Response;
+      let answer: Response | undefined;
       try {
-        answer = await deps.resume({ requestId, from: delivered, target, boot });
+        answer = await withinWindow(
+          deps.resume({ requestId, from: delivered, target, boot }),
+          streamResumeWindowMs - (deps.now() - cutAt),
+        );
       } catch (error) {
         // The new instance may not be up yet; any other refusal means it cannot resume.
         if (deps.ended(error) && !deps.signal.aborted) continue;
         return { outcome: "failed" as const, attempt };
       }
+      if (!answer) return { outcome: "failed" as const, attempt };
       if (
         answer.status === 200 &&
         answer.body &&
@@ -266,8 +321,6 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
     }
     return { outcome: "failed" as const, attempt: streamResumeAttempts };
   };
-  const headers = new Headers(response.headers);
-  for (const name of internalHeaders) headers.delete(name);
   return new Response(
     new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -276,7 +329,9 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
           try {
             part = await reader.read();
           } catch (error) {
-            if (!deps.ended(error) || deps.signal.aborted) throw error;
+            if (!deps.ended(error) || deps.signal.aborted || cancelled) throw error;
+            // A cut with no byte delivered since the last resume, or one too many, is not resumed.
+            if (++cuts > streamResumeCuts || delivered === resumedAt) throw error;
             const result = await reattach();
             console.info("POOL_STREAM_RESUME", {
               requestId,
@@ -286,7 +341,13 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
             });
             // No resume: the original error ends the stream, so today's retry terminal follows.
             if (result.outcome !== "resumed") throw error;
+            // The client left while the resume was asked for: the resumed part is not kept open.
+            if (cancelled || deps.signal.aborted) {
+              void result.reader.cancel().catch(() => {});
+              throw error;
+            }
             reader = result.reader;
+            resumedAt = delivered;
             continue;
           }
           if (part.done) return controller.close();
@@ -295,9 +356,25 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
         }
       },
       cancel(reason) {
+        cancelled = true;
         return reader.cancel(reason);
       },
     }),
-    { status: response.status, statusText: response.statusText, headers },
+    init,
   );
+}
+
+/** The answer if it comes within the window, or nothing; a later one is cancelled when it comes. */
+async function withinWindow(answer: Promise<Response>, milliseconds: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(resolve, Math.max(0, milliseconds), undefined);
+  });
+  try {
+    const first = await Promise.race([answer, late]);
+    if (!first) void answer.then((value) => value.body?.cancel()).catch(() => {});
+    return first;
+  } finally {
+    clearTimeout(timer);
+  }
 }

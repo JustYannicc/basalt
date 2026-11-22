@@ -111,6 +111,7 @@ import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
+import { readinessReadMs } from "./runtime-slots/forced-restart-timing.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import { brand } from "../../brand.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
@@ -881,11 +882,20 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           : await this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
               // A stopped container's answers went with it; never start one to look.
               if (!container?.running) return resumeGone();
-              const routed = resumeRoute(forwarded, 8317, await (await this.lifecycle).warm());
+              // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
+              // out a restart.
+              const status = await readRuntimeHealth(
+                container.getTcpPort(8318),
+                this.env.POOL_MANAGEMENT_KEY,
+                AbortSignal.timeout(readinessReadMs),
+              ).catch(() => undefined);
+              const routed = resumeRoute(forwarded, 8317, status);
               if (routed === "gone") return resumeGone();
               prepared();
-              return toLayer(routed.request, (request, port) =>
-                container.getTcpPort(port).fetch(request),
+              return toLayer(
+                routed.request,
+                (request, port) => container.getTcpPort(port).fetch(request),
+                () => container.running,
               );
             });
       if (answer.status !== 200) return answer;
@@ -1144,6 +1154,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
         return this.ctx.container.getTcpPort(target).fetch(forwarded);
       },
+      running: () => this.ctx.container?.running === true,
       defer: (work) => this.ctx.waitUntil(work),
     });
   }
