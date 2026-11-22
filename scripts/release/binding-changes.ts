@@ -5,10 +5,12 @@ import { Redacted } from "effect";
 import { safeJson } from "./safe-json.ts";
 
 /**
- * Which bindings each updated Worker changes, by name and Cloudflare type and never by value, and
- * whether a failed release's rollback could force every changed secret past Cloudflare's
- * changed-secret refusal. The release prints it in plan mode, after the digest, for the person who
- * gives the apply its GO. It only reads the plan: nothing the apply compares depends on it.
+ * Which bindings each updated Worker changes, by name and by the type it is declared as, never by
+ * value, and whether, by declared type, a failed release's rollback could force every changed
+ * secret past Cloudflare's changed-secret refusal. The declared type is not the authority: the
+ * live Worker's is (22 Nov: a value declared plain and also read as configuration stayed plain).
+ * The release prints it in plan mode, after the digest, for the person who gives the apply its GO.
+ * It only reads the plan: nothing the apply compares depends on it.
  */
 
 /** A name the stack declares: letters, digits and underscores. Anything else is withheld. */
@@ -117,17 +119,17 @@ export function bindingChangesReport(plan: AlchemyPlan.Plan, forceSecrets: reado
   );
   const unknown = named((type) => type === "unresolved" || type === "binding");
   return [
-    "Binding changes per updated Worker (names and types only):",
+    "Binding changes per updated Worker (names, and the type each is declared as; the live Worker's types decide):",
     ...(workers.length
       ? workers.map(
           ({ worker, changes }) =>
-            `- ${worker}: ${changes.map(({ name, type }) => `${name} (${type})`).join(", ")}`,
+            `- ${worker}: ${changes.map(({ name, type }) => `${name} (declared ${type})`).join(", ")}`,
         )
       : ["- none"]),
     unlisted.length
-      ? `Every changed secret is on forceSecrets: NO. Not on it: ${unlisted.join("; ")}.`
+      ? `By declared type, every changed secret is on forceSecrets: NO. Not on it: ${unlisted.join("; ")}.`
       : unknown.length
-        ? `Every changed secret is on forceSecrets: not known until the apply resolves ${unknown.join("; ")}.`
-        : "Every changed secret is on forceSecrets: yes.",
+        ? `By declared type, every changed secret is on forceSecrets: not known until the apply resolves ${unknown.join("; ")}.`
+        : "By declared type, every changed secret is on forceSecrets: yes.",
   ].join("\n");
 }

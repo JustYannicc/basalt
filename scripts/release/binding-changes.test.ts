@@ -42,12 +42,32 @@ test("a changed secret is named with its type, never its value, and the verdict 
   const unlisted = bindingChangesReport(plan, []);
   assert.match(
     unlisted,
-    /^Every changed secret is on forceSecrets: NO\. Not on it: .*ArtifactsCredentials: POOL_APP_SIGNING_KEY/mu,
+    /^By declared type, every changed secret is on forceSecrets: NO\. Not on it: .*ArtifactsCredentials: POOL_APP_SIGNING_KEY/mu,
   );
-  assert.match(bindingChangesReport(plan, ["POOL_APP_SIGNING_KEY"]), /forceSecrets: yes\.$/u);
-  // The public lines, and everything they are built from, carry neither value.
+  assert.match(unlisted, /ArtifactsCredentials: .*POOL_APP_SIGNING_KEY \(declared secret_text\)/u);
+  // Listing the store's secret takes it, and only it, off the verdict's list.
+  assert.doesNotMatch(
+    bindingChangesReport(plan, ["POOL_APP_SIGNING_KEY"]),
+    /Not on it: .*ArtifactsCredentials: POOL_APP_SIGNING_KEY/u,
+  );
+  // Every secret the report names, listed: the verdict is yes.
+  const secrets = changes.flatMap(({ changes: names }) =>
+    names.filter(({ type }) => type.split("+").includes("secret_text")).map(({ name }) => name),
+  );
+  assert.match(
+    bindingChangesReport(plan, secrets),
+    /^By declared type, every changed secret is on forceSecrets: yes\.$/mu,
+  );
+  // The public lines, and everything they are built from, carry no value: neither of these, nor
+  // the fixture's other secrets.
   for (const text of [unlisted, safeJson(changes)])
-    for (const value of [recordedSecret, declaredSecret])
+    for (const value of [
+      recordedSecret,
+      declaredSecret,
+      "synthetic-management-secret",
+      "synthetic-deployment-key",
+      "synthetic-database-password",
+    ])
       assert.equal(text.includes(value), false, value);
 });
 
