@@ -401,7 +401,7 @@ def main(stop: threading.Event | None = None) -> int:
             return Child(
                 "resume",
                 [RESUME_BINARY],
-                child_environment("resume", management_key),
+                child_environment("resume", management_key, node_boot_id=readiness.boot_id),
                 ROOT / "resume",
             )
 

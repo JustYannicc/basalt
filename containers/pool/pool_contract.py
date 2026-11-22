@@ -273,6 +273,9 @@ def child_environment(
                 env[name] = value
     elif kind == "node":
         env["HOME_JWT"] = home_jwt
+    elif kind == "resume":
+        # A resume naming any other boot is gone; the layer gets no credentials.
+        env["POOL_BOOT_ID"] = node_boot_id
     return env
 
 

@@ -123,6 +123,23 @@ class ResumeLayerTests(unittest.TestCase):
             self.assertTrue(pool_contract.resume_layer_healthy())
 
 
+class ResumeEnvironmentTests(unittest.TestCase):
+    def test_the_layer_gets_its_boot_and_no_credentials(self) -> None:
+        with patch.object(pool_contract, "ROOT", pool_contract.pathlib.Path(self._tmp())):
+            env = pool_contract.child_environment("resume", "management-secret", "jwt-secret", "boot-1")
+        self.assertEqual(env["POOL_BOOT_ID"], "boot-1")
+        self.assertNotIn("HOME_JWT", env)
+        self.assertNotIn("MANAGEMENT_PASSWORD", env)
+        self.assertNotIn("management-secret", env.values())
+
+    def _tmp(self) -> str:
+        import tempfile
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return directory.name
+
+
 class ReadinessResumeTests(unittest.TestCase):
     def test_ready_names_resume_only_while_the_layer_is_available(self) -> None:
         readiness = Readiness("k" * 32)

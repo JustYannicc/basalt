@@ -42,7 +42,7 @@ func run() error {
 		return err
 	}
 	server := &http.Server{
-		Handler:           NewLayer(upstream),
+		Handler:           NewLayer(upstream, NewStore(productionLimits()), os.Getenv("POOL_BOOT_ID")),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

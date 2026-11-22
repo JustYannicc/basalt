@@ -24,10 +24,13 @@ const (
 type Layer struct {
 	upstream  *url.URL
 	transport http.RoundTripper
+	store     *Store
+	boot      string
 }
 
-func NewLayer(upstream *url.URL) *Layer {
-	return &Layer{upstream: upstream, transport: newUpstreamTransport()}
+// NewLayer serves answers for the container boot named boot; a resume naming any other boot is gone.
+func NewLayer(upstream *url.URL, store *Store, boot string) *Layer {
+	return &Layer{upstream: upstream, transport: newUpstreamTransport(), store: store, boot: boot}
 }
 
 func (l *Layer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,20 +47,11 @@ func (l *Layer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case isUpgrade(r):
 		// Model sockets stay on the node's port; one that arrives here is a routing fault.
 		closedError(w, http.StatusBadRequest, "resume_layer_no_upgrade")
+	case r.Header.Get(resumableHeader) == "1":
+		l.resumable(w, r)
 	default:
 		l.passThrough(w, r)
 	}
-}
-
-// resume answers "gone" until buffering exists: no id is ever held, which is the contract's
-// answer for an unknown id.
-func (l *Layer) resume(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		closedError(w, http.StatusMethodNotAllowed, "resume_layer_method")
-		return
-	}
-	w.Header().Set(resumeStateHeader, "gone")
-	closedError(w, http.StatusGone, "resume_gone")
 }
 
 func isUpgrade(r *http.Request) bool {

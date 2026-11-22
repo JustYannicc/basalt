@@ -80,6 +80,8 @@ func writeHead(w http.ResponseWriter, resp *http.Response) {
 		header.Add("Trailer", name)
 	}
 	w.WriteHeader(resp.StatusCode)
+	// Headers leave as soon as the node's did, as they do on a direct call.
+	_ = http.NewResponseController(w).Flush()
 }
 
 // copyBody streams bytes as they arrive; a model stream must never wait for a full buffer.

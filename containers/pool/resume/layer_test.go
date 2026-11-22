@@ -51,7 +51,7 @@ func newLayerServer(t *testing.T, upstream *upstreamFixture) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(NewLayer(target))
+	server := httptest.NewServer(NewLayer(target, NewStore(testLimits()), testBoot))
 	t.Cleanup(server.Close)
 	return server
 }
@@ -117,12 +117,12 @@ func TestPassThroughKeepsRequestAndAnswerBytes(t *testing.T) {
 	}
 }
 
-func TestMarkedCallIsNotOfferedForResumeBeforeBuffering(t *testing.T) {
+func TestMarkedCallReachesTheNodeUnchangedAndIsOfferedForResume(t *testing.T) {
 	upstream := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	layer := newLayerServer(t, upstream)
 	resp, body := rawCall(t, layer.URL, "POST /v1/messages HTTP/1.1\r\nHost: pool\r\n"+
 		"X-Basalt-Resumable: 1\r\nX-Basalt-Request-Id: 6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f\r\nContent-Length: 0\r\n\r\n")
-	if string(body) != "ok" || resp.Header.Get(resumeHeader) != "" {
+	if string(body) != "ok" || resp.Header.Get(resumeHeader) != "v1" {
 		t.Fatalf("marked call: %q resume=%q", body, resp.Header.Get(resumeHeader))
 	}
 	if (<-upstream.seen).Header.Get(resumableHeader) != "1" {
@@ -289,7 +289,7 @@ func TestUnreachableNodeIsNamedBeforeAnyAnswerByte(t *testing.T) {
 	address := listener.Addr().String()
 	_ = listener.Close()
 	target, _ := url.Parse("http://" + address)
-	layer := httptest.NewServer(NewLayer(target))
+	layer := httptest.NewServer(NewLayer(target, NewStore(testLimits()), testBoot))
 	defer layer.Close()
 	resp, err := http.Get(layer.URL + "/v1/messages")
 	if err != nil {
