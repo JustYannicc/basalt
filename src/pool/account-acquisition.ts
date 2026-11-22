@@ -126,6 +126,10 @@ export class HomeAccountAcquisitions {
         const route = signInRoute(value);
         if (route === "refuse" || (route && !this.routes))
           return Response.json({ error: "route_unavailable" }, { status: 409 });
+        // A Home without the session proxy (carry 0758) would ignore proxy_url and exchange the
+        // code directly, so a routed start needs Home's own word that it routes the session.
+        if (route && !(await this.routesSessions(request.signal)))
+          return Response.json({ error: "route_unsupported" }, { status: 409 });
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
         );
@@ -337,6 +341,15 @@ export class HomeAccountAcquisitions {
     // Anything else is classified exactly as an ordinary start's answer would be.
     if (response.status === 404) fail(404, "not_found", "The backend resource no longer exists.");
     throw new BackendFailure(response.status);
+  }
+
+  private async routesSessions(signal: AbortSignal) {
+    const capabilities = await acquisitionStep("oauth_start", () =>
+      this.home.data("/capabilities", { signal }),
+    );
+    return (
+      object(capabilities.capabilities) && capabilities.capabilities.oauth_session_proxy_v1 === true
+    );
   }
 
   private async advance(

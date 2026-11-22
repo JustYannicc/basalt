@@ -287,3 +287,22 @@ test("a routed start with an uncertain answer still releases its route when the 
   await f.tick();
   assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
 });
+
+test("a Home that can't route a sign-in session never gets a routed start: route_unsupported, nothing sent", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  f.withoutSessionProxy();
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unsupported" });
+  assert.deepEqual(
+    f.calls.map((call) => new URL(call.path, "https://fixture.invalid").pathname.split("/").pop()),
+    ["capabilities"],
+  );
+  assert.deepEqual(recorder.events, []);
+  // Someone without rules signs in as on main, on the same Home.
+  assert.equal(
+    typeof (await body(await f.send("start", { hasRules: false }, owner, "connect:plain"))).session,
+    "string",
+  );
+});

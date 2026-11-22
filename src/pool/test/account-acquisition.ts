@@ -45,12 +45,15 @@ export function fixture(
   let status: Record<string, unknown> = { status: "wait" };
   let failStart = false;
   let startReply: (() => Response) | undefined;
+  let sessionProxy = true;
   let statusError: Error | undefined;
   let callbackStatus: number | undefined;
   const home = new HomeClient(async (path, init) => {
     const method = init?.method ?? "GET";
     calls.push({ path, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const url = new URL(path, "https://fixture.invalid");
+    if (url.pathname.endsWith("/capabilities"))
+      return Response.json({ capabilities: { oauth_session_proxy_v1: sessionProxy } });
     if (url.pathname.endsWith("/oauth/auth-url")) {
       if (failStart) throw new Error("Lost response after send");
       if (startReply) return startReply();
@@ -146,6 +149,9 @@ export function fixture(
     },
     tick() {
       return controller.tick();
+    },
+    withoutSessionProxy() {
+      sessionProxy = false;
     },
     startAnswers(reply: () => Response) {
       startReply = reply;
