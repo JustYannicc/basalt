@@ -101,7 +101,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-app-failure.ts b/apps/ho
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-failure.ts
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,129 @@
 +/**
 + * A pool app API route answers its page "unavailable" for every failure it does not name, so the
 + * page never says why. Each such 5xx reaches error reporting here, tagged with its route and the
@@ -150,14 +150,24 @@ new file mode 100644
 +    .replace(/[\w.~+/=-]{16,}/g, (run) => (/\d/.test(run) ? "<value>" : run))
 +    .slice(0, 180);
 +
++const recordedFailure = (error: unknown) => {
++  // A getter that throws or a cause chain that loops must not turn the route's 503 into a defect.
++  try {
++    const recorded = recordedError(error);
++    return recorded instanceof Error
++      ? {
++          name: reportedType(recorded.name) ?? "UnrecognizedFailure",
++          message: scrubReportedText(recorded.message),
++        }
++      : { name: "UnrecognizedFailure", message: "" };
++  } catch {
++    return { name: "UnrecognizedFailure", message: "" };
++  }
++};
++
 +/** The error reported in place of `error`: its recorded type and scrubbed message only. */
 +export const reportedFailure = (error: unknown): Error => {
-+  const recorded = recordedError(error);
-+  const name =
-+    recorded instanceof Error
-+      ? (reportedType(recorded.name) ?? "UnrecognizedFailure")
-+      : "UnrecognizedFailure";
-+  const message = recorded instanceof Error ? scrubReportedText(recorded.message) : "";
++  const { name, message } = recordedFailure(error);
 +  const failure = new Error(message);
 +  failure.name = name;
 +  failure.stack = message === "" ? name : `${name}: ${message}`;
@@ -171,6 +181,12 @@ new file mode 100644
 + * outage is never hidden behind the first.
 + */
 +const reportedOncePerCause: ReadonlySet<PoolRefusalCode> = new Set(["history_too_large"]);
++/** The pool's named refusals below 500: the request was wrong or not allowed, and nothing failed. */
++const quietRefusals: ReadonlySet<PoolRefusalCode> = new Set([
++  "invalid_query",
++  "unauthorized",
++  "not_found",
++]);
 +const causeWindowMs = 60 * 60 * 1000;
 +const causeLimit = 512;
 +const causesReportedAt = new Map<string, number>();
@@ -188,12 +204,18 @@ new file mode 100644
 +  return true;
 +};
 +
-+/** Report a failure a pool app route answers with a 5xx. Statuses below 500 never report. */
++/**
++ * Report a failure a pool app route answers with a 5xx. The pool's named refusals below 500 and
++ * failures marked `ErrorReporter.ignore` never report.
++ */
 +export const reportPoolAppFailure = (route: PoolAppRoute, error: unknown) =>
 +  Effect.gen(function* () {
++    if (ErrorReporter.isIgnored(error)) return;
 +    const refusal = poolRefusal(error);
-+    // The pool's own 4xx refusals still answer the page "unavailable", but nothing failed.
-+    if (refusal !== undefined && refusal.status < 500) return;
++    // These still answer the page "unavailable", but nothing failed. Any other answer the route
++    // turns into its 503, an unnamed 409 or 429 included, reports.
++    if (refusal?.code !== undefined && refusal.status < 500 && quietRefusals.has(refusal.code))
++      return;
 +    if (
 +      refusal?.code !== undefined &&
 +      reportedOncePerCause.has(refusal.code) &&

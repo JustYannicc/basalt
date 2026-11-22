@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, ErrorReporter, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/http";
+import { TestClock } from "effect/testing";
 import { PoolUsageUnavailable } from "../../.upstream/apps/hosted/server/src/contracts/pool-usage.ts";
 import { load, refusalTag, reported, responseBody, routeTag } from "./pool-app-failure-fixture.ts";
 
@@ -200,10 +201,40 @@ test("nothing below 500 reports, though the page still reads a pool refusal as u
   // The same route still reports a pool failure at or above 500.
   const failed = await poolAnswer(503, { error: "backend_unavailable" });
   assert.deepEqual(await run(failing("pool-usage/summary", failed)), { status: 503, events: 1 });
+  // A pool answer below 500 with no named refusal still becomes the route's 503, so it reports.
+  for (const [status, body] of [
+    [409, { error: "busy" }],
+    [429, {}],
+  ] as const) {
+    const unnamed = await poolAnswer(status, body);
+    assert.deepEqual(await run(failing("pool-usage/summary", unnamed)), { status: 503, events: 1 });
+  }
+  // A failure marked to be ignored answers the same and is never reported.
+  class Ignored extends Error {
+    readonly [ErrorReporter.ignore] = true;
+  }
+  assert.deepEqual(await run(failing("pool-usage/summary", new Ignored("quiet"))), {
+    status: 503,
+    events: 0,
+  });
+});
+
+test("a failure with unreadable fields answers unavailable and reports its kind only", async () => {
+  const hostile = new Error("unused");
+  Object.defineProperty(hostile, "message", {
+    get() {
+      throw new Error("a field that throws");
+    },
+  });
+  const { result, events } = await reported(failing("pool-usage/overview", hostile));
+  assert.equal(result.status, 503);
+  assert.deepEqual(responseBody(result), unavailable);
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]!.exception, { values: [{ type: "UnrecognizedFailure" }] });
 });
 
 test("a report never carries a token- or address-shaped message, nor an error's fields", async () => {
-  const token = "sk_live_4f9a8b7c6d5e4f3a2b1c";
+  const token = "tok_4f9a8b7c6d5e4f3a2b1c";
   const address = "person.name@example.invalid";
   const defect = new Error(`refresh for ${address} failed with ${token}\nat a private line`);
   for (const strictPrivacy of [true, false]) {
@@ -281,4 +312,75 @@ test("pool failures report on every occurrence; a repeated named refusal once pe
     poolAnswer(503, { error: "backend_unavailable" }, "app_too_large_a"),
   );
   assert.equal(other.length, 2);
+});
+
+test("a held-back refusal reports again once its hour has passed", async () => {
+  const { refusedBy } = await refusals();
+  const tooLarge = () =>
+    refusedBy(
+      new usage.PoolUsageUnavailable(),
+      { status: 503, body: { error: "history_too_large" } },
+      { pool: "app_too_large_window" },
+    );
+  const reportsAfter = async (minutes: number) =>
+    (
+      await reported(
+        Effect.gen(function* () {
+          yield* TestClock.adjust(minutes * 60_000);
+          return yield* failing("pool-usage/summary", tooLarge());
+        }).pipe(Effect.provide(TestClock.layer())),
+      )
+    ).events.length;
+  assert.equal(await reportsAfter(0), 1);
+  assert.equal(await reportsAfter(59), 0);
+  assert.equal(await reportsAfter(61), 1);
+});
+
+test("held-back refusals are capped at 512, after which the oldest reports again", async () => {
+  const { refusedBy } = await refusals();
+  const { reportPoolAppFailure } = await load(
+    "apps/hosted/server/src/implementation/pool-app-failure.ts",
+  );
+  const tooLarge = (pool: string) =>
+    refusedBy(
+      new usage.PoolUsageUnavailable(),
+      { status: 503, body: { error: "history_too_large" } },
+      { pool },
+    );
+  const summary = async (pool: string) =>
+    (await reported(failing("pool-usage/summary", tooLarge(pool)))).events.length;
+  assert.equal(await summary("app_too_large_oldest"), 1);
+  assert.equal(await summary("app_too_large_oldest"), 0);
+  // Newer causes claim their places whether or not a reporter is listening.
+  for (let index = 0; index < 512; index++)
+    await Effect.runPromise(
+      reportPoolAppFailure("pool-usage/summary", tooLarge(`app_too_large_newer_${index}`)),
+    );
+  assert.equal(await summary("app_too_large_oldest"), 1);
+});
+
+test("strict privacy passes only listed routes, listed refusals and identifier types", async () => {
+  const { poolAppIncident } = await load(
+    "apps/hosted/cloud/src/implementation/pool-app-incident.ts",
+  );
+  const event = (tags: Record<string, string>, type: string) => ({
+    tags,
+    exception: { values: [{ type, value: "refused" }] },
+  });
+  assert.deepEqual(
+    poolAppIncident(event({ [routeTag]: "pool-usage/summary" }, "PoolUsageUnavailable")),
+    {
+      failure: "PoolUsageUnavailable",
+      value: "refused",
+      tags: { [routeTag]: "pool-usage/summary" },
+      fingerprint: ["basalt", "PoolUsageUnavailable", "pool-usage/summary"],
+    },
+  );
+  for (const [tags, type] of [
+    [{ [routeTag]: "pool-usage/other" }, "PoolUsageUnavailable"],
+    [{ [routeTag]: "pool-usage/summary", [refusalTag]: "busy" }, "PoolUsageUnavailable"],
+    [{ [routeTag]: "pool-usage/summary" }, "not an identifier"],
+    [{}, "PoolUsageUnavailable"],
+  ] as const)
+    assert.equal(poolAppIncident(event(tags, type)), undefined, JSON.stringify(tags) + type);
 });

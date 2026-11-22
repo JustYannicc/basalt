@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-app-failure-reporting",
   "file": "0730-pool-app-failure-reporting.patch",
-  "content_sha256": "89a89fd21fbd001b6949b95a81fbb948bbed795b5682888cbc7ee49a09d1c82a",
+  "content_sha256": "dfcb5deed7a865188f9f1040ebd8bf2dad9c22455851375da94cde53e819bd80",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
