@@ -37,6 +37,7 @@ import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
+import { domainFacts, readWorkerDomains, stageWorkerNames } from "./stage-domains.ts";
 import {
   carriesStage,
   readApplications,
@@ -1801,6 +1802,21 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         instances: instances.length,
         running: instances.filter((instance) => instance.state === "running").length,
       }));
+      // The Workers custom domains on the stage's own label or its State's Workers, each with both
+      // facts, so a destroy that meets one its State never recorded can be judged before it is.
+      const rows = (stacks[stageNames(subject).stack] ?? []).map((entry) => entry.value);
+      result.domains = domainFacts(
+        await readWorkerDomains({
+          accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
+          token: source.CLOUDFLARE_API_TOKEN ?? "",
+        }),
+        {
+          label: stageNames(subject).slug,
+          domain: source.TEST_STAGE_DOMAIN ?? "",
+          stage,
+          workers: stageWorkerNames(rows),
+        },
+      );
     } else if (mode === "baseline") {
       await budgetProbe(subject, source, outputs);
       // #1491's acceptance: the root application's version must not move across an apply that changes
