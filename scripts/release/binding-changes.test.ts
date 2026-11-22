@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import type * as AlchemyPlan from "alchemy/Plan";
+import type { ResourceState } from "alchemy/State/ResourceState";
+import { Redacted } from "effect";
 import { bindingChanges, bindingChangesReport, forceListOf } from "./binding-changes.ts";
 import { planDigest } from "./plan-check.ts";
 import { safeJson } from "./safe-json.ts";
@@ -22,7 +25,9 @@ async function replanned(
     declared: first,
     settle: ["Api", "Catalog", "ArtifactsCredentials"],
   });
-  return (await makePlan(context, { rows, declared: then })).plan;
+  // The State the first plan left, as rows: every one of them was written as a ResourceState.
+  const recorded = rows as unknown as Readonly<Record<string, ResourceState>>;
+  return (await makePlan(context, { rows: recorded, declared: then })).plan;
 }
 
 const store = (changes: ReturnType<typeof bindingChanges>) =>
@@ -96,6 +101,40 @@ test("reading the plan for the line leaves the plan's digest byte for byte as it
   bindingChangesReport(plan, ["POOL_APP_SIGNING_KEY"]);
   bindingChanges(plan);
   assert.equal(planDigest(plan), before);
+});
+
+test("a key or Worker that is not a plain name, or holds a long hex run, is withheld, and still counts", () => {
+  const hex = "0123456789abcdef0123";
+  const worker = (env: Record<string, unknown>) => ({
+    resource: { Type: "Cloudflare.Worker" },
+    action: "update",
+    props: { env },
+    state: { props: { env: {} } },
+    bindings: [],
+  });
+  const plan = {
+    resources: {
+      Api: worker({
+        "not a name": "plain-value-P1",
+        [`KEY_${hex}`]: Redacted.make("secret-value-S1"),
+        GOOD_NAME: "plain-value-P2",
+      }),
+      [`Worker${hex}`]: worker({ OTHER: "plain-value-P3" }),
+    },
+    deletions: {},
+  } as unknown as AlchemyPlan.Plan;
+  const report = bindingChangesReport(plan, ["GOOD_NAME", `KEY_${hex}`]);
+  for (const printed of [
+    /^- Api: .*GOOD_NAME \(declared plain_text\)/mu,
+    /^- Api: .*\[withheld\] \(declared plain_text\)/mu,
+    /^- Api: .*\[withheld\] \(declared secret_text\)/mu,
+    /^- \[withheld\]: OTHER \(declared plain_text\)$/mu,
+  ])
+    assert.match(report, printed);
+  // A withheld secret can't be matched to the list, so the verdict refuses it.
+  assert.match(report, /forceSecrets: NO\. Not on it: Api: \[withheld\]\.$/mu);
+  for (const value of [hex, "not a name", "plain-value-P", "secret-value-S1"])
+    assert.equal(report.includes(value), false, value);
 });
 
 test("the force list is read from any policy shape, and a policy without one lists nothing", () => {

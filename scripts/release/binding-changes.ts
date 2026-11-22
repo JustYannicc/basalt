@@ -13,8 +13,13 @@ import { safeJson } from "./safe-json.ts";
  * It only reads the plan: nothing the apply compares depends on it.
  */
 
-/** A name the stack declares: letters, digits and underscores. Anything else is withheld. */
+/**
+ * A name the stack declares: letters, digits and underscores. Anything else is withheld, and so is
+ * a long hex run, which may be an id (as in public-report.ts).
+ */
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,120}$/u;
+const HEX_ID = /[A-Fa-f0-9]{16,}/u;
+const printable = (name: string) => (NAME.test(name) && !HEX_ID.test(name) ? name : WITHHELD);
 /** Cloudflare's binding types are lowercase words; anything else is not printed. */
 const TYPE = /^[a-z][a-z0-9_]{0,40}$/u;
 const SECRET = "secret_text";
@@ -90,9 +95,9 @@ export function bindingChanges(plan: AlchemyPlan.Plan): WorkerBindingChanges[] {
         changes.set(binding.sid, (wire.get(binding.sid) ?? []).join("+") || "binding");
     if (!changes.size) continue;
     workers.push({
-      worker: NAME.test(fqn) ? fqn : WITHHELD,
+      worker: printable(fqn),
       changes: [...changes]
-        .map(([name, type]) => ({ name: NAME.test(name) ? name : WITHHELD, type }))
+        .map(([name, type]) => ({ name: printable(name), type }))
         .sort((a, b) => a.name.localeCompare(b.name)),
     });
   }
