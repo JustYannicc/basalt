@@ -272,6 +272,9 @@ test("only a customer Autumn has never seen is created, and creation is sent onc
   assert.deepEqual(late.routes, ["customers.get", "customers.get", "customers.get_or_create"]);
 });
 
+const failureTag = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isFailure(exit) ? (Cause.squash(exit.cause) as { readonly _tag?: unknown })._tag : undefined;
+
 test("a held or returned v1 organization's member limit fails closed before Autumn is read", async () => {
   for (const state of ["held", "returned"]) {
     let reads = 0;
@@ -282,7 +285,7 @@ test("a held or returned v1 organization's member limit fails closed before Autu
       ),
     );
     assert.ok(Exit.isFailure(exit), state);
-    assert.equal(Cause.squash(exit.cause)._tag, "BillingUnavailable", state);
+    assert.equal(failureTag(exit), "BillingUnavailable", state);
     assert.equal(reads, 0, `${state}: no allowance read`);
   }
   // A failed hold read is not an unheld organization.
@@ -290,7 +293,7 @@ test("a held or returned v1 organization's member limit fails closed before Autu
     allowanceUnlessHeld(Effect.fail("database"), Effect.succeed(freeMembers)),
   );
   assert.ok(Exit.isFailure(unreadable));
-  assert.equal(Cause.squash(unreadable.cause)._tag, "BillingUnavailable");
+  assert.equal(failureTag(unreadable), "BillingUnavailable");
   assert.equal(
     await Effect.runPromise(allowanceUnlessHeld(Effect.succeed(null), Effect.succeed(freeMembers))),
     freeMembers,
