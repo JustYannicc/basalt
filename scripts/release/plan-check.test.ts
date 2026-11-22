@@ -2198,6 +2198,9 @@ test("the class change finds the shared Secrets Store settled, so it lists no en
   assert.equal(settled.resources.PoolObservationSecrets?.action, "noop");
   assert.ok(!(await violationsOf(settled, reviewed)).includes(store));
   assert.ok((await violationsOf(settled, adopting)).includes(store), "the old entry refuses it");
+  // A store that is not settled is not the reviewed class change, with or without an entry.
+  (settled.resources.PoolObservationSecrets as unknown as { action: string }).action = "adopted";
+  assert.ok((await violationsOf(settled, reviewed)).includes(store), "an adopted store is refused");
 });
 
 /** A row as an apply that stopped mid-update leaves it: `old` holds the last finished generation. */
