@@ -127,15 +127,19 @@ async def splice(client, upstream):
             fail()
 
     pumps = asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
-    # A pump blocked in drain() never sees its own side reset; the transport does.
-    lost = [asyncio.ensure_future(side.wait_closed()) for side in (client_writer, upstream_writer)]
+    # A pump blocked in drain() never sees its own side reset; the transport does, while it
+    # is still reading. The watchers are shielded: cancelling wait_closed() itself would
+    # cancel the connection's shared closed-future and end the deadline wait below early.
+    closing = [asyncio.ensure_future(side.wait_closed()) for side in (client_writer, upstream_writer)]
+    for task in closing:
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    lost = [asyncio.shield(task) for task in closing]
     done, _ = await asyncio.wait([pumps, *lost], return_when=asyncio.FIRST_COMPLETED)
     if pumps not in done:
         fail()
     await pumps
     for watcher in lost:
         watcher.cancel()
-    await asyncio.gather(*lost, return_exceptions=True)
     upstream_writer.close()
     if deadline is not None:
         await asyncio.gather(client_writer.wait_closed(), upstream_writer.wait_closed(), return_exceptions=True)
