@@ -1,0 +1,192 @@
+name: Proof contract legs
+
+# Throwaway proof for the split pool contract tests: each leg alone, forward and in reversed file
+# order, on a fresh service database. Deleted with its branch; never merged.
+on:
+  push:
+    branches: ["proof/contract-legs-**"]
+
+permissions:
+  contents: read
+
+env:
+  E2E_BUN_VERSION: 1.4.2
+  BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
+
+jobs:
+  leg-proof:
+    runs-on: ubuntu-latest
+    # The longest job of a full Check, in shards that each build the candidate image. The
+    # compatibility shard also loads the frozen compatibility images and runs the files that read
+    # them plus the one-off proofs; the contracts shard runs every other pool test file, split in
+    # parts by scripts/ci/pool-test-shard.ts (its step took 11.5 of the job's 21.6 hosted minutes).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: contracts
+            part: 1/2
+            order: forward
+          - shard: contracts
+            part: 1/2
+            order: reversed
+          - shard: contracts
+            part: 2/2
+            order: forward
+          - shard: contracts
+            part: 2/2
+            order: reversed
+    services:
+      postgres:
+        image: postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
+        env:
+          POSTGRES_USER: fixture_root
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: fixture-only
+        ports: [5432:5432, 6432:6432]
+        options: >-
+          --health-cmd "pg_isready -U fixture_root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Prove committed change locks and account source read contention on PostgreSQL
+        if: matrix.shard == 'compatibility'
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+        run: node --experimental-transform-types --test --test-concurrency=1 scripts/upstream-tests/account-change-postgres.test.ts scripts/upstream-tests/change-serializable-postgres.test.ts scripts/upstream-tests/account-source-read-locks-postgres.test.ts
+      - name: Stage the pinned app release for provider fixtures
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Free runner disk before pool builds
+        run: |
+          echo "Runner disk before cleanup (bytes)"
+          df -B1 /
+          # The builds peak near 15 GB; deleting the preinstalled SDKs takes over a minute, so only small disks pay it.
+          if [ "$(df --output=avail -B1G / | tail -n 1 | tr -d ' ')" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          fi
+          docker builder prune --all --force
+          echo "Runner disk after cleanup (bytes)"
+          df -B1 /
+      - name: Load the compatibility images
+        if: matrix.shard == 'compatibility'
+        uses: ./.github/actions/pool-compatibility-images
+      - name: Build the pinned pool image
+        run: |
+          echo "Runner disk before compatibility build cache cleanup (bytes)"
+          df -B1 /
+          docker builder prune --all --force
+          echo "Runner disk before candidate build (bytes)"
+          df -B1 /
+          bash scripts/ci/pool-image-build.sh --target runtime --tag basalt-1409-pool:test containers/pool
+      - name: Allow pool fixture HTTP from Docker bridges on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        run: |
+          sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
+          sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
+      - name: Verify containers can reach the host fixture listeners
+        run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
+      - name: Start the isolated transaction pooler
+        if: matrix.shard == 'compatibility'
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+        run: |
+          docker exec "$POSTGRES_CONTAINER" apk add --no-cache pgbouncer=1.25.1-r0
+          docker exec -i "$POSTGRES_CONTAINER" sh -c 'cat > /tmp/budget-pgbouncer.ini' <<'CONFIG'
+          [databases]
+          * = host=127.0.0.1 port=5432
+          [pgbouncer]
+          listen_addr=0.0.0.0
+          listen_port=6432
+          auth_type=trust
+          auth_file=/tmp/budget-users.txt
+          admin_users=fixture_root
+          pool_mode=transaction
+          default_pool_size=5
+          max_db_connections=5
+          max_client_conn=400
+          max_prepared_statements=200
+          ignore_startup_parameters=extra_float_digits
+          server_lifetime=60
+          server_idle_timeout=15
+          logfile=/tmp/budget-pgbouncer.log
+          pidfile=/tmp/budget-pgbouncer.pid
+          CONFIG
+          docker exec -i "$POSTGRES_CONTAINER" sh -c 'cat > /tmp/budget-users.txt; chown postgres /tmp/budget-pgbouncer.ini /tmp/budget-users.txt' <<'USERS'
+          "fixture_root" "fixture-only"
+          "budget_a" "fixture-only"
+          "budget_b" "fixture-only"
+          USERS
+          docker exec --user postgres "$POSTGRES_CONTAINER" pgbouncer -d /tmp/budget-pgbouncer.ini
+          node scripts/pool-tests/database-budget/setup.ts
+      - name: Verify Home connection limits and concurrent liveness on Postgres
+        if: matrix.shard == 'compatibility'
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+        run: |
+          docker build --target home-db-pool-tests --tag basalt-home-db-pool:test containers/pool
+          docker run --rm --network host -e HOME_TEST_POSTGRES_DSN=postgresql://fixture_root:fixture-only@localhost:5432/postgres -e HOME_TEST_POOLED_DSN=postgresql://budget_a:fixture-only@localhost:6432/budget0314_compat basalt-home-db-pool:test
+          proof=$(docker create basalt-home-db-pool:test)
+          docker cp "$proof:/out/home-budget-client" "$RUNNER_TEMP/home-budget-client"
+          docker rm "$proof"
+          node scripts/pool-tests/database-budget/setup.ts cleanup
+      - name: Prove the shared budget across independent Home processes
+        if: matrix.shard == 'compatibility'
+        run: node --test --test-concurrency=1 scripts/pool-tests/shared-database-budget.test.ts scripts/pool-tests/database-direct-control.test.ts scripts/pool-tests/database-retirement.test.ts scripts/pool-tests/database-verification.test.ts
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          POOL_TEST_POOLED_URL: postgresql://fixture_root:fixture-only@localhost:6432/postgres
+          POOL_TEST_HOME_BUDGET_CLIENT: ${{ runner.temp }}/home-budget-client
+      - name: Compile and serve the SQLite upload worker assets
+        if: matrix.shard == 'contracts'
+        run: node scripts/pool-tests/sqlite-compiler-proof.mjs "${{ runner.temp }}/sqlite-upload-compiled"
+      - name: Check the pool runtime and database contracts
+        run: |
+          list=$(node scripts/ci/pool-test-shard.ts "$POOL_TEST_SHARD" "$POOL_TEST_PART")
+          if [ "$LEG_ORDER" = reversed ]; then list=$(printf '%s\n' "$list" | tac); fi
+          printf '%s\n' "$list"
+          mapfile -t files <<< "$list"
+          node --test --test-concurrency=1 "${files[@]}"
+        env:
+          POOL_TEST_SHARD: ${{ matrix.shard }}
+          POOL_TEST_PART: ${{ matrix.part || '1/1' }}
+          LEG_ORDER: ${{ matrix.order }}
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          SQLITE_COMPILED_OUTPUT: ${{ runner.temp }}/sqlite-upload-compiled
+          POOL_TEST_IMAGE: basalt-1409-pool:test
+          POOL_TEST_LEGACY_IMAGE: basalt-1409-pool:privacy-legacy
+          POOL_TEST_USAGE_PRIVACY_IMAGE: basalt-1409-pool:usage-privacy-baseline
+      - name: Set up the import flow's browser
+        if: matrix.shard == 'compatibility'
+        uses: ./.github/actions/setup-browser
+      - name: Verify usage imports through the pool app and database
+        if: matrix.shard == 'compatibility'
+        run: node --test scripts/pool-ui-tests/usage-import.test.mjs
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+      - name: Release pool build disk
+        if: always()
+        run: |
+          echo "Runner disk before pool cleanup (bytes)"
+          df -B1 /
+          for image in basalt-1409-pool:test basalt-1409-pool:privacy-legacy basalt-1409-pool:usage-privacy-baseline basalt-home-db-pool:test; do
+            if docker image inspect "$image" > /dev/null 2>&1; then
+              docker image rm "$image"
+            fi
+          done
+          docker builder prune --all --force
+          echo "Runner disk after pool cleanup (bytes)"
+          df -B1 /
+
