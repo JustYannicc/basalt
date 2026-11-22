@@ -4537,7 +4537,7 @@
       "methods": {
         "oauth": {
           "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for Tailscale yet. You can connect with your own OAuth app."
+          "message": "Tailscale has no sign-in for outside apps, so you connect with an OAuth client created in your own tailnet."
         }
       }
     },
