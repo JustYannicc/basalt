@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { isCheckJob } from "./retry-history.ts";
+import { isCheckJob, shardJob } from "./retry-history.ts";
 import {
   attemptJobs,
   github,
@@ -20,7 +20,7 @@ import {
 
 export type JobFlake = {
   id: string;
-  /** A job's name, or a matrix job's id whose legs GitHub shows as `job (leg)`. */
+  /** A job's name, or a matrix job's id: its legs show as `job (leg)`, a declared job's shards as `job-<n>`. */
   job: string;
   /** Every one of these appears in the failed job's log. */
   match: string[];
@@ -66,7 +66,7 @@ export function parseJobFlakes(value: unknown) {
 }
 
 const forJob = (flake: JobFlake, name: string) =>
-  name === flake.job || name.startsWith(`${flake.job} (`);
+  name === flake.job || name.startsWith(`${flake.job} (`) || shardJob(name) === flake.job;
 
 /** The listed flakes that could explain this job's failure today, before its log is read. */
 export const candidates = (flakes: readonly JobFlake[], name: string, today: string) =>

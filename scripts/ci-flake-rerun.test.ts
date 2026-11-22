@@ -47,6 +47,15 @@ test("a job is re-run only when its log carries a listed flake's whole signature
   // Half the signature, or none of it, is a failure for a person.
   for (const log of ["--- FAIL: TestRace (0.00s)", "panic: other", ""])
     assert.equal(decide(jobs, new Map([[1, log]])).action, "report", log);
+  // A declared job's shards match its id.
+  const shard = { ...flake, job: "declared-cloud" };
+  const shardJobs = [{ id: 1, name: "declared-cloud-7", conclusion: "failure" }, jobs[2]!];
+  assert.equal(decide(shardJobs, undefined, run, [shard]).action, "rerun");
+  assert.equal(
+    decide([{ ...shardJobs[0]!, name: "declared-cloud-extra" }, jobs[2]!], undefined, run, [shard])
+      .action,
+    "report",
+  );
   // A flake listed for another job explains nothing here; a leg matches its job's id only.
   for (const name of ["pool-runtime-extra", "upstream-image"])
     assert.equal(decide([{ ...jobs[0]!, name }, jobs[2]!]).action, "report", name);
