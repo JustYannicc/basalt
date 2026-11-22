@@ -8,6 +8,7 @@ import {
   deleteProgram,
   laneTokenName,
   mintLaneToken,
+  requireExpiry,
   mintKeys,
   mintProgram,
   observationPermission,
@@ -16,10 +17,11 @@ import {
 
 const account = "a".repeat(32);
 const tokenId = "b".repeat(32);
+const expiresOn = new Date(Date.now() + 3_600_000).toISOString().replace(/\.\d{3}Z$/u, "Z");
 
 /** A fake operator connection: the program text runs against `cloudflare.request` and these rows. */
 function connection(
-  rows: { id: string; name: string; policies?: unknown[] }[],
+  rows: { id: string; name: string; policies?: unknown[]; expires_on?: string }[],
   options: { failProofRead?: boolean; pageSize?: number } = {},
 ) {
   const sent: string[] = [];
@@ -27,7 +29,7 @@ function connection(
     request: async (request: {
       method: string;
       path: string;
-      body?: { name: string };
+      body?: { name: string; expires_on?: string };
       query?: { page?: number; per_page?: number };
     }) => {
       sent.push(`${request.method} ${request.path}`);
@@ -44,6 +46,7 @@ function connection(
         const row = {
           id: tokenId,
           name: request.body!.name,
+          expires_on: request.body!.expires_on,
           policies: [
             {
               effect: "allow",
@@ -92,6 +95,7 @@ test("the mint creates the lane's token with production's one policy, sets the j
   const result = await mintLaneToken({
     accountId: account,
     lane: 2,
+    expiresOn,
     record,
     transport,
     setSecret: async (name, value) => void secrets.push([name, value]),
@@ -122,6 +126,7 @@ test("the mint refuses a lane that already has a token of that name, and sets no
   const result = await mintLaneToken({
     accountId: account,
     lane: 2,
+    expiresOn,
     record: join(tmpdir(), "never-written.json"),
     transport,
     setSecret: async () => void (set = true),
@@ -139,6 +144,7 @@ test("the delete removes only the recorded id, proves it gone by a list read, th
   await mintLaneToken({
     accountId: account,
     lane: 2,
+    expiresOn,
     record,
     transport,
     setSecret: async () => {},
@@ -184,8 +190,19 @@ test("the delete refuses a recorded id that names another token, and a record fo
 
 test("only lanes 1 to 9 and a real account id make a program", () => {
   for (const lane of [0, 10, 2.5])
-    assert.throws(() => mintProgram(account, lane, {}), /lane is 1 to 9/u);
-  assert.throws(() => mintProgram("production", 2, {}), /account id/u);
+    assert.throws(() => mintProgram(account, lane, {}, expiresOn), /lane is 1 to 9/u);
+  assert.throws(() => mintProgram("production", 2, {}, expiresOn), /account id/u);
+  // The expiry is required, a whole-second UTC instant, in the future and within a day.
+  const now = Date.parse("2026-11-22T00:20:00Z");
+  for (const bad of [
+    "",
+    "2026-11-22T00:19:59Z",
+    "2026-11-23T00:20:01Z",
+    "2026-11-22T07:00Z",
+    "tomorrow",
+  ])
+    assert.throws(() => requireExpiry(bad, now), /expiry/u, bad);
+  assert.equal(requireExpiry("2026-11-22T07:00:00Z", now), "2026-11-22T07:00:00Z");
   assert.throws(() => deleteProgram(account, 2, "not-an-id"), /token id/u);
 });
 
@@ -284,6 +301,7 @@ test("a token created before a later step fails still comes back with its id, so
   const result = await mintLaneToken({
     accountId: account,
     lane: 2,
+    expiresOn,
     record,
     transport,
     setSecret: async () => assert.fail("no secret after a failed mint"),
@@ -328,7 +346,7 @@ test("the mint's existence check reads every page of tokens", async () => {
   const { transport, sent } = connection([...many, { id: tokenId, name: laneTokenName(2) }], {
     pageSize: 100,
   });
-  const reply = (await transport.run(mintProgram(account, 2, mintKeys().publicJwk))) as {
+  const reply = (await transport.run(mintProgram(account, 2, mintKeys().publicJwk, expiresOn))) as {
     outcome: string;
   };
   assert.equal(reply.outcome, "refused_existing");

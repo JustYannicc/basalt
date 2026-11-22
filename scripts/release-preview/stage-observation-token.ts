@@ -54,14 +54,37 @@ export function openSealed(sealed: string, privateKey: KeyObject) {
 }
 
 /**
+ * A lane token expires on its own: at a whole-second UTC instant after now and within 24 hours, so
+ * a teardown that never runs still leaves no lasting credential.
+ */
+export function requireExpiry(expiresOn: string, now = Date.now()) {
+  const at = Date.parse(expiresOn);
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(expiresOn) ||
+    !Number.isFinite(at) ||
+    at <= now ||
+    at > now + 24 * 3_600_000
+  )
+    throw new Error("A lane token's expiry is a UTC instant within the next 24 hours");
+  return expiresOn;
+}
+
+/**
  * Proves it can seal before anything is created, refuses an existing token of that name, creates
  * it, proves its one policy, and returns its id and its value sealed to `publicJwk`.
  */
-export function mintProgram(accountId: string, lane: number, publicJwk: object) {
+export function mintProgram(
+  accountId: string,
+  lane: number,
+  publicJwk: object,
+  expiresOn: string,
+  now = Date.now(),
+) {
   const target = {
     accountId: requireAccount(accountId),
     name: laneTokenName(requireLane(lane)),
     permission: observationPermission,
+    expiresOn: requireExpiry(expiresOn, now),
     publicJwk,
   };
   return `async () => {
@@ -105,6 +128,7 @@ export function mintProgram(accountId: string, lane: number, publicJwk: object) 
     if ((await tokens()).some(row => row && row.name === target.name))
       return {outcome:'refused_existing'};
     const created = (await request({method:'POST',path:base + '/tokens',body:{name:target.name,
+      expires_on:target.expiresOn,
       policies:[{effect:'allow',permission_groups:[{id:target.permission}],
         resources:{['com.cloudflare.api.account.' + target.accountId]:'*'}}]}})).result;
     if (created && /^[a-f0-9]{32}$/.test(created.id || '')) tokenId = created.id;
@@ -115,7 +139,8 @@ export function mintProgram(accountId: string, lane: number, publicJwk: object) 
       policy.effect === 'allow' && policy.permission_groups.length === 1 &&
       policy.permission_groups[0].id === target.permission &&
       Object.keys(policy.resources || {}).length === 1 &&
-      policy.resources['com.cloudflare.api.account.' + target.accountId] === '*';
+      policy.resources['com.cloudflare.api.account.' + target.accountId] === '*' &&
+      Date.parse(actual.expires_on) === Date.parse(target.expiresOn);
     if (!owned) return {outcome:'refused_ownership', tokenId};
     const sealed = await seal(created.value);
     created.value = null;
@@ -209,13 +234,14 @@ export function deleteJobSecret(name: string, run: Spawn = spawn) {
 export async function mintLaneToken(input: {
   accountId: string;
   lane: number;
+  expiresOn: string;
   record: string;
   transport: OperatorTransport;
   setSecret?: typeof setJobSecret;
 }) {
   const keys = mintKeys();
   const reply = (await input.transport.run(
-    mintProgram(input.accountId, input.lane, keys.publicJwk),
+    mintProgram(input.accountId, input.lane, keys.publicJwk, input.expiresOn),
   )) as {
     outcome?: unknown;
     tokenId?: unknown;
@@ -369,13 +395,21 @@ export function toolsServiceTransport(input: {
   };
 }
 
-/** `stage-observation-token.ts mint|delete <lane> <account id> <connection id>`; prints outcomes only. */
+/**
+ * `stage-observation-token.ts mint <lane> <account id> <connection id> <expires, UTC>` or
+ * `delete <lane> <account id> <connection id>`; prints outcomes only.
+ */
 async function main(args: string[]) {
-  const [command, laneText, accountId, connection] = args;
+  const [command, laneText, accountId, connection, expiresOn] = args;
   const lane = Number(laneText);
-  if ((command !== "mint" && command !== "delete") || !accountId || !connection)
+  if (
+    (command !== "mint" && command !== "delete") ||
+    !accountId ||
+    !connection ||
+    (command === "mint" && !expiresOn)
+  )
     throw new Error(
-      "Usage: stage-observation-token.ts mint|delete <lane> <account id> <connection id>",
+      "Usage: stage-observation-token.ts mint <lane> <account id> <connection id> <expires> | delete <lane> <account id> <connection id>",
     );
   const { homedir } = await import("node:os");
   const { join } = await import("node:path");
@@ -397,7 +431,7 @@ async function main(args: string[]) {
   );
   const result =
     command === "mint"
-      ? await mintLaneToken({ accountId, lane, record, transport })
+      ? await mintLaneToken({ accountId, lane, expiresOn: expiresOn!, record, transport })
       : await deleteLaneToken({ accountId, lane, record, transport });
   console.log(JSON.stringify(result));
 }
