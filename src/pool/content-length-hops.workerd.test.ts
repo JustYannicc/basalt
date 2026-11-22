@@ -1,55 +1,68 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
 
-// The front layer's resend copy is kept only for a body of known size. A model call's size has to
-// reach the hop that owns the container: entry, controller object, then a runtime's object, each
-// rebuilding the request the way the pool does (new headers, container origin).
+// The front layer's resend copy is kept only for a body of known size. Here a model call crosses
+// the hops the pool's own way: the entry keeps a copy for its replay, the controller object rebuilds
+// the call and the fleet's retry keeps a backup before the send, and the runtime object runs the
+// real layer hop. The layer refuses the connect, so the call must reach the node's port whole.
 const fixture = `
 import { DurableObject } from "cloudflare:workers";
-const seen = (request) => request.headers.get("content-length");
+import { toLayer } from "./src/pool/stream-resume.ts";
 const rebuilt = (request) => {
   const headers = new Headers(request.headers);
   headers.set("X-Basalt-Resumable", "1");
-  const forwarded = new Request(request, { headers });
-  return new Request(new URL(new URL(forwarded.url).pathname, "http://pool"), forwarded);
+  return new Request(new URL(new URL(request.url).pathname, "http://pool"), new Request(request, { headers }));
 };
 export class Controller extends DurableObject {
   async fetch(request) {
-    const atController = seen(request);
+    const backup = request.clone();
     const answer = await this.env.RUNTIME.get(this.env.RUNTIME.idFromName("runtime")).fetch(rebuilt(request));
-    return Response.json({ atController, ...(await answer.json()) });
+    await backup.body?.cancel();
+    return answer;
   }
 }
 export class Runtime extends DurableObject {
   async fetch(request) {
-    // As the layer hop does: the copy first, then the routed request that carries the body.
-    const copy = request.clone();
-    const routed = rebuilt(request);
-    const bytes = (await routed.arrayBuffer()).byteLength;
-    await copy.body?.cancel();
-    return Response.json({ atRuntime: seen(routed), atCopy: seen(copy), bytes });
+    const ports = [];
+    const answer = await toLayer(rebuilt(request), async (routed, port) => {
+      ports.push(port);
+      if (port === 8316) throw new Error("The container is not listening in the TCP address 10.0.0.1:8316");
+      return Response.json({ length: routed.headers.get("content-length"), bytes: (await routed.arrayBuffer()).byteLength });
+    });
+    return Response.json({ ports, ...(await answer.json()) });
   }
 }
 export default {
-  fetch(request, env) {
-    return env.CONTROLLER.get(env.CONTROLLER.idFromName("controller")).fetch(request);
+  async fetch(request, env) {
+    const held = request.clone();
+    const answer = await env.CONTROLLER.get(env.CONTROLLER.idFromName("controller")).fetch(request);
+    await held.body?.cancel();
+    return answer;
   },
 };
 `;
 
 test(
-  "a model call's Content-Length survives the entry, the controller and a runtime object",
+  "a model call's size reaches the layer hop through the pool's copies, so a refused connect re-sends it whole",
   { timeout: 60_000 },
   async (context) => {
     const bundle = await build({
-      stdin: { contents: fixture, loader: "js" },
+      stdin: {
+        contents: fixture,
+        resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
+        loader: "js",
+      },
       bundle: true,
       write: false,
       format: "esm",
       platform: "neutral",
-      external: ["cloudflare:workers"],
+      mainFields: ["module", "main"],
+      conditions: ["workerd", "module", "import"],
+      target: "es2023",
+      external: ["node:*", "cloudflare:workers"],
     });
     const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
     const mf = new Miniflare(
@@ -73,13 +86,12 @@ test(
       body: new Uint8Array(size).fill(97),
     });
     assert.deepEqual(await known.json(), {
-      atController: String(size),
-      atRuntime: String(size),
-      atCopy: String(size),
+      ports: [8316, 8317],
+      length: String(size),
       bytes: size,
     });
 
-    // A streamed body has no size to keep a copy by, so no copy is kept and nothing is re-sent.
+    // A streamed body has no size, so no copy is kept: the refused connect is the layer's failure.
     const streamed = await mf.dispatchFetch("http://pool/v1/messages", {
       method: "POST",
       body: new ReadableStream<Uint8Array>({
@@ -90,8 +102,7 @@ test(
       }),
       duplex: "half",
     });
-    const unsized = (await streamed.json()) as { atRuntime: string | null; bytes: number };
-    assert.equal(unsized.atRuntime, null);
-    assert.equal(unsized.bytes, 1024);
+    assert.equal(streamed.status, 500);
+    await streamed.body?.cancel();
   },
 );

@@ -626,7 +626,7 @@ test("an answer whose resumed part fails before any byte is not resumed again", 
   assert.equal(resumes, 1);
 });
 
-test("a re-sent copy is never cut after it went to the node, and the copy budget is given back each time", async () => {
+test("a re-sent copy arrives whole when the node answers before reading it, and each call gives its share of the copy budget back", async () => {
   const marked = (size: number) =>
     new Request("http://pool/v1/responses", {
       method: "POST",

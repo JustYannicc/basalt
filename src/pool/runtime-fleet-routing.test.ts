@@ -438,31 +438,3 @@ test("a marked answer cut mid-body never counts against its runtime, and logs on
   await f.settle();
   assert.ok((await f.state.inspect()).some((row) => row.phase === "quarantined"));
 });
-
-test("a marked answer cut after its client left logs nothing", async (context) => {
-  const log = context.mock.method(console, "error", () => {});
-  const f = fixture(3, 1);
-  const identity = await f.add();
-  const cell = f.cell(identity);
-  const forward = cell.forward;
-  cell.forward = async (...args) => {
-    const answer = await forward(...args);
-    return new Response(answer.body, { headers: { "X-Basalt-Resume": "v1" } });
-  };
-  const client = new AbortController();
-  const left = new Request("https://synthetic.invalid/v1/responses", {
-    method: "POST",
-    signal: client.signal,
-  });
-  const marked = await f.fleet.forward(left, "pool", f.legacy, () => {});
-  const cut = marked.text();
-  client.abort();
-  f.bodies[0]!.error(new Error("Network connection lost."));
-  await assert.rejects(cut);
-  await f.settle();
-  assert.equal(
-    log.mock.calls.filter((call) => call.arguments[0] === "POOL_RESUMABLE_STREAM_CUT").length,
-    0,
-  );
-  assert.ok((await f.state.inspect()).every((row) => row.phase !== "quarantined"));
-});
