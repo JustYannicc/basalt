@@ -68,7 +68,7 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
   const conversations = [];
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
-    // Concurrent turns make the primary busier than an idle cell, so balancing sends one there.
+    // Ready cells take every turn; the root serves only while no cell is ready.
     const batch = Array.from({ length: burst }, () => conversation());
     conversations.push(...batch);
     const results = await Promise.all(

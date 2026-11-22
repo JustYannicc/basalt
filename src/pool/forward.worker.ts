@@ -38,6 +38,13 @@ import { terminalResponse, type TerminalFinish } from "./terminal-response.worke
 import { digest } from "./backend-users.ts";
 import { endpointMetadata } from "./model-history/record.ts";
 import { terminalSocket } from "./terminal-socket.worker.ts";
+import {
+  resumeLayerPort,
+  resumeRoute,
+  toLayer,
+  streamResumableHeader,
+  streamResumeEligibleHeader,
+} from "./stream-resume.ts";
 import { captureRefusalModel } from "./refusal-model.ts";
 import { endpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 import type { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -64,7 +71,9 @@ interface Dependencies {
   ) => Promise<import("./lifecycle.ts").PoolStatus>;
   protection: RuntimeProtection;
   databasePool?: Pick<HomeDatabasePoolMonitor, "observation">;
-  fetch(request: Request, port: 8317 | 8327): Promise<Response>;
+  fetch(request: Request, port: 8317 | 8327 | typeof resumeLayerPort): Promise<Response>;
+  /** Whether the container still runs; a stopped one's failure is never the front layer's. */
+  running?(): boolean;
   defer(work: Promise<unknown>): void;
 }
 
@@ -183,10 +192,18 @@ export async function forwardPoolRequest(
         prepared();
         beforeDispatch();
       };
+      // The front layer keeps this call's answer only while this container advertises the layer.
+      const routed = resumeRoute(forwarded, port, status);
+      const sent = routed === "gone" ? forwarded : routed.request;
+      const target = routed === "gone" ? port : routed.port;
+      const send = (request: Request) =>
+        target === resumeLayerPort
+          ? toLayer(request, deps.fetch, deps.running)
+          : deps.fetch(request, target);
       if (port === 8317 && (native !== undefined || modelLease !== undefined))
-        return modelLifetimeFetch(forwarded, (request) => deps.fetch(request, port), dispatch);
+        return modelLifetimeFetch(sent, send, dispatch);
       dispatch();
-      return deps.fetch(forwarded, port);
+      return send(sent);
     };
     const outboundHeaders = new Headers(request.headers);
     outboundHeaders.delete("X-Basalt-Request-Id");
@@ -194,6 +211,10 @@ export async function forwardPoolRequest(
       outboundHeaders.set("X-Request-Id", requestId);
       outboundHeaders.set("X-Basalt-Request-Id", requestId);
     }
+    // Only the hop that owns the container marks a call for its front layer; a caller never does.
+    outboundHeaders.delete(streamResumableHeader);
+    if (modelCall && !socketCall) outboundHeaders.set(streamResumeEligibleHeader, "1");
+    else outboundHeaders.delete(streamResumeEligibleHeader);
     const outbound = containerRequest(
       new Request(request, { headers: outboundHeaders }),
       "http://pool",
