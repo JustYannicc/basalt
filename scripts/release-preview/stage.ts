@@ -11,6 +11,7 @@
  * lets Alchemy bootstrap the shared State store; nothing here runs the CLI with `--yes`.
  */
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -58,6 +59,7 @@ export const stageModes = [
   "release",
   "classplan",
   "stateread",
+  "redrelease",
   "adopt",
   "diagnose",
   "secrets",
@@ -106,7 +108,7 @@ export function candidateTreeEnvironment(harness: string, tree: string): NodeJS.
 }
 
 async function runEntry(
-  command: "plan" | "deploy" | "serving" | "rollback" | "boot" | "accept",
+  command: "plan" | "deploy" | "apply" | "serving" | "rollback" | "boot" | "accept",
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   extra: NodeJS.ProcessEnv,
@@ -143,11 +145,13 @@ async function runEntry(
         "--config",
         "alchemy.run.ts",
         // The step's own allow-list, include and wire rules, exactly as production will run it.
-        ...((command === "plan" || command === "deploy") && policy
+        ...((command === "plan" || command === "deploy" || command === "apply") && policy
           ? ["--policy", join(tree, `scripts/release/policies/${policy}.json`)]
           : []),
         // Without a policy, the cutover's include still scopes the plan to PoolWorker and its inputs.
-        ...((command === "plan" || command === "deploy") && !policy && include
+        ...((command === "plan" || command === "deploy" || command === "apply") &&
+        !policy &&
+        include
           ? ["--include", include]
           : []),
         ...args,
@@ -635,6 +639,298 @@ async function stageRelease(
     result.poolWorkerRowsAfter = rows.filter((row) => row.fqn === "PoolWorker");
   });
   result.bootAfter = await bootOf("release-after");
+  return result;
+}
+
+/** The stage smoke user's own ids, read through the stage's public API as the user. */
+async function smokeIds(origin: string, source: NodeJS.ProcessEnv, stage: string) {
+  const cookieOf = (response: Response) =>
+    (response.headers.getSetCookie?.() ?? []).map((value) => value.split(";")[0]).join("; ");
+  const signIn = await fetch(`${origin}/api/auth/sign-in/email`, {
+    method: "POST",
+    headers: { origin, "content-type": "application/json" },
+    body: JSON.stringify({
+      email: source.PREVIEW_SMOKE_EMAIL,
+      password: source.PREVIEW_SMOKE_PASSWORD,
+      rememberMe: false,
+    }),
+  });
+  if (!signIn.ok) throw new Error(`The smoke user's sign-in answered HTTP ${signIn.status}`);
+  const cookie = cookieOf(signIn);
+  const get = async (route: string) => {
+    const response = await fetch(`${origin}${route}`, { headers: { origin, cookie } });
+    if (!response.ok) throw new Error(`${route.split("?")[0]} answered HTTP ${response.status}`);
+    return response.json() as Promise<unknown>;
+  };
+  const session = (await get("/api/auth/get-session")) as { user?: { id?: unknown } } | null;
+  const user = session?.user?.id;
+  // The smoke organization, as scripts/preview-auth/seed.ts names it.
+  const slug = `preview-smoke-${createHash("sha256").update(stage).digest("hex").slice(0, 12)}`;
+  const organizations = (await get("/api/auth/organization/list")) as {
+    id?: unknown;
+    slug?: unknown;
+  }[];
+  const organization = organizations.find((item) => item.slug === slug)?.id;
+  if (typeof user !== "string" || typeof organization !== "string")
+    throw new Error("The smoke user or its organization was not found");
+  const inventory = (await get(
+    `/api/organizations/${encodeURIComponent(organization)}/inventory`,
+  )) as {
+    apps?: { id?: unknown; name?: unknown }[];
+  };
+  const pool = inventory.apps?.find(
+    (app) => typeof app.name === "string" && /^Preview smoke's pool(?: \d+)?$/u.test(app.name),
+  )?.id;
+  if (typeof pool !== "string") throw new Error("The smoke user's pool was not found");
+  return { user, organization, pool };
+}
+
+/**
+ * The red release (production's "Roll back a failed release", rehearsed): a one-line PoolWorker
+ * change on the candidate, released under its own policy; the root's boot read before the apply;
+ * acceptance after it; the entry's own `rollback --from` the serving record; the boot read again;
+ * re-acceptance; then every Worker's serving version compared by id and a plan read back. The
+ * acceptance device is registered in the job by the candidate's own tool, its ids kept in memory.
+ */
+async function redRelease(
+  lane: number,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+  hooks: ReturnType<typeof nativeHooks>,
+) {
+  const { branch, policy } = releaseCandidate(
+    await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
+  );
+  const result: Record<string, unknown> = { branch, policy, kind: "red" };
+  const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
+  await rm(candidate, { recursive: true, force: true });
+  execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
+  execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
+    cwd: root,
+  });
+  result.candidate = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: candidate,
+    encoding: "utf8",
+  }).trim();
+  if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
+    throw new Error(`The candidate has no ${policy} policy`);
+  execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+  // The red commit: one exported marker in PoolWorker's entry, a real upload with no behaviour.
+  const workerPath = join(candidate, "src/pool/worker.ts");
+  await writeFile(
+    workerPath,
+    `${await readFile(workerPath, "utf8")}\nexport const rehearsalRedMarker = ${JSON.stringify(`${source.GITHUB_RUN_ID ?? "local"}-${Date.now()}`)};\n`,
+  );
+  const config = stageEnvironment(subject, source);
+  const { stage, stack } = stageNames(subject);
+  const redact = redactor(source);
+  const failure = (error: unknown) =>
+    redact(error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+  const exitOf = (message: string) => Number(/failed with exit (\d+)/u.exec(message)?.[1] ?? NaN);
+  const env: NodeJS.ProcessEnv = {
+    ...declaration.baseline,
+    POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
+  };
+  // The stage's own origin, as State records the Router's URL: never typed or derived from a name.
+  const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(config.stage);
+  const routerUrl = (
+    (stacks[stack] ?? []).find((entry) => entry.path.endsWith("/Router"))?.value as
+      | { attr?: { url?: unknown } }
+      | undefined
+  )?.attr?.url;
+  const origin = typeof routerUrl === "string" ? new URL(routerUrl).origin : "";
+  result.rootApplicationBefore = (await hooks.readBack("red-before")).applications ?? null;
+  try {
+    if (!origin) throw new Error("State records no Router URL for the stage");
+    const ids = await smokeIds(origin, source, stage);
+    const out = execFileSync(
+      "node",
+      [
+        join(candidate, "scripts/release/rehearsal-acceptance-device.ts"),
+        "--stage",
+        stage,
+        "--origin",
+        origin,
+        "--pool",
+        ids.pool,
+        "--owner",
+        ids.user,
+        "--organization",
+        ids.organization,
+        "--user",
+        ids.user,
+      ],
+      {
+        cwd: candidate,
+        env: {
+          PATH: source.PATH,
+          HOME: source.HOME,
+          POOL_APP_SIGNING_KEY: config.deploy.POOL_APP_SIGNING_KEY,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    env.POOL_ACCEPTANCE_DEVICE = out.trim().split("\n").at(-1)!;
+    env.POOL_ACCEPTANCE_ORIGIN = origin;
+    result.device = "registered";
+  } catch (error) {
+    // The five writes-only steps still run; acceptance and the boot reads are skipped.
+    result.device = { failed: failure(error) };
+  }
+  const device = typeof env.POOL_ACCEPTANCE_DEVICE === "string";
+  const file = (name: string) => join(outputs, name);
+  const step = async (
+    command: "plan" | "deploy" | "apply" | "serving" | "rollback" | "boot" | "accept",
+    options: Parameters<typeof runEntry>[5],
+  ) => {
+    try {
+      await runEntry(command, subject, source, env, outputs, { ...options, tree: candidate });
+      return { exit: 0 };
+    } catch (error) {
+      const message = failure(error);
+      return { exit: exitOf(message), refused: message };
+    }
+  };
+  await withStageBuild(candidate, subject, source, async () => {
+    // 1. The plan and the serving record the rollback reads, as release.yml takes them.
+    result.plan = await step("plan", { policy });
+    const plan = join(candidate, ".local/release/plan.json");
+    result.servingRead = await step("serving", {
+      policy: null,
+      include: null,
+      args: ["--from", plan, "--out", file("serving.json")],
+    });
+    // 2. The root's boot before the apply.
+    if (device)
+      result.bootBefore = await step("boot", {
+        policy: null,
+        include: null,
+        args: ["--out", file("root-boot.json")],
+      });
+    // 3. The reviewed plan applied by its digest and attempt, as release.yml's "Apply the reviewed
+    // plan" runs it, so the rollback undoes exactly what production's apply would have done.
+    const reviewed = await readFile(plan, "utf8").then(
+      (text) => JSON.parse(text) as { digest?: unknown; attempt?: unknown },
+      () => ({}) as { digest?: unknown; attempt?: unknown },
+    );
+    if (typeof reviewed.digest !== "string" || typeof reviewed.attempt !== "string")
+      throw new Error("The plan recorded no digest or attempt to apply");
+    result.reviewedDigest = reviewed.digest.slice(0, 12);
+    const from = Date.now();
+    result.apply = await step("apply", {
+      policy,
+      args: ["--plan-digest", reviewed.digest, "--attempt", reviewed.attempt],
+    });
+    const to = Date.now();
+    result.window = { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+    result.poolWorkerVersions = await poolWorkerVersionsBetween({
+      account: encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? ""),
+      headers: { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` },
+      stage,
+      stack,
+      from,
+      to,
+    }).then(
+      ({ count, numbers }) => ({ count, numbers }),
+      (error: unknown) => ({ unreadable: failure(error) }),
+    );
+    // 4. Acceptance, as the workflow runs it after a code release.
+    if (device)
+      result.accept = await step("accept", {
+        policy: null,
+        include: null,
+        args: [
+          "--expect",
+          "same-boot",
+          "--root-boot",
+          file("root-boot.json"),
+          "--out",
+          file("acceptance.json"),
+        ],
+      });
+    // 5. The entry's own rollback from the serving record.
+    result.rollback = await step("rollback", {
+      policy: null,
+      include: null,
+      args: ["--from", file("serving.json")],
+    });
+    // 6. The boot again, then re-acceptance, as the workflow's rollback step runs it.
+    if (device) {
+      result.bootAfter = await step("boot", {
+        policy: null,
+        include: null,
+        args: ["--out", file("root-boot-after.json")],
+      });
+      result.reaccept = await step("accept", {
+        policy: null,
+        include: null,
+        args: [
+          "--expect",
+          "any",
+          "--admitted",
+          file("root-boot.json"),
+          "--out",
+          file("acceptance-after-rollback.json"),
+        ],
+      });
+      const bootOf = (name: string) =>
+        readFile(file(name), "utf8").then(
+          (text) => (JSON.parse(text) as { boot?: unknown }).boot ?? null,
+          () => null,
+        );
+      const [before, after] = await Promise.all([
+        bootOf("root-boot.json"),
+        bootOf("root-boot-after.json"),
+      ]);
+      result.sameBoot = before !== null && before === after;
+    }
+    // 7. Every Worker in the serving record back on its recorded version, compared by id.
+    result.servingReadAfter = await step("serving", {
+      policy: null,
+      include: null,
+      args: ["--from", plan, "--out", file("serving-after-rollback.json")],
+    });
+    const versions = (name: string) =>
+      readFile(file(name), "utf8").then(
+        (text) =>
+          Object.fromEntries(
+            (
+              (JSON.parse(text) as { workers?: { fqn: string; version: string }[] }).workers ?? []
+            ).map(({ fqn, version }) => [fqn, version]),
+          ),
+        () => ({}) as Record<string, string>,
+      );
+    const [recorded, now] = await Promise.all([
+      versions("serving.json"),
+      versions("serving-after-rollback.json"),
+    ]);
+    result.workers = Object.keys(recorded).length;
+    result.workersRestored = Object.keys(recorded).filter(
+      (fqn) => now[fqn] === recorded[fqn],
+    ).length;
+    result.workersNotRestored = Object.keys(recorded).filter((fqn) => now[fqn] !== recorded[fqn]);
+    // The follow-up plan of the red commit, unscoped.
+    const planned = await runEntry("plan", subject, source, env, outputs, {
+      policy: null,
+      include: null,
+      tree: candidate,
+    }).catch((error: unknown) => ({ failed: failure(error) }));
+    const rows =
+      (
+        planned as {
+          record?: { changes?: { fqn: string; action: string; changedProps?: unknown }[] };
+        }
+      ).record?.changes ?? [];
+    result.followUpPlan =
+      "failed" in planned
+        ? planned
+        : rows.map(({ fqn, action, changedProps }) => ({ fqn, action, changedProps }));
+  });
+  result.rootApplicationAfter = (await hooks.readBack("red-after")).applications ?? null;
+  result.rootApplicationUnchanged =
+    JSON.stringify(result.rootApplicationBefore) === JSON.stringify(result.rootApplicationAfter);
   return result;
 }
 
@@ -1606,6 +1902,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "release") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "redrelease") {
+      Object.assign(result, await redRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "stateread") {
       // Read-only: the five Workers that plan as updates with no changed prop, as State records
       // them. Private output only; the public record keeps their statuses.
