@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { previewStageOrigin, stageEnvironment } from "../environment.ts";
 import { stageModelRequest } from "./stage-model.ts";
-import { stateEvidence } from "./stage-rows.ts";
+import { recordedOrigins, recordedWorkerProps, stateEvidence } from "./stage-rows.ts";
 import { previewPoolDatabaseBranch } from "../../src/pool/database-settings.ts";
 import {
   deployStage,
@@ -57,6 +57,7 @@ export const stageModes = [
   "heal",
   "release",
   "classplan",
+  "stateread",
   "adopt",
   "diagnose",
   "secrets",
@@ -1605,6 +1606,30 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "release") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "stateread") {
+      // Read-only: the five Workers that plan as updates with no changed prop, as State records
+      // them. Private output only; the public record keeps their statuses.
+      const config = stageEnvironment(subject, source);
+      const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(
+        config.stage,
+      );
+      const rows = stacks[stageNames(subject).stack] ?? [];
+      const origins = recordedOrigins(rows, ["DatabaseConnection", "PoolModelDatabaseConnection"]);
+      const recorded = recordedWorkerProps(rows, [
+        "Sso",
+        "Api",
+        "Dashboard",
+        "McpServer",
+        "Marketing",
+      ]);
+      await writeFile(
+        join(outputs, "state-workers.json"),
+        `${JSON.stringify({ workers: recorded, origins }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+      result.statuses = Object.fromEntries(
+        Object.entries(recorded).map(([fqn, row]) => [fqn, (row as { status: unknown }).status]),
+      );
     } else if (mode === "classplan") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks, "classplan"));
     } else if (mode === "heal") {

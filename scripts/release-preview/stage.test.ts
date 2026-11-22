@@ -10,6 +10,7 @@ test("a label names one mode and one of six lanes", () => {
   assert.deepEqual(stageLabel("stage-baseline-5"), { mode: "baseline", lane: 5 });
   assert.deepEqual(stageLabel("stage-baseline-6"), { mode: "baseline", lane: 6 });
   assert.deepEqual(stageLabel("stage-classplan-6"), { mode: "classplan", lane: 6 });
+  assert.deepEqual(stageLabel("stage-stateread-6"), { mode: "stateread", lane: 6 });
   assert.equal(stageLabel("stage-apply-7"), undefined);
   assert.equal(stageLabel("stage-nuke"), undefined);
   assert.equal(stageLabel("release-rehearsal"), undefined);
