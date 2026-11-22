@@ -111,6 +111,8 @@ import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
+import { containerAnswer } from "./controller-unsent.ts";
+import { readinessReadMs } from "./runtime-slots/forced-restart-timing.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import { brand } from "../../brand.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
@@ -132,6 +134,21 @@ import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
+import {
+  CodeHandover,
+  decodeControllerCode,
+  HandoverCount,
+  handoverRefusal,
+} from "./code-handover.ts";
+import {
+  decodeResumeInput,
+  resumeGone,
+  resumeRequest,
+  resumeRoute,
+  toLayer,
+} from "./stream-resume.ts";
+import { resumedAnswer } from "./stream-resume.worker.ts";
+import { resumedTerminal } from "./terminal-recording.worker.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -188,6 +205,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private managementWarming?: Promise<void>;
   private memberships: NativeMemberships;
   private modelStreams = new NativeStreams();
+  private handover: CodeHandover;
+  private handoverCount = new HandoverCount();
+  private handoffsInFlight = 0;
   private protection: RuntimeProtection;
   private importRemoval: ImportRemoval;
   private recovery: RuntimeRecovery;
@@ -217,6 +237,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       afterReply: (work) => {
         setTimeout(work, 250);
       },
+    });
+    this.handover = new CodeHandover({
+      own: { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
+      storage: ctx.storage,
+      inFlight: () => this.handoverCount.active,
+      busy: () =>
+        this.alarmInFlight || this.homeUpkeepTask !== undefined || this.handoffsInFlight > 0,
+      abort: (reason) => ctx.abort(reason),
+      defer: (work) => ctx.waitUntil(work.catch(() => console.error("POOL_CODE_HANDOVER_PENDING"))),
     });
     this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
     this.changes = new PoolChanges(
@@ -782,7 +811,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
-  deploymentIdentity() {
+  /** `caller`: the deployed entrypoint's own code, passed only by its signed adoption read. */
+  deploymentIdentity(caller?: unknown) {
+    const code = caller === undefined ? undefined : decodeControllerCode(caller);
+    if (code) this.handover.offer(code);
     return {
       candidate: productionOpsRelease,
       workerInput: poolWorkerRevision,
@@ -818,18 +850,62 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async runtimeHandoff(request: Request) {
     this.ensureAlarm();
-    return handleRuntimeHandoff(
-      request,
-      this.handoff,
-      {
-        candidate: productionOpsRelease,
-        workerInput: poolWorkerRevision,
-      },
-      this.env.POOL_DEPLOYMENT_KEY ?? "",
-      this.fleet,
-      this.candidateProbe,
-      this.bookmarks,
-    );
+    this.handoffsInFlight++;
+    try {
+      return await handleRuntimeHandoff(
+        request,
+        this.handoff,
+        {
+          candidate: productionOpsRelease,
+          workerInput: poolWorkerRevision,
+        },
+        this.env.POOL_DEPLOYMENT_KEY ?? "",
+        this.fleet,
+        this.candidateProbe,
+        this.bookmarks,
+      );
+    } finally {
+      this.handoffsInFlight--;
+    }
+  }
+
+  /** The rest of an answer an earlier instance of this object was streaming when it ended (#1642). */
+  async resume(input: unknown): Promise<Response> {
+    const parsed = decodeResumeInput(input);
+    // While this object hands over, a resume answers gone, so the stream ends with today's terminal.
+    if (!parsed || this.handover.draining) return resumeGone();
+    const request = resumeRequest(parsed);
+    return this.handoverCount.track(request, async () => {
+      const container = this.ctx.container;
+      const answer =
+        parsed.target.kind === "runtime"
+          ? await this.fleet.resume(parsed.target.identity, request)
+          : await this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
+              // A stopped container's answers went with it; never start one to look.
+              if (!container?.running) return resumeGone();
+              // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
+              // out a restart.
+              const status = await readRuntimeHealth(
+                container.getTcpPort(8318),
+                this.env.POOL_MANAGEMENT_KEY,
+                AbortSignal.timeout(readinessReadMs),
+              ).catch(() => undefined);
+              const routed = resumeRoute(forwarded, 8317, status);
+              if (routed === "gone") return resumeGone();
+              prepared();
+              return toLayer(
+                routed.request,
+                (request, port) => container.getTcpPort(port).fetch(request),
+                () => container.running,
+              );
+            });
+      if (answer.status !== 200) return answer;
+      return resumedAnswer(answer, {
+        from: parsed.from,
+        lease: this.modelStreams.acquire(crypto.randomUUID(), "", request.signal),
+        finish: resumedTerminal(this.env, parsed.requestId, (work) => this.ctx.waitUntil(work)),
+      });
+    });
   }
 
   /** Arms the upkeep alarm if nothing has, without holding the caller. */
@@ -927,7 +1003,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return Response.json({ error: "membership_unavailable" }, { status: 503 });
       }
     }
-    if (pathname === appModelPath) return this.appModels.handle(request);
+    // Refused and counted here, before the call records its single-use nonce or mints a key.
+    if (pathname === appModelPath)
+      return this.handover.draining
+        ? handoverRefusal(request)
+        : this.handoverCount.track(request, () => this.appModels.handle(request));
     if (pathname === accountMirrorPath)
       return handleAccountKeyMirror(request, {
         home: this.mirrorHome,
@@ -982,6 +1062,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         accountLabels: (pool) => this.usageAccountLabels.read(pool),
         currentPrices: (targets) => this.overviewPrices.readTable(targets),
+        failed: () =>
+          this.ctx.waitUntil(captureError(this.env, "pool_usage_read_failed", pathname)),
       });
     if (
       pathname === managedUsagePath ||
@@ -1039,6 +1121,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
     const port = poolPort(new URL(request.url).pathname);
+    // An app model call was already refused or counted where it entered the object.
+    if (port !== 8317 || appModel !== undefined) return this.forwardPool(request, port, appModel);
+    // Refused or counted in the same synchronous step, so no call slips past the handover's count.
+    if (this.handover.draining) return Promise.resolve(handoverRefusal(request));
+    return this.handoverCount.track(request, () => this.forwardPool(request, port));
+  }
+
+  private forwardPool(
+    request: Request,
+    port: ReturnType<typeof poolPort>,
+    appModel?: ModelIdentity,
+  ): Promise<Response> {
     return forwardPoolRequest(request, port, {
       ...(appModel === undefined ? {} : { appModel }),
       env: this.env,
@@ -1059,10 +1153,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           : primary();
       },
       warm: (legacy) => this.handoff.warm(legacy),
-      fetch: (forwarded, target) => {
+      fetch: async (forwarded, target) => {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
-        return this.ctx.container.getTcpPort(target).fetch(forwarded);
+        return containerAnswer(await this.ctx.container.getTcpPort(target).fetch(forwarded));
       },
+      running: () => this.ctx.container?.running === true,
       defer: (work) => this.ctx.waitUntil(work),
     });
   }
@@ -1172,8 +1267,12 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         },
         this.env.POOL_DEPLOYMENT_KEY ?? "",
         (phase) =>
+          // The envelope named exactly this code, so only a signed adoption read starts a handover.
           phase === "adoption"
-            ? singleton(this.env).deploymentIdentity()
+            ? singleton(this.env).deploymentIdentity({
+                candidate: productionOpsRelease,
+                workerInput: poolWorkerRevision,
+              })
             : singleton(this.env).deploymentReady(),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);

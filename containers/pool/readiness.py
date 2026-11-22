@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import http.server
 import json
+import os
 import re
 import threading
 import time
@@ -61,6 +62,9 @@ class Readiness:
         self._monotonic_ns = monotonic_ns
         self._services_ready = False
         self._resume_available = False
+        self._database_distance: dict[str, object] = {"db_rtt_state": "pending"}
+        location = os.environ.get("CLOUDFLARE_LOCATION", "").strip().lower()
+        self._location = location if re.fullmatch(r"[a-z]{3}[0-9]{2}", location) else None
         self._service_audit_revision = 0
         self._policy_observations_enabled = True
         self._policy_healthy = False
@@ -81,6 +85,15 @@ class Readiness:
     def set_resume_available(self, value: bool) -> None:
         with self._lock:
             self._resume_available = value
+
+    def set_database_distance(self, rtt_ms: int | None) -> None:
+        """Home's measured distance to the database; None records a failed measurement."""
+        with self._lock:
+            self._database_distance = (
+                {"db_rtt_state": "failed"}
+                if rtt_ms is None
+                else {"db_rtt_state": "measured", "db_rtt_ms": rtt_ms}
+            )
 
     def service_audit_revision(self) -> int:
         with self._lock:
@@ -216,11 +229,11 @@ class Readiness:
             self._observed_policy_probes.clear()
             self._probe_condition.notify_all()
 
-    def snapshot(self) -> tuple[bool, dict[str, str]]:
+    def snapshot(self) -> tuple[bool, dict[str, object]]:
         ready, payload, _ = self.readiness_response()
         return ready, payload
 
-    def readiness_response(self) -> tuple[bool, dict[str, str], int]:
+    def readiness_response(self) -> tuple[bool, dict[str, object], int]:
         with self._lock:
             self._expire_policy_lease()
             remaining_ns = self._policy_deadline_ns - self._monotonic_ns()
@@ -231,7 +244,11 @@ class Readiness:
             )
             ready = self._services_ready and policy_live
             lease_ms = max(0, min(1500, remaining_ns // 1_000_000)) if ready else 0
-            payload = {"boot_id": self.boot_id, "started_at": self.started_at}
+            # The distance is reported while warming too, so the controller can redraw a far cell.
+            payload: dict[str, object] = {"boot_id": self.boot_id, "started_at": self.started_at}
+            payload.update(self._database_distance)
+            if self._location is not None:
+                payload["location"] = self._location
             if self._resume_available:
                 payload["resume"] = "v1"
             return ready, payload, lease_ms

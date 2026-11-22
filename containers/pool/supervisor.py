@@ -38,6 +38,7 @@ from .pool_contract import (
     create_node_jwt,
     env_required,
     home_boot_requires_import,
+    home_database_distance,
     management_ready,
     require_tmpfs,
     resume_layer_healthy,
@@ -337,6 +338,9 @@ def main(stop: threading.Event | None = None) -> int:
             with startup_phase(StartupPhase.CONFIG_APPLY, supervisor_started_ns):
                 operation_timeout(STARTUP_TIMEOUT_SECONDS)
                 apply_pool_config(management_key, allow_remote)
+            if not recovering:
+                # Once per boot, over Home's own database pool; the controller routes on it.
+                readiness.set_database_distance(home_database_distance(management_key))
             if not recovering:
                 category = FailureCategory.NODE_STARTUP
             with startup_phase(StartupPhase.NODE_LAUNCH, supervisor_started_ns):

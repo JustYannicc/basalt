@@ -12,6 +12,8 @@ export interface PoolStatus {
   policyLeaseUntil?: number;
   launch?: { generation: number; tokenHash: string };
   database?: RuntimeDistance;
+  /** The container's front layer is up and keeps resumable answers (#1642). */
+  resume?: "v1";
 }
 
 /** A warm runtime lost readiness. The caller can retry after its protection recovers. */

@@ -270,7 +270,7 @@ class NativePolicyReadinessTests(unittest.TestCase):
         connection.close()
         self.assertEqual(response.status, 200)
         self.assertEqual(lease_ms, "1500")
-        self.assertEqual(set(json.loads(body)), {"boot_id", "started_at"})
+        self.assertEqual(set(json.loads(body)), {"boot_id", "started_at", "db_rtt_state"})
 
         clock.advance(1_234_000_000)
         connection = http.client.HTTPConnection(host, port, timeout=1)
