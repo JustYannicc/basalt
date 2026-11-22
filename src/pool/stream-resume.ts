@@ -15,6 +15,8 @@ export const streamResumeFromHeader = "X-Basalt-Resume-From";
 export const streamResumeBootHeader = "X-Basalt-Resume-Boot";
 export const streamResumeStateHeader = "X-Basalt-Resume-State";
 export const streamBootHeader = "X-Signalbox-Pool-Boot";
+/** The layer's answer when it could not reach the node: no request byte reached the node. */
+export const streamResumeUpstreamHeader = "X-Basalt-Resume-Upstream";
 export const streamResumePath = "/__basalt/resume/v1/";
 /**
  * Set by the controller on a finite model call it would let the front layer keep. The hop that
@@ -143,20 +145,27 @@ export async function toLayer(
   if (new URL(request.url).pathname.startsWith(streamResumePath))
     return send(request, resumeLayerPort).catch(() => resumeGone());
   const spare = request.clone();
-  try {
-    const answer = await send(request, resumeLayerPort);
-    void spare.body?.cancel().catch(() => {});
-    return answer;
-  } catch (error) {
-    if (!layerConnectRefused(error)) {
-      void spare.body?.cancel().catch(() => {});
-      rememberRuntimeFailure("resume_layer", error);
-      throw error;
-    }
+  const toNode = () => {
     const headers = new Headers(spare.headers);
     headers.delete(streamResumableHeader);
     return send(new Request(spare, { headers }), 8317);
+  };
+  let answer: Response;
+  try {
+    answer = await send(request, resumeLayerPort);
+  } catch (error) {
+    if (layerConnectRefused(error)) return toNode();
+    void spare.body?.cancel().catch(() => {});
+    rememberRuntimeFailure("resume_layer", error);
+    throw error;
   }
+  // The layer couldn't reach the node, so the node saw nothing: the node's port answers as today.
+  if (answer.status === 502 && answer.headers.get(streamResumeUpstreamHeader) === "unreachable") {
+    void answer.body?.cancel().catch(() => {});
+    return toNode();
+  }
+  void spare.body?.cancel().catch(() => {});
+  return answer;
 }
 
 /** The explicit "gone": the entry ends the stream with today's retry terminal. */

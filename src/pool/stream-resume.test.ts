@@ -341,6 +341,21 @@ test("a layer that died since the readiness read costs resumability only", async
   assert.equal(tries, 1);
   assert.equal(runtimeFailureDiagnostic(lost, "fleet_forward").runtimeStep, "resume_layer");
 
+  // A layer that could not reach the node hands the call to the node's port, which answers as today.
+  const viaNode: number[] = [];
+  const fromNode = await toLayer(marked(), async (request, port) => {
+    viaNode.push(port);
+    if (port === resumeLayerPort)
+      return new Response('{"error":"upstream unreachable"}', {
+        status: 502,
+        headers: { "X-Basalt-Resume-Upstream": "unreachable" },
+      });
+    assert.equal(request.headers.get("X-Basalt-Resumable"), null);
+    return new Response("node answer");
+  });
+  assert.equal(await fromNode.text(), "node answer");
+  assert.deepEqual(viaNode, [resumeLayerPort, 8317]);
+
   // A resume read the layer can't take is simply gone.
   const gone = await toLayer(
     new Request(`http://pool/__basalt/resume/v1/${requestId}`),
