@@ -192,10 +192,15 @@ test("the class change adopts the shared Secrets Store and expects the pool data
   assert.ok(!policy.check.allow.some((entry) => entry.fqn === "PoolDatabase"));
 });
 
-test("a release that rolls back may force only the telemetry secret, and one that cannot forces nothing", async () => {
-  // EXECUTOR_TELEMETRY carries the release's build version, so it differs between any two releases.
+test("a release that rolls back may force only its two reviewed secrets, and one that cannot forces nothing", async () => {
+  // EXECUTOR_TELEMETRY changes with the upstream pin; EXECUTOR_COMPILER_CACHE_RELEASE is the release
+  // commit on AppCompiler. Nothing else may be forced without review.
   for (const name of ["code", "cutover-code", "release"])
-    assert.deepEqual((await read(name)).rollback?.forceSecrets, ["EXECUTOR_TELEMETRY"], name);
+    assert.deepEqual(
+      (await read(name)).rollback?.forceSecrets,
+      ["EXECUTOR_TELEMETRY", "EXECUTOR_COMPILER_CACHE_RELEASE"],
+      name,
+    );
   // These two have no rollback step: release.yml rolls back neither a heal nor a class change.
   for (const name of ["code-restart", "cutover-classes"])
     assert.equal((await read(name)).rollback, undefined, name);

@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { Cause, Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { failureReport } from "./public-report.ts";
+import { readFile } from "node:fs/promises";
+import { decodeReleasePolicy } from "./policy.ts";
 import { changedSecrets, rollbackTo, servingVersion } from "./worker-version.ts";
 
 // The deployments list as production returns it: extra keys, newest first.
@@ -241,5 +243,43 @@ test("a rollback given no list of per-release secrets forces nothing", async () 
     assert.deepEqual(server.seen, [`POST ${deployments}`]);
   } finally {
     server.close();
+  }
+});
+
+test("each rolling-back policy forces the compiler's release secret alone, and never beside an unlisted one", async () => {
+  for (const name of ["code", "cutover-code", "release"]) {
+    const policy = decodeReleasePolicy(
+      JSON.parse(await readFile(new URL(`./policies/${name}.json`, import.meta.url), "utf8")),
+    );
+    const listed = new Set(policy.rollback?.forceSecrets ?? []);
+    const alone = await api([deployment("v241"), deployment("v240")], {
+      ...secretChanged("EXECUTOR_COMPILER_CACHE_RELEASE"),
+      yieldsToForce: true,
+    });
+    try {
+      const exit = await run(
+        withHttp(rollbackTo(target(alone.origin), "v240", "rollback", listed)),
+      );
+      assert.deepEqual(
+        exit,
+        Exit.succeed({ id: "dep-new", forcedSecrets: ["EXECUTOR_COMPILER_CACHE_RELEASE"] }),
+        name,
+      );
+    } finally {
+      alone.close();
+    }
+    const mixed = await api([deployment("v241")], {
+      ...secretChanged("EXECUTOR_COMPILER_CACHE_RELEASE, TEST_STAGE_EXPIRES_AT"),
+      yieldsToForce: true,
+    });
+    try {
+      const exit = await run(
+        withHttp(rollbackTo(target(mixed.origin), "v240", "rollback", listed)),
+      );
+      assert.ok(Exit.isFailure(exit), name);
+      assert.deepEqual(mixed.seen, [`POST ${deployments}`], name);
+    } finally {
+      mixed.close();
+    }
   }
 });
