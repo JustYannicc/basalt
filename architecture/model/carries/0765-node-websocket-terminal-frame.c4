@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "A Responses websocket's terminal frame (an upstream error such as a usage-limit 429, or the 1012 replay close) reaches the client instead of a bare 1006. A terminal close waits up to 250 ms for a write that is finishing, gives its own write a 1-second deadline, and still cuts off a writer that stays blocked. The session's teardown waits for a terminal close already in progress before it closes the socket. A continuation sent right after an idle upstream EOF is either refused or reported lost, depending on whether the node has seen the EOF yet."
+      constraint "A Responses websocket's terminal frame (an upstream error such as a usage-limit 429, or the 1012 replay close) reaches the client instead of a bare 1006. A terminal close waits up to 250 ms for a write that is finishing, gives its own write a 1-second deadline, and still cuts off a writer that stays blocked. The session's teardown waits for a terminal close already in progress before it closes the socket."
     }
   }
 }
