@@ -1,0 +1,309 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -8257,3 +8257,305 @@
+          return value;
+      const resources = instanceResources[value.instanceType];
+      if (resources === undefined)
++diff --git a/src/Util/scc.ts b/src/Util/scc.ts
++index becd14c..bc77ed5 100644
++--- a/src/Util/scc.ts
+++++ b/src/Util/scc.ts
++@@ -81,29 +81,35 @@ export const stronglyConnectedComponents = (
++ };
++ 
++ /**
++- * Compute the set of graph nodes that participate in a dependency cycle.
+++ * Map each graph node that participates in a dependency cycle to the id of
+++ * its cycle. Two nodes share an id exactly when they sit in the same cycle.
++  *
++  * A node is considered "in a cycle" iff it sits in a strongly-connected
++  * component (SCC) of size > 1, or has a self-edge (size-1 SCC that loops
++  * back to itself).
++  */
++-export const findCycleMembers = (
+++export const findCycles = (
++   edges: Record<string, readonly string[]>,
++-): Set<string> => {
++-  const cycleMembers = new Set<string>();
+++): Map<string, number> => {
+++  const cycles = new Map<string, number>();
+++  let id = 0;
++   for (const scc of stronglyConnectedComponents(
++     Object.keys(edges),
++     (node) => edges[node] ?? [],
++   )) {
++-    if (scc.length > 1) {
++-      for (const fqn of scc) cycleMembers.add(fqn);
++-    } else {
++-      // Size-1 SCC: only counts as a cycle if it has a self-edge.
++-      const only = scc[0];
++-      if ((edges[only] ?? []).includes(only)) {
++-        cycleMembers.add(only);
++-      }
+++    // Size-1 SCC: only counts as a cycle if it has a self-edge.
+++    if (scc.length > 1 || (edges[scc[0]] ?? []).includes(scc[0])) {
+++      for (const fqn of scc) cycles.set(fqn, id);
+++      id += 1;
++     }
++   }
++-  return cycleMembers;
+++  return cycles;
++ };
+++
+++/**
+++ * Compute the set of graph nodes that participate in a dependency cycle,
+++ * across every cycle. {@link findCycles} tells the cycles apart.
+++ */
+++export const findCycleMembers = (
+++  edges: Record<string, readonly string[]>,
+++): Set<string> => new Set(findCycles(edges).keys());
++diff --git a/lib/Util/scc.js b/lib/Util/scc.js
++index aaef3b9..55723af 100644
++--- a/lib/Util/scc.js
+++++ b/lib/Util/scc.js
++@@ -68,27 +68,29 @@ export const stronglyConnectedComponents = (nodes, successors) => {
++     return output;
++ };
++ /**
++- * Compute the set of graph nodes that participate in a dependency cycle.
+++ * Map each graph node that participates in a dependency cycle to the id of
+++ * its cycle. Two nodes share an id exactly when they sit in the same cycle.
++  *
++  * A node is considered "in a cycle" iff it sits in a strongly-connected
++  * component (SCC) of size > 1, or has a self-edge (size-1 SCC that loops
++  * back to itself).
++  */
++-export const findCycleMembers = (edges) => {
++-    const cycleMembers = new Set();
+++export const findCycles = (edges) => {
+++    const cycles = new Map();
+++    let id = 0;
++     for (const scc of stronglyConnectedComponents(Object.keys(edges), (node) => edges[node] ?? [])) {
++-        if (scc.length > 1) {
+++        // Size-1 SCC: only counts as a cycle if it has a self-edge.
+++        if (scc.length > 1 || (edges[scc[0]] ?? []).includes(scc[0])) {
++             for (const fqn of scc)
++-                cycleMembers.add(fqn);
++-        }
++-        else {
++-            // Size-1 SCC: only counts as a cycle if it has a self-edge.
++-            const only = scc[0];
++-            if ((edges[only] ?? []).includes(only)) {
++-                cycleMembers.add(only);
++-            }
+++                cycles.set(fqn, id);
+++            id += 1;
++         }
++     }
++-    return cycleMembers;
+++    return cycles;
++ };
+++/**
+++ * Compute the set of graph nodes that participate in a dependency cycle,
+++ * across every cycle. {@link findCycles} tells the cycles apart.
+++ */
+++export const findCycleMembers = (edges) => new Set(findCycles(edges).keys());
++ //# sourceMappingURL=scc.js.map
++\ No newline at end of file
++diff --git a/lib/Util/scc.d.ts b/lib/Util/scc.d.ts
++index 8f1c894..1ad0508 100644
++--- a/lib/Util/scc.d.ts
+++++ b/lib/Util/scc.d.ts
++@@ -10,11 +10,17 @@
++  */
++ export declare const stronglyConnectedComponents: (nodes: Iterable<string>, successors: (node: string) => Iterable<string>) => string[][];
++ /**
++- * Compute the set of graph nodes that participate in a dependency cycle.
+++ * Map each graph node that participates in a dependency cycle to the id of
+++ * its cycle. Two nodes share an id exactly when they sit in the same cycle.
++  *
++  * A node is considered "in a cycle" iff it sits in a strongly-connected
++  * component (SCC) of size > 1, or has a self-edge (size-1 SCC that loops
++  * back to itself).
++  */
+++export declare const findCycles: (edges: Record<string, readonly string[]>) => Map<string, number>;
+++/**
+++ * Compute the set of graph nodes that participate in a dependency cycle,
+++ * across every cycle. {@link findCycles} tells the cycles apart.
+++ */
++ export declare const findCycleMembers: (edges: Record<string, readonly string[]>) => Set<string>;
++ //# sourceMappingURL=scc.d.ts.map
++\ No newline at end of file
++diff --git a/src/Plan.ts b/src/Plan.ts
++index 0123bbf..aefeaf3 100644
++--- a/src/Plan.ts
+++++ b/src/Plan.ts
++@@ -93,7 +93,7 @@ import {
++   type UpdatingReourceState,
++ } from "./State/index.ts";
++ import { isPlainData, mapPlainData } from "./Util/data.ts";
++-import { findCycleMembers } from "./Util/scc.ts";
+++import { findCycleMembers, findCycles } from "./Util/scc.ts";
++ import { hashInput } from "./Util/sha256.ts";
++ 
++ export type PlanError = never;
++@@ -296,6 +296,13 @@ export type Plan<Output = any> = {
++    * publish a fresh attr (the common, linear case).
++    */
++   cycleMembers: ReadonlySet<string>;
+++  /**
+++   * The cycle each of {@link cycleMembers} sits in, as an id that two FQNs
+++   * share exactly when they sit in the same cycle. Only peers in one cycle
+++   * rendezvous on each other's early signal; a member reading a member of
+++   * another cycle waits for its final attributes, as any DAG node does.
+++   */
+++  cycleIds: ReadonlyMap<string, number>;
++   /**
++    * The run-level default {@link ProviderMode} this plan was built with
++    * (`alchemy dev` → `"local"`, `alchemy deploy` → `"live"`). Renderers use
++@@ -1237,7 +1244,8 @@ const makePlan = <A>(
++     // Resources that participate in a cycle when both prop and binding
++     // edges are considered. Used below to decide whether an acyclic
++     // binding edge should also become a downstream edge.
++-    const combinedCycleMembers = findCycleMembers(allUpstreamDependencies);
+++    const combinedCycles = findCycles(allUpstreamDependencies);
+++    const combinedCycleMembers = new Set(combinedCycles.keys());
++     const inputCycleMembers = findCycleMembers({
++       ...newUpstreamDependencies,
++       ...Object.fromEntries(
++@@ -2423,6 +2431,7 @@ const makePlan = <A>(
++       output: selected ? undefined : stack.output,
++       selectedFqns: selected,
++       cycleMembers,
+++      cycleIds: combinedCycles,
++       defaultMode: runDefaultMode,
++     } satisfies Plan<A | undefined> as Plan<A | undefined>;
++   }).pipe(
++diff --git a/lib/Plan.js b/lib/Plan.js
++index 4a644ac..6a20c90 100644
++--- a/lib/Plan.js
+++++ b/lib/Plan.js
++@@ -28,7 +28,7 @@ export { InvalidResourceSelection, UnsafeSelectionBoundary, } from "./ResourceSe
++ import {} from "./Stack.js";
++ import { isActionState, State, } from "./State/index.js";
++ import { isPlainData, mapPlainData } from "./Util/data.js";
++-import { findCycleMembers } from "./Util/scc.js";
+++import { findCycleMembers, findCycles } from "./Util/scc.js";
++ import { hashInput } from "./Util/sha256.js";
++ const describeBinding = (binding) => ({
++     sid: binding.sid,
++@@ -738,7 +738,8 @@ Effect.gen(function* () {
++     // Resources that participate in a cycle when both prop and binding
++     // edges are considered. Used below to decide whether an acyclic
++     // binding edge should also become a downstream edge.
++-    const combinedCycleMembers = findCycleMembers(allUpstreamDependencies);
+++    const combinedCycles = findCycles(allUpstreamDependencies);
+++    const combinedCycleMembers = new Set(combinedCycles.keys());
++     const inputCycleMembers = findCycleMembers({
++         ...newUpstreamDependencies,
++         ...Object.fromEntries(actions.map((action) => [
++@@ -1724,6 +1725,7 @@ Effect.gen(function* () {
++         output: selected ? undefined : stack.output,
++         selectedFqns: selected,
++         cycleMembers,
+++        cycleIds: combinedCycles,
++         defaultMode: runDefaultMode,
++     };
++ }).pipe(
++diff --git a/lib/Plan.d.ts b/lib/Plan.d.ts
++index eb94292..1409022 100644
++--- a/lib/Plan.d.ts
+++++ b/lib/Plan.d.ts
++@@ -146,6 +146,13 @@ export type Plan<Output = any> = {
++      * publish a fresh attr (the common, linear case).
++      */
++     cycleMembers: ReadonlySet<string>;
+++    /**
+++     * The cycle each of {@link cycleMembers} sits in, as an id that two FQNs
+++     * share exactly when they sit in the same cycle. Only peers in one cycle
+++     * rendezvous on each other's early signal; a member reading a member of
+++     * another cycle waits for its final attributes, as any DAG node does.
+++     */
+++    cycleIds: ReadonlyMap<string, number>;
++     /**
++      * The run-level default {@link ProviderMode} this plan was built with
++      * (`alchemy dev` → `"local"`, `alchemy deploy` → `"live"`). Renderers use
++diff --git a/src/Apply.ts b/src/Apply.ts
++index 9b59306..abaf2fb 100644
++--- a/src/Apply.ts
+++++ b/src/Apply.ts
++@@ -427,6 +427,11 @@ const executePlan = Effect.fn(function* (
++       Object.entries(tracker).map(([fqn, t]) => [fqn, t.output]),
++     );
++ 
+++  const sameCycle = (a: string, b: string) => {
+++    const cycle = plan.cycleIds.get(a);
+++    return cycle !== undefined && cycle === plan.cycleIds.get(b);
+++  };
+++
++   const waitForDeps = (downstreamFqn: string, fqns: string[]) =>
++     Effect.all(
++       fqns
++@@ -447,7 +452,12 @@ const executePlan = Effect.fn(function* (
++           // against final outputs once the cycle settles. A downstream
++           // outside the cycle must still wait for reconcile: e.g. a queue
++           // consumer cannot attach to a Worker's fetch-only precreate stub.
++-          plan.cycleMembers.has(downstreamFqn) && plan.cycleMembers.has(fqn)
+++          // So must a member of another cycle. The early signal carries the
+++          // upstream's previous or precreated attributes, so reading it would
+++          // update this resource with them and again in `converge`. Waiting
+++          // for the final ones cannot deadlock: no cycle depends back on a
+++          // cycle it reads.
+++          sameCycle(downstreamFqn, fqn)
++             ? Deferred.await(ready[fqn])
++             : Deferred.await(readyStable[fqn]),
++         ),
++diff --git a/lib/Apply.js b/lib/Apply.js
++index 1f37fdf..4624ae9 100644
++--- a/lib/Apply.js
+++++ b/lib/Apply.js
++@@ -185,6 +185,10 @@ const executePlan = Effect.fn(function* (plan, tracker, terminalStatuses, sessio
++     // requires stable inputs (e.g. Tasks) waits past the precreate phase.
++     const readyStable = Object.fromEntries(yield* Effect.all(Object.keys(allNodes).map((fqn) => Effect.map(Deferred.make(), (d) => [fqn, d]))));
++     const getOutputs = () => Object.fromEntries(Object.entries(tracker).map(([fqn, t]) => [fqn, t.output]));
+++    const sameCycle = (a, b) => {
+++        const cycle = plan.cycleIds.get(a);
+++        return cycle !== undefined && cycle === plan.cycleIds.get(b);
+++    };
++     const waitForDeps = (downstreamFqn, fqns) => Effect.all(fqns
++         .filter((fqn) => fqn in ready)
++         .map((fqn) => 
++@@ -203,7 +207,12 @@ const executePlan = Effect.fn(function* (plan, tracker, terminalStatuses, sessio
++     // against final outputs once the cycle settles. A downstream
++     // outside the cycle must still wait for reconcile: e.g. a queue
++     // consumer cannot attach to a Worker's fetch-only precreate stub.
++-    plan.cycleMembers.has(downstreamFqn) && plan.cycleMembers.has(fqn)
+++    // So must a member of another cycle. The early signal carries the
+++    // upstream's previous or precreated attributes, so reading it would
+++    // update this resource with them and again in `converge`. Waiting
+++    // for the final ones cannot deadlock: no cycle depends back on a
+++    // cycle it reads.
+++    sameCycle(downstreamFqn, fqn)
++         ? Deferred.await(ready[fqn])
++         : Deferred.await(readyStable[fqn])), { concurrency: "unbounded" });
++     const waitForStableDeps = (fqns) => Effect.all(fqns
++diff --git a/src/Drift.ts b/src/Drift.ts
++index ae5d1e5..cc5cfe5 100644
++--- a/src/Drift.ts
+++++ b/src/Drift.ts
++@@ -603,6 +603,7 @@ export const plan = (stack: {
++         actionDeletions: {},
++         output: undefined,
++         cycleMembers: new Set<string>(),
+++        cycleIds: new Map<string, number>(),
++       },
++     } satisfies DriftPlan;
++   }).pipe(
++diff --git a/lib/Drift.js b/lib/Drift.js
++index 4f7e557..64bfa31 100644
++--- a/lib/Drift.js
+++++ b/lib/Drift.js
++@@ -383,6 +383,7 @@ export const plan = (stack) => Effect.gen(function* () {
++             actionDeletions: {},
++             output: undefined,
++             cycleMembers: new Set(),
+++            cycleIds: new Map(),
++         },
++     };
++ }).pipe(Effect.withSpan("drift.plan", {
