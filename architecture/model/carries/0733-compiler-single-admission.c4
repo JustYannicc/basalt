@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The compiler isolate admits one build at a time; a concurrent build waits in the queue and answers BuildBusy only after the queue budget, which the catalog sweep retries as a resource failure."
+    }
+  }
+}

@@ -1,0 +1,32 @@
+diff --git a/apps/hosted/cloud/src/implementation/compiler-runtime.ts b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
+--- a/apps/hosted/cloud/src/implementation/compiler-runtime.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
+@@ -17,6 +17,16 @@ const FrameworkAssets = Schema.declare(
+     Predicate.isObject(value) && "fetch" in value && typeof value.fetch === "function",
+ );
+ const FrameworkFiles = Schema.Record(Schema.String, Schema.String);
++/**
++ * One build per isolate. Two Obsidian-size builds at once ran out of the isolate's memory on
++ * production (esbuild's memory nearly doubles), so a second build waits for the first, about 12 s
++ * for a vault, and answers BuildBusy only after the queue budget. The lease starts at admission
++ * and expires when that compile's deadline ends, even if request cleanup never runs.
++ */
++export const compilerBuildSlots = 1;
++export const compilerAdmission = () =>
++  makeBuildAdmission(compilerBuildSlots, compilerCompileBudget, compilerQueueBudget);
++
+ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
+   Effect.gen(function* () {
+     // Framework files are deployment assets. A custom registry is never eligible for reuse.
+@@ -52,10 +62,7 @@ export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
+             ),
+           ),
+     );
+-    // Two builds still overlap one's npm downloads with the other's bundling, and a build
+-    // stalled on the registry leaves the other slot free. The lease starts at admission and
+-    // expires when that compile's deadline ends, even if request cleanup never runs.
+-    const admitted = makeBuildAdmission(2, compilerCompileBudget, compilerQueueBudget);
++    const admitted = compilerAdmission();
+     const isolate = crypto.randomUUID();
+     const host = {
+       ...(registry === undefined ? {} : { registry }),

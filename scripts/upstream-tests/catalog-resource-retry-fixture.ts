@@ -11,6 +11,7 @@ const load = (path: string) => import(new URL(path, new URL(`file://${upstream}/
 const { StorageHost } = await load("packages/sdk/src/contracts/storage.ts");
 const { VersionBuildFailed } = await load("packages/sdk/src/contracts/version.ts");
 const { RuntimeBuildFailed } = await load("packages/sdk/src/contracts/runtime.ts");
+const { BuildBusy } = await load("packages/sdk/src/contracts/version.ts");
 const { versionBuildFailed } = await load(
   "packages/sdk/src/implementation/version-build-failure.ts",
 );
@@ -103,6 +104,8 @@ const fixture = (
     readonly persistent?: boolean;
     readonly invalidSource?: boolean;
     readonly deploymentUnanswered?: boolean;
+    /** The compiler's queue budget runs out: every alpha build answers BuildBusy. */
+    readonly busy?: boolean;
   },
   feedUrl: string,
 ) => {
@@ -155,6 +158,7 @@ const fixture = (
       build: ({ app: id }: { app: string }) =>
         Effect.suspend(() => {
           buildCalls++;
+          if (id === "alpha" && options.busy) return Effect.fail(new BuildBusy());
           const request = Effect.tryPromise({
             try: async () => {
               compilerCalls++;
@@ -265,6 +269,7 @@ export const withScenario = async (
     readonly persistent?: boolean;
     readonly invalidSource?: boolean;
     readonly deploymentUnanswered?: boolean;
+    readonly busy?: boolean;
   },
   run: (scenario: {
     readonly execute: Effect.Effect<void, unknown, never>;
