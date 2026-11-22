@@ -6,8 +6,12 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
-import { largeGitMs, largeHistory, largeHistoryTestMs } from "./test/large-history.ts";
+import { largeGitMs, largeHistoryOnce, useLargeHistory } from "./test/large-history.ts";
 import { backend, boundedGit, git, token } from "./test/backend.ts";
+
+// The 48 MiB history takes seconds to build on an idle core and over a minute beside another
+// suite, so it is built once here, while the file loads, and each test copies it.
+const large = largeHistoryOnce();
 
 async function vaultRuntime(t: { after: (cleanup: () => Promise<void>) => void }) {
   const bundle = await build({
@@ -102,11 +106,11 @@ test("the vault object lands checkpoints from inside a Durable Object", async (t
 
 test(
   "a fresh Durable Object opens a >32 MiB repository and reads every note version",
-  { timeout: largeHistoryTestMs },
+  { timeout: 60000 },
   async (t) => {
     const server = await backend();
     t.after(() => server.close());
-    const { commits, packBytes } = largeHistory(server.root, server.bare);
+    const { commits, packBytes } = useLargeHistory(large, server.bare);
     assert.ok(packBytes > 45 * 1024 * 1024);
     const runtime = await vaultRuntime(t);
     const call = async (method: string, input: unknown) => {
