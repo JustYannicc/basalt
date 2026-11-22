@@ -279,7 +279,9 @@ const unchangedOnAnotherRepository = Effect.gen(function* () {
 const recreatedOnAnotherRepository = Effect.gen(function* () {
   const store = {};
   yield* sharedPublication(store, "ns-elsewhere");
-  const again = yield* Effect.exit(deploy(colours(), store));
+  // The plan does not read the live attachment, so an update must reach reconcile, as it did in
+  // production through an attachment that only resolves at apply.
+  const again = yield* Effect.exit(deploy(colours({ rollout: { strategy: "immediate" } }), store));
   assert.ok(Exit.isSuccess(again), "the recreate converges");
   assert.equal(deletes, 1, "the moved attachment recreates blue once");
   assert.deepEqual(rollouts, []);
