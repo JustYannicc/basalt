@@ -37,7 +37,7 @@ export const routeReasons = [
 export type RouteReason = (typeof routeReasons)[number];
 export type RouteWhenDown = "stop" | "direct";
 
-/** I2 `Reading`, unchanged. */
+/** I2 `Reading`. */
 export interface RouteReading {
   readonly state: "active" | "down" | "direct_fallback" | "off" | "needs_login";
   readonly reason: RouteReason | null;
@@ -47,6 +47,14 @@ export interface RouteReading {
   readonly checkedAt: number;
   readonly whenDown: RouteWhenDown;
   readonly tailnet: string | null;
+  /** Milliseconds since the epoch when `state` last changed. */
+  readonly since: number;
+  /** This route's own node name on the tailnet. */
+  readonly deviceName: string | null;
+  /** This route's own node id, the one the Tailscale API knows the device by. */
+  readonly deviceId: string | null;
+  /** Milliseconds since the epoch when the node key expires; null when it does not or is unknown. */
+  readonly keyExpiry: number | null;
 }
 
 interface Signed {
@@ -104,6 +112,8 @@ export interface RouteAcquisitionReplies {
       readonly id: string;
       readonly name: string;
       readonly online: boolean;
+      /** Milliseconds since the epoch the exit was last seen; null while online or unknown. */
+      readonly lastSeen: number | null;
     }[];
     readonly selected: { readonly exitId: string | null; readonly whenDown: RouteWhenDown };
   };

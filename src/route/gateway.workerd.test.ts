@@ -158,7 +158,13 @@ test(
         error: "route_not_permitted",
       });
       assert.deepEqual((await host(mf, "exits", {})).exits, [
-        { id: "n1", name: "home-exit", online: true },
+        { id: "n1", name: "home-exit", online: true, lastSeen: null },
+        {
+          id: "n2",
+          name: "away-exit",
+          online: false,
+          lastSeen: Date.parse("2026-11-20T08:00:00Z"),
+        },
       ]);
 
       // The relay wire is the Home peer's, end to end, over the gateway's SOCKS port (an echo here).

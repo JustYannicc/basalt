@@ -98,7 +98,7 @@ export class RouteGateway extends DurableObject<RouteEnvironment> {
       url.search ||
       !owner
     )
-      return new Response(null, { status: 403 });
+      return new Response(null, { status: 501 });
     let socket;
     try {
       socket = await this.core.openTunnel({ owner });

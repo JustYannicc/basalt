@@ -97,13 +97,13 @@ export async function handleRouteAcquisition(
   if (request.method !== "POST") return failure("bad_request");
   const value = await claims(request, deps);
   if (typeof value === "string") return failure(value);
-  const gateway = deps.gateway(value.routeId);
-  if (!gateway) return failure("route_gateway_unavailable");
   const caller =
     "owner" in value
       ? { routeId: value.routeId, owner: value.owner }
       : { routeId: value.routeId, organization: value.organization, account: value.account };
   try {
+    const gateway = deps.gateway(value.routeId);
+    if (!gateway) return failure("route_gateway_unavailable");
     switch (value.action) {
       case "start": {
         await gateway.create({ ...caller, app: value.app });

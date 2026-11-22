@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { GatewayStatus, ReasonCode, type Selection } from "./reading.ts";
+import { GatewayStatus, ReasonCode, epochMs, type Selection } from "./reading.ts";
 
 /** A refusal that crosses the RPC boundary: its message is the reason code and nothing else. */
 export class RouteRefused extends Error {
@@ -35,7 +35,12 @@ const LoginReply = Schema.Union([
 ]);
 const ExitsReply = Schema.Struct({
   exits: Schema.Array(
-    Schema.Struct({ id: Schema.String, name: Schema.String, online: Schema.Boolean }),
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      online: Schema.Boolean,
+      last_seen: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
   ),
 });
 const StateReply = Schema.Struct({ state: Schema.String, state_revision: Schema.Number });
@@ -102,7 +107,12 @@ export class GatewayControl {
   }
   async exits() {
     const reply = Schema.decodeUnknownSync(ExitsReply)(await this.call("GET", "/exits"));
-    return reply.exits.map(({ id, name, online }) => ({ id, name, online }));
+    return reply.exits.map(({ id, name, online, last_seen }) => ({
+      id,
+      name,
+      online,
+      lastSeen: online ? null : epochMs(last_seen),
+    }));
   }
   async logout() {
     await this.call("POST", "/logout", {});

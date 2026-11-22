@@ -23,6 +23,8 @@ export class FakeGateway implements GatewayContainer {
   /** What a login turns into; the "state file" the gateway would hand back. */
   loginState = "node-state-after-login";
   pendingLogin = false;
+  /** The next /select fails, as a timeout or a refused socket would. */
+  failSelects = 0;
 
   start(options: { enableInternet: boolean }) {
     if (!options.enableInternet) throw new Error("The gateway needs the internet");
@@ -74,7 +76,13 @@ export class FakeGateway implements GatewayContainer {
               relay_region: "fra",
             }
           : null,
-      node: { logged_in: loggedIn, key_expiry: null, tailnet: loggedIn ? "example-tailnet" : null },
+      node: {
+        logged_in: loggedIn,
+        key_expiry: loggedIn ? "2027-05-21T00:00:00Z" : null,
+        tailnet: loggedIn ? "example-tailnet" : null,
+        name: loggedIn ? "signalbox-route" : null,
+        id: loggedIn ? "node-1" : null,
+      },
       state_revision: boot.revision,
     };
   }
@@ -97,8 +105,17 @@ export class FakeGateway implements GatewayContainer {
       return Response.json({ url: "https://login.example.invalid/a/test" });
     }
     if (path === "/exits" && method === "GET")
-      return Response.json({ exits: [{ id: "n1", name: "home-exit", online: true }] });
+      return Response.json({
+        exits: [
+          { id: "n1", name: "home-exit", online: true, last_seen: null },
+          { id: "n2", name: "away-exit", online: false, last_seen: "2026-11-20T08:00:00Z" },
+        ],
+      });
     if (path === "/select" && method === "POST") {
+      if (this.failSelects > 0) {
+        this.failSelects -= 1;
+        throw new TypeError("connection reset");
+      }
       const selection = body as { exit_id: string | null; when_down: string };
       this.selects.push(selection);
       this.boot.selection = selection;

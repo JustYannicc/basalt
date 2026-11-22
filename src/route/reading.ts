@@ -25,19 +25,38 @@ export const GatewayStatus = Schema.Struct({
     logged_in: Schema.Boolean,
     key_expiry: Schema.NullOr(Schema.String),
     tailnet: Schema.optional(Schema.NullOr(Schema.String)),
+    name: Schema.optional(Schema.NullOr(Schema.String)),
+    id: Schema.optional(Schema.NullOr(Schema.String)),
   }),
   state_revision: Schema.Number,
 });
 export type GatewayStatus = typeof GatewayStatus.Type;
 
 export type Reading = RouteReading;
+/** A reading as observed, before the DO knows how long its state has held. */
+export type Observed = Omit<Reading, "since">;
+
+/** An ISO time from the gateway as milliseconds; anything unparsable reads as unknown. */
+export function epochMs(value: string | null | undefined) {
+  const ms = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** `since` carries over while the state holds and restarts on each change. */
+export function settle(previous: Reading | undefined, observed: Observed): Reading {
+  const since =
+    previous?.state === observed.state && Number.isFinite(previous.since)
+      ? previous.since
+      : observed.checkedAt;
+  return { ...observed, since };
+}
 
 export interface Selection {
   exitId: string | null;
   whenDown: WhenDown;
 }
 
-export function readingFromStatus(status: GatewayStatus, checkedAt: number): Reading {
+export function readingFromStatus(status: GatewayStatus, checkedAt: number): Observed {
   const state =
     status.reason === "route_off"
       ? "off"
@@ -51,6 +70,9 @@ export function readingFromStatus(status: GatewayStatus, checkedAt: number): Rea
     reason: state === "active" ? null : (status.reason ?? "route_status_unavailable"),
     exitName: status.exit?.name ?? null,
     tailnet: status.node.tailnet ?? null,
+    deviceName: status.node.name ?? null,
+    deviceId: status.node.id ?? null,
+    keyExpiry: epochMs(status.node.key_expiry),
     path: status.exit?.path ?? "unknown",
     relayRegion: status.exit?.relay_region ?? null,
     checkedAt,
@@ -64,12 +86,15 @@ export function localReading(
   reason: ReasonCode,
   selection: Selection | undefined,
   checkedAt: number,
-): Reading {
+): Observed {
   return {
     state,
     reason,
     exitName: null,
     tailnet: null,
+    deviceName: null,
+    deviceId: null,
+    keyExpiry: null,
     path: "unknown",
     relayRegion: null,
     checkedAt,
@@ -78,7 +103,7 @@ export function localReading(
 }
 
 /** Only crossing into or out of `down` is worth a person's attention (the Blocker and the badge). */
-export function crossesDown(previous: Reading | undefined, next: Reading) {
+export function crossesDown(previous: Observed | undefined, next: Observed) {
   return (previous?.state === "down") !== (next.state === "down");
 }
 

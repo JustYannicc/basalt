@@ -40,6 +40,10 @@ export class PoolRoutePeer extends WorkerEntrypoint<PoolRoutePeerEnvironment, { 
     if (typeof owner !== "string" || !owner) return refusedTunnel("route_not_permitted");
     const gateways = this.env.RouteGateway?.jurisdiction("eu");
     if (!gateways) return refusedTunnel("route_gateway_unavailable");
-    return gateways.get(gateways.idFromName(routeId)).fetch(routeTunnelUpgrade({ owner }));
+    try {
+      return await gateways.get(gateways.idFromName(routeId)).fetch(routeTunnelUpgrade({ owner }));
+    } catch {
+      return refusedTunnel("route_gateway_unavailable");
+    }
   }
 }

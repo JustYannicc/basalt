@@ -132,16 +132,23 @@ test("select returns the reading, keeps the route warm and polls every 30 s", as
     reason: null,
     exitName: "home-exit",
     tailnet: "example-tailnet",
+    deviceName: "signalbox-route",
+    deviceId: "node-1",
+    keyExpiry: Date.parse("2027-05-21T00:00:00Z"),
     path: "relay",
     relayRegion: "fra",
     checkedAt: deps.now(),
+    since: deps.now(),
     whenDown: "stop",
   });
   assert.equal(storage.alarm, deps.now() + 30_000);
   await gateway.alarm();
   assert.ok(container.inactivity.length > 0);
   assert.deepEqual(await gateway.exits(caller), {
-    exits: [{ id: "n1", name: "home-exit", online: true }],
+    exits: [
+      { id: "n1", name: "home-exit", online: true, lastSeen: null },
+      { id: "n2", name: "away-exit", online: false, lastSeen: Date.parse("2026-11-20T08:00:00Z") },
+    ],
     selected: { exitId: "n1", whenDown: "stop" },
   });
   const off = await gateway.select(caller, { exitId: null, whenDown: "stop" });
@@ -174,7 +181,7 @@ test("a key rotation keeps the device signed in and reseals under the current ke
     bootId: "boot-0",
     revision: 1,
   });
-  await gateway.reading(caller);
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   assert.deepEqual(container.starts, ["old-key-state"]);
   const stored = await storage.get<{ sealed: { iv: number[]; bytes: number[] } }>("route-v1:state");
   assert.equal((await openRouteState(deps.secret, routeId, stored!.sealed)).state, "old-key-state");
@@ -187,7 +194,7 @@ test("a state no key opens starts a logged-out node, never a crash", async () =>
     bootId: "boot-0",
     revision: 1,
   });
-  const reading = await gateway.reading(caller);
+  const reading = await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   assert.deepEqual(container.starts, [null]);
   assert.equal(reading.state, "needs_login");
   assert.equal(reading.reason, "route_needs_login");
@@ -248,7 +255,7 @@ test("disconnect logs the device out, forgets its identity and stops the contain
 });
 
 test("a tunnel opens to the SOCKS port for its owner and refuses when the gateway is gone", async () => {
-  const { gateway, container } = await created();
+  const { gateway, container } = await joined();
   const socket = await gateway.openTunnel({ owner });
   assert.equal(container.running, true);
   await socket.close();
@@ -274,4 +281,80 @@ test("the node state and login link never reach a log line", async () => {
   const logged = lines.join("\n");
   assert.equal(logged.includes("node-state-after-login"), false);
   assert.equal(logged.includes("login.example.invalid"), false);
+});
+
+async function joined() {
+  const fixture = await created();
+  await fixture.gateway.login(caller);
+  fixture.container.approve();
+  return fixture;
+}
+
+test("a select the gateway lost at boot is re-sent, so the route never silently reads off", async () => {
+  const { gateway, container, advance } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "direct" });
+  container.crash();
+  container.failSelects = 1;
+  advance(30_000);
+  await gateway.alarm();
+  advance(30_000);
+  await gateway.alarm();
+  const reading = await gateway.reading(caller);
+  assert.equal(reading.state, "active");
+  assert.equal(reading.whenDown, "direct");
+  assert.deepEqual(container.selects.at(-1), { exit_id: "n1", when_down: "direct" });
+});
+
+test("a select that never lands is refused and leaves the previous selection in force", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.failSelects = 1;
+  await refusedWith(
+    gateway.select(caller, { exitId: "n2", whenDown: "direct" }),
+    "route_gateway_unavailable",
+  );
+  assert.deepEqual(await storage.get("route-v1:selection"), { exitId: "n1", whenDown: "stop" });
+  assert.equal((await gateway.reading(caller)).whenDown, "stop");
+});
+
+test("switching a route off stops warming and polling, and never restarts its gateway", async () => {
+  const { gateway, container, storage, advance } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  const off = await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  assert.equal(off.state, "off");
+  assert.equal(storage.alarm, null);
+  container.crash();
+  const warmed = container.inactivity.length;
+  advance(30_000);
+  await gateway.alarm();
+  const reading = await gateway.reading(caller);
+  assert.equal(reading.state, "off");
+  assert.equal(container.running, false);
+  assert.equal(container.inactivity.length, warmed);
+  // Switching back on restores the identity and the new selection together.
+  assert.equal((await gateway.select(caller, { exitId: "n1", whenDown: "stop" })).state, "active");
+  assert.deepEqual(container.starts, [null, "node-state-after-login"]);
+});
+
+test("a tunnel to a disconnected route starts no compute", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await gateway.disconnect(caller);
+  const starts = container.starts.length;
+  await refusedWith(gateway.openTunnel({ owner }), "route_gateway_unavailable");
+  assert.equal(container.running, false);
+  assert.equal(container.starts.length, starts);
+});
+
+test("since holds while the state holds and restarts when it changes", async () => {
+  const { gateway, container, advance, deps } = await joined();
+  const first = await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  advance(30_000);
+  await gateway.alarm();
+  assert.equal((await gateway.reading(caller)).since, first.since);
+  container.reachable = false;
+  advance(30_000);
+  const down = await gateway.reading(caller);
+  assert.equal(down.state, "down");
+  assert.equal(down.since, deps.now());
 });

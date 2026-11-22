@@ -76,7 +76,10 @@ test("saved-account steps bind the first account and act on the route", async ()
   await send(session("start", { app: "tailscale" }));
   container.approve();
   assert.deepEqual((await send(saved("exits"))).body, {
-    exits: [{ id: "n1", name: "home-exit", online: true }],
+    exits: [
+      { id: "n1", name: "home-exit", online: true, lastSeen: null },
+      { id: "n2", name: "away-exit", online: false, lastSeen: Date.parse("2026-11-20T08:00:00Z") },
+    ],
     selected: { exitId: null, whenDown: "stop" },
   });
   assert.equal((await storage.get<{ account: string }>("route-v1:meta"))?.account, "acct-1");
@@ -141,4 +144,23 @@ test("without the class every request reads unavailable", async () => {
     status: 503,
     body: { error: "route_gateway_unavailable" },
   });
+});
+
+test("signing in again is start on the same route: a fresh link, then connected, account kept", async () => {
+  const { send, session, saved, container, storage } = setup();
+  await send(session("start", { app: "tailscale" }));
+  container.approve();
+  await send(saved("select", { exitId: "n1", whenDown: "stop" }));
+  assert.deepEqual((await send(saved("remove"))).body, {});
+  const again = await send(session("start", { app: "tailscale" }));
+  assert.equal(again.status, 200);
+  assert.equal(again.body.url, "https://login.example.invalid/a/test");
+  assert.deepEqual((await send(session("status"))).body, { state: "waiting" });
+  container.approve();
+  assert.deepEqual((await send(session("status"))).body, {
+    state: "connected",
+    tailnet: "example-tailnet",
+  });
+  assert.equal((await storage.get<{ account: string }>("route-v1:meta"))?.account, "acct-1");
+  assert.equal((await send(saved("exits"))).status, 200);
 });

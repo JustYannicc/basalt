@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { crossesDown, readingFromStatus, type GatewayStatus } from "./reading.ts";
+import { crossesDown, readingFromStatus, settle, type GatewayStatus } from "./reading.ts";
 import { openRouteState, sealRouteState } from "./state.ts";
 
 const base: GatewayStatus = {
@@ -37,6 +37,9 @@ test("gateway states map onto the reading the owner sees", () => {
     reason: null,
     exitName: "home-exit",
     tailnet: "example-tailnet",
+    deviceName: null,
+    deviceId: null,
+    keyExpiry: null,
     path: "direct",
     relayRegion: null,
     checkedAt: 5,
@@ -72,4 +75,25 @@ test("sealed state opens only for its own route and key, and through the previou
     state: "state-bytes",
     reseal: true,
   });
+});
+
+test("a reading keeps its since while its state holds", () => {
+  const observed = readingFromStatus(base, 5);
+  const first = settle(undefined, observed);
+  assert.equal(first.since, 5);
+  assert.equal(settle(first, { ...observed, checkedAt: 9 }).since, 5);
+  assert.equal(settle(first, { ...observed, state: "down", checkedAt: 9 }).since, 9);
+  const named = readingFromStatus(
+    {
+      ...base,
+      node: { ...base.node, name: "signalbox-route", key_expiry: "2027-01-01T00:00:00Z" },
+    },
+    5,
+  );
+  assert.equal(named.deviceName, "signalbox-route");
+  assert.equal(named.keyExpiry, Date.parse("2027-01-01T00:00:00Z"));
+  assert.equal(
+    readingFromStatus({ ...base, node: { ...base.node, key_expiry: "soon" } }, 5).keyExpiry,
+    null,
+  );
 });
