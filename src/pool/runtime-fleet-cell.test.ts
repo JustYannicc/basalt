@@ -283,7 +283,8 @@ test("a never-served start is abandoned only once its instance stayed absent thr
   assert.equal(await f.cell.abandon(f.target), true, "with no first-start intent nothing was sent");
   await f.cell.start(f.target);
   assert.equal(await f.cell.abandon(f.target), false, "a listed instance is running");
-  f.crash();
+  // The container exits on its own, and the provider keeps listing it as inactive.
+  await f.ctx.container!.destroy();
   assert.equal(
     await f.cell.abandon(f.target),
     false,
@@ -293,7 +294,7 @@ test("a never-served start is abandoned only once its instance stayed absent thr
   assert.equal(await f.cell.abandon(f.target), false);
   f.revive();
   assert.equal(await f.cell.abandon(f.target), false, "listed again, so the wait starts over");
-  f.crash();
+  await f.ctx.container!.destroy();
   assert.equal(await f.cell.abandon(f.target), false);
   context.mock.timers.tick(startingBoundMs - 1_000);
   assert.equal(await f.cell.abandon(f.target), false);

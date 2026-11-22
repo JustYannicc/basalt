@@ -215,7 +215,9 @@ export class RuntimeEndpoint {
         return;
       }
       const retained = await this.store.retained(proof.target.slotId);
-      if (retained && !retained.retired) {
+      // A retired slot never starts again: its place may already be counted free.
+      if (retained?.retired) throw new SlotRefused("identity");
+      if (retained) {
         const { record } = await this.store.read(proof.target);
         if (
           !sameControllerCode(record.authorization.controllerCode, proof.controllerCode) ||

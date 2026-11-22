@@ -426,3 +426,14 @@ test("readiness is read after the keep-alive, so a lease spent during it never a
   );
   assert.equal(f.calls.model, 0, "nothing reached the model port");
 });
+
+test("a retired record is never admitted again, so its slot can't start a second container", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await f.endpoint.drain(identity, AbortSignal.timeout(2_000));
+  await f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000));
+  await assert.rejects(f.endpoint.admit(f.grant.envelope), /identity/);
+  await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)));
+  assert.equal(f.calls.start, 1);
+});

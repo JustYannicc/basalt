@@ -115,7 +115,18 @@ export class FleetHandoffCell implements FleetCell {
     // starts a container only on that send, so its absence proves nothing was ever sent.
     if (!initial) return true;
     if (!sameTarget(initial.target, target)) return false;
-    if (!(await this.deps.provider.absent(this.deps.application, target.instanceId)))
+    // A destroyed instance stays listed as inactive, which counts as absent only for a boot the
+    // driver reported stopped; a start that never named its boot needs the instance unlisted.
+    const stopped = initial.identity ? await this.bootStopped(initial.identity) : false;
+    const proven = stopped ? { driverStopped: true as const } : undefined;
+    if (
+      !(await this.deps.provider.absent(
+        this.deps.application,
+        target.instanceId,
+        undefined,
+        proven,
+      ))
+    )
       return this.present();
     // A listing can lag a start that was just sent, from this isolate or a replaced one, so an
     // absence counts only once every read for a whole start bound agreed.
@@ -126,6 +137,14 @@ export class FleetHandoffCell implements FleetCell {
   private present() {
     this.absentSince = undefined;
     return false;
+  }
+  private async bootStopped(identity: SlotIdentity) {
+    try {
+      const actual = await this.deps.driver.failed(identity, AbortSignal.timeout(2_000));
+      return actual.stopped && sameIdentity(actual.identity, identity);
+    } catch {
+      return false;
+    }
   }
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
