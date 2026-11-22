@@ -37,7 +37,7 @@ export class RuntimeStartupStop {
     if (record.status === "aborted") return record;
     if (this.ctx.container!.running) return record;
     const next = { ...record, status: "aborted" as const };
-    await this.store.ended(() => this.ctx.storage.put(startupStopKey(intent.target), next));
+    await this.store.end(() => this.ctx.storage.put(startupStopKey(intent.target), next));
     return next;
   }
   async abort(value: StartupStopIntent, signal: AbortSignal) {

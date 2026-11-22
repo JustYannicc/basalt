@@ -48,17 +48,38 @@ export class RuntimeWitnessStore {
    * slot, so the refresh alarm and target its start left are dropped in the same turn and commit
    * with it. The provider lists a retired cell whose object an alarm wakes as running, with a place.
    */
-  async ended(write: () => Promise<unknown>) {
-    await Promise.all([
-      write(),
-      ...(this.owned ? [this.owned.delete(alarmTargetKey), this.owned.deleteAlarm()] : []),
-    ]);
+  async end(write: () => Promise<unknown>) {
+    await Promise.all([write(), ...this.dropAlarm()]);
+  }
+  private dropAlarm() {
+    return this.owned ? [this.owned.delete(alarmTargetKey), this.owned.deleteAlarm()] : [];
+  }
+  /**
+   * How a start on a runtime object arms its refresh, or undefined to keep the lifecycle's own
+   * arming of a shared alarm. An abort doesn't wait for the start it stops, so the start checks
+   * again after arming: whichever lands first, an ended slot keeps no alarm.
+   */
+  refresh(target: SlotTarget) {
+    if (!this.owned) return undefined;
+    return async (at: number) => {
+      const scheduled = await this.storage.getAlarm();
+      if (scheduled === null || scheduled > at) await this.storage.setAlarm(at);
+      if (await this.over(target)) await Promise.all(this.dropAlarm());
+    };
+  }
+  /** What `read` refuses on, short of a wrong target: no start or alarm may use this slot again. */
+  private async over(target: SlotTarget) {
+    return (
+      (await this.storage.get(startupStopKey(target))) !== undefined ||
+      (await this.abandoned(target.slotId)) ||
+      (await this.retained(target.slotId))?.retired === true
+    );
   }
   retire(target: SlotTarget, record: WitnessRecord & { retired: true }) {
-    return this.ended(() => this.put(target, record));
+    return this.end(() => this.put(target, record));
   }
   abandon(target: SlotTarget) {
-    return this.ended(() => this.storage.put(abandonedStartKey(target.slotId), { target }));
+    return this.end(() => this.storage.put(abandonedStartKey(target.slotId), { target }));
   }
   async abandoned(slot: string) {
     return (await this.storage.get(abandonedStartKey(slot))) !== undefined;
