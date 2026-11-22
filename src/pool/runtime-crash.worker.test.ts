@@ -4,8 +4,18 @@ import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worke
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { runtimeRecoveryBudgetMs } from "./runtime-slots/recovery.ts";
 import { crashAuditKey, crashNonceKey } from "./runtime-crash-contract.ts";
+import { answerTopology, followerTopology } from "./test/home-topology.ts";
 
-async function ready(context: { after(fn: () => Promise<void>): void }) {
+type Fleet = Awaited<ReturnType<typeof fleetWorkerFixture>>;
+
+/**
+ * A fleet with one ready sibling beside the root. `rootCall` is a call the root takes first: once a
+ * cell is ready the root takes no new call, so only a call accepted before that is still on it.
+ */
+async function ready(
+  context: { after(fn: () => Promise<void>): void },
+  rootCall?: (f: Fleet) => Promise<Response>,
+) {
   const f = await fleetWorkerFixture();
   context.after(f.cleanup);
   await f.bootstrap();
@@ -13,12 +23,17 @@ async function ready(context: { after(fn: () => Promise<void>): void }) {
     operationId: "crash-proof-fleet",
     configuration: { ...f.configuration, targetActive: 100 },
   });
-  const response = await f.model();
-  assert.equal(response.status, 200);
-  await response.body?.cancel();
+  const held = rootCall?.(f);
+  if (!held) {
+    const response = await f.model();
+    assert.equal(response.status, 200);
+    await response.body?.cancel();
+  }
   await f.settle();
   const [sibling] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
   assert.ok(sibling?.identity);
+  // Production shape: the primary is killed only once its own Home proves it is a follower.
+  answerTopology(f.old.home, () => Response.json(followerTopology()));
   const at = Date.now();
   const command = {
     identity: f.old.identity(),
@@ -27,7 +42,7 @@ async function ready(context: { after(fn: () => Promise<void>): void }) {
     at,
     expiresAt: at + 30_000,
   };
-  return { f, command, sibling };
+  return { f, command, sibling, held };
 }
 
 test(
@@ -199,7 +214,7 @@ test(
 
 for (const [path, status] of [
   ["responses", 503],
-  ["messages", 529],
+  ["messages", 503],
 ] as const)
   test(
     `the signed kill interrupts an accepted ${path} call with native retry advice and no server replay`,
@@ -210,19 +225,19 @@ for (const [path, status] of [
       context.after(() => {
         release.resolve();
       });
-      const { f, command } = await ready(context);
-      let attempts = 0;
       context.mock.method(console, "error", () => {});
-      f.onModel(async (instance) => {
-        assert.equal(instance, f.old);
-        attempts++;
-        entered.resolve();
-        await release.promise;
-        throw new Error("synthetic port closed by SIGKILL");
+      let attempts = 0;
+      const { f, command, held } = await ready(context, (f) => {
+        f.onModel(async (instance) => {
+          assert.equal(instance, f.old);
+          attempts++;
+          entered.resolve();
+          await release.promise;
+          throw new Error("synthetic port closed by SIGKILL");
+        });
+        return f.model(new Request(`http://pool/v1/${path}`, { method: "POST", body: "{}" }));
       });
-      const response = f.model(
-        new Request(`http://pool/v1/${path}`, { method: "POST", body: "{}" }),
-      );
+      const response = held!;
       await entered.promise;
       assert.equal((await f.command("runtime-crash", command)).status, 200);
       release.resolve();

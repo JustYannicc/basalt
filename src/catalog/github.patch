@@ -1,0 +1,239 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -11,7 +11,18 @@ Repositories, code search, issues, pull requests and users through GitHub's offi
+ 
+ Health check: `GET https://api.github.com/user`.
+ 
++## Results
++
++Tool results reach agent transcripts, so they don't carry the credentials GitHub puts in some responses. REST and MCP results go through the same filter in `results.ts`:
++
++- `temp_clone_token` and `temp_download_token`, the short-lived credentials on repository and runner-download reads, are dropped wherever they appear.
++- A file's `download_url`, and a raw-content link in a message from GitHub's MCP server, lose their `token` query parameter, which reads a private file without the account. Read the file through the tools instead. File contents, issue bodies and other text stay as GitHub sent them.
++- A secret-scanning alert's `secret`, the leaked value itself, is dropped.
++- A credential minted because a person asked for one, such as a runner registration token or an installation token, is returned only by the REST tools `results.ts` lists as minting it. Every other result drops those fields.
++
+ ## Known gaps
+ 
+ - Release asset upload (`uploads.github.com`) is skipped.
++- The five operations under `/applications/{client_id}` are left out: checking, resetting, scoping and deleting a token, and deleting an authorization. GitHub answers them only for an OAuth or GitHub app's own client ID and secret, sent as Basic credentials, which a connected account does not have.
++- Operations that act as an app, not a person, are still listed, such as those under `/app` and the Marketplace listing. GitHub answers them for a GitHub App's JWT, so they fail with a connected account's token.
+ - The MCP server serves its default toolsets; the REST API covers the rest. MCP tools and annotations were not listed with a real account.
+diff --git a/index.ts b/index.ts
+--- a/index.ts
++++ b/index.ts
+@@ -3,6 +3,7 @@ import {
+   decodeJson,
+   defineApp,
+   defineProvider,
++  mapResults,
+   number,
+   oauth2,
+   object,
+@@ -17,6 +18,7 @@ import { always } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { mcpResult, restResult } from "./results.js";
+ 
+ const User = object({ id: number(), login: string(), avatar_url: string(), html_url: string() });
+ 
+@@ -79,13 +81,16 @@ export default defineApp(
+               accounts,
+               async (account) =>
+                 withApprovals(
+-                  await mcpRouter({
+-                    url: mcpUrl,
+-                    account,
+-                    headers: { Authorization: `Bearer ${token(account)}` },
+-                    cache,
+-                    signal,
+-                  }),
++                  mapResults(
++                    await mcpRouter({
++                      url: mcpUrl,
++                      account,
++                      headers: { Authorization: `Bearer ${token(account)}` },
++                      cache,
++                      signal,
++                    }),
++                    mcpResult,
++                  ),
+                   (tool) => (toolAnnotations(tool)?.readOnlyHint === true ? undefined : always()),
+                 ),
+               { signal },
+@@ -100,8 +105,12 @@ export default defineApp(
+             await accountRouter(
+               accounts,
+               (account) =>
+-                withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-                  tool.kind === "mutation" ? always() : undefined,
++                withApprovals(
++                  mapResults(
++                    liveOpenapiRouter({ ...options, cache, fetch, signal, account }),
++                    restResult,
++                  ),
++                  (tool) => (tool.kind === "mutation" ? always() : undefined),
+                 ),
+               { signal },
+             ),
+diff --git a/openapi.ts b/openapi.ts
+--- a/openapi.ts
++++ b/openapi.ts
+@@ -1,6 +1,7 @@
+ import type { OpenapiToolNamesOptions } from "apps/openapi";
+ 
+-// GitHub's description declares no security schemes; every operation accepts a bearer token.
++// GitHub's description declares no security schemes. Every operation left here takes a bearer
++// token: a person's, or a GitHub App's JWT for the operations that act as the app itself.
+ export const options = {
+   source: {
+     url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+@@ -13,4 +14,14 @@ export const options = {
+     oauth: [{ scheme: "bearer", field: "access_token", part: "value", prefix: "" }],
+   },
+   oauth: [],
++  // GitHub answers every operation on these paths only for an OAuth or GitHub app's own client ID
++  // and secret, sent as Basic credentials, never for a bearer token: checking, resetting, scoping
++  // and deleting a token, and deleting an authorization. Its REST reference marks exactly these
++  // five as taking Basic authentication. A connected account has no such secret and the host's
++  // own must not reach a tool call, so they are left out.
++  patches: [
++    { op: "remove", path: "/paths/~1applications~1{client_id}~1grant" },
++    { op: "remove", path: "/paths/~1applications~1{client_id}~1token" },
++    { op: "remove", path: "/paths/~1applications~1{client_id}~1token~1scoped" },
++  ],
+ } satisfies OpenapiToolNamesOptions;
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "title": "GitHub"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.140",
++    "apps": "0.0.1-beta.104-basalt.15",
+     "@modelcontextprotocol/sdk": "1.32.1"
+   }
+ }
+diff --git a/results.ts b/results.ts
+new file mode 100644
+--- /dev/null
++++ b/results.ts
+@@ -0,0 +1,115 @@
++// Tool results land in agent transcripts, so they never carry a credential GitHub puts in a
++// response unless the tool exists to mint it. REST and MCP results go through the same filter.
++
++/** Short-lived credentials GitHub adds to ordinary reads, dropped from every result. */
++const incidental = new Set(["temp_clone_token", "temp_download_token"]);
++
++/**
++ * The REST tools, named under `api`, that mint a credential because a person asked for one, and
++ * the fields that carry it. Only these tools return those fields; every other result drops them.
++ */
++export const mintingTools: Readonly<Record<string, readonly string[]>> = {
++  "actions.createRegistrationTokenForOrg": ["token"],
++  "actions.createRegistrationTokenForRepo": ["token"],
++  "actions.createRemoveTokenForOrg": ["token"],
++  "actions.createRemoveTokenForRepo": ["token"],
++  "actions.generateRunnerJitconfigForOrg": ["encoded_jit_config"],
++  "actions.generateRunnerJitconfigForRepo": ["encoded_jit_config"],
++  "apps.createFromManifest": ["client_secret", "pem", "webhook_secret"],
++  "apps.createInstallationAccessToken": ["token"],
++};
++const minted = new Set(Object.values(mintingTools).flat());
++const none: ReadonlySet<string> = new Set();
++
++// A link to a private file's raw content carries a `token` that reads the file without the
++// account: a file's `download_url`, or the link GitHub's MCP server writes for a large file.
++const contentLink = /https:\/\/[\w-]+\.githubusercontent\.com\/[^\s"'<>\\]*/g;
++
++/**
++ * `link` without its `token` query parameters. It is edited as text, so nothing else in it
++ * changes and no link can fail to parse; a `#` or `)` ends the query, as in a Markdown link.
++ */
++const withoutToken = (link: string) => {
++  const start = link.indexOf("?");
++  if (start < 0) return link;
++  const tail = link.slice(start + 1);
++  const end = tail.search(/[#)]/);
++  const parameters = (end < 0 ? tail : tail.slice(0, end)).split("&");
++  const kept = parameters.filter((parameter) => !parameter.startsWith("token="));
++  if (kept.length === parameters.length) return link;
++  return `${link.slice(0, start)}${kept.length ? `?${kept.join("&")}` : ""}${end < 0 ? "" : tail.slice(end)}`;
++};
++const withoutLinkTokens = (text: string) =>
++  text.includes("token=") ? text.replace(contentLink, withoutToken) : text;
++
++/** `value` without credentials, other than the minted fields in `keep`; `value` itself if none. */
++const clean = (value: unknown, keep: ReadonlySet<string>): unknown => {
++  if (typeof value !== "object" || value === null) return value;
++  if (Array.isArray(value)) {
++    const items = value.map((item) => clean(item, keep));
++    return items.every((item, index) => item === value[index]) ? value : items;
++  }
++  // A secret-scanning alert's `secret` is the leaked credential itself.
++  const alert = "secret_type" in value;
++  let changed = false;
++  const entries = Object.entries(value).flatMap(([key, item]) => {
++    if (incidental.has(key) || (minted.has(key) && !keep.has(key)) || (alert && key === "secret")) {
++      changed = true;
++      return [];
++    }
++    // Other text, such as file contents and issue bodies, stays as GitHub sent it.
++    const cleaned =
++      key === "download_url" && typeof item === "string"
++        ? withoutLinkTokens(item)
++        : clean(item, keep);
++    if (cleaned !== item) changed = true;
++    return [[key, cleaned] as const];
++  });
++  return changed ? Object.fromEntries(entries) : value;
++};
++
++/** A REST tool's result, keeping only the credential the tool mints, if it is listed. */
++export const restResult = (result: unknown, tool: string) =>
++  clean(result, Object.hasOwn(mintingTools, tool) ? new Set(mintingTools[tool]) : none);
++
++const isMcpResult = (value: unknown): value is { readonly content: readonly unknown[] } =>
++  typeof value === "object" && value !== null && "content" in value && Array.isArray(value.content);
++
++const isText = (block: unknown): block is { readonly type: "text"; readonly text: string } =>
++  typeof block === "object" &&
++  block !== null &&
++  "type" in block &&
++  block.type === "text" &&
++  "text" in block &&
++  typeof block.text === "string";
++
++const json = (text: string): unknown => {
++  try {
++    return JSON.parse(text);
++  } catch {
++    return undefined;
++  }
++};
++
++/**
++ * GitHub's MCP server writes GitHub's objects as JSON text, so a text block that is JSON is
++ * filtered as that value and rewritten only if that changed it. Any other text block is the
++ * server's own message, such as a large file's download link. A file's contents arrive in a
++ * resource block, which stays as sent.
++ */
++const textBlock = (block: { readonly type: "text"; readonly text: string }) => {
++  const parsed = json(block.text);
++  if (parsed === undefined) return { ...block, text: withoutLinkTokens(block.text) };
++  const cleaned = clean(parsed, none);
++  return cleaned === parsed ? block : { ...block, text: JSON.stringify(cleaned) };
++};
++
++/** An MCP tool's result. No MCP tool mints a credential. */
++export const mcpResult = (result: unknown) => {
++  if (!isMcpResult(result)) return clean(result, none);
++  const { content, ...rest } = result;
++  return {
++    ...Object.fromEntries(Object.entries(rest).map(([key, value]) => [key, clean(value, none)])),
++    content: content.map((block) => (isText(block) ? textBlock(block) : clean(block, none))),
++  };
++};

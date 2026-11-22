@@ -64,6 +64,22 @@
           "reason": "The synthetic identity issuer listens on loopback."
         }
       }
+    },
+    "accountIdentityReconnectLabels": {
+      "title": "Reconnecting as another identity refreshes a label and description taken from the old one and keeps a typed label",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Identity relabelling uses the shared SDK; hosted policy is covered separately."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The synthetic identity issuer listens on loopback."
+        }
+      }
     }
   },
   "runs": {
@@ -74,7 +90,8 @@
       "host-managed-accounts-local:shared-identities-and-incremental-consent"
     ],
     "accountGrantReuse": ["host-managed-accounts-local:shared-identities-and-incremental-consent"],
-    "accountGrantRefusal": ["host-managed-accounts-local:shared-identities-and-incremental-consent"]
+    "accountGrantRefusal": ["host-managed-accounts-local:shared-identities-and-incremental-consent"],
+    "accountIdentityReconnectLabels": ["host-managed-accounts-local:shared-identities-and-incremental-consent"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
