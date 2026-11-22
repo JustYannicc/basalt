@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fetchController, type ControllerHop } from "./controller-reset.ts";
+import { reachedNoContainer } from "./controller-unsent.ts";
+import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 
 const mark = "X-Signalbox-Controller-Unsent";
 const body = JSON.stringify({
@@ -58,4 +60,24 @@ test("an unsent call that can't be sent again keeps the retryable 503, without t
   assert.equal(response.headers.get("Retry-After"), "1");
   assert.equal(response.headers.get(mark), null);
   assert.equal(h.sends.length, 1);
+});
+
+test("only a refusal before the container send proves a call reached no runtime", () => {
+  const tagged = (step: Parameters<typeof rememberRuntimeFailure>[0]) => {
+    const error = new Error("refused");
+    rememberRuntimeFailure(step, error);
+    return error;
+  };
+  for (const step of [
+    "endpoint_identity",
+    "endpoint_admission",
+    "endpoint_health",
+    "endpoint_request",
+    "port_lookup",
+  ] as const)
+    assert.equal(reachedNoContainer(tagged(step)), true, step);
+  // The send itself, the endpoint's catch-all step, and an untraced failure prove nothing.
+  for (const step of ["port_dispatch", "endpoint_route", "slot_port"] as const)
+    assert.equal(reachedNoContainer(tagged(step)), false, step);
+  assert.equal(reachedNoContainer(new Error("Network connection lost.")), false);
 });

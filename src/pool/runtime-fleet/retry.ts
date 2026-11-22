@@ -9,6 +9,7 @@ import { awaitProbe } from "../availability.ts";
 import { FleetRefused } from "./state.ts";
 import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
 import { nativeRuntimeUnavailable, nativeRuntimeStream } from "../runtime-unavailable.ts";
+import { reachedNoContainer, unsentRefusal } from "../controller-unsent.ts";
 import {
   modelCallReplayable,
   upstreamOutcomeUnknown,
@@ -167,6 +168,9 @@ export async function forwardRecoverably(
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
         }
+        // The runtime's endpoint refused before its container send: nothing ran, so the entry may
+        // send the call it holds once more.
+        if (dispatched && !safe && reachedNoContainer(error)) return unsentRefusal(request, error);
         if (dispatched && !safe) return acceptedCrash(request, error);
         retained = backup ?? new Request(request, { signal });
         retainedOwned = true;

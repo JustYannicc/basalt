@@ -6,6 +6,7 @@ import {
   stripRuntimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
 import { isModelLifetimePath, stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
+import { reachedNoContainer, unsentRefusal } from "./controller-unsent.ts";
 import { inheritModelLifetime, modelLifetimeFetch } from "./model-lifetime.worker.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
@@ -311,6 +312,23 @@ export async function forwardPoolRequest(
                     : "unknown",
       homeDatabasePool: databasePool(),
     };
+    // The runtime's endpoint refused before its container send: nothing ran, so the entry may send
+    // the call it holds once more instead of reporting an unknown outcome.
+    if (
+      dispatched &&
+      isPublicModelPath(pathname) &&
+      !request.signal.aborted &&
+      reachedNoContainer(error)
+    ) {
+      terminal?.("unavailable", 503, 0);
+      console.error(
+        "POOL_CONTROLLER_UNSENT",
+        JSON.stringify({ requestId, step: diagnostic.runtimeStep ?? null }),
+      );
+      const refused = unsentRefusal(request, error);
+      refused.headers.set("X-Request-Id", requestId);
+      return refused;
+    }
     if (dispatched && isPublicModelPath(pathname)) {
       terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
       return gatewayOutcomeUnknown(
