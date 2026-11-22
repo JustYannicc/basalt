@@ -42,9 +42,9 @@ export const ReleasePolicy = Schema.Struct({
   ),
   /**
    * Secrets a failed release's rollback may force past Cloudflare's refusal while a secret differs
-   * from the value the earlier version ran with (10220): ones that differ on every release by
-   * design. The rollback forces only a refusal that names nothing else; a policy without it forces
-   * nothing.
+   * from the value the earlier version ran with (10220): ones whose value a release changes by
+   * design, such as a pinned build version. The rollback forces only a refusal that names nothing
+   * else; a policy without it forces nothing.
    */
   rollback: Schema.optional(
     Schema.Struct({

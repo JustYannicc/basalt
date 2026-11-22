@@ -949,7 +949,7 @@ try {
               .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
               .map((change) => change.fqn)
         : [];
-    // The secrets the release policy says differ on every release by design: the one `--policy`
+    // The secrets the release policy says a release changes by design: the one `--policy`
     // names, else the job's POLICY. A policy that cannot be read forces nothing; every Worker is
     // still rolled back where it can be.
     let forceSecrets: ReadonlySet<string> = new Set();

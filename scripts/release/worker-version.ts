@@ -96,7 +96,7 @@ const errorsOf = (body: unknown) => {
  * Deploys an earlier version at 100%, as `wrangler rollback` does. Cloudflare refuses it across a
  * class change, and while a secret differs from the value the version ran with. That refusal is
  * sent again with `force` only when every secret it names is in `forceSecrets`, the release
- * policy's list of secrets that differ on every release by design, and the refusal is exactly that
+ * policy's list of secrets whose value a release changes by design, and the refusal is exactly that
  * one message: Cloudflare's `force` overrides every block, not only the changed secret. Cloudflare
  * keeps a secret's value per version (changing one creates a new version), so the earlier version
  * comes back with the value it ran with.
