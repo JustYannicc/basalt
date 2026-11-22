@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-container-publication-repository",
+  "file": "0767-alchemy-container-publication-repository.patch",
+  "content_sha256": "d3389abb28585bc14f0d9055f6d6f9c8d073a935ef9a307c885f6cddc1d3ee06",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release shares one image publication between applications built from one context, so one repository receives the image; remove when the pinned release keys publications by repository."
+}

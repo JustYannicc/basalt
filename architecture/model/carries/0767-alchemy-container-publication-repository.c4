@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Two Containers built from one context share an image hash but publish to their own repositories: the provider keys an image publication by the repository it pushes to, so each application builds into, and runs, its own repository. While an application's image input is unchanged it keeps the reference it runs when that names the recorded digest, so an application left running another repository's digest by an earlier shared publication is not sent its own repository at a digest that repository never received."
+    }
+  }
+}
