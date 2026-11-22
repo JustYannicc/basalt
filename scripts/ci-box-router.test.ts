@@ -482,6 +482,14 @@ test("declared shard rows and benched named jobs route, and free slots and timeo
         noWait,
       );
       assert.deepEqual(shared.jobs, unwatched.jobs, `${slots}/${busy}`);
+      // The CI runners' own label queues the heartbeat behind them, as no heartbeat label does.
+      const sameLabel = await routeBox(
+        input({ ...routing, heartbeatLabel: "basalt-box" }),
+        busyBox(),
+        () => now,
+        noWait,
+      );
+      assert.deepEqual(sameLabel.jobs, unwatched.jobs, `${slots}/${busy}`);
     }
   assert.equal(boxSlowdown, 2);
   assert.deepEqual(fillBox([{ id: "a", minutes: 31, timeout: 61 }], 5), []);

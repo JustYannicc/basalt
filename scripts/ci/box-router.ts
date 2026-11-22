@@ -141,12 +141,16 @@ export function fillBox(shards: readonly BoxShard[], limit: number) {
   return planBox(shards, limit, 0).map((job) => job.id);
 }
 
-/** Box jobs ran at 1.02–1.16× their hosted time under the load guard; a job waiting for a slot is
- * planned at the 1.25× keep rule, so the wave behind it never outlasts the Check. */
-export const waveSlowdown = 1.25;
+/**
+ * The pace a second wave is planned at: the box's own worst case, not its best. Box jobs ran at
+ * 1.02–1.16× their hosted time under the load guard, and at 2.2–2.8× in a full Check that gates
+ * overran; a wave planned at a faster pace than the one ahead of it really runs at is cancelled
+ * while the box is healthy.
+ */
+export const waveSlowdown = boxSlowdown;
 /** A full suite's floor: its longest hosted jobs run 17.5–19.3 minutes, plus select. */
 export const fullCheckFloor = 20;
-/** Jobs per free slot at most: one starts at once, one waits behind it. */
+/** At most this many jobs per free slot, counted over all slots: some start at once, the rest wait. */
 export const boxWaves = 2;
 
 /**
@@ -295,11 +299,11 @@ export async function routeBox(
     const floor = checkFloor(plan.shards);
     // A job may wait on the box only while its heartbeat runs on its own runner: one that queued
     // behind CI jobs would go stale, and box-watch would take a holding box for a down one.
-    const planned = planBox(
-      plan.shards,
-      free,
-      heartbeatRunnerLabel(input.heartbeatLabel) ? floor : 0,
-    );
+    // A heartbeat on the CI runners' own label would still queue behind them.
+    const ownRunner =
+      heartbeatRunnerLabel(input.heartbeatLabel) !== "" &&
+      input.heartbeatLabel?.toLowerCase() !== settings.label.toLowerCase();
+    const planned = planBox(plan.shards, free, ownRunner ? floor : 0);
     if (!planned.length)
       return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
     const jobs = planned.map((job) => job.id);

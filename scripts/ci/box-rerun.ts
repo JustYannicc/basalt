@@ -48,6 +48,7 @@ export function parseVerdict(text: string | undefined) {
     return {
       run: value.run as number,
       attempt: value.attempt as number,
+      reason: value.reason,
       stuck,
       cutOff,
       at: Date.parse(value.at),
@@ -94,8 +95,12 @@ export function rerunDecision(
       why: "a newer Check runs for this pull request, and a re-run would cancel it",
     };
   // The aggregate runs after any cancel and fails on the cancelled jobs; it is no real failure.
+  // Nor is a box job's, when the box went down under it: its runner was lost, not its test.
+  const lostBox = (job: RerunJob) =>
+    verdict.reason === "box-down" &&
+    (job.labels ?? []).some((value) => value.toLowerCase() === label);
   const failed = jobs
-    .filter((job) => job.conclusion === "failure" && !isCheckJob(job.name))
+    .filter((job) => job.conclusion === "failure" && !isCheckJob(job.name) && !lostBox(job))
     .map((job) => job.name);
   if (failed.length)
     return {
@@ -105,6 +110,27 @@ export function rerunDecision(
       failed,
     };
   return { action: "rerun", stuck: verdict.stuck };
+}
+
+/** A GitHub call, tried three times: a 5xx or a dropped connection is common and passes. */
+export async function retried(
+  call: () => Promise<Response>,
+  what: string,
+  tries = 3,
+  pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+) {
+  for (let attempt = 1; ; attempt++) {
+    const response = await call().catch((error: Error) => error);
+    if (response instanceof Response && (response.ok || response.status < 500)) {
+      if (!response.ok) throw new Error(`GitHub returned ${response.status} for ${what}`);
+      return response;
+    }
+    if (attempt === tries)
+      throw new Error(
+        `GitHub kept failing ${what}: ${response instanceof Response ? response.status : response.message}`,
+      );
+    await pause(2_000 * attempt);
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -123,11 +149,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const verdict = path && existsSync(path) ? readFileSync(path, "utf8") : undefined;
   const jobs: RerunJob[] = [];
   for (let page = 1; page <= 10; page++) {
-    const response = await fetch(
-      `${api}/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=100&page=${page}`,
-      { headers, signal: AbortSignal.timeout(20_000) },
+    const response = await retried(
+      () =>
+        fetch(
+          `${api}/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=100&page=${page}`,
+          { headers, signal: AbortSignal.timeout(20_000) },
+        ),
+      "the run's jobs",
     );
-    if (!response.ok) throw new Error(`GitHub returned ${response.status} for the run's jobs`);
     const batch = ((await response.json()) as { jobs?: Record<string, unknown>[] }).jobs ?? [];
     for (const job of batch)
       jobs.push({
@@ -145,11 +174,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let superseded = false;
   if (env.RUN_EVENT === "pull_request") {
     const branch = encodeURIComponent(env.HEAD_BRANCH ?? "");
-    const response = await fetch(
-      `${api}/actions/workflows/ci.yml/runs?event=pull_request&branch=${branch}&per_page=20`,
-      { headers, signal: AbortSignal.timeout(20_000) },
+    const response = await retried(
+      () =>
+        fetch(
+          `${api}/actions/workflows/ci.yml/runs?event=pull_request&branch=${branch}&per_page=20`,
+          { headers, signal: AbortSignal.timeout(20_000) },
+        ),
+      "the branch's Checks",
     );
-    if (!response.ok) throw new Error(`GitHub returned ${response.status} for the branch's Checks`);
     const runs =
       ((await response.json()) as { workflow_runs?: { id?: number }[] }).workflow_runs ?? [];
     superseded = runs.some((other) => Number(other.id) > run.id);
@@ -166,12 +198,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         `Box jobs that never ran: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`,
     );
   else {
-    const rerun = await fetch(`${api}/actions/runs/${run.id}/rerun-failed-jobs`, {
-      method: "POST",
-      headers,
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!rerun.ok) throw new Error(`GitHub returned ${rerun.status} re-running the run`);
+    await retried(
+      () =>
+        fetch(`${api}/actions/runs/${run.id}/rerun-failed-jobs`, {
+          method: "POST",
+          headers,
+          signal: AbortSignal.timeout(20_000),
+        }),
+      "the re-run",
+    );
     say(
       `Box re-run: re-running the jobs box-watch's cancel stopped, ${decision.stuck.length} of them box jobs that never started, on GitHub's runners.`,
     );

@@ -23,6 +23,8 @@ export type WatchedJob = {
   name: string;
   status: string;
   onBox: boolean;
+  /** When GitHub queued the job, once its needs were met; missing, select's end stands in. */
+  createdAt?: number;
 };
 export type Verdict = {
   run: number;
@@ -76,10 +78,17 @@ export function watchDecision(
     .map((name) => listed.get(name))
     .filter((job): job is WatchedJob => !!job && job.onBox && notStarted.has(job.status));
   if (!missing.length && !stuck.length) return { action: "done" };
-  const elapsed = (input.now - input.selectedAt) / minute;
-  const late = stuck.filter(
-    (job) => !(elapsed < latestStart(input.planned[job.name]!, input.floorMinutes)),
-  );
+  // Each job's deadline counts from when it was queued: a busy GitHub queue for the jobs it needs
+  // delays it, the floor and the Check alike. While the box runs any of this Check's own jobs, a
+  // waiting one is held behind them by design, which is no stall.
+  const working = input.jobs.some((job) => job.onBox && job.status === "in_progress");
+  const late = working
+    ? []
+    : stuck.filter((job) => {
+        const queued = job.createdAt ?? input.selectedAt;
+        const waited = (input.now - queued) / minute;
+        return !(waited < latestStart(input.planned[job.name]!, input.floorMinutes));
+      });
   const down = stuck.length > 0 && input.downFor >= downMinutes;
   if (!down && !late.length) return { action: "wait" };
   return {
@@ -92,7 +101,9 @@ export function watchDecision(
       cutOff: input.jobs
         .filter((job) => job.status === "in_progress" && job.name !== input.self)
         .map((job) => job.id),
-      at: new Date(input.now).toISOString(),
+      // The listing's own time, to the second: GitHub stamps a start to the second, so a job the
+      // box took after this listing never reads as started before it.
+      at: new Date(Math.floor(input.now / 1000) * 1000).toISOString(),
     },
   };
 }
@@ -152,6 +163,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
     let decision: ReturnType<typeof watchDecision>;
     try {
+      // The decision's time is this listing's, taken before it is read.
+      const listedAt = Date.now();
       const jobs = await jobsOf();
       const selectedAt = Date.parse(
         String(jobs.find((job) => job.name === "select")?.completed_at ?? ""),
@@ -163,6 +176,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         onBox:
           Array.isArray(job.labels) &&
           job.labels.some((value) => String(value).toLowerCase() === label),
+        createdAt: Date.parse(String(job.created_at ?? "")) || undefined,
       }));
       const stuck = watched.some(
         (job) => job.name in planned && job.onBox && notStarted.has(job.status),
@@ -199,7 +213,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         jobs: watched,
         planned,
         downFor: notUpSince === undefined ? 0 : (Date.now() - notUpSince) / minute,
-        now: Date.now(),
+        now: listedAt,
         selectedAt: Number.isFinite(selectedAt) ? selectedAt : started,
         floorMinutes,
         run,

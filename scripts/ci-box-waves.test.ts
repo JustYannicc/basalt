@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   boxSettings,
+  boxSlowdown,
   boxWaves,
   checkFloor,
   fillBox,
@@ -16,16 +17,22 @@ const waves = (rows: readonly BoxShard[], free: number, floor: number) =>
   planBox(rows, free, floor).map(({ id, wave }) => ({ id, wave }));
 
 test("free slots take the longest jobs at once, and a second wave waits only if it ends by the floor", () => {
-  const rows = [row("a", 15), row("b", 13), row("c", 10), row("d", 7), row("e", 4), row("f", 2)];
-  // Two slots: a ends at 18.75 and b at 16.25 at the keep rule's pace. Behind b, c, d and e would
-  // end at 28.75, 25 and 21.25, past the 20-minute floor; f ends at 18.75 and waits.
-  assert.equal(waveSlowdown, 1.25);
+  const rows = [row("a", 9), row("b", 8), row("c", 3), row("d", 2)];
+  // Planned at the box's own worst pace, 2x: a ends at 18 and b at 16. Behind b, c would end at 22,
+  // past the 20-minute floor, and stays hosted; d ends at 20 and waits.
+  assert.equal(waveSlowdown, boxSlowdown);
+  assert.equal(waveSlowdown, 2);
   assert.deepEqual(waves(rows, 2, 20), [
     { id: "a", wave: 1 },
     { id: "b", wave: 1 },
-    { id: "f", wave: 2 },
+    { id: "d", wave: 2 },
   ]);
-  // A later floor lets more wait, never more than two jobs a slot.
+  // At that pace a full suite's ten-minute shards leave no room for a second wave by its floor.
+  assert.deepEqual(
+    waves([row("x", 10), row("y", 10), row("z", 2)], 2, 20).map((job) => job.wave),
+    [1, 1],
+  );
+  // A later floor lets more wait, never more than two jobs per free slot in all.
   const late = planBox(rows, 2, 60);
   // Each planned job carries the minutes box-watch's deadline needs.
   assert.deepEqual(
