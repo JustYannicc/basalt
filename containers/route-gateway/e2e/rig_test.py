@@ -392,7 +392,7 @@ class Rig:
         after = self.gateway_call("GET", "/state")[1]["state"]
         keys = lambda blob: {value for value in json.loads(base64.b64decode(blob) or b"{}").values()}
         node = next((n for n in json.loads(self.headscale("nodes", "list", "-o", "json")) or [] if "signalbox-route" in (n.get("name"), n.get("given_name"))), {})
-        expired = (node.get("expiry") or {}).get("seconds", 0) < time.time()
+        expired = bool(node) and 0 < (node.get("expiry") or {}).get("seconds", 0) < time.time()
         after_logout = self.through("logout")
         self.record("8_logout", logged_out == [200, {}] and after_status["state"] == "needs_login"
                     and not after_status["node"]["logged_in"] and keys(before) and not keys(before) & keys(after)

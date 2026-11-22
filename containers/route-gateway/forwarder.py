@@ -5,6 +5,7 @@ every connection is checked here before anything is dialled (stop-when-down).
 """
 
 import asyncio
+import contextlib
 import json
 import struct
 import time
@@ -98,10 +99,16 @@ async def splice(client, upstream):
     """Copy both ways. A clean EOF half-closes; an error on either side closes both, so a
     reset never leaves the other direction waiting with its connection slot held."""
     (client_reader, client_writer), (upstream_reader, upstream_writer) = client, upstream
-    failed = False
+    deadline = None
+
+    def abort():
+        for side in (client_writer, upstream_writer):
+            # A transport that already flushed and closed has nothing left to abort.
+            with contextlib.suppress(AttributeError, RuntimeError):
+                side.transport.abort()
 
     async def pump(reader, writer):
-        nonlocal failed
+        nonlocal deadline
         try:
             while data := await reader.read(65536):
                 writer.write(data)
@@ -109,21 +116,18 @@ async def splice(client, upstream):
             if writer.can_write_eof():
                 writer.write_eof()
         except (ConnectionError, OSError):
-            failed = True
+            # close() still flushes what was already received, and holds the other side
+            # open until it has; a peer that never reads it is aborted after the deadline.
             client_writer.close()
             upstream_writer.close()
+            if deadline is None:
+                deadline = asyncio.get_running_loop().call_later(ABORT_AFTER_S, abort)
 
     await asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
     upstream_writer.close()
-    if failed:
-        # close() still flushes what the other side already sent; abort only a peer that
-        # never reads it.
-        closing = asyncio.gather(client_writer.wait_closed(), upstream_writer.wait_closed(), return_exceptions=True)
-        try:
-            await asyncio.wait_for(closing, ABORT_AFTER_S)
-        except asyncio.TimeoutError:
-            client_writer.transport.abort()
-            upstream_writer.transport.abort()
+    if deadline is not None:
+        await asyncio.gather(client_writer.wait_closed(), upstream_writer.wait_closed(), return_exceptions=True)
+        deadline.cancel()
 
 
 class Forwarder:

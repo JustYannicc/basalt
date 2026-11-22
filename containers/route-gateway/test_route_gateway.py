@@ -338,6 +338,46 @@ class WatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exits, [1])
 
 
+class StuckWriter:
+    """A writer whose close() waits on a peer that never reads, until it is aborted."""
+
+    def __init__(self, reader):
+        self.reader, self.closed = reader, asyncio.Event()
+        self.transport = self
+
+    def write(self, data):
+        pass
+
+    async def drain(self):
+        pass
+
+    def can_write_eof(self):
+        return False
+
+    def close(self):
+        pass
+
+    def abort(self):
+        self.reader.feed_eof()
+        self.closed.set()
+
+    async def wait_closed(self):
+        await self.closed.wait()
+
+
+class SpliceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_reset_frees_the_slot_even_when_the_client_never_reads(self):
+        client_reader, upstream_reader = asyncio.StreamReader(), asyncio.StreamReader()
+        upstream_reader.set_exception(ConnectionResetError())
+        client_writer, upstream_writer = StuckWriter(client_reader), StuckWriter(upstream_reader)
+        original, forwarder.ABORT_AFTER_S = forwarder.ABORT_AFTER_S, 0.1
+        try:
+            await asyncio.wait_for(forwarder.splice((client_reader, client_writer), (upstream_reader, upstream_writer)), 2)
+        finally:
+            forwarder.ABORT_AFTER_S = original
+        self.assertTrue(client_writer.closed.is_set())
+
+
 class ControlTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.adapter = FakeAdapter()
