@@ -29,6 +29,8 @@
     ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
     ".upstream/apps/hosted/server/src/implementation/account-source-options.ts",
     ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-read-facts.ts",
     ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
     ".upstream/packages/apps/src/contracts/provider.ts",
     ".upstream/packages/apps/src/contracts/selected-account-read.ts",
