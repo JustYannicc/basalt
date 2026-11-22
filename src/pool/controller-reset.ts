@@ -35,7 +35,8 @@ export const controllerHoldBudgetBytes = 32 * 1024 * 1024;
 // release, and its bytes must not stay counted for the life of the isolate.
 const reservations = new Map<object, { bytes: number; until: number }>();
 /** Bytes held for replay in this isolate right now. */
-export function controllerHeldBytes(now = Date.now()) {
+export function controllerHeldBytes() {
+  const now = Date.now();
   let total = 0;
   for (const [key, reservation] of reservations) {
     if (reservation.until <= now) reservations.delete(key);
@@ -262,7 +263,6 @@ const resendable = (response: Response) => handingOver(response) || sentNowhere(
  * replay window, and once an answer comes the caller sees nothing. Past the window, or without a
  * held body, the refusal itself goes back: the retryable 503 clients already follow.
  */
-
 async function awaitHandover(
   request: Request,
   hop: ControllerHop,

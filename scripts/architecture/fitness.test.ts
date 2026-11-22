@@ -21,6 +21,9 @@ let source: ReturnType<typeof sourceDependencies>;
 let imports: ReturnType<typeof sourceDependencies>;
 let pipeline: ReturnType<typeof pipelineDependencies>;
 let ownershipErrors: ReturnType<typeof moduleErrors>;
+// Loading the model and the stack inventory and reading every source file takes about five seconds
+// on an idle core and well past thirty beside a full gate; the bound stops only a hang.
+const setupMs = 5 * 60_000;
 beforeAll(async () => {
   workspace = await LikeC4.fromWorkspace(`${root}/architecture`, { logger: false });
   expect(workspace.getErrors()).toEqual([]);
@@ -31,7 +34,7 @@ beforeAll(async () => {
   imports = sourceDependencies(root, modules(), [], sources);
   pipeline = pipelineDependencies(root, modules(), services());
   ownershipErrors = moduleErrors(root, modules());
-}, 30_000);
+}, setupMs);
 afterAll(() => workspace?.dispose());
 
 const modules = () =>
@@ -74,11 +77,17 @@ test("deployed resources and deployment instances correspond in both directions"
 
 const services = () =>
   [...model.elements()]
-    .filter((e) => e.isTagged("external") || values(e.metadata.endpointHosts).length)
+    .filter(
+      (e) =>
+        e.isTagged("external") ||
+        values(e.metadata.endpointHosts).length ||
+        values(e.metadata.addressEnv).length,
+    )
     .map((element) => ({
       id: element.id,
       hosts: [...values(element.metadata.hosts), ...values(element.metadata.endpointHosts)],
       sdks: values(element.metadata.sdks),
+      addressEnvs: values(element.metadata.addressEnv),
     }));
 
 test("outside hosts, SDKs and service bindings have caller relationships", () => {
@@ -101,6 +110,10 @@ test("outside hosts, SDKs and service bindings have caller relationships", () =>
     }
   }
   expect(dependencies.filter((d) => !relationships.has(`${d.source}->${d.target}`))).toEqual([]);
+  const declaredAddresses = services().flatMap((service) => service.addressEnvs);
+  expect(declaredAddresses.length, "an address variable is declared by one service").toBe(
+    new Set(declaredAddresses).size,
+  );
 });
 
 test("every owned package and module has code and all cross-module imports have relationships", () => {

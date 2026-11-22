@@ -31,6 +31,7 @@ import {
   type FleetConfiguration,
 } from "./configuration.ts";
 import { RuntimeFleetState } from "./state.ts";
+import { fleetWakeUp, inPhaseFor } from "./phase-bounds.ts";
 import { RuntimeFleet } from "./controller.ts";
 import { boundFleetCell } from "./bound-cell.ts";
 import { RuntimeFleetPeers, type HomePeerEndpoint } from "./peers.ts";
@@ -309,7 +310,11 @@ export class PoolRuntimeFleet {
     return {
       permission: await this.configuration.inspect(operationId),
       replacement: operationId ? await this.replacement.inspect(operationId) : undefined,
-      resources: await this.state.inspect(),
+      // A held row has no time exit, so its age and reason show wherever the fleet is inspected.
+      resources: (await this.state.inspect()).map((row) => ({
+        ...row,
+        inPhaseMs: inPhaseFor(row, Date.now()),
+      })),
       bindings: this.deps
         .namespaces()
         .map(({ color, applicationId, imageInput }) => ({ color, applicationId, imageInput })),
@@ -438,30 +443,25 @@ export class PoolRuntimeFleet {
   abortPool(pool: string) {
     this.runtime?.abortPool(pool);
   }
+  /** Arms the next fleet pass from durable state, for a pass a reset cut before it re-armed. */
+  reschedule() {
+    return this.schedule();
+  }
   private async schedule() {
     if (!this.deps.schedule) return;
     const permission = await this.configuration.inspect();
     const now = Date.now();
     if (await this.deps.handoff.selected()) await this.deps.schedule(now + recoveryPassMs);
     if (!permission) return;
-    const deadlines = (await this.state.inspect())
-      .map((row) => {
-        if (row.phase === "ready")
-          return permission.enabled && row.active
-            ? now + 2_000
-            : Math.min(
-                now + 2_000,
-                Math.max(
-                  now + 100,
-                  row.lastUsedAt +
-                    (permission.enabled ? permission.configuration.idleMilliseconds : 0),
-                ),
-              );
-        if (row.phase === "draining" && row.active && row.drainAcknowledged) return undefined;
-        return now + 2_000;
-      })
-      .filter((at) => at !== undefined);
-    if (deadlines.length) await this.deps.schedule(Math.min(...deadlines));
+    const at = fleetWakeUp(
+      await this.state.inspect(),
+      {
+        enabled: permission.enabled,
+        idleMilliseconds: permission.configuration.idleMilliseconds,
+      },
+      now,
+    );
+    if (at !== undefined) await this.deps.schedule(at);
   }
   private async primaryHeadroom() {
     if (!(await this.imageUpdate.headroom())) return;

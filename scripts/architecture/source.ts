@@ -21,6 +21,8 @@ export interface OutsideService {
   id: string;
   hosts: string[];
   sdks: string[];
+  /** Environment variables whose URL host this service is; only plain Python TCP dials use them. */
+  addressEnvs?: string[];
 }
 export interface Dependency {
   source: string;

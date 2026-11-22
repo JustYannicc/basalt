@@ -28,6 +28,9 @@ const WitnessRecord = Schema.Struct({
 });
 export type WitnessRecord = typeof WitnessRecord.Type;
 
+/** A fleet start its controller abandoned: no admission or start reaches its slot again. */
+const abandonedStartKey = (slot: string) => `runtime-slots-v1:start-abandoned:${slot}`;
+
 /** Private configuration and launch provenance share the allocated per-slot witness record. */
 export class RuntimeWitnessStore {
   private storage: RuntimeState["storage"];
@@ -35,6 +38,12 @@ export class RuntimeWitnessStore {
   constructor(storage: RuntimeState["storage"], secret: string) {
     this.storage = storage;
     this.secret = secret;
+  }
+  abandon(target: SlotTarget) {
+    return this.storage.put(abandonedStartKey(target.slotId), { target });
+  }
+  async abandoned(slot: string) {
+    return (await this.storage.get(abandonedStartKey(slot))) !== undefined;
   }
   retainAlarmTarget(target: SlotTarget) {
     return this.storage.put("runtime-alarm-v1:target", target);
@@ -49,6 +58,7 @@ export class RuntimeWitnessStore {
   }
   async read(target: SlotTarget) {
     if (await this.storage.get(startupStopKey(target))) throw new SlotRefused("selection");
+    if (await this.abandoned(target.slotId)) throw new SlotRefused("selection");
     const record = await this.retained(target.slotId);
     if (!record || record.retired || !sameTarget(record.authorization.target, target))
       throw new SlotRefused("identity");
@@ -71,6 +81,7 @@ export class RuntimeWitnessStore {
   ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(authorization.target);
     if (await this.storage.get(startupStopKey(target))) throw new SlotRefused("selection");
+    if (await this.abandoned(target.slotId)) throw new SlotRefused("selection");
     const sealed = await sealConfiguration(configuration, this.secret, JSON.stringify(target));
     await this.put(target, { authorization, sealed, ...(identity ? { identity } : {}) });
   }

@@ -5,11 +5,19 @@ import { physicalPrimaryTargets, sameGeneration, selectedPrimary } from "./physi
 import { slotFirstStartKey } from "../runtime-slots/storage.ts";
 import { runtimeCellKey } from "./cell-state.ts";
 import { RuntimeDistance, distanceClass, type DistanceClass } from "../runtime-distance.ts";
+import { logQuarantine, type PhaseBound } from "./phase-bounds.ts";
 
 const Count = Schema.Number.check(
   Schema.isInt(),
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
+const quarantineReasons = [
+  "runtime_failed",
+  "policy_refused",
+  "start_unproven",
+  "drain_unproven",
+  "absence_unproven",
+] as const;
 const Row = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
@@ -32,8 +40,14 @@ const Row = Schema.Struct({
   replacement: Schema.optional(Schema.Boolean),
   // Sent to draining by a far-placement redraw, never by load or retirement.
   redrawn: Schema.optional(Schema.Boolean),
+  // When the row entered its phase. A row stored before this existed is stamped by its next write.
+  phaseAt: Schema.optional(Count),
+  // Why a quarantined row holds its place; rows quarantined before this existed carry none.
+  reason: Schema.optional(Schema.Literals(quarantineReasons)),
 });
 type Row = typeof Row.Type;
+export type FleetRow = Row;
+export type QuarantineReason = (typeof quarantineReasons)[number];
 const Ledger = Schema.Array(Row);
 const key = "runtime-fleet-v1:resources";
 const primaryKey = "runtime-fleet-v1:primary-active";
@@ -46,6 +60,8 @@ interface RuntimeReservation {
 }
 interface PrimaryReservation {
   kind: "primary";
+  /** No cell was ready: the root takes the call as the fleet's only route. */
+  alone: boolean;
   release(): Promise<void>;
 }
 /**
@@ -109,14 +125,34 @@ export class RuntimeFleetState {
       throw new FleetRefused("uncertain");
     return rows;
   }
-  private change<T>(work: (rows: Row[], transaction: SlotStorage) => T | Promise<T>) {
-    return this.storage.transaction(async (transaction) => {
+  /** Every phase change stamps its entry time, so each phase's bound counts from one durable instant. */
+  private stamp(rows: Row[], before: ReadonlyMap<string, Row["phase"]>) {
+    const entered: Row[] = [];
+    rows.forEach((row, index) => {
+      const changed = before.get(row.target.slotId) !== row.phase;
+      if (!changed && row.phaseAt !== undefined) return;
+      rows[index] = { ...row, phaseAt: this.now() };
+      if (changed && row.phase === "quarantined") entered.push(rows[index]);
+    });
+    return entered;
+  }
+  private async change<T>(work: (rows: Row[], transaction: SlotStorage) => T | Promise<T>) {
+    let entered: Row[] = [];
+    const value = await this.storage.transaction(async (transaction) => {
       const rows = this.rows(await transaction.get(key));
+      const before = new Map(rows.map((row) => [row.target.slotId, row.phase]));
       const value = await work(rows, transaction);
+      entered = this.stamp(rows, before);
       this.rows(rows);
       await transaction.put(key, rows);
       return value;
     });
+    for (const row of entered) logQuarantine("entered", row, 0);
+    return value;
+  }
+  /** Gives rows stored before phase times existed their entry time, counted from now. */
+  stampPhases() {
+    return this.change(() => {});
   }
   async inspect(storage: SlotStorage = this.storage) {
     return this.rows(await storage.get(key));
@@ -295,6 +331,7 @@ export class RuntimeFleetState {
         await transaction.put(retiredKey(row.target.slotId), { ...row, phase: "retired" });
       } else retained.push(row.phase === "ready" ? { ...row, phase: "draining" } : row);
     }
+    this.stamp(retained, new Map(rows.map((row) => [row.target.slotId, row.phase])));
     await transaction.put(key, retained);
   }
   cancelReserved(target: SlotTarget) {
@@ -327,7 +364,7 @@ export class RuntimeFleetState {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
       throw new Error("Invalid measured runtime capacity");
     const selected = await this.change<
-      { kind: "runtime"; identity: SlotIdentity } | { kind: "primary" }
+      { kind: "runtime"; identity: SlotIdentity } | { kind: "primary"; alone: boolean }
     >(async (rows, transaction) => {
       const rank = (row: Row) => tier(placement, distanceClass(row.database), row.active);
       const available = rows
@@ -349,7 +386,7 @@ export class RuntimeFleetState {
         ) {
           if (!Number.isSafeInteger(active + 1)) throw new FleetRefused("uncertain");
           await transaction.put(primaryKey, active + 1);
-          return { kind: "primary" };
+          return { kind: "primary", alone: !row };
         }
       }
       if (!row?.identity) throw new FleetRefused("capacity");
@@ -376,10 +413,10 @@ export class RuntimeFleetState {
         else await transaction.put(retiredKey(identity.slotId), next);
       }));
     return selected.kind === "primary"
-      ? { kind: "primary", release }
+      ? { kind: "primary", alone: selected.alone, release }
       : { kind: "runtime", identity: selected.identity, release };
   }
-  quarantine(identity: SlotIdentity) {
+  quarantine(identity: SlotIdentity, reason: QuarantineReason = "runtime_failed") {
     return this.change(async (rows, transaction) => {
       if (!rows.some((row) => sameTarget(row.target, identity))) {
         const retired = Schema.decodeUnknownSync(Row)(
@@ -406,7 +443,51 @@ export class RuntimeFleetState {
         if (demand >= this.maximum) throw new FleetRefused("uncertain");
         await transaction.put(replacementKey, demand + 1);
       }
-      rows[rows.indexOf(row)] = { ...row, phase: "quarantined" };
+      rows[rows.indexOf(row)] = { ...row, phase: "quarantined", reason };
+    });
+  }
+  /**
+   * A row past its phase bound takes no call and holds its place until the provider proves the
+   * instance gone. It adds no replacement demand: growth sees past quarantined rows instead, so a
+   * start that keeps failing can't feed itself more starts.
+   */
+  exceed(target: SlotTarget, phase: Row["phase"], phaseAt: number, reason: PhaseBound) {
+    return this.change((rows) => {
+      const row = this.row(rows, target);
+      if (row.phase !== phase || row.phaseAt !== phaseAt) return false;
+      rows[rows.indexOf(row)] = { ...row, phase: "quarantined", reason };
+      return true;
+    });
+  }
+  /** A start that never served frees its place once its cell proved the instance gone. */
+  reclaimUnstarted(target: SlotTarget) {
+    return this.change(async (rows, transaction) => {
+      const row = this.row(rows, target);
+      if (row.phase !== "quarantined" || row.identity || row.active !== 0)
+        throw new FleetRefused("identity");
+      await transaction.put(retiredKey(target.slotId), row);
+      rows.splice(rows.indexOf(row), 1);
+    });
+  }
+  /**
+   * Lowers a lost release's count to the cell's own count, never below it, and only while the
+   * ledger stands exactly as it was read, so a call admitted or released since then keeps it.
+   */
+  reconcileActive(identity: SlotIdentity, seen: Pick<Row, "active" | "lastUsedAt">, cell: number) {
+    return this.change((rows) => {
+      const row = this.row(rows, identity);
+      if (
+        !sameIdentity(row.identity, identity) ||
+        (row.phase !== "ready" && row.phase !== "draining") ||
+        row.active !== seen.active ||
+        row.lastUsedAt !== seen.lastUsedAt ||
+        !Number.isSafeInteger(cell) ||
+        cell < 0 ||
+        cell >= row.active
+      )
+        return false;
+      rows[rows.indexOf(row)] = { ...row, active: cell };
+      return true;
     });
   }
   reclaimQuarantined(identity: SlotIdentity) {

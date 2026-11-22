@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "An account's plan and credits readings age out 30 minutes after their last probe, and the collector re-probes only accounts in use, so an idle account always reaches the funding filter with aged readings. The filter never refuses it on age alone: while a fresh reading says its credits can't be spent and its last plan reading showed quota it stays on its plan, an aged credits reading is unknown, and before refusing a call it waits up to 1.5 s for a forced collection and decides on the fresh reading. The wait stays inside the node's 3 s dispatch read timeout. A never policy never trusts an aged credits reading, so no path spends credits it forbids."
+    }
+  }
+}

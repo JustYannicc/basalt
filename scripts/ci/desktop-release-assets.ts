@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { digest } from "../upstream-cache.ts";
@@ -13,7 +13,22 @@ export function desktopAssetKey(lock: string, platform: string) {
   return `desktop-release-assets-v1-${platform}-${digest(JSON.stringify(identities))}`;
 }
 
-async function main(mode: string | undefined) {
+// electron-builder hands @electron/get no checksums, so every package run fetched Electron's
+// SHASUMS256.txt from the mirror, cache bypassed, and one stalled request failed the job. With the
+// locked checksums it verifies the zip offline. They pass through only when electronDownload is in
+// @electron/get's shape, which unsafelyDisableChecksums marks; mirrorOptions would mark it too, but
+// ElectronFramework then keeps only the mirror and drops the checksums.
+export function electronBuilderConfig(desktop: NodeJS.Require) {
+  return {
+    ...desktop("./package.json").build,
+    electronDownload: {
+      unsafelyDisableChecksums: false,
+      checksums: desktop("electron/checksums.json"),
+    },
+  };
+}
+
+async function main(mode: string | undefined, output: string | undefined) {
   const require = createRequire(new URL("../../clients/desktop/package.json", import.meta.url));
   if (mode === "key") {
     const key = desktopAssetKey(
@@ -48,7 +63,13 @@ async function main(mode: string | undefined) {
       await getAppImageTools(manifest.build.toolsets?.appimage ?? "0.0.0", Arch[process.arch]);
     }
     console.log("Desktop release downloads are cached and checksum-verified");
-  } else throw new Error("Expected key or warm");
+  } else if (mode === "builder-config") {
+    // An explicit --config replaces package.json's build, so the file carries all of it.
+    if (!output) throw new Error("Expected the electron-builder config path");
+    writeFileSync(output, JSON.stringify(electronBuilderConfig(require), null, 2) + "\n");
+    console.log(`electron-builder verifies Electron against the locked checksums: ${output}`);
+  } else throw new Error("Expected key, warm or builder-config");
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main(process.argv[2]);
+if (process.argv[1] === fileURLToPath(import.meta.url))
+  await main(process.argv[2], process.argv[3]);

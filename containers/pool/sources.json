@@ -329,6 +329,24 @@
             "mode": "manual",
             "requires": "Carry 0758 lets one Home sign-in go through its own proxy; it is to be offered upstream. Retire when the pinned Home accepts an optional proxy_url on /oauth/auth-url and advertises oauth_session_proxy_v1 on /capabilities, sends that sign-in's code exchange and every call it makes only through that proxy, saves the proxy on the credential it creates, refuses a proxy it cannot route through before any session exists (invalid_proxy_url, or proxy_unsupported for plugin providers and for Claude with an http or https proxy), fails the sign-in closed with proxy_unavailable when the proxy can't be reached, never through Home's own proxy or direct, and passes the through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-funding-aged-reading",
+          "file": "0762-home-funding-aged-reading.patch",
+          "sha256": "3a14248825846e58fd51ea09690df5c56d495c26484ebf67f3faeb60bde76330",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0762 keeps an account whose plan reading has aged out from being refused outright by the pool's funding filter. Retire when the pinned Home keeps an account on its plan while a fresh reading says its credits can't be spent and its last plan reading showed quota, treats an aged credits reading as unknown rather than refused, keeps out a plan last seen empty before its reset, and under a never policy refreshes the candidates' readings within a bound and decides on the fresh reading before it refuses, and passes the aged-reading, bounded-refresh and wait-for-in-flight-probe regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-cooldown-provider-time",
+          "file": "0763-home-cooldown-provider-time.patch",
+          "sha256": "3e018f9a27936645cca6f1d6b4e3830b4bf4f06fa2fa8e86de967677f01afaf3",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0763 lets a quota cooldown end at the provider's own time. Retire when the pinned Home ends a 429 cooldown at the provider's reset or retry time for every provider when that time is 10 s or more, never later on the blind backoff, lets a shorter provider time only lengthen the escalating backoff so a provider that keeps saying retry in a moment is never called every second, never shortens an open window because two limits can hold at once, grows the backoff only for a 429 without a provider time, reads the node's fail.retry_after_ms, and passes the provider-time, high-backoff, floor, open-window and usage-payload regressions."
+          }
         }
       ]
     },
@@ -443,6 +461,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
+          }
+        },
+        {
+          "identity": "cliproxy-node-provider-retry-time",
+          "file": "0764-node-provider-retry-time.patch",
+          "sha256": "5502cdd4da913618fb2fa0847e76498333968d3db6124208c5cb506ed7de6b78",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
           }
         }
       ]

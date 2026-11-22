@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "An e2e run waits for its fixture process's ready file for as long as the process is alive, up to a readiness bound of two minutes, rather than a fixed ten seconds: a process that is still starting on a busy runner is not a failure. A process that stops before reporting ready fails at once, as before; one still running at the bound fails as a readiness timeout naming that the process was still running and where its fixtures.log is. A slow start shows as lateness against the Check's floor, never as a missing fixture file."
+    }
+  }
+}

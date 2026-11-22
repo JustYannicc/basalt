@@ -428,3 +428,87 @@ class SupervisorTests(unittest.TestCase):
             [row["state"] for marker, row in records if marker == "POOL_HOME_RECOVERY"],
             ["attempt", "exhausted"],
         )
+
+
+class FirstBootStartupBoundTests(unittest.TestCase):
+    """A first boot is the quiet case: no recovery episode, only the startup budget."""
+
+    def first_boot(self, answers_at: float | None) -> tuple[SimpleNamespace, Clock, Stop]:
+        clock = Clock()
+        stop = Stop(clock)
+        child = SimpleNamespace(
+            name="home",
+            process=Mock(poll=Mock(return_value=None)),
+            config_empty=threading.Event(),
+        )
+
+        def ready(_key: str) -> bool:
+            return answers_at is not None and clock.now >= answers_at
+
+        self.enterContext(patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)))
+        self.enterContext(patch.object(supervisor, "management_ready", side_effect=ready))
+        return child, clock, stop
+
+    def test_a_home_that_never_answers_gets_exactly_the_startup_budget(self) -> None:
+        child, clock, stop = self.first_boot(None)
+        with self.assertRaises(supervisor.StartupError):
+            supervisor.wait_for_home(child, "fixture", stop)
+        # runtime-forced-stop.test.ts keeps this equal to the controller's runtimeStartupMs.
+        self.assertEqual(clock.now, 180)
+        self.assertEqual(set(stop.waits), {0.5})
+
+    def test_a_home_that_answers_inside_the_budget_is_ready_at_its_first_answer(self) -> None:
+        child, clock, stop = self.first_boot(179.5)
+        self.assertEqual(supervisor.wait_for_home(child, "fixture", stop), "ready")
+        self.assertEqual(clock.now, 179.5)
+
+    def test_a_home_and_node_that_never_become_healthy_get_exactly_the_startup_budget(self) -> None:
+        clock = Clock()
+        stop = Stop(clock)
+        health_reads: list[float] = []
+
+        def make_child(name, *_args):
+            return SimpleNamespace(
+                name=name,
+                process=SimpleNamespace(
+                    poll=lambda: None,
+                    wait=lambda timeout=None: -9,
+                    terminate=lambda: None,
+                    kill=lambda: None,
+                    returncode=None,
+                ),
+                config_empty=threading.Event(),
+            )
+
+        def never_healthy(*_args) -> bool:
+            health_reads.append(clock.now)
+            return False
+
+        with ExitStack() as stack:
+            root = stack.enter_context(tempfile.TemporaryDirectory())
+            mocks = {
+                "ROOT": pathlib.Path(root),
+                "env_required": Mock(return_value="fixture"),
+                "require_tmpfs": Mock(),
+                "child_environment": Mock(return_value={}),
+                "start_ready_server": Mock(return_value=None),
+                "Child": make_child,
+                "wait_for_home": Mock(return_value="ready"),
+                "apply_pool_config": Mock(),
+                "home_database_distance": Mock(return_value=None),
+                "create_node_jwt": Mock(return_value=("node", "jwt")),
+                "check_services": never_healthy,
+                "PolicyHealthMonitor": Mock(return_value=SimpleNamespace(run=lambda _: None)),
+                "terminate_children": Mock(),
+                "time": SimpleNamespace(monotonic=clock),
+            }
+            for name, value in mocks.items():
+                stack.enter_context(patch.object(supervisor, name, value))
+            stack.enter_context(patch.object(supervisor.signal, "signal", Mock(return_value=None)))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            errors = stack.enter_context(redirect_stderr(io.StringIO()))
+            result = supervisor.main(stop)
+        self.assertEqual(result, 1)
+        self.assertEqual((health_reads[0], health_reads[-1], len(health_reads)), (0, 179.5, 360))
+        self.assertEqual(clock.now, 180)
+        self.assertIn('POOL_RUNTIME_FAILURE {"category":4,"count":1}', errors.getvalue())
