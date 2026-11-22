@@ -8,6 +8,7 @@ import {
   nativeModelPrefix,
 } from "./native-contract.ts";
 import { signEnvelope } from "./token.ts";
+import type { StoredComputer } from "./computer-registry.ts";
 import { modelDrainProtocol } from "./model-drain-contract.ts";
 
 function protocol() {
@@ -572,6 +573,113 @@ test("a row access is restored to without its earlier state is never reported re
   assert.equal((await p.f.registry())[device.id]?.state, "revoking", "upkeep leaves it too");
 });
 
+/** A tools-only device the tools service reported, as Connect's list records it. */
+async function reportedDevice(p: ReturnType<typeof protocol>, name: string, computer: string) {
+  const device = {
+    grant: `native:${name}`,
+    computer: computer.repeat(32),
+    pool: pool.pool,
+    toolsOrganization: pool.organization,
+  };
+  assert.equal((await p.control("learn", device)).status, 200);
+  const identity = { grant: device.grant, computer: device.computer, pool: pool.pool };
+  const list = async (member: boolean) => {
+    const listed = await p.f.action("computers", owner, await p.f.intent(owner), {
+      native: [{ ...device, member }],
+    });
+    assert.equal(listed.status, 200, await listed.clone().text());
+  };
+  return { device, list, check: () => p.control("check", identity) };
+}
+async function leaveRow(
+  p: ReturnType<typeof protocol>,
+  computer: string,
+  change: Partial<StoredComputer>,
+) {
+  const registry = await p.f.registry();
+  Object.assign(registry[computer]!, change);
+  await p.f.storage.put("computer-registry-v1", registry);
+}
+
+test("a tools-only device whose person left its tools organization is not reported revoked", async () => {
+  const p = protocol();
+  const reported = await reportedDevice(p, "left-team", "3");
+  await reported.list(false);
+  assert.equal((await p.f.registry())[reported.device.computer]?.state, "removed");
+  assert.equal((await reported.check()).status, 401, "its person never revoked it");
+});
+
+test("a legacy person-revoked tools-only row removed later is still reported revoked after Connect lists it", async () => {
+  const p = protocol();
+  const reported = await reportedDevice(p, "legacy-removed", "4");
+  // Before this release: its person revoked it, then access removal finished it without a reason.
+  await leaveRow(p, reported.device.computer, {
+    state: "removed",
+    removedAt: new Date(p.f.now()).toISOString(),
+  });
+  assert.equal((await reported.check()).status, 410, "before Connect lists it");
+  await reported.list(true);
+  assert.equal((await reported.check()).status, 410, "after Connect lists it");
+  assert.equal((await p.f.registry())[reported.device.computer]?.state, "revoked");
+});
+
+test("Connect's report never revives a tools-only row whose removal began during its person's revoke", async () => {
+  const p = protocol();
+  const reported = await reportedDevice(p, "pending-revoked", "5");
+  await leaveRow(p, reported.device.computer, {
+    state: "revoking",
+    removalPending: true,
+    removalAt: p.f.now(),
+    beforeRemoval: { state: "revoking" },
+  });
+  await reported.list(true);
+  assert.equal((await p.f.registry())[reported.device.computer]?.state, "revoked");
+  assert.equal((await reported.check()).status, 410);
+});
+
+test("a row under removal answers 410 only when removal began during its person's revoke", async () => {
+  const p = protocol();
+  const device = await memberDevice(p);
+  const pending = { state: "revoking" as const, removalPending: true, removalAt: p.f.now() };
+  await leaveRow(p, device.id, { ...pending, beforeRemoval: { state: "revoking" } });
+  assert.equal((await device.check()).status, 410);
+  await leaveRow(p, device.id, { ...pending, beforeRemoval: { state: "active" } });
+  assert.equal((await device.check()).status, 401);
+});
+
+test("a person's revoke during a pending removal is recorded for when removal finishes", async () => {
+  const p = protocol();
+  const device = await memberDevice(p);
+  p.f.server.revokeFailure = true;
+  assert.equal((await p.f.access(audience([owner]))).status, 503);
+  assert.equal((await p.f.registry())[device.id]?.beforeRemoval?.state, "active");
+  assert.equal((await p.control("revoke", device.identity)).status, 503);
+  assert.equal((await p.f.registry())[device.id]?.beforeRemoval?.state, "revoking");
+  p.f.server.revokeFailure = false;
+  p.f.advance(1);
+  assert.equal((await p.f.access(audience([owner]))).status, 200);
+  const removed = (await p.f.registry())[device.id];
+  assert.equal(removed?.state, "removed");
+  assert.equal(removed?.removedFor, "revoke");
+  assert.equal((await device.check()).status, 410);
+});
+
+test("upkeep finishes legacy tools-only rows that show their person's revoke as revoked", async () => {
+  const p = protocol();
+  const legacy = await reportedDevice(p, "upkeep-legacy", "6");
+  const left = await reportedDevice(p, "upkeep-left", "7");
+  await left.list(false);
+  await leaveRow(p, legacy.device.computer, {
+    state: "removed",
+    removedAt: new Date(p.f.now()).toISOString(),
+  });
+  await p.f.expire();
+  const registry = await p.f.registry();
+  assert.equal(registry[legacy.device.computer]?.state, "revoked");
+  assert.ok(registry[legacy.device.computer]?.revokedAt);
+  assert.equal(registry[left.device.computer]?.state, "removed", "a person who left keeps theirs");
+});
+
 test("a device holding a model key still revokes it through Home", async () => {
   const p = protocol();
   const { computer } = await p.register();
@@ -788,7 +896,8 @@ test("Connect's report repairs tools-only rows an earlier access change swept", 
   assert.deepEqual(
     Object.fromEntries(listed.map(({ id, state, removedAt }) => [id, [state, removedAt]])),
     {
-      [swept.computer]: ["active", null],
+      // No recorded reason: treated as its person's revoke, so it stays revoked.
+      [swept.computer]: ["revoked", null],
       [pending.computer]: ["active", null],
       [signedOut.computer]: ["revoked", null],
     },
