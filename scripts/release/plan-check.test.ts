@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isResolved, stripUnresolved } from "alchemy/Diff";
 import * as Output from "alchemy/Output";
@@ -7,6 +8,7 @@ import type * as Plan from "alchemy/Plan";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Cause, Effect, Exit } from "effect";
 import { checkPlan, decodePlanPolicy, planDigest, PlanRefused, propChanges } from "./plan-check.ts";
+import { decodeReleasePolicy } from "./policy.ts";
 import {
   accountId,
   buildContext,
@@ -2432,4 +2434,112 @@ test("a named removed binding is exactly one plain setting of that name, in ever
     await removed({ ...withRow([plain]), status: "updating", old: withRow([secret]) }),
     ["worker-binding-removed PoolWorker"],
   );
+});
+
+test("the code-only cutover step admits the root's attachment and the store's code, and nothing it refused before", async (context) => {
+  // The reviewed file itself, with the pin the release supplies at run time.
+  const file = async (change: (check: Record<string, unknown>) => Record<string, unknown>) => {
+    const { check } = decodeReleasePolicy(
+      JSON.parse(await readFile(new URL("./policies/cutover-code.json", import.meta.url), "utf8")),
+    );
+    return Effect.runPromise(
+      decodePlanPolicy(
+        change({ ...check, poolContainer: { ...check.poolContainer, image: pinnedImage } }),
+      ),
+    );
+  };
+  const step = await file((check) => check);
+  // The same file without its two admissions: the step as it was before.
+  const before = await file((check) => ({
+    ...check,
+    allow: (check.allow as { fqn: string }[]).filter(
+      (entry) => entry.fqn !== "ArtifactsCredentials",
+    ),
+    poolContainer: { fqn: "PoolContainer", image: pinnedImage },
+    // fixedBindings is a wire rule; the plan check does not read it.
+  }));
+  const rules = async (plan: Plan.Plan, against: typeof step) => {
+    const exit = await Effect.runPromiseExit(checkPlan(plan, against));
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`).sort()
+      : [];
+  };
+  const { sha256Object } = await import("alchemy/Util/sha256");
+  const reference = (
+    await Effect.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
+  ).slice(0, 16);
+  // Production after the healing release: the root's recorded hash names the reference.
+  const rows = () => {
+    const recorded = productionRows();
+    (recorded.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
+      reference;
+    return recorded;
+  };
+  const notNoop = "pool-container-not-noop PoolContainer";
+
+  // 1. The root's attachment that waits on the pool Worker (the pool database command's outcome).
+  const lane = (
+    await planned(context, {
+      rows: recordsReadiness(rows()),
+      declared: { poolWorkerWaitsOnCommand: true },
+      settle: onlyStore,
+    })
+  ).plan;
+  assert.ok(!(await rules(lane, step)).includes(notNoop), "the step admits the attachment row");
+  assert.ok((await rules(lane, before)).includes(notNoop), "it refused that row before");
+
+  // 2. The bulk-import store's Worker, moving with the rest of main.
+  const whole = (await planned(context, { rows: rows() })).plan;
+  assert.equal(whole.resources.ArtifactsCredentials?.action, "update");
+  const storeRules = (found: string[]) =>
+    found.filter((rule) => rule.endsWith(" ArtifactsCredentials"));
+  assert.deepEqual(storeRules(await rules(whole, step)), [], "the step admits the store's code");
+  assert.deepEqual(storeRules(await rules(whole, before)), [
+    "outside-code-only ArtifactsCredentials",
+  ]);
+
+  // 3. Everything else it refused before, it still refuses, by the same rules. A deviation that
+  // makes the pool Worker update can also carry the root's attachment row, which is kind 1.
+  for (const [deviation, input] of [
+    [
+      "a new class on the pool Worker",
+      { rows: rows(), settle: onlyStore, declared: { newClass: true } },
+    ],
+    [
+      "the fleet classes declared",
+      { rows: rows(), settle: onlyStore, declared: { fleetClasses: true } },
+    ],
+    [
+      "a changed setting on the root",
+      { rows: rows(), settle: onlyStore, declared: { containerInstanceType: "standard" } },
+    ],
+    ["the root's old recorded hash", { rows: productionRows(), settle: onlyStore }],
+    [
+      "a class moved to another Worker",
+      {
+        rows: rows(),
+        settle: onlyStore,
+        declared: { ledger: { className: "PoolLedger", transferredFrom: "ArtifactsCredentials" } },
+      },
+    ],
+    [
+      "the vault bucket moved",
+      { rows: rows(), settle: onlyStore, declared: { bucketJurisdiction: "default" } },
+    ],
+  ] as const) {
+    const plan = (await planned(context, input as PlanInput)).plan;
+    const now = await rules(plan, step);
+    const then = await rules(plan, before);
+    assert.ok(now.length > 0, `${deviation}: refused`);
+    assert.deepEqual(
+      then.filter((rule) => !now.includes(rule)).filter((rule) => rule !== notNoop),
+      [],
+      `${deviation}: only the attachment row is newly admitted`,
+    );
+    assert.deepEqual(
+      now.filter((rule) => !then.includes(rule)),
+      [],
+      `${deviation}: nothing new refuses`,
+    );
+  }
 });
