@@ -2160,6 +2160,49 @@ test("the class change admits the root's attachment row too, and nothing else on
   }
 });
 
+/** A reviewed policy file itself, with the pin the release supplies at run time. */
+const reviewedPolicy = async (
+  name: string,
+  change: (check: Record<string, unknown>) => Record<string, unknown> = (check) => check,
+) => {
+  const { check } = decodeReleasePolicy(
+    JSON.parse(await readFile(new URL(`./policies/${name}.json`, import.meta.url), "utf8")),
+  );
+  return Effect.runPromise(
+    decodePlanPolicy(
+      change({ ...check, poolContainer: { ...check.poolContainer, image: pinnedImage } }),
+    ),
+  );
+};
+const violationsOf = async (
+  plan: Plan.Plan,
+  against: Awaited<ReturnType<typeof reviewedPolicy>>,
+) => {
+  const exit = await Effect.runPromiseExit(checkPlan(plan, against));
+  return Exit.isFailure(exit)
+    ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`).sort()
+    : [];
+};
+
+test("the class change finds the shared Secrets Store settled, so it lists no entry for it", async (context) => {
+  const reviewed = await reviewedPolicy("cutover-classes");
+  // The entry the file held while production's State did not record the store yet.
+  const adopting = await reviewedPolicy("cutover-classes", (check) => ({
+    ...check,
+    allow: [...(check.allow as unknown[]), { fqn: "PoolObservationSecrets", action: "adopted" }],
+  }));
+  const store = "outside-cutover-classes PoolObservationSecrets";
+
+  // Production: State records the store, so declaring the fleet finds it settled.
+  const settled = (await planned(context, { declared: { fleetClasses: true } })).plan;
+  assert.equal(settled.resources.PoolObservationSecrets?.action, "noop");
+  assert.ok(!(await violationsOf(settled, reviewed)).includes(store));
+  assert.ok((await violationsOf(settled, adopting)).includes(store), "the old entry refuses it");
+  // A store that is not settled is not the reviewed class change, with or without an entry.
+  (settled.resources.PoolObservationSecrets as unknown as { action: string }).action = "adopted";
+  assert.ok((await violationsOf(settled, reviewed)).includes(store), "an adopted store is refused");
+});
+
 /** A row as an apply that stopped mid-update leaves it: `old` holds the last finished generation. */
 const interrupted = (
   row: ResourceState,
@@ -2447,30 +2490,13 @@ const planBKinds = [
 ];
 
 test("the code release admits a whole-stack plan of main and still refuses what it refused before", async (context) => {
-  // The reviewed file itself, with the pin the release supplies at run time.
-  const file = async (change: (check: Record<string, unknown>) => Record<string, unknown>) => {
-    const { check } = decodeReleasePolicy(
-      JSON.parse(await readFile(new URL("./policies/code.json", import.meta.url), "utf8")),
-    );
-    return Effect.runPromise(
-      decodePlanPolicy(
-        change({ ...check, poolContainer: { ...check.poolContainer, image: pinnedImage } }),
-      ),
-    );
-  };
-  const code = await file((check) => check);
+  const code = await reviewedPolicy("code");
   // The same file without its two admissions: the code policy as it was before.
-  const before = await file((check) => ({
+  const before = await reviewedPolicy("code", (check) => ({
     ...check,
     allow: [],
     poolContainer: { fqn: "PoolContainer", image: pinnedImage },
   }));
-  const rules = async (plan: Plan.Plan, against: typeof code) => {
-    const exit = await Effect.runPromiseExit(checkPlan(plan, against));
-    return Exit.isFailure(exit)
-      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`).sort()
-      : [];
-  };
   const { sha256Object } = await import("alchemy/Util/sha256");
   const reference = (
     await Effect.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
@@ -2495,8 +2521,8 @@ test("the code release admits a whole-stack plan of main and still refuses what 
   ).plan;
   assert.equal(whole.resources.ArtifactsCredentials?.action, "update");
   assert.equal(whole.resources.PoolContainer?.action, "update");
-  assert.deepEqual(await rules(whole, code), [], "the code release admits the whole plan");
-  const then = await rules(whole, before);
+  assert.deepEqual(await violationsOf(whole, code), [], "the code release admits the whole plan");
+  const then = await violationsOf(whole, before);
   assert.ok(then.includes(notNoop) && then.includes(storeOutside), then.join(", "));
   // Every row kind plan B recorded is a kind this admitted plan carries.
   const kinds = new Set(
@@ -2529,8 +2555,8 @@ test("the code release admits a whole-stack plan of main and still refuses what 
     const plan = (
       await planned(context, { rows: rows(), settle: onlyStore, ...input } as PlanInput)
     ).plan;
-    const now = await rules(plan, code);
-    const was = await rules(plan, before);
+    const now = await violationsOf(plan, code);
+    const was = await violationsOf(plan, before);
     assert.ok(now.length > 0, `${deviation}: refused`);
     assert.deepEqual(
       was.filter((rule) => !now.includes(rule) && rule !== notNoop),

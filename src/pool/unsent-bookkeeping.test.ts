@@ -12,6 +12,7 @@ import { NativeStreams } from "./native-streams.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { correlateEndpointRequest, rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { unsentRefusal } from "./controller-unsent.ts";
+import { rootFallbackRefused } from "./runtime-fleet/root-fallback.ts";
 import { fixture, owner, pool, signingKey } from "./test/computers.ts";
 import { signEnvelope } from "./token.ts";
 
@@ -205,4 +206,37 @@ test("a re-send refused again before its own send stays the one request, with no
   const lines = logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT");
   assert.equal(lines.length, 1);
   assert.equal(JSON.parse(String(lines[0]!.arguments[1])).requestId, attempt);
+});
+
+test("a call the root's cap refused, then sent again under its own name, is recorded once", async (context) => {
+  const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
+  // The fleet answers the cap's refusal without a send: no dispatch, so no terminal start.
+  const capped: Route = async (request) => rootFallbackRefused(request);
+  const refused = await h.send(await h.call(), capped);
+  assert.equal(refused.status, 503);
+  assert.equal(refused.headers.get(mark), "1");
+  const attempt = refused.headers.get("X-Request-Id");
+  assert.ok(attempt);
+  await refused.text();
+  await h.settle();
+  assert.deepEqual(h.starts, []);
+  assert.deepEqual(h.finishes, []);
+  // The entry sends it again under the refused attempt's id; the cap refuses once more, then serves.
+  const again = await h.send(await h.call({ [attemptHeader]: attempt }), capped);
+  assert.equal(again.headers.get("X-Request-Id"), attempt);
+  await again.text();
+  const answered = await h.send(await h.call({ [attemptHeader]: attempt }), nodeAnswer);
+  assert.equal(answered.status, 200);
+  await answered.text();
+  await h.settle();
+  assert.deepEqual(h.finishes, [{ id: attempt, outcome: "complete", status: 200 }]);
+  const lines = logged.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_ROOT_FALLBACK_REFUSED",
+  );
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(String(line.arguments[1])).requestId),
+    [attempt, attempt],
+    "every refused attempt of the one call carries its one id",
+  );
 });
