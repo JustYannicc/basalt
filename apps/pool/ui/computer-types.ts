@@ -29,6 +29,8 @@ export interface Computer {
   readonly state?: ComputerState;
   /** False for a computer set up for models only. Absent from hosts that predate the choice. */
   readonly tools?: boolean;
+  /** False for a device approved for tools only, which uses no pool. Absent otherwise. */
+  readonly models?: boolean;
   /** Its setup link lapsed unclaimed, so it can never be set up. */
   readonly lapsed?: true;
 }

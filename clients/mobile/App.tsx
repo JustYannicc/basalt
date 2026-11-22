@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import Constants from "expo-constants";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { namesNoPool } from "../contracts/pool-display.ts";
 import { controller } from "./native.ts";
 import { Button, Card, Field, Label, Notice, ThemeProvider, styles, useTheme } from "./ui.tsx";
 import { ModelScreen } from "./ModelScreen.tsx";
@@ -152,8 +153,7 @@ function Home() {
                     <Label small muted>
                       {connection.display.account.email}
                     </Label>
-                    {/* The server names no pool for a tools-only device: it uses none. */}
-                    {connection.display.pool.name ? (
+                    {!namesNoPool(connection) ? (
                       <Label small muted>
                         Pool: {connection.display.pool.name}
                       </Label>
@@ -165,7 +165,7 @@ function Home() {
                     {connection.origin}
                   </Label>
                 )}
-                {connection?.state === "connected" && origin && (
+                {connection?.state === "connected" && origin && !namesNoPool(connection) && (
                   <Button
                     label="Choose pool in browser"
                     secondary
