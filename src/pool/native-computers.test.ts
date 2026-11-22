@@ -501,6 +501,77 @@ test("a device with no model key revokes while Home is stopped and leaves no rev
   }
 });
 
+/** A member's models-only device whose key is minted: access removal can take it from them. */
+async function memberDevice(p: ReturnType<typeof protocol>) {
+  const as = { user: member, grant: "native:member-device" };
+  const registered = await p.control("register", {
+    ...as,
+    intent: await p.f.intent(member),
+    name: "Member device",
+    tools: false,
+    models: true,
+  });
+  assert.equal(registered.status, 200, await registered.clone().text());
+  const { computer } = (await registered.json()) as { computer: { id: string } };
+  (await p.model(computer.id, as)).release();
+  const identity = { ...as, computer: computer.id, pool: pool.pool };
+  return { id: computer.id, check: () => p.control("check", identity), identity };
+}
+const audience = (users: string[]) => ({
+  action: "audience" as const,
+  pools: [{ ...pool, users }],
+});
+
+test("a device its person revoked answers 410 after access removal finishes it as removed", async () => {
+  const p = protocol();
+  const device = await memberDevice(p);
+  p.f.server.revokeFailure = true;
+  assert.equal((await p.control("revoke", device.identity)).status, 503);
+  p.f.server.revokeFailure = false;
+  assert.equal((await p.f.access(audience([owner]))).status, 200);
+  assert.equal((await p.f.registry())[device.id]?.state, "removed");
+  assert.equal((await device.check()).status, 410);
+});
+
+test("a device removed for lost access, not revoked, still answers 401", async () => {
+  const p = protocol();
+  const device = await memberDevice(p);
+  assert.equal((await p.f.access(audience([owner]))).status, 200);
+  assert.equal((await p.f.registry())[device.id]?.state, "removed");
+  assert.equal((await device.check()).status, 401);
+});
+
+test("a row removed before the pool recorded why answers 410: every native check refused it", async () => {
+  const p = protocol();
+  const device = await memberDevice(p);
+  const registry = await p.f.registry();
+  registry[device.id]!.state = "removed";
+  await p.f.storage.put("computer-registry-v1", registry);
+  assert.equal((await device.check()).status, 410);
+});
+
+test("a row access is restored to without its earlier state is never reported revoked", async () => {
+  const p = protocol();
+  const device = await memberDevice(p);
+  // Removal can't finish while Home fails, so the row waits with removal pending.
+  p.f.server.revokeFailure = true;
+  assert.equal((await p.f.access(audience([owner]))).status, 503);
+  // As an older release left it: no record of its state before removal.
+  const registry = await p.f.registry();
+  assert.equal(registry[device.id]?.removalPending, true);
+  delete registry[device.id]!.beforeRemoval;
+  await p.f.storage.put("computer-registry-v1", registry);
+  p.f.server.revokeFailure = false;
+  p.f.advance(1);
+  assert.equal((await p.f.access(audience([owner, member]))).status, 200);
+  const restored = (await p.f.registry())[device.id];
+  assert.equal(restored?.state, "revoking");
+  assert.equal(restored?.removalPending, undefined);
+  assert.equal((await device.check()).status, 401, "its person may never have revoked it");
+  await p.f.expire();
+  assert.equal((await p.f.registry())[device.id]?.state, "revoking", "upkeep leaves it too");
+});
+
 test("a device holding a model key still revokes it through Home", async () => {
   const p = protocol();
   const { computer } = await p.register();
@@ -633,75 +704,4 @@ test("Connect's report of a revoked grant revokes its tools-only row and adds no
     listed.map(({ id, state }) => [id, state]),
     [[live.computer, "revoked"]],
   );
-});
-
-/** A member's models-only device whose key is minted: access removal can take it from them. */
-async function memberDevice(p: ReturnType<typeof protocol>) {
-  const as = { user: member, grant: "native:member-device" };
-  const registered = await p.control("register", {
-    ...as,
-    intent: await p.f.intent(member),
-    name: "Member device",
-    tools: false,
-    models: true,
-  });
-  assert.equal(registered.status, 200, await registered.clone().text());
-  const { computer } = (await registered.json()) as { computer: { id: string } };
-  (await p.model(computer.id, as)).release();
-  const identity = { ...as, computer: computer.id, pool: pool.pool };
-  return { id: computer.id, check: () => p.control("check", identity), identity };
-}
-const audience = (users: string[]) => ({
-  action: "audience" as const,
-  pools: [{ ...pool, users }],
-});
-
-test("a device its person revoked answers 410 after access removal finishes it as removed", async () => {
-  const p = protocol();
-  const device = await memberDevice(p);
-  p.f.server.revokeFailure = true;
-  assert.equal((await p.control("revoke", device.identity)).status, 503);
-  p.f.server.revokeFailure = false;
-  assert.equal((await p.f.access(audience([owner]))).status, 200);
-  assert.equal((await p.f.registry())[device.id]?.state, "removed");
-  assert.equal((await device.check()).status, 410);
-});
-
-test("a device removed for lost access, not revoked, still answers 401", async () => {
-  const p = protocol();
-  const device = await memberDevice(p);
-  assert.equal((await p.f.access(audience([owner]))).status, 200);
-  assert.equal((await p.f.registry())[device.id]?.state, "removed");
-  assert.equal((await device.check()).status, 401);
-});
-
-test("a row removed before the pool recorded why answers 410: every native check refused it", async () => {
-  const p = protocol();
-  const device = await memberDevice(p);
-  const registry = await p.f.registry();
-  registry[device.id]!.state = "removed";
-  await p.f.storage.put("computer-registry-v1", registry);
-  assert.equal((await device.check()).status, 410);
-});
-
-test("a row access is restored to without its earlier state is never reported revoked", async () => {
-  const p = protocol();
-  const device = await memberDevice(p);
-  // Removal can't finish while Home fails, so the row waits with removal pending.
-  p.f.server.revokeFailure = true;
-  assert.equal((await p.f.access(audience([owner]))).status, 503);
-  // As an older release left it: no record of its state before removal.
-  const registry = await p.f.registry();
-  assert.equal(registry[device.id]?.removalPending, true);
-  delete registry[device.id]!.beforeRemoval;
-  await p.f.storage.put("computer-registry-v1", registry);
-  p.f.server.revokeFailure = false;
-  p.f.advance(1);
-  assert.equal((await p.f.access(audience([owner, member]))).status, 200);
-  const restored = (await p.f.registry())[device.id];
-  assert.equal(restored?.state, "revoking");
-  assert.equal(restored?.removalPending, undefined);
-  assert.equal((await device.check()).status, 401, "its person may never have revoked it");
-  await p.f.expire();
-  assert.equal((await p.f.registry())[device.id]?.state, "revoking", "upkeep leaves it too");
 });
