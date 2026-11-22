@@ -193,16 +193,12 @@ test("someone else's sessions, or another device's assertion, return none of the
   const other = await d.body(await d.read(d.theirs, `session=${sessions.own}`));
   assert.equal(other.key, d.theirs.keyId);
   assert.deepEqual(other.sessions[0]!.records, []);
-  // Even a Home that ignores the key filter cannot hand back another key's rows.
+  // A Home that ignores the key filter fails the whole read closed: no rows, and no row count that
+  // could hint that another key's session exists.
   d.f.server.usageIgnoresKey = true;
-  const unfiltered = await d.body(
-    await d.read(d.mine, `session=${sessions.theirs}&session=${sessions.own}`),
-  );
-  assert.deepEqual(unfiltered.sessions[0]!.records, []);
-  assert.deepEqual(
-    unfiltered.sessions[1]!.records.map(({ key }) => key),
-    [d.mine.keyId],
-  );
+  const unfiltered = await d.read(d.mine, `session=${sessions.theirs}&session=${sessions.own}`);
+  assert.equal(unfiltered.status, 503);
+  assert.doesNotMatch(await unfiltered.text(), new RegExp(sessions.theirs, "u"));
 });
 
 test("an assertion made for another device, request or moment is refused before any read", async () => {

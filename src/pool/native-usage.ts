@@ -21,8 +21,9 @@ export async function nativeUsageSessions(url: URL): Promise<string[]> {
 /**
  * Rows of these sessions charged to this device's key, each with whether its account is in the
  * device's pool. Home looks each session up by its session index and filters by the key; a row that
- * disagrees with either is dropped here, so another key's rows never leave this function. Each row's
- * key is Home's own, so a caller checking it tests this filter rather than restating the device's key.
+ * disagrees with either fails the whole read closed, so another key's rows never leave this function.
+ * Each row's key is Home's own, so a caller checking it tests this filter rather than restating the
+ * device's key.
  */
 export async function readNativeUsage(
   client: HomeClient,
@@ -49,7 +50,9 @@ export async function readNativeUsage(
       return unavailable();
     const records = items.flatMap((row) => {
       const key = object(row.client) ? row.client.api_key_id : undefined;
-      if (row.session_id !== session || key !== device.keyId) return [];
+      // Home was asked for exactly this session and key, so any other row means its filter broke:
+      // fail closed, since even the page's total would hint at another key's session.
+      if (row.session_id !== session || key !== device.keyId) return unavailable();
       const id = text(row.id),
         status = text(row.status),
         at = text(row.timestamp);
