@@ -193,7 +193,6 @@
       "empty-state-mcp.spec.ts#emptyStateMcp": "adff1c06850672b087edf607e708d4c6ae2536d76387ce85dfce70ab53a69355",
       "empty-state-recovery.spec.ts#emptyStateRecovery": "80c04db90b3587e3e7febf78b6200c5b2b659ae1c17b75a8c4ccded363caebf2",
       "empty-state-recovery.spec.ts#emptyAccountTools": "6d8443aa43b9d6e26876bb1ea19accd0409e8311bd74a44b46e1a7f1cf70bb9c",
-      "empty-states.spec.ts#emptyStates": "5396b7309db9c03bfe1a651b8169a7c1d7778de5134921571e674c69e05d251d",
       "enrollment-refresh.spec.ts#enrollmentRefresh": "783a78b6d31f0fd78478e43be79f5c4fd3aeaba5ccdb41e9081bade485a38108",
       "executor-app-redeploy.spec.ts#executorAppRedeploy": "97f20e6fbe2ad8950b092256600d6ed91a6d96b213f43c0dbcfd885f8d94a2d6",
       "executor-customization.spec.ts#executorCustomization": "61b232544f70c48427a89068709ddbb1fd0dfd2993267e06896e0117609f0b6c",
@@ -413,7 +412,6 @@
       "query-refresh.spec.ts#membersRefresh": "61268e26263bb3ff9ca6856f09c9c48895569cfc31048bf6777781387b540af4",
       "query-refresh.spec.ts#queryRefresh": "cc39b74817d61595ae966b11fc1b1ca7a4d6c09ac749350e97dc131ea15daa8e",
       "query-refresh.spec.ts#retainedReturn": "215a535a0f6b0a866e710dba9ee3c17e49a1366433422ba0b2e9d170e9bb63e3",
-      "registry-failures.spec.ts#remoteRegistryFailures": "4dd95628e6fe53bd5d29f66911f26ab049989fa5d939fcfaddf2c5dc5ee90ac4",
       "release-archives.spec.ts#every tested archive matching its published archive passes, for pull requests and manual runs": "7068f2045eea31da0a19eb2a5e24538643262b3dd4f2c1f78162377f88f66911",
       "release-archives.spec.ts#a tested archive whose bytes differ from the published one fails": "7068f2045eea31da0a19eb2a5e24538643262b3dd4f2c1f78162377f88f66911",
       "release-archives.spec.ts#a missing digest fails, whichever job did not record it": "7068f2045eea31da0a19eb2a5e24538643262b3dd4f2c1f78162377f88f66911",
@@ -456,7 +454,6 @@
       "source-highlighting.spec.ts#sourceHighlighting": "af92365b1949372e530d70ed6f0261935c51686e692df961f988fac00932c6f4",
       "source-highlighting.spec.ts#skillCodeHighlighting": "8044b090ee39c6563b3b9b57fd9532d33559f5b442ac21a250d3f8fff2af8aad",
       "standalone-lockdown.spec.ts#the release executable ignores Bun's environment and working-directory overrides, so no local process runs code in it or debugs it": "fc1f8c8f3781ccc055b24e7a7dd8235e4278ddf83d16ba5452498ab4f152903f",
-      "superseded-reads.spec.ts#supersededReads": "67dd374c0d56c2739ff59b888c187ad2b2e0eb5606661646e02bb8f29e9fc322",
       "team-create-route.spec.ts#teamCreateRoute": "fadf9307a60d5b78f8df463ee4d46d80d13f836ce06237bddd0a70436cfe6df0",
       "team-installation.spec.ts#teamInstallationFromRequest": "4f70a4f6406867e87f9e3a390a90afb73ca32b625758d9c21321af3cf56d0286",
       "team-installation.spec.ts#teamInstallationConcurrent": "6a72d2e53d9361f3dd1424a3a4f0b5af6e7046b6cd6647bc29778466e47d203c",
@@ -541,13 +538,13 @@
     }
   },
   {
-    "reason": "The body proves CRLF, LF, and trailing breaks reach `/credential-checks` unchanged before save and the health check after save, while the accessibility tree hides the synthetic key. The plan schedules the shared credential form on self-host and Cloud. This is a new browser-form input/redaction edge; it does not exercise SDK29, Cloud bridge auth, schema migration, or a retained protocol. The selected `credentialHostsForm` already covers the credential UI\u2019s visibility and host contract, so keep this distinct form behavior as an explicit exception.",
+    "reason": "The body proves CRLF, LF, and trailing breaks reach `/credential-checks` unchanged before save and the health check after save, while the accessibility tree hides the synthetic key. The plan schedules the shared credential form on self-host and Cloud. This is a new browser-form input/redaction edge; it does not exercise SDK29, Cloud bridge auth, schema migration, or a retained protocol. The selected `credentialHostsForm` already covers the credential UI’s visibility and host contract, so keep this distinct form behavior as an explicit exception.",
     "entries": {
       "account-secret-fields.spec.ts#accountSecretFieldsExact": "eb7c2baa4f8ae0f12d227b4c66f1c41d1f6b861698522de605c7a9b64b92ca93"
     }
   },
   {
-    "reason": "The body covers paste/drop, undo, drag, Clear, and plain/password field presentation and checks exact form payloads. The plan schedules the shared browser form on self-host only, with Cloud/local excluded as shared-form coverage. This is UI editing behavior outside the accepted SDK, migration, frozen-protocol, and Cloud bridge changes; the selected `credentialHostsForm` covers the credential form\u2019s security contract, not this multiline interaction. Record the new identity as an exception.",
+    "reason": "The body covers paste/drop, undo, drag, Clear, and plain/password field presentation and checks exact form payloads. The plan schedules the shared browser form on self-host only, with Cloud/local excluded as shared-form coverage. This is UI editing behavior outside the accepted SDK, migration, frozen-protocol, and Cloud bridge changes; the selected `credentialHostsForm` covers the credential form’s security contract, not this multiline interaction. Record the new identity as an exception.",
     "entries": {
       "account-secret-fields.spec.ts#accountSecretFieldsSummary": "3ab30b22ef37d6027bf557213ca38e48360470abfd65997b0ea75c0685ed6a10"
     }
@@ -685,19 +682,19 @@
     }
   },
   {
-    "reason": "The source pins historical apps to upstream beta.0 through startup data steps. That is not the accepted Basalt .13/.14/.16 exact-provenance path, and unknown release identities intentionally refuse; this test does not establish the cutover\u2019s provenance invariant, so renew its existing exception.",
+    "reason": "The source pins historical apps to upstream beta.0 through startup data steps. That is not the accepted Basalt .13/.14/.16 exact-provenance path, and unknown release identities intentionally refuse; this test does not establish the cutover’s provenance invariant, so renew its existing exception.",
     "entries": {
       "app-framework-pin.spec.ts#appFrameworkPin": "fa4538b03f2add62ff3a5e9f5544c84747e9cfccded478c17474d9c7aa9e9add"
     }
   },
   {
-    "reason": "The Cloud cron test pins historical apps to upstream beta.5. That is not the accepted Basalt .13/.14/.16 exact-provenance path, and unknown release identities intentionally refuse; this test does not establish the cutover\u2019s provenance invariant, so renew its existing exception.",
+    "reason": "The Cloud cron test pins historical apps to upstream beta.5. That is not the accepted Basalt .13/.14/.16 exact-provenance path, and unknown release identities intentionally refuse; this test does not establish the cutover’s provenance invariant, so renew its existing exception.",
     "entries": {
       "app-framework-pin.spec.ts#cloudAppFrameworkPin": "65fe8eccd78d74f44904858a2202308a52a65ad49deecda6ea15f8ffcb098538"
     }
   },
   {
-    "reason": "The source pins historical apps to upstream beta.2 at local startup. That is not the accepted Basalt .13/.14/.16 exact-provenance path, and unknown release identities intentionally refuse; this test does not establish the cutover\u2019s provenance invariant, so renew its existing exception.",
+    "reason": "The source pins historical apps to upstream beta.2 at local startup. That is not the accepted Basalt .13/.14/.16 exact-provenance path, and unknown release identities intentionally refuse; this test does not establish the cutover’s provenance invariant, so renew its existing exception.",
     "entries": {
       "app-framework-pin.spec.ts#localAppFrameworkPin": "b5892cdf0b190293ef186c01c8badf2032049af5c2e97660638f87dfb8fcdf16"
     }
@@ -739,7 +736,7 @@
     }
   },
   {
-    "reason": "The candidate aborts one live subscription, then verifies the next trace links to the failed attempt, the failed span remains in the collector, and the page recovers; attached Cloud also checks the Axiom link. Its body is unchanged by the candidate diff. The plan schedules self-host and Cloud and excludes local for hosted deploy/auth. This is trace continuity for an app retry, not the cutover\u2019s auth transaction, retained-key, protocol, migration, or Workflow adapter boundary; renew the existing exception.",
+    "reason": "The candidate aborts one live subscription, then verifies the next trace links to the failed attempt, the failed span remains in the collector, and the page recovers; attached Cloud also checks the Axiom link. Its body is unchanged by the candidate diff. The plan schedules self-host and Cloud and excludes local for hosted deploy/auth. This is trace continuity for an app retry, not the cutover’s auth transaction, retained-key, protocol, migration, or Workflow adapter boundary; renew the existing exception.",
     "entries": {
       "app-observability.spec.ts#appRetryTraces": "3535b90f5d066cb16bb61e263cdfbc95b9b3dc5d0d864d584168f8569462b938"
     }
@@ -1032,7 +1029,7 @@
     }
   },
   {
-    "reason": "The candidate moves an empty workspace into its member's V2 team while deliberately leaving five seeded V1 integration/policy/toolkit rows untouched, then rolls back without changing them. This is the importer\u2019s leave-data option, not preservation across the accepted Cloud SQL schema migration. Add a scoped exception.",
+    "reason": "The candidate moves an empty workspace into its member's V2 team while deliberately leaving five seeded V1 integration/policy/toolkit rows untouched, then rolls back without changing them. This is the importer’s leave-data option, not preservation across the accepted Cloud SQL schema migration. Add a scoped exception.",
     "entries": {
       "cloud-v1-import-run.spec.ts#v1ImportIntoLeave": "1afc6f665e7640b12186af46f9c0071d0d52b5acc012e4b0cb3a7f64f40cd9da"
     }
@@ -1194,13 +1191,13 @@
     }
   },
   {
-    "reason": "The candidate checks the V1 handoff\u2019s session boundary: invalid signature, expiry, audience/version, unmapped user/organization, direct session-start access, and a departed member are refused without a cookie. This is a distinct V1 importer/session flow, not the accepted independent Better Auth/PostgreSQL migration bridge or retained Cloud SQL commit/rollback proof. It also does not assert runner provenance/Workflow dispatch or p39/p40-to-p42 underscore credential-host parsing. Add a scoped exception.",
+    "reason": "The candidate checks the V1 handoff’s session boundary: invalid signature, expiry, audience/version, unmapped user/organization, direct session-start access, and a departed member are refused without a cookie. This is a distinct V1 importer/session flow, not the accepted independent Better Auth/PostgreSQL migration bridge or retained Cloud SQL commit/rollback proof. It also does not assert runner provenance/Workflow dispatch or p39/p40-to-p42 underscore credential-host parsing. Add a scoped exception.",
     "entries": {
       "cloud-v1-session-handoff.spec.ts#v1HandoffRefusals": "38df7c803a9628f1a5b620749bfdb9974d0aebf766a382e44ef630b3837fab6f"
     }
   },
   {
-    "reason": "The candidate exercises the imported member\u2019s browser session handoff: /api/v1-handoff issues a session, sets no-referrer/no-store, avoids replacement of another signed-in user, and refuses replay. This is a distinct V1 importer/session flow. It does not execute the accepted independent Better Auth/PostgreSQL migration bridge or verify retained Cloud SQL rows, schema, keys, grants, commit, or rollback; it also does not assert runner provenance/Workflow dispatch or p39/p40-to-p42 underscore credential-host parsing. Add a scoped exception.",
+    "reason": "The candidate exercises the imported member’s browser session handoff: /api/v1-handoff issues a session, sets no-referrer/no-store, avoids replacement of another signed-in user, and refuses replay. This is a distinct V1 importer/session flow. It does not execute the accepted independent Better Auth/PostgreSQL migration bridge or verify retained Cloud SQL rows, schema, keys, grants, commit, or rollback; it also does not assert runner provenance/Workflow dispatch or p39/p40-to-p42 underscore credential-host parsing. Add a scoped exception.",
     "entries": {
       "cloud-v1-session-handoff.spec.ts#v1HandoffSignIn": "8b89dc16eed7bc30ba72542adfb4307bde0d9e804e31b66a4f679cbf9bbc3a64"
     }
@@ -1266,7 +1263,7 @@
     }
   },
   {
-    "reason": "The body links an admin\u2019s personal account and an owner\u2019s shared account to an app, removes the admin from the organization, then proves the personal account stops filling the requirement while its manager-visible link remains and the shared account still serves callers. The plan schedules self-host and Cloud, with local excluded because it has one owner. This is a meaningful membership/app-link authorization rule, but it does not prove the accepted SDK29 physical-row/grant migration, Cloud auth transaction, frozen protocol compatibility, credential host grammar, or Workflow adapter change; preserve it as a new exception.",
+    "reason": "The body links an admin’s personal account and an owner’s shared account to an app, removes the admin from the organization, then proves the personal account stops filling the requirement while its manager-visible link remains and the shared account still serves callers. The plan schedules self-host and Cloud, with local excluded because it has one owner. This is a meaningful membership/app-link authorization rule, but it does not prove the accepted SDK29 physical-row/grant migration, Cloud auth transaction, frozen protocol compatibility, credential host grammar, or Workflow adapter change; preserve it as a new exception.",
     "entries": {
       "departed-member-app-links.spec.ts#hostedDepartedMemberAppLink": "4b0ac46a518e79528aec6e74e1acd1939d992a7511e520efa56068db1c936929"
     }
@@ -1369,7 +1366,7 @@
     }
   },
   {
-    "reason": "The dynamic released-image case checks login, encrypted credentials, retained app data and workflows across restart. PGlite-to-native migration, failed-bootstrap recovery and backup/rollback assertions run only when EXECUTOR_E2E_DOCKER_PREVIOUS_IMAGE names a different non-native image. Basalt\u2019s current upstream-image job supplies only its newly built current image, so selecting this case there would not prove that conditional migration. The exact physical SDK29/Cloud bridge and independent auth commit/rollback are gated by the dedicated native upstream proofs; genuine old-server overlap remains a separate verification requirement. Preserve this individually reviewed exception rather than claim a current-image restart is old-image migration evidence. Source .upstream/e2e/tests/docker-release.spec.ts:45-54,383-438; root .github/workflows/ci.yml upstream-image env/step.",
+    "reason": "The dynamic released-image case checks login, encrypted credentials, retained app data and workflows across restart. PGlite-to-native migration, failed-bootstrap recovery and backup/rollback assertions run only when EXECUTOR_E2E_DOCKER_PREVIOUS_IMAGE names a different non-native image. Basalt’s current upstream-image job supplies only its newly built current image, so selecting this case there would not prove that conditional migration. The exact physical SDK29/Cloud bridge and independent auth commit/rollback are gated by the dedicated native upstream proofs; genuine old-server overlap remains a separate verification requirement. Preserve this individually reviewed exception rather than claim a current-image restart is old-image migration evidence. Source .upstream/e2e/tests/docker-release.spec.ts:45-54,383-438; root .github/workflows/ci.yml upstream-image env/step.",
     "entries": {
       "docker-release.spec.ts#<dynamic: `released image keeps login and encrypted credentials across restart (${mode})`>": "d2124700b5abf4dd0e8ece6860580436b57e24d2fe4e03902c0f245c13134d70"
     }
@@ -1435,7 +1432,7 @@
     }
   },
   {
-    "reason": "This new scenario checks the GraphQL adapter\u2019s bounded/redacted remote error bodies, status preservation and unknown mutation outcome through API and MCP. The cutover scope changes MCP invocation/identity and storage/Cloud bridging, not this GraphQL error parser; the already selected MCP write-ambiguity cases cover the changed retry contract. Add a narrow exception for this independent adapter behavior.",
+    "reason": "This new scenario checks the GraphQL adapter’s bounded/redacted remote error bodies, status preservation and unknown mutation outcome through API and MCP. The cutover scope changes MCP invocation/identity and storage/Cloud bridging, not this GraphQL error parser; the already selected MCP write-ambiguity cases cover the changed retry contract. Add a narrow exception for this independent adapter behavior.",
     "entries": {
       "graphql-errors.spec.ts#graphqlStatedErrors": "e825bdbcc964b3074ca5ee8e6481a0c943c6155dcbef2d1df0678e1fc5b8bbe5"
     }
@@ -1459,19 +1456,19 @@
     }
   },
   {
-    "reason": "The body deletes a member\u2019s own account, revokes a shared account audience, and makes the app private; subsequent app calls and skill reads lose the revoked accounts/access, while another member\u2019s unrelated personal link remains. The plan schedules self-host and Cloud, with local excluded for hosted membership. The candidate diff does not change this scenario. It proves ordinary app-link/access revocation, not the physical SDK29 grants/rows migration or its transaction/rollback path; renew the existing exception.",
+    "reason": "The body deletes a member’s own account, revokes a shared account audience, and makes the app private; subsequent app calls and skill reads lose the revoked accounts/access, while another member’s unrelated personal link remains. The plan schedules self-host and Cloud, with local excluded for hosted membership. The candidate diff does not change this scenario. It proves ordinary app-link/access revocation, not the physical SDK29 grants/rows migration or its transaction/rollback path; renew the existing exception.",
     "entries": {
       "hosted-app-accounts.spec.ts#hostedAppAccountRevocation": "d354864c6c1ad854cc2b7e5daf15b05badced3d4b617580b45194d2e85fcee84"
     }
   },
   {
-    "reason": "The body checks idempotent per-requirement links, shared-account links, unlinking while keeping the organization account usable, cardinality/scope/provider validation, and the caller\u2019s current access to linked accounts. The plan schedules self-host and Cloud; local has separate link-route scenarios. This test body is unchanged by the candidate diff, which only normalizes a later MCP error message. No migration, physical lineage, Better Auth transaction, or frozen protocol behavior is exercised; renew its existing exception.",
+    "reason": "The body checks idempotent per-requirement links, shared-account links, unlinking while keeping the organization account usable, cardinality/scope/provider validation, and the caller’s current access to linked accounts. The plan schedules self-host and Cloud; local has separate link-route scenarios. This test body is unchanged by the candidate diff, which only normalizes a later MCP error message. No migration, physical lineage, Better Auth transaction, or frozen protocol behavior is exercised; renew its existing exception.",
     "entries": {
       "hosted-app-accounts.spec.ts#hostedAppAccountRoutes": "22027d9eabbf482b66a6d01ba46fa8809fb34149a7a5ece6b99649c1667299a8"
     }
   },
   {
-    "reason": "The body checks that each hosted member sees and calls only with their own account link, cannot link another member\u2019s account, loses the app requirement after unlink, and can relink the still-saved account without affecting another member. The plan schedules self-host and Cloud, excluding local for hosted membership. The candidate diff does not change this test; its only hunk adapts failure-site text in a later skill-choice scenario. This is ordinary per-member app-link lifecycle, not physical SDK29/Cloud SQL migration or credential-grant retention across that migration; renew the existing exception.",
+    "reason": "The body checks that each hosted member sees and calls only with their own account link, cannot link another member’s account, loses the app requirement after unlink, and can relink the still-saved account without affecting another member. The plan schedules self-host and Cloud, excluding local for hosted membership. The candidate diff does not change this test; its only hunk adapts failure-site text in a later skill-choice scenario. This is ordinary per-member app-link lifecycle, not physical SDK29/Cloud SQL migration or credential-grant retention across that migration; renew the existing exception.",
     "entries": {
       "hosted-app-accounts.spec.ts#hostedAppAccounts": "af3908587b9a83f4ad50dc6cabfa36220b5cffbe79a1a5c2c9f837aee92f2f9f"
     }
@@ -1483,13 +1480,13 @@
     }
   },
   {
-    "reason": "The body checks that `many()` uses every linked account in order while a plain requirement uses only its own link, and that unlink/relink and another member\u2019s links remain isolated. The plan schedules self-host and Cloud, excluding local for hosted membership. The candidate diff changes only a later skill error assertion; this SDK account-cardinality contract is unchanged and does not prove a cutover migration, retained grant/key, old-server compatibility, or p39/p40-to-p42 protocol rule. Renew its existing exception.",
+    "reason": "The body checks that `many()` uses every linked account in order while a plain requirement uses only its own link, and that unlink/relink and another member’s links remain isolated. The plan schedules self-host and Cloud, excluding local for hosted membership. The candidate diff changes only a later skill error assertion; this SDK account-cardinality contract is unchanged and does not prove a cutover migration, retained grant/key, old-server compatibility, or p39/p40-to-p42 protocol rule. Renew its existing exception.",
     "entries": {
       "hosted-app-accounts.spec.ts#hostedManyAccounts": "b95c7a3fb88a88136cbabfcb1b9b7abb2d584876d9af07cca084fb148e675487"
     }
   },
   {
-    "reason": "The body creates an MCP API key, reads a skill using the member\u2019s linked account, and refuses explicit account selection for both skill reads and listings. The plan schedules self-host and Cloud, excluding local for hosted membership. The diff only strips variable failure-site metadata before comparing the stable refusal text. This generic MCP account-choice boundary is not the accepted SDK29 migration, Cloud auth commit/rollback, frozen protocol, or caller/host grammar change; renew the existing exception.",
+    "reason": "The body creates an MCP API key, reads a skill using the member’s linked account, and refuses explicit account selection for both skill reads and listings. The plan schedules self-host and Cloud, excluding local for hosted membership. The diff only strips variable failure-site metadata before comparing the stable refusal text. This generic MCP account-choice boundary is not the accepted SDK29 migration, Cloud auth commit/rollback, frozen protocol, or caller/host grammar change; renew the existing exception.",
     "entries": {
       "hosted-app-accounts.spec.ts#hostedSkillAccountChoice": "b768007f7afa1b78713cf4ec9412f2f685848e9d6c289c6849f9bc328ebd9dbc"
     }
@@ -1513,7 +1510,7 @@
     }
   },
   {
-    "reason": "The body has an admin create a shared account and another member link it, invoke the app, then confirms the creator can unlink their own association without removing the member\u2019s link or call access. The plan schedules self-host and Cloud, with local excluded because it lacks shared accounts/members. The candidate diff does not change this scenario; it is ordinary account-link ownership behavior, not physical row/grant retention across the accepted migration or a changed auth bridge. Renew the existing exception.",
+    "reason": "The body has an admin create a shared account and another member link it, invoke the app, then confirms the creator can unlink their own association without removing the member’s link or call access. The plan schedules self-host and Cloud, with local excluded because it lacks shared accounts/members. The candidate diff does not change this scenario; it is ordinary account-link ownership behavior, not physical row/grant retention across the accepted migration or a changed auth bridge. Renew the existing exception.",
     "entries": {
       "hosted-shared.spec.ts#sharedAccountLinks": "78fe831bab52ee4538d43eb0715995bf438b900eebca1b1384be2273bf4176cf"
     }
@@ -1567,13 +1564,13 @@
     }
   },
   {
-    "reason": "This case checks exact readback of wide Unicode source files beside a 13.6 MB OpenAPI document, then calls one health query. It is a file text roundtrip/large-input check, not the cutover\u2019s data/schema object or Cloud bridge contract.",
+    "reason": "This case checks exact readback of wide Unicode source files beside a 13.6 MB OpenAPI document, then calls one health query. It is a file text roundtrip/large-input check, not the cutover’s data/schema object or Cloud bridge contract.",
     "entries": {
       "large-openapi-app.spec.ts#largeOpenapiWideSourceApp": "9930a60c8d79f9a93c8b16016faf1015a68dd4ef6515ca74fa2519c41e0d60fe"
     }
   },
   {
-    "reason": "This case adds OpenAPI 3.2 QUERY, querystring arrays and JSON Lines handling under a path prefix. It checks spec-version/parser features, not the cutover\u2019s V1 caller identity, credential grammar or Cloud bridge behavior.",
+    "reason": "This case adds OpenAPI 3.2 QUERY, querystring arrays and JSON Lines handling under a path prefix. It checks spec-version/parser features, not the cutover’s V1 caller identity, credential grammar or Cloud bridge behavior.",
     "entries": {
       "live-openapi-import.spec.ts#liveOpenapi32": "49e236ec9baadf714d8062d90c5102d82e9b487416c5b5cfa9fcb66bd4831d2d"
     }
@@ -1627,7 +1624,7 @@
     }
   },
   {
-    "reason": "Renew the existing local CLI exception. The candidate covers sign-in guidance, host skills/docs, recursive source create/read that excludes dependency and Git directories, and a source commit; the plan is local-only, and these authoring workflows do not exercise the cutover\u2019s SQL retention, framework provenance, or new caller/host wire compatibility.",
+    "reason": "Renew the existing local CLI exception. The candidate covers sign-in guidance, host skills/docs, recursive source create/read that excludes dependency and Git directories, and a source commit; the plan is local-only, and these authoring workflows do not exercise the cutover’s SQL retention, framework provenance, or new caller/host wire compatibility.",
     "entries": {
       "local-apps-cli.spec.ts#localAppsCli": "02a82800700ae537ce766a209b4630328d660ebd17e6d093f890ff7fed00eed6"
     }
@@ -1681,7 +1678,7 @@
     }
   },
   {
-    "reason": "Renew the existing local CLI exception. The candidate verifies Executor 1 command names/flags return migration guidance, avoid creating a data directory, and stay out of Executor 2 help while valid service commands and typo suggestions remain; the updated hints explicitly describe the new local service lifecycle. Its local-only plan covers command parsing and migration copy, not the cutover\u2019s SQL, framework, caller, or host protocol compatibility.",
+    "reason": "Renew the existing local CLI exception. The candidate verifies Executor 1 command names/flags return migration guidance, avoid creating a data directory, and stay out of Executor 2 help while valid service commands and typo suggestions remain; the updated hints explicitly describe the new local service lifecycle. Its local-only plan covers command parsing and migration copy, not the cutover’s SQL, framework, caller, or host protocol compatibility.",
     "entries": {
       "local-cli-legacy-commands.spec.ts#localCliLegacyCommands": "79177d18b9cd4dceb3016f4ed26a164fb9a03be43c5ceb50dc2587b912ad45b7"
     }
@@ -1867,7 +1864,7 @@
     }
   },
   {
-    "reason": "Candidate body proves one linked MCP server\u2019s discovery failure does not poison another account\u2019s tools. This is per-account discovery isolation, not the p42 request caller identity or credential-pattern validation.",
+    "reason": "Candidate body proves one linked MCP server’s discovery failure does not poison another account’s tools. This is per-account discovery isolation, not the p42 request caller identity or credential-pattern validation.",
     "entries": {
       "mcp-account-failures.spec.ts#mcpAccountFailureIsolated": "080c6ccf06567f6a742b46038a72da2142cc2958d05f024419e652778931da97"
     }
@@ -1945,7 +1942,7 @@
     }
   },
   {
-    "reason": "The scenario counts cache commands for warm calls across two linked accounts and confirms a tool absent from one account is refused. It covers per-account catalog cache partitioning, not the requesting user\u2019s p42 caller identity or retained Cloud SQL rows.",
+    "reason": "The scenario counts cache commands for warm calls across two linked accounts and confirms a tool absent from one account is refused. It covers per-account catalog cache partitioning, not the requesting user’s p42 caller identity or retained Cloud SQL rows.",
     "entries": {
       "mcp-catalog.spec.ts#mcpCatalogAccountsOneCommand": "eccd1fb35918c9bd7480b1b8bb6bcdec6d02bff0a2b91fedc45a5249ae0a8153"
     }
@@ -1969,7 +1966,7 @@
     }
   },
   {
-    "reason": "The scenario verifies the app\u2019s cached tool catalog changes after explicit refresh or tools/list_changed. This is cache invalidation, not an accepted caller/host/credential contract.",
+    "reason": "The scenario verifies the app’s cached tool catalog changes after explicit refresh or tools/list_changed. This is cache invalidation, not an accepted caller/host/credential contract.",
     "entries": {
       "mcp-catalog.spec.ts#mcpListingCacheChanges": "c9452609ce3cc76a4a2bca4aef4701e631163074d79b0131e61223013fb3d93a"
     }
@@ -1987,13 +1984,13 @@
     }
   },
   {
-    "reason": "The candidate selects a connection runsAs account, observes that account\u2019s key inside the app tool, refuses a per-call account override, and refuses a newly linked account outside the connection policy. This is connection/account-selection behavior; it does not assert the host-authenticated caller identity at the authored app or a Workflow step, and uses an in-app key value rather than sealing credentials to an outbound DNS host adapter. It is not physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
+    "reason": "The candidate selects a connection runsAs account, observes that account’s key inside the app tool, refuses a per-call account override, and refuses a newly linked account outside the connection policy. This is connection/account-selection behavior; it does not assert the host-authenticated caller identity at the authored app or a Workflow step, and uses an in-app key value rather than sealing credentials to an outbound DNS host adapter. It is not physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
       "mcp-connections.spec.ts#scopedConnectionAccounts": "63b65f79b69176c80954a99efcb04f463c53124e6bb9de0addec2efca47903d8"
     }
   },
   {
-    "reason": "The candidate distinguishes an app-linked account from user-linked accounts, requires runsAs app rather than naming the app account directly, returns the app account\u2019s key through an app tool, and hides that account ID from tool descriptions, connection listings, and grant listings. This is app-account link policy, not the host-authenticated caller identity at the authored app or a Workflow step, nor outbound host credential sealing/conversion or physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
+    "reason": "The candidate distinguishes an app-linked account from user-linked accounts, requires runsAs app rather than naming the app account directly, returns the app account’s key through an app tool, and hides that account ID from tool descriptions, connection listings, and grant listings. This is app-account link policy, not the host-authenticated caller identity at the authored app or a Workflow step, nor outbound host credential sealing/conversion or physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
       "mcp-connections.spec.ts#scopedConnectionAppAccount": "387193e6c9fe14187fcd05c5f0b58e8296a6425b5aa60c3ef562bb5bb50cf0a6"
     }
@@ -2011,7 +2008,7 @@
     }
   },
   {
-    "reason": "The candidate holds a tool execution, changes the owner\u2019s linked account, then verifies the existing MCP connection still uses its configured account for the first call and refuses the replacement on the next call. This protects connection runsAs/link-swap policy, not the host-authenticated caller supplied to an authored app or Workflow step; the in-app token fixture does not exercise sealing-to-adapter conversion or credential host parsing. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
+    "reason": "The candidate holds a tool execution, changes the owner’s linked account, then verifies the existing MCP connection still uses its configured account for the first call and refuses the replacement on the next call. This protects connection runsAs/link-swap policy, not the host-authenticated caller supplied to an authored app or Workflow step; the in-app token fixture does not exercise sealing-to-adapter conversion or credential host parsing. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
       "mcp-connections.spec.ts#scopedConnectionLinkSwappedMidExecution": "c6d77d40fce32d5db2c841dd6a51abd611600683db798da50ddab82bde12295f"
     }
@@ -2065,7 +2062,7 @@
     }
   },
   {
-    "reason": "The candidate\u2019s loopback server runs each tool call and closes the connection before returning. It checks the write outcome is unknown/non-retryable, a confirmed read may be retried once, and the server recorded each call exactly once. This is generic transport ambiguity/retry handling, not the accepted caller, Workflow, credential-host, or physical-bridge boundary. Renew the existing exception.",
+    "reason": "The candidate’s loopback server runs each tool call and closes the connection before returning. It checks the write outcome is unknown/non-retryable, a confirmed read may be retried once, and the server recorded each call exactly once. This is generic transport ambiguity/retry handling, not the accepted caller, Workflow, credential-host, or physical-bridge boundary. Renew the existing exception.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteCallDropped": "7043282627a7f2a1e4a068ca26191e463bb8a7f6b83c8fb8ba0861150dededb7"
     }
@@ -2083,13 +2080,13 @@
     }
   },
   {
-    "reason": "The new case calls a query before listing its app\u2019s tools. The app factory and handler each write before CacheError, and the test verifies Executor does not re-evaluate the factory to classify the failure; once a listing confirms the query, the normal retry advice applies. This is cold-listing/partial-write error handling, not the accepted compiler/retained-loader or caller/Workflow boundary. Add a scoped exception.",
+    "reason": "The new case calls a query before listing its app’s tools. The app factory and handler each write before CacheError, and the test verifies Executor does not re-evaluate the factory to classify the failure; once a listing confirms the query, the normal retry advice applies. This is cold-listing/partial-write error handling, not the accepted compiler/retained-loader or caller/Workflow boundary. Add a scoped exception.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteColdQueryNotReevaluated": "48fe372b4c2469938db5ca975e92420590a7cb70a02fe51ed93ade2b91975739"
     }
   },
   {
-    "reason": "The new case makes an MCP server\u2019s `readOnlyHint` insufficient to authorize a retry when the app has no confirmed `kinds` entry. It checks the program, direct MCP call, and REST caller all see a non-retryable ambiguous outcome and the server receives each call once. This is retry-safety policy, not the accepted p42 caller, Workflow, host grammar, or migration contract. Add a scoped exception.",
+    "reason": "The new case makes an MCP server’s `readOnlyHint` insufficient to authorize a retry when the app has no confirmed `kinds` entry. It checks the program, direct MCP call, and REST caller all see a non-retryable ambiguous outcome and the server receives each call once. This is retry-safety policy, not the accepted p42 caller, Workflow, host grammar, or migration contract. Add a scoped exception.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteHintedReadTimedOut": "c065d34ed45219639eaea26e36c66c32b86b0ffad5ab348a968e2587bd41d694"
     }
@@ -2119,13 +2116,13 @@
     }
   },
   {
-    "reason": "The candidate\u2019s dynamic tool factory writes records and then fails tool resolution through invalid-option, unavailable-cache, or unusable-arguments errors. It verifies mutation failures are non-retryable while an equivalent read can retry. These are partial-write and tool-resolution error semantics, not the accepted public compiler/retained-loader proof or p42 caller/Workflow/credential-host contract. Renew the existing exception.",
+    "reason": "The candidate’s dynamic tool factory writes records and then fails tool resolution through invalid-option, unavailable-cache, or unusable-arguments errors. It verifies mutation failures are non-retryable while an equivalent read can retry. These are partial-write and tool-resolution error semantics, not the accepted public compiler/retained-loader proof or p42 caller/Workflow/credential-host contract. Renew the existing exception.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteResolveWrote": "f39cc3382e642986f9f7cdf228cd0874340b496046d056c0d96fbbb40072f9e7"
     }
   },
   {
-    "reason": "This case reports an MCP server\u2019s HTTP and JSON-RPC refusal during connection and bounds the failure time. It is generic transport error mapping, not the cutover\u2019s host grammar or caller credential pattern.",
+    "reason": "This case reports an MCP server’s HTTP and JSON-RPC refusal during connection and bounds the failure time. It is generic transport error mapping, not the cutover’s host grammar or caller credential pattern.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteServerRefused": "e8b91105591964d54b5f134e6436d1dbc20f6a4079a00c351fbb5caca80cfd13"
     }
@@ -2137,13 +2134,13 @@
     }
   },
   {
-    "reason": "The scenario preserves an MCP server\u2019s isError result as a failed tool outcome through execute, direct call and approval resume, while distinguishing an app result that only looks like an MCP error. This is a new generic protocol result mapping, not the accepted caller, host, credential-pattern or migration contract.",
+    "reason": "The scenario preserves an MCP server’s isError result as a failed tool outcome through execute, direct call and approval resume, while distinguishing an app result that only looks like an MCP error. This is a new generic protocol result mapping, not the accepted caller, host, credential-pattern or migration contract.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteToolReportedError": "f433d353e0354fd602ab633c33b6a83e1ea6496e5e75e9b3c05bdd0a99bf6e0d"
     }
   },
   {
-    "reason": "The candidate calls a user-account app with no linked account, receives AppAccountRequired, connects the owner\u2019s account, and then calls successfully. It never switches or identifies the authenticated caller inside app code; it tests account setup/recovery, not p42 caller provenance at the authored app or a Workflow step, credential-host sealing, or the migration bridge. Renew the existing exception.",
+    "reason": "The candidate calls a user-account app with no linked account, receives AppAccountRequired, connects the owner’s account, and then calls successfully. It never switches or identifies the authenticated caller inside app code; it tests account setup/recovery, not p42 caller provenance at the authored app or a Workflow step, credential-host sealing, or the migration bridge. Renew the existing exception.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpExecuteUnavailableApp": "b3ba7ed96334e9dd89101764d37dda54b6a2225163cb562a599cd1dfce50ad41"
     }
@@ -2167,7 +2164,7 @@
     }
   },
   {
-    "reason": "The candidate exercises approval resume error handling: trace references move to the resuming request, a later call failure is reported, duplicate/malformed/unknown request IDs receive diagnostics, and another grant cannot inspect or answer the first grant\u2019s pending request. These are resume/error and grant-visibility rules; the app fixture does not assert host-authenticated caller identity at an authored app or Workflow step, nor the physical bridge, credential-host, or retained-loader boundary. Renew the existing exception.",
+    "reason": "The candidate exercises approval resume error handling: trace references move to the resuming request, a later call failure is reported, duplicate/malformed/unknown request IDs receive diagnostics, and another grant cannot inspect or answer the first grant’s pending request. These are resume/error and grant-visibility rules; the app fixture does not assert host-authenticated caller identity at an authored app or Workflow step, nor the physical bridge, credential-host, or retained-loader boundary. Renew the existing exception.",
     "entries": {
       "mcp-execute-failures.spec.ts#mcpResumeReasons": "78a17018f22c4e66aeb40309c8d9809b0c94221e80611883a8c1ee3f00fc2bbb"
     }
@@ -2185,7 +2182,7 @@
     }
   },
   {
-    "reason": "The program dynamically reaches a stalled app\u2019s tool listing and verifies timeout phase/deadline plus discovery telemetry. This is dynamic lookup timeout behavior, not p42 caller identity, host grammar, credential validation or retained product state.",
+    "reason": "The program dynamically reaches a stalled app’s tool listing and verifies timeout phase/deadline plus discovery telemetry. This is dynamic lookup timeout behavior, not p42 caller identity, host grammar, credential validation or retained product state.",
     "entries": {
       "mcp-execute-lazy.spec.ts#mcpDynamicToolsStallTimesOut": "6e7305353281066cc826bcecaea04b2ba33513e02f5f8ba57463ae20bd38e9c6"
     }
@@ -2227,7 +2224,7 @@
     }
   },
   {
-    "reason": "The candidate imitates the 32 MiB Workers RPC error from app code, compares it with a real 35 MiB result, and verifies a mutation\u2019s lost result is not retried while a read retry succeeds. This tests size-error classification and retry advice, not physical SQL migration state, host identity, credential DNS grammar, or Workflow dispatch. Add a scoped exception.",
+    "reason": "The candidate imitates the 32 MiB Workers RPC error from app code, compares it with a real 35 MiB result, and verifies a mutation’s lost result is not retried while a read retry succeeds. This tests size-error classification and retry advice, not physical SQL migration state, host identity, credential DNS grammar, or Workflow dispatch. Add a scoped exception.",
     "entries": {
       "mcp-large-result.spec.ts#mcpRpcLimitForged": "f1aa8cdf18bc275995fcda5617cd907278001e17c517435628eaa8d4239e0ecf"
     }
@@ -2263,13 +2260,13 @@
     }
   },
   {
-    "reason": "The body checks an OAuth setup response\u2019s automatic/client-required mode, scope and discovered protected-resource metadata, registration side effects, denied member reads, and sign-in after registration changes; the candidate diff adds the `resource` field and asserts metadata-derived selection. The plan schedules self-host only because it uses a loopback issuer, excluding Cloud and local. This is a generic OAuth setup/resource feature, not physical SDK29/Cloud SQL migration or the Cloud auth transaction/rollback, retained grants/keys, frozen protocol, or p42 caller/host grammar; renew the existing exception.",
+    "reason": "The body checks an OAuth setup response’s automatic/client-required mode, scope and discovered protected-resource metadata, registration side effects, denied member reads, and sign-in after registration changes; the candidate diff adds the `resource` field and asserts metadata-derived selection. The plan schedules self-host only because it uses a loopback issuer, excluding Cloud and local. This is a generic OAuth setup/resource feature, not physical SDK29/Cloud SQL migration or the Cloud auth transaction/rollback, retained grants/keys, frozen protocol, or p42 caller/host grammar; renew the existing exception.",
     "entries": {
       "oauth-client-setup.spec.ts#oauthClientSetup": "c7029359ab7c1521d2224b79bf28c74dc6ccbb6db0f37bce53b1b0686379f161"
     }
   },
   {
-    "reason": "The body creates group audiences and checks an outsider cannot discover or name the client, a member\u2019s pending/typed use is refused, and widening the audience permits use. The plan schedules self-host only with a loopback issuer; local excludes hosted organization roles. This is the OAuth client audience policy itself, not a cutover change to migrated grant/key rows, Better Auth commit/rollback, or protocol identity; renew the existing exception.",
+    "reason": "The body creates group audiences and checks an outsider cannot discover or name the client, a member’s pending/typed use is refused, and widening the audience permits use. The plan schedules self-host only with a loopback issuer; local excludes hosted organization roles. This is the OAuth client audience policy itself, not a cutover change to migrated grant/key rows, Better Auth commit/rollback, or protocol identity; renew the existing exception.",
     "entries": {
       "oauth-clients.spec.ts#oauthClientAudience": "1685cbea52ef54f4f98f3768cc3e0aa6fc3fbe823e42d34778f0b90dacfe4db3"
     }
@@ -2293,7 +2290,7 @@
     }
   },
   {
-    "reason": "The body edits a manual OAuth client\u2019s ID, secret and audience in one save, checks neither secret is returned, verifies the new settings affect sign-in, and refuses edits to automatically registered clients; it also checks the form layout. The plan schedules self-host only with a loopback issuer. This is generic administrator management of OAuth client records, not the physical SDK29 migration or Cloud auth bridge transaction; renew the existing exception.",
+    "reason": "The body edits a manual OAuth client’s ID, secret and audience in one save, checks neither secret is returned, verifies the new settings affect sign-in, and refuses edits to automatically registered clients; it also checks the form layout. The plan schedules self-host only with a loopback issuer. This is generic administrator management of OAuth client records, not the physical SDK29 migration or Cloud auth bridge transaction; renew the existing exception.",
     "entries": {
       "oauth-clients.spec.ts#oauthClientEdit": "505233caf3cf279fe020edf0d4c70ee707229e490b24a75757e27adaafd11b00"
     }
@@ -2329,7 +2326,7 @@
     }
   },
   {
-    "reason": "The body uses the V1-shaped config that declares only Google\u2019s authorization/token endpoints and checks default `access_type=offline` plus `prompt=consent`, app overrides for each parameter, and exact-host matching so a lookalike host gets neither. The plan schedules self-host only; Cloud/local exercise the hosted API separately. The test does not invoke an importer, migrate a stored grant, or prove retention across the cutover; the accepted change does not adopt generic legacy source-shape defaults. Keep this new identity as an explicit exception with that proof limit.",
+    "reason": "The body uses the V1-shaped config that declares only Google’s authorization/token endpoints and checks default `access_type=offline` plus `prompt=consent`, app overrides for each parameter, and exact-host matching so a lookalike host gets neither. The plan schedules self-host only; Cloud/local exercise the hosted API separately. The test does not invoke an importer, migrate a stored grant, or prove retention across the cutover; the accepted change does not adopt generic legacy source-shape defaults. Keep this new identity as an explicit exception with that proof limit.",
     "entries": {
       "oauth-google-renewable-grant.spec.ts#oauthGoogleRenewableGrant": "ca0c8292e041772f2561e6d0045b4031f1e6f8073d6913ffda9ae08d8d3ef8ae"
     }
@@ -2443,13 +2440,13 @@
     }
   },
   {
-    "reason": "The scenario exercises the imported OpenAPI HTTP adapter\u2019s error-body bounds, secret redaction, declared response schemas, auth/rate-limit diagnostics, input validation and possibly-written recovery across MCP and REST. Those are generic upstream API-call/error contracts, not the accepted p39/p40 provenance, p42 caller/host/credential validation, or SDK29/Cloud SQL migration behavior.",
+    "reason": "The scenario exercises the imported OpenAPI HTTP adapter’s error-body bounds, secret redaction, declared response schemas, auth/rate-limit diagnostics, input validation and possibly-written recovery across MCP and REST. Those are generic upstream API-call/error contracts, not the accepted p39/p40 provenance, p42 caller/host/credential validation, or SDK29/Cloud SQL migration behavior.",
     "entries": {
       "openapi-errors.spec.ts#openapiErrors": "962ea2eadb1526bda21dd2fa66a743f6a678c36faa8a7f5056fe0d6c5a33eb33"
     }
   },
   {
-    "reason": "The new body checks real HTTP/batched management spans for session, API-key, and OAuth-grant callers: authorized requests name the caller\u2019s own organization/user, while non-member/left-organization refusals omit the requested organization and retain the caller/refusal reason. The plan schedules self-host and managed Cloud, excluding Local. This is generic HTTP management identity telemetry; it does not prove physical Cloud auth migration/lineage, independent Better Auth commit/rollback, or .16/p42 runner provenance. Renewing the cutover requires those concrete contracts, so keep this new identity as an exception.",
+    "reason": "The new body checks real HTTP/batched management spans for session, API-key, and OAuth-grant callers: authorized requests name the caller’s own organization/user, while non-member/left-organization refusals omit the requested organization and retain the caller/refusal reason. The plan schedules self-host and managed Cloud, excluding Local. This is generic HTTP management identity telemetry; it does not prove physical Cloud auth migration/lineage, independent Better Auth commit/rollback, or .16/p42 runner provenance. Renewing the cutover requires those concrete contracts, so keep this new identity as an exception.",
     "entries": {
       "organization-request-spans.spec.ts#organizationRequestSpans": "77012282d3d00ddbef6de756cc7ec421d8d7090c7d7b7a8f1eb90eabda6eb42a"
     }
@@ -2503,7 +2500,7 @@
     }
   },
   {
-    "reason": "The new body connects SSO to an already signed-in password account only when the provider returns that account\u2019s email, rejects another email with an explanation, then verifies sign-in returns the same account. The plan schedules self-host only; Cloud customer SSO uses its own provider registration and Local has no sign-in. This new account-linking flow does not exercise the physical SDK29/Cloud auth migration and rollback or p42 caller/host contract; 0138 social-sign-in/security remains gated, so record a new exception.",
+    "reason": "The new body connects SSO to an already signed-in password account only when the provider returns that account’s email, rejects another email with an explanation, then verifies sign-in returns the same account. The plan schedules self-host only; Cloud customer SSO uses its own provider registration and Local has no sign-in. This new account-linking flow does not exercise the physical SDK29/Cloud auth migration and rollback or p42 caller/host contract; 0138 social-sign-in/security remains gated, so record a new exception.",
     "entries": {
       "self-host-sso.spec.ts#selfHostSsoConnectPasswordAccount": "3626116050e26dcfe307d80e9644acc893a5b46cd002788be6e591fd75173d8f"
     }
@@ -2539,9 +2536,9 @@
     }
   },
   {
-    "reason": "Renew the existing Cloud polling exception. The candidate holds three Billing overview GETs while advancing the browser clock, verifies each superseded request is cancelled before reaching the server and the latest completes, then confirms plans still render. Its diff makes the poll wait for the request it sends; the Cloud-only plan covers stale-read cancellation, not SDK29/Cloud-bridge physical migration, framework provenance, runner caller/host compatibility, or Workflow adapters.",
+    "reason": "Renew the existing Cloud polling exception. The candidate holds three Billing overview GETs while advancing the browser clock, verifies each superseded request is cancelled before reaching the server and the latest completes, then confirms plans still render. Its diff makes the poll wait for the request it sends; the Cloud-only plan covers stale-read cancellation, not SDK29/Cloud-bridge physical migration, framework provenance, runner caller/host compatibility, or Workflow adapters. Carry 0679 installs the browser clock through the shared helper; the scenario and its assertions are unchanged.",
     "entries": {
-      "superseded-reads.spec.ts#supersededReads": "2aa49f177d169eaaeb12c9c0365b4dc8892a7e2020260b99003aa61a3916ad5e"
+      "superseded-reads.spec.ts#supersededReads": "a6eebe19470cdd826ceeceea2518acfc5f2eaa49cbc1293771f0423e69ac9803"
     }
   },
   {
@@ -2551,13 +2548,13 @@
     }
   },
   {
-    "reason": "The scenario measures upstream wait separately from Executor overhead for a slow provider call, asserting the app\u2019s upstream duration and zero elicitation time. It is telemetry attribution, not p42 identity/host/credential behavior or retained product state.",
+    "reason": "The scenario measures upstream wait separately from Executor overhead for a slow provider call, asserting the app’s upstream duration and zero elicitation time. It is telemetry attribution, not p42 identity/host/credential behavior or retained product state.",
     "entries": {
       "tool-call-overhead.spec.ts#toolCallOverhead": "3619c9b880634c48bbf336051ea4fd23da9928a888a0edf0b73ed8618fb8b03a"
     }
   },
   {
-    "reason": "The scenario verifies a call\u2019s provider timing is recorded when it runs after approval/resume. This is tracing around the approval path, not a changed p42 caller-identity or retained product-state assertion.",
+    "reason": "The scenario verifies a call’s provider timing is recorded when it runs after approval/resume. This is tracing around the approval path, not a changed p42 caller-identity or retained product-state assertion.",
     "entries": {
       "tool-call-overhead.spec.ts#toolCallOverheadApproved": "00c04bc2314a3e89c729ae31d925909eb6e1a376fd9622fc54c3ea78264282fd"
     }
@@ -2581,7 +2578,7 @@
     }
   },
   {
-    "reason": "The scenario tags stale-cache refresh work as background and excludes it from the caller\u2019s provider and overhead time. It is tool-cache telemetry, not physical retained rows or p42 caller/host/credential behavior.",
+    "reason": "The scenario tags stale-cache refresh work as background and excludes it from the caller’s provider and overhead time. It is tool-cache telemetry, not physical retained rows or p42 caller/host/credential behavior.",
     "entries": {
       "tool-call-overhead.spec.ts#toolCallOverheadBackground": "2c4620cdca070ac83a36445f7516e230db43e440e9587142ac0cf3c7209f6626"
     }
@@ -2611,7 +2608,7 @@
     }
   },
   {
-    "reason": "The scenario measures a person\u2019s wait as elicitation time for both app-level and nested MCP-server questions, separately from provider time. It is span accounting, not caller identity or credential-pattern behavior.",
+    "reason": "The scenario measures a person’s wait as elicitation time for both app-level and nested MCP-server questions, separately from provider time. It is span accounting, not caller identity or credential-pattern behavior.",
     "entries": {
       "tool-call-overhead.spec.ts#toolCallOverheadElicitation": "37b2aac858864ee695a6f4cdeb99e1fb1a7721a63c62d73f7e051c0f388ea6bd"
     }
@@ -2623,13 +2620,13 @@
     }
   },
   {
-    "reason": "The test runs two calls that wait on one shared missing cache entry and attributes the second call\u2019s lease-poll wait separately from Executor overhead. This is cache timing, not the accepted storage migration or p42 identity/host/credential contract.",
+    "reason": "The test runs two calls that wait on one shared missing cache entry and attributes the second call’s lease-poll wait separately from Executor overhead. This is cache timing, not the accepted storage migration or p42 identity/host/credential contract.",
     "entries": {
       "tool-call-overhead.spec.ts#toolCallOverheadLease": "57a2979d6912f385c63111ec62cf56e6fb577740769e8f4ebfee7f259b429063"
     }
   },
   {
-    "reason": "The scenario separates an app-owned cache loader\u2019s provider wait and processing time from Executor cache overhead. It is telemetry accounting around a cache loader, not the accepted cutover behavior.",
+    "reason": "The scenario separates an app-owned cache loader’s provider wait and processing time from Executor cache overhead. It is telemetry accounting around a cache loader, not the accepted cutover behavior.",
     "entries": {
       "tool-call-overhead.spec.ts#toolCallOverheadLoader": "a626bc66c9184162efd1e48871a1c11d6135ec0f1a1628f186275f42171e5f0d"
     }
@@ -2701,7 +2698,7 @@
     }
   },
   {
-    "reason": "The new body deploys current and apps beta.84 packages, starts a workflow, lists and gets its run, checks keyed replay returns the same run, and rejects an over-long key before creating another run. Its plan schedules self-host and Cloud, with Local excluded for hosted app routes. This is basic app SDK workflow compatibility; it does not assert the runner caller or provenance changed by p42, and beta.84 is not the cutover\u2019s retained framework-provenance path. The selected workflowStartReadBack and workflowStartCommit cases cover the ambiguous-start safety path; this new identity does not prove physical SDK29/Cloud migration, bridge rollback, or p42 host grammar, so keep it as an explicit new exception.",
+    "reason": "The new body deploys current and apps beta.84 packages, starts a workflow, lists and gets its run, checks keyed replay returns the same run, and rejects an over-long key before creating another run. Its plan schedules self-host and Cloud, with Local excluded for hosted app routes. This is basic app SDK workflow compatibility; it does not assert the runner caller or provenance changed by p42, and beta.84 is not the cutover’s retained framework-provenance path. The selected workflowStartReadBack and workflowStartCommit cases cover the ambiguous-start safety path; this new identity does not prove physical SDK29/Cloud migration, bridge rollback, or p42 host grammar, so keep it as an explicit new exception.",
     "entries": {
       "workflow-controls.spec.ts#workflowControls": "b44bffbf26dad77bbe4041e6f34cd4e254e42e49abb2ed41bbe40146f7d4e81f"
     }

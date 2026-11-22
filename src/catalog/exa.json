@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/exa\",\n  \"description\": \"AI web search with Exa: search, find similar pages, fetch page contents, get cited answers, and manage monitors, agent runs, batches and websets.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.15\"\n  },\n  \"executor\": {\n    \"title\": \"Exa\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/exa\",\n  \"description\": \"AI web search with Exa: search, find similar pages, fetch page contents, get cited answers, and manage monitors, agent runs, batches and websets.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\"\n  },\n  \"executor\": {\n    \"title\": \"Exa\"\n  }\n}\n"
     }
   ]
 }

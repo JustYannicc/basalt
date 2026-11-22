@@ -29,11 +29,15 @@ export const migrationKeys = (source: string) => [
  * bump that brings an upstream step into a number Basalt's carries already use must renumber it
  * past the released steps, as carry 0475 does for upstream's Cloud steps 8 to 13.
  */
-export function migrationNumberProblems(releasedKeys: readonly string[], declared: readonly string[]) {
+export function migrationNumberProblems(
+  releasedKeys: readonly string[],
+  declared: readonly string[],
+) {
   const problems: string[] = [];
   const current = new Set(declared);
   for (const key of releasedKeys)
-    if (!current.has(key)) problems.push(`released step ${key} is no longer declared at its number`);
+    if (!current.has(key))
+      problems.push(`released step ${key} is no longer declared at its number`);
   const highest = Math.max(0, ...releasedKeys.map((key) => step(key).id));
   const releasedSet = new Set(releasedKeys);
   for (const key of declared)
@@ -49,7 +53,11 @@ export function migrationNumberProblems(releasedKeys: readonly string[], declare
 }
 
 test("a new step below a released one, a renumbered release, or a reused id is refused", () => {
-  const releasedKeys = ["9_app_account_links", "10_account_observations", "23_account_traffic_changes"];
+  const releasedKeys = [
+    "9_app_account_links",
+    "10_account_observations",
+    "23_account_traffic_changes",
+  ];
   assert.deepEqual(
     migrationNumberProblems(releasedKeys, [...releasedKeys, "10_group_account_connections"]),
     [
@@ -58,7 +66,11 @@ test("a new step below a released one, a renumbered release, or a reused id is r
     ],
   );
   assert.deepEqual(
-    migrationNumberProblems(releasedKeys, ["9_app_account_links", "13_account_observations", "23_account_traffic_changes"]),
+    migrationNumberProblems(releasedKeys, [
+      "9_app_account_links",
+      "13_account_observations",
+      "23_account_traffic_changes",
+    ]),
     [
       "released step 10_account_observations is no longer declared at its number",
       "new step 13_account_observations is numbered at or below released step 23",

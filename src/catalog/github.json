@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/github\",\n  \"description\": \"Repositories, code search, issues and pull requests through GitHub's MCP server, plus the rest of the GitHub REST API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"GitHub\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.15\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/github\",\n  \"description\": \"Repositories, code search, issues and pull requests through GitHub's MCP server, plus the rest of the GitHub REST API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"GitHub\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     },
     {
       "path": "results.ts",
