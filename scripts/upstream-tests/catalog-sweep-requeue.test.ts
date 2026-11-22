@@ -9,9 +9,14 @@ const load = (path: string) => import(new URL(path, upstream).href);
 const { catalogAppJobPrefix } = await load(
   "apps/hosted/server/src/contracts/catalog-app-updates.ts",
 );
-const { queueCatalogAppUpdates } = await load(
+const { queueCatalogAppUpdates } = (await load(
   "apps/hosted/server/src/implementation/catalog-app-upgrades.ts",
-);
+)) as {
+  queueCatalogAppUpdates: (
+    feedUrl: string,
+    release: string,
+  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
+};
 
 const release = "a".repeat(40);
 const sweeps = `${catalogAppJobPrefix}${release}:%`;
