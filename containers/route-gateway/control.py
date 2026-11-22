@@ -104,7 +104,8 @@ class Gateway:
                 "key_expiry": snapshot.key_expiry if snapshot else None,
                 "tailnet": snapshot.tailnet if snapshot and snapshot.logged_in else None,
                 "name": snapshot.name if snapshot and snapshot.logged_in else None,
-                "id": snapshot.node_id if snapshot and snapshot.logged_in else None,
+                # Kept while the key is expired: that is when Disconnect most needs it.
+                "id": snapshot.node_id if snapshot else None,
             },
             "state_revision": self.observe_state(),
         }

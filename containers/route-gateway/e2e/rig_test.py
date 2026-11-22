@@ -351,7 +351,10 @@ class Rig:
         new_requests = self.echo_lines()[requests_before:]
         direct_requests = [line for line in new_requests if line["from"] == GATEWAY_IP]
         bare_handshakes = sum(1 for line in self.echo_lines(accepts=True)[len(accepts_before):] if line["accept"] == GATEWAY_IP)
-        self.record("3a_exit_route_revoked", not direct_requests, client=revoked, gateway_log=self.refusals()[-1],
+        refused_with = self.refusals()[-1]
+        self.record("3a_exit_route_revoked", not direct_requests and refused_with == {"route_refused": "route_exit_missing"}
+                    and under_load["replies"].get("0", 0) > 0 and under_load["replies"].get("2", 0) > 0,
+                    client=revoked, gateway_log=refused_with,
                     under_load=under_load, direct_requests_from_gateway=len(direct_requests),
                     bare_handshakes_from_gateway=bare_handshakes,
                     routed_requests_during_load=sum(1 for line in new_requests if line["from"] == EXIT_IP))
@@ -374,7 +377,8 @@ class Rig:
         raw = json.loads(self.docker("exec", self.names["gateway"], "python3", "/e2e/rig_test.py", "socks",
                                      "127.0.0.1", "1055", ECHO_IP, "8080", "raw-proxy"))
         # Calls may still reach echo through the exit until the netmap drops it; none may go direct.
-        self.record("3_exit_removed", GATEWAY_IP not in self.echo_from("check3") and not direct_requests, client=missing,
+        self.record("3_exit_removed", GATEWAY_IP not in self.echo_from("check3") and not direct_requests
+                    and under_load["replies"].get("0", 0) > 0 and under_load["replies"].get("2", 0) > 0, client=missing,
                     under_load=under_load, direct_requests_from_gateway=len(direct_requests),
                     bare_handshakes_from_gateway=bare_handshakes,
                     routed_requests_during_load=sum(1 for ip in self.echo_from("check3") if ip == EXIT_IP),
@@ -388,10 +392,13 @@ class Rig:
         after = self.gateway_call("GET", "/state")[1]["state"]
         keys = lambda blob: {value for value in json.loads(base64.b64decode(blob) or b"{}").values()}
         node = next((n for n in json.loads(self.headscale("nodes", "list", "-o", "json")) or [] if "signalbox-route" in (n.get("name"), n.get("given_name"))), {})
+        expired = (node.get("expiry") or {}).get("seconds", 0) < time.time()
+        after_logout = self.through("logout")
         self.record("8_logout", logged_out == [200, {}] and after_status["state"] == "needs_login"
-                    and not after_status["node"]["logged_in"] and not keys(before) & keys(after),
-                    status=after_status, old_identity_values_left=len(keys(before) & keys(after)),
-                    control_keeps_expired_record=bool(node), record_expiry=node.get("expiry"))
+                    and not after_status["node"]["logged_in"] and keys(before) and not keys(before) & keys(after)
+                    and after_logout.get("reply") == 2 and not self.echo_from("logout") and expired,
+                    status=after_status, old_identity_values_left=len(keys(before) & keys(after)), client=after_logout,
+                    control_keeps_expired_record=bool(node), record_expired=expired)
 
     def teardown(self):
         removed = {"containers": 0, "networks": 0, "images": 0}

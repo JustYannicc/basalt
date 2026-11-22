@@ -95,11 +95,13 @@ async def read_reply(reader):
 
 
 async def splice(client, upstream):
-    """Copy both ways. A clean EOF half-closes; an error on either side aborts both, so a
+    """Copy both ways. A clean EOF half-closes; an error on either side closes both, so a
     reset never leaves the other direction waiting with its connection slot held."""
     (client_reader, client_writer), (upstream_reader, upstream_writer) = client, upstream
+    failed = False
 
     async def pump(reader, writer):
+        nonlocal failed
         try:
             while data := await reader.read(65536):
                 writer.write(data)
@@ -107,14 +109,21 @@ async def splice(client, upstream):
             if writer.can_write_eof():
                 writer.write_eof()
         except (ConnectionError, OSError):
-            # close() still flushes what the other side already sent; abort only if a peer
-            # never reads it.
-            for side in (client_writer, upstream_writer):
-                side.close()
-                asyncio.get_running_loop().call_later(ABORT_AFTER_S, side.transport.abort)
+            failed = True
+            client_writer.close()
+            upstream_writer.close()
 
     await asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
     upstream_writer.close()
+    if failed:
+        # close() still flushes what the other side already sent; abort only a peer that
+        # never reads it.
+        closing = asyncio.gather(client_writer.wait_closed(), upstream_writer.wait_closed(), return_exceptions=True)
+        try:
+            await asyncio.wait_for(closing, ABORT_AFTER_S)
+        except asyncio.TimeoutError:
+            client_writer.transport.abort()
+            upstream_writer.transport.abort()
 
 
 class Forwarder:

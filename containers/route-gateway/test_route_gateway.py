@@ -237,7 +237,7 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
             await reader.readexactly(3)
             writer.write(b"\x05\x00")
             await reader.readexactly(10)
-            writer.write(b"\x05\x00\x00\x01" + b"\x00" * 6)
+            writer.write(b"\x05\x00\x00\x01" + b"\x00" * 6 + b"last-chunk")
             await writer.drain()
             # Linger 0 turns the close into a TCP reset, as a dropped far end would send.
             writer.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
@@ -249,7 +249,7 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
         writer.write(b"\x05\x01\x00" + self.ipv4())
         self.assertEqual((await reader.readexactly(12))[3], 0)
         # The client stays idle and open: only the forwarder can free the slot.
-        self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+        self.assertIn(await asyncio.wait_for(reader.read(), 2), (b"last-chunk", b""))
         for _ in range(50):
             if self.forwarder.active == 0:
                 break
@@ -327,6 +327,7 @@ class WatcherTests(unittest.IsolatedAsyncioTestCase):
         adapter, exits = FakeAdapter(), []
         adapter.process = first = FakeProcess()
         watcher = asyncio.create_task(control.watch_daemon(adapter, exits.append, idle_s=0.01))
+        await asyncio.sleep(0.02)  # the watcher is now waiting on the first process
         with contextlib.redirect_stdout(io.StringIO()):
             adapter.process = second = FakeProcess()  # logout replaces tailscaled
             first.ended.set()
@@ -402,7 +403,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         await self.call("POST", "/select", {"exit_id": "nEXIT", "when_down": "stop"})
         status = (await self.call("GET", "/status"))[1]
         self.assertEqual((status["state"], status["reason"]), ("needs_login", "route_needs_login"))
-        self.assertEqual((status["node"]["tailnet"], status["node"]["name"], status["node"]["id"]), (None, None, None))
+        self.assertEqual((status["node"]["tailnet"], status["node"]["name"], status["node"]["id"]), (None, None, "nSELF"))
         await self.call("POST", "/select", {"exit_id": None, "when_down": "stop"})
         self.assertEqual((await self.call("GET", "/status"))[1]["reason"], "route_off")
         self.assertEqual(self.adapter.selected, ["nEXIT", "nEXIT", "nEXIT", None])
@@ -435,6 +436,19 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual((await self.call("POST", "/logout"))[0], 503)
         self.assertEqual(exits, [1])
+
+    async def test_a_logout_that_fails_before_stopping_tailscaled_is_retryable(self):
+        exits = []
+        self.gateway.exit = exits.append
+        await self.start()
+        self.adapter.process = FakeProcess()
+
+        async def refused_logout():
+            raise AdapterError("localapi_refused")
+
+        self.adapter.logout = refused_logout
+        self.assertEqual(await self.call("POST", "/logout"), (503, {"error": "route_status_unavailable"}))
+        self.assertEqual(exits, [])
 
     async def test_adapter_failure_is_a_reason_code(self):
         await self.start()
