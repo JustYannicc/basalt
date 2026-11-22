@@ -9,6 +9,19 @@ import { nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
  */
 export const controllerUnsentHeader = "X-Signalbox-Controller-Unsent";
 
+/**
+ * Set only by the entry on its re-send of a call the controller answered unsent: that attempt's
+ * request id, so the controller records the re-send under it and the two count as one request.
+ */
+export const unsentAttemptHeader = "X-Signalbox-Unsent-Attempt";
+
+const attemptId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The refused attempt's id a header names, or nothing when it names none in its closed form. */
+export function unsentAttempt(value: string | null) {
+  return value !== null && attemptId.test(value) ? value : undefined;
+}
+
 // The endpoint's steps before its container send. Its catch-all step stays out: a failure after the
 // container already answered could carry it too.
 const beforeContainer = new Set([
@@ -48,10 +61,6 @@ export function withoutUnsentMark(response: Response) {
   });
 }
 
-/**
- * A container's own answer can't speak for the pool. Its refusal steps, handover mark and unsent
- * mark are removed where it enters the pool, so only the endpoint itself can prove a call unsent.
- */
 const poolOnly = [
   controllerUnsentHeader,
   codeHandoverHeader,
@@ -61,6 +70,10 @@ const poolOnly = [
   "X-Signalbox-Runtime-Defect",
 ];
 
+/**
+ * A container's own answer can't speak for the pool. Its refusal steps, handover mark and unsent
+ * mark are removed where it enters the pool, so only the endpoint itself can prove a call unsent.
+ */
 export function containerAnswer(response: Response) {
   if (response.status === 101 || !poolOnly.some((name) => response.headers.has(name)))
     return response;

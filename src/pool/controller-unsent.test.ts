@@ -109,3 +109,70 @@ test("a container's own answer can't carry the pool's refusal or resend marks", 
   const plain = new Response("ok");
   assert.equal(containerAnswer(plain), plain);
 });
+
+test("the entry names the refused attempt on its re-send, and never lets a client name one", async (context) => {
+  context.mock.method(console, "info", () => {});
+  context.mock.method(console, "error", () => {});
+  const refusedId = "0b5c3a4e-8f1d-4c2b-9a7e-3d6f1e2a4b5c";
+  const named: (string | null)[] = [];
+  let now = 4_000_000;
+  const hop: ControllerHop = {
+    controller: () => ({
+      fetch: async (request) => {
+        named.push(request.headers.get("X-Signalbox-Unsent-Attempt"));
+        await request.text();
+        if (named.length > 1) return Response.json({ id: "message" });
+        const refused = unsent();
+        refused.headers.set("X-Request-Id", refusedId);
+        return refused;
+      },
+    }),
+    env: { SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456" },
+    defer: () => {},
+    now: () => now,
+    wait: async (milliseconds) => {
+      now += milliseconds;
+    },
+  };
+  const chosen = call();
+  chosen.headers.set("X-Signalbox-Unsent-Attempt", "6f2d9c1a-3b4e-4f5a-8c7d-9e0f1a2b3c4d");
+  const response = await fetchController(chosen, hop);
+  assert.equal(response.status, 200);
+  assert.deepEqual(named, [null, refusedId]);
+});
+
+test("a handover refusal between re-sends keeps the refused attempt's name", async (context) => {
+  context.mock.method(console, "info", () => {});
+  context.mock.method(console, "error", () => {});
+  const refusedId = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const named: (string | null)[] = [];
+  let now = 5_000_000;
+  const hop: ControllerHop = {
+    controller: () => ({
+      fetch: async (request) => {
+        named.push(request.headers.get("X-Signalbox-Unsent-Attempt"));
+        await request.text();
+        if (named.length === 1) {
+          const refused = unsent();
+          refused.headers.set("X-Request-Id", refusedId);
+          return refused;
+        }
+        if (named.length === 2)
+          return Response.json(
+            { type: "error" },
+            { status: 503, headers: { "X-Signalbox-Pool-Handover": "draining" } },
+          );
+        return Response.json({ id: "message" });
+      },
+    }),
+    env: { SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456" },
+    defer: () => {},
+    now: () => now,
+    wait: async (milliseconds) => {
+      now += milliseconds;
+    },
+  };
+  const response = await fetchController(call(), hop);
+  assert.equal(response.status, 200);
+  assert.deepEqual(named, [null, refusedId, refusedId]);
+});
