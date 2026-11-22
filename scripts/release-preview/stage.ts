@@ -1762,7 +1762,18 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
   const run = async () => {
-    if (mode === "baseline") {
+    if (mode === "check") {
+      // Whether the lane already stands, before anything is created on it: its State rows by stack.
+      // A lane picked for a new rehearsal must show none.
+      const config = stageEnvironment(subject, source);
+      const stacks = await alchemyPreviewStateReader({ environment: config.deploy }).read(
+        config.stage,
+      );
+      result.standing = Object.fromEntries(
+        Object.entries(stacks).map(([stack, rows]) => [stack, rows.length]),
+      );
+      result.free = Object.values(stacks).every((rows) => rows.length === 0);
+    } else if (mode === "baseline") {
       await budgetProbe(subject, source, outputs);
       // #1491's acceptance: the root application's version must not move across an apply that changes
       // nothing on it. Read before (a fresh stage has none) and after.
