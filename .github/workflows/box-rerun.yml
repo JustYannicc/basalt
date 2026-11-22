@@ -44,6 +44,8 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
           BOX_WATCH_VERDICT: ${{ runner.temp }}/box-watch-verdict/verdict.json
         run: node scripts/ci/box-rerun.ts

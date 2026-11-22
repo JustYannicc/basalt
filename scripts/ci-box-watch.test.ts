@@ -14,7 +14,7 @@ import {
   type WatchedJob,
 } from "./ci/box-watch.ts";
 import { parseVerdict, rerunDecision, type RerunJob, type Run } from "./ci/box-rerun.ts";
-import { namedJobs } from "./ci/box-router.ts";
+import { declaredJobs, namedJobs } from "./ci/box-router.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const read = (path: string) => parse(readFileSync(new URL("../" + path, import.meta.url), "utf8"));
@@ -64,15 +64,17 @@ test("a planned box job not listed yet keeps box-watch waiting, and it never can
   assert.deepEqual(watch(jobs, 60, 60, planned), { action: "wait" });
   assert.equal(jobName("declared-cloud-7"), "declared-cloud-7");
   assert.equal(jobName("production-ops-identity:role"), "production-ops-identity (role)");
-  // GitHub names a leg `job (value)` only for a one-key matrix with no name of its own; a job box-watch
-  // can't find by name would hold its hosted runner until it gives up.
+  // box-watch finds a box job by the name GitHub shows: a declared shard's own, a named job's id,
+  // and a leg as `job (value)`, which GitHub shows only for a one-key matrix with no name of its
+  // own. A job it can't find would hold the aggregate until box-watch gives up after 40 minutes.
   const workflow = read(".github/workflows/ci.yml");
   for (const [id, named] of Object.entries(namedJobs)) {
-    if (typeof named.minutes === "number") continue;
     const ci = workflow.jobs[id];
     assert.equal(ci.name, undefined, id);
+    if (typeof named.minutes === "number") continue;
     for (const leg of ci.strategy.matrix.include) assert.equal(Object.keys(leg).length, 1, id);
   }
+  for (const id of declaredJobs) assert.equal(workflow.jobs[id].name, "${{ matrix.shard }}", id);
 });
 
 test("a box down for the bound after box-watch's probe gets its queued jobs cancelled; before it, they wait", () => {
@@ -98,22 +100,28 @@ test("a box down for the bound after box-watch's probe gets its queued jobs canc
 
 test("a healthy box may hold each job until its own latest start that still ends by the floor", () => {
   assert.equal(holdingMinutes, 5);
-  // A first-wave job: the floor plus the margin. A waiting 4-minute job must still end by the
-  // floor at 1.25x its minutes: 20 - 5 + 5 = 20 minutes after select.
-  assert.equal(latestStart(first, 20), 25);
+  // Either wave: the latest start that still ends by the floor at 1.25x its minutes, plus the
+  // margin. A 4-minute job: 20 - 5 + 5 = 20; a 15-minute one: 20 - 18.75 + 5 = 6.25.
   const second: Planned = { minutes: 4, wave: 2 };
   assert.equal(latestStart(second, 20), 20);
-  const jobs = [job({ id: 1 }), job({ id: 2 })];
+  assert.equal(latestStart(first, 20), 6.25);
+  // A job longer than the floor at that pace may still wait the margin: the fast lane's floor is
+  // its own longest job.
+  assert.equal(latestStart({ minutes: 15.6, wave: 1 }, 15.6), 5);
+  const jobs = [job({ id: 1, status: "in_progress" }), job({ id: 2 })];
   const planned = { "job-1": first, "job-2": second };
   // Up and holding: no down cancel, however long the job has queued, until its own deadline.
   assert.deepEqual(watch(jobs, 19.5, 0, planned), { action: "wait" });
   const late = watch(jobs, 20, 0, planned);
   assert.ok(late.action === "cancel");
   assert.equal(late.verdict.reason, "held-past-deadline");
+  assert.deepEqual(late.verdict.stuck, [2]);
   // Every stuck job goes with the cancel, not only the late one.
-  assert.deepEqual(late.verdict.stuck, [1, 2]);
-  assert.deepEqual(watch([job({ id: 1 })], 24.5, 0, { "job-1": first }), { action: "wait" });
-  assert.equal(watch([job({ id: 1 })], 25, 0, { "job-1": first }).action, "cancel");
+  const both = [job({ id: 1 }), job({ id: 2 })];
+  assert.deepEqual(watch(both, 6, 0, planned), { action: "wait" });
+  const firstLate = watch(both, 6.25, 0, planned);
+  assert.ok(firstLate.action === "cancel");
+  assert.deepEqual(firstLate.verdict.stuck, [1, 2]);
 });
 
 const run: Run = { id: 7, attempt: 1, conclusion: "cancelled" };
@@ -161,6 +169,8 @@ test("box-rerun acts only on box-watch's own verdict for that very run's first a
     JSON.stringify({ ...JSON.parse(verdict), reason: "other" }),
     JSON.stringify({ ...JSON.parse(verdict), stuck: [] }),
     JSON.stringify({ ...JSON.parse(verdict), stuck: ["11"] }),
+    JSON.stringify({ ...JSON.parse(verdict), at: "soon" }),
+    JSON.stringify({ ...JSON.parse(verdict), at: undefined }),
   ])
     assert.equal(decide(text).action, "none", text);
   // A run that finished on its own is never re-run by this workflow.
@@ -177,12 +187,27 @@ test("a forged verdict can't re-run a run: its stuck jobs must be box jobs that 
   // A hosted job, a job that isn't in the run, a box job that got a runner, one that finished.
   for (const stuck of [[13], [11, 99], [14]])
     assert.equal(decide(forged(stuck)).action, "none", String(stuck));
-  const held = jobs.map((j) => (j.id === 11 ? { ...j, runnerName: "box-3" } : j));
+  const held = jobs.map((j) =>
+    j.id === 11 ? { ...j, runnerName: "box-3", startedAt: "2026-11-21T16:04:59Z" } : j,
+  );
   assert.equal(decide(verdict, held).action, "none");
+  // One the box took only after the verdict, in the seconds before the cancel landed, still counts.
+  const tookLate = jobs.map((j) =>
+    j.id === 11 ? { ...j, runnerName: "box-3", startedAt: "2026-11-21T16:05:10Z" } : j,
+  );
+  assert.deepEqual(decide(verdict, tookLate), { action: "rerun", stuck: [11, 12] });
   const ran = jobs.map((j) => (j.id === 12 ? { ...j, conclusion: "success" } : j));
   assert.equal(decide(verdict, ran).action, "none");
   // No box label configured: nothing is a box job.
   assert.equal(rerunDecision(run, verdict, jobs, "").action, "none");
+});
+
+test("a re-run never cancels a pull request's newer Check", () => {
+  // The pull request's Checks share a group that cancels in progress.
+  assert.deepEqual(rerunDecision(run, verdict, jobs, "basalt-box", true), {
+    action: "none",
+    why: "a newer Check runs for this pull request, and a re-run would cancel it",
+  });
 });
 
 test("with no real failure the stuck and cut-off jobs re-run; a real failure leaves the run for a person", () => {
@@ -243,6 +268,8 @@ test("box-rerun runs the default branch's file after a cancelled Check, with not
   assert.equal(run.run, "node scripts/ci/box-rerun.ts");
   assert.equal(run.env.RUN_ATTEMPT, "${{ github.event.workflow_run.run_attempt }}");
   assert.equal(run.env.BOX_LABEL, "${{ vars.BASALT_CI_BOX_LABEL }}");
+  assert.equal(run.env.RUN_EVENT, "${{ github.event.workflow_run.event }}");
+  assert.equal(run.env.HEAD_BRANCH, "${{ github.event.workflow_run.head_branch }}");
 });
 
 test("the aggregate takes box-watch passed or skipped, never failed or cancelled", () => {

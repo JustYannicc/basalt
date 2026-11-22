@@ -52,14 +52,12 @@ export type WatchInput = {
 };
 
 /**
- * The minute after select by which a box job must have started: a first-wave job starts at once and
- * may wait until the floor plus the margin; a waiting one only as long as it still ends by the
- * floor at the keep rule's pace, plus the margin.
+ * The minute after select by which a box job must have started: as long as it still ends by the
+ * floor at the keep rule's pace, plus the margin. Past it the job fails the pass rule anyway, so
+ * running it on GitHub's runners is the faster way to end the Check.
  */
-export const latestStart = ({ minutes, wave }: Planned, floorMinutes: number) =>
-  wave === 1
-    ? floorMinutes + holdingMinutes
-    : floorMinutes - minutes * waveSlowdown + holdingMinutes;
+export const latestStart = ({ minutes }: Planned, floorMinutes: number) =>
+  Math.max(0, floorMinutes - minutes * waveSlowdown) + holdingMinutes;
 
 /** The job name GitHub shows for a box_jobs id: a declared shard's own, a leg as `job (leg)`. */
 export const jobName = (id: string) => {
@@ -179,17 +177,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           up = boxIsUp(await observer.heartbeat(), Date.now());
         } catch {}
         if (up === true) notUpSince = undefined;
-        else if (up === false) {
-          if (Date.now() - probedAt >= 2 * minute) {
+        else if (
+          up === false &&
+          (notUpSince === undefined || Date.now() - probedAt >= 2 * minute)
+        ) {
+          // The down clock starts at this spell's first probe GitHub accepted; a probe it refused
+          // proves nothing, so the box stays unknown.
+          const probe = await fetch(`${api}/actions/workflows/box-heartbeat.yml/dispatches`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ ref: "main" }),
+            signal: AbortSignal.timeout(20_000),
+          }).catch(() => undefined);
+          if (probe?.ok) {
             probedAt = Date.now();
-            await fetch(`${api}/actions/workflows/box-heartbeat.yml/dispatches`, {
-              method: "POST",
-              headers,
-              body: JSON.stringify({ ref: "main" }),
-              signal: AbortSignal.timeout(20_000),
-            }).catch(() => undefined);
+            notUpSince ??= probedAt;
           }
-          notUpSince ??= probedAt;
         }
       }
       decision = watchDecision({

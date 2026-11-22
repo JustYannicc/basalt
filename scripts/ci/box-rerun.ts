@@ -16,6 +16,7 @@ export type RerunJob = {
   conclusion: string | null;
   labels?: readonly string[];
   runnerName?: string | null;
+  startedAt?: string | null;
 };
 export type RerunDecision =
   | { action: "none"; why: string }
@@ -39,10 +40,18 @@ export function parseVerdict(text: string | undefined) {
       !Number.isSafeInteger(value.attempt) ||
       (value.reason !== "box-down" && value.reason !== "held-past-deadline") ||
       !stuck?.length ||
-      !cutOff
+      !cutOff ||
+      typeof value.at !== "string" ||
+      !Number.isFinite(Date.parse(value.at))
     )
       return undefined;
-    return { run: value.run as number, attempt: value.attempt as number, stuck, cutOff };
+    return {
+      run: value.run as number,
+      attempt: value.attempt as number,
+      stuck,
+      cutOff,
+      at: Date.parse(value.at),
+    };
   } catch {
     return undefined;
   }
@@ -53,6 +62,8 @@ export function rerunDecision(
   verdictText: string | undefined,
   jobs: readonly RerunJob[],
   boxLabel: string,
+  /** A newer Check runs for this pull request; re-running this one would cancel it. */
+  superseded = false,
 ): RerunDecision {
   if (run.conclusion !== "cancelled") return { action: "none", why: "the run was not cancelled" };
   if (run.attempt !== 1) return { action: "none", why: "only a first attempt routes to the box" };
@@ -61,20 +72,27 @@ export function rerunDecision(
   if (verdict.run !== run.id || verdict.attempt !== run.attempt)
     return { action: "none", why: "box-watch's verdict names another run or attempt" };
   // A forged verdict can't name jobs the box never held: each stuck job must be a box job of this
-  // attempt that was cancelled before it ever got a runner.
+  // attempt that the cancel stopped before it got a runner, or that the box only took after the
+  // verdict, in the seconds before the cancel landed.
   const label = boxLabel.toLowerCase();
   const byId = new Map(jobs.map((job) => [job.id, job]));
   const unheld = verdict.stuck.filter((id) => {
     const job = byId.get(id);
+    const startedLate = !!job?.startedAt && Date.parse(job.startedAt) >= verdict.at;
     return !(
       job &&
       job.conclusion === "cancelled" &&
-      !job.runnerName &&
+      (!job.runnerName || startedLate) &&
       (job.labels ?? []).some((value) => value.toLowerCase() === label)
     );
   });
   if (!label || unheld.length)
     return { action: "none", why: "box-watch's verdict names jobs the box never held" };
+  if (superseded)
+    return {
+      action: "none",
+      why: "a newer Check runs for this pull request, and a re-run would cancel it",
+    };
   // The aggregate runs after any cancel and fails on the cancelled jobs; it is no real failure.
   const failed = jobs
     .filter((job) => job.conclusion === "failure" && !isCheckJob(job.name))
@@ -118,10 +136,25 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         conclusion: (job.conclusion as string | null) ?? null,
         labels: Array.isArray(job.labels) ? job.labels.map(String) : [],
         runnerName: (job.runner_name as string | null) ?? null,
+        startedAt: (job.started_at as string | null) ?? null,
       });
     if (batch.length < 100) break;
   }
-  const decision = rerunDecision(run, verdict, jobs, env.BOX_LABEL ?? "");
+  // A pull request's Checks share one concurrency group that cancels in progress, so a re-run of a
+  // superseded run would cancel the newest. Push runs each have their own group.
+  let superseded = false;
+  if (env.RUN_EVENT === "pull_request") {
+    const branch = encodeURIComponent(env.HEAD_BRANCH ?? "");
+    const response = await fetch(
+      `${api}/actions/workflows/ci.yml/runs?event=pull_request&branch=${branch}&per_page=20`,
+      { headers, signal: AbortSignal.timeout(20_000) },
+    );
+    if (!response.ok) throw new Error(`GitHub returned ${response.status} for the branch's Checks`);
+    const runs =
+      ((await response.json()) as { workflow_runs?: { id?: number }[] }).workflow_runs ?? [];
+    superseded = runs.some((other) => Number(other.id) > run.id);
+  }
+  const decision = rerunDecision(run, verdict, jobs, env.BOX_LABEL ?? "", superseded);
   const say = (line: string) => {
     console.log(line);
     if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, line + "\n");

@@ -252,6 +252,10 @@ export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   return { budget, why };
 }
 
+/** The heartbeat runner's own label, or "" when it is unset or one other runners share. */
+export const heartbeatRunnerLabel = (label = "") =>
+  /^[\w.-]+$/.test(label) && !refusedLabels.includes(label.toLowerCase()) ? label : "";
+
 const zeroBudget = "the box's CI budget is 0";
 
 /** Whether the newest heartbeat shows a healthy box: one that grants no budget now is holding. */
@@ -293,7 +297,13 @@ export async function routeBox(
     if (!free)
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
     const floor = checkFloor(plan.shards);
-    const planned = planBox(plan.shards, free, input.heartbeatLabel ? floor : 0);
+    // A job may wait on the box only while its heartbeat runs on its own runner: one that queued
+    // behind CI jobs would go stale, and box-watch would take a holding box for a down one.
+    const planned = planBox(
+      plan.shards,
+      free,
+      heartbeatRunnerLabel(input.heartbeatLabel) ? floor : 0,
+    );
     if (!planned.length)
       return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
     const jobs = planned.map((job) => job.id);
@@ -362,8 +372,7 @@ export function githubObserver(
   // A heartbeat label that other runners share could let them vouch for the box, so it is refused.
   const heartbeatLabel = (env.heartbeatLabel ?? "").toLowerCase();
   const onHeartbeatRunner = (job: Record<string, unknown>) =>
-    /^[\w.-]+$/.test(heartbeatLabel) &&
-    !refusedLabels.includes(heartbeatLabel) &&
+    heartbeatRunnerLabel(heartbeatLabel) !== "" &&
     Array.isArray(job.labels) &&
     job.labels.some((label) => String(label).toLowerCase() === heartbeatLabel);
   const onBox = (job: Record<string, unknown>) =>

@@ -474,6 +474,14 @@ test("declared shard rows and benched named jobs route, and free slots and timeo
       const unwatched = await routeBox(input(routing), busyBox(), () => now, noWait);
       assert.deepEqual(unwatched.jobs, fillBox(plan.shards, free), `${slots}/${busy}`);
       assert.ok(Object.values(unwatched.plan).every((job) => job.wave === 1));
+      // A label other runners share is no heartbeat runner of the box's own either.
+      const shared = await routeBox(
+        input({ ...routing, heartbeatLabel: "self-hosted" }),
+        busyBox(),
+        () => now,
+        noWait,
+      );
+      assert.deepEqual(shared.jobs, unwatched.jobs, `${slots}/${busy}`);
     }
   assert.equal(boxSlowdown, 2);
   assert.deepEqual(fillBox([{ id: "a", minutes: 31, timeout: 61 }], 5), []);
