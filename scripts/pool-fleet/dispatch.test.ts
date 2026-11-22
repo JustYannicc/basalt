@@ -187,11 +187,27 @@ test("crash-cell kills one ready non-primary cell, sees it restart, and keeps re
   try {
     assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
     const crash = dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" });
+    const sentAfter = Date.now();
     const result = await runPoolFleet(crash, lane.deps());
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(lane.crashes.length, 1);
     assert.equal(lane.crashes[0]!.kind, "cell");
     assert.equal(lane.crashes[0]!.identity.bootId, "cell-boot");
+    // The result names the cell it killed and when, by ids alone.
+    const killed = lane.crashes[0]!.identity;
+    const record = ("result" in result && result.result) as {
+      crash?: { target?: unknown; killedAt?: unknown };
+    };
+    assert.deepEqual(record.crash?.target, {
+      slotId: killed.slotId,
+      instanceId: killed.instanceId,
+      bootId: "cell-boot",
+    });
+    assert.ok(
+      typeof record.crash?.killedAt === "number" &&
+        record.crash.killedAt >= sentAfter &&
+        record.crash.killedAt <= Date.now(),
+    );
     const proof = JSON.stringify("result" in result && result.result);
     assert.match(proof, /"status":"proven"/u);
     assert.match(proof, /"failedAfter":0/u);
