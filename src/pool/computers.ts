@@ -34,6 +34,7 @@ import {
   type UsageObservationEvent,
 } from "./usage-observation.ts";
 import { NativeComputers, revocableKeys } from "./native-computers.ts";
+import { SetupCustody } from "./setup-custody.ts";
 import { toolsKeyDeleted, toolsLeftoverControl } from "./tools-leftovers.ts";
 
 interface Dependencies {
@@ -62,10 +63,12 @@ function choosePool(pools: readonly { id: string }[], value: unknown): string {
 export class Computers {
   private deps: Dependencies;
   private native: NativeComputers;
+  private custody: SetupCustody;
   private queue: Promise<unknown> = Promise.resolve();
   private leftovers: ComputerLeftovers;
   constructor(deps: Dependencies) {
     this.deps = deps;
+    this.custody = new SetupCustody(deps.storage, deps.home);
     this.native = new NativeComputers({
       ...deps,
       now: () => this.now(),
@@ -145,6 +148,7 @@ export class Computers {
       const directory = await PoolDirectory.load(this.deps.storage, this.now());
       await directory.prune(this.now());
       await directory.provisionPending(this.deps.home);
+      await this.custody.sweep(registry, () => this.save(registry));
     });
     // Outside the registry queue: it asks Home, and a stopped container must hold up no device.
     await this.leftovers.finish();
@@ -524,34 +528,46 @@ export class Computers {
       revokedAt: null,
       removedAt: null,
     };
-    registry[computer.id] = computer;
-    await this.save(registry);
-    const issued = await this.deps.home.mint(
-      computer.user,
-      computer.pool,
-      computer.id,
-      intent.owner,
-    );
-    computer.keyId = issued.keyId;
-    computer.userId = issued.userId;
-    // Store the acknowledged id before any fallible encryption or response work.
-    await this.save(registry);
-    const { token, link } = await seal(
-      this.deps.signingKey,
-      {
-        modelUrl: this.origin(),
-        modelKey: issued.key,
-        ...(tools && { toolsUrl: `${this.origin()}/mcp`, toolsToken: input.toolsToken as string }),
-      },
-      this.now(),
-    );
-    computer.link = link;
-    await this.save(registry);
-    return json({
-      computer: publicView(computer),
-      token,
-      expiresAt: new Date(link.expiresAt).toISOString(),
-    });
+    // Until released, upkeep revokes whatever Home made for this computer.
+    await this.custody.hold(computer.id);
+    try {
+      const issued = await this.deps.home.mint(
+        computer.user,
+        computer.pool,
+        computer.id,
+        intent.owner,
+      );
+      computer.keyId = issued.keyId;
+      computer.userId = issued.userId;
+      const { token, link } = await seal(
+        this.deps.signingKey,
+        {
+          modelUrl: this.origin(),
+          modelKey: issued.key,
+          ...(tools && {
+            toolsUrl: `${this.origin()}/mcp`,
+            toolsToken: input.toolsToken as string,
+          }),
+        },
+        this.now(),
+      );
+      computer.link = link;
+      // Written only with its key and link, so a failed setup leaves no row in `issuing`.
+      registry[computer.id] = computer;
+      await this.save(registry);
+      await this.custody.release(computer.id);
+      return json({
+        computer: publicView(computer),
+        token,
+        expiresAt: new Date(link.expiresAt).toISOString(),
+      });
+    } catch (error) {
+      if (Object.hasOwn(registry, computer.id)) {
+        delete registry[computer.id];
+        await this.save(registry);
+      }
+      throw error;
+    }
   }
   private async refresh(registry: Registry, user: string, id: unknown): Promise<Response> {
     const computer = this.own(registry, user, id);

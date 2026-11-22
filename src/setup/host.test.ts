@@ -849,6 +849,17 @@ test("a failed handoff rolls back its newly created tools token", async () => {
   assert.ok(!(await response.text()).includes("exp_secret"));
 });
 
+test("a refused handoff whose tools-token rollback also fails still asks the person to try again", async () => {
+  const f = fixture({
+    pool: ({ path }) => (path.endsWith("/links") ? json({ error: "unavailable" }, 503) : undefined),
+    tools: ({ path }) => (path.endsWith("/delete") ? json({ success: false }, 500) : undefined),
+  });
+  const response = await f.create();
+  assert.equal(f.calls.at(-1)!.path, "/api/auth/api-key/delete");
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { error: "Could not complete setup. Try again." });
+});
+
 test("browser metadata excludes credentials; links over five minutes are refused and cleaned up", async () => {
   const f = fixture({
     pool: ({ path }) =>

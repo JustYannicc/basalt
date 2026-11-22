@@ -115,6 +115,11 @@
       "packages": ["astro"],
       "upstream": null,
       "owner": null
+    },
+    "0761-alchemy-container-precreate-no-application": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/pull/3265",
+      "owner": "release owner"
     }
   }
 }

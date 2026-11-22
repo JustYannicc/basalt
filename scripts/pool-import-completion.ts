@@ -11,6 +11,8 @@ import {
 import { historyObject } from "../src/pool/model-history/record.ts";
 
 class CompletionRefused extends Error {}
+// 256 ranges at no less than one per call, plus planning calls and one restart.
+const completionReconcileCalls = 600;
 
 export async function runImportCompletion(
   options: PoolOperationsTarget & {
@@ -55,13 +57,35 @@ export async function runImportCompletion(
         JSON.stringify({ status: "started", ...approval }),
         { mode: 0o600, flag: "wx" },
       );
-    const response = await platform.service.fetch(
-      new Request(`http://pool-operations${historyImportCompletionPath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selection, ...approval }),
-      }),
-    );
+    const call = () =>
+      platform.service.fetch(
+        new Request(`http://pool-operations${historyImportCompletionPath}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selection, ...approval }),
+        }),
+      );
+    let response = await call();
+    // A large source reconciles a slice of ranges per call; each slice persists, so repeat. A dry
+    // run that hit the session deadline lost at most its unfinished slice, so it is retried too.
+    for (
+      let calls = 1, deadlines = 0;
+      !approval && (response.status === 202 || response.status === 503);
+      calls++
+    ) {
+      if (response.status === 503) {
+        if (++deadlines > 3) break;
+        response = await call();
+        continue;
+      }
+      const progress = historyObject(await response.json());
+      if (progress.status !== "reconciling" || calls >= completionReconcileCalls)
+        throw new Error("Completion reconciliation did not finish; run the dry run again");
+      console.error(
+        `Reconciling ${String(progress.ranges)}/${String(progress.totalRanges)} ranges`,
+      );
+      response = await call();
+    }
     if (response.status === 409)
       throw new CompletionRefused(completionRefusal(await response.json()));
     if (!response.ok)
