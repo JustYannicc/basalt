@@ -231,7 +231,8 @@ const sharedPublication = (store, attachment) =>
   Effect.gen(function* () {
     reset();
     assert.ok(Exit.isSuccess(yield* Effect.exit(deploy(colours(), store))), "setup deploy");
-    for (const app of [...live.values()])
+    // Replacing an existing key's value while iterating a Map visits each entry once.
+    for (const app of live.values())
       live.set(app.id, {
         ...app,
         instances: 4,
