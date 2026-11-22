@@ -7,5 +7,5 @@
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "alchemy-dependency-upgrade",
-  "requires": "A pinned Alchemy release shares one image publication between applications built from one context, so one repository receives the image; remove when the pinned release keys publications by repository."
+  "requires": "A pinned Alchemy release shares one image publication between applications built from one context (alchemy-run/alchemy#3653); remove when the pinned release keys publications by repository."
 }
