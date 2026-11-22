@@ -51,7 +51,7 @@ diff --git a/apps/hosted/cloud/src/implementation/pool-app-incident.ts b/apps/ho
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/pool-app-incident.ts
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,38 @@
 +/** Only a pool app route's closed failure fields pass the direct error sink's privacy boundary. */
 +import type { ErrorEvent } from "@sentry/core";
 +import {
@@ -60,6 +60,7 @@ new file mode 100644
 +  poolAppRefusalAttribute,
 +  poolAppRouteAttribute,
 +  reportedType,
++  reportsMessage,
 +  scrubReportedText,
 +} from "@executor-js/hosted-server/pool-app-failure";
 +
@@ -75,7 +76,10 @@ new file mode 100644
 +  )
 +    return undefined;
 +  // The reporter already scrubbed it; scrubbing again keeps this boundary its own check.
-+  const value = typeof exception?.value === "string" ? scrubReportedText(exception.value) : "";
++  const value =
++    reportsMessage(route) && typeof exception?.value === "string"
++      ? scrubReportedText(exception.value)
++      : "";
 +  return {
 +    failure,
 +    ...(value === "" ? {} : { value }),
@@ -101,7 +105,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-app-failure.ts b/apps/ho
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-failure.ts
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,135 @@
 +/**
 + * A pool app API route answers its page "unavailable" for every failure it does not name, so the
 + * page never says why. Each such 5xx reaches error reporting here, tagged with its route and the
@@ -126,6 +130,11 @@ new file mode 100644
 +const routes: ReadonlySet<string> = new Set(poolAppRoutes);
 +export const isPoolAppRoute = (value: unknown): value is PoolAppRoute =>
 +  typeof value === "string" && routes.has(value);
++/**
++ * An account label is a person's own text and often an address, which no scrub can tell from
++ * ordinary words, so that route's failures report their type and route only.
++ */
++export const reportsMessage = (route: PoolAppRoute) => route !== "pool-usage/account-label";
 +
 +/** Span attributes the cloud error reporter copies to an incident's tags. */
 +export const poolAppRouteAttribute = "executor.pool_app.route";
@@ -165,9 +174,10 @@ new file mode 100644
 +  }
 +};
 +
-+/** The error reported in place of `error`: its recorded type and scrubbed message only. */
-+export const reportedFailure = (error: unknown): Error => {
-+  const { name, message } = recordedFailure(error);
++/** The error reported in place of `error`: its recorded type and, if kept, its scrubbed message. */
++export const reportedFailure = (error: unknown, withMessage = true): Error => {
++  const { name, message: recorded } = recordedFailure(error);
++  const message = withMessage ? recorded : "";
 +  const failure = new Error(message);
 +  failure.name = name;
 +  failure.stack = message === "" ? name : `${name}: ${message}`;
@@ -181,7 +191,7 @@ new file mode 100644
 + * outage is never hidden behind the first.
 + */
 +const reportedOncePerCause: ReadonlySet<PoolRefusalCode> = new Set(["history_too_large"]);
-+/** The pool's named refusals below 500: the request was wrong or not allowed, and nothing failed. */
++/** The pool's named refusals below 500: the request was wrong or not allowed; nothing failed. */
 +const quietRefusals: ReadonlySet<PoolRefusalCode> = new Set([
 +  "invalid_query",
 +  "unauthorized",
@@ -222,7 +232,7 @@ new file mode 100644
 +      !firstInWindow(`${refusal.code}\n${refusal.pool ?? ""}`, yield* Clock.currentTimeMillis)
 +    )
 +      return;
-+    yield* ErrorReporter.report(Cause.fail(reportedFailure(error))).pipe(
++    yield* ErrorReporter.report(Cause.fail(reportedFailure(error, reportsMessage(route)))).pipe(
 +      Effect.withSpan("pool_app.failure", {
 +        attributes: {
 +          [poolAppRouteAttribute]: route,

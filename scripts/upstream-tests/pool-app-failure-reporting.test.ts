@@ -149,9 +149,9 @@ test("each pool app route reports a 503 once, tagged with its route, by type and
     assert.deepEqual(responseBody(result), unavailable);
     assert.equal(events.length, 1, `${route} reports one event`);
     const [event] = events;
-    assert.deepEqual(event!.exception, {
-      values: [{ type: "PoolUsageUnavailable", value: unavailableText }],
-    });
+    // A label is a person's own text, so that route reports no message at all.
+    const value = route === "pool-usage/account-label" ? {} : { value: unavailableText };
+    assert.deepEqual(event!.exception, { values: [{ type: "PoolUsageUnavailable", ...value }] });
     assert.deepEqual(event!.tags, { [routeTag]: route });
     assert.deepEqual(event!.fingerprint, ["basalt", "PoolUsageUnavailable", route]);
     for (const key of ["extra", "request", "breadcrumbs"]) assert.equal(key in event!, false);
@@ -217,6 +217,27 @@ test("nothing below 500 reports, though the page still reads a pool refusal as u
     status: 503,
     events: 0,
   });
+});
+
+test("an account-label failure reports its type and route, never a label or an address", async () => {
+  const label = "Team inbox Alex";
+  const address = "alex.example@example.invalid";
+  const failure = new Error(`saving the label ${label} for ${address} failed`);
+  for (const strictPrivacy of [true, false]) {
+    const { result, events } = await reported(
+      failing("pool-usage/account-label", failure),
+      strictPrivacy,
+    );
+    assert.equal(result.status, 503);
+    assert.deepEqual(responseBody(result), unavailable);
+    assert.equal(events.length, 1);
+    assert.equal(failureOf(events[0]!)?.type, "Error");
+    assert.ok(!events[0]!.exception?.values?.[0]?.value, `no message (${strictPrivacy})`);
+    assert.equal(events[0]!.tags?.[routeTag], "pool-usage/account-label");
+    const text = JSON.stringify(events[0]);
+    for (const secret of [label, address, "example.invalid"])
+      assert.equal(text.includes(secret), false, `${secret} is not reported (${strictPrivacy})`);
+  }
 });
 
 test("a failure with unreadable fields answers unavailable and reports its kind only", async () => {
@@ -374,6 +395,15 @@ test("strict privacy passes only listed routes, listed refusals and identifier t
       value: "refused",
       tags: { [routeTag]: "pool-usage/summary" },
       fingerprint: ["basalt", "PoolUsageUnavailable", "pool-usage/summary"],
+    },
+  );
+  // The account-label route's value never passes, whatever reached the boundary.
+  assert.deepEqual(
+    poolAppIncident(event({ [routeTag]: "pool-usage/account-label" }, "PoolUsageUnavailable")),
+    {
+      failure: "PoolUsageUnavailable",
+      tags: { [routeTag]: "pool-usage/account-label" },
+      fingerprint: ["basalt", "PoolUsageUnavailable", "pool-usage/account-label"],
     },
   );
   for (const [tags, type] of [
