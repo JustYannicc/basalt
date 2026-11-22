@@ -16,7 +16,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
-import { Effect, Schema } from "effect";
+import { runDecoded } from "./run-decoded.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const { handleCatalog } = await import(join(root, "src/catalog/worker.ts"));
@@ -379,8 +379,7 @@ try {
   const call = async (name, input, ctx = context) => {
     const operation = (await operationsFor(ctx)).get(served.prefix + name);
     assert.ok(operation, `${served.label} has no ${served.prefix}${name} tool`);
-    const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(operation.input)(input));
-    return Effect.runPromise(operation.run(ctx, decoded));
+    return runDecoded(operation, ctx, input);
   };
   const failure = (promise) =>
     promise.then(
@@ -692,8 +691,7 @@ try {
       waitForInput: async () => answer,
     };
     const workflow = nativeWorkflow(definition.workflows[record.workflow]);
-    const input = await Effect.runPromise(Schema.decodeUnknownEffect(workflow.input)(record.input));
-    const output = await Effect.runPromise(workflow.run({ runId: record.id, step }, input));
+    const output = await runDecoded(workflow, { runId: record.id, step }, record.input);
     Object.assign(record, { status: "complete", output });
     return { output, timers, questions };
   };
