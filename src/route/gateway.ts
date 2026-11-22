@@ -106,13 +106,15 @@ export class RouteGatewayCore {
 
   async login(input: unknown): Promise<{ url: string; expiresAt: number } | { state: "ready" }> {
     await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
-    await this.ensureStarted();
-    const reply = await this.gateway.login();
-    if (!("url" in reply)) return reply;
-    const expiresAt = this.deps.now() + loginWindowMs;
-    await this.deps.storage.put(keys.loginUntil, expiresAt);
-    await this.schedule();
-    return { url: reply.url, expiresAt };
+    return this.exclusive(async () => {
+      await this.ensureStarted();
+      const reply = await this.gateway.login();
+      if (!("url" in reply)) return reply;
+      const expiresAt = this.deps.now() + loginWindowMs;
+      await this.deps.storage.put(keys.loginUntil, expiresAt);
+      await this.schedule();
+      return { url: reply.url, expiresAt };
+    });
   }
 
   /** Whether the person has approved the device: a sealed identity exists and is still signed in. */
@@ -150,8 +152,8 @@ export class RouteGatewayCore {
 
   /**
    * Choosing an exit that does not reach the gateway changes nothing and is refused, so the host
-   * writes no rule for it. Switching off always succeeds: it is the safe direction, it needs no
-   * compute, and a running gateway that misses it gets it again on its next start or refresh.
+   * writes no rule for it. Switching off always succeeds and needs no compute: a running gateway
+   * that misses it is stopped, so it cannot keep routing, and its next start applies off.
    */
   async select(caller: unknown, input: unknown): Promise<Reading> {
     await this.authorize(Schema.decodeUnknownSync(Caller, strict)(caller));
@@ -160,10 +162,14 @@ export class RouteGatewayCore {
       const previous = await this.deps.storage.get<Selection>(keys.selection);
       await this.deps.storage.put(keys.selection, selection);
       if (selection.exitId === null) {
+        // A boot in flight (started by a tunnel) sends the selection it read before this one.
+        await this.starting?.catch(() => {});
         if (this.gateway.running)
           try {
             return await this.applied(await this.gateway.select(selection));
-          } catch {}
+          } catch {
+            await this.gateway.destroy();
+          }
         return this.record(await this.idle(selection), true);
       }
       let status: GatewayStatus;
@@ -173,6 +179,8 @@ export class RouteGatewayCore {
       } catch {
         if (previous) await this.deps.storage.put(keys.selection, previous);
         else await this.deps.storage.delete([keys.selection]);
+        // The gateway may have applied it anyway; a route that was off must not keep routing.
+        if ((previous?.exitId ?? null) === null) await this.gateway.destroy();
         throw new RouteRefused("route_gateway_unavailable");
       }
       return this.applied(status);
@@ -188,24 +196,28 @@ export class RouteGatewayCore {
 
   async disconnect(input: unknown): Promise<Record<string, never>> {
     await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
-    // With no stored identity and nothing running there is no device to log out, so a repeated
-    // disconnect starts no compute.
-    const identity = this.gateway.running || (await this.identity.exists());
-    try {
-      if (identity) {
-        await this.ensureStarted();
-        await this.gateway.logout();
+    return this.exclusive(async () => {
+      // With no stored identity and nothing running there is no device to log out, so a repeated
+      // disconnect starts no compute.
+      const identity = this.gateway.running || (await this.identity.exists());
+      try {
+        if (identity) {
+          await this.ensureStarted();
+          await this.gateway.logout();
+        }
+      } catch {
+        // The device stays listed, offline, in the owner's tailnet until it expires. Disconnecting
+        // must still finish, so the identity is forgotten here either way.
+        console.log(JSON.stringify({ route_logout: "route_gateway_unavailable" }));
       }
-    } catch {
-      // The device stays listed, offline, in the owner's tailnet until it expires. Disconnecting
-      // must still finish, so the identity is forgotten here either way.
-      console.log(JSON.stringify({ route_logout: "route_gateway_unavailable" }));
-    }
-    await this.deps.storage.delete([keys.state, keys.selection, keys.loginUntil]);
-    await this.deps.storage.deleteAlarm();
-    await this.gateway.destroy();
-    await this.record(localReading("needs_login", "route_needs_login", undefined, this.deps.now()));
-    return {};
+      await this.deps.storage.delete([keys.state, keys.selection, keys.loginUntil]);
+      await this.deps.storage.deleteAlarm();
+      await this.gateway.destroy();
+      await this.record(
+        localReading("needs_login", "route_needs_login", undefined, this.deps.now()),
+      );
+      return {};
+    });
   }
 
   /** The socket to the gateway's SOCKS port for one tunnel; the DO never parses what it carries. */
@@ -267,7 +279,11 @@ export class RouteGatewayCore {
     return ((await this.deps.storage.get<Selection>(keys.selection))?.exitId ?? null) !== null;
   }
 
-  private async refresh(): Promise<{ reading: Reading }> {
+  private refresh(): Promise<{ reading: Reading }> {
+    return this.exclusive(() => this.refreshNow());
+  }
+
+  private async refreshNow(): Promise<{ reading: Reading }> {
     const selection = await this.deps.storage.get<Selection>(keys.selection);
     const live =
       this.gateway.running ||
@@ -280,12 +296,11 @@ export class RouteGatewayCore {
     try {
       await this.ensureStarted();
       const observed = await this.gateway.status();
-      // A select the gateway lost (a failed boot-time select) is re-sent. It runs under the same
-      // lock as select and rereads the stored selection, so it can never undo a newer choice.
-      const status = await this.exclusive(async () => {
-        const current = await this.deps.storage.get<Selection>(keys.selection);
-        return current && !matches(observed, current) ? this.gateway.select(current) : observed;
-      });
+      // A select the gateway lost (a failed boot-time select) is re-sent.
+      const status =
+        selection && !matches(observed, selection)
+          ? await this.gateway.select(selection)
+          : observed;
       await this.persistState(status);
       return { reading: await this.record(readingFromStatus(status, this.deps.now())) };
     } catch (error) {
@@ -304,7 +319,11 @@ export class RouteGatewayCore {
       : localReading("needs_login", "route_needs_login", selection, this.deps.now());
   }
 
-  /** Selections change one at a time, so a revert or a heal never lands over a newer choice. */
+  /**
+   * Everything that writes route state from a gateway reply (login, select, disconnect, every
+   * refresh with its heal and identity save) runs one at a time. A DO interleaves at every awaited
+   * container call, so without this a late reply could undo a disconnect or a newer selection.
+   */
   private exclusive<T>(work: () => Promise<T>): Promise<T> {
     const run = this.selecting.then(work, work);
     this.selecting = run.catch(() => {});
@@ -378,11 +397,13 @@ export class RouteGatewayCore {
   /** The node state is read only after a login or key change, and only while signed in. */
   private async persistState(status: GatewayStatus) {
     if (!status.node.logged_in) return;
+    if (!(await this.identity.holds(status.boot_id, status.state_revision))) {
+      const { routeId } = await this.meta();
+      const reply = await this.gateway.state();
+      await this.identity.save(routeId, reply.state, status.boot_id, reply.state_revision);
+    }
+    // Only a saved identity ends the sign-in, so a failed state read keeps the poll going.
     await this.deps.storage.delete([keys.loginUntil]);
-    if (await this.identity.holds(status.boot_id, status.state_revision)) return;
-    const { routeId } = await this.meta();
-    const reply = await this.gateway.state();
-    await this.identity.save(routeId, reply.state, status.boot_id, reply.state_revision);
   }
 }
 

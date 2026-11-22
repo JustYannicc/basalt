@@ -29,6 +29,29 @@ export class FakeGateway implements GatewayContainer {
   offFirst = false;
   /** The next start ignores the identity it is given, as an expired or revoked node key would. */
   forgetState = false;
+  /** The next /state read fails once. */
+  failStates = 0;
+  private gates = new Map<
+    string,
+    { opened: Promise<void>; arrived: () => void; reply: "before" | "after" }
+  >();
+
+  /**
+   * Holds the next request to `path` until released, so a test can run another call while it is
+   * in flight. "before" holds it unprocessed: released after the container stopped, it fails like
+   * a reset connection. "after" processes it and holds only its reply on the way back.
+   */
+  hold(path: string, reply: "before" | "after" = "before") {
+    let open!: () => void;
+    let arrived!: () => void;
+    const reached = new Promise<void>((resolve) => (arrived = resolve));
+    this.gates.set(path, {
+      opened: new Promise<void>((resolve) => (open = resolve)),
+      arrived,
+      reply,
+    });
+    return { reached, release: open };
+  }
 
   start(options: { enableInternet: boolean }) {
     if (!options.enableInternet) throw new Error("The gateway needs the internet");
@@ -96,6 +119,21 @@ export class FakeGateway implements GatewayContainer {
   }
 
   private async handle(method: string, path: string, body: unknown): Promise<Response> {
+    const gate = this.gates.get(path);
+    if (gate) this.gates.delete(path);
+    if (gate?.reply === "before") {
+      gate.arrived();
+      await gate.opened;
+    }
+    const response = await this.answer(method, path, body);
+    if (gate?.reply === "after") {
+      gate.arrived();
+      await gate.opened;
+    }
+    return response;
+  }
+
+  private async answer(method: string, path: string, body: unknown): Promise<Response> {
     if (!this.running || !this.reachable) throw new TypeError("connection refused");
     if (path === "/start" && method === "POST") {
       if (this.boot) return Response.json({ error: "route_gateway_unavailable" }, { status: 409 });
@@ -134,6 +172,10 @@ export class FakeGateway implements GatewayContainer {
       this.boot.state = null;
       this.boot.revision += 1;
       return Response.json({});
+    }
+    if (path === "/state" && method === "GET" && this.failStates > 0) {
+      this.failStates -= 1;
+      return Response.json({ error: "route_status_unavailable" }, { status: 503 });
     }
     if (path === "/state" && method === "GET")
       return Response.json({ state: this.boot.state ?? "", state_revision: this.boot.revision });

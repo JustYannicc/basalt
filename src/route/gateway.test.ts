@@ -283,6 +283,9 @@ test("the node state and login link never reach a log line", async () => {
   assert.equal(logged.includes("login.example.invalid"), false);
 });
 
+/** Lets every other call in flight run as far as it can before a held request is released. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
 async function joined() {
   const fixture = await created();
   await fixture.gateway.login(caller);
@@ -437,6 +440,98 @@ test("a signed-out node whose route is off reads as needing a sign-in, not conne
   assert.equal(reading.state, "needs_login");
   assert.deepEqual(await gateway.joinStatus(caller), { state: "waiting" });
   container.approve();
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "connected",
+    tailnet: "example-tailnet",
+  });
+});
+
+test("a select failing after a disconnect never brings the deleted selection back", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  const held = container.hold("/select");
+  const choosing = gateway.select(caller, { exitId: "n2", whenDown: "stop" });
+  await held.reached;
+  const leaving = gateway.disconnect(caller);
+  await settle();
+  held.release();
+  // Whichever way the select ends, the disconnect after it has the last word.
+  await choosing.catch(() => {});
+  await leaving;
+  assert.equal(await storage.get("route-v1:selection"), undefined);
+  assert.equal(await storage.get("route-v1:state"), undefined);
+  const starts = container.starts.length;
+  assert.equal((await gateway.reading(caller)).state, "needs_login");
+  assert.equal(container.starts.length, starts);
+});
+
+test("an identity read in flight during a disconnect is never saved again", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  const held = container.hold("/state", "after");
+  const reading = gateway.reading(caller);
+  await held.reached;
+  const leaving = gateway.disconnect(caller);
+  await settle();
+  held.release();
+  await reading;
+  await leaving;
+  assert.equal(await storage.get("route-v1:state"), undefined);
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "failed",
+    reason: "route_needs_login",
+  });
+  await assert.rejects(
+    gateway.openTunnel({ owner }),
+    (error: Error) => error.message === "route_gateway_unavailable",
+  );
+});
+
+test("cancelling during a sign-in leaves no poll and no compute", async () => {
+  const { gateway, container, storage } = await created();
+  const held = container.hold("/login", "after");
+  const signing = gateway.login(caller);
+  await held.reached;
+  const leaving = gateway.disconnect(caller);
+  await settle();
+  held.release();
+  await signing;
+  await leaving;
+  assert.equal(await storage.get("route-v1:login-until"), undefined);
+  assert.equal(storage.alarm, null);
+  assert.equal(container.running, false);
+});
+
+test("switching off during a boot leaves the gateway off, not on the old exit", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  const held = container.hold("/select");
+  const tunnel = gateway.openTunnel({ owner });
+  await held.reached;
+  const off = gateway.select(caller, { exitId: null, whenDown: "stop" });
+  await settle();
+  held.release();
+  await (await tunnel).close();
+  assert.equal((await off).state, "off");
+  assert.deepEqual(container.selects.at(-1), { exit_id: null, when_down: "stop" });
+});
+
+test("a switch-off the running gateway misses stops it, so it cannot keep routing", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.failSelects = 1;
+  assert.equal((await gateway.select(caller, { exitId: null, whenDown: "stop" })).state, "off");
+  assert.equal(container.running, false);
+});
+
+test("a failed identity read right after approval keeps the sign-in waiting, not failed", async () => {
+  const { gateway, container } = await created();
+  await gateway.login(caller);
+  container.approve();
+  container.failStates = 1;
+  assert.deepEqual(await gateway.joinStatus(caller), { state: "waiting" });
   assert.deepEqual(await gateway.joinStatus(caller), {
     state: "connected",
     tailnet: "example-tailnet",
