@@ -711,6 +711,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const trace = new PoolUpkeepTrace("home");
     if (this.homeUpkeepTask) {
       trace.event("home_shared");
+      // The native lease lasts 12 s and a held Home pass reaches its renewal only once, so every
+      // Home deadline renews beside it; a renewal already running is joined, never started twice.
+      this.ctx.waitUntil(
+        trace
+          .run("memberships", () => this.memberships.tick())
+          .catch(() => console.error("POOL_MEMBERSHIP_RENEWAL_PENDING")),
+      );
       // The alarm consumed this deadline; retain a wake-up even if the shared task has already scheduled its next pass.
       this.ctx.waitUntil(
         this.alarms

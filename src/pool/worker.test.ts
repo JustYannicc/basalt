@@ -1766,11 +1766,13 @@ test("committed change delivery survives a shared Home task without delaying fle
     await alarms.schedule("fleet", Date.now());
     alarm = null;
     await worker.alarm();
-    assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 0 });
+    // The held task's delivery is not repeated, and membership renewal does not wait for it.
+    assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 1 });
     assert.equal((await alarms.inspect()).homeDeadline, Date.now() + 5_000);
   } finally {
     delivery.resolve();
     await Promise.all(background);
   }
-  assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 1 });
+  // Released, the pass renews again in its own turn: two renewals one after the other.
+  assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 2 });
 });
