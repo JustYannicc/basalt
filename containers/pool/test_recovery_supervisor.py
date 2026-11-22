@@ -459,3 +459,54 @@ class FirstBootStartupBoundTests(unittest.TestCase):
         child, clock, stop = self.first_boot(179.5)
         self.assertEqual(supervisor.wait_for_home(child, "fixture", stop), "ready")
         self.assertEqual(clock.now, 179.5)
+
+    def test_a_home_and_node_that_never_become_healthy_get_exactly_the_startup_budget(self) -> None:
+        clock = Clock()
+        stop = Stop(clock)
+        health_reads: list[float] = []
+
+        def make_child(name, *_args):
+            return SimpleNamespace(
+                name=name,
+                process=SimpleNamespace(
+                    poll=lambda: None,
+                    wait=lambda timeout=None: -9,
+                    terminate=lambda: None,
+                    kill=lambda: None,
+                    returncode=None,
+                ),
+                config_empty=threading.Event(),
+            )
+
+        def never_healthy(*_args) -> bool:
+            health_reads.append(clock.now)
+            return False
+
+        with ExitStack() as stack:
+            root = stack.enter_context(tempfile.TemporaryDirectory())
+            mocks = {
+                "ROOT": pathlib.Path(root),
+                "env_required": Mock(return_value="fixture"),
+                "require_tmpfs": Mock(),
+                "child_environment": Mock(return_value={}),
+                "start_ready_server": Mock(return_value=None),
+                "Child": make_child,
+                "wait_for_home": Mock(return_value="ready"),
+                "apply_pool_config": Mock(),
+                "home_database_distance": Mock(return_value=None),
+                "create_node_jwt": Mock(return_value=("node", "jwt")),
+                "check_services": never_healthy,
+                "PolicyHealthMonitor": Mock(return_value=SimpleNamespace(run=lambda _: None)),
+                "terminate_children": Mock(),
+                "time": SimpleNamespace(monotonic=clock),
+            }
+            for name, value in mocks.items():
+                stack.enter_context(patch.object(supervisor, name, value))
+            stack.enter_context(patch.object(supervisor.signal, "signal", Mock(return_value=None)))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            errors = stack.enter_context(redirect_stderr(io.StringIO()))
+            result = supervisor.main(stop)
+        self.assertEqual(result, 1)
+        self.assertEqual((health_reads[0], health_reads[-1], len(health_reads)), (0, 179.5, 360))
+        self.assertEqual(clock.now, 180)
+        self.assertIn('POOL_RUNTIME_FAILURE {"category":4,"count":1}', errors.getvalue())
