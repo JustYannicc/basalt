@@ -24,6 +24,8 @@ const steps = [
   "endpoint_request",
   "port_lookup",
   "port_dispatch",
+  // The container's front layer (#1642): its failure costs resumability, never the runtime.
+  "resume_layer",
 ] as const;
 const reasons = [
   "slot_identity",
