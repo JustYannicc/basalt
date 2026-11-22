@@ -493,7 +493,10 @@ export class SharingFixture {
   killResumeLayer(): void {
     docker(
       [
-        "exec", `${this.name}-pool`, "python3", "-c",
+        "exec",
+        `${this.name}-pool`,
+        "python3",
+        "-c",
         "import os,pathlib,signal\n" +
           "for d in pathlib.Path('/proc').iterdir():\n" +
           " if d.name.isdigit():\n" +
