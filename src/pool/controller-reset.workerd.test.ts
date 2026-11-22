@@ -115,15 +115,6 @@ test(
     });
     assert.equal(replayed.status, 200);
     assert.deepEqual(await replayed.json(), { size: 3 * 1024 * 1024, digest: held.digest });
-    const large = streamed(5 * 1024 * 1024);
-    const advised = await mf.dispatchFetch("http://pool/v1/messages", {
-      method: "POST",
-      body: large.body,
-      duplex: "half",
-    });
-    assert.equal(advised.status, 503);
-    assert.equal(advised.headers.get("Retry-After"), "1");
-    assert.equal((await advised.json()).error.type, "api_error");
     // The copy gives up past 4 MiB, midway through 64 KiB reads; the real send keeps every byte.
     const whole = streamed(5 * 1024 * 1024);
     const sent = await mf.dispatchFetch("http://pool/v1/messages", {
@@ -134,5 +125,16 @@ test(
     });
     assert.equal(sent.status, 200);
     assert.deepEqual(await sent.json(), { size: 5 * 1024 * 1024, digest: whole.digest });
+    // Last: this answer leaves part of its upload unread, so workerd closes the connection, and a
+    // call sent after it could start on that closing socket and fail with EPIPE.
+    const large = streamed(5 * 1024 * 1024);
+    const advised = await mf.dispatchFetch("http://pool/v1/messages", {
+      method: "POST",
+      body: large.body,
+      duplex: "half",
+    });
+    assert.equal(advised.status, 503);
+    assert.equal(advised.headers.get("Retry-After"), "1");
+    assert.equal((await advised.json()).error.type, "api_error");
   },
 );
