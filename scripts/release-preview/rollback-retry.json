@@ -1,0 +1,5 @@
+{
+  "fqn": "Api",
+  "servedBefore": "2026-11-22T04:52:39Z",
+  "note": "Lane 6: one retry of the red release's refused rollback of this Worker, to the version that served it just before the red apply began."
+}

@@ -60,6 +60,7 @@ export const stageModes = [
   "classplan",
   "stateread",
   "redrelease",
+  "retry",
   "adopt",
   "diagnose",
   "secrets",
@@ -931,6 +932,100 @@ async function redRelease(
   result.rootApplicationAfter = (await hooks.readBack("red-after")).applications ?? null;
   result.rootApplicationUnchanged =
     JSON.stringify(result.rootApplicationBefore) === JSON.stringify(result.rootApplicationAfter);
+  return result;
+}
+
+/**
+ * One retry of the red release's refused rollback, for one Worker: the version that served it
+ * just before the red apply began, from its own deployment history, written as a one-Worker
+ * serving record, then the candidate entry's own `rollback --from` it. Read-only around it.
+ */
+async function rollbackRetry(
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  outputs: string,
+  hooks: ReturnType<typeof nativeHooks>,
+) {
+  const spec = JSON.parse(
+    await readFile(join(root, "scripts/release-preview/rollback-retry.json"), "utf8"),
+  ) as { fqn?: unknown; servedBefore?: unknown };
+  const fqn =
+    typeof spec.fqn === "string" && /^[A-Z][A-Za-z]{1,40}$/u.test(spec.fqn) ? spec.fqn : "";
+  const before = typeof spec.servedBefore === "string" ? Date.parse(spec.servedBefore) : NaN;
+  if (!fqn || !Number.isFinite(before))
+    throw new Error("rollback-retry.json names no Worker or instant");
+  const { branch, policy } = releaseCandidate(
+    await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
+  );
+  const result: Record<string, unknown> = { fqn, servedBefore: spec.servedBefore, branch, policy };
+  const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
+  await rm(candidate, { recursive: true, force: true });
+  execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
+  execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
+    cwd: root,
+  });
+  execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+  const { stage, stack } = stageNames(subject);
+  const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
+  const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
+  const script = stageWorker(await workerScripts(account, headers), stage, fqn, stack);
+  const history = async () => {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts/${encodeURIComponent(script)}/deployments`,
+      { headers },
+    );
+    if (!response.ok) throw new Error(`The deployments list answered HTTP ${response.status}`);
+    return (
+      (
+        (await response.json()) as {
+          result?: {
+            deployments?: {
+              created_on: string;
+              versions: { version_id: string; percentage: number }[];
+            }[];
+          };
+        }
+      ).result?.deployments ?? []
+    );
+  };
+  const deployments = await history();
+  const served = deployments
+    .filter((deployment) => Date.parse(deployment.created_on) < before)
+    .sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on))[0];
+  const target =
+    served?.versions.length === 1 && served.versions[0]!.percentage === 100
+      ? served.versions[0]!.version_id
+      : "";
+  if (!target) throw new Error("No single version served the Worker at that instant");
+  const now = deployments[0]?.versions.map((version) => version.version_id) ?? [];
+  result.alreadyServing = now.length === 1 && now[0] === target;
+  result.targetPrefix = target.slice(0, 8);
+  const record = join(outputs, "serving-retry.json");
+  await writeFile(record, `${JSON.stringify({ workers: [{ fqn, version: target, script }] })}\n`, {
+    mode: 0o600,
+  });
+  const env: NodeJS.ProcessEnv = {
+    ...declaration.baseline,
+    POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
+  };
+  try {
+    await runEntry("rollback", subject, source, env, outputs, {
+      policy: null,
+      include: null,
+      args: ["--from", record],
+      tree: candidate,
+    });
+    result.rollback = { exit: 0 };
+  } catch (error) {
+    // The refusal's text stays in the private output; the public record keeps only its exit.
+    const message = error instanceof Error ? error.message : String(error);
+    await writeFile(join(outputs, "rollback-retry-refusal.txt"), redactor(source)(message), {
+      mode: 0o600,
+    });
+    result.rollback = { exit: Number(/failed with exit (\d+)/u.exec(message)?.[1] ?? NaN) };
+  }
+  const after = (await history())[0]?.versions.map((version) => version.version_id) ?? [];
+  result.servingTargetAfter = after.length === 1 && after[0] === target;
   return result;
 }
 
@@ -1902,6 +1997,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "release") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "retry") {
+      Object.assign(result, await rollbackRetry(subject, source, outputs, hooks));
     } else if (mode === "redrelease") {
       Object.assign(result, await redRelease(lane, subject, source, outputs, hooks));
     } else if (mode === "stateread") {
