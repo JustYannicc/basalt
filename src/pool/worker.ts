@@ -921,13 +921,20 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
    * `take()` clears a due deadline before its pass runs, and only the pass re-arms it, so a reset
    * that cuts the pass leaves its owner none; the alarm the other owner keeps set hides that from
    * `ensure()`. A missing deadline comes back from each owner's own durable condition: the fleet's
-   * rows and selection, so an empty fleet stays asleep, and Home's live memberships, so a Home with
-   * nothing to renew stays asleep too.
+   * rows and selection, so an empty fleet stays asleep, and Home's live memberships while a runtime
+   * is selected, so a Home with nothing to renew stays asleep too.
    */
   private async restoreDeadlines() {
     const { homeDeadline, fleetDeadline } = await this.alarms.inspect();
     if (fleetDeadline === null) await this.fleet.reschedule();
-    if (homeDeadline === null && !this.homeUpkeepTask) await this.memberships.reschedule();
+    // With nothing selected, Home stays unarmed, as in `ensure()`: a pass inside the call that built
+    // the object would move the change revisions a view reads around its query.
+    if (
+      homeDeadline === null &&
+      !this.homeUpkeepTask &&
+      (await this.ctx.storage.get(slotSelectionKey)) !== undefined
+    )
+      await this.memberships.reschedule();
     await this.alarms.rearm();
   }
 
