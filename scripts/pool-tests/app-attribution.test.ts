@@ -1,7 +1,9 @@
 import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
-import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
+import {
+  historyChangeOnceVersion,
+  historyRowSchemaVersion,
+} from "../../src/pool/model-history/history-row-schema.ts";
 import assert from "node:assert/strict";
-import { historyChangeOnceVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
 import { appModelLabel } from "../../src/pool/app-model-contract.ts";
@@ -23,7 +25,10 @@ import {
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";
 import { historyBulkSchemaVersion } from "../../src/pool/model-history/bulk-schema.ts";
-import { historyImportCompletionVersion } from "../../src/pool/model-history/import-completion-schema.ts";
+import {
+  historyImportCompletionVersion,
+  historyImportReconcileVersion,
+} from "../../src/pool/model-history/import-completion-schema.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { homeMetadataFixture, historyMemoryOwnerFixture } from "./history-fixture.ts";
 
@@ -87,6 +92,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
         historyChangeOnceVersion,
+        historyImportReconcileVersion,
         historySchemaVersion,
       ].sort(),
     );

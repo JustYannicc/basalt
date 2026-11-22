@@ -1,6 +1,8 @@
 import {
   historyImportCompletionVersion,
   historyImportCompletionStatements,
+  historyImportReconcileStatements,
+  historyImportReconcileVersion,
 } from "./import-completion-schema.ts";
 import { poolDatabase } from "../database-settings.ts";
 import { historyBulkSchemaVersion, historyBulkStatements } from "./bulk-schema.ts";
@@ -184,6 +186,7 @@ export const historySchemaMigrations = [
   { name: historyJournalPrepareVersion, statements: historyJournalPrepareStatements },
   { name: historyRowSchemaVersion, statements: historyRowStatements },
   { name: historyChangeOnceVersion, statements: historyChangeOnceStatements },
+  { name: historyImportReconcileVersion, statements: historyImportReconcileStatements },
   { name: historyUsageRollupVersion, statements: historyUsageRollupStatements },
 ];
 export const historyJournalActivationMigration = {

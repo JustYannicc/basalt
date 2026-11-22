@@ -39,6 +39,7 @@ const expectedTables = [
   "basalt_model_terminal_starts",
   "basalt_model_terminal_finishes",
   "basalt_model_import_completion",
+  "basalt_model_import_reconcile",
   "basalt_model_usage_hourly",
   "basalt_model_usage_hours",
   "basalt_model_usage_ready",
