@@ -119,8 +119,9 @@ test("a selected row without downstream history names the unselected rows", asyn
 });
 
 // The fixture's stack declares no Action and no Output that hides a dependency from selection, and
-// keeping binding evidence alive needs a delete the planner refuses earlier, so these three are
-// raised with the planner's exact template (alchemy/src/Plan.ts).
+// keeping binding evidence alive needs a delete the planner refuses earlier, so these four are
+// raised with the planner's exact template (alchemy/src/Plan.ts). The drift test below holds every
+// template to the installed planner's own text.
 test("an Action reusing a resource's FQN names the Action", () => {
   assert.equal(
     raised(
@@ -190,6 +191,14 @@ test("a name that is not a plain resource name keeps the generic line", () => {
     'Pool"Worker',
     "Pool/Worker",
     "pool.example.org/x",
+    // Hosts, ids and token shapes that hold no slash, quote or space.
+    "api.example.com",
+    "x.y.z.internal",
+    "a23e4567-e89b-12d3-a456-426614174000",
+    "AKIAABCDEFGHIJKLMNOP",
+    "Bearer_tok-AbCdEfGhIjKlMnOpQrStUvWxYz01234567",
+    "Pool-Worker",
+    "Pool_Worker",
     "abcdef0123456789abcdef0123456789",
     "1PoolWorker",
     `P${"o".repeat(121)}`,
@@ -210,4 +219,22 @@ test("the sealed detail keeps the planner's whole message", () => {
   const report = raised(message);
   assert.equal(report.publicText, named("check=mode-switch-while-deleting resource=PoolWorker"));
   assert.equal(report.detail, `${head}: UnsafeSelectionBoundary: ${message}`);
+});
+
+test("every template's fixed text is the installed planner's own", async () => {
+  // A reworded sentence in an Alchemy bump would otherwise fall back to the generic line unseen.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const { CHECKS } = await import("./selection-boundary.ts");
+  const planner = await readFile(fileURLToPath(import.meta.resolve("alchemy/Plan")), "utf8");
+  for (const [check, sentence] of CHECKS) {
+    const fragments = sentence
+      // Placeholders and the few regex constructs the sentences use (an alternation) split the prose.
+      .split(/'<\w+>'|<\w+>|'\[a-z\]\+'|\(\?:|\)\??|\|/u)
+      .map((fragment) => fragment.replace(/\\(.)/gu, "$1"))
+      .filter((fragment) => fragment.length >= 8);
+    assert.ok(fragments.length > 0, check);
+    for (const fragment of fragments)
+      assert.ok(planner.includes(fragment), `${check}: the planner no longer says "${fragment}"`);
+  }
 });

@@ -7,8 +7,13 @@
  * gives `undefined`, and the caller keeps its generic line.
  */
 
-/** A resource name from our own source: no spaces, quotes, slashes or hosts. */
-const NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,120}$/u;
+/**
+ * A resource name from our own source: the stack's logical ids are letters and digits, with a
+ * lowercase letter (PoolWorker, OAuthWire). Dots, dashes, underscores and an all-capitals run are
+ * refused, so a host, a UUID or a key-shaped string never prints even if one became an FQN.
+ */
+const NAME = /^[A-Za-z][A-Za-z0-9]{0,120}$/u;
+const LOWERCASE = /[a-z]/u;
 /** Account, zone and namespace ids are hex runs, which a name never holds. */
 const HEX_ID = /[A-Fa-f0-9]{16,}/u;
 const NAMES_PER_LIST = 8;
@@ -18,7 +23,7 @@ const SELECT_OR_FULL = "Select them or run a full deployment\\.";
  * The planner's checks in its order, each with its sentence as a regular expression: `'<role>'` is
  * one quoted name, a bare `<role>` is names joined by ", ".
  */
-const CHECKS: ReadonlyArray<readonly [check: string, sentence: string]> = [
+export const CHECKS: ReadonlyArray<readonly [check: string, sentence: string]> = [
   [
     "action-overwrites-state",
     "Filtered Action '<action>' cannot overwrite persisted resource state\\. Finish resource cleanup before reusing its FQN for an Action\\.",
@@ -67,7 +72,7 @@ const TEMPLATES = CHECKS.map(([check, sentence]) => {
   return { check, pattern: new RegExp(`^${source}$`, "u"), lists };
 });
 
-const plain = (name: string) => NAME.test(name) && !HEX_ID.test(name);
+const plain = (name: string) => NAME.test(name) && LOWERCASE.test(name) && !HEX_ID.test(name);
 
 /** `UnsafeSelectionBoundary: check=<check> <role>=<names>…`, or `undefined` when not proven. */
 export function selectionBoundary(message: string): string | undefined {
