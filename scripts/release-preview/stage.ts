@@ -37,6 +37,7 @@ import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
+import { readRootApplication, rootMoveVerdict, type RootRead } from "./stage-rootmove.ts";
 import { adoptWithoutSeed, seedAndAdopt } from "./stage-seed.ts";
 import { diagnoseStagePool, stageWorker, workerScripts } from "./stage-diagnose.ts";
 import { poolWorkerVersionsBetween } from "./stage-versions.ts";
@@ -65,6 +66,7 @@ export const stageModes = [
   "adopt",
   "diagnose",
   "secrets",
+  "rootmove",
   "destroy",
 ] as const;
 export type StageMode = (typeof stageModes)[number];
@@ -2077,6 +2079,58 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       );
       // The state the heal proof needs before any fault: a selection, health, the pinned root.
       result.after = await faultRead(lane, source, outputs, "after-adopt", ["--read-only"]);
+    } else if (mode === "rootmove") {
+      // The root's image moves through a plain Alchemy deploy while its instance runs: the lane's
+      // second pin replaces the one its baseline deployed. Nothing else in the stage changes.
+      const move = composeRootPin(
+        source[`REHEARSAL_ROOT_MOVE_${lane}`],
+        source.CLOUDFLARE_ACCOUNT_ID,
+      );
+      if (!move) throw new Error(`REHEARSAL_ROOT_MOVE_${lane} is not set; nothing applied`);
+      result.rootPin = "secret";
+      const name = (await hooks.readBack("before-rootmove")).applications.find(
+        (application) => application.className === "PoolContainer",
+      )?.name;
+      if (!name) throw new Error("The stage has no root application; run its baseline first");
+      const read = () =>
+        readRootApplication({
+          accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
+          token: source.CLOUDFLARE_API_TOKEN ?? "",
+          name,
+        });
+      const before = await read();
+      result.before = before;
+      const extra = { ...declaration.baseline, POOL_ROOT_IMAGE: move };
+      // The stage must run this checkout, built as the stage is, before its plan means anything.
+      result.deployedCommit = await requireDeployedHead(subject, source, { clientOnly: false });
+      let planned: Awaited<ReturnType<typeof runEntry>> | undefined;
+      // #1766's verdict for the root row, before anything is applied. No policy: the move is the point.
+      await withStageBuild(root, subject, { ...source, ...extra }, async () => {
+        planned = await runEntry("plan", subject, source, extra, outputs, { policy: null });
+      });
+      result.containerImages =
+        (planned?.record as { containerImages?: unknown } | undefined)?.containerImages ?? null;
+      // The root's identity and boot, sampled every 2 s from before the deploy to the watch's end.
+      const probe = startProbe(lane, join(outputs, "probe.jsonl"), source);
+      const reads: RootRead[] = [];
+      try {
+        await redeployStage(root, subject, { ...source, ...extra }, extra);
+        // Read-only watch: right after the deploy, then 5 and 10 minutes on.
+        for (const waitMs of [0, 5 * 60_000, 5 * 60_000]) {
+          await new Promise((done) => setTimeout(done, waitMs));
+          reads.push(await read());
+        }
+      } finally {
+        result.interruption = await probe.stop();
+      }
+      result.after = reads;
+      const interruption = result.interruption as { rootChanged?: unknown };
+      result.verdict = rootMoveVerdict({
+        before,
+        after: reads.at(-1)!,
+        // A probe that never summarized proves no unchanged boot.
+        rootChanged: interruption.rootChanged !== false,
+      });
     } else if (mode === "destroy") {
       await destroyStage(root, subject, source);
       await verifyStageAbsent(root, subject, source);

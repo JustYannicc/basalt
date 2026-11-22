@@ -393,6 +393,7 @@ const {
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
 const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
+const { containerImages } = await import("./container-image.ts");
 const { ownIdentities, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
@@ -649,7 +650,14 @@ try {
               `The plan updates ${policy.check.poolWorker} without ${readinessCommand}, so nothing waits for the pool object to adopt the new code; include it`,
             ),
           );
-        if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
+        if (command === "plan")
+          return {
+            snapshot,
+            digest,
+            planned: changedRows(snapshot),
+            // Whether each updated Container's image changes or only its attachment (#1766).
+            images: Object.fromEntries(yield* containerImages(snapshot.native)),
+          };
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
             new Error(
@@ -679,12 +687,16 @@ try {
       digest: result.digest,
       summary: result.snapshot.summary,
       changes: result.planned,
+      ...("images" in result ? { containerImages: result.images } : {}),
     };
     await output(resolve(root, `.local/release/${command}.json`), record);
     await summary(
       `${command === "plan" ? "Planned" : "Applied; a fresh plan is all noop"}: digest \`${result.digest}\`, attempt \`${attempt}\``,
     );
     await summary(`\`\`\`json\n${safeJson(record.changes, 2)}\n\`\`\``);
+    if ("containerImages" in record)
+      for (const [fqn, image] of Object.entries(record.containerImages))
+        await summary(`- ${fqn} Cloudflare.Container update (${image})`);
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {

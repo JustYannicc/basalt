@@ -94,6 +94,10 @@ jobs:
           PREVIEW_STATE_KEY: ${{ secrets.PREVIEW_STATE_KEY }}
           PREVIEW_SMOKE_EMAIL: ${{ secrets.PREVIEW_SMOKE_EMAIL }}
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
+          # Lane 1's root image for its baseline and the image its rootmove moves the root to, by
+          # digest and without the account; the job adds CLOUDFLARE_ACCOUNT_ID.
+          REHEARSAL_ROOT_IMAGE_1: ${{ vars.REHEARSAL_ROOT_IMAGE_1 }}
+          REHEARSAL_ROOT_MOVE_1: ${{ vars.REHEARSAL_ROOT_MOVE_1 }}
           # Lane 2's root image by digest, without the account; the job adds CLOUDFLARE_ACCOUNT_ID.
           REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
           # Lane 2's observation token, minted by the operator for this stage only. Until it exists the
@@ -128,6 +132,8 @@ jobs:
           PREVIEW_SMOKE_PASSWORD: ${{ secrets.PREVIEW_SMOKE_PASSWORD }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          REHEARSAL_ROOT_IMAGE_1: ${{ vars.REHEARSAL_ROOT_IMAGE_1 }}
+          REHEARSAL_ROOT_MOVE_1: ${{ vars.REHEARSAL_ROOT_MOVE_1 }}
           REHEARSAL_ROOT_IMAGE_2: ${{ vars.REHEARSAL_ROOT_IMAGE_2 }}
           REHEARSAL_ROOT_IMAGE_3: ${{ vars.REHEARSAL_ROOT_IMAGE_3 }}
           REHEARSAL_ROOT_IMAGE_4: ${{ vars.REHEARSAL_ROOT_IMAGE_4 }}

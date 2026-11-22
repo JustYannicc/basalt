@@ -1,4 +1,6 @@
 {
   "note": "One deadline per standing rehearsal lane, recorded when the lane is created from its GO (the lane's hard stop plus margin). Every job of the lane gives its stage this same TEST_STAGE_EXPIRES_AT, so the value a Worker holds as a secret never changes between releases: a per-job deadline made every release change it, which blocks a rollback (Cloudflare 10220) and re-uploads the pool Worker.",
-  "lanes": {}
+  "lanes": {
+    "1": "2026-11-23T00:00:00Z"
+  }
 }
